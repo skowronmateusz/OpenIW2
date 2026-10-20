@@ -14,6 +14,7 @@
 #include "fs/vfs.h"
 #include "game/collision.h"
 #include "game/pmove.h"
+#include "game/world.h"
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -207,6 +208,18 @@ struct Lightmap {
     SDL_GPUTexture* sun = nullptr;
 };
 
+struct MatInfo {
+    Pass pass;
+    int texture;
+};
+
+// A model uploaded for dynamic (entity) drawing, in model space.
+struct GpuModel {
+    SDL_GPUBuffer* vertices = nullptr;
+    SDL_GPUBuffer* indices = nullptr;
+    std::vector<Batch> batches;
+};
+
 struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
@@ -216,6 +229,10 @@ struct Scene {
     std::vector<Batch> batches;
     SDL_GPUTexture* sky = nullptr;
     std::unique_ptr<game::CollisionWorld> collision;
+    std::unique_ptr<assets::LightGrid> grid;
+    std::unordered_map<std::string, int> imageIndex;
+    std::unordered_map<std::string, MatInfo> matCache;
+    std::unordered_map<std::string, std::optional<GpuModel>> models;
     Vec3 sunDirection{0, 0, 1};
     Vec3 sunColor{1, 1, 1};
     Camera start;
@@ -308,7 +325,98 @@ Vec3 parseVec3(const std::string& s) {
     return v;
 }
 
-Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName) {
+MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::string& name) {
+    if (auto it = scene.matCache.find(name); it != scene.matCache.end()) return it->second;
+    MatInfo mi{Pass::Opaque, 0};
+    if (const auto md = vfs.read("materials/" + name)) {
+        try {
+            const auto m = assets::parseMaterial(*md);
+            mi.pass = classify(m.techniqueSet);
+            const std::string& img = m.colorImage();
+            if (mi.pass == Pass::Sky) {
+                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+            } else if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
+                auto it = scene.imageIndex.find(img);
+                if (it == scene.imageIndex.end()) {
+                    SDL_GPUTexture* t = loadImage(dev, up, vfs, img);
+                    int idx = 0;
+                    if (t) {
+                        idx = int(scene.textures.size());
+                        scene.textures.push_back(t);
+                    }
+                    it = scene.imageIndex.emplace(img, idx).first;
+                }
+                mi.texture = it->second;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "warning: material " << name << ": " << e.what() << "\n";
+        }
+    }
+    scene.matCache.emplace(name, mi);
+    return mi;
+}
+
+// Loads an xmodel's LOD 0 into GPU buffers for entity drawing (cached; nullptr if it cannot be loaded).
+const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& name) {
+    if (auto it = scene.models.find(name); it != scene.models.end()) return it->second ? &*it->second : nullptr;
+    auto& slot = scene.models[name];
+    try {
+        const auto md = vfs.read(name);
+        if (!md) throw std::runtime_error("missing");
+        const auto xm = assets::parseXModel(*md);
+        const auto pd = vfs.read("xmodelparts/" + xm.lods.at(0).name);
+        const auto sd = vfs.read("xmodelsurfs/" + xm.lods.at(0).name);
+        if (!pd || !sd) throw std::runtime_error("missing parts or surfs");
+        const auto surfs = assets::parseXModelSurfs(*sd, assets::parseXModelParts(*pd));
+        Uploader up(dev);
+        std::vector<GpuVertex> verts;
+        std::vector<uint32_t> indices;
+        GpuModel gm;
+        for (size_t si = 0; si < surfs.size(); ++si) {
+            const MatInfo mi = si < xm.lods[0].materials.size() ? sceneMaterial(scene, dev, up, vfs, xm.lods[0].materials[si]) : MatInfo{Pass::Opaque, 0};
+            if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+            const uint32_t base = uint32_t(verts.size());
+            for (const auto& v : surfs[si].vertices) {
+                GpuVertex g{};
+                std::memcpy(g.pos, v.position.data(), 12);
+                std::memcpy(g.normal, v.normal.data(), 12);
+                std::memcpy(g.color, v.color.data(), 4);
+                g.uv[0] = v.uv[0];
+                g.uv[1] = v.uv[1];
+                g.light[0] = g.light[1] = g.light[2] = 1.0f;
+                verts.push_back(g);
+            }
+            Batch b;
+            b.pass = mi.pass;
+            b.texture = mi.texture;
+            b.lightmap = -3;
+            b.firstIndex = uint32_t(indices.size());
+            for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
+            b.indexCount = uint32_t(indices.size()) - b.firstIndex;
+            gm.batches.push_back(b);
+        }
+        if (verts.empty()) throw std::runtime_error("no drawable surfaces");
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = uint32_t(verts.size() * sizeof(GpuVertex));
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        SDL_GPUBufferCreateInfo ib{};
+        ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        ib.size = uint32_t(indices.size() * 4);
+        gm.indices = SDL_CreateGPUBuffer(dev, &ib);
+        up.buffer(gm.vertices, verts.data(), vb.size);
+        up.buffer(gm.indices, indices.data(), ib.size);
+        up.flush();
+        slot = std::move(gm);
+        return &*slot;
+    } catch (const std::exception& e) {
+        std::cerr << "warning: model " << name << ": " << e.what() << "\n";
+        slot.reset();
+        return nullptr;
+    }
+}
+
+Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
     Scene scene;
     const std::string path = "maps/" + mapName + ".d3dbsp";
     const auto data = vfs.read(path);
@@ -325,40 +433,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         scene.textures.push_back(t);
     }
 
-    // Materials -> pass + color texture (cached by material name).
-    struct MatInfo { Pass pass; int texture; };
-    std::unordered_map<std::string, int> imageIndex;
-    std::unordered_map<std::string, MatInfo> matCache;
-    auto material = [&](const std::string& name) -> MatInfo {
-        if (auto it = matCache.find(name); it != matCache.end()) return it->second;
-        MatInfo mi{Pass::Opaque, 0};
-        if (const auto md = vfs.read("materials/" + name)) {
-            try {
-                const auto m = assets::parseMaterial(*md);
-                mi.pass = classify(m.techniqueSet);
-                const std::string& img = m.colorImage();
-                if (mi.pass == Pass::Sky) {
-                    if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-                } else if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
-                    auto it = imageIndex.find(img);
-                    if (it == imageIndex.end()) {
-                        SDL_GPUTexture* t = loadImage(dev, up, vfs, img);
-                        int idx = 0;
-                        if (t) {
-                            idx = int(scene.textures.size());
-                            scene.textures.push_back(t);
-                        }
-                        it = imageIndex.emplace(img, idx).first;
-                    }
-                    mi.texture = it->second;
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "warning: material " << name << ": " << e.what() << "\n";
-            }
-        }
-        matCache.emplace(name, mi);
-        return mi;
-    };
+    auto material = [&](const std::string& name) { return sceneMaterial(scene, dev, up, vfs, name); };
     std::vector<MatInfo> mats;
     for (const auto& bm : bsp.materials()) mats.push_back(material(bm.name));
 
@@ -419,7 +494,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
             scene.sunDirection = c.forward();
         }
     }
-    const assets::LightGrid grid(bsp.lump(2), bsp.lump(3));
+    scene.grid = std::make_unique<assets::LightGrid>(bsp.lump(2), bsp.lump(3));
+    const assets::LightGrid& grid = *scene.grid;
 
     // Static models placed by entities (world-space copies, lit per vertex from the light grid).
     struct ModelData { std::vector<assets::XSurface> surfaces; std::vector<MatInfo> materials; };
@@ -428,7 +504,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     for (const auto& e : bsp.entities()) {
         const std::string* cls = e.get("classname");
         const std::string* model = e.get("model");
-        if (!cls || !model || (*cls != "misc_model" && *cls != "script_model")) continue;
+        if (!cls || !model || (*cls != "misc_model" && !(staticScriptModels && *cls == "script_model"))) continue;
         if (model->rfind("xmodel/", 0) != 0) continue;
         auto& cached = modelCache[*model];
         if (!cached) {
@@ -561,7 +637,30 @@ struct FragmentUniforms {
     float sunColor[4];
     float lmWeights[4];
     float params[4];
+    float ambient[4];
 };
+
+// An entity model to draw this frame.
+struct DrawItem {
+    const GpuModel* model = nullptr;
+    Mat4 transform{};
+    float ambient[3] = {0.5f, 0.5f, 0.5f};
+    float sunVisibility = 1.0f;
+};
+
+const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+Mat4 entityTransform(const Vec3& origin, const Vec3& angles, float scale = 1.0f) {
+    const float d2r = float(M_PI) / 180;
+    const float sp = std::sin(angles.x * d2r), cp = std::cos(angles.x * d2r);
+    const float sy = std::sin(angles.y * d2r), cy = std::cos(angles.y * d2r);
+    const float sr = std::sin(angles.z * d2r), cr = std::cos(angles.z * d2r);
+    const Vec3 f{cp * cy, cp * sy, -sp};
+    const Vec3 l{sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp};
+    const Vec3 u{cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp};
+    return {f.x * scale, f.y * scale, f.z * scale, 0, l.x * scale, l.y * scale, l.z * scale, 0,
+            u.x * scale, u.y * scale, u.z * scale, 0, origin.x, origin.y, origin.z, 1};
+}
 
 struct Renderer {
     SDL_GPUDevice* dev = nullptr;
@@ -705,7 +804,8 @@ struct Renderer {
         depthH = h;
     }
 
-    void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam) {
+    void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
+              const std::vector<DrawItem>& items = {}) {
         ensureDepth(w, h);
         SDL_GPUColorTargetInfo color{};
         color.texture = target;
@@ -721,7 +821,7 @@ struct Renderer {
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
-        struct { Mat4 vp; float eye[4]; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 1}};
+        struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 1}, kIdentity};
         SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         SDL_GPUBufferBinding vb{scene.vertices, 0};
         SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
@@ -747,16 +847,52 @@ struct Renderer {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                    {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f}};
+                    {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
+                    {0, 0, 0, 0}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            }
+            // Entity models of this pass.
+            for (const DrawItem& it : items) {
+                bool bound = false;
+                for (const Batch& b : it.model->batches) {
+                    if (b.pass != p) continue;
+                    if (!bound) {
+                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                        SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
+                        SDL_GPUBufferBinding mib{it.model->indices, 0};
+                        SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        VU mu = vu;
+                        mu.model = it.transform;
+                        SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
+                        bound = true;
+                    }
+                    SDL_GPUTextureSamplerBinding tex[3] = {
+                        {scene.textures[size_t(b.texture)], repeatSampler}, {scene.dummyLightmap.coeffs, clampSampler}, {scene.dummyLightmap.sun, clampSampler}};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                    FragmentUniforms fu = {
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                        {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                        {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
+                        {p == Pass::AlphaTest ? 1.0f : 0.0f, 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility}};
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                }
+                if (bound) {
+                    // Restore world buffers for the next pass's world batches.
+                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                    SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                }
             }
         }
         SDL_EndGPURenderPass(pass);
     }
 };
 
-void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h, const std::string& out) {
+void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h, const std::string& out,
+                const std::vector<DrawItem>& items) {
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -773,7 +909,7 @@ void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camer
     if (!target || !tb) sdlFail("screenshot resources");
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
-    r.draw(cmd, target, w, h, scene, cam);
+    r.draw(cmd, target, w, h, scene, cam, items);
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region{};
     region.texture = target;
@@ -813,6 +949,8 @@ int main(int argc, char** argv) {
     std::optional<float> yaw, pitch;
     uint32_t width = 1600, height = 900;
     float walkSeconds = 0;
+    float simSeconds = 0;
+    bool scripts = true;
     Renderer renderer;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -828,6 +966,8 @@ int main(int argc, char** argv) {
             else if (a == "--size") { const std::string s = next(); width = uint32_t(std::stoul(s)); height = uint32_t(std::stoul(s.substr(s.find('x') + 1))); }
             else if (a == "--lm-scale") renderer.lmScale = std::stof(next());
             else if (a == "--walk-seconds") walkSeconds = std::stof(next());
+            else if (a == "--sim-seconds") simSeconds = std::stof(next());
+            else if (a == "--no-scripts") scripts = false;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
         } catch (const std::exception& e) {
@@ -848,7 +988,42 @@ int main(int argc, char** argv) {
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
 
-        Scene scene = loadScene(dev, vfs, args[1]);
+        std::unique_ptr<game::World> world;
+        if (scripts) {
+            world = std::make_unique<game::World>(vfs, args[1]);
+            world->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
+            world->start();
+        }
+        Scene scene = loadScene(dev, vfs, args[1], !world);
+
+        // Entity models currently visible in the game world.
+        auto gatherItems = [&]() {
+            std::vector<DrawItem> items;
+            if (!world) return items;
+            for (const auto& e : world->entities()) {
+                if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
+                const script::Value m = e->obj->get("model");
+                if (!m.isString() || m.asString().rfind("xmodel/", 0) != 0) continue;
+                const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
+                if (!gm) continue;
+                const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
+                if (!o.isVector()) continue;
+                const auto ov = o.asVector();
+                const auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
+                DrawItem it;
+                it.model = gm;
+                it.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                assets::LightGridCoeffs c;
+                float sun = 1.0f;
+                if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
+                    const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
+                    it.ambient[0] = l[0]; it.ambient[1] = l[1]; it.ambient[2] = l[2];
+                    it.sunVisibility = sun;
+                }
+                items.push_back(it);
+            }
+            return items;
+        };
         Camera cam = scene.start;
         if (pos) cam.pos = *pos;
         if (yaw) cam.yaw = *yaw;
@@ -868,8 +1043,15 @@ int main(int argc, char** argv) {
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + mp.eyeHeight};
                 std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
             }
+            if (world) {
+                for (int f = 0; f < int(simSeconds * 20); ++f) {
+                    world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
+                    world->frame();
+                }
+                std::cout << "script errors: " << world->vm().errors().size() << ", live threads: " << world->vm().liveThreadCount() << "\n";
+            }
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-            screenshot(dev, renderer, scene, cam, width, height, shot);
+            screenshot(dev, renderer, scene, cam, width, height, shot, gatherItems());
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
             return 0;
@@ -885,6 +1067,7 @@ int main(int argc, char** argv) {
         uint64_t last = SDL_GetTicksNS();
         bool running = true;
         bool walk = true;
+        float gameClock = 0;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
         const game::MoveParams mp;
@@ -936,11 +1119,20 @@ int main(int argc, char** argv) {
                 cam.pos = cam.pos + normalize(move) * speed;
             }
 
+            if (world) {
+                world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                gameClock += std::min(dt, 0.25f);
+                while (gameClock >= 0.05f) {
+                    world->frame();
+                    gameClock -= 0.05f;
+                }
+            }
+            const auto items = gatherItems();
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
             if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap)
-                renderer.draw(cmd, swap, w, h, scene, cam);
+                renderer.draw(cmd, swap, w, h, scene, cam, items);
             SDL_SubmitGPUCommandBuffer(cmd);
         }
         SDL_ReleaseWindowFromGPUDevice(dev, window);

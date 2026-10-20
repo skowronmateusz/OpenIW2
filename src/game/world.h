@@ -49,6 +49,12 @@ public:
     const std::vector<std::unique_ptr<Entity>>& entities() const { return entities_; }
     const std::vector<PathNode>& nodes() const { return nodes_; }
 
+    // Moves the player entity (set by the movement code each frame).
+    void setPlayerOrigin(const Vec3& origin, const Vec3& angles);
+
+    // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
+    bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
+
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
@@ -61,6 +67,7 @@ private:
     void spawnMapEntities();
     void registerBuiltins();
     void registerMissingStubs();
+    void runTriggers();
 
     const fs::Vfs& vfs_;
     std::string mapName_;
@@ -76,6 +83,7 @@ private:
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;
     std::map<std::string, int> missing_;
+    std::vector<std::pair<Vec3, Vec3>> submodels_;
 };
 
 } // namespace iw2::game

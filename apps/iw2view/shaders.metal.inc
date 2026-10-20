@@ -15,6 +15,7 @@ struct VertexIn {
 struct VertexUniforms {
     float4x4 viewProj;
     float4 eye;
+    float4x4 model;
 };
 
 struct VertexOut {
@@ -28,8 +29,8 @@ struct VertexOut {
 
 vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
     VertexOut o;
-    o.position = u.viewProj * float4(in.position, 1.0);
-    o.normal = in.normal;
+    o.position = u.viewProj * (u.model * float4(in.position, 1.0));
+    o.normal = (u.model * float4(in.normal, 0.0)).xyz;
     o.color = in.color;
     o.uv = in.uv;
     o.lmUv = in.lmUv;
@@ -41,7 +42,8 @@ struct FragmentUniforms {
     float4 sunDirection;   // xyz: direction towards the sun
     float4 sunColor;       // rgb: sun color * intensity
     float4 lmWeights;      // weights applied to the four lightmap coefficients
-    float4 params;         // x: alpha test (1 = on), y: 1 = lightmap, 2 = vertex light, z: lightmap scale, w: fullbright
+    float4 params;
+    float4 ambient;        // entity light: rgb ambient from the light grid, w = sun visibility         // x: alpha test (1 = on), y: 1 = lightmap, 2 = vertex light, 3 = entity light, z: lightmap scale, w: fullbright
 };
 
 fragment float4 fs_main(VertexOut in [[stage_in]],
@@ -58,6 +60,9 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     float3 light;
     if (u.params.w > 0.5) {
         light = float3(1.0);
+    } else if (u.params.y > 2.5) {
+        float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
+        light = u.ambient.rgb + u.ambient.w * ndl * u.sunColor.rgb;
     } else if (u.params.y > 1.5) {
         light = in.light; // baked per vertex from the light grid
     } else if (u.params.y > 0.5) {

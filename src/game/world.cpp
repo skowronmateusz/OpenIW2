@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <set>
 #include <stdexcept>
@@ -70,6 +71,13 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);
     bsp_ = std::make_unique<assets::D3dBsp>(bspData_);
+    const auto models = bsp_->lump(35);
+    for (size_t i = 0; i + 48 <= models.size(); i += 48) {
+        Vec3 mn, mx;
+        std::memcpy(mn.data(), models.data() + i, 12);
+        std::memcpy(mx.data(), models.data() + i + 12, 12);
+        submodels_.push_back({mn, mx});
+    }
     vm_.print = [this](const std::string& s) { print(s); };
     registerCoreBuiltins(vm_);
     registerBuiltins();
@@ -151,7 +159,60 @@ void World::start() {
 
 void World::frame() {
     timeMs_ += 50;
+    runTriggers();
     vm_.runFrame(timeMs_);
+}
+
+void World::setPlayerOrigin(const Vec3& origin, const Vec3& angles) {
+    if (!player_) return;
+    player_->obj->set("origin", Value(origin));
+    player_->obj->set("angles", Value(angles));
+}
+
+bool World::submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const {
+    if (model.size() < 2 || model[0] != '*') return false;
+    const int i = std::atoi(model.c_str() + 1);
+    if (i <= 0 || size_t(i) >= submodels_.size()) return false;
+    mins = submodels_[size_t(i)].first;
+    maxs = submodels_[size_t(i)].second;
+    return true;
+}
+
+// Fires "trigger" on triggers the player is touching (inferred behaviour: every server frame while touching;
+// trigger_once is removed after it fires). Player box: (-15,-15,0)-(15,15,70) around the origin.
+void World::runTriggers() {
+    if (!player_) return;
+    const Value po = player_->obj->get("origin");
+    if (!po.isVector()) return;
+    const Vec3 p = po.asVector();
+    const Vec3 pmin{p[0] - 15, p[1] - 15, p[2]}, pmax{p[0] + 15, p[1] + 15, p[2] + 70};
+    std::vector<Entity*> fired;
+    for (const auto& e : entities_) {
+        if (e->obj->removed || e->isSpawner || !startsWith(e->classname, "trigger_")) continue;
+        if (e->classname == "trigger_damage" || e->classname == "trigger_lookat" || e->classname == "trigger_use" ||
+            e->classname == "trigger_use_touch")
+            continue;
+        if (e->obj->get("$disabled").truthy()) continue;
+        bool touching = false;
+        if (e->classname == "trigger_radius") {
+            const Vec3 o = e->obj->get("origin").asVector();
+            const float r = e->obj->get("radius").isDefined() ? e->obj->get("radius").asFloat() : 0.0f;
+            const float h = e->obj->get("height").isDefined() ? e->obj->get("height").asFloat() : 0.0f;
+            const float dx = std::max({o[0] - pmax[0], pmin[0] - o[0], 0.0f}), dy = std::max({o[1] - pmax[1], pmin[1] - o[1], 0.0f});
+            touching = dx * dx + dy * dy <= r * r && pmax[2] >= o[2] && pmin[2] <= o[2] + h;
+        } else {
+            Vec3 mn, mx;
+            const Value m = e->obj->get("model");
+            if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) continue;
+            touching = pmin[0] <= mx[0] && pmax[0] >= mn[0] && pmin[1] <= mx[1] && pmax[1] >= mn[1] && pmin[2] <= mx[2] && pmax[2] >= mn[2];
+        }
+        if (touching) fired.push_back(e.get());
+    }
+    for (Entity* e : fired) {
+        if (e->obj->removed) continue;
+        vm_.notify(e->obj, "trigger", {Value(player_->obj)});
+        if (e->classname == "trigger_once") e->obj->removed = true;
+    }
 }
 
 void World::registerBuiltins() {
