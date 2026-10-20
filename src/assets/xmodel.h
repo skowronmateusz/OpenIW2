@@ -1,0 +1,67 @@
+// xmodel / xmodelparts / xmodelsurfs (docs/spec/xmodel.md).
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace iw2::assets {
+
+struct XModelLod {
+    float distance = 0;
+    std::string name;                  // base name of xmodelparts/<name> and xmodelsurfs/<name>
+    std::vector<std::string> materials; // one per surface
+};
+
+struct XModel {
+    uint8_t flags = 0;
+    std::array<float, 3> mins{}, maxs{};
+    std::vector<XModelLod> lods; // only non-empty LODs, in file order
+};
+
+// Parses the xmodel header and per-LOD material lists. Throws std::runtime_error on malformed input.
+XModel parseXModel(std::span<const uint8_t> data);
+
+struct Quat {
+    float x = 0, y = 0, z = 0, w = 1;
+};
+
+struct XBone {
+    std::string name;
+    int parent = -1;                 // -1 for root bones
+    std::array<float, 3> localOffset{};
+    Quat localRotation;
+    // Base pose in model space.
+    std::array<float, 3> position{};
+    Quat rotation;
+};
+
+struct XModelParts {
+    int rootCount = 0;
+    std::vector<XBone> bones;
+};
+
+XModelParts parseXModelParts(std::span<const uint8_t> data);
+
+struct XVertex {
+    std::array<float, 3> position{}; // model space (base pose applied)
+    std::array<float, 3> normal{};
+    std::array<uint8_t, 4> color{};
+    std::array<float, 2> uv{};
+};
+
+struct XSurface {
+    std::vector<XVertex> vertices;
+    std::vector<uint16_t> indices;
+    bool skinned = false;
+};
+
+// Parses all surfaces and transforms them into model space with the base pose of `parts`.
+std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XModelParts& parts);
+
+std::array<float, 3> rotate(const Quat& q, const std::array<float, 3>& v);
+Quat multiply(const Quat& a, const Quat& b);
+
+} // namespace iw2::assets

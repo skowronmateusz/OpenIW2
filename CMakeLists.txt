@@ -27,6 +27,7 @@ add_library(iw2_assets
   src/assets/iwi.cpp
   src/assets/d3dbsp.cpp
   src/assets/material.cpp
+  src/assets/xmodel.cpp
   src/util/png.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
@@ -59,3 +60,7 @@ if(SDL3_FOUND)
 else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")
 endif()
+
+add_executable(test_xmodel tests/test_xmodel.cpp)
+target_link_libraries(test_xmodel PRIVATE iw2_assets)
+add_test(NAME xmodel COMMAND test_xmodel)
