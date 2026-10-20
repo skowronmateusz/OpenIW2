@@ -67,7 +67,16 @@ int main(int argc, char** argv) {
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
         const auto t0 = std::chrono::steady_clock::now();
         world.start();
-        if (spawnAll) std::cout << "spawned " << world.spawnAllActors() << " actors\n";
+        if (spawnAll) {
+            std::cout << "spawned " << world.spawnAllActors() << " actors\n";
+            for (const auto& e : world.entities())
+                if (e->isActor) {
+                    std::cout << "first actor model " << e->obj->get("model").toString() << ", attachments:";
+                    for (const auto& a : e->attachments) std::cout << " " << a.model << "@" << a.tag;
+                    std::cout << "\n";
+                    break;
+                }
+        }
         for (int f = 0; f < seconds * 20; ++f) world.frame();
         const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 

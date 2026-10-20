@@ -501,28 +501,31 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
     return &it->second;
 }
 
-// Poses an attached model: bones that share a name with the body follow the body; a tag places the model's root
-// bone at that body bone (inferred attachment rules).
-assets::XPose attachmentPose(const assets::XModelParts& body, const assets::XPose& bodyPose, const assets::XModelParts& att,
-                             const std::string& tag) {
-    auto findBone = [](const assets::XModelParts& p, const std::string& n) -> int {
-        for (size_t i = 0; i < p.bones.size(); ++i) {
-            const auto& bn = p.bones[i].name;
-            if (bn.size() == n.size() && std::equal(bn.begin(), bn.end(), n.begin(), [](char a, char b) { return std::tolower(a) == std::tolower(b); }))
-                return int(i);
-        }
-        return -1;
-    };
+// Bone transforms by lower-case name, accumulated over a body and its attachments.
+using BoneMap = std::unordered_map<std::string, std::pair<std::array<float, 3>, assets::Quat>>;
+
+std::string lowerName(std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+void addBones(BoneMap& map, const assets::XModelParts& parts, const assets::XPose& pose) {
+    for (size_t i = 0; i < parts.bones.size(); ++i) map.emplace(lowerName(parts.bones[i].name), std::make_pair(pose.position[i], pose.rotation[i]));
+}
+
+// Poses an attached model. All models on an entity share one skeleton: bones whose names already exist (on the
+// body or an earlier attachment) follow them; a tag places the model's root bone at that bone (inferred rules).
+assets::XPose attachmentPose(const BoneMap& bones, const assets::XModelParts& att, const std::string& tag) {
     assets::XPose pose = assets::bindPose(att);
-    const int tagBone = tag.empty() ? -1 : findBone(body, tag);
+    const auto tagIt = tag.empty() ? bones.end() : bones.find(lowerName(tag));
     for (size_t i = 0; i < att.bones.size(); ++i) {
-        const int b = findBone(body, att.bones[i].name);
-        if (b >= 0 && tag.empty()) {
-            pose.position[i] = bodyPose.position[size_t(b)];
-            pose.rotation[i] = bodyPose.rotation[size_t(b)];
-        } else if (att.bones[i].parent < 0 && tagBone >= 0) {
-            pose.position[i] = bodyPose.position[size_t(tagBone)];
-            pose.rotation[i] = bodyPose.rotation[size_t(tagBone)];
+        const auto it = tag.empty() ? bones.find(lowerName(att.bones[i].name)) : bones.end();
+        if (it != bones.end()) {
+            pose.position[i] = it->second.first;
+            pose.rotation[i] = it->second.second;
+        } else if (att.bones[i].parent < 0 && tagIt != bones.end()) {
+            pose.position[i] = tagIt->second.first;
+            pose.rotation[i] = tagIt->second.second;
         } else if (att.bones[i].parent >= 0) {
             const size_t p = size_t(att.bones[i].parent);
             pose.rotation[i] = assets::multiply(pose.rotation[p], att.bones[i].localRotation);
@@ -1146,10 +1149,13 @@ int main(int argc, char** argv) {
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *body, pose);
                     if (it.model) items.push_back(it);
+                    BoneMap bones;
+                    addBones(bones, body->parts, pose);
                     for (const auto& at : e->attachments) {
                         const Scene::CpuModel* am = sceneCpuModel(scene, dev, vfs, at.model);
                         if (!am) continue;
-                        const assets::XPose ap = attachmentPose(body->parts, pose, am->parts, at.tag);
+                        const assets::XPose ap = attachmentPose(bones, am->parts, at.tag);
+                        addBones(bones, am->parts, ap);
                         DrawItem ai = base;
                         ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
                         if (ai.model) items.push_back(ai);
