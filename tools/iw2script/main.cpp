@@ -2,10 +2,12 @@
 //
 //   iw2script <main-dir> check              parse every .gsc and report errors
 //   iw2script <main-dir> dump <path.gsc>    print the syntax tree
+//   iw2script <main-dir> compile            compile every .gsc with the VM compiler
 //   iw2script <main-dir> builtins           list called functions that no script defines (engine built-ins)
 
 #include "fs/vfs.h"
 #include "script/parser.h"
+#include "script/vm.h"
 
 #include <functional>
 #include <iostream>
@@ -27,6 +29,25 @@ int main(int argc, char** argv) {
             if (!data) { std::cerr << "not found\n"; return 1; }
             const auto tree = iw2::script::parseScript(std::string_view(reinterpret_cast<const char*>(data->data()), data->size()), argv[3]);
             std::cout << iw2::script::dumpTree(*tree) << "\n";
+        } else if (cmd == "compile") {
+            iw2::script::VM vm([&](const std::string& p) -> std::optional<std::string> {
+                auto d = vfs.read(p);
+                if (!d) return std::nullopt;
+                return std::string(d->begin(), d->end());
+            });
+            int ok = 0, failed = 0;
+            for (const auto& name : vfs.list()) {
+                if (name.size() < 4 || name.substr(name.size() - 4) != ".gsc") continue;
+                try {
+                    vm.loadFile(name);
+                    ++ok;
+                } catch (const std::exception& e) {
+                    if (failed < 25) std::cerr << e.what() << "\n";
+                    ++failed;
+                }
+            }
+            std::cout << "total: " << ok << " ok, " << failed << " failed\n";
+            return failed ? 1 : 0;
         } else if (cmd == "builtins") {
             std::set<std::string> defined;
             std::map<std::string, std::pair<int, int>> called; // name -> (plain calls, method calls)

@@ -35,7 +35,9 @@ target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
 target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_script
-  src/script/parser.cpp)
+  src/script/parser.cpp
+  src/script/value.cpp
+  src/script/vm.cpp)
 target_include_directories(iw2_script PUBLIC src)
 target_compile_options(iw2_script PRIVATE -Wall -Wextra -Wpedantic)
 
@@ -77,3 +79,7 @@ add_test(NAME xmodel COMMAND test_xmodel)
 add_executable(test_lightgrid tests/test_lightgrid.cpp)
 target_link_libraries(test_lightgrid PRIVATE iw2_assets)
 add_test(NAME lightgrid COMMAND test_lightgrid)
+
+add_executable(test_vm tests/test_vm.cpp)
+target_link_libraries(test_vm PRIVATE iw2_script)
+add_test(NAME vm COMMAND test_vm)
