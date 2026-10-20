@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -497,11 +498,11 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
             if (auto s = e.get("sunlight")) light = std::stof(*s);
             if (auto c = e.get("suncolor")) scene.sunColor = parseVec3(*c) * light;
             if (auto d = e.get("sundirection")) {
-                const Vec3 a = parseVec3(*d); // pitch yaw roll, pointing from the sun
+                const Vec3 a = parseVec3(*d); // pitch yaw roll; the resulting forward vector points towards the sun
                 Camera c;
                 c.pitch = a.x;
                 c.yaw = a.y;
-                scene.sunDirection = c.forward() * -1.0f;
+                scene.sunDirection = c.forward();
             }
         } else if (*cls == "info_player_start" && scene.start.pos.x == 0 && scene.start.pos.y == 0) {
             if (auto o = e.get("origin")) scene.start.pos = parseVec3(*o) + Vec3{0, 0, 60};
@@ -534,8 +535,10 @@ struct Renderer {
     SDL_GPUSampler* clampSampler = nullptr;
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
-    float lmScale = 2.0f;
-    float lmWeights[4] = {0.25f, 0.25f, 0.25f, 0.25f};
+    float lmScale = 1.0f;
+    // Weights for a flat normal map from the $lightmapweights rule (docs/spec/material.md): all weight on
+    // stored byte 0, which a B8G8R8A8 texture returns in .b.
+    float lmWeights[4] = {0.0f, 0.0f, 1.0f, 0.0f};
     bool fullbright = false;
 
     void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat) {

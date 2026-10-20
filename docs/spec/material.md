@@ -45,8 +45,25 @@ Each 4 MiB lightmap holds four images back to back. Their sizes come from `FUN_1
 | 3 | 1024 × 1024 | 1 | `lightmapSamplerSun`: sun visibility |
 
 The game's shader computes `lightmapDiffuse.c = dot(coeffs_c, weights)`. Here `weights` is sampled from the
-engine-generated `$lightmapweights` texture at the normal-map sample. The texture is built in `FUN_1000d5c0` /
-`FUN_1000d260`; its contents are **not specified yet**. Sun light is then added as `sunVisibility × phong(sun)`.
+engine-generated `$lightmapweights` texture at the normal-map sample. Sun light is then added as
+`sunVisibility × lightColor0 × max(0, N·L)` (`lightmap.hlsl`, `phong.hlsl`).
+
+### `$lightmapweights` (32 × 32, ARGB8888), built in `FUN_1000fef0` and `FUN_1000fdd0`
+
+For texel `(i, j)`: `x = 2(i + 0.5)/32 − 1`, `y = 2(j + 0.5)/32 − 1`. If `x² + y² > 1`, the vector is normalized.
+`z = sqrt(1 − x² − y²)`. The four weights, stored as bytes 0..3 of each texel (`round(w × 255)`), are:
+
+1. `t = atan2(y, x) × 3/(2π) − 0.75`, wrapped into `[0, 3)`.
+2. `t ∈ [0,1)`: `(w1, w2, w3) = (1 − t, t, 0)`. `t ∈ [1,2)`: `(0, 2 − t, t − 1)`. `t ∈ [2,3)`: `(t − 2, 0, 3 − t)`.
+3. `w0 = clamp(1 − angle(z) × 1.0467734, 0, 1)`. The angle function (`FUN_100f8d90`) is inferred to be `acos`;
+   the constant is `1 / acos(1/√3)`.
+4. `w1..w3 *= (1 − w0)`.
+
+So a flat normal map gives weights `(1, 0, 0, 0)`: only byte 0 of each coefficient texel is used. The renderer must
+keep the same byte order for coefficient and weight textures.
+
+Sun direction: the forward vector of the worldspawn `sundirection` angles (pitch, yaw, roll) points **towards** the sun.
+With this convention the lightmap sun-visibility shadows line up with the sun-lit faces (checked visually on `toujane`).
 
 When `r_optimizeLightmaps` is 2, the renderer instead merges the lightmaps into one RGBA image per lightmap,
 built from part 0.
