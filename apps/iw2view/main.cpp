@@ -8,6 +8,7 @@
 #include "assets/d3dbsp.h"
 #include "assets/iwi.h"
 #include "assets/material.h"
+#include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "util/png.h"
 
@@ -293,13 +294,14 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         scene.textures.push_back(t);
     }
 
-    // Materials -> pass + color texture.
+    // Materials -> pass + color texture (cached by material name).
     struct MatInfo { Pass pass; int texture; };
-    std::vector<MatInfo> mats;
     std::unordered_map<std::string, int> imageIndex;
-    for (const auto& bm : bsp.materials()) {
+    std::unordered_map<std::string, MatInfo> matCache;
+    auto material = [&](const std::string& name) -> MatInfo {
+        if (auto it = matCache.find(name); it != matCache.end()) return it->second;
         MatInfo mi{Pass::Opaque, 0};
-        if (const auto md = vfs.read("materials/" + bm.name)) {
+        if (const auto md = vfs.read("materials/" + name)) {
             try {
                 const auto m = assets::parseMaterial(*md);
                 mi.pass = classify(m.techniqueSet);
@@ -318,11 +320,14 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                     mi.texture = it->second;
                 }
             } catch (const std::exception& e) {
-                std::cerr << "warning: material " << bm.name << ": " << e.what() << "\n";
+                std::cerr << "warning: material " << name << ": " << e.what() << "\n";
             }
         }
-        mats.push_back(mi);
-    }
+        matCache.emplace(name, mi);
+        return mi;
+    };
+    std::vector<MatInfo> mats;
+    for (const auto& bm : bsp.materials()) mats.push_back(material(bm.name));
 
     // Lightmaps.
     const auto lmLump = bsp.lump(assets::BspLump::Lightmaps);
@@ -366,6 +371,74 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         auto& dst = groups[{int(mi.pass), mi.texture, lm}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
+    // Static models placed by entities (world-space copies, lit by ambient + sun for now).
+    struct ModelData { std::vector<assets::XSurface> surfaces; std::vector<MatInfo> materials; };
+    std::unordered_map<std::string, std::optional<ModelData>> modelCache;
+    size_t modelCount = 0;
+    for (const auto& e : bsp.entities()) {
+        const std::string* cls = e.get("classname");
+        const std::string* model = e.get("model");
+        if (!cls || !model || (*cls != "misc_model" && *cls != "script_model")) continue;
+        if (model->rfind("xmodel/", 0) != 0) continue;
+        auto& cached = modelCache[*model];
+        if (!cached) {
+            try {
+                const auto md = vfs.read(*model);
+                if (!md) throw std::runtime_error("missing");
+                const auto xm = assets::parseXModel(*md);
+                const auto pd = vfs.read("xmodelparts/" + xm.lods.at(0).name);
+                const auto sd = vfs.read("xmodelsurfs/" + xm.lods.at(0).name);
+                if (!pd || !sd) throw std::runtime_error("missing parts or surfs");
+                ModelData d;
+                d.surfaces = assets::parseXModelSurfs(*sd, assets::parseXModelParts(*pd));
+                for (const auto& mn : xm.lods[0].materials) d.materials.push_back(material(mn));
+                cached = std::move(d);
+            } catch (const std::exception& ex) {
+                std::cerr << "warning: " << *model << ": " << ex.what() << "\n";
+                cached = ModelData{};
+            }
+        }
+        if (cached->surfaces.empty()) continue;
+
+        Vec3 origin, angles;
+        float scale = 1.0f;
+        if (auto o = e.get("origin")) origin = parseVec3(*o);
+        if (auto a = e.get("angles")) angles = parseVec3(*a);
+        else if (auto a1 = e.get("angle")) angles.y = std::stof(*a1);
+        if (auto sc = e.get("modelscale")) scale = std::stof(*sc);
+        const float d2r = float(M_PI) / 180;
+        const float sp = std::sin(angles.x * d2r), cp = std::cos(angles.x * d2r);
+        const float sy = std::sin(angles.y * d2r), cy = std::cos(angles.y * d2r);
+        const float sr = std::sin(angles.z * d2r), cr = std::cos(angles.z * d2r);
+        const Vec3 ax0{cp * cy, cp * sy, -sp};
+        const Vec3 ax1{sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp};
+        const Vec3 ax2{cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp};
+        auto xf = [&](const std::array<float, 3>& v, float k, bool translate) {
+            Vec3 r = ax0 * (v[0] * k) + ax1 * (v[1] * k) + ax2 * (v[2] * k);
+            return translate ? r + origin : r;
+        };
+
+        for (size_t si = 0; si < cached->surfaces.size(); ++si) {
+            const auto& surf = cached->surfaces[si];
+            const MatInfo mi = si < cached->materials.size() ? cached->materials[si] : MatInfo{Pass::Opaque, 0};
+            if (mi.pass == Pass::Skip) continue;
+            const uint32_t base = uint32_t(verts.size());
+            for (const auto& v : surf.vertices) {
+                GpuVertex g{};
+                const Vec3 p = xf(v.position, scale, true), n = normalize(xf(v.normal, 1.0f, false));
+                g.pos[0] = p.x; g.pos[1] = p.y; g.pos[2] = p.z;
+                g.normal[0] = n.x; g.normal[1] = n.y; g.normal[2] = n.z;
+                std::memcpy(g.color, v.color.data(), 4);
+                g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
+                verts.push_back(g);
+            }
+            auto& dst = groups[{int(mi.pass), mi.texture, -1}];
+            for (uint16_t i : surf.indices) dst.push_back(base + i);
+        }
+        ++modelCount;
+    }
+    std::cout << "placed " << modelCount << " static models (" << modelCache.size() << " unique)\n";
+
     std::vector<uint32_t> indices;
     for (const auto& [key, idx] : groups) {
         Batch b;
