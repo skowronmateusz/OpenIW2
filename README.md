@@ -3,7 +3,7 @@
 A from-scratch, native macOS (Apple Silicon) engine that plays the **Call of Duty 2** single-player campaign
 using the game data from your own retail copy.
 
-> Status: early. Only the asset filesystem works so far. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> Status: early. Asset loading (packs, textures, maps, materials) and a first native Metal map viewer work. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## What this repository contains, and what it does not
 
@@ -29,6 +29,8 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+If your `cmake` is an Intel build running under Rosetta, the project still targets `arm64` (set in `CMakeLists.txt`).
+
 ## Point it at your game data
 
 Copy the `main` folder from an installed, patched (1.3) game anywhere on your Mac, then:
@@ -37,4 +39,10 @@ Copy the `main` folder from an installed, patched (1.3) game anywhere on your Ma
 ./build/iw2fs /path/to/main packs --lang english
 ./build/iw2fs /path/to/main list maps/ --lang english
 ./build/iw2fs /path/to/main cat maps/_utility.gsc
+```
+
+Fly through a map (mouse + WASD, Shift = faster, F = fullbright, P = print camera position):
+
+```bash
+./build/iw2view /path/to/main toujane
 ```
