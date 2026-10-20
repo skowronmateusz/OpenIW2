@@ -45,11 +45,20 @@ struct XModelParts {
 
 XModelParts parseXModelParts(std::span<const uint8_t> data);
 
+struct XInfluence {
+    int16_t bone = 0;
+    float weight = 1.0f;
+    std::array<float, 3> offset{}; // position relative to the bone
+};
+
 struct XVertex {
     std::array<float, 3> position{}; // model space (base pose applied)
     std::array<float, 3> normal{};
     std::array<uint8_t, 4> color{};
     std::array<float, 2> uv{};
+    // Skinning data: influences in bone space and the normal in the space of the first bone.
+    std::vector<XInfluence> influences;
+    std::array<float, 3> boneNormal{};
 };
 
 struct XSurface {
@@ -60,6 +69,18 @@ struct XSurface {
 
 // Parses all surfaces and transforms them into model space with the base pose of `parts`.
 std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XModelParts& parts);
+
+// A posed skeleton: model-space position and rotation per bone.
+struct XPose {
+    std::vector<std::array<float, 3>> position;
+    std::vector<Quat> rotation;
+};
+
+// Base pose of a skeleton.
+XPose bindPose(const XModelParts& parts);
+
+// Re-skins a vertex with a pose (position and normal in model space).
+void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& position, std::array<float, 3>& normal);
 
 std::array<float, 3> rotate(const Quat& q, const std::array<float, 3>& v);
 Quat multiply(const Quat& a, const Quat& b);

@@ -124,6 +124,25 @@ XModelParts parseXModelParts(std::span<const uint8_t> data) {
     return p;
 }
 
+XPose bindPose(const XModelParts& parts) {
+    XPose p;
+    for (const auto& b : parts.bones) {
+        p.position.push_back(b.position);
+        p.rotation.push_back(b.rotation);
+    }
+    return p;
+}
+
+void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& position, std::array<float, 3>& normal) {
+    position = {0, 0, 0};
+    for (const auto& inf : v.influences) {
+        const size_t b = size_t(inf.bone);
+        const auto o = rotate(pose.rotation[b], inf.offset);
+        for (int a = 0; a < 3; ++a) position[size_t(a)] += (pose.position[b][size_t(a)] + o[size_t(a)]) * inf.weight;
+    }
+    normal = v.influences.empty() ? v.normal : rotate(pose.rotation[size_t(v.influences.front().bone)], v.boneNormal);
+}
+
 std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XModelParts& parts) {
     Reader r(data, "xmodelsurfs");
     if (const int16_t v = r.get<int16_t>(); v != kVersion) r.fail("version " + std::to_string(v));
@@ -156,8 +175,11 @@ std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XMod
             r.vec3(); // binormal (inferred)
             if (surf.skinned) {
                 const uint8_t extra = r.get<uint8_t>();
-                const XBone& b0 = boneAt(r.get<int16_t>());
+                const int16_t bone0 = r.get<int16_t>();
+                const XBone& b0 = boneAt(bone0);
                 const auto p0 = r.vec3();
+                v.influences.push_back({bone0, 1.0f, p0});
+                v.boneNormal = n;
                 std::array<float, 3> pos = toModel(b0, p0);
                 std::array<float, 3> nrm = rotate(b0.rotation, n);
                 if (extra) {
@@ -165,9 +187,13 @@ std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XMod
                     float rest = 1.0f;
                     std::array<float, 3> acc{};
                     for (int k = 0; k < extra; ++k) {
-                        const XBone& bk = boneAt(r.get<int16_t>());
-                        const auto pk = toModel(bk, r.vec3());
+                        const int16_t bonek = r.get<int16_t>();
+                        const XBone& bk = boneAt(bonek);
+                        const auto offk = r.vec3();
+                        const auto pk = toModel(bk, offk);
                         const float w = r.get<uint16_t>() / 65535.0f;
+                        v.influences.push_back({bonek, w, offk});
+                        v.influences.front().weight -= w;
                         for (int a = 0; a < 3; ++a) acc[size_t(a)] += pk[size_t(a)] * w;
                         rest -= w;
                     }
@@ -177,8 +203,11 @@ std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XMod
                 v.normal = nrm;
             } else {
                 const XBone& b = boneAt(rigidBone);
-                v.position = toModel(b, r.vec3());
+                const auto off = r.vec3();
+                v.position = toModel(b, off);
                 v.normal = rotate(b.rotation, n);
+                v.influences.push_back({rigidBone, 1.0f, off});
+                v.boneNormal = n;
             }
         }
         surf.indices.resize(size_t(triCount) * 3);

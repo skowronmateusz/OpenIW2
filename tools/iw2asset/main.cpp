@@ -12,11 +12,14 @@
 //   iw2asset <main-dir> model-info <xmodel/name>     LODs, materials, bones, surfaces
 //   iw2asset <main-dir> model-png <xmodel/name> <out.png> [size]   shaded side view of LOD 0
 //   iw2asset <main-dir> model-check                  parse every xmodel with all its LODs
+//   iw2asset <main-dir> anim-info <xanim/name>       frames, bones, notetracks
+//   iw2asset <main-dir> anim-check                   parse every xanim
 //   iw2asset <main-dir> bsp-check                    parse every map
 
 #include "assets/d3dbsp.h"
 #include "assets/iwi.h"
 #include "assets/material.h"
+#include "assets/xanim.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "util/png.h"
@@ -98,9 +101,13 @@ std::vector<uint8_t> mustRead(const fs::Vfs& vfs, const std::string& path) {
 int main(int argc, char** argv) {
     std::vector<std::string> args;
     int face = 0;
+    std::string animName;
+    float animFrame = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--face" && i + 1 < argc) face = std::stoi(argv[++i]);
+        else if (a == "--anim" && i + 1 < argc) animName = argv[++i];
+        else if (a == "--frame" && i + 1 < argc) animFrame = std::stof(argv[++i]);
         else args.push_back(a);
     }
     if (args.size() < 2) {
@@ -209,14 +216,16 @@ int main(int argc, char** argv) {
             const auto m = assets::parseXModel(mustRead(vfs, args[2]));
             const auto parts = assets::parseXModelParts(mustRead(vfs, "xmodelparts/" + m.lods.at(0).name));
             const auto surfs = assets::parseXModelSurfs(mustRead(vfs, "xmodelsurfs/" + m.lods.at(0).name), parts);
+            assets::XPose pose = assets::bindPose(parts);
+            if (!animName.empty()) {
+                const auto anim = assets::parseXAnim(mustRead(vfs, "xanim/" + animName));
+                pose = assets::animatePose(parts, anim, animFrame);
+            }
             std::vector<PreviewTri> tris;
             for (const auto& s : surfs)
                 for (size_t k = 0; k + 2 < s.indices.size(); k += 3) {
                     PreviewTri t;
-                    for (int c = 0; c < 3; ++c) {
-                        t.p[c] = s.vertices[s.indices[k + size_t(c)]].position;
-                        t.n[c] = s.vertices[s.indices[k + size_t(c)]].normal;
-                    }
+                    for (int c = 0; c < 3; ++c) assets::skinVertex(s.vertices[s.indices[k + size_t(c)]], pose, t.p[c], t.n[c]);
                     tris.push_back(t);
                 }
             renderPreview(tris, args[3], args.size() > 4 ? std::stoi(args[4]) : 768, true);
@@ -272,6 +281,26 @@ int main(int argc, char** argv) {
                         const auto surfs = assets::parseXModelSurfs(mustRead(vfs, "xmodelsurfs/" + lod.name), parts);
                         if (surfs.size() != lod.materials.size()) throw std::runtime_error("surface/material count mismatch in " + lod.name);
                     }
+                    ++ok;
+                } catch (const std::exception& e) {
+                    if (failed < 15) std::cerr << name << ": " << e.what() << "\n";
+                    ++failed;
+                }
+            }
+            std::cout << "total: " << ok << " ok, " << failed << " failed\n";
+            return failed ? 1 : 0;
+        } else if (cmd == "anim-info" && args.size() > 2) {
+            const auto a = assets::parseXAnim(mustRead(vfs, args[2]));
+            std::cout << args[2] << ": " << a.numFrames << " frames @ " << a.frameRate << " fps (" << a.length() << " s), "
+                      << a.bones.size() << " bones" << (a.looping ? ", looping" : "") << (a.delta ? ", delta" : "") << "\n";
+            for (const auto& b : a.bones)
+                std::cout << "  " << b.name << ": " << b.rot.keys.size() << " rot keys, " << b.trans.keys.size() << " trans keys\n";
+            for (const auto& n : a.notes) std::cout << "  note " << n.name << " @ " << n.time << "\n";
+        } else if (cmd == "anim-check") {
+            int ok = 0, failed = 0;
+            for (const auto& name : vfs.list("xanim/")) {
+                try {
+                    assets::parseXAnim(mustRead(vfs, name));
                     ++ok;
                 } catch (const std::exception& e) {
                     if (failed < 15) std::cerr << name << ": " << e.what() << "\n";

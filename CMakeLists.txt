@@ -29,6 +29,7 @@ add_library(iw2_assets
   src/assets/material.cpp
   src/assets/xmodel.cpp
   src/assets/lightgrid.cpp
+  src/assets/xanim.cpp
   src/util/png.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
