@@ -7,10 +7,13 @@
 //   iw2asset <main-dir> bsp-info <maps/name.d3dbsp>   lump table and counts
 //   iw2asset <main-dir> bsp-obj  <maps/name.d3dbsp> <out.obj>   export draw geometry as Wavefront OBJ
 //   iw2asset <main-dir> bsp-topdown <maps/name.d3dbsp> <out.png> [size]   shaded top-down preview
+//   iw2asset <main-dir> mat-info <materials/name>    techset, textures, constants
+//   iw2asset <main-dir> mat-check                    parse every material
 //   iw2asset <main-dir> bsp-check                    parse every map
 
 #include "assets/d3dbsp.h"
 #include "assets/iwi.h"
+#include "assets/material.h"
 #include "fs/vfs.h"
 #include "util/png.h"
 
@@ -176,6 +179,34 @@ int main(int argc, char** argv) {
                 }
             }
             util::writePngRgba(args[3], rgba.data(), w, h);
+        } else if (cmd == "mat-info" && args.size() > 2) {
+            const auto data = mustRead(vfs, args[2]);
+            const auto m = assets::parseMaterial(data);
+            std::cout << m.name << "\n  techset " << m.techniqueSet << "\n";
+            for (const auto& t : m.textures)
+                std::cout << "  texture " << t.samplerName << " (semantic " << int(t.semantic) << ") = " << t.imageName << "\n";
+            for (const auto& c : m.constants)
+                std::cout << "  constant " << c.name << " = " << c.value[0] << " " << c.value[1] << " " << c.value[2] << " " << c.value[3] << "\n";
+        } else if (cmd == "mat-check") {
+            int ok = 0, failed = 0, missingImages = 0;
+            std::map<std::string, int> techsets;
+            for (const auto& name : vfs.list("materials/")) {
+                if (name.find('.') != std::string::npos || name.find('/', 10) != std::string::npos) continue;
+                try {
+                    const auto data = mustRead(vfs, name);
+                    const auto m = assets::parseMaterial(data);
+                    ++techsets[m.techniqueSet];
+                    for (const auto& t : m.textures)
+                        if (!t.imageName.empty() && t.imageName[0] != '$' && !vfs.exists("images/" + t.imageName + ".iwi")) ++missingImages;
+                    ++ok;
+                } catch (const std::exception& e) {
+                    std::cerr << name << ": " << e.what() << "\n";
+                    ++failed;
+                }
+            }
+            std::cout << "techsets used: " << techsets.size() << ", missing image references: " << missingImages << "\n";
+            std::cout << "total: " << ok << " ok, " << failed << " failed\n";
+            return failed ? 1 : 0;
         } else if (cmd == "bsp-check") {
             int ok = 0, failed = 0;
             for (const auto& name : vfs.list("maps/")) {

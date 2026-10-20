@@ -21,6 +21,7 @@ target_compile_options(iw2_fs PRIVATE -Wall -Wextra -Wpedantic)
 add_library(iw2_assets
   src/assets/iwi.cpp
   src/assets/d3dbsp.cpp
+  src/assets/material.cpp
   src/util/png.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
