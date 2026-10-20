@@ -3,7 +3,8 @@
 //   iw2view <main-dir> <map-name> [--shot out.png] [--pos x,y,z] [--yaw deg] [--pitch deg]
 //           [--size WxH] [--lm-scale s] [--lm-weights a,b,c,d]
 //
-// Controls: mouse to look, WASD to move, Space/C up/down, Shift faster, F fullbright, Esc to quit.
+// Controls: mouse to look, WASD to move, Space jump (walk) / up (fly), C down (fly), Shift faster,
+// V toggles walk/fly, F fullbright, P prints the camera position, Esc quits.
 
 #include "assets/d3dbsp.h"
 #include "assets/iwi.h"
@@ -11,6 +12,8 @@
 #include "assets/material.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
+#include "game/collision.h"
+#include "game/pmove.h"
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -22,6 +25,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -211,6 +215,7 @@ struct Scene {
     Lightmap dummyLightmap;
     std::vector<Batch> batches;
     SDL_GPUTexture* sky = nullptr;
+    std::unique_ptr<game::CollisionWorld> collision;
     Vec3 sunDirection{0, 0, 1};
     Vec3 sunColor{1, 1, 1};
     Camera start;
@@ -309,6 +314,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     const auto data = vfs.read(path);
     if (!data) throw std::runtime_error("map not found: " + path);
     const assets::D3dBsp bsp(*data);
+    scene.collision = std::make_unique<game::CollisionWorld>(bsp);
     Uploader up(dev);
 
     // White fallback texture.
@@ -806,6 +812,7 @@ int main(int argc, char** argv) {
     std::optional<Vec3> pos;
     std::optional<float> yaw, pitch;
     uint32_t width = 1600, height = 900;
+    float walkSeconds = 0;
     Renderer renderer;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -820,6 +827,7 @@ int main(int argc, char** argv) {
             else if (a == "--pitch") pitch = std::stof(next());
             else if (a == "--size") { const std::string s = next(); width = uint32_t(std::stoul(s)); height = uint32_t(std::stoul(s.substr(s.find('x') + 1))); }
             else if (a == "--lm-scale") renderer.lmScale = std::stof(next());
+            else if (a == "--walk-seconds") walkSeconds = std::stof(next());
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
         } catch (const std::exception& e) {
@@ -847,6 +855,19 @@ int main(int argc, char** argv) {
         if (pitch) cam.pitch = *pitch;
 
         if (!shot.empty()) {
+            if (walkSeconds > 0) {
+                // Drop the player at the camera position and walk forward, then take the shot from the eyes.
+                const game::MoveParams mp;
+                game::PlayerState ps;
+                ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - mp.eyeHeight + 8.0f};
+                game::PlayerInput in;
+                in.yaw = cam.yaw;
+                for (int i = 0; i < 20; ++i) game::playerMove(*scene.collision, ps, in, 0.05f, mp);
+                in.forward = 1;
+                for (int i = 0; i < int(walkSeconds * 60); ++i) game::playerMove(*scene.collision, ps, in, 1.0f / 60.0f, mp);
+                cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + mp.eyeHeight};
+                std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
+            }
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
             screenshot(dev, renderer, scene, cam, width, height, shot);
             SDL_DestroyGPUDevice(dev);
@@ -863,12 +884,20 @@ int main(int argc, char** argv) {
 
         uint64_t last = SDL_GetTicksNS();
         bool running = true;
+        bool walk = true;
+        game::PlayerState ps;
+        ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
+        const game::MoveParams mp;
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_EVENT_QUIT) running = false;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_F) renderer.fullbright = !renderer.fullbright;
+                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_V) {
+                    walk = !walk;
+                    if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - mp.eyeHeight}; ps.velocity = {0, 0, 0}; }
+                }
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_P)
                     std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
@@ -880,15 +909,32 @@ int main(int argc, char** argv) {
             const float dt = float(now - last) * 1e-9f;
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
-            const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
-            Vec3 move;
-            if (keys[SDL_SCANCODE_W]) move = move + cam.forward();
-            if (keys[SDL_SCANCODE_S]) move = move + cam.forward() * -1.0f;
-            if (keys[SDL_SCANCODE_D]) move = move + cam.right();
-            if (keys[SDL_SCANCODE_A]) move = move + cam.right() * -1.0f;
-            if (keys[SDL_SCANCODE_SPACE]) move = move + Vec3{0, 0, 1};
-            if (keys[SDL_SCANCODE_C]) move = move + Vec3{0, 0, -1};
-            cam.pos = cam.pos + normalize(move) * speed;
+            if (walk) {
+                game::PlayerInput in;
+                in.forward = float(keys[SDL_SCANCODE_W]) - float(keys[SDL_SCANCODE_S]);
+                in.right = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
+                in.jump = keys[SDL_SCANCODE_SPACE];
+                in.sprint = keys[SDL_SCANCODE_LSHIFT];
+                in.yaw = cam.yaw;
+                // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
+                float remaining = std::min(dt, 0.1f);
+                while (remaining > 0) {
+                    const float step = std::min(remaining, 1.0f / 60.0f);
+                    game::playerMove(*scene.collision, ps, in, step, mp);
+                    remaining -= step;
+                }
+                cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + mp.eyeHeight};
+            } else {
+                const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
+                Vec3 move;
+                if (keys[SDL_SCANCODE_W]) move = move + cam.forward();
+                if (keys[SDL_SCANCODE_S]) move = move + cam.forward() * -1.0f;
+                if (keys[SDL_SCANCODE_D]) move = move + cam.right();
+                if (keys[SDL_SCANCODE_A]) move = move + cam.right() * -1.0f;
+                if (keys[SDL_SCANCODE_SPACE]) move = move + Vec3{0, 0, 1};
+                if (keys[SDL_SCANCODE_C]) move = move + Vec3{0, 0, -1};
+                cam.pos = cam.pos + normalize(move) * speed;
+            }
 
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;

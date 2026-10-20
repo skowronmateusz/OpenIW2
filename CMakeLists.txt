@@ -46,7 +46,9 @@ add_executable(iw2script tools/iw2script/main.cpp)
 target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
 
 add_library(iw2_game
-  src/game/world.cpp)
+  src/game/world.cpp
+  src/game/collision.cpp
+  src/game/pmove.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
@@ -76,7 +78,7 @@ add_test(NAME d3dbsp COMMAND test_d3dbsp)
 find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp)
-  target_link_libraries(iw2view PRIVATE iw2_fs iw2_assets SDL3::SDL3)
+  target_link_libraries(iw2view PRIVATE iw2_game SDL3::SDL3)
   target_compile_options(iw2view PRIVATE -Wall -Wextra)
 else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")

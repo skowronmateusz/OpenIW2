@@ -1,7 +1,9 @@
 // iw2game: run a level headless (scripts, entities, no rendering).
 //
 //   iw2game <main-dir> <map> [seconds] [--cvar name=value ...]
+//   iw2game <main-dir> <map> --walk-test     drop the player at the spawn point and walk forward
 
+#include "game/pmove.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -20,6 +22,34 @@ int main(int argc, char** argv) {
         iw2::fs::Vfs vfs;
         vfs.mountDirectory(argv[1]);
         iw2::game::World world(vfs, argv[2]);
+        if (argc > 3 && std::string(argv[3]) == "--walk-test") {
+            const auto t0 = std::chrono::steady_clock::now();
+            iw2::game::CollisionWorld cw(world.bsp());
+            std::cout << "collision: " << cw.brushCount() << " brushes (" << cw.triangleCount() << " from triangles), built in "
+                      << std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() << " s\n";
+            world.start();
+            iw2::game::PlayerState ps;
+            const auto o = world.player()->obj->get("origin").asVector();
+            const auto a = world.player()->obj->get("angles").asVector();
+            ps.origin = {o[0], o[1], o[2] + 32};
+            iw2::game::PlayerInput in;
+            in.yaw = a[1];
+            {
+                const iw2::game::MoveParams mp;
+                auto tr = cw.trace(ps.origin, ps.origin, mp.mins, mp.maxs, iw2::game::Contents::PlayerSolid);
+                std::cout << "spawn check: startSolid " << tr.startSolid << " contents 0x" << std::hex << tr.contents << std::dec << "\n";
+                auto tr2 = cw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 200}, {0,0,0}, {0,0,0}, iw2::game::Contents::PlayerSolid);
+                std::cout << "ray down: fraction " << tr2.fraction << " end z " << tr2.endPos[2] << " normal z " << tr2.normal[2] << " startSolid " << tr2.startSolid << "\n";
+            }
+            for (int f = 0; f < 40; ++f) iw2::game::playerMove(cw, ps, in, 0.05f);
+            std::cout << "after drop: z=" << ps.origin[2] << " (spawn z " << o[2] << "), on ground " << ps.onGround << "\n";
+            in.forward = 1;
+            for (int s = 1; s <= 6; ++s) {
+                for (int f = 0; f < 20; ++f) iw2::game::playerMove(cw, ps, in, 0.05f);
+                std::cout << "t=" << s << "s pos (" << ps.origin[0] << ", " << ps.origin[1] << ", " << ps.origin[2] << ") on ground " << ps.onGround << "\n";
+            }
+            return 0;
+        }
         int seconds = 10;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
