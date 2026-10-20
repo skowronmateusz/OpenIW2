@@ -1,0 +1,7 @@
+build/
+.cache/
+*.iwd
+*.d3dbsp
+*.iwi
+/main/
+.DS_Store
