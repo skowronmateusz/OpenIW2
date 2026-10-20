@@ -45,6 +45,15 @@ target_compile_options(iw2_script PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(iw2script tools/iw2script/main.cpp)
 target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
 
+add_library(iw2_game
+  src/game/world.cpp)
+target_include_directories(iw2_game PUBLIC src)
+target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
+target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(iw2game tools/iw2game/main.cpp)
+target_link_libraries(iw2game PRIVATE iw2_game)
+
 add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)
 
