@@ -83,6 +83,19 @@ int main(int argc, char** argv) {
         std::cout << "simulated " << seconds << " s in " << wall << " s; entities " << world.entities().size() << ", nodes "
                   << world.nodes().size() << ", live threads " << world.vm().liveThreadCount() << ", runtime errors "
                   << world.vm().errors().size() << "\n";
+        {
+            std::map<std::string, int> states;
+            const iw2::game::Entity* mover = nullptr;
+            for (const auto& e : world.entities())
+                if (e->isActor && !e->obj->removed) {
+                    ++states[e->animScript];
+                    if (!mover && e->animScript == "move") mover = e.get();
+                }
+            std::cout << "actor animscripts:";
+            for (const auto& [k, v] : states) std::cout << " " << k << "=" << v;
+            std::cout << "\n";
+            if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
+        }
         std::map<std::string, int> errs;
         for (const auto& e : world.vm().errors()) ++errs[e];
         int shown = 0;

@@ -328,7 +328,9 @@ void World::moveActor(Entity& e, float dt) {
         } else {
             o[0] += dx / d * budget;
             o[1] += dy / d * budget;
-            e.obj->set("angles", Value(Vec3{0, std::atan2(dy, dx) * 180.0f / float(M_PI), 0}));
+            const float yaw = std::atan2(dy, dx) * 180.0f / float(M_PI);
+            e.obj->set("angles", Value(Vec3{0, yaw, 0}));
+            e.obj->set("$motionyaw", Value(yaw));
             budget = 0;
         }
     }
@@ -610,6 +612,17 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("weaponisboltaction", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "boltaction") == "1"); });
     vm_.registerBuiltin("weapontype", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weapontype")); });
     vm_.registerBuiltin("weaponclass", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weaponclass")); });
+    // Angle of the actor's motion relative to its facing, in degrees (0 = moving forward). Inferred from
+    // animscripts/utility.gsc QuadrantAnimWeights(getMotionAngle() + 180) picking "front" for forward motion.
+    vm_.registerBuiltin("getmotionangle", [](CallContext& c) {
+        const auto o = c.self.asObject();
+        const Value mv = o->get("$motionyaw"), an = o->get("angles");
+        if (!mv.isNumber() || !an.isVector()) return Value(0.0f);
+        float d = mv.asFloat() - an.asVector()[1];
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        return Value(d);
+    });
     vm_.registerBuiltin("getentitynumber", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("getentitynumber on a non-entity");
