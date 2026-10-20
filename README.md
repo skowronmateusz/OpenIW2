@@ -46,3 +46,9 @@ Fly through a map (mouse + WASD, Shift = faster, F = fullbright, P = print camer
 ```bash
 ./build/iw2view /path/to/main toujane
 ```
+
+## License
+
+OpenIW2 is licensed under the GNU General Public License, version 2 or (at your option) any later version.
+See [LICENSE](LICENSE). This keeps the door open to reusing code from the GPL-licensed id Tech 3 (Quake III Arena)
+source release, the engine family CoD2's engine descends from. Game data is not covered: you need your own copy.
