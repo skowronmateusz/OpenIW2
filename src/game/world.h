@@ -4,6 +4,8 @@
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
 #include "game/animtree.h"
+#include "game/collision.h"
+#include "game/pathnodes.h"
 #include "script/vm.h"
 
 #include <functional>
@@ -38,6 +40,10 @@ struct Entity {
     std::unique_ptr<AnimState> anim;
     uint64_t animScriptThread = 0;   // thread of the running engine animscript (init, stop, …)
     std::string animScript;
+    // Movement towards the script goal.
+    std::vector<std::array<float, 3>> path;
+    size_t pathIndex = 0;
+    std::array<float, 3> pathGoal{};
 };
 
 struct PathNode {
@@ -80,6 +86,8 @@ public:
     // Weapon definition (weapons/sp/<name>: "WEAPONFILE\\key\\value\\…"), or nullptr.
     const std::map<std::string, std::string>* weapon(const std::string& name);
     AnimLibrary& animLibrary() { return animLib_; }
+    const CollisionWorld& collision() const { return *collision_; }
+    const PathGraph& paths() const { return paths_; }
 
 private:
     Entity& spawnEntity(const std::string& classname);
@@ -93,6 +101,8 @@ private:
     void registerAnimBuiltins();
     void startAnimScript(Entity& e, const std::string& name);
     void thinkActors();
+    void moveActor(Entity& e, float dt);
+    int nearestNode(const std::array<float, 3>& p) const;
 
     const fs::Vfs& vfs_;
     std::string mapName_;
@@ -110,6 +120,8 @@ private:
     int32_t nextFx_ = 0;
     std::map<std::string, int> missing_;
     std::vector<std::pair<Vec3, Vec3>> submodels_;
+    std::unique_ptr<CollisionWorld> collision_;
+    PathGraph paths_;
     std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
 

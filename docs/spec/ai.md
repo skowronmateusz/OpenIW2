@@ -27,3 +27,27 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
 
 The engine's AI state machine (when `stop`, `move`, `combat`, `cover_*`, `pain` and `death` run), path finding,
 and target selection.
+
+## Native actor fields (observed)
+
+Rows of `{ const char* name; int32 offset; int32 type; … }` (20 bytes), around 0x570774.
+Types seen: 0 int, 2 byte/bool, 3 float, 4 string, 5 vector, 6 and 8 entity, 0xa path node.
+Names include `fovcosine`, `maxsightdistsqrd`, `followmin`, `followmax`, `chainfallback`, `interval`,
+`damagetaken`, `damagedir`, `damageyaw`, `damagelocation`, `damageweapon`, `proneok`, `walkdist`,
+`desiredangle`, `pacifist`, `pacifistwait`, `suppressionwait`, `name`, `weapon`, `dontavoidplayer`,
+`grenadeawareness`, `grenade`, `grenadeweapon`, `grenadeammo`, `favoriteenemy`, `allowdeath`, `useable`,
+`dropweapon`, `drawoncompass`, `scriptstate`, `lastscriptstate`, `statechangereason`, `groundtype`, `anim_pose`,
+`goalradius`, `goalheight`, `lastenemysightpos`, `pathenemylookahead`, `pathenemyfightdist`, `chainnode`,
+`movemode`, `keepclaimednode`, `keepclaimednodeingoal`, `badplaceawareness`, `goodshootpos`, `goodshootposvalid`,
+`threatbias`, `node`, `enemy`, `ignoreme`, `accuracystationarymod`. Their default values are not specified yet;
+OpenIW2 uses `movemode = "run"`, `anim_pose = "stand"` and `goalradius = 64` (inferred).
+
+## Path data (lump 38, observed)
+
+Loaded by `FUN_0052e3c0`: `int32 version = 8; int16 nodeCount` (must equal the number of
+`node_*` entities: "Path node count mismatch in bsp file"), then per node `int16 linkCount` and
+`linkCount × { uint16 targetNode; float distance }`. Node-to-node visibility follows as `(n − 1)·n` bits,
+run-length coded: a byte `b < 0x80` means `b` zero bytes then one literal byte, and `b ≥ 0x80` means `~b` literal
+bytes. `toujane`: 2,571 nodes, 21,583 links; the lump is consumed exactly.
+
+OpenIW2 moves actors along an A* path over this graph at the root-motion speed of their current animations.

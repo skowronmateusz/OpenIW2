@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <set>
@@ -71,6 +72,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);
     bsp_ = std::make_unique<assets::D3dBsp>(bspData_);
+    collision_ = std::make_unique<CollisionWorld>(*bsp_);
     const auto models = bsp_->lump(35);
     for (size_t i = 0; i + 48 <= models.size(); i += 48) {
         Vec3 mn, mx;
@@ -143,6 +145,14 @@ void World::spawnMapEntities() {
     }
     if (!starts.empty()) playerStart = &starts.front();
 
+    std::vector<std::array<float, 3>> nodePositions;
+    for (const auto& n : nodes_) nodePositions.push_back(n.obj->get("origin").isVector() ? n.obj->get("origin").asVector() : Vec3{0, 0, 0});
+    try {
+        paths_ = PathGraph(bsp_->lump(38), std::move(nodePositions));
+    } catch (const std::exception& e) {
+        print(std::string("path data: ") + e.what());
+    }
+
     Entity& p = spawnEntity("player");
     p.isPlayer = true;
     p.obj->set("health", Value(int32_t(100)));
@@ -176,6 +186,13 @@ Entity* World::spawnActor(Entity& spawner) {
     a.obj->set("health", Value(int32_t(100)));
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
+    // Native actor fields (docs/spec/ai.md); default values are inferred.
+    a.obj->set("movemode", Value("run"));
+    a.obj->set("anim_pose", Value("stand"));
+    if (!a.obj->get("goalradius").isDefined()) a.obj->set("goalradius", Value(64.0f));
+    a.obj->set("goalheight", Value(0.0f));
+    a.obj->set("accuracy", Value(1.0f));
+    a.obj->set("grenadeammo", Value(int32_t(0)));
     const std::string aitype = "aitype/" + cls.substr(6) + ".gsc";
     try {
         vm_.start(aitype, "main", {}, Value(a.obj));
@@ -241,14 +258,84 @@ void World::startAnimScript(Entity& e, const std::string& name) {
     }
 }
 
-// Minimal AI state machine (inferred placeholder): when the current animscript ends, the actor goes to "stop".
-void World::thinkActors() {
-    for (const auto& e : entities_) {
-        if (!e->isActor || e->obj->removed) continue;
-        if (e->animScriptThread && vm_.isThreadAlive(e->animScriptThread)) continue;
-        if (e->animScript == "stop") continue; // stop ended on its own; do not spin
-        startAnimScript(*e, "stop");
+int World::nearestNode(const std::array<float, 3>& p) const {
+    int best = -1;
+    float bestD = 1e30f;
+    for (size_t i = 0; i < paths_.size(); ++i) {
+        const auto& q = paths_.position(i);
+        const float d = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + 4.0f * (p[2] - q[2]) * (p[2] - q[2]);
+        if (d < bestD) { bestD = d; best = int(i); }
     }
+    return best;
+}
+
+// Minimal AI state machine (inferred placeholder, docs/spec/ai.md): an actor with a goal outside its goal radius
+// runs "move" and follows the node graph; on arrival it is notified "goal" and runs "stop". When any animscript
+// ends on its own, the actor returns to "stop".
+void World::thinkActors() {
+    for (const auto& ep : entities_) {
+        Entity& e = *ep;
+        if (!e.isActor || e.obj->removed) continue;
+        if (e.animScript == "init" && e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
+        const Value goal = e.obj->get("$goalpos");
+        const Value origin = e.obj->get("origin");
+        if (goal.isVector() && origin.isVector()) {
+            const auto g = goal.asVector(), o = origin.asVector();
+            const Value rv = e.obj->get("goalradius");
+            const float radius = std::max(rv.isNumber() ? rv.asFloat() : 0.0f, 16.0f);
+            const float dist = std::sqrt((g[0] - o[0]) * (g[0] - o[0]) + (g[1] - o[1]) * (g[1] - o[1]));
+            if (dist > radius) {
+                if (e.animScript != "move" || e.pathGoal != g) {
+                    e.path.clear();
+                    const int a = nearestNode(o), b = nearestNode(g);
+                    for (int n : paths_.findPath(a, b)) e.path.push_back(paths_.position(size_t(n)));
+                    e.path.push_back(g);
+                    e.pathIndex = 0;
+                    e.pathGoal = g;
+                    if (e.animScript != "move") startAnimScript(e, "move");
+                }
+                moveActor(e, 0.05f);
+                continue;
+            }
+            if (e.animScript == "move") {
+                e.path.clear();
+                vm_.notify(e.obj, "goal");
+                startAnimScript(e, "stop");
+                continue;
+            }
+        }
+        if (e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
+        if (e.animScript == "stop") continue; // stop ended on its own; do not spin
+        startAnimScript(e, "stop");
+    }
+}
+
+void World::moveActor(Entity& e, float dt) {
+    if (e.pathIndex >= e.path.size()) return;
+    auto o = e.obj->get("origin").asVector();
+    float speed = e.anim ? e.anim->moveSpeed() : 0.0f;
+    if (speed < 1.0f) speed = 150.0f; // fallback while the move script has not picked an animation yet
+    float budget = speed * dt;
+    while (budget > 0 && e.pathIndex < e.path.size()) {
+        const auto& t = e.path[e.pathIndex];
+        const float dx = t[0] - o[0], dy = t[1] - o[1];
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (d <= budget) {
+            o[0] = t[0];
+            o[1] = t[1];
+            budget -= d;
+            ++e.pathIndex;
+        } else {
+            o[0] += dx / d * budget;
+            o[1] += dy / d * budget;
+            e.obj->set("angles", Value(Vec3{0, std::atan2(dy, dx) * 180.0f / float(M_PI), 0}));
+            budget = 0;
+        }
+    }
+    // Stand on the ground.
+    const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::PlayerSolid);
+    if (!tr.startSolid && tr.fraction < 1.0f) o[2] = tr.endPos[2];
+    e.obj->set("origin", Value(o));
 }
 
 void World::useAnimTree(Entity& e, const std::string& tree) {

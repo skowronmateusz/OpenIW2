@@ -83,6 +83,9 @@ public:
     float time(int n) const { return nodes_[size_t(n)].time; }
     const AnimTree& tree() const { return tree_; }
 
+    // Horizontal root-motion speed (units/s) of the currently weighted animations with delta tracks.
+    float moveSpeed() const;
+
     // Blended local pose for a skeleton.
     assets::XPose pose(const assets::XModelParts& parts) const;
 

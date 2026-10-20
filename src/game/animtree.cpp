@@ -201,6 +201,23 @@ float AnimState::effectiveWeight(int n) const {
     return w;
 }
 
+float AnimState::moveSpeed() const {
+    const auto& nodes = tree_.nodes();
+    float speed = 0;
+    for (size_t i = 1; i < nodes.size(); ++i) {
+        if (!nodes[i].children.empty()) continue;
+        const float w = effectiveWeight(int(i));
+        if (w <= 0.001f) continue;
+        const assets::XAnim* a = lib_.anim(nodes[i].name);
+        if (!a || !a->delta || a->deltaTrans.keys.size() < 2 || a->length() <= 0) continue;
+        const auto& f = a->deltaTrans.keys.front();
+        const auto& l = a->deltaTrans.keys.back();
+        const float d = std::sqrt((l[0] - f[0]) * (l[0] - f[0]) + (l[1] - f[1]) * (l[1] - f[1]));
+        speed += w * d / a->length() * nodes_[i].rate;
+    }
+    return speed;
+}
+
 assets::XPose AnimState::pose(const assets::XModelParts& parts) const {
     const auto& nodes = tree_.nodes();
     const size_t nb = parts.bones.size();

@@ -1,0 +1,99 @@
+#include "game/pathnodes.h"
+
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <queue>
+#include <stdexcept>
+
+namespace iw2::game {
+namespace {
+
+template <typename T>
+T rd(std::span<const uint8_t> d, size_t& pos) {
+    if (pos + sizeof(T) > d.size()) throw std::runtime_error("path data: truncated");
+    T v;
+    std::memcpy(&v, d.data() + pos, sizeof v);
+    pos += sizeof v;
+    return v;
+}
+
+} // namespace
+
+PathGraph::PathGraph(std::span<const uint8_t> lump, std::vector<std::array<float, 3>> positions) : positions_(std::move(positions)) {
+    if (lump.empty()) {
+        links_.resize(positions_.size());
+        return;
+    }
+    size_t pos = 0;
+    const int32_t version = rd<int32_t>(lump, pos);
+    if (version != 8) throw std::runtime_error("path data: version " + std::to_string(version));
+    const int16_t count = rd<int16_t>(lump, pos);
+    if (size_t(count) != positions_.size())
+        throw std::runtime_error("Path node count mismatch in bsp file (" + std::to_string(count) + " vs " +
+                                 std::to_string(positions_.size()) + " node entities)");
+    links_.resize(size_t(count));
+    for (int i = 0; i < count; ++i) {
+        const int16_t n = rd<int16_t>(lump, pos);
+        for (int k = 0; k < n; ++k) {
+            PathLink l;
+            l.target = rd<uint16_t>(lump, pos);
+            l.distance = rd<float>(lump, pos);
+            if (l.target >= count) throw std::runtime_error("path data: link target out of range");
+            links_[size_t(i)].push_back(l);
+        }
+    }
+    // Run-length coded bit matrix: a byte b < 0x80 means b zero bytes then one literal byte;
+    // b >= 0x80 means ~b literal bytes.
+    const size_t size = (size_t(count - 1) * size_t(count) + 7) / 8;
+    vis_.assign(size, 0);
+    size_t out = 0;
+    while (out < size) {
+        const uint8_t b = rd<uint8_t>(lump, pos);
+        if (b & 0x80) {
+            for (int k = 0; k < uint8_t(~b) && out < size; ++k) vis_[out++] = rd<uint8_t>(lump, pos);
+        } else {
+            out += b;
+            if (out < size) vis_[out++] = rd<uint8_t>(lump, pos);
+        }
+    }
+}
+
+std::vector<int> PathGraph::findPath(int from, int to) const {
+    const size_t n = positions_.size();
+    if (from < 0 || to < 0 || size_t(from) >= n || size_t(to) >= n) return {};
+    auto h = [&](int a) {
+        const auto& p = positions_[size_t(a)];
+        const auto& q = positions_[size_t(to)];
+        return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+    };
+    std::vector<float> g(n, std::numeric_limits<float>::infinity());
+    std::vector<int> prev(n, -1);
+    using Item = std::pair<float, int>;
+    std::priority_queue<Item, std::vector<Item>, std::greater<>> open;
+    g[size_t(from)] = 0;
+    open.push({h(from), from});
+    while (!open.empty()) {
+        const auto [f, cur] = open.top();
+        open.pop();
+        if (cur == to) break;
+        if (f - h(cur) > g[size_t(cur)] + 1e-3f) continue;
+        for (const PathLink& l : links_[size_t(cur)]) {
+            const float ng = g[size_t(cur)] + l.distance;
+            if (ng < g[l.target]) {
+                g[l.target] = ng;
+                prev[l.target] = cur;
+                open.push({ng + h(l.target), l.target});
+            }
+        }
+    }
+    if (from != to && prev[size_t(to)] < 0) return {};
+    std::vector<int> path;
+    for (int c = to; c >= 0; c = prev[size_t(c)]) {
+        path.push_back(c);
+        if (c == from) break;
+    }
+    return {path.rbegin(), path.rend()};
+}
+
+} // namespace iw2::game
