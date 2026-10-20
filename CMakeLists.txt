@@ -52,7 +52,7 @@ add_library(iw2_game
   src/game/pmove.cpp
   src/game/animtree.cpp
   src/game/pathnodes.cpp
-  src/game/combat.cpp)
+  src/game/combat.cpp src/game/playerweapon.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
@@ -99,3 +99,7 @@ add_test(NAME lightgrid COMMAND test_lightgrid)
 add_executable(test_vm tests/test_vm.cpp)
 target_link_libraries(test_vm PRIVATE iw2_script)
 add_test(NAME vm COMMAND test_vm)
+
+add_executable(test_playerweapon tests/test_playerweapon.cpp)
+target_link_libraries(test_playerweapon PRIVATE iw2_game)
+add_test(NAME playerweapon COMMAND test_playerweapon)

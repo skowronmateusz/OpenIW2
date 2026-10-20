@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <string>
@@ -53,10 +54,13 @@ int main(int argc, char** argv) {
         int seconds = 10;
         bool spawnAll = false;
         int traceActor = -1;
+        bool playerShoots = false;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--trace-actor" && i + 1 < argc) {
                 traceActor = std::stoi(argv[++i]);
+            } else if (a == "--player-shoots") {
+                playerShoots = true; // the player fires at the nearest axis actor twice a second
             } else if (a == "--spawn-all") {
                 spawnAll = true;
             } else if (a == "--cvar" && i + 1 < argc) {
@@ -85,7 +89,32 @@ int main(int argc, char** argv) {
                     break;
                 }
         }
-        for (int f = 0; f < seconds * 20; ++f) world.frame();
+        int playerHits = 0;
+        for (int f = 0; f < seconds * 20; ++f) {
+            if (playerShoots && f % 10 == 0 && world.player()) {
+                const auto eye = iw2::script::Vec3{world.player()->obj->get("origin").asVector()[0], world.player()->obj->get("origin").asVector()[1],
+                                              world.player()->obj->get("origin").asVector()[2] + 60.0f};
+                iw2::game::Entity* best = nullptr;
+                float bestD = 1e30f;
+                for (const auto& e : world.entities()) {
+                    if (!e->isActor || !world.isAlive(*e) || e->obj->get("team").toString() != "axis" || !world.canSee(*world.player(), *e)) continue;
+                    const auto o = e->obj->get("origin").asVector();
+                    const float d = (o[0] - eye[0]) * (o[0] - eye[0]) + (o[1] - eye[1]) * (o[1] - eye[1]);
+                    if (d < bestD) { bestD = d; best = e.get(); }
+                }
+                if (best) {
+                    const auto o = best->obj->get("origin").asVector();
+                    iw2::script::Vec3 dir{o[0] - eye[0], o[1] - eye[1], o[2] + 40.0f - eye[2]};
+                    const float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+                    for (auto& c : dir) c /= l;
+                    const int before = world.stats.hits;
+                    world.playerFire(eye, dir);
+                    playerHits += world.stats.hits - before;
+                }
+            }
+            world.frame();
+        }
+        if (playerShoots) std::cout << "player hits " << playerHits << "\n";
         const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
         std::cout << "simulated " << seconds << " s in " << wall << " s; entities " << world.entities().size() << ", nodes "

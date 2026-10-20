@@ -10,9 +10,11 @@
 #include "assets/iwi.h"
 #include "assets/lightgrid.h"
 #include "assets/material.h"
+#include "assets/xanim.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "game/collision.h"
+#include "game/playerweapon.h"
 #include "game/pmove.h"
 #include "game/world.h"
 #include "util/png.h"
@@ -534,6 +536,20 @@ assets::XPose attachmentPose(const BoneMap& bones, const assets::XModelParts& at
         }
     }
     return pose;
+}
+
+// Cached view-model animations (xanim/<name>); nullptr when missing.
+const assets::XAnim* viewAnim(const fs::Vfs& vfs, const std::string& name) {
+    static std::map<std::string, std::optional<assets::XAnim>> cache;
+    auto [it, inserted] = cache.try_emplace(lowerName(name));
+    if (inserted) {
+        try {
+            if (const auto d = vfs.read("xanim/" + lowerName(name))) it->second = assets::parseXAnim(*d);
+        } catch (const std::exception& e) {
+            std::cerr << "warning: xanim " << name << ": " << e.what() << "\n";
+        }
+    }
+    return it->second ? &*it->second : nullptr;
 }
 
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
@@ -1070,6 +1086,7 @@ int main(int argc, char** argv) {
     uint32_t width = 1600, height = 900;
     float walkSeconds = 0;
     float simSeconds = 0;
+    float fireSeconds = 0;
     bool scripts = true;
     bool spawnAll = false;
     Renderer renderer;
@@ -1088,6 +1105,7 @@ int main(int argc, char** argv) {
             else if (a == "--lm-scale") renderer.lmScale = std::stof(next());
             else if (a == "--walk-seconds") walkSeconds = std::stof(next());
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
+            else if (a == "--fire-seconds") fireSeconds = std::stof(next());
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
@@ -1171,6 +1189,70 @@ int main(int argc, char** argv) {
             up.flush();
             return items;
         };
+        // First-person weapon: hands and gun posed by the weapon's current view-model animation and drawn in
+        // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
+        game::PlayerWeapon pweapon;
+        auto syncWeapon = [&]() {
+            if (!world || !world->player()) return;
+            const script::Value w = world->player()->obj->get("$weapon");
+            std::string name = w.isString() && !w.asString().empty() ? w.asString() : "thompson";
+            if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
+            if (name == pweapon.name()) return;
+            if (const auto* def = world->weapon(name)) pweapon.equip(name, *def);
+        };
+        auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c) {
+            if (!pweapon.equipped()) return;
+            const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
+            const Scene::CpuModel* gun = sceneCpuModel(scene, dev, vfs, pweapon.gunModel());
+            const assets::XAnim* an = viewAnim(vfs, pweapon.anim());
+            float frame = 0;
+            if (an) {
+                const float last = float(std::max(0, an->numFrames - 1));
+                const float f = pweapon.animTime() * float(an->frameRate);
+                frame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
+            }
+            DrawItem base;
+            // standMove{F,R,U} from the weapon file shift the model in view space (forward, right, up).
+            const auto mv = pweapon.standMove();
+            base.transform = entityTransform(c.pos + c.forward() * mv[0] + c.right() * mv[1] + cross(c.right(), c.forward()) * mv[2],
+                                             {c.pitch, c.yaw, 0});
+            if (const char* dbg = std::getenv("IW2_VIEWMODEL_DEBUG")) {
+                // Debug: show the view model from outside, `dist` units ahead, turned by `yaw` degrees.
+                float dist = 40, turn = 180;
+                std::sscanf(dbg, "%f,%f", &dist, &turn);
+                base.transform = entityTransform(c.pos + c.forward() * dist, {0, c.yaw + turn, 0});
+            }
+            assets::LightGridCoeffs lc;
+            float sun = 1.0f;
+            if (scene.grid && scene.grid->sample({c.pos.x, c.pos.y, c.pos.z}, lc, sun)) {
+                const auto l = assets::LightGrid::evaluate(lc, {0, 0, 1});
+                base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
+                base.sunVisibility = sun;
+            }
+            Uploader up(dev);
+            BoneMap bones;
+            if (hands) {
+                const assets::XPose hp = an ? assets::animatePose(hands->parts, *an, frame) : assets::bindPose(hands->parts);
+                addBones(bones, hands->parts, hp);
+                DrawItem it = base;
+                it.model = skinModel(scene, dev, up, -1, pweapon.handModel(), *hands, hp);
+                if (it.model) items.push_back(it);
+            }
+            if (gun) {
+                assets::XPose gp = an ? assets::animatePose(gun->parts, *an, frame) : assets::bindPose(gun->parts);
+                if (const auto tw = bones.find("tag_weapon"); tw != bones.end()) {
+                    for (size_t i = 0; i < gp.position.size(); ++i) {
+                        const auto o = assets::rotate(tw->second.second, gp.position[i]);
+                        gp.position[i] = {tw->second.first[0] + o[0], tw->second.first[1] + o[1], tw->second.first[2] + o[2]};
+                        gp.rotation[i] = assets::multiply(tw->second.second, gp.rotation[i]);
+                    }
+                }
+                DrawItem it = base;
+                it.model = skinModel(scene, dev, up, -1, pweapon.gunModel(), *gun, gp);
+                if (it.model) items.push_back(it);
+            }
+            up.flush();
+        };
         Camera cam = scene.start;
         if (pos) cam.pos = *pos;
         if (yaw) cam.yaw = *yaw;
@@ -1198,7 +1280,12 @@ int main(int argc, char** argv) {
                 std::cout << "script errors: " << world->vm().errors().size() << ", live threads: " << world->vm().liveThreadCount() << "\n";
             }
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-            screenshot(dev, renderer, scene, cam, width, height, shot, gatherItems());
+            syncWeapon();
+            pweapon.update(1.0f, {});
+            pweapon.update(fireSeconds, {fireSeconds > 0, false});
+            auto shotItems = gatherItems();
+            addViewModel(shotItems, cam);
+            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems);
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
             return 0;
@@ -1214,6 +1301,7 @@ int main(int argc, char** argv) {
         uint64_t last = SDL_GetTicksNS();
         bool running = true;
         bool walk = true;
+        bool reloadPressed = false;
         float gameClock = 0;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
@@ -1228,6 +1316,7 @@ int main(int argc, char** argv) {
                     walk = !walk;
                     if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - mp.eyeHeight}; ps.velocity = {0, 0, 0}; }
                 }
+                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_R) reloadPressed = true;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_P)
                     std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
@@ -1267,6 +1356,15 @@ int main(int argc, char** argv) {
             }
 
             if (world) {
+                syncWeapon();
+                game::PlayerWeapon::Input wi;
+                wi.fire = (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) != 0;
+                wi.reload = reloadPressed;
+                reloadPressed = false;
+                const int shots = pweapon.update(std::min(dt, 0.1f), wi);
+                const Vec3 f = cam.forward();
+                for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
+                if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
                 gameClock += std::min(dt, 0.25f);
                 while (gameClock >= 0.05f) {
@@ -1274,7 +1372,8 @@ int main(int argc, char** argv) {
                     gameClock -= 0.05f;
                 }
             }
-            const auto items = gatherItems();
+            auto items = gatherItems();
+            addViewModel(items, cam);
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;

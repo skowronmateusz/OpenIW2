@@ -93,6 +93,7 @@ public:
     // Player fires the current weapon from `eye` along `forward` (unit vector).
     void playerFire(const Vec3& eye, const Vec3& forward);
     bool isAlive(const Entity& e) const;
+    bool canSee(Entity& from, Entity& to);
     struct Stats { int shots = 0, hits = 0, kills = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
@@ -118,7 +119,6 @@ private:
     const assets::XModelParts* skeleton(const std::string& model);
     std::unordered_map<std::string, BoneXform> entityBones(Entity& e);
     Vec3 eyePosition(Entity& e);
-    bool canSee(Entity& from, Entity& to);
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod);
     Entity* traceSentients(const Vec3& start, const Vec3& end, const Entity* ignore, float& fraction);
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount);
