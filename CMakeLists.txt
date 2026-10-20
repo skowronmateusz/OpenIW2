@@ -18,10 +18,24 @@ target_include_directories(iw2_fs PUBLIC src)
 target_link_libraries(iw2_fs PUBLIC ZLIB::ZLIB)
 target_compile_options(iw2_fs PRIVATE -Wall -Wextra -Wpedantic)
 
+add_library(iw2_assets
+  src/assets/iwi.cpp
+  src/util/png.cpp)
+target_include_directories(iw2_assets PUBLIC src)
+target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
+target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)
+
+add_executable(iw2asset tools/iw2asset/main.cpp)
+target_link_libraries(iw2asset PRIVATE iw2_fs iw2_assets)
 
 enable_testing()
 add_executable(test_vfs tests/test_vfs.cpp)
 target_link_libraries(test_vfs PRIVATE iw2_fs)
 add_test(NAME vfs COMMAND test_vfs)
+
+add_executable(test_iwi tests/test_iwi.cpp)
+target_link_libraries(test_iwi PRIVATE iw2_assets)
+add_test(NAME iwi COMMAND test_iwi)
