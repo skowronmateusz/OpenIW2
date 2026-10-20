@@ -36,6 +36,9 @@ animation reference, animation tree.
 - A runtime error stops only the failing thread and is reported. The original prints a script runtime error and,
   in developer mode, halts.
 
+- A script function called without an object (`f()`, `thread f()`, `path::f()`) runs with the caller's `self`
+  (*inferred*: `aitype/*.gsc` calls `character\x::main()`, which then sets fields on `self`).
+
 ## Name resolution
 
 An unqualified call looks in the current file, then in the files named by `#include` (not transitively), then

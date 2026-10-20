@@ -104,6 +104,7 @@ Entity* World::entityOf(const Value& v) {
 }
 
 void World::spawnMapEntities() {
+    std::vector<Entity*> mapStartActors;
     const ObjectPtr* playerStart = nullptr;
     std::vector<ObjectPtr> starts;
     for (const auto& be : bsp_->entities()) {
@@ -131,6 +132,8 @@ void World::spawnMapEntities() {
             e.isSpawner = true;
             fill(e.obj);
             e.obj->set("count", e.obj->get("count").isDefined() ? e.obj->get("count") : Value(int32_t(1)));
+            const Value flags = e.obj->get("spawnflags");
+            if (!(flags.isInt() && (flags.asInt() & 1))) mapStartActors.push_back(&e);
         } else if (kEntityClasses.count(cls)) {
             Entity& e = spawnEntity(cls);
             fill(e.obj);
@@ -149,6 +152,41 @@ void World::spawnMapEntities() {
         p.obj->set("angles", (*playerStart)->get("angles"));
     }
     player_ = &p;
+
+    // AI placed without the SPAWNER flag spawn at load (inferred from the SPAWNER flag description in the
+    // aitype scripts: "makes this a spawner instead of a guy").
+    for (Entity* sp : mapStartActors) spawnActor(*sp);
+}
+
+// Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new
+// actor, notifies the spawner "spawned", and starts animscripts/init.gsc::main() (docs/spec/ai.md).
+Entity* World::spawnActor(Entity& spawner) {
+    const Value count = spawner.obj->get("count");
+    if (count.isInt() && count.asInt() <= 0) return nullptr;
+    if (count.isInt()) spawner.obj->set("count", Value(int32_t(count.asInt() - 1)));
+
+    const std::string cls = spawner.classname;
+    Entity& a = spawnEntity(cls);
+    a.isActor = true;
+    a.obj->kind = "actor";
+    for (const auto& [k, v] : spawner.obj->fields)
+        if (k != "spawnflags" && k != "count") a.obj->set(k, v);
+    a.obj->set("classname", Value(cls));
+    a.obj->set("health", Value(int32_t(100)));
+    a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
+    const std::string aitype = "aitype/" + cls.substr(6) + ".gsc";
+    try {
+        vm_.start(aitype, "main", {}, Value(a.obj));
+    } catch (const std::exception& e) {
+        print("aitype " + aitype + ": " + e.what());
+    }
+    vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
+    try {
+        vm_.start("animscripts/init.gsc", "main", {}, Value(a.obj));
+    } catch (const std::exception& e) {
+        print("animscripts/init: " + std::string(e.what()));
+    }
+    return &a;
 }
 
 void World::start() {
@@ -161,6 +199,36 @@ void World::frame() {
     timeMs_ += 50;
     runTriggers();
     vm_.runFrame(timeMs_);
+}
+
+const std::map<std::string, std::string>* World::weapon(const std::string& name) {
+    const std::string key = lower(name);
+    auto it = weapons_.find(key);
+    if (it == weapons_.end()) {
+        std::optional<std::map<std::string, std::string>> def;
+        if (auto d = vfs_.read("weapons/sp/" + key)) {
+            std::string text(d->begin(), d->end());
+            std::vector<std::string> parts;
+            size_t start = 0;
+            for (size_t i = 0; i <= text.size(); ++i)
+                if (i == text.size() || text[i] == '\\') { parts.push_back(text.substr(start, i - start)); start = i + 1; }
+            if (!parts.empty() && parts[0] == "WEAPONFILE") {
+                def.emplace();
+                for (size_t i = 1; i + 1 < parts.size(); i += 2) (*def)[lower(parts[i])] = parts[i + 1];
+            }
+        }
+        it = weapons_.emplace(key, std::move(def)).first;
+    }
+    return it->second ? &*it->second : nullptr;
+}
+
+int World::spawnAllActors() {
+    std::vector<Entity*> spawners;
+    for (const auto& e : entities_)
+        if (e->isSpawner && !e->obj->removed) spawners.push_back(e.get());
+    int n = 0;
+    for (Entity* sp : spawners) n += spawnActor(*sp) != nullptr;
+    return n;
 }
 
 void World::setPlayerOrigin(const Vec3& origin, const Vec3& angles) {
@@ -288,6 +356,86 @@ void World::registerBuiltins() {
         return Value(toArray(out));
     });
 
+    auto doSpawn = [this](CallContext& c) -> Value {
+        Entity* sp = entityOf(c.self);
+        if (!sp || !sp->isSpawner) throw std::runtime_error("dospawn can only be called on actor spawners");
+        Entity* a = spawnActor(*sp);
+        return a ? Value(a->obj) : Value();
+    };
+    vm_.registerBuiltin("dospawn", doSpawn);
+    vm_.registerBuiltin("stalingradspawn", doSpawn);
+    vm_.registerBuiltin("attach", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("attach on a non-entity");
+        e->attachments.push_back({c.arg(0).toString(), c.arg(1).isDefined() ? lower(c.arg(1).toString()) : std::string()});
+        return Value();
+    });
+    vm_.registerBuiltin("detach", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("detach on a non-entity");
+        const std::string m = c.arg(0).toString(), t = c.arg(1).isDefined() ? lower(c.arg(1).toString()) : std::string();
+        for (auto it = e->attachments.begin(); it != e->attachments.end(); ++it)
+            if (lower(it->model) == lower(m) && (t.empty() || it->tag == t)) { e->attachments.erase(it); return Value(); }
+        throw std::runtime_error("detach: model " + m + " is not attached");
+    });
+    vm_.registerBuiltin("detachall", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) e->attachments.clear();
+        return Value();
+    });
+    vm_.registerBuiltin("getattachsize", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        return Value(int32_t(e ? e->attachments.size() : 0));
+    });
+    vm_.registerBuiltin("getattachmodelname", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        const int i = c.arg(0).asInt();
+        if (!e || i < 0 || size_t(i) >= e->attachments.size()) throw std::runtime_error("getattachmodelname: bad index");
+        return Value(e->attachments[size_t(i)].model);
+    });
+    vm_.registerBuiltin("getattachtagname", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        const int i = c.arg(0).asInt();
+        if (!e || i < 0 || size_t(i) >= e->attachments.size()) throw std::runtime_error("getattachtagname: bad index");
+        return Value(e->attachments[size_t(i)].tag);
+    });
+    vm_.registerBuiltin("useanimtree", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (e && c.arg(0).isDefined()) e->animTree = std::get<script::AnimTreeRef>(c.arg(0).v).name;
+        return Value();
+    });
+    auto weaponField = [this](const Value& name, const std::string& field) -> std::string {
+        const auto* w = weapon(name.toString());
+        if (!w) throw std::runtime_error("unknown weapon " + name.toString());
+        auto it = w->find(field);
+        return it == w->end() ? std::string() : it->second;
+    };
+    vm_.registerBuiltin("getweaponmodel", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "worldmodel")); });
+    vm_.registerBuiltin("weaponfightdist", [weaponField](CallContext& c) { return Value(float(std::atof(weaponField(c.arg(0), "fightdist").c_str()))); });
+    vm_.registerBuiltin("weaponmaxdist", [weaponField](CallContext& c) { return Value(float(std::atof(weaponField(c.arg(0), "maxdist").c_str()))); });
+    vm_.registerBuiltin("weaponclipsize", [weaponField](CallContext& c) { return Value(int32_t(std::atoi(weaponField(c.arg(0), "clipsize").c_str()))); });
+    vm_.registerBuiltin("weaponissemiauto", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "semiauto") == "1"); });
+    vm_.registerBuiltin("weaponisboltaction", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "boltaction") == "1"); });
+    vm_.registerBuiltin("weapontype", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weapontype")); });
+    vm_.registerBuiltin("weaponclass", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weaponclass")); });
+    vm_.registerBuiltin("getentitynumber", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("getentitynumber on a non-entity");
+        return Value(int32_t(e->number));
+    });
+    vm_.registerBuiltin("getentnum", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("getentnum on a non-entity");
+        return Value(int32_t(e->number));
+    });
+    // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
+    vm_.registerBuiltin("setgoalnode", [](CallContext& c) {
+        auto o = c.self.asObject();
+        if (c.arg(0).isObject()) o->set("$goalpos", c.arg(0).asObject()->get("origin"));
+        return Value();
+    });
+    vm_.registerBuiltin("setgoalpos", [](CallContext& c) { c.self.asObject()->set("$goalpos", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalentity", [](CallContext& c) { c.self.asObject()->set("$goalent", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
     vm_.registerBuiltin("spawn", [this](CallContext& c) {
         Entity& e = spawnEntity(c.arg(0).toString());
         if (c.arg(1).isDefined()) e.obj->set("origin", c.arg(1));

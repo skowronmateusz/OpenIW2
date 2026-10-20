@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -19,12 +20,20 @@ using script::Value;
 using script::Vec3;
 
 // Script-visible entity. Native state lives in the object's fields so scripts and engine share one view.
+struct Attachment {
+    std::string model;
+    std::string tag;
+};
+
 struct Entity {
     ObjectPtr obj;
     int number = 0;
     std::string classname;
     bool isPlayer = false;
     bool isSpawner = false;
+    bool isActor = false;
+    std::vector<Attachment> attachments;
+    std::string animTree; // set by useanimtree
 };
 
 struct PathNode {
@@ -49,6 +58,9 @@ public:
     const std::vector<std::unique_ptr<Entity>>& entities() const { return entities_; }
     const std::vector<PathNode>& nodes() const { return nodes_; }
 
+    // Debug: spawns one AI from each actor spawner (exercises the aitype/animscripts path).
+    int spawnAllActors();
+
     // Moves the player entity (set by the movement code each frame).
     void setPlayerOrigin(const Vec3& origin, const Vec3& angles);
 
@@ -61,8 +73,12 @@ public:
 
     std::map<std::string, std::string> cvars;
 
+    // Weapon definition (weapons/sp/<name>: "WEAPONFILE\\key\\value\\…"), or nullptr.
+    const std::map<std::string, std::string>* weapon(const std::string& name);
+
 private:
     Entity& spawnEntity(const std::string& classname);
+    Entity* spawnActor(Entity& spawner);
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void registerBuiltins();
@@ -84,6 +100,7 @@ private:
     int32_t nextFx_ = 0;
     std::map<std::string, int> missing_;
     std::vector<std::pair<Vec3, Vec3>> submodels_;
+    std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
 
 } // namespace iw2::game

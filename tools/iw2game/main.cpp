@@ -51,9 +51,12 @@ int main(int argc, char** argv) {
             return 0;
         }
         int seconds = 10;
+        bool spawnAll = false;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
-            if (a == "--cvar" && i + 1 < argc) {
+            if (a == "--spawn-all") {
+                spawnAll = true;
+            } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
                 world.cvars[kv.substr(0, eq)] = eq == std::string::npos ? "1" : kv.substr(eq + 1);
@@ -64,6 +67,7 @@ int main(int argc, char** argv) {
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
         const auto t0 = std::chrono::steady_clock::now();
         world.start();
+        if (spawnAll) std::cout << "spawned " << world.spawnAllActors() << " actors\n";
         for (int f = 0; f < seconds * 20; ++f) world.frame();
         const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 

@@ -144,6 +144,14 @@ ender()
         CHECK(!h.out.empty() && h.out.back() == "still");
     }
 
+    // Plain calls inherit self.
+    {
+        Harness h;
+        h.files["test/self.gsc"] = "main() { s = spawnstruct(); s.name = \"guy\"; s thread outer(); }\nouter() { inner(); }\ninner() { println(self.name); }\n";
+        h.vm.start("test/self.gsc", "main");
+        CHECK(h.joined() == "guy|");
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;

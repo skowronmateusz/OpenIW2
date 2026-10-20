@@ -895,9 +895,12 @@ void VM::step(Thread& t, bool& suspended) {
         if (in.op == Op::CallUnresolved) throw std::runtime_error("unknown function " + f.strings[size_t(in.a)]);
         std::vector<Value> args(argc);
         for (size_t i = argc; i-- > 0;) args[i] = pop();
-        Value self;
+        // A call without an object keeps the caller's self (inferred: character scripts are called as
+        // character\x::main() from aitype main() and set fields on self).
+        Value self = fr.self;
         if (in.flags & CallFlags::Method) self = pop();
         if (builtin) {
+            if (!(in.flags & CallFlags::Method)) self = Value();
             CallContext ctx{*this, t, self, args};
             push(builtins_[size_t(target)](ctx));
         } else if (in.flags & CallFlags::Thread) {
