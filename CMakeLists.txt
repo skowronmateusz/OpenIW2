@@ -37,12 +37,13 @@ target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
 add_library(iw2_script
   src/script/parser.cpp
   src/script/value.cpp
-  src/script/vm.cpp)
+  src/script/vm.cpp
+  src/script/builtins_core.cpp)
 target_include_directories(iw2_script PUBLIC src)
 target_compile_options(iw2_script PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(iw2script tools/iw2script/main.cpp)
-target_link_libraries(iw2script PRIVATE iw2_fs iw2_script)
+target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
 
 add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)

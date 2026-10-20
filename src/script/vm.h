@@ -110,6 +110,7 @@ public:
     void loadFile(const std::string& path);
 
     void registerBuiltin(const std::string& name, Builtin fn);
+    bool hasBuiltin(const std::string& name) const;
 
     // Starts a thread running file::function with arguments; it runs until it first suspends.
     uint64_t start(const std::string& file, const std::string& function, std::vector<Value> args = {}, Value self = {});

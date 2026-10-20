@@ -499,6 +499,8 @@ void VM::registerBuiltin(const std::string& name, Builtin fn) {
     builtinNames_.push_back(n);
 }
 
+bool VM::hasBuiltin(const std::string& name) const { return builtinIndex_.count(lower(name)) != 0; }
+
 std::string VM::normalizePath(const std::string& path) {
     std::string p = lower(path);
     std::replace(p.begin(), p.end(), '\\', '/');
