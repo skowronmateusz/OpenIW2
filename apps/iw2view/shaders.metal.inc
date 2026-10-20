@@ -9,6 +9,7 @@ struct VertexIn {
     float4 color    [[attribute(2)]];
     float2 uv       [[attribute(3)]];
     float2 lmUv     [[attribute(4)]];
+    float3 light    [[attribute(5)]];
 };
 
 struct VertexUniforms {
@@ -22,6 +23,7 @@ struct VertexOut {
     float4 color;
     float2 uv;
     float2 lmUv;
+    float3 light;
 };
 
 vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
@@ -31,6 +33,7 @@ vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[
     o.color = in.color;
     o.uv = in.uv;
     o.lmUv = in.lmUv;
+    o.light = in.light;
     return o;
 }
 
@@ -38,7 +41,7 @@ struct FragmentUniforms {
     float4 sunDirection;   // xyz: direction towards the sun
     float4 sunColor;       // rgb: sun color * intensity
     float4 lmWeights;      // weights applied to the four lightmap coefficients
-    float4 params;         // x: alpha test (1 = on), y: has lightmap, z: lightmap scale, w: fullbright
+    float4 params;         // x: alpha test (1 = on), y: 1 = lightmap, 2 = vertex light, z: lightmap scale, w: fullbright
 };
 
 fragment float4 fs_main(VertexOut in [[stage_in]],
@@ -55,6 +58,8 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     float3 light;
     if (u.params.w > 0.5) {
         light = float3(1.0);
+    } else if (u.params.y > 1.5) {
+        light = in.light; // baked per vertex from the light grid
     } else if (u.params.y > 0.5) {
         float4 r = lmCoeffs.sample(lmSampler, in.lmUv, 0);
         float4 g = lmCoeffs.sample(lmSampler, in.lmUv, 1);

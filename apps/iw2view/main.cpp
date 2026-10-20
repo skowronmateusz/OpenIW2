@@ -7,6 +7,7 @@
 
 #include "assets/d3dbsp.h"
 #include "assets/iwi.h"
+#include "assets/lightgrid.h"
 #include "assets/material.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
@@ -183,15 +184,16 @@ struct GpuVertex {
     uint8_t color[4];
     float uv[2];
     float lmUv[2];
+    float light[3];
 };
-static_assert(sizeof(GpuVertex) == 44);
+static_assert(sizeof(GpuVertex) == 56);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Sky, Skip };
 
 struct Batch {
     Pass pass = Pass::Opaque;
     int texture = 0;   // index into Scene::textures
-    int lightmap = -1; // -1 = none
+    int lightmap = -1; // -1 = none, -2 = per-vertex light from the light grid
     bool fullbright = false;
     uint32_t firstIndex = 0, indexCount = 0;
 };
@@ -396,7 +398,24 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         auto& dst = groups[{int(mi.pass), mi.texture, lm}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
-    // Static models placed by entities (world-space copies, lit by ambient + sun for now).
+    // Sun from worldspawn (needed for baking model light).
+    for (const auto& e : bsp.entities()) {
+        const std::string* cls = e.get("classname");
+        if (!cls || *cls != "worldspawn") continue;
+        float light = 1.0f;
+        if (auto sl = e.get("sunlight")) light = std::stof(*sl);
+        if (auto c = e.get("suncolor")) scene.sunColor = parseVec3(*c) * light;
+        if (auto d = e.get("sundirection")) {
+            const Vec3 a = parseVec3(*d);
+            Camera c;
+            c.pitch = a.x;
+            c.yaw = a.y;
+            scene.sunDirection = c.forward();
+        }
+    }
+    const assets::LightGrid grid(bsp.lump(2), bsp.lump(3));
+
+    // Static models placed by entities (world-space copies, lit per vertex from the light grid).
     struct ModelData { std::vector<assets::XSurface> surfaces; std::vector<MatInfo> materials; };
     std::unordered_map<std::string, std::optional<ModelData>> modelCache;
     size_t modelCount = 0;
@@ -443,6 +462,11 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
             return translate ? r + origin : r;
         };
 
+        // One light-grid sample at the model origin, as the original does per model (inferred).
+        assets::LightGridCoeffs coeffs{};
+        float sunVis = 1.0f;
+        const bool haveGrid = grid.sample({origin.x, origin.y, origin.z + 4.0f}, coeffs, sunVis);
+
         for (size_t si = 0; si < cached->surfaces.size(); ++si) {
             const auto& surf = cached->surfaces[si];
             const MatInfo mi = si < cached->materials.size() ? cached->materials[si] : MatInfo{Pass::Opaque, 0};
@@ -455,9 +479,15 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.normal[0] = n.x; g.normal[1] = n.y; g.normal[2] = n.z;
                 std::memcpy(g.color, v.color.data(), 4);
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
+                const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
+                std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
+                if (haveGrid) probe = assets::LightGrid::evaluate(coeffs, {n.x, n.y, n.z});
+                g.light[0] = probe[0] + sunVis * ndl * scene.sunColor.x;
+                g.light[1] = probe[1] + sunVis * ndl * scene.sunColor.y;
+                g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -1}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -562,12 +592,13 @@ struct Renderer {
         vbd.slot = 0;
         vbd.pitch = sizeof(GpuVertex);
         vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-        SDL_GPUVertexAttribute attrs[5] = {
+        SDL_GPUVertexAttribute attrs[6] = {
             {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, pos)},
             {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, normal)},
             {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, offsetof(GpuVertex, color)},
             {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv)},
             {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, lmUv)},
+            {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, light)},
         };
 
         for (int p = 0; p < 4; ++p) {
@@ -588,7 +619,7 @@ struct Renderer {
             pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
             pi.vertex_input_state.num_vertex_buffers = 1;
             pi.vertex_input_state.vertex_attributes = attrs;
-            pi.vertex_input_state.num_vertex_attributes = 5;
+            pi.vertex_input_state.num_vertex_attributes = 6;
             pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
             pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -619,7 +650,7 @@ struct Renderer {
             pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
             pi.vertex_input_state.num_vertex_buffers = 1;
             pi.vertex_input_state.vertex_attributes = attrs;
-            pi.vertex_input_state.num_vertex_attributes = 5;
+            pi.vertex_input_state.num_vertex_attributes = 6;
             pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             pi.depth_stencil_state.enable_depth_test = true;
@@ -710,7 +741,7 @@ struct Renderer {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                    {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 0.0f, lmScale, fullbright ? 1.0f : 0.0f}};
+                    {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
             }
