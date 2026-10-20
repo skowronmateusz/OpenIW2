@@ -84,6 +84,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerCoreBuiltins(vm_);
     registerBuiltins();
     registerAnimBuiltins();
+    registerCombatBuiltins();
     registerMissingStubs();
 }
 
@@ -183,7 +184,8 @@ Entity* World::spawnActor(Entity& spawner) {
     for (const auto& [k, v] : spawner.obj->fields)
         if (k != "spawnflags" && k != "count") a.obj->set(k, v);
     a.obj->set("classname", Value(cls));
-    a.obj->set("health", Value(int32_t(100)));
+    if (!a.obj->get("health").isNumber()) a.obj->set("health", Value(int32_t(100)));
+    a.obj->set("maxhealth", a.obj->get("health"));
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
     // Native actor fields (docs/spec/ai.md); default values are inferred.
@@ -250,6 +252,7 @@ const std::map<std::string, std::string>* World::weapon(const std::string& name)
 void World::startAnimScript(Entity& e, const std::string& name) {
     if (!e.animScript.empty()) vm_.notify(e.obj, "killanimscript");
     e.animScript = name;
+    e.animScriptStartMs = timeMs_;
     try {
         e.animScriptThread = vm_.start("animscripts/" + name + ".gsc", "main", {}, Value(e.obj));
     } catch (const std::exception& ex) {
@@ -273,9 +276,18 @@ int World::nearestNode(const std::array<float, 3>& p) const {
 // runs "move" and follows the node graph; on arrival it is notified "goal" and runs "stop". When any animscript
 // ends on its own, the actor returns to "stop".
 void World::thinkActors() {
+    const bool perceive = (perceptionTick_++ % 4) == 0; // every 0.2 s (inferred cadence)
     for (const auto& ep : entities_) {
         Entity& e = *ep;
         if (!e.isActor || e.obj->removed) continue;
+        if (!isAlive(e)) continue; // the death animscript runs on its own
+        if (perceive) updatePerception(e);
+        {
+            // lookforward: unit vector of the actor's facing (native field, docs/spec/ai.md).
+            const Value ang = e.obj->get("angles");
+            const float yaw = ang.isVector() ? ang.asVector()[1] * float(M_PI) / 180.0f : 0.0f;
+            e.obj->set("lookforward", Value(Vec3{std::cos(yaw), std::sin(yaw), 0}));
+        }
         if (e.animScript == "init" && e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
         const Value goal = e.obj->get("$goalpos");
         const Value origin = e.obj->get("origin");
@@ -304,9 +316,18 @@ void World::thinkActors() {
                 continue;
             }
         }
+        // With a live enemy and nowhere to go, fight (inferred: the engine runs "combat" for exposed AI).
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (enemy && isAlive(*enemy) && e.animScript == "stop") {
+            startAnimScript(e, "combat");
+            continue;
+        }
         if (e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
-        if (e.animScript == "stop") continue; // stop ended on its own; do not spin
-        startAnimScript(e, "stop");
+        // A script's main may return while threads it started keep acting (e.g. combat starting a melee thread),
+        // so give it time before re-running the state script (inferred).
+        if (timeMs_ - e.animScriptStartMs < 1000) continue;
+        if (e.animScript == "stop" && !(enemy && isAlive(*enemy))) continue; // stop ended on its own; do not spin
+        startAnimScript(e, enemy && isAlive(*enemy) ? "combat" : "stop");
     }
 }
 

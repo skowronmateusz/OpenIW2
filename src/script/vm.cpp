@@ -901,20 +901,31 @@ void VM::step(Thread& t, bool& suspended) {
         if (in.flags & CallFlags::Method) self = pop();
         if (builtin) {
             if (!(in.flags & CallFlags::Method)) self = Value();
+            if (traceSelf && self.isObject() && self.asObject() == traceSelf) {
+                std::string line = "[trace " + std::to_string(nowMs_) + "] " + builtinNames_[size_t(target)] + "(";
+                for (size_t i = 0; i < args.size(); ++i) line += (i ? ", " : "") + args[i].toString();
+                print(line + ") at " + f.file + ":" + std::to_string(in.line));
+            }
             CallContext ctx{*this, t, self, args};
             push(builtins_[size_t(target)](ctx));
         } else if (in.flags & CallFlags::Thread) {
+            if (traceSelf && self.isObject() && self.asObject() == traceSelf)
+                print("[trace " + std::to_string(nowMs_) + "] thread " + functions_[size_t(target)].name);
             Thread& nt = newThread();
             enterFunction(nt, target, std::move(args), std::move(self));
             run(nt);
             push(Value());
         } else {
+            if (traceSelf && self.isObject() && self.asObject() == traceSelf)
+                print("[trace " + std::to_string(nowMs_) + "] call " + functions_[size_t(target)].file + "::" + functions_[size_t(target)].name);
             enterFunction(t, target, std::move(args), std::move(self));
         }
         break;
     }
     case Op::Return: {
         Value v = pop();
+        if (traceSelf && fr.self.isObject() && fr.self.asObject() == traceSelf)
+            print("[trace " + std::to_string(nowMs_) + "] return " + f.name + " -> " + v.toString());
         t.stack.resize(fr.stackBase);
         t.frames.pop_back();
         if (t.frames.empty()) {
@@ -1015,6 +1026,20 @@ void VM::runFrame(int64_t nowMs) {
     // Drop finished threads.
     threads_.erase(std::remove_if(threads_.begin(), threads_.end(), [](const auto& th) { return th->state == ThreadState::Done; }),
                    threads_.end());
+}
+
+std::vector<std::string> VM::describeThreads() const {
+    std::vector<std::string> out;
+    for (const auto& th : threads_) {
+        if (th->state == ThreadState::Done || th->frames.empty()) continue;
+        const Frame& fr = th->frames.back();
+        const CompiledFunction& f = functions_[size_t(fr.function)];
+        const int line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
+        std::string st = th->state == ThreadState::Waiting ? "wait" : th->state == ThreadState::WaitingNotify ? "waittill " + th->waitEvent
+                         : th->state == ThreadState::WaitingFrameEnd ? "frameend" : "ready";
+        out.push_back(f.file + ":" + std::to_string(line) + " " + f.name + " (" + st + ")");
+    }
+    return out;
 }
 
 bool VM::isThreadAlive(uint64_t id) const {

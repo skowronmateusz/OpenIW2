@@ -52,9 +52,12 @@ int main(int argc, char** argv) {
         }
         int seconds = 10;
         bool spawnAll = false;
+        int traceActor = -1;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
-            if (a == "--spawn-all") {
+            if (a == "--trace-actor" && i + 1 < argc) {
+                traceActor = std::stoi(argv[++i]);
+            } else if (a == "--spawn-all") {
                 spawnAll = true;
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
@@ -69,6 +72,11 @@ int main(int argc, char** argv) {
         world.start();
         if (spawnAll) {
             std::cout << "spawned " << world.spawnAllActors() << " actors\n";
+            if (traceActor >= 0) {
+                int k = 0;
+                for (const auto& e : world.entities())
+                    if (e->isActor && k++ == traceActor) { world.vm().traceSelf = e->obj; break; }
+            }
             for (const auto& e : world.entities())
                 if (e->isActor) {
                     std::cout << "first actor model " << e->obj->get("model").toString() << ", attachments:";
@@ -91,10 +99,30 @@ int main(int argc, char** argv) {
                     ++states[e->animScript];
                     if (!mover && e->animScript == "move") mover = e.get();
                 }
+            int alive = 0, dead = 0;
+            for (const auto& e : world.entities())
+                if (e->isActor) (world.isAlive(*e) ? alive : dead)++;
+            std::cout << "actors alive " << alive << ", dead " << dead << "; player health " << world.player()->obj->get("health").toString() << "\n";
+            std::cout << "shots " << world.stats.shots << ", hits " << world.stats.hits << ", kills " << world.stats.kills << "\n";
             std::cout << "actor animscripts:";
             for (const auto& [k, v] : states) std::cout << " " << k << "=" << v;
             std::cout << "\n";
+            for (const auto& e : world.entities())
+                if (e->isActor && e->animScript == "combat" && e->anim) {
+                    std::cout << "combat actor anim state:\n" << e->anim->debugString();
+                    break;
+                }
             if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
+        }
+        {
+            std::map<std::string, int> waits;
+            for (const auto& d : world.vm().describeThreads())
+                if (d.rfind("animscripts/", 0) == 0 && d.find("battlechatter") == std::string::npos && d.find("init.gsc") == std::string::npos && d.find("squadmanager") == std::string::npos) ++waits[d];
+            std::vector<std::pair<int, std::string>> top;
+            for (const auto& [k, v] : waits) top.push_back({v, k});
+            std::sort(top.rbegin(), top.rend());
+            std::cout << "top animscript waits:\n";
+            for (size_t i = 0; i < top.size() && i < 15; ++i) std::cout << "  " << top[i].first << " " << top[i].second << "\n";
         }
         std::map<std::string, int> errs;
         for (const auto& e : world.vm().errors()) ++errs[e];

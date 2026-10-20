@@ -128,8 +128,11 @@ public:
 
     size_t liveThreadCount() const;
     bool isThreadAlive(uint64_t id) const;
+    // Debug: "file:line function (state event)" for each live thread's innermost frame.
+    std::vector<std::string> describeThreads() const;
     const std::vector<std::string>& errors() const { return errors_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
+    ObjectPtr traceSelf; // debug: log built-in calls made with this self
 
     // Calls a function value synchronously (no suspension allowed); used by builtins.
     const CompiledFunction* function(int index) const { return &functions_[size_t(index)]; }

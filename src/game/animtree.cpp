@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 
 namespace iw2::game {
@@ -199,6 +200,20 @@ float AnimState::effectiveWeight(int n) const {
         w *= own / std::max(sum, 1.0f); // weights below 1 in total fade towards the base pose (inferred)
     }
     return w;
+}
+
+std::string AnimState::debugString() const {
+    std::string out;
+    const auto& nodes = tree_.nodes();
+    for (size_t i = 1; i < nodes.size(); ++i) {
+        const AnimNodeState& s = nodes_[i];
+        if (s.weight <= 0 && s.goalWeight <= 0) continue;
+        char buf[256];
+        std::snprintf(buf, sizeof buf, "  %s w=%.2f goal=%.2f t=%.2f rate=%.2f notify=%s leaf=%d anim=%d\n", nodes[i].name.c_str(), s.weight, s.goalWeight,
+                      s.time, s.rate, s.notify.c_str(), int(nodes[i].children.empty()), lib_.anim(nodes[i].name) != nullptr);
+        out += buf;
+    }
+    return out;
 }
 
 float AnimState::moveSpeed() const {

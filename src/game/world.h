@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +41,7 @@ struct Entity {
     std::unique_ptr<AnimState> anim;
     uint64_t animScriptThread = 0;   // thread of the running engine animscript (init, stop, …)
     std::string animScript;
+    int64_t animScriptStartMs = 0;
     // Movement towards the script goal.
     std::vector<std::array<float, 3>> path;
     size_t pathIndex = 0;
@@ -87,6 +89,11 @@ public:
     const std::map<std::string, std::string>* weapon(const std::string& name);
     AnimLibrary& animLibrary() { return animLib_; }
     const CollisionWorld& collision() const { return *collision_; }
+
+    // Player fires the current weapon from `eye` along `forward` (unit vector).
+    void playerFire(const Vec3& eye, const Vec3& forward);
+    bool isAlive(const Entity& e) const;
+    struct Stats { int shots = 0, hits = 0, kills = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -102,6 +109,22 @@ private:
     void startAnimScript(Entity& e, const std::string& name);
     void thinkActors();
     void moveActor(Entity& e, float dt);
+
+    // Combat (src/game/combat.cpp)
+    struct BoneXform {
+        Vec3 position;
+        assets::Quat rotation;
+    };
+    const assets::XModelParts* skeleton(const std::string& model);
+    std::unordered_map<std::string, BoneXform> entityBones(Entity& e);
+    Vec3 eyePosition(Entity& e);
+    bool canSee(Entity& from, Entity& to);
+    void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod);
+    Entity* traceSentients(const Vec3& start, const Vec3& end, const Entity* ignore, float& fraction);
+    Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount);
+    int weaponDamage(const std::string& weaponName);
+    void updatePerception(Entity& e);
+    void registerCombatBuiltins();
     int nearestNode(const std::array<float, 3>& p) const;
 
     const fs::Vfs& vfs_;
@@ -121,6 +144,9 @@ private:
     std::map<std::string, int> missing_;
     std::vector<std::pair<Vec3, Vec3>> submodels_;
     std::unique_ptr<CollisionWorld> collision_;
+    std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
+    std::mt19937 rng_{12345};
+    int perceptionTick_ = 0;
     PathGraph paths_;
     std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
