@@ -13,6 +13,7 @@ struct VertexIn {
 
 struct VertexUniforms {
     float4x4 viewProj;
+    float4 eye;
 };
 
 struct VertexOut {
@@ -67,5 +68,21 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         light = float3(0.45) + ndl * u.sunColor.rgb * 0.6;
     }
     return float4(base.rgb * light, base.a);
+}
+
+struct SkyOut {
+    float4 position [[position]];
+    float3 dir;
+};
+
+vertex SkyOut vs_sky(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
+    SkyOut o;
+    o.position = u.viewProj * float4(in.position, 1.0);
+    o.dir = in.position - u.eye.xyz;
+    return o;
+}
+
+fragment float4 fs_sky(SkyOut in [[stage_in]], texturecube<float> sky [[texture(0)]], sampler s [[sampler(0)]]) {
+    return float4(sky.sample(s, in.dir).rgb, 1.0);
 }
 )MSL"

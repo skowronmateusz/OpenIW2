@@ -185,7 +185,7 @@ struct GpuVertex {
 };
 static_assert(sizeof(GpuVertex) == 44);
 
-enum class Pass { Opaque, AlphaTest, Blend, Additive, Skip };
+enum class Pass { Opaque, AlphaTest, Blend, Additive, Sky, Skip };
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -207,13 +207,15 @@ struct Scene {
     std::vector<Lightmap> lightmaps;
     Lightmap dummyLightmap;
     std::vector<Batch> batches;
+    SDL_GPUTexture* sky = nullptr;
     Vec3 sunDirection{0, 0, 1};
     Vec3 sunColor{1, 1, 1};
     Camera start;
 };
 
 Pass classify(const std::string& techset) {
-    if (techset == "tools" || techset == "sky" || techset.rfind("tools", 0) == 0) return Pass::Skip;
+    if (techset == "sky") return Pass::Sky;
+    if (techset == "tools" || techset.rfind("tools", 0) == 0) return Pass::Skip;
     if (techset.find("_add") != std::string::npos) return Pass::Additive;
     if (techset.find("blend") != std::string::npos || techset.rfind("effect", 0) == 0) return Pass::Blend;
     if (techset.find("alphatest") != std::string::npos) return Pass::AlphaTest;
@@ -233,6 +235,26 @@ SDL_GPUTexture* createTexture(SDL_GPUDevice* dev, SDL_GPUTextureFormat fmt, uint
     SDL_GPUTexture* t = SDL_CreateGPUTexture(dev, &info);
     if (!t) sdlFail("SDL_CreateGPUTexture");
     return t;
+}
+
+SDL_GPUTexture* loadCubeImage(SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::string& name) {
+    const auto data = vfs.read("images/" + name + ".iwi");
+    if (!data) return nullptr;
+    try {
+        const auto img = assets::parseIwi(*data);
+        if (img.faceCount != 6) return nullptr;
+        const auto& l0 = img.levels[0];
+        SDL_GPUTexture* tex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, uint32_t(l0.width), uint32_t(l0.height), 1, 6,
+                                            SDL_GPU_TEXTURETYPE_CUBE);
+        for (int f = 0; f < 6; ++f) {
+            const auto rgba = assets::decodeToRgba(img, 0, f);
+            up.texture(tex, 0, uint32_t(f), uint32_t(l0.width), uint32_t(l0.height), rgba.data(), uint32_t(rgba.size()));
+        }
+        return tex;
+    } catch (const std::exception& e) {
+        std::cerr << "warning: sky image " << name << ": " << e.what() << "\n";
+        return nullptr;
+    }
 }
 
 SDL_GPUTexture* loadImage(SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::string& name) {
@@ -306,7 +328,9 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 const auto m = assets::parseMaterial(*md);
                 mi.pass = classify(m.techniqueSet);
                 const std::string& img = m.colorImage();
-                if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
+                if (mi.pass == Pass::Sky) {
+                    if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+                } else if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
                     auto it = imageIndex.find(img);
                     if (it == imageIndex.end()) {
                         SDL_GPUTexture* t = loadImage(dev, up, vfs, img);
@@ -505,6 +529,7 @@ struct FragmentUniforms {
 struct Renderer {
     SDL_GPUDevice* dev = nullptr;
     SDL_GPUGraphicsPipeline* pipelines[4] = {}; // Opaque, AlphaTest, Blend, Additive
+    SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
     SDL_GPUTexture* depth = nullptr;
@@ -574,6 +599,38 @@ struct Renderer {
             pipelines[p] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
             if (!pipelines[p]) sdlFail("SDL_CreateGPUGraphicsPipeline");
         }
+        {
+            SDL_GPUShaderCreateInfo svs = vs;
+            svs.entrypoint = "vs_sky";
+            SDL_GPUShaderCreateInfo sfs = fs;
+            sfs.entrypoint = "fs_sky";
+            sfs.num_samplers = 1;
+            SDL_GPUShader* sv = SDL_CreateGPUShader(dev, &svs);
+            SDL_GPUShader* sf = SDL_CreateGPUShader(dev, &sfs);
+            if (!sv || !sf) sdlFail("sky shaders");
+            SDL_GPUColorTargetDescription ct{};
+            ct.format = colorFormat;
+            SDL_GPUGraphicsPipelineCreateInfo pi{};
+            pi.vertex_shader = sv;
+            pi.fragment_shader = sf;
+            pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+            pi.vertex_input_state.num_vertex_buffers = 1;
+            pi.vertex_input_state.vertex_attributes = attrs;
+            pi.vertex_input_state.num_vertex_attributes = 5;
+            pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+            pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            pi.depth_stencil_state.enable_depth_test = true;
+            pi.depth_stencil_state.enable_depth_write = false;
+            pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+            pi.target_info.color_target_descriptions = &ct;
+            pi.target_info.num_color_targets = 1;
+            pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            pi.target_info.has_depth_stencil_target = true;
+            skyPipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+            if (!skyPipeline) sdlFail("sky pipeline");
+            SDL_ReleaseGPUShader(dev, sv);
+            SDL_ReleaseGPUShader(dev, sf);
+        }
         SDL_ReleaseGPUShader(dev, vsh);
         SDL_ReleaseGPUShader(dev, fsh);
 
@@ -624,13 +681,20 @@ struct Renderer {
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
-        const Mat4 vp = cam.viewProj(float(w) / float(h));
-        SDL_PushGPUVertexUniformData(cmd, 0, vp.data(), sizeof(vp));
+        struct { Mat4 vp; float eye[4]; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 1}};
+        SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         SDL_GPUBufferBinding vb{scene.vertices, 0};
         SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
         SDL_GPUBufferBinding ib{scene.indices, 0};
         SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 
+        if (scene.sky) {
+            SDL_BindGPUGraphicsPipeline(pass, skyPipeline);
+            SDL_GPUTextureSamplerBinding sb{scene.sky, clampSampler};
+            SDL_BindGPUFragmentSamplers(pass, 0, &sb, 1);
+            for (const Batch& b : scene.batches)
+                if (b.pass == Pass::Sky) SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+        }
         for (Pass p : {Pass::Opaque, Pass::AlphaTest, Pass::Blend, Pass::Additive}) {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
