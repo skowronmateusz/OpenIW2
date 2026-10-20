@@ -233,6 +233,15 @@ struct Scene {
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
     std::unordered_map<std::string, std::optional<GpuModel>> models;
+    // CPU-side models for skinned (animated) drawing.
+    struct CpuModel {
+        assets::XModelParts parts;
+        std::vector<assets::XSurface> surfaces;
+        std::vector<MatInfo> materials;
+    };
+    std::unordered_map<std::string, std::optional<CpuModel>> cpuModels;
+    // Per (entity, model) GPU buffers re-filled every frame with skinned vertices.
+    std::map<std::pair<int, std::string>, GpuModel> skinned;
     Vec3 sunDirection{0, 0, 1};
     Vec3 sunColor{1, 1, 1};
     Camera start;
@@ -414,6 +423,114 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
         slot.reset();
         return nullptr;
     }
+}
+
+const Scene::CpuModel* sceneCpuModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& name) {
+    if (auto it = scene.cpuModels.find(name); it != scene.cpuModels.end()) return it->second ? &*it->second : nullptr;
+    auto& slot = scene.cpuModels[name];
+    try {
+        const auto md = vfs.read(name);
+        if (!md) throw std::runtime_error("missing");
+        const auto xm = assets::parseXModel(*md);
+        const auto pd = vfs.read("xmodelparts/" + xm.lods.at(0).name);
+        const auto sd = vfs.read("xmodelsurfs/" + xm.lods.at(0).name);
+        if (!pd || !sd) throw std::runtime_error("missing parts or surfs");
+        Scene::CpuModel cm;
+        cm.parts = assets::parseXModelParts(*pd);
+        cm.surfaces = assets::parseXModelSurfs(*sd, cm.parts);
+        Uploader up(dev);
+        for (const auto& mn : xm.lods[0].materials) cm.materials.push_back(sceneMaterial(scene, dev, up, vfs, mn));
+        up.flush();
+        slot = std::move(cm);
+        return &*slot;
+    } catch (const std::exception& e) {
+        std::cerr << "warning: model " << name << ": " << e.what() << "\n";
+        slot.reset();
+        return nullptr;
+    }
+}
+
+// Skins a CPU model with a pose into its per-entity GPU buffers; returns the model to draw.
+const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int entity, const std::string& name,
+                          const Scene::CpuModel& cm, const assets::XPose& pose) {
+    auto key = std::make_pair(entity, name);
+    auto it = scene.skinned.find(key);
+    std::vector<GpuVertex> verts;
+    std::vector<uint32_t> indices;
+    std::vector<Batch> batches;
+    for (size_t si = 0; si < cm.surfaces.size(); ++si) {
+        const MatInfo mi = si < cm.materials.size() ? cm.materials[si] : MatInfo{Pass::Opaque, 0};
+        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        const uint32_t base = uint32_t(verts.size());
+        for (const auto& v : cm.surfaces[si].vertices) {
+            GpuVertex g{};
+            std::array<float, 3> p, n;
+            assets::skinVertex(v, pose, p, n);
+            std::memcpy(g.pos, p.data(), 12);
+            std::memcpy(g.normal, n.data(), 12);
+            std::memcpy(g.color, v.color.data(), 4);
+            g.uv[0] = v.uv[0];
+            g.uv[1] = v.uv[1];
+            verts.push_back(g);
+        }
+        Batch b;
+        b.pass = mi.pass;
+        b.texture = mi.texture;
+        b.lightmap = -3;
+        b.firstIndex = uint32_t(indices.size());
+        for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
+        b.indexCount = uint32_t(indices.size()) - b.firstIndex;
+        batches.push_back(b);
+    }
+    if (verts.empty()) return nullptr;
+    if (it == scene.skinned.end()) {
+        GpuModel gm;
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = uint32_t(verts.size() * sizeof(GpuVertex));
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        SDL_GPUBufferCreateInfo ib{};
+        ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        ib.size = uint32_t(indices.size() * 4);
+        gm.indices = SDL_CreateGPUBuffer(dev, &ib);
+        up.buffer(gm.indices, indices.data(), ib.size);
+        gm.batches = batches;
+        it = scene.skinned.emplace(key, gm).first;
+    }
+    up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+    return &it->second;
+}
+
+// Poses an attached model: bones that share a name with the body follow the body; a tag places the model's root
+// bone at that body bone (inferred attachment rules).
+assets::XPose attachmentPose(const assets::XModelParts& body, const assets::XPose& bodyPose, const assets::XModelParts& att,
+                             const std::string& tag) {
+    auto findBone = [](const assets::XModelParts& p, const std::string& n) -> int {
+        for (size_t i = 0; i < p.bones.size(); ++i) {
+            const auto& bn = p.bones[i].name;
+            if (bn.size() == n.size() && std::equal(bn.begin(), bn.end(), n.begin(), [](char a, char b) { return std::tolower(a) == std::tolower(b); }))
+                return int(i);
+        }
+        return -1;
+    };
+    assets::XPose pose = assets::bindPose(att);
+    const int tagBone = tag.empty() ? -1 : findBone(body, tag);
+    for (size_t i = 0; i < att.bones.size(); ++i) {
+        const int b = findBone(body, att.bones[i].name);
+        if (b >= 0 && tag.empty()) {
+            pose.position[i] = bodyPose.position[size_t(b)];
+            pose.rotation[i] = bodyPose.rotation[size_t(b)];
+        } else if (att.bones[i].parent < 0 && tagBone >= 0) {
+            pose.position[i] = bodyPose.position[size_t(tagBone)];
+            pose.rotation[i] = bodyPose.rotation[size_t(tagBone)];
+        } else if (att.bones[i].parent >= 0) {
+            const size_t p = size_t(att.bones[i].parent);
+            pose.rotation[i] = assets::multiply(pose.rotation[p], att.bones[i].localRotation);
+            const auto o = assets::rotate(pose.rotation[p], att.bones[i].localOffset);
+            pose.position[i] = {pose.position[p][0] + o[0], pose.position[p][1] + o[1], pose.position[p][2] + o[2]};
+        }
+    }
+    return pose;
 }
 
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
@@ -951,6 +1068,7 @@ int main(int argc, char** argv) {
     float walkSeconds = 0;
     float simSeconds = 0;
     bool scripts = true;
+    bool spawnAll = false;
     Renderer renderer;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -968,6 +1086,7 @@ int main(int argc, char** argv) {
             else if (a == "--walk-seconds") walkSeconds = std::stof(next());
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
             else if (a == "--no-scripts") scripts = false;
+            else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
         } catch (const std::exception& e) {
@@ -993,6 +1112,7 @@ int main(int argc, char** argv) {
             world = std::make_unique<game::World>(vfs, args[1]);
             world->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
             world->start();
+            if (spawnAll) std::cout << "spawned " << world->spawnAllActors() << " actors\n";
         }
         Scene scene = loadScene(dev, vfs, args[1], !world);
 
@@ -1000,28 +1120,49 @@ int main(int argc, char** argv) {
         auto gatherItems = [&]() {
             std::vector<DrawItem> items;
             if (!world) return items;
+            Uploader up(dev);
             for (const auto& e : world->entities()) {
                 if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");
                 if (!m.isString() || m.asString().rfind("xmodel/", 0) != 0) continue;
-                const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
-                if (!gm) continue;
                 const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                 if (!o.isVector()) continue;
                 const auto ov = o.asVector();
                 const auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
-                DrawItem it;
-                it.model = gm;
-                it.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                DrawItem base;
+                base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                 assets::LightGridCoeffs c;
                 float sun = 1.0f;
                 if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
                     const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
-                    it.ambient[0] = l[0]; it.ambient[1] = l[1]; it.ambient[2] = l[2];
-                    it.sunVisibility = sun;
+                    base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
+                    base.sunVisibility = sun;
                 }
+                if (e->isActor) {
+                    // Animated: skin the body with the blended pose and attach head/helmet/etc.
+                    const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
+                    if (!body) continue;
+                    const assets::XPose pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
+                    DrawItem it = base;
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *body, pose);
+                    if (it.model) items.push_back(it);
+                    for (const auto& at : e->attachments) {
+                        const Scene::CpuModel* am = sceneCpuModel(scene, dev, vfs, at.model);
+                        if (!am) continue;
+                        const assets::XPose ap = attachmentPose(body->parts, pose, am->parts, at.tag);
+                        DrawItem ai = base;
+                        ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
+                        if (ai.model) items.push_back(ai);
+                    }
+                    continue;
+                }
+                const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
+                if (!gm) continue;
+                DrawItem it = base;
+                it.model = gm;
                 items.push_back(it);
             }
+            up.flush();
             return items;
         };
         Camera cam = scene.start;

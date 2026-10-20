@@ -1017,6 +1017,12 @@ void VM::runFrame(int64_t nowMs) {
                    threads_.end());
 }
 
+bool VM::isThreadAlive(uint64_t id) const {
+    for (const auto& th : threads_)
+        if (th->id == id) return th->state != ThreadState::Done;
+    return false;
+}
+
 size_t VM::liveThreadCount() const {
     size_t n = 0;
     for (const auto& th : threads_) n += th->state != ThreadState::Done;

@@ -49,7 +49,8 @@ target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
 add_library(iw2_game
   src/game/world.cpp
   src/game/collision.cpp
-  src/game/pmove.cpp)
+  src/game/pmove.cpp
+  src/game/animtree.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)

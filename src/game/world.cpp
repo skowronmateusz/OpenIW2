@@ -62,7 +62,7 @@ ArrayPtr toArray(const std::vector<ObjectPtr>& objs) {
 } // namespace
 
 World::World(const fs::Vfs& vfs, std::string mapName)
-    : vfs_(vfs), mapName_(std::move(mapName)), vm_([this](const std::string& p) -> std::optional<std::string> {
+    : vfs_(vfs), mapName_(std::move(mapName)), animLib_(vfs), vm_([this](const std::string& p) -> std::optional<std::string> {
           auto d = vfs_.read(p);
           if (!d) return std::nullopt;
           return std::string(d->begin(), d->end());
@@ -81,6 +81,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     vm_.print = [this](const std::string& s) { print(s); };
     registerCoreBuiltins(vm_);
     registerBuiltins();
+    registerAnimBuiltins();
     registerMissingStubs();
 }
 
@@ -174,6 +175,7 @@ Entity* World::spawnActor(Entity& spawner) {
     a.obj->set("classname", Value(cls));
     a.obj->set("health", Value(int32_t(100)));
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
+    useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
     const std::string aitype = "aitype/" + cls.substr(6) + ".gsc";
     try {
         vm_.start(aitype, "main", {}, Value(a.obj));
@@ -181,11 +183,7 @@ Entity* World::spawnActor(Entity& spawner) {
         print("aitype " + aitype + ": " + e.what());
     }
     vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
-    try {
-        vm_.start("animscripts/init.gsc", "main", {}, Value(a.obj));
-    } catch (const std::exception& e) {
-        print("animscripts/init: " + std::string(e.what()));
-    }
+    startAnimScript(a, "init");
     return &a;
 }
 
@@ -197,8 +195,16 @@ void World::start() {
 
 void World::frame() {
     timeMs_ += 50;
+    for (const auto& e : entities_) {
+        if (!e->anim || e->obj->removed) continue;
+        ObjectPtr obj = e->obj;
+        e->anim->update(0.05f, [this, obj](const std::string& notifyName, const std::string& note) {
+            vm_.notify(obj, notifyName, {Value(note)});
+        });
+    }
     runTriggers();
     vm_.runFrame(timeMs_);
+    thinkActors();
 }
 
 const std::map<std::string, std::string>* World::weapon(const std::string& name) {
@@ -220,6 +226,102 @@ const std::map<std::string, std::string>* World::weapon(const std::string& name)
         it = weapons_.emplace(key, std::move(def)).first;
     }
     return it->second ? &*it->second : nullptr;
+}
+
+// Engine animscripts (docs/spec/ai.md): the previous one gets "killanimscript", then animscripts/<name>::main()
+// starts on the actor.
+void World::startAnimScript(Entity& e, const std::string& name) {
+    if (!e.animScript.empty()) vm_.notify(e.obj, "killanimscript");
+    e.animScript = name;
+    try {
+        e.animScriptThread = vm_.start("animscripts/" + name + ".gsc", "main", {}, Value(e.obj));
+    } catch (const std::exception& ex) {
+        print("animscripts/" + name + ": " + ex.what());
+        e.animScriptThread = 0;
+    }
+}
+
+// Minimal AI state machine (inferred placeholder): when the current animscript ends, the actor goes to "stop".
+void World::thinkActors() {
+    for (const auto& e : entities_) {
+        if (!e->isActor || e->obj->removed) continue;
+        if (e->animScriptThread && vm_.isThreadAlive(e->animScriptThread)) continue;
+        if (e->animScript == "stop") continue; // stop ended on its own; do not spin
+        startAnimScript(*e, "stop");
+    }
+}
+
+void World::useAnimTree(Entity& e, const std::string& tree) {
+    const AnimTree* t = animLib_.tree(tree);
+    if (!t) throw std::runtime_error("unknown animtree " + tree);
+    if (e.animTree == t->name() && e.anim) return;
+    e.animTree = t->name();
+    e.anim = std::make_unique<AnimState>(*t, animLib_);
+}
+
+// setanim and friends (signatures as documented in the shipped animscripts, e.g.
+// "setflaggedanimknoballrestart(notifyName, anim, rootAnim, goalWeight, goalTime, rate)"). Defaults are inferred.
+void World::registerAnimBuiltins() {
+    auto node = [this](CallContext& c, const Value& v) -> std::pair<Entity*, int> {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->anim) throw std::runtime_error("entity has no animtree");
+        if (!std::holds_alternative<script::AnimRef>(v.v)) throw std::runtime_error("expected an animation, got " + v.typeName());
+        const int n = e->anim->tree().find(std::get<script::AnimRef>(v.v).name);
+        if (n < 0) throw std::runtime_error("animation " + std::get<script::AnimRef>(v.v).name + " is not in animtree " + e->animTree);
+        return {e, n};
+    };
+    struct Variant { const char* name; bool flagged, knob, knobAll, restart; };
+    static const Variant variants[] = {
+        {"setanim", false, false, false, false}, {"setanimrestart", false, false, false, true},
+        {"setanimknob", false, true, false, false}, {"setanimknobrestart", false, true, false, true},
+        {"setanimknoball", false, true, true, false}, {"setanimknoballrestart", false, true, true, true},
+        {"setflaggedanim", true, false, false, false}, {"setflaggedanimrestart", true, false, false, true},
+        {"setflaggedanimknob", true, true, false, false}, {"setflaggedanimknobrestart", true, true, false, true},
+        {"setflaggedanimknoball", true, true, true, false}, {"setflaggedanimknoballrestart", true, true, true, true},
+    };
+    for (const Variant& var : variants) {
+        vm_.registerBuiltin(var.name, [node, var](CallContext& c) {
+            size_t i = 0;
+            AnimState::SetArgs a;
+            if (var.flagged) a.notify = c.arg(i++).toString();
+            auto [e, n] = node(c, c.arg(i++));
+            if (var.knobAll) {
+                a.knobAllRoot = node(c, c.arg(i++)).second;
+            }
+            a.knob = var.knob;
+            a.restart = var.restart;
+            if (c.arg(i).isDefined()) a.weight = c.arg(i).asFloat();
+            ++i;
+            if (c.arg(i).isDefined()) a.blendTime = c.arg(i).asFloat();
+            ++i;
+            if (c.arg(i).isDefined()) a.rate = c.arg(i).asFloat();
+            e->anim->set(n, a);
+            return Value();
+        });
+    }
+    vm_.registerBuiltin("clearanim", [node](CallContext& c) {
+        auto [e, n] = node(c, c.arg(0));
+        e->anim->clear(n, c.arg(1).isDefined() ? c.arg(1).asFloat() : 0.2f);
+        return Value();
+    });
+    vm_.registerBuiltin("getanimtime", [node](CallContext& c) {
+        auto [e, n] = node(c, c.arg(0));
+        return Value(e->anim->time(n));
+    });
+    vm_.registerBuiltin("getanimlength", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(0).v)) throw std::runtime_error("getanimlength needs an animation");
+        const assets::XAnim* a = animLib_.anim(std::get<script::AnimRef>(c.arg(0).v).name);
+        return Value(a ? a->length() : 0.0f);
+    });
+    vm_.registerBuiltin("animhasnotetrack", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(0).v)) throw std::runtime_error("animhasnotetrack needs an animation");
+        const assets::XAnim* a = animLib_.anim(std::get<script::AnimRef>(c.arg(0).v).name);
+        const std::string note = lower(c.arg(1).toString());
+        if (a)
+            for (const auto& n : a->notes)
+                if (lower(n.name) == note) return Value(true);
+        return Value(false);
+    });
 }
 
 int World::spawnAllActors() {
@@ -400,7 +502,11 @@ void World::registerBuiltins() {
     });
     vm_.registerBuiltin("useanimtree", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
-        if (e && c.arg(0).isDefined()) e->animTree = std::get<script::AnimTreeRef>(c.arg(0).v).name;
+        if (e && c.arg(0).isDefined()) useAnimTree(*e, std::get<script::AnimTreeRef>(c.arg(0).v).name);
+        return Value();
+    });
+    vm_.registerBuiltin("stopuseanimtree", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) { e->anim.reset(); e->animTree.clear(); }
         return Value();
     });
     auto weaponField = [this](const Value& name, const std::string& field) -> std::string {

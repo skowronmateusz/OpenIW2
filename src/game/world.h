@@ -3,6 +3,7 @@
 
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
+#include "game/animtree.h"
 #include "script/vm.h"
 
 #include <functional>
@@ -34,6 +35,9 @@ struct Entity {
     bool isActor = false;
     std::vector<Attachment> attachments;
     std::string animTree; // set by useanimtree
+    std::unique_ptr<AnimState> anim;
+    uint64_t animScriptThread = 0;   // thread of the running engine animscript (init, stop, …)
+    std::string animScript;
 };
 
 struct PathNode {
@@ -75,6 +79,7 @@ public:
 
     // Weapon definition (weapons/sp/<name>: "WEAPONFILE\\key\\value\\…"), or nullptr.
     const std::map<std::string, std::string>* weapon(const std::string& name);
+    AnimLibrary& animLibrary() { return animLib_; }
 
 private:
     Entity& spawnEntity(const std::string& classname);
@@ -84,11 +89,16 @@ private:
     void registerBuiltins();
     void registerMissingStubs();
     void runTriggers();
+    void useAnimTree(Entity& e, const std::string& tree);
+    void registerAnimBuiltins();
+    void startAnimScript(Entity& e, const std::string& name);
+    void thinkActors();
 
     const fs::Vfs& vfs_;
     std::string mapName_;
     std::vector<uint8_t> bspData_;
     std::unique_ptr<assets::D3dBsp> bsp_;
+    AnimLibrary animLib_;
     script::VM vm_;
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;

@@ -127,6 +127,7 @@ public:
     ObjectPtr newObject(std::string kind);
 
     size_t liveThreadCount() const;
+    bool isThreadAlive(uint64_t id) const;
     const std::vector<std::string>& errors() const { return errors_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
 
