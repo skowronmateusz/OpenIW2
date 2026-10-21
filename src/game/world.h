@@ -6,6 +6,7 @@
 #include "game/animtree.h"
 #include "game/collision.h"
 #include "game/pathnodes.h"
+#include "game/vehicles.h"
 #include "script/vm.h"
 
 #include <functional>
@@ -46,6 +47,7 @@ struct Entity {
     std::vector<std::array<float, 3>> path;
     size_t pathIndex = 0;
     std::array<float, 3> pathGoal{};
+    std::unique_ptr<VehicleState> vehicle; // script_vehicle path state (src/game/vehicles.cpp)
 };
 
 struct PathNode {
@@ -141,6 +143,15 @@ private:
     std::vector<PendingNotify> pendingNotifies_;
     int ambientHandle_ = 0, musicHandle_ = 0;
     int nearestNode(const std::array<float, 3>& p) const;
+
+    // Vehicles (src/game/vehicles.cpp)
+    void registerVehicleBuiltins();
+    void linkVehicleNodes();
+    void thinkVehicles();
+    VehicleState& vehicleState(const script::Value& self);
+    int vehicleNodeIndex(const script::Value& v) const;
+    std::vector<VehicleNode> vnodes_;
+    std::unordered_map<const script::Object*, int> vnodeIndex_;
 
     const fs::Vfs& vfs_;
     std::string mapName_;
