@@ -442,15 +442,6 @@ void World::registerCombatBuiltins() {
         const Vec3 d = sub(en->obj->get("origin").asVector(), a->obj->get("origin").asVector());
         return Value(dot(d, d));
     });
-    vm_.registerBuiltin("giveweapon", [](CallContext& c) {
-        c.self.asObject()->set("$weapon", c.arg(0));
-        return Value();
-    });
-    vm_.registerBuiltin("switchtoweapon", [](CallContext& c) {
-        c.self.asObject()->set("$weapon", c.arg(0));
-        return Value();
-    });
-    vm_.registerBuiltin("getcurrentweapon", [](CallContext& c) { return c.self.asObject()->get("$weapon"); });
     vm_.registerBuiltin("enablehealthshield", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("setnormalhealth", [this](CallContext& c) {
         Entity* e = entityOf(c.self);

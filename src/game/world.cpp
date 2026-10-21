@@ -87,6 +87,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerCombatBuiltins();
     registerSoundBuiltins();
     registerHudBuiltins();
+    registerInventoryBuiltins();
     registerMissingStubs();
 }
 
