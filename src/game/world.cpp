@@ -716,6 +716,15 @@ void World::registerBuiltins() {
         e.obj->set("health", Value(int32_t(1000)));
         return Value(e.obj);
     });
+    // Load-time hints and profiling markers have no effect on the simulation.
+    for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret", "precacheshellshock",
+                             "precacherumble", "precachestring", "precachevehicle", "precachemenu", "prof_begin", "prof_end"})
+        vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
+    // setviewmodel(model): the player's first-person hands model (read by the front end).
+    vm_.registerBuiltin("setviewmodel", [](CallContext& c) {
+        if (c.self.isObject()) c.self.asObject()->set("$viewmodel", c.arg(0));
+        return Value();
+    });
     vm_.registerBuiltin("getspeed", [](CallContext&) { return Value(0.0f); });
     vm_.registerBuiltin("getspeedmph", [](CallContext&) { return Value(0.0f); });
     vm_.registerBuiltin("getwheelsurface", [](CallContext&) { return Value("dirt"); }); // inferred default
