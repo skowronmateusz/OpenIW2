@@ -5,7 +5,7 @@
 
 #include <array>
 #include <cstdint>
-#include <vector>
+#include <memory>
 
 namespace iw2::game {
 
@@ -25,41 +25,29 @@ struct TraceResult {
     bool startSolid = false;
     bool allSolid = false;
     uint32_t contents = 0;
+    uint32_t surfaceFlags = 0; // surface flags of the material that was hit (lump 0)
+    int material = -1;         // index of that material in lump 0, -1 if nothing was hit
 };
 
 class CollisionWorld {
 public:
     CollisionWorld() = default;
     explicit CollisionWorld(const assets::D3dBsp& bsp);
+    ~CollisionWorld();
+    CollisionWorld(CollisionWorld&&) noexcept;
+    CollisionWorld& operator=(CollisionWorld&&) noexcept;
 
-    // Sweeps an axis-aligned box from start to end. `mins`/`maxs` are relative to the origin.
+    // Sweeps the box `mins`/`maxs` (relative to the origin) from start to end through the world (model 0).
+    // As in the original, the box is traced as a vertical capsule (docs/spec/collision.md).
     TraceResult trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const;
 
-    size_t brushCount() const { return brushes_.size(); }
-    size_t triangleCount() const { return tris_.size(); }
+    size_t brushCount() const;
+    size_t triangleCount() const;
+
+    struct Data;
 
 private:
-    struct Plane { Vec normal; float dist; };
-    struct Brush {
-        Vec mins, maxs;
-        std::vector<Plane> planes; // all bounding planes (6 axial + extra)
-        uint32_t contents = 0;
-    };
-
-    void addTriangleBrush(const Vec& a, const Vec& b, const Vec& c, uint32_t contents);
-    void buildGrid();
-    void traceBrush(const Brush& b, const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, TraceResult& tr) const;
-
-    std::vector<Brush> brushes_;
-    std::vector<std::array<Vec, 3>> tris_;
-
-    // Uniform 2D grid over x/y for broad-phase culling.
-    static constexpr float kCell = 256.0f;
-    float gridX0_ = 0, gridY0_ = 0;
-    int gridW_ = 0, gridH_ = 0;
-    std::vector<std::vector<uint32_t>> grid_;
-    mutable std::vector<uint32_t> stamp_;
-    mutable uint32_t stampValue_ = 0;
+    std::unique_ptr<Data> d_;
 };
 
 } // namespace iw2::game
