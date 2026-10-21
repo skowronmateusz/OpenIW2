@@ -1544,13 +1544,13 @@ int main(int argc, char** argv) {
                 // Drop the player at the camera position and walk forward, then take the shot from the eyes.
                 const game::MoveParams mp;
                 game::PlayerState ps;
-                ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - mp.eyeHeight + 8.0f};
+                ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight + 8.0f};
                 game::PlayerInput in;
                 in.yaw = cam.yaw;
                 for (int i = 0; i < 20; ++i) game::playerMove(*scene.collision, ps, in, 0.05f, mp);
                 in.forward = 1;
                 for (int i = 0; i < int(walkSeconds * 60); ++i) game::playerMove(*scene.collision, ps, in, 1.0f / 60.0f, mp);
-                cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + mp.eyeHeight};
+                cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
             }
             if (world) {
@@ -1584,6 +1584,7 @@ int main(int argc, char** argv) {
         bool running = true;
         bool walk = true;
         bool reloadPressed = false;
+        game::Stance stance = game::Stance::Stand;
         float gameClock = 0;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
@@ -1596,9 +1597,13 @@ int main(int argc, char** argv) {
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_F) renderer.fullbright = !renderer.fullbright;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
-                    if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - mp.eyeHeight}; ps.velocity = {0, 0, 0}; }
+                    if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
                 }
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_R) reloadPressed = true;
+                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_C)
+                    stance = stance == game::Stance::Crouch ? game::Stance::Stand : game::Stance::Crouch;
+                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_Z)
+                    stance = stance == game::Stance::Prone ? game::Stance::Stand : game::Stance::Prone;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_P)
                     std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
@@ -1615,7 +1620,7 @@ int main(int argc, char** argv) {
                 in.forward = float(keys[SDL_SCANCODE_W]) - float(keys[SDL_SCANCODE_S]);
                 in.right = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
                 in.jump = keys[SDL_SCANCODE_SPACE];
-                in.sprint = keys[SDL_SCANCODE_LSHIFT];
+                in.stance = stance;
                 in.yaw = cam.yaw;
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
@@ -1624,7 +1629,7 @@ int main(int argc, char** argv) {
                     game::playerMove(*scene.collision, ps, in, step, mp);
                     remaining -= step;
                 }
-                cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + mp.eyeHeight};
+                cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
             } else {
                 const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
                 Vec3 move;
