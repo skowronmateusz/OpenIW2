@@ -434,6 +434,27 @@ void World::registerCombatBuiltins() {
         const TraceResult tr = collision_->trace(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0}, Contents::Solid);
         return Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]});
     });
+    // dropweapon(weapon, hand, throwSpeed) (0x53da50): hand "left"/"right" picks tag_weapon_left/right, other
+    // values no tag; the weapon item is spawned there by 0x5220f0. TODO(spec): the throw velocity (applied when
+    // throwSpeed != 0) and the item entity's physics.
+    vm_.registerBuiltin("dropweapon", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("not an entity");
+        const std::string w = lowerStr(c.arg(0).toString());
+        if (w.empty() || w == "none" || !weapon(w)) return Value();
+        const std::string hand = lowerStr(c.arg(1).toString());
+        Vec3 at = e->obj->get("origin").asVector();
+        if (hand == "left" || hand == "right") {
+            const auto bones = entityBones(*e);
+            if (auto it = bones.find(hand == "left" ? "tag_weapon_left" : "tag_weapon_right"); it != bones.end()) at = it->second.position;
+        }
+        Entity& item = spawnEntity("weapon_" + w);
+        item.obj->set("origin", Value(at));
+        item.obj->set("angles", e->obj->get("angles"));
+        const auto* def = weapon(w);
+        if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
+        return Value(item.obj);
+    });
     vm_.registerBuiltin("issuppressed", [](CallContext&) { return Value(false); });
     vm_.registerBuiltin("getclosestenemysqdist", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
