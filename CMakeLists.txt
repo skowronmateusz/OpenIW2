@@ -133,3 +133,7 @@ add_test(NAME sound COMMAND test_sound)
 add_executable(test_menu tests/test_menu.cpp)
 target_link_libraries(test_menu PRIVATE iw2_ui)
 add_test(NAME menu COMMAND test_menu)
+
+add_executable(test_movers tests/test_movers.cpp)
+target_link_libraries(test_movers PRIVATE iw2_game)
+add_test(NAME movers COMMAND test_movers)
