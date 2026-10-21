@@ -3,6 +3,7 @@
 //   iw2game <main-dir> <map> [seconds] [--cvar name=value ...]
 //   iw2game <main-dir> <map> --walk-test     drop the player at the spawn point and walk forward
 
+#include "audio/sound.h"
 #include "game/pmove.h"
 #include "game/world.h"
 
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <iostream>
 #include <map>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -72,6 +74,16 @@ int main(int argc, char** argv) {
             }
         }
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
+        // Sounds are not played here; count requests and aliases that do not resolve.
+        iw2::audio::SoundAliases aliases;
+        aliases.load(vfs, argv[2]);
+        std::mt19937 soundRng(1);
+        std::map<std::string, int> soundsPlayed, soundsUnknown;
+        world.playSound = [&](const std::string& alias, const iw2::game::Vec3*, float*) {
+            if (aliases.pick(alias, soundRng)) ++soundsPlayed[alias];
+            else ++soundsUnknown[alias];
+            return 1;
+        };
         const auto t0 = std::chrono::steady_clock::now();
         world.start();
         if (spawnAll) {
@@ -115,6 +127,14 @@ int main(int argc, char** argv) {
             world.frame();
         }
         if (playerShoots) std::cout << "player hits " << playerHits << "\n";
+        {
+            int played = 0;
+            for (const auto& [k, n] : soundsPlayed) played += n;
+            std::cout << "sound aliases " << aliases.size() << "; sounds started " << played << " (" << soundsPlayed.size()
+                      << " aliases)";
+            for (const auto& [k, n] : soundsUnknown) std::cout << "; unknown " << k << " x" << n;
+            std::cout << "\n";
+        }
         const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
         std::cout << "simulated " << seconds << " s in " << wall << " s; entities " << world.entities().size() << ", nodes "

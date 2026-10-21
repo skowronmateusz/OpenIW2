@@ -168,6 +168,14 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     float frac = tr.fraction;
     Entity* hit = traceSentients(start, end, &shooter, frac);
     ++stats.shots;
+    {
+        // Weapon sound: fireSoundPlayer without position for the player, fireSound at the shooter otherwise.
+        const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
+        if (const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr) {
+            auto it = def->find(shooter.isPlayer ? "firesoundplayer" : "firesound");
+            if (it != def->end() && !it->second.empty()) startSound(it->second, shooter.isPlayer ? nullptr : &start);
+        }
+    }
     if (hit) {
         ++stats.hits;
         const Vec3 dir = scale(sub(end, start), 1.0f / std::max(1.0f, len(sub(end, start))));

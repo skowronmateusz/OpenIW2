@@ -30,10 +30,17 @@ add_library(iw2_assets
   src/assets/xmodel.cpp
   src/assets/lightgrid.cpp
   src/assets/xanim.cpp
+  src/assets/font.cpp
   src/util/png.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
 target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
+
+add_library(iw2_audio
+  src/audio/sound.cpp)
+target_include_directories(iw2_audio PUBLIC src)
+target_link_libraries(iw2_audio PUBLIC iw2_fs)
+target_compile_options(iw2_audio PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_script
   src/script/parser.cpp
@@ -52,13 +59,13 @@ add_library(iw2_game
   src/game/pmove.cpp
   src/game/animtree.cpp
   src/game/pathnodes.cpp
-  src/game/combat.cpp src/game/playerweapon.cpp)
+  src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(iw2game tools/iw2game/main.cpp)
-target_link_libraries(iw2game PRIVATE iw2_game)
+target_link_libraries(iw2game PRIVATE iw2_game iw2_audio)
 
 add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)
@@ -82,7 +89,7 @@ add_test(NAME d3dbsp COMMAND test_d3dbsp)
 find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp)
-  target_link_libraries(iw2view PRIVATE iw2_game SDL3::SDL3)
+  target_link_libraries(iw2view PRIVATE iw2_game iw2_audio SDL3::SDL3)
   target_compile_options(iw2view PRIVATE -Wall -Wextra)
 else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")
@@ -103,3 +110,7 @@ add_test(NAME vm COMMAND test_vm)
 add_executable(test_playerweapon tests/test_playerweapon.cpp)
 target_link_libraries(test_playerweapon PRIVATE iw2_game)
 add_test(NAME playerweapon COMMAND test_playerweapon)
+
+add_executable(test_sound tests/test_sound.cpp)
+target_link_libraries(test_sound PRIVATE iw2_audio)
+add_test(NAME sound COMMAND test_sound)

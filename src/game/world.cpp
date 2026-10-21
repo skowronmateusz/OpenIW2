@@ -85,6 +85,8 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerBuiltins();
     registerAnimBuiltins();
     registerCombatBuiltins();
+    registerSoundBuiltins();
+    registerHudBuiltins();
     registerMissingStubs();
 }
 
@@ -222,6 +224,15 @@ void World::frame() {
         });
     }
     runTriggers();
+    for (size_t i = 0; i < pendingNotifies_.size();) {
+        if (pendingNotifies_[i].atMs <= timeMs_) {
+            const auto p = pendingNotifies_[i];
+            pendingNotifies_.erase(pendingNotifies_.begin() + long(i));
+            vm_.notify(p.obj, p.name);
+        } else {
+            ++i;
+        }
+    }
     vm_.runFrame(timeMs_);
     thinkActors();
 }

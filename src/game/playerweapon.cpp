@@ -34,6 +34,8 @@ void PlayerWeapon::enter(State s, const char* animKey, float duration) {
     const std::string a = animKey ? field(animKey) : std::string();
     anim_ = a.empty() ? field("idleAnim") : a;
     animTime_ = 0;
+    const char* soundKey = s == State::Reloading ? "reloadSound" : s == State::Rechamber ? "rechamberSound" : nullptr;
+    if (soundKey && !field(soundKey).empty()) sounds_.push_back(field(soundKey));
 }
 
 void PlayerWeapon::equip(const std::string& name, const std::map<std::string, std::string>& def) {

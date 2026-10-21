@@ -5,6 +5,8 @@
 #include <array>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace iw2::game {
 
@@ -32,6 +34,8 @@ public:
     const std::string& anim() const { return anim_; }
     float animTime() const { return animTime_; }
     std::array<float, 3> standMove() const { return {time("standMoveF", 0), time("standMoveR", 0), time("standMoveU", 0)}; }
+    // Sound aliases started by state changes since the last call (reload, rechamber).
+    std::vector<std::string> takeSounds() { return std::exchange(sounds_, {}); }
     bool animLoops() const { return state_ == State::Ready; }
 
 private:
@@ -49,6 +53,7 @@ private:
     int clip_ = 0, stock_ = 0;
     bool triggerReleased_ = true;
     bool needsRechamber_ = false;
+    std::vector<std::string> sounds_;
 };
 
 } // namespace iw2::game

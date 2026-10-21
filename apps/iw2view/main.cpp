@@ -7,12 +7,14 @@
 // V toggles walk/fly, F fullbright, P prints the camera position, Esc quits.
 
 #include "assets/d3dbsp.h"
+#include "assets/font.h"
 #include "assets/iwi.h"
 #include "assets/lightgrid.h"
 #include "assets/material.h"
 #include "assets/xanim.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
+#include "audio/sound.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
 #include "game/pmove.h"
@@ -798,8 +800,19 @@ Mat4 entityTransform(const Vec3& origin, const Vec3& angles, float scale = 1.0f)
             u.x * scale, u.y * scale, u.z * scale, 0, origin.x, origin.y, origin.z, 1};
 }
 
+// A screen-space textured quad in pixels of the render target (HUD).
+struct Quad2D {
+    float x0, y0, x1, y1;
+    float s0 = 0, t0 = 0, s1 = 1, t1 = 1;
+    uint8_t rgba[4] = {255, 255, 255, 255};
+    int texture = 0; // index into Scene::textures
+};
+
 struct Renderer {
     SDL_GPUDevice* dev = nullptr;
+    SDL_GPUBuffer* overlayVerts = nullptr;
+    SDL_GPUBuffer* overlayIndices = nullptr;
+    static constexpr uint32_t kMaxQuads = 8192;
     SDL_GPUGraphicsPipeline* pipelines[4] = {}; // Opaque, AlphaTest, Blend, Additive
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUSampler* repeatSampler = nullptr;
@@ -941,8 +954,47 @@ struct Renderer {
     }
 
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
-              const std::vector<DrawItem>& items = {}) {
+              const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}) {
         ensureDepth(w, h);
+        // HUD quads go to their own buffers before the render pass (alpha-blended, no lighting, at the near plane).
+        const size_t nq = std::min<size_t>(overlay.size(), kMaxQuads);
+        if (nq) {
+            if (!overlayVerts) {
+                SDL_GPUBufferCreateInfo vb{};
+                vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+                vb.size = uint32_t(kMaxQuads * 4 * sizeof(GpuVertex));
+                overlayVerts = SDL_CreateGPUBuffer(dev, &vb);
+                SDL_GPUBufferCreateInfo ib{};
+                ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+                ib.size = kMaxQuads * 6 * 4;
+                overlayIndices = SDL_CreateGPUBuffer(dev, &ib);
+                std::vector<uint32_t> idx;
+                for (uint32_t q = 0; q < kMaxQuads; ++q)
+                    for (uint32_t k : {0u, 1u, 2u, 0u, 2u, 3u}) idx.push_back(q * 4 + k);
+                Uploader up(dev);
+                up.buffer(overlayIndices, idx.data(), uint32_t(idx.size() * 4));
+            }
+            std::vector<GpuVertex> verts;
+            verts.reserve(nq * 4);
+            for (size_t i = 0; i < nq; ++i) {
+                const Quad2D& q = overlay[i];
+                const float xs[4] = {q.x0, q.x1, q.x1, q.x0}, ys[4] = {q.y0, q.y0, q.y1, q.y1};
+                const float ss[4] = {q.s0, q.s1, q.s1, q.s0}, ts[4] = {q.t0, q.t0, q.t1, q.t1};
+                for (int k = 0; k < 4; ++k) {
+                    GpuVertex g{};
+                    g.pos[0] = xs[k] / float(w) * 2.0f - 1.0f;
+                    g.pos[1] = 1.0f - ys[k] / float(h) * 2.0f;
+                    g.pos[2] = 0.0f;
+                    g.normal[2] = 1;
+                    std::memcpy(g.color, q.rgba, 4);
+                    g.uv[0] = ss[k];
+                    g.uv[1] = ts[k];
+                    verts.push_back(g);
+                }
+            }
+            Uploader up(dev);
+            up.buffer(overlayVerts, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+        }
         SDL_GPUColorTargetInfo color{};
         color.texture = target;
         color.clear_color = {0.55f, 0.65f, 0.78f, 1.0f};
@@ -1023,12 +1075,35 @@ struct Renderer {
                 }
             }
         }
+        if (nq) {
+            SDL_BindGPUGraphicsPipeline(pass, pipelines[int(Pass::Blend)]);
+            struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 1}, kIdentity};
+            SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
+            SDL_GPUBufferBinding ovb{overlayVerts, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &ovb, 1);
+            SDL_GPUBufferBinding oib{overlayIndices, 0};
+            SDL_BindGPUIndexBuffer(pass, &oib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            FragmentUniforms fu = {{0, 0, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 1, 1}, {0, 0, 0, 0}};
+            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            // Consecutive quads with the same texture share a draw call.
+            size_t i = 0;
+            while (i < nq) {
+                size_t j = i + 1;
+                while (j < nq && overlay[j].texture == overlay[i].texture) ++j;
+                SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(overlay[i].texture)], clampSampler},
+                                                       {scene.dummyLightmap.coeffs, clampSampler},
+                                                       {scene.dummyLightmap.sun, clampSampler}};
+                SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                SDL_DrawGPUIndexedPrimitives(pass, uint32_t((j - i) * 6), 1, uint32_t(i * 6), 0, 0);
+                i = j;
+            }
+        }
         SDL_EndGPURenderPass(pass);
     }
 };
 
 void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h, const std::string& out,
-                const std::vector<DrawItem>& items) {
+                const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay = {}) {
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -1045,7 +1120,7 @@ void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camer
     if (!target || !tb) sdlFail("screenshot resources");
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
-    r.draw(cmd, target, w, h, scene, cam, items);
+    r.draw(cmd, target, w, h, scene, cam, items, overlay);
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region{};
     region.texture = target;
@@ -1087,6 +1162,8 @@ int main(int argc, char** argv) {
     float walkSeconds = 0;
     float simSeconds = 0;
     float fireSeconds = 0;
+    bool audioOn = true;
+    std::string language = "polish";
     bool scripts = true;
     bool spawnAll = false;
     Renderer renderer;
@@ -1106,6 +1183,8 @@ int main(int argc, char** argv) {
             else if (a == "--walk-seconds") walkSeconds = std::stof(next());
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
             else if (a == "--fire-seconds") fireSeconds = std::stof(next());
+            else if (a == "--no-audio") audioOn = false;
+            else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
@@ -1124,7 +1203,30 @@ int main(int argc, char** argv) {
         fs::Vfs vfs;
         vfs.mountDirectory(args[0]);
 
-        if (!SDL_Init(SDL_INIT_VIDEO)) sdlFail("SDL_Init");
+        if (!SDL_Init(SDL_INIT_VIDEO | (shot.empty() && audioOn ? SDL_INIT_AUDIO : 0))) sdlFail("SDL_Init");
+
+        // Sound: aliases for this level, a software mixer and an SDL audio stream that pulls from it.
+        audio::SoundAliases aliases;
+        aliases.load(vfs, args[1]);
+        constexpr int kAudioRate = 48000;
+        audio::Mixer mixer(vfs, aliases, kAudioRate);
+        SDL_AudioStream* audioStream = nullptr;
+        if (shot.empty() && audioOn) {
+            const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kAudioRate};
+            audioStream = SDL_OpenAudioDeviceStream(
+                SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                [](void* user, SDL_AudioStream* stream, int additional, int) {
+                    auto* m = static_cast<audio::Mixer*>(user);
+                    std::vector<float> buf(size_t(additional / int(sizeof(float))) & ~size_t(1));
+                    if (buf.empty()) return;
+                    m->mix(buf.data(), int(buf.size() / 2));
+                    SDL_PutAudioStreamData(stream, buf.data(), int(buf.size() * sizeof(float)));
+                },
+                &mixer);
+            if (audioStream) SDL_ResumeAudioStreamDevice(audioStream);
+            else std::cerr << "warning: no audio: " << SDL_GetError() << "\n";
+        }
+        std::cout << "sound aliases: " << aliases.size() << "\n";
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
 
@@ -1132,6 +1234,10 @@ int main(int argc, char** argv) {
         if (scripts) {
             world = std::make_unique<game::World>(vfs, args[1]);
             world->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
+            world->playSound = [&mixer](const std::string& alias, const game::Vec3* origin, float* duration) {
+                return mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, duration);
+            };
+            world->stopSound = [&mixer](int h) { mixer.stop(h); };
             world->start();
             if (spawnAll) std::cout << "spawned " << world->spawnAllActors() << " actors\n";
         }
@@ -1197,6 +1303,7 @@ int main(int argc, char** argv) {
             const script::Value w = world->player()->obj->get("$weapon");
             std::string name = w.isString() && !w.asString().empty() ? w.asString() : "thompson";
             if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
+            if (!w.isString() || w.asString() != name) world->player()->obj->set("$weapon", script::Value(name));
             if (name == pweapon.name()) return;
             if (const auto* def = world->weapon(name)) pweapon.equip(name, *def);
         };
@@ -1253,6 +1360,176 @@ int main(int argc, char** argv) {
             }
             up.flush();
         };
+
+        // HUD: script elements, crosshair and ammo counter, laid out on a 640x480 virtual screen
+        // (alignment rules are inferred; see docs/spec/ui.md).
+        assets::Localization loc;
+        loc.load(vfs, language);
+        std::map<std::string, std::optional<assets::Font>> fonts;
+        auto font = [&](const std::string& name) -> const assets::Font* {
+            auto [it, inserted] = fonts.try_emplace(name);
+            if (inserted) {
+                try {
+                    // Languages with their own code page have fonts under fonts/<language>/.
+                    auto d = vfs.read("fonts/" + language + "/" + name);
+                    if (!d) d = vfs.read("fonts/" + name);
+                    if (d) it->second = assets::parseFont(*d);
+                } catch (const std::exception& e) {
+                    std::cerr << "warning: font " << name << ": " << e.what() << "\n";
+                }
+            }
+            return it->second ? &*it->second : nullptr;
+        };
+        auto materialTexture = [&](const std::string& name) {
+            Uploader up(dev);
+            return sceneMaterial(scene, dev, up, vfs, name).texture;
+        };
+        auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
+                           const uint8_t rgba[4], float alignX, float alignY) {
+            // alignX/alignY: 0 = left/top, 0.5 = centre, 1 = right/bottom of the text box at (x, y).
+            const int tex = materialTexture(f.material);
+            std::vector<std::string> lines(1);
+            for (char c : text) {
+                if (c == '\n') lines.emplace_back();
+                else lines.back() += c;
+            }
+            const float lineH = float(f.pixelHeight) * scale;
+            float ty = y - alignY * lineH * float(lines.size());
+            for (const auto& line : lines) {
+                float width = 0;
+                for (unsigned char c : line)
+                    if (const auto* g = f.find(c)) width += float(g->dx) * scale;
+                float pen = x - alignX * width;
+                for (unsigned char c : line) {
+                    const auto* g = f.find(c);
+                    if (!g) continue;
+                    if (g->width && g->height) {
+                        Quad2D q{pen + float(g->x0) * scale, ty + lineH + float(g->y0) * scale, 0, 0, g->s0, g->t0, g->s1, g->t1};
+                        q.x1 = q.x0 + float(g->width) * scale;
+                        q.y1 = q.y0 + float(g->height) * scale;
+                        std::memcpy(q.rgba, rgba, 4);
+                        q.texture = tex;
+                        out.push_back(q);
+                    }
+                    pen += float(g->dx) * scale;
+                }
+                ty += lineH;
+            }
+        };
+        auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
+            std::vector<Quad2D> out;
+            const float sc = float(h) / 480.0f;               // virtual pixel to screen pixel
+            const float left43 = (float(w) - 640.0f * sc) * 0.5f; // left edge of the 4:3 area
+            auto field = [](const script::ObjectPtr& o, const char* k, float def) {
+                const script::Value v = o->get(k);
+                return v.isNumber() ? v.asFloat() : def;
+            };
+            auto lerpOver = [&](const script::ObjectPtr& o, const char* startKey, const char* timeKey) {
+                const script::Value st = o->get(startKey), tm = o->get(timeKey);
+                if (!st.isNumber() || !tm.isNumber() || tm.asFloat() <= 0) return 1.0f;
+                return std::clamp((float(world->timeMs()) - st.asFloat()) / tm.asFloat(), 0.0f, 1.0f);
+            };
+            if (world) {
+                std::vector<script::ObjectPtr> elems = world->hudElems();
+                std::stable_sort(elems.begin(), elems.end(), [&](const auto& a, const auto& b) { return field(a, "sort", 0) < field(b, "sort", 0); });
+                for (const auto& o : elems) {
+                    float alpha = field(o, "alpha", 1);
+                    script::Vec3 color = o->get("color").isVector() ? o->get("color").asVector() : script::Vec3{1, 1, 1};
+                    if (const float t = lerpOver(o, "$fadestart", "$fadetime"); t < 1) {
+                        alpha = field(o, "$fadealpha", alpha) + (alpha - field(o, "$fadealpha", alpha)) * t;
+                        if (o->get("$fadecolor").isVector())
+                            for (int k = 0; k < 3; ++k) color[k] = o->get("$fadecolor").asVector()[k] + (color[k] - o->get("$fadecolor").asVector()[k]) * t;
+                    }
+                    if (alpha <= 0.001f) continue;
+                    float x = field(o, "x", 0), y = field(o, "y", 0);
+                    if (const float t = lerpOver(o, "$movestart", "$movetime"); t < 1) {
+                        x = field(o, "$movex", x) + (x - field(o, "$movex", x)) * t;
+                        y = field(o, "$movey", y) + (y - field(o, "$movey", y)) * t;
+                    }
+                    const std::string ha = o->get("horzalign").toString(), va = o->get("vertalign").toString();
+                    const std::string ax = o->get("alignx").toString(), ay = o->get("aligny").toString();
+                    const bool fullX = ha == "fullscreen", fullY = va == "fullscreen";
+                    const float sx = fullX ? float(w) / 640.0f : sc, sy = fullY ? float(h) / 480.0f : sc;
+                    const float baseX = fullX ? 0.0f : ha == "center" ? float(w) * 0.5f : ha == "right" ? left43 + 640.0f * sc
+                                      : ha == "subleft" ? 0.0f : ha == "subright" ? float(w) : left43;
+                    const float baseY = fullY ? 0.0f : va == "middle" ? float(h) * 0.5f : va == "bottom" ? float(h) : 0.0f;
+                    const float px = baseX + x * sx, py = baseY + y * sy;
+                    const float fx = ax == "center" ? 0.5f : ax == "right" ? 1.0f : 0.0f;
+                    const float fy = ay == "middle" ? 0.5f : ay == "bottom" ? 1.0f : 0.0f;
+                    const uint8_t rgba[4] = {uint8_t(std::clamp(color[0], 0.0f, 1.0f) * 255), uint8_t(std::clamp(color[1], 0.0f, 1.0f) * 255),
+                                             uint8_t(std::clamp(color[2], 0.0f, 1.0f) * 255), uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255)};
+                    if (o->get("$shader").isString()) {
+                        float ww = field(o, "$width", 0), hh = field(o, "$height", 0);
+                        if (const float t = lerpOver(o, "$scalestart", "$scaletime"); t < 1) {
+                            ww = field(o, "$scalew", ww) + (ww - field(o, "$scalew", ww)) * t;
+                            hh = field(o, "$scaleh", hh) + (hh - field(o, "$scaleh", hh)) * t;
+                        }
+                        const std::string shader = o->get("$shader").asString();
+                        Quad2D q{px - fx * ww * sx, py - fy * hh * sy, 0, 0};
+                        q.x1 = q.x0 + ww * sx;
+                        q.y1 = q.y0 + hh * sy;
+                        std::memcpy(q.rgba, rgba, 4);
+                        q.texture = materialTexture(shader);
+                        if (shader == "black") q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
+                        out.push_back(q);
+                        continue;
+                    }
+                    // Text: label, set text, value or timer.
+                    auto str = [&](const script::Value& v) -> std::string {
+                        if (std::holds_alternative<script::LocalizedString>(v.v)) {
+                            const auto& key = std::get<script::LocalizedString>(v.v).key;
+                            const std::string* t = loc.find(key);
+                            return t ? *t : key;
+                        }
+                        return v.isDefined() ? v.toString() : std::string();
+                    };
+                    std::string text = str(o->get("$text"));
+                    if (o->get("$timerend").isNumber()) {
+                        const int secs = std::max(0, int(std::ceil((o->get("$timerend").asFloat() - float(world->timeMs())) / 1000.0f)));
+                        text = std::to_string(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + std::to_string(secs % 60);
+                    } else if (o->get("$value").isDefined()) {
+                        const script::Value v = o->get("$value");
+                        text = v.isNumber() && v.asFloat() == float(int(v.asFloat())) ? std::to_string(int(v.asFloat())) : v.toString();
+                    }
+                    const std::string label = str(o->get("label"));
+                    if (!label.empty()) {
+                        const auto at = label.find("&&1");
+                        text = at == std::string::npos ? label + text : label.substr(0, at) + text + label.substr(at + 3);
+                    }
+                    if (text.empty()) continue;
+                    const std::string fontName = o->get("font").toString();
+                    const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
+                    if (f) hudText(out, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
+                }
+            }
+            // Crosshair: four bars, separated by the weapon's hip spread (inferred look).
+            if (pweapon.equipped()) {
+                float spread = 2.0f;
+                if (const auto* d = world ? world->weapon(pweapon.name()) : nullptr)
+                    if (auto it = d->find("hipspreadstandmin"); it != d->end()) spread = std::max(1.0f, float(std::atof(it->second.c_str())));
+                const float gap = std::tan(spread * float(M_PI) / 180.0f) / std::tan(32.5f * float(M_PI) / 180.0f) * float(h) * 0.5f;
+                const float cx = float(w) * 0.5f, cy = float(h) * 0.5f, len = 10 * sc, th = std::max(2.0f, 2.0f * sc);
+                const Quad2D bars[4] = {{cx - gap - len, cy - th / 2, cx - gap, cy + th / 2}, {cx + gap, cy - th / 2, cx + gap + len, cy + th / 2},
+                                        {cx - th / 2, cy - gap - len, cx + th / 2, cy - gap}, {cx - th / 2, cy + gap, cx + th / 2, cy + gap + len}};
+                for (Quad2D q : bars) {
+                    q.rgba[3] = 200;
+                    out.push_back(q);
+                }
+                // Ammo counter, bottom right of the 4:3 area.
+                if (const assets::Font* f = font("bigfont")) {
+                    const uint8_t white[4] = {255, 255, 255, 230};
+                    hudText(out, std::to_string(pweapon.clip()) + " | " + std::to_string(pweapon.stock()), left43 + 620 * sc, 460 * sc,
+                            1.0f * sc, *f, white, 1.0f, 1.0f);
+                }
+            }
+            if (const char* key = std::getenv("IW2_HUD_TEXT")) { // debug: show a localized string
+                const std::string* t = loc.find(key);
+                const uint8_t yellow[4] = {255, 230, 120, 255};
+                if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
+            }
+            (void)c;
+            return out;
+        };
         Camera cam = scene.start;
         if (pos) cam.pos = *pos;
         if (yaw) cam.yaw = *yaw;
@@ -1277,7 +1554,8 @@ int main(int argc, char** argv) {
                     world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     world->frame();
                 }
-                std::cout << "script errors: " << world->vm().errors().size() << ", live threads: " << world->vm().liveThreadCount() << "\n";
+                std::cout << "script errors: " << world->vm().errors().size() << ", live threads: " << world->vm().liveThreadCount()
+                          << ", hud elements: " << world->hudElems().size() << "\n";
             }
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
             syncWeapon();
@@ -1285,7 +1563,7 @@ int main(int argc, char** argv) {
             pweapon.update(fireSeconds, {fireSeconds > 0, false});
             auto shotItems = gatherItems();
             addViewModel(shotItems, cam);
-            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems);
+            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
             return 0;
@@ -1362,6 +1640,11 @@ int main(int argc, char** argv) {
                 wi.reload = reloadPressed;
                 reloadPressed = false;
                 const int shots = pweapon.update(std::min(dt, 0.1f), wi);
+                for (const auto& snd : pweapon.takeSounds()) mixer.play(snd);
+                {
+                    const Vec3 f = cam.forward(), r = cam.right();
+                    mixer.setListener({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, {r.x, r.y, r.z});
+                }
                 const Vec3 f = cam.forward();
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
@@ -1378,9 +1661,10 @@ int main(int argc, char** argv) {
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
             if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap)
-                renderer.draw(cmd, swap, w, h, scene, cam, items);
+                renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam));
             SDL_SubmitGPUCommandBuffer(cmd);
         }
+        if (audioStream) SDL_DestroyAudioStream(audioStream);
         SDL_ReleaseWindowFromGPUDevice(dev, window);
         SDL_DestroyWindow(window);
         SDL_DestroyGPUDevice(dev);

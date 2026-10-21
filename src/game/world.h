@@ -83,6 +83,14 @@ public:
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
 
+    // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
+    // returns a handle (0 = nothing played); stopSound(handle).
+    std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
+    std::function<void(int)> stopSound = [](int) {};
+
+    // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
+    const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
+
     std::map<std::string, std::string> cvars;
 
     // Weapon definition (weapons/sp/<name>: "WEAPONFILE\\key\\value\\…"), or nullptr.
@@ -125,6 +133,13 @@ private:
     int weaponDamage(const std::string& weaponName);
     void updatePerception(Entity& e);
     void registerCombatBuiltins();
+    void registerSoundBuiltins();
+    void registerHudBuiltins();
+    std::vector<ObjectPtr> hudElems_;
+    int startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj = nullptr, const std::string& notify = {});
+    struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
+    std::vector<PendingNotify> pendingNotifies_;
+    int ambientHandle_ = 0, musicHandle_ = 0;
     int nearestNode(const std::array<float, 3>& p) const;
 
     const fs::Vfs& vfs_;
