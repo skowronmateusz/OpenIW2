@@ -1,4 +1,5 @@
 #include "audio/sound.h"
+#include "audio/decode.h"
 
 #include <algorithm>
 #include <cctype>
@@ -161,7 +162,7 @@ std::shared_ptr<const Wav> Mixer::load(const std::string& file) {
     if (auto it = cache_.find(key); it != cache_.end()) return it->second;
     std::shared_ptr<const Wav> w;
     try {
-        if (const auto d = vfs_.read("sound/" + key)) w = std::make_shared<Wav>(parseWav(*d));
+        if (const auto d = vfs_.read("sound/" + key)) w = std::make_shared<Wav>(decodeSound(*d, key));
         else std::cerr << "warning: missing sound " << file << "\n";
     } catch (const std::exception& e) {
         std::cerr << "warning: sound " << file << ": " << e.what() << "\n";

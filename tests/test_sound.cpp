@@ -1,5 +1,6 @@
 // Tests for WAV parsing and the mixer's distance attenuation, with synthetic data.
 
+#include "audio/decode.h"
 #include "audio/sound.h"
 
 #include <cmath>
@@ -42,6 +43,12 @@ int main() {
 
     bool threw = false;
     try { iw2::audio::parseWav(std::vector<uint8_t>{1, 2, 3}); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+
+    // decodeSound picks the parser by extension: WAV data under a .wav name, the MP3 decoder for .mp3.
+    CHECK(iw2::audio::decodeSound(bytes, "a/b.WAV").frames() == 3);
+    threw = false;
+    try { iw2::audio::decodeSound(std::vector<uint8_t>(64, 0), "music/x.MP3"); } catch (const std::exception&) { threw = true; }
     CHECK(threw);
 
     if (failures) return 1;

@@ -3,7 +3,20 @@
 ## Files
 
 Shipped sounds are `sound/**.wav` (20,188 files, all RIFF WAVE with 16-bit PCM; 19 are stereo) plus 71 `.mp3`
-files (music; not decoded yet). Checked by scanning every `.wav` in the packs.
+files (music and long ambient tracks, e.g. `sound/ambient/amb_africa01b.mp3`: MPEG layer 3, 44,100 Hz stereo,
+1152 frames per packet, 255.9 s). Checked by scanning every `.wav` in the packs.
+
+### Decoding
+
+- `.wav`: parsed directly (`parseWav`).
+- `.mp3`: decoded with the system AudioToolbox framework (`AudioFileOpenWithCallbacks` over the in-memory file +
+  `ExtAudioFile` converting to interleaved signed 16-bit PCM at the file's own rate and channel count;
+  `src/audio/decode_apple.cpp`). The decoder is chosen by the file extension (`decodeSound`).
+- `iw2asset <main> sound-check` decodes every `.wav` and `.mp3` under `sound/`: 20,190 `.wav` and 71 `.mp3`
+  decode without errors. `iw2asset <main> sound-info <path>` prints rate, channels and frame count; for the file
+  above it reports 11,286,144 frames at 44,100 Hz, matching `afinfo`'s 255.92 s.
+- A whole track is decoded on first play and cached as PCM (a 4-minute stereo track is about 45 MB). Streaming is
+  not implemented yet.
 
 ## Sound aliases (`soundaliases/*.csv`)
 
