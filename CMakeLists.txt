@@ -67,11 +67,18 @@ add_library(iw2_game
   src/game/pmove.cpp
   src/game/animtree.cpp
   src/game/pathnodes.cpp
-  src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp
+  src/game/actorfields.cpp
+  src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp
   src/game/vehicles.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
+
+add_library(iw2_ui
+  src/ui/menu.cpp)
+target_include_directories(iw2_ui PUBLIC src)
+target_link_libraries(iw2_ui PUBLIC iw2_fs)
+target_compile_options(iw2_ui PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(iw2game tools/iw2game/main.cpp)
 target_link_libraries(iw2game PRIVATE iw2_game iw2_audio)
@@ -123,3 +130,11 @@ add_test(NAME playerweapon COMMAND test_playerweapon)
 add_executable(test_sound tests/test_sound.cpp)
 target_link_libraries(test_sound PRIVATE iw2_audio)
 add_test(NAME sound COMMAND test_sound)
+
+add_executable(test_menu tests/test_menu.cpp)
+target_link_libraries(test_menu PRIVATE iw2_ui)
+add_test(NAME menu COMMAND test_menu)
+
+add_executable(test_movers tests/test_movers.cpp)
+target_link_libraries(test_movers PRIVATE iw2_game)
+add_test(NAME movers COMMAND test_movers)

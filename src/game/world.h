@@ -4,6 +4,8 @@
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
 #include "game/animtree.h"
+#include "game/inventory.h"
+#include "game/movers.h"
 #include "game/collision.h"
 #include "game/pathnodes.h"
 #include "game/vehicles.h"
@@ -93,6 +95,9 @@ public:
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
 
+    // The player's weapon inventory (throws for non-players).
+    Inventory& inventory(Entity& player);
+
     std::map<std::string, std::string> cvars;
 
     // Weapon definition (weapons/sp/<name>: "WEAPONFILE\\key\\value\\…"), or nullptr.
@@ -137,6 +142,19 @@ private:
     void registerCombatBuiltins();
     void registerSoundBuiltins();
     void registerHudBuiltins();
+    void registerInventoryBuiltins();
+    void registerMoverBuiltins();
+    void runMovers();
+    Entity* entityByNumber(int number);
+    std::map<int, MoverState> movers_;
+    std::map<int, Link> links_;
+    std::map<int, Inventory> inventories_;
+    std::string weaponField(const std::string& weaponName, const char* key);
+    int weaponInt(const std::string& weaponName, const char* key);
+    void fillClip(Inventory& inv, const std::string& weapon);
+    void addAmmo(Inventory& inv, const std::string& weapon, int amount, bool fillClipToo);
+    bool giveWeapon(Inventory& inv, const std::string& weapon);
+    void takeWeapon(Inventory& inv, const std::string& weapon);
     std::vector<ObjectPtr> hudElems_;
     int startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj = nullptr, const std::string& notify = {});
     struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
