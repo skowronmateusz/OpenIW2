@@ -89,6 +89,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerSoundBuiltins();
     registerHudBuiltins();
     registerInventoryBuiltins();
+    registerMoverBuiltins();
     registerMissingStubs();
 }
 
@@ -236,8 +237,15 @@ void World::start() {
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
 }
 
+Entity* World::entityByNumber(int number) {
+    for (const auto& e : entities_)
+        if (e->number == number) return e.get();
+    return nullptr;
+}
+
 void World::frame() {
     timeMs_ += 50;
+    runMovers();
     for (const auto& e : entities_) {
         if (!e->anim || e->obj->removed) continue;
         ObjectPtr obj = e->obj;

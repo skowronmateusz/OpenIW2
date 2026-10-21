@@ -5,6 +5,7 @@
 #include "fs/vfs.h"
 #include "game/animtree.h"
 #include "game/inventory.h"
+#include "game/movers.h"
 #include "game/collision.h"
 #include "game/pathnodes.h"
 #include "script/vm.h"
@@ -140,6 +141,11 @@ private:
     void registerSoundBuiltins();
     void registerHudBuiltins();
     void registerInventoryBuiltins();
+    void registerMoverBuiltins();
+    void runMovers();
+    Entity* entityByNumber(int number);
+    std::map<int, MoverState> movers_;
+    std::map<int, Link> links_;
     std::map<int, Inventory> inventories_;
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);

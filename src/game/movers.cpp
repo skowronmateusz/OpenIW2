@@ -1,0 +1,331 @@
+// Movers and linking, following CoD2SP_s.exe 1.3 (docs/spec/movers.md).
+#include "game/movers.h"
+
+#include "game/world.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+
+namespace iw2::game {
+
+using namespace script;
+
+namespace {
+
+float length(const MVec& v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+MVec scaled(const MVec& v, float s) { return {v[0] * s, v[1] * s, v[2] * s}; }
+MVec plus(const MVec& a, const MVec& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
+MVec minus(const MVec& a, const MVec& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+std::string lowerStr(std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+MVec normalized(const MVec& v) {
+    const float l = length(v);
+    return l > 0 ? scaled(v, 1.0f / l) : MVec{0, 0, 0};
+}
+
+} // namespace
+
+float angleSubtract(float a, float b) {
+    float d = a - b;
+    while (d > 180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    return d;
+}
+
+// 0x4fae80. t is clamped to the duration for the stopping types 3, 7 and 8.
+MVec Trajectory::evaluate(int64_t nowMs) const {
+    float t = float(nowMs - startMs);
+    if (type == 3 || type == 7 || type == 8) t = std::clamp(t, 0.0f, float(durationMs));
+    const float ts = t * 0.001f;
+    switch (type) {
+    case 2:
+    case 3: return plus(base, scaled(delta, ts));
+    case 4: return plus(base, scaled(delta, std::sin(durationMs > 0 ? t / float(durationMs) * 2.0f * float(M_PI) : 0.0f)));
+    case 5: {
+        MVec p = plus(base, scaled(delta, ts));
+        p[2] -= 400.0f * ts * ts;
+        return p;
+    }
+    case 7: {
+        const float durS = float(durationMs) * 0.001f;
+        return plus(base, scaled(normalized(delta), durS > 0 ? length(delta) / durS * ts * ts * 0.5f : 0.0f));
+    }
+    case 8: {
+        const float durS = float(durationMs) * 0.001f;
+        return minus(plus(base, scaled(delta, ts)), scaled(normalized(delta), durS > 0 ? length(delta) / durS * ts * ts * 0.5f : 0.0f));
+    }
+    default: return base;
+    }
+}
+
+void startMove(MoverChannel& ch, const MVec& current, const MVec& target, int totalMs, int accelMs, int decelMs, int64_t nowMs) {
+    ch.active = true;
+    ch.target = target;
+    ch.decelMs = decelMs;
+    ch.tr.startMs = nowMs;
+    ch.tr.base = current;
+    const MVec diff = minus(target, current);
+    if (accelMs == 0 && decelMs == 0) {
+        ch.tr.type = 3;
+        ch.tr.durationMs = totalMs;
+        ch.tr.delta = scaled(diff, 1.0f / (float(totalMs) * 0.001f));
+        ch.linearMs = totalMs;
+        ch.speed = length(ch.tr.delta);
+        ch.velocity = ch.tr.delta;
+        ch.phase1End = current;
+        ch.phase2End = target;
+        return;
+    }
+    ch.linearMs = totalMs - accelMs - decelMs;
+    ch.speed = 2.0f * length(diff) / (float(2 * totalMs - accelMs - decelMs) * 0.001f);
+    ch.velocity = scaled(normalized(diff), ch.speed);
+    if (accelMs > 0) {
+        ch.tr.type = 7;
+        ch.tr.durationMs = accelMs;
+        ch.tr.delta = ch.velocity;
+        ch.phase1End = ch.tr.evaluate(nowMs + accelMs);
+    } else {
+        ch.phase1End = current;
+        ch.tr.type = ch.linearMs > 0 ? 3 : 8;
+        ch.tr.durationMs = ch.linearMs > 0 ? ch.linearMs : decelMs;
+        ch.tr.delta = ch.velocity;
+    }
+    ch.phase2End = plus(ch.phase1End, scaled(ch.velocity, float(ch.linearMs) * 0.001f));
+}
+
+bool stepMove(MoverChannel& ch, int64_t nowMs) {
+    while (ch.active && ch.tr.startMs + ch.tr.durationMs <= nowMs) {
+        const int64_t end = ch.tr.startMs + ch.tr.durationMs;
+        if (ch.tr.type == 7 && ch.linearMs > 0) {
+            ch.tr = {3, end, ch.linearMs, ch.phase1End, ch.velocity};
+        } else if ((ch.tr.type == 3 || ch.tr.type == 7) && ch.decelMs > 0) {
+            ch.tr = {8, end, ch.decelMs, ch.phase2End, scaled(normalized(minus(ch.target, ch.phase2End)), ch.speed)};
+        } else {
+            if (ch.tr.type == 5) ch.tr.base = ch.tr.evaluate(nowMs);
+            else ch.tr.base = ch.target;
+            ch.tr.type = 0;
+            ch.active = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+void World::runMovers() {
+    for (auto it = movers_.begin(); it != movers_.end();) {
+        Entity* e = entityByNumber(it->first);
+        if (!e || e->obj->removed) {
+            it = movers_.erase(it);
+            continue;
+        }
+        MoverState& m = it->second;
+        for (MoverChannel* ch : {&m.pos, &m.apos}) {
+            if (!ch->active) continue;
+            const bool done = stepMove(*ch, timeMs_);
+            const MVec v = done ? ch->tr.base : ch->tr.evaluate(timeMs_);
+            e->obj->set(ch->angles ? "angles" : "origin", Value(Vec3{v[0], v[1], v[2]}));
+            if (done) {
+                if (ch->angles) {
+                    // Angles are normalised when a rotation ends (0x532960).
+                    Vec3 a = e->obj->get("angles").asVector();
+                    for (float& x : a) x = angleSubtract(x, 0.0f);
+                    e->obj->set("angles", Value(a));
+                }
+                vm_.notify(e->obj, ch->angles ? "rotatedone" : "movedone");
+            }
+        }
+        ++it;
+    }
+    // Linked entities follow their parent (TODO(spec): the original update order and tag handling, 0x4ed770).
+    for (const auto& [child, link] : links_) {
+        Entity* c = entityByNumber(child);
+        Entity* p = entityByNumber(link.parent);
+        if (!c || !p || c->obj->removed || p->obj->removed) continue;
+        const Value po = p->obj->get("origin"), pa = p->obj->get("angles");
+        Vec3 base = po.isVector() ? po.asVector() : Vec3{0, 0, 0}, ang = pa.isVector() ? pa.asVector() : Vec3{0, 0, 0};
+        if (!link.tag.empty()) {
+            const auto bones = entityBones(*p);
+            if (auto b = bones.find(lowerStr(link.tag)); b != bones.end()) base = b->second.position;
+        }
+        const float yaw = ang[1] * float(M_PI) / 180.0f;
+        const auto& o = link.originOffset;
+        c->obj->set("origin", Value(Vec3{base[0] + o[0] * std::cos(yaw) - o[1] * std::sin(yaw),
+                                         base[1] + o[0] * std::sin(yaw) + o[1] * std::cos(yaw), base[2] + o[2]}));
+        c->obj->set("angles", Value(Vec3{ang[0] + link.anglesOffset[0], ang[1] + link.anglesOffset[1], ang[2] + link.anglesOffset[2]}));
+    }
+}
+
+void World::registerMoverBuiltins() {
+    auto mover = [this](CallContext& c) -> Entity& {
+        Entity* e = entityOf(c.self);
+        if (!e || (e->classname != "script_brushmodel" && e->classname != "script_model" && e->classname != "script_origin"))
+            throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) +
+                                     " is not a script_brushmodel, script_model, or script_origin");
+        return *e;
+    };
+    // Time arguments (0x533510): total > 0, accel and decel ≥ 0 (default 0), accel + decel ≤ total.
+    auto times = [](CallContext& c, size_t first, int& total, int& accel, int& decel) {
+        const float t = c.arg(first).asFloat();
+        const float a = c.args.size() > first + 1 ? c.arg(first + 1).asFloat() : 0.0f;
+        const float d = c.args.size() > first + 2 ? c.arg(first + 2).asFloat() : 0.0f;
+        if (t <= 0) throw std::runtime_error("total time must be positive");
+        if (a < 0) throw std::runtime_error("accel time must be nonnegative");
+        if (d < 0) throw std::runtime_error("decel time must be nonnegative");
+        if (a + d > t) throw std::runtime_error("accel time plus decel time is greater than total time");
+        total = int(t * 1000.0f);
+        accel = int(a * 1000.0f);
+        decel = int(d * 1000.0f);
+    };
+    auto current = [this](Entity& e, MoverChannel& ch, const char* field) {
+        // A running move continues from its current position (0x532b0a).
+        if (ch.active) return ch.tr.evaluate(timeMs_);
+        const Value fv = e.obj->get(field);
+        const Vec3 v = fv.isVector() ? fv.asVector() : Vec3{0, 0, 0};
+        return MVec{v[0], v[1], v[2]};
+    };
+    auto moveTo = [this, current](Entity& e, const MVec& target, int total, int accel, int decel) {
+        MoverChannel& ch = movers_[e.number].pos;
+        ch.angles = false;
+        startMove(ch, current(e, ch, "origin"), target, total, accel, decel, timeMs_);
+    };
+    auto rotateTo = [this, current](Entity& e, const MVec& target, int total, int accel, int decel) {
+        MoverChannel& ch = movers_[e.number].apos;
+        ch.angles = true;
+        startMove(ch, current(e, ch, "angles"), target, total, accel, decel, timeMs_);
+    };
+    vm_.registerBuiltin("moveto", [mover, times, moveTo](CallContext& c) {
+        Entity& e = mover(c);
+        int t, a, d;
+        times(c, 1, t, a, d);
+        const Vec3 p = c.arg(0).asVector();
+        moveTo(e, {p[0], p[1], p[2]}, t, a, d);
+        return Value();
+    });
+    for (int axis = 0; axis < 3; ++axis) {
+        static const char* const moveNames[3] = {"movex", "movey", "movez"};
+        static const char* const rotNames[3] = {"rotatepitch", "rotateyaw", "rotateroll"};
+        vm_.registerBuiltin(moveNames[axis], [mover, times, moveTo, axis](CallContext& c) {
+            Entity& e = mover(c);
+            int t, a, d;
+            times(c, 1, t, a, d);
+            Vec3 p = e.obj->get("origin").asVector();
+            p[size_t(axis)] += c.arg(0).asFloat();
+            moveTo(e, {p[0], p[1], p[2]}, t, a, d);
+            return Value();
+        });
+        vm_.registerBuiltin(rotNames[axis], [mover, times, rotateTo, axis](CallContext& c) {
+            Entity& e = mover(c);
+            int t, a, d;
+            times(c, 1, t, a, d);
+            Vec3 p = e.obj->get("angles").asVector();
+            p[size_t(axis)] += c.arg(0).asFloat();
+            rotateTo(e, {p[0], p[1], p[2]}, t, a, d);
+            return Value();
+        });
+    }
+    vm_.registerBuiltin("rotateto", [mover, times, rotateTo](CallContext& c) {
+        Entity& e = mover(c);
+        int t, a, d;
+        times(c, 1, t, a, d);
+        const Vec3 cur = e.obj->get("angles").asVector(), want = c.arg(0).asVector();
+        MVec target;
+        for (int k = 0; k < 3; ++k) target[size_t(k)] = cur[size_t(k)] + angleSubtract(want[size_t(k)], cur[size_t(k)]);
+        rotateTo(e, target, t, a, d);
+        return Value();
+    });
+    // TODO(spec): rotatevelocity's accel/decel phases (0x532e20); here a linear rotation for the given time.
+    vm_.registerBuiltin("rotatevelocity", [this, mover, times](CallContext& c) {
+        Entity& e = mover(c);
+        int t, a, d;
+        times(c, 1, t, a, d);
+        MoverChannel& ch = movers_[e.number].apos;
+        const Vec3 cur = e.obj->get("angles").asVector(), vel = c.arg(0).asVector();
+        ch = {};
+        ch.active = true;
+        ch.angles = true;
+        ch.tr = {2, timeMs_, t, {cur[0], cur[1], cur[2]}, {vel[0], vel[1], vel[2]}};
+        ch.target = ch.tr.evaluate(timeMs_ + t);
+        return Value();
+    });
+    vm_.registerBuiltin("movegravity", [this, mover](CallContext& c) {
+        Entity& e = mover(c);
+        const float t = c.arg(1).asFloat();
+        if (t <= 0) throw std::runtime_error("total time must be positive");
+        MoverChannel& ch = movers_[e.number].pos;
+        const Vec3 cur = e.obj->get("origin").asVector(), vel = c.arg(0).asVector();
+        ch = {};
+        ch.active = true;
+        ch.tr = {5, timeMs_, int(t * 1000.0f), {cur[0], cur[1], cur[2]}, {vel[0], vel[1], vel[2]}};
+        return Value();
+    });
+    // solid / notsolid (0x533f70 / 0x534050): errors on script_origin; collision of moving brush models is not
+    // connected yet (needs the submodel traces of the collision spec).
+    vm_.registerBuiltin("solid", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (e && e->classname == "script_origin") throw std::runtime_error("solid called on a script_origin");
+        if (e) e->obj->set("$notsolid", Value());
+        return Value();
+    });
+    vm_.registerBuiltin("notsolid", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (e && e->classname == "script_origin") throw std::runtime_error("notsolid called on a script_origin");
+        if (e) e->obj->set("$notsolid", Value(true));
+        return Value();
+    });
+    vm_.registerBuiltin("linkto", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        Entity* p = entityOf(c.arg(0));
+        if (!e || !p) throw std::runtime_error("linkto needs two entities");
+        Link l;
+        l.parent = p->number;
+        l.tag = c.args.size() > 1 && c.arg(1).isString() ? c.arg(1).asString() : std::string();
+        if (c.args.size() > 2 && c.arg(2).isVector()) { const Vec3 o = c.arg(2).asVector(); l.originOffset = {o[0], o[1], o[2]}; }
+        if (c.args.size() > 3 && c.arg(3).isVector()) { const Vec3 o = c.arg(3).asVector(); l.anglesOffset = {o[0], o[1], o[2]}; }
+        if (c.args.size() <= 2) {
+            // Without offsets the child keeps its current placement relative to the parent (inferred).
+            const Vec3 po = p->obj->get("origin").asVector(), co = e->obj->get("origin").asVector();
+            const float yaw = -p->obj->get("angles").asVector()[1] * float(M_PI) / 180.0f;
+            const float dx = co[0] - po[0], dy = co[1] - po[1];
+            l.originOffset = {dx * std::cos(yaw) - dy * std::sin(yaw), dx * std::sin(yaw) + dy * std::cos(yaw), co[2] - po[2]};
+        }
+        links_[e->number] = l;
+        return Value();
+    });
+    vm_.registerBuiltin("unlink", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) links_.erase(e->number);
+        return Value();
+    });
+    vm_.registerBuiltin("enablelinkto", [](CallContext& c) {
+        if (c.self.isObject()) {
+            if (c.self.asObject()->get("$linktoenabled").truthy()) throw std::runtime_error("entity already has linkTo enabled");
+            c.self.asObject()->set("$linktoenabled", Value(true));
+        }
+        return Value();
+    });
+    // istouching(other) (0x4ef100): TODO(spec) the exact shape tests (0x4f9f50, 0x447830); here the brush
+    // model's bounds against a 15-unit-radius, 72-unit-high box at the other entity (actor bounds of 0x4fc640).
+    vm_.registerBuiltin("istouching", [this](CallContext& c) {
+        Entity* a = entityOf(c.self);
+        Entity* b = entityOf(c.arg(0));
+        if (!a || !b) return Value(false);
+        auto box = [this](Entity& e, Vec3& mn, Vec3& mx) {
+            const Value m = e.obj->get("model");
+            if (m.isString() && submodelBounds(m.asString(), mn, mx)) return true;
+            const Vec3 o = e.obj->get("origin").asVector();
+            mn = {o[0] - 15, o[1] - 15, o[2]};
+            mx = {o[0] + 15, o[1] + 15, o[2] + 72};
+            return false;
+        };
+        Vec3 amn, amx, bmn, bmx;
+        const bool ab = box(*a, amn, amx), bb = box(*b, bmn, bmx);
+        if (ab && bb) throw std::runtime_error("istouching cannot be called on 2 brush/cylinder entities");
+        for (int k = 0; k < 3; ++k)
+            if (amn[size_t(k)] > bmx[size_t(k)] || bmn[size_t(k)] > amx[size_t(k)]) return Value(false);
+        return Value(true);
+    });
+}
+
+} // namespace iw2::game
