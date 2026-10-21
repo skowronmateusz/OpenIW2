@@ -230,6 +230,9 @@ Entity* World::spawnActor(Entity& spawner) {
 }
 
 void World::start() {
+    // maps/_load.gsc sets level.script from getcvar("mapname"), so the cvar must name the running map before the
+    // level script starts (docs/spec/ui.md, intro screen).
+    cvars["mapname"] = mapName_;
     spawnMapEntities();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main");

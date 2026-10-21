@@ -1417,7 +1417,7 @@ int main(int argc, char** argv) {
             }
         };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
-            std::vector<Quad2D> out;
+            std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
             const float sc = float(h) / 480.0f;               // virtual pixel to screen pixel
             const float left43 = (float(w) - 640.0f * sc) * 0.5f; // left edge of the 4:3 area
             auto field = [](const script::ObjectPtr& o, const char* k, float def) {
@@ -1433,6 +1433,9 @@ int main(int argc, char** argv) {
                 std::vector<script::ObjectPtr> elems = world->hudElems();
                 std::stable_sort(elems.begin(), elems.end(), [&](const auto& a, const auto& b) { return field(a, "sort", 0) < field(b, "sort", 0); });
                 for (const auto& o : elems) {
+                    // Elements with `foreground` set draw above the game's own HUD (crosshair, ammo); the intro
+                    // screen's black backdrop uses it (inferred; docs/spec/ui.md).
+                    std::vector<Quad2D>& dst = o->get("foreground").truthy() ? front : out;
                     float alpha = field(o, "alpha", 1);
                     script::Vec3 color = o->get("color").isVector() ? o->get("color").asVector() : script::Vec3{1, 1, 1};
                     if (const float t = lerpOver(o, "$fadestart", "$fadetime"); t < 1) {
@@ -1471,7 +1474,7 @@ int main(int argc, char** argv) {
                         std::memcpy(q.rgba, rgba, 4);
                         q.texture = materialTexture(shader);
                         if (shader == "black") q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
-                        out.push_back(q);
+                        dst.push_back(q);
                         continue;
                     }
                     // Text: label, set text, value or timer.
@@ -1499,7 +1502,7 @@ int main(int argc, char** argv) {
                     if (text.empty()) continue;
                     const std::string fontName = o->get("font").toString();
                     const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
-                    if (f) hudText(out, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
+                    if (f) hudText(dst, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
                 }
             }
             // Crosshair: four bars, separated by the weapon's hip spread (inferred look).
@@ -1527,6 +1530,7 @@ int main(int argc, char** argv) {
                 const uint8_t yellow[4] = {255, 230, 120, 255};
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
+            out.insert(out.end(), front.begin(), front.end());
             (void)c;
             return out;
         };
