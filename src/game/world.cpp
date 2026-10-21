@@ -98,6 +98,8 @@ Entity& World::spawnEntity(const std::string& classname) {
     e->obj->set("classname", Value(classname));
     e->obj->set("origin", Value(Vec3{0, 0, 0}));
     e->obj->set("angles", Value(Vec3{0, 0, 0}));
+    e->obj->set("spawnflags", Value(int32_t(0))); // native entity fields with default 0
+    e->obj->set("count", Value(int32_t(0)));
     byObject_[e->obj.get()] = e.get();
     entities_.push_back(std::move(e));
     return *entities_.back();
@@ -113,6 +115,10 @@ void World::spawnMapEntities() {
     std::vector<Entity*> mapStartActors;
     const ObjectPtr* playerStart = nullptr;
     std::vector<ObjectPtr> starts;
+    // script_struct entities become script structs: the engine runs codescripts/struct::initstructs() once and
+    // codescripts/struct::createstruct() per struct, then sets the key/values on it (FUN_004fa5c0,
+    // script names from FUN_004eb460).
+    vm_.start("codescripts/struct.gsc", "initstructs");
     for (const auto& be : bsp_->entities()) {
         const std::string* clsp = be.get("classname");
         if (!clsp) continue;
@@ -123,7 +129,14 @@ void World::spawnMapEntities() {
                 o->set(key, parseFieldValue(key, v));
             }
         };
-        if (startsWith(cls, "node_")) {
+        if (cls == "script_struct") {
+            vm_.start("codescripts/struct.gsc", "createstruct");
+            const Value list = vm_.level()->get("struct");
+            if (list.isArray() && std::get<script::ArrayPtr>(list.v)->size() > 0) {
+                const Value st = std::get<script::ArrayPtr>(list.v)->items.back().second;
+                if (st.isObject()) fill(st.asObject());
+            }
+        } else if (startsWith(cls, "node_")) {
             PathNode n;
             n.obj = vm_.newObject(cls);
             n.type = cls;
@@ -137,7 +150,9 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             e.isSpawner = true;
             fill(e.obj);
-            e.obj->set("count", e.obj->get("count").isDefined() ? e.obj->get("count") : Value(int32_t(1)));
+            bool hasCount = false;
+            for (const auto& [k, v] : be.fields) hasCount = hasCount || lower(k) == "count";
+            if (!hasCount) e.obj->set("count", Value(int32_t(1)));
             const Value flags = e.obj->get("spawnflags");
             if (!(flags.isInt() && (flags.asInt() & 1))) mapStartActors.push_back(&e);
         } else if (kEntityClasses.count(cls)) {
@@ -183,8 +198,13 @@ Entity* World::spawnActor(Entity& spawner) {
     Entity& a = spawnEntity(cls);
     a.isActor = true;
     a.obj->kind = "actor";
+    // Spawned AI keep the spawner's key/values except its targetname; map-start AI (no spawner flag 1) are the
+    // placed entity itself, so they keep it. A spawner whose count runs out is removed. (Inferred from scripts
+    // that getent() a spawner by targetname and later getent() the AI by script_noteworthy.)
+    const Value flags = spawner.obj->get("spawnflags");
+    const bool placed = !(flags.isInt() && (flags.asInt() & 1));
     for (const auto& [k, v] : spawner.obj->fields)
-        if (k != "spawnflags" && k != "count") a.obj->set(k, v);
+        if (k != "spawnflags" && k != "count" && (placed || k != "targetname")) a.obj->set(k, v);
     a.obj->set("classname", Value(cls));
     if (!a.obj->get("health").isNumber()) a.obj->set("health", Value(int32_t(100)));
     a.obj->set("maxhealth", a.obj->get("health"));
@@ -204,6 +224,7 @@ Entity* World::spawnActor(Entity& spawner) {
         print("aitype " + aitype + ": " + e.what());
     }
     vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
+    if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
     startAnimScript(a, "init");
     return &a;
 }
@@ -512,7 +533,7 @@ void World::registerBuiltins() {
         const std::string k = lower(key.toString());
         std::vector<ObjectPtr> out;
         for (const auto& e : entities_)
-            if (!e->obj->removed && !e->isSpawner && e->obj->get(k) == value) out.push_back(e->obj);
+            if (!e->obj->removed && e->obj->get(k) == value) out.push_back(e->obj); // spawners included
         return out;
     };
     vm_.registerBuiltin("getent", [findEntities](CallContext& c) -> Value {
@@ -679,6 +700,25 @@ void World::registerBuiltins() {
         if (c.arg(1).isDefined()) e.obj->set("origin", c.arg(1));
         if (c.arg(2).isDefined()) e.obj->set("spawnflags", c.arg(2));
         return Value(e.obj);
+    });
+    // spawnvehicle(model, targetname, vehicletype, origin, angles): a script_vehicle entity. Vehicles do not
+    // drive yet; their speed queries return 0.
+    vm_.registerBuiltin("spawnvehicle", [this](CallContext& c) {
+        Entity& e = spawnEntity("script_vehicle");
+        e.obj->set("model", c.arg(0));
+        e.obj->set("targetname", c.arg(1));
+        e.obj->set("vehicletype", c.arg(2));
+        if (c.arg(3).isVector()) e.obj->set("origin", c.arg(3));
+        if (c.arg(4).isVector()) e.obj->set("angles", c.arg(4));
+        e.obj->set("health", Value(int32_t(1000)));
+        return Value(e.obj);
+    });
+    vm_.registerBuiltin("getspeed", [](CallContext&) { return Value(0.0f); });
+    vm_.registerBuiltin("getspeedmph", [](CallContext&) { return Value(0.0f); });
+    vm_.registerBuiltin("getwheelsurface", [](CallContext&) { return Value("dirt"); }); // inferred default
+    vm_.registerBuiltin("clearenemy", [](CallContext& c) {
+        if (c.self.isObject()) c.self.asObject()->set("enemy", Value());
+        return Value();
     });
     vm_.registerBuiltin("delete", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
