@@ -15,8 +15,11 @@
 //   iw2asset <main-dir> anim-info <xanim/name>       frames, bones, notetracks
 //   iw2asset <main-dir> anim-check                   parse every xanim
 //   iw2asset <main-dir> bsp-check                    parse every map
+//   iw2asset <main-dir> sound-info <sound/name>      decode a .wav/.mp3: rate, channels, frames
+//   iw2asset <main-dir> sound-check                  decode every .wav and .mp3 under sound/
 
 #include "assets/d3dbsp.h"
+#include "audio/decode.h"
 #include "assets/iwi.h"
 #include "assets/material.h"
 #include "assets/xanim.h"
@@ -30,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <cctype>
 #include <map>
 #include <string>
 #include <vector>
@@ -326,6 +330,31 @@ int main(int argc, char** argv) {
                 }
             }
             std::cout << "total: " << ok << " ok, " << failed << " failed\n";
+            return failed ? 1 : 0;
+        } else if (cmd == "sound-info" && args.size() > 2) {
+            const auto w = audio::decodeSound(mustRead(vfs, args[2]), args[2]);
+            std::cout << args[2] << ": " << w.rate << " Hz, " << w.channels << " channel(s), " << w.frames()
+                      << " frames (" << double(w.frames()) / w.rate << " s)\n";
+        } else if (cmd == "sound-check") {
+            std::map<std::string, int> ok;
+            int failed = 0;
+            for (const auto& name : vfs.list("sound/")) {
+                const auto dot = name.rfind('.');
+                if (dot == std::string::npos) continue;
+                std::string ext = name.substr(dot);
+                for (auto& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+                if (ext != ".wav" && ext != ".mp3") continue;
+                try {
+                    const auto w = audio::decodeSound(mustRead(vfs, name), name);
+                    if (w.frames() == 0) throw std::runtime_error("no samples");
+                    ++ok[ext];
+                } catch (const std::exception& e) {
+                    if (failed < 15) std::cerr << name << ": " << e.what() << "\n";
+                    ++failed;
+                }
+            }
+            for (const auto& [ext, n] : ok) std::cout << ext << ": " << n << " ok\n";
+            std::cout << "failed: " << failed << "\n";
             return failed ? 1 : 0;
         } else {
             std::cerr << "unknown command: " << cmd << "\n";

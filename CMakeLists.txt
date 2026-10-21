@@ -37,9 +37,17 @@ target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
 target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_audio
-  src/audio/sound.cpp)
+  src/audio/sound.cpp
+  src/audio/decode.cpp)
 target_include_directories(iw2_audio PUBLIC src)
 target_link_libraries(iw2_audio PUBLIC iw2_fs)
+if(APPLE)
+  # MP3 music is decoded with the system AudioToolbox framework (src/audio/decode_apple.cpp).
+  target_sources(iw2_audio PRIVATE src/audio/decode_apple.cpp)
+  target_link_libraries(iw2_audio PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+else()
+  message(FATAL_ERROR "mp3 decoding is only implemented with AudioToolbox (macOS)")
+endif()
 target_compile_options(iw2_audio PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_script
@@ -71,7 +79,7 @@ add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)
 
 add_executable(iw2asset tools/iw2asset/main.cpp)
-target_link_libraries(iw2asset PRIVATE iw2_fs iw2_assets)
+target_link_libraries(iw2asset PRIVATE iw2_fs iw2_assets iw2_audio)
 
 enable_testing()
 add_executable(test_vfs tests/test_vfs.cpp)
