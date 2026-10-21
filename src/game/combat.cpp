@@ -132,6 +132,9 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     } else if (target.isPlayer) {
         vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
         print("player killed");
+        // TODO(spec): the original opens the dead screen and offers the last save (opendeadscreen,
+        // loadgame_continue); OpenIW2 restarts the level after 3 s.
+        if (!levelChange_.pending) levelChange_ = {true, true, mapName_, false, timeMs_ + 3000};
     }
 }
 
