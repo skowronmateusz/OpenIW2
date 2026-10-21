@@ -1,4 +1,5 @@
 #include "game/world.h"
+#include "game/actorfields.h"
 
 #include "script/builtins_core.h"
 #include "script/parser.h"
@@ -206,17 +207,13 @@ Entity* World::spawnActor(Entity& spawner) {
     for (const auto& [k, v] : spawner.obj->fields)
         if (k != "spawnflags" && k != "count" && (placed || k != "targetname")) a.obj->set(k, v);
     a.obj->set("classname", Value(cls));
-    if (!a.obj->get("health").isNumber()) a.obj->set("health", Value(int32_t(100)));
-    a.obj->set("maxhealth", a.obj->get("health"));
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
-    // Native actor fields (docs/spec/ai.md); default values are inferred.
+    applyActorFieldDefaults(*a.obj); // docs/spec/ai.md
+    // TODO(spec): movemode and anim_pose are engine-maintained string fields whose initial values are not
+    // specified yet; these two are inferred.
     a.obj->set("movemode", Value("run"));
     a.obj->set("anim_pose", Value("stand"));
-    if (!a.obj->get("goalradius").isDefined()) a.obj->set("goalradius", Value(64.0f));
-    a.obj->set("goalheight", Value(0.0f));
-    a.obj->set("accuracy", Value(1.0f));
-    a.obj->set("grenadeammo", Value(int32_t(0)));
     const std::string aitype = "aitype/" + cls.substr(6) + ".gsc";
     try {
         vm_.start(aitype, "main", {}, Value(a.obj));
