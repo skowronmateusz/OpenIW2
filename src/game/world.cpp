@@ -90,6 +90,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerHudBuiltins();
     registerInventoryBuiltins();
     registerMoverBuiltins();
+    registerCampaignBuiltins();
     registerVehicleBuiltins();
     registerMissingStubs();
 }

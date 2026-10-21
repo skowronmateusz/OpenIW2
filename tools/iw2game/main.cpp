@@ -127,6 +127,11 @@ int main(int argc, char** argv) {
             world.frame();
         }
         if (playerShoots) std::cout << "player hits " << playerHits << "\n";
+        for (int i = 0; i < 16; ++i) {
+            const auto& o = world.objectives()[size_t(i)];
+            if (o.state) std::cout << "objective " << i << " state " << o.state << " " << o.text << "\n";
+        }
+        if (auto ch = world.dueLevelChange()) std::cout << "level change to " << ch->map << (ch->failed ? " (failed)" : "") << "\n";
         {
             int played = 0;
             for (const auto& [k, n] : soundsPlayed) played += n;

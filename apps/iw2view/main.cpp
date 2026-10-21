@@ -556,6 +556,21 @@ const assets::XAnim* viewAnim(const fs::Vfs& vfs, const std::string& name) {
     return it->second ? &*it->second : nullptr;
 }
 
+// Releases a scene's GPU resources (used when the level changes).
+void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
+    auto buf = [&](SDL_GPUBuffer* b) { if (b) SDL_ReleaseGPUBuffer(dev, b); };
+    auto tex = [&](SDL_GPUTexture* t) { if (t) SDL_ReleaseGPUTexture(dev, t); };
+    buf(scene.vertices);
+    buf(scene.indices);
+    for (size_t i = 1; i < scene.textures.size(); ++i) tex(scene.textures[i]); // [0] is the shared white texture
+    for (auto& lm : scene.lightmaps) { tex(lm.coeffs); tex(lm.sun); }
+    tex(scene.sky);
+    for (auto& [name, m] : scene.models)
+        if (m) { buf(m->vertices); buf(m->indices); }
+    for (auto& [key, m] : scene.skinned) { buf(m.vertices); buf(m.indices); }
+    scene = Scene{};
+}
+
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
     Scene scene;
     const std::string path = "maps/" + mapName + ".d3dbsp";
@@ -1236,18 +1251,30 @@ int main(int argc, char** argv) {
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
 
-        std::unique_ptr<game::World> world;
-        if (scripts) {
-            world = std::make_unique<game::World>(vfs, args[1]);
-            world->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
-            world->playSound = [&mixer](const std::string& alias, const game::Vec3* origin, float* duration) {
+        // A level's game world. game[] survives level changes (maps/_endmission.gsc and _loadout.gsc rely on it,
+        // docs/spec/campaign.md), so its fields are copied into the new world before its script starts.
+        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
+            auto w = std::make_unique<game::World>(vfs, map);
+            w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
+            w->playSound = [&mixer](const std::string& alias, const game::Vec3* origin, float* duration) {
                 return mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, duration);
             };
-            world->stopSound = [&mixer](int h) { mixer.stop(h); };
-            world->start();
+            w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            if (carriedGame)
+                for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
+            w->start();
+            return w;
+        };
+        std::string currentMap = args[1];
+        std::unique_ptr<game::World> world;
+        if (scripts) {
+            world = makeWorld(currentMap, nullptr);
             if (spawnAll) std::cout << "spawned " << world->spawnAllActors() << " actors\n";
         }
         Scene scene = loadScene(dev, vfs, args[1], !world);
+        // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
+        struct ScreenMessage { std::string text; uint64_t untilNs; };
+        std::vector<ScreenMessage> screenMessages;
 
         // Entity models currently visible in the game world.
         auto gatherItems = [&]() {
@@ -1521,6 +1548,18 @@ int main(int argc, char** argv) {
                     if (f) hudText(dst, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
                 }
             }
+            {
+                const uint64_t now = SDL_GetTicksNS();
+                std::erase_if(screenMessages, [&](const ScreenMessage& m) { return m.untilNs < now; });
+                float my = 100 * sc;
+                const uint8_t white[4] = {255, 255, 255, 255};
+                if (const assets::Font* f = font("normalfont"))
+                    for (const auto& m : screenMessages) {
+                        const std::string* t = loc.find(m.text);
+                        hudText(out, t ? *t : m.text, float(w) * 0.5f, my, 0.75f * sc, *f, white, 0.5f, 0);
+                        my += 18 * sc;
+                    }
+            }
             // Crosshair: four bars, separated by the weapon's hip spread (inferred look).
             if (pweapon.equipped()) {
                 float spread = 2.0f;
@@ -1693,6 +1732,24 @@ int main(int argc, char** argv) {
                 while (gameClock >= 0.05f) {
                     world->frame();
                     gameClock -= 0.05f;
+                }
+                for (const auto& cmd : world->takeClientCommands())
+                    if (cmd.name == "obj_update" || cmd.name == "obj_complete")
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 4000000000ull}); // display time inferred
+                if (auto change = world->dueLevelChange()) {
+                    // Level change or restart: rebuild the world and the scene for the next map.
+                    currentMap = change->map;
+                    std::cout << (change->failed ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
+                    const script::ObjectPtr carried = world->vm().game();
+                    world.reset();
+                    releaseScene(dev, scene);
+                    world = makeWorld(currentMap, carried);
+                    scene = loadScene(dev, vfs, currentMap, false);
+                    cam = scene.start;
+                    ps = game::PlayerState{};
+                    ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
+                    pweapon = game::PlayerWeapon{};
+                    gameClock = 0;
                 }
             }
             auto items = gatherItems();

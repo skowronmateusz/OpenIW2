@@ -82,3 +82,10 @@ fade value. TODO: compass face rotation (ownerdraw 84), back (85, FUN_004a90b0),
 
 `src/ui/menu.{h,cpp}` parses every shipped SP menu (`ui/menus.txt`, `ui/hud.txt`, `ui/ingame.txt`; test
 `test_menu`). Not done: runtime (open stack, dvarTest, actions, `uiScript`), drawing, ownerdraws.
+
+## Implementation status (OpenIW2)
+
+`src/game/campaign.cpp`: objective built-ins and state messages as above; `changelevel`, `missionsuccess` and
+`missionfailed` set a pending level change. `iw2view` rebuilds the world and scene for the next map when it is due
+and copies `game[]` into the new world. Inferred and marked TODO: `objective_string`'s message, the failure
+screen (OpenIW2 restarts the level after 3 s), how long objective messages stay on screen (4 s).

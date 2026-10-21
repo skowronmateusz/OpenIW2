@@ -6,6 +6,7 @@
 #include "game/animtree.h"
 #include "game/inventory.h"
 #include "game/movers.h"
+#include "game/campaign.h"
 #include "game/collision.h"
 #include "game/pathnodes.h"
 #include "game/vehicles.h"
@@ -95,6 +96,15 @@ public:
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
 
+    const std::array<Objective, 16>& objectives() const { return objectives_; }
+    std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
+    // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
+    std::optional<LevelChange> dueLevelChange() const {
+        if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
+        return std::nullopt;
+    }
+    const std::string& mapName() const { return mapName_; }
+
     // The player's weapon inventory (throws for non-players).
     Inventory& inventory(Entity& player);
 
@@ -144,6 +154,12 @@ private:
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();
+    void registerCampaignBuiltins();
+    void objectiveMessage(int state, const std::string& text);
+    std::array<Objective, 16> objectives_{};
+    std::vector<ClientCommand> clientCommands_;
+    int64_t lastObjectiveMessageMs_ = -1000;
+    LevelChange levelChange_;
     void runMovers();
     Entity* entityByNumber(int number);
     std::map<int, MoverState> movers_;
