@@ -6,7 +6,7 @@
 
 namespace iw2::game {
 
-std::string PlayerWeapon::field(const char* key) const {
+std::string PlayerWeapon::fieldValue(const char* key) const {
     std::string k(key);
     for (char& c : k) c = char(std::tolower(static_cast<unsigned char>(c)));
     auto it = def_.find(k); // World::weapon() lower-cases keys
@@ -14,35 +14,35 @@ std::string PlayerWeapon::field(const char* key) const {
 }
 
 float PlayerWeapon::time(const char* key, float fallback) const {
-    const std::string v = field(key);
+    const std::string v = fieldValue(key);
     return v.empty() ? fallback : float(std::atof(v.c_str()));
 }
 
 std::string PlayerWeapon::gunModel() const {
-    const std::string m = field("gunModel");
+    const std::string m = fieldValue("gunModel");
     return m.empty() ? m : "xmodel/" + m;
 }
 
 std::string PlayerWeapon::handModel() const {
-    const std::string m = field("handModel");
+    const std::string m = fieldValue("handModel");
     return m.empty() ? m : "xmodel/" + m;
 }
 
 void PlayerWeapon::enter(State s, const char* animKey, float duration) {
     state_ = s;
     timer_ = duration;
-    const std::string a = animKey ? field(animKey) : std::string();
-    anim_ = a.empty() ? field("idleAnim") : a;
+    const std::string a = animKey ? fieldValue(animKey) : std::string();
+    anim_ = a.empty() ? fieldValue("idleAnim") : a;
     animTime_ = 0;
     const char* soundKey = s == State::Reloading ? "reloadSound" : s == State::Rechamber ? "rechamberSound" : nullptr;
-    if (soundKey && !field(soundKey).empty()) sounds_.push_back(field(soundKey));
+    if (soundKey && !fieldValue(soundKey).empty()) sounds_.push_back(fieldValue(soundKey));
 }
 
 void PlayerWeapon::equip(const std::string& name, const std::map<std::string, std::string>& def) {
     name_ = name;
     def_ = def;
-    const int clipSize = std::max(1, std::atoi(field("clipSize").c_str()));
-    const int start = std::atoi(field("startAmmo").c_str());
+    const int clipSize = std::max(1, std::atoi(fieldValue("clipSize").c_str()));
+    const int start = std::atoi(fieldValue("startAmmo").c_str());
     clip_ = std::min(clipSize, std::max(start, clipSize));
     stock_ = std::max(0, start - clip_);
     needsRechamber_ = false;
@@ -52,10 +52,23 @@ void PlayerWeapon::equip(const std::string& name, const std::map<std::string, st
 
 int PlayerWeapon::update(float dt, const Input& in) {
     if (name_.empty()) return 0;
+    // Aiming (0x4dd0d0): only weapons with aimDownSight; not while reloading, nor while rechambering unless
+    // rechamberWhileAds. The fraction moves by ms / adsTransInTime (or adsTransOutTime) and is clamped to 0..1.
+    {
+        const bool can = time("aimDownSight", 0) != 0;
+        const bool want = can && in.ads && state_ != State::Reloading &&
+                          !(state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0);
+        if (!can) adsFrac_ = 0;
+        else if (want) adsFrac_ += dt / std::max(0.001f, time("adsTransInTime", 0.3f));
+        else adsFrac_ -= dt / std::max(0.001f, time("adsTransOutTime", 0.3f));
+        adsFrac_ = std::clamp(adsFrac_, 0.0f, 1.0f);
+        if (adsFrac_ == 0) zoomingIn_ = true;
+        if (adsFrac_ == 1) zoomingIn_ = false;
+    }
     animTime_ += dt;
     timer_ -= dt;
-    const bool automatic = field("semiAuto") != "1";
-    const int clipSize = std::max(1, std::atoi(field("clipSize").c_str()));
+    const bool automatic = fieldValue("semiAuto") != "1";
+    const int clipSize = std::max(1, std::atoi(fieldValue("clipSize").c_str()));
     int shots = 0;
     if (!in.fire) triggerReleased_ = true;
 
@@ -101,8 +114,10 @@ int PlayerWeapon::update(float dt, const Input& in) {
         --clip_;
         ++shots;
         triggerReleased_ = false;
-        needsRechamber_ = field("boltAction") == "1";
-        enter(State::Firing, clip_ == 0 ? "lastShotAnim" : "fireAnim", time("fireTime", 0.1f));
+        needsRechamber_ = fieldValue("boltAction") == "1";
+        const bool aimed = adsFrac_ == 1.0f;
+        enter(State::Firing, clip_ == 0 ? (aimed ? "adsLastShotAnim" : "lastShotAnim") : (aimed ? "adsFireAnim" : "fireAnim"),
+              time("fireTime", 0.1f));
     }
     return shots;
 }

@@ -15,6 +15,7 @@ public:
     struct Input {
         bool fire = false;   // trigger held
         bool reload = false; // reload pressed this tick
+        bool ads = false;    // aim-down-sights button held
     };
 
     // `def` is the parsed weapon file (World::weapon). Starts raising the weapon.
@@ -33,14 +34,18 @@ public:
     std::string handModel() const;
     const std::string& anim() const { return anim_; }
     float animTime() const { return animTime_; }
-    std::array<float, 3> standMove() const { return {time("standMoveF", 0), time("standMoveR", 0), time("standMoveU", 0)}; }
     // Sound aliases started by state changes since the last call (reload, rechamber).
     std::vector<std::string> takeSounds() { return std::exchange(sounds_, {}); }
+    // Aim fraction 0..1 and whether it is rising (docs/spec/weapons.md, 0x4dd0d0).
+    float adsFrac() const { return adsFrac_; }
+    bool adsZoomingIn() const { return zoomingIn_; }
+    float number(const char* key) const { return time(key, 0.0f); }
+    std::string field(const char* key) const { return fieldValue(key); }
     bool animLoops() const { return state_ == State::Ready; }
 
 private:
     enum class State { Raising, Ready, Firing, Rechamber, Reloading };
-    std::string field(const char* key) const;
+    std::string fieldValue(const char* key) const;
     float time(const char* key, float fallback) const;
     void enter(State s, const char* animKey, float duration);
 
@@ -54,6 +59,8 @@ private:
     bool triggerReleased_ = true;
     bool needsRechamber_ = false;
     std::vector<std::string> sounds_;
+    float adsFrac_ = 0;
+    bool zoomingIn_ = true;
 };
 
 } // namespace iw2::game

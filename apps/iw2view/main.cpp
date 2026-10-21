@@ -17,6 +17,7 @@
 #include "audio/sound.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
+#include "game/viewweapon.h"
 #include "game/pmove.h"
 #include "game/world.h"
 #include "util/png.h"
@@ -78,6 +79,7 @@ Mat4 mul(const Mat4& a, const Mat4& b) {
 struct Camera {
     Vec3 pos;
     float yaw = 0, pitch = 0; // degrees; yaw 0 looks along +X, pitch positive looks down (game convention)
+    float fovX43 = 80.0f;     // cg_fov: horizontal field of view of a 4:3 screen (default 80, 0x4a10f0)
 
     Vec3 forward() const {
         const float cy = std::cos(yaw * float(M_PI) / 180), sy = std::sin(yaw * float(M_PI) / 180);
@@ -90,7 +92,7 @@ struct Camera {
         const Vec3 f = forward(), r = right(), u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
-        const float fovY = 65.0f * float(M_PI) / 180, n = 4.0f, fa = 40000.0f;
+        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = 4.0f, fa = 40000.0f;
         const float t = 1.0f / std::tan(fovY / 2);
         const Mat4 proj = {t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, fa / (n - fa), -1, 0, 0, n * fa / (n - fa), 0};
         return mul(proj, view);
@@ -1163,6 +1165,8 @@ int main(int argc, char** argv) {
     float simSeconds = 0;
     float fireSeconds = 0;
     bool audioOn = true;
+    float shotViewHeight = 60;
+    bool shotAds = false;
     std::string language = "polish";
     bool scripts = true;
     bool spawnAll = false;
@@ -1184,6 +1188,8 @@ int main(int argc, char** argv) {
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
             else if (a == "--fire-seconds") fireSeconds = std::stof(next());
             else if (a == "--no-audio") audioOn = false;
+            else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
+            else if (a == "--ads") shotAds = true;
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--spawn-all") spawnAll = true;
@@ -1298,6 +1304,7 @@ int main(int argc, char** argv) {
         // First-person weapon: hands and gun posed by the weapon's current view-model animation and drawn in
         // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
         game::PlayerWeapon pweapon;
+        game::ViewWeaponMotion vmMotion;
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             const script::Value w = world->player()->obj->get("$weapon");
@@ -1318,11 +1325,20 @@ int main(int argc, char** argv) {
                 const float f = pweapon.animTime() * float(an->frameRate);
                 frame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
             }
+            // While aiming, the resting pose follows adsUpAnim by the aim fraction (inferred; the original drives
+            // it through the view-model anim tree, not specified yet).
+            if (pweapon.adsFrac() > 0 && pweapon.animLoops()) {
+                if (const assets::XAnim* up = viewAnim(vfs, pweapon.field("adsUpAnim"))) {
+                    an = up;
+                    frame = pweapon.adsFrac() * float(std::max(0, up->numFrames - 1));
+                }
+            }
             DrawItem base;
-            // standMove{F,R,U} from the weapon file shift the model in view space (forward, right, up).
-            const auto mv = pweapon.standMove();
+            // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
+            const auto mv = vmMotion.move();
+            const auto rt = vmMotion.rot();
             base.transform = entityTransform(c.pos + c.forward() * mv[0] + c.right() * mv[1] + cross(c.right(), c.forward()) * mv[2],
-                                             {c.pitch, c.yaw, 0});
+                                             {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
             if (const char* dbg = std::getenv("IW2_VIEWMODEL_DEBUG")) {
                 // Debug: show the view model from outside, `dist` units ahead, turned by `yaw` degrees.
                 float dist = 40, turn = 180;
@@ -1564,7 +1580,14 @@ int main(int argc, char** argv) {
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
             syncWeapon();
             pweapon.update(1.0f, {});
-            pweapon.update(fireSeconds, {fireSeconds > 0, false});
+            pweapon.update(fireSeconds, {fireSeconds > 0, false, shotAds});
+            for (int i = 0; i < 100; ++i) {
+                pweapon.update(0.02f, {false, false, shotAds});
+                vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac());
+            }
+            cam.pos.z += shotViewHeight - 60.0f;
+            cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
+                                      pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn());
             auto shotItems = gatherItems();
             addViewModel(shotItems, cam);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
@@ -1645,10 +1668,18 @@ int main(int argc, char** argv) {
             if (world) {
                 syncWeapon();
                 game::PlayerWeapon::Input wi;
-                wi.fire = (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) != 0;
+                const SDL_MouseButtonFlags mouse = SDL_GetMouseState(nullptr, nullptr);
+                wi.fire = (mouse & SDL_BUTTON_LMASK) != 0;
+                wi.ads = (mouse & SDL_BUTTON_RMASK) != 0;
                 wi.reload = reloadPressed;
                 reloadPressed = false;
                 const int shots = pweapon.update(std::min(dt, 0.1f), wi);
+                vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
+                                std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
+                                ps.viewHeight, pweapon.adsFrac());
+                cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
+                                          pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
+                                          pweapon.adsZoomingIn());
                 for (const auto& snd : pweapon.takeSounds()) mixer.play(snd);
                 {
                     const Vec3 f = cam.forward(), r = cam.right();
