@@ -90,6 +90,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerHudBuiltins();
     registerInventoryBuiltins();
     registerMoverBuiltins();
+    registerVehicleBuiltins();
     registerMissingStubs();
 }
 
@@ -145,7 +146,7 @@ void World::spawnMapEntities() {
             n.type = cls;
             fill(n.obj);
             nodes_.push_back(std::move(n));
-        } else if (cls == "info_vehicle_node") {
+        } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
             fill(o);
             vehicleNodes_.push_back(o);
@@ -233,6 +234,7 @@ void World::start() {
     // level script starts (docs/spec/ui.md, intro screen).
     cvars["mapname"] = mapName_;
     spawnMapEntities();
+    linkVehicleNodes();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
 }
@@ -264,6 +266,7 @@ void World::frame() {
         }
     }
     vm_.runFrame(timeMs_);
+    thinkVehicles();
     thinkActors();
 }
 
@@ -710,8 +713,8 @@ void World::registerBuiltins() {
         if (c.arg(2).isDefined()) e.obj->set("spawnflags", c.arg(2));
         return Value(e.obj);
     });
-    // spawnvehicle(model, targetname, vehicletype, origin, angles): a script_vehicle entity. Vehicles do not
-    // drive yet; their speed queries return 0.
+    // spawnvehicle(model, targetname, vehicletype, origin, angles): a script_vehicle entity; its path state is
+    // created on first use (src/game/vehicles.cpp).
     vm_.registerBuiltin("spawnvehicle", [this](CallContext& c) {
         Entity& e = spawnEntity("script_vehicle");
         e.obj->set("model", c.arg(0));
@@ -731,8 +734,6 @@ void World::registerBuiltins() {
         if (c.self.isObject()) c.self.asObject()->set("$viewmodel", c.arg(0));
         return Value();
     });
-    vm_.registerBuiltin("getspeed", [](CallContext&) { return Value(0.0f); });
-    vm_.registerBuiltin("getspeedmph", [](CallContext&) { return Value(0.0f); });
     vm_.registerBuiltin("getwheelsurface", [](CallContext&) { return Value("dirt"); }); // inferred default
     vm_.registerBuiltin("clearenemy", [](CallContext& c) {
         if (c.self.isObject()) c.self.asObject()->set("enemy", Value());
