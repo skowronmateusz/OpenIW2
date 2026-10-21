@@ -109,6 +109,17 @@ void World::registerCampaignBuiltins() {
         return Value();
     });
 
+    // getkeybinding(command) (0x4ecd60, 0x4cdb30): array with "count" and "key1"/"key2" key names; an unknown or
+    // unbound command gives count 0 and key1 "KEY_UNBOUND".
+    vm_.registerBuiltin("getkeybinding", [this](CallContext& c) {
+        auto arr = std::make_shared<Array>();
+        const auto it = keyBindings.find(c.arg(0).toString());
+        const std::vector<std::string> keys = it == keyBindings.end() ? std::vector<std::string>{} : it->second;
+        arr->set(ArrayKey{true, 0, "key1"}, Value(keys.empty() ? std::string("KEY_UNBOUND") : keys[0]));
+        arr->set(ArrayKey{true, 0, "key2"}, Value(keys.size() > 1 ? keys[1] : std::string()));
+        arr->set(ArrayKey{true, 0, "count"}, Value(int32_t(std::min<size_t>(keys.size(), 2))));
+        return Value(arr);
+    });
     // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds ≥ 0.
     auto change = [this](CallContext& c, bool fromMissionSuccess) {
         if (!player_ || !isAlive(*player_)) return Value();

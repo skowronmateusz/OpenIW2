@@ -109,6 +109,8 @@ public:
     Inventory& inventory(Entity& player);
 
     std::map<std::string, std::string> cvars;
+    // Key bindings of the front end: command (e.g. "+attack") → key names (getkeybinding).
+    std::map<std::string, std::vector<std::string>> keyBindings;
 
     // Weapon definition (weapons/sp/<name>: "WEAPONFILE\\key\\value\\…"), or nullptr.
     const std::map<std::string, std::string>* weapon(const std::string& name);

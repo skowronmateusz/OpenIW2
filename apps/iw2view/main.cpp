@@ -1262,6 +1262,10 @@ int main(int argc, char** argv) {
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
+            // The viewer's controls, reported to scripts through getkeybinding (command names from the exe).
+            w->keyBindings = {{"+forward", {"W"}}, {"+back", {"S"}}, {"+moveleft", {"A"}}, {"+moveright", {"D"}},
+                              {"+attack", {"MOUSE1"}}, {"+speed", {"MOUSE2"}}, {"+reload", {"R"}},
+                              {"+gostand", {"SPACE"}}, {"togglecrouch", {"C"}}, {"toggleprone", {"Z"}}};
             w->start();
             return w;
         };
