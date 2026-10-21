@@ -543,7 +543,11 @@ void VM::loadFile(const std::string& path) {
     }
     for (const auto& inc : file.includes) loadFile(inc);
 
+    // #animtree means the tree of the closest preceding #using_animtree, so a file may switch trees between
+    // functions (maps/_truck.gsc does).
+    files_[key].animtree.clear();
     for (const auto& c : tree->children) {
+        if (c->kind == NodeKind::UsingAnimtree) files_[key].animtree = c->text;
         if (c->kind != NodeKind::Function) continue;
         Compiler comp(*this, key);
         try {
