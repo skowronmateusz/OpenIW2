@@ -300,7 +300,7 @@ SDL_GPUTexture* loadImage(SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, 
     if (!data) return nullptr;
     try {
         const auto img = assets::parseIwi(*data);
-        if (img.faceCount != 1 || assets::isWavelet(img.header.format)) return nullptr;
+        if (img.faceCount != 1) return nullptr;
         const auto f = img.header.format;
         const bool bc = f == assets::IwiFormat::DXT1 || f == assets::IwiFormat::DXT3 || f == assets::IwiFormat::DXT5;
         const bool bcOk = bc && img.header.width % 4 == 0 && img.header.height % 4 == 0;
