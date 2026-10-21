@@ -235,7 +235,7 @@ void World::start() {
     cvars["mapname"] = mapName_;
     spawnMapEntities();
     vm_.level()->set("script", Value(mapName_));
-    vm_.start("maps/" + mapName_ + ".gsc", "main");
+    vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
 }
 
 void World::frame() {

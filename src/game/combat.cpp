@@ -382,6 +382,58 @@ void World::registerCombatBuiltins() {
     for (const char* noop : {"exitprone", "enterprone", "orientmode", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setcandamage", "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
+    // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
+    // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").
+    auto trace = [this](CallContext& c, bool hitCharacters, Entity* ignore, float& fraction, Vec3& pos, Vec3& normal,
+                        Entity*& hitEnt) {
+        const Vec3 a = c.arg(0).asVector(), b = c.arg(1).asVector();
+        const TraceResult tr = collision_->trace(a, b, {0, 0, 0}, {0, 0, 0}, Contents::Solid);
+        fraction = tr.fraction;
+        pos = tr.endPos;
+        normal = tr.normal;
+        hitEnt = nullptr;
+        if (hitCharacters) {
+            float f = fraction;
+            if (Entity* e = traceSentients(a, b, ignore, f)) {
+                fraction = f;
+                pos = add(a, scale(sub(b, a), f));
+                normal = scale(sub(b, a), -1.0f / std::max(1.0f, len(sub(b, a))));
+                hitEnt = e;
+            }
+        }
+    };
+    vm_.registerBuiltin("bullettrace", [this, trace](CallContext& c) {
+        float f;
+        Vec3 pos, normal;
+        Entity* hit;
+        trace(c, c.arg(2).truthy(), entityOf(c.arg(3)), f, pos, normal, hit);
+        auto arr = std::make_shared<Array>();
+        auto put = [&](const char* k, Value v) { arr->set(ArrayKey{true, 0, k}, std::move(v)); };
+        put("fraction", Value(f));
+        put("position", Value(pos));
+        put("normal", Value(normal));
+        put("surfacetype", Value(f < 1.0f ? "default" : "none"));
+        if (hit) put("entity", Value(hit->obj));
+        return Value(arr);
+    });
+    vm_.registerBuiltin("bullettracepassed", [trace, this](CallContext& c) {
+        float f;
+        Vec3 pos, normal;
+        Entity* hit;
+        trace(c, c.arg(2).truthy(), entityOf(c.arg(3)), f, pos, normal, hit);
+        return Value(f >= 1.0f);
+    });
+    vm_.registerBuiltin("sighttracepassed", [trace, this](CallContext& c) {
+        float f;
+        Vec3 pos, normal;
+        Entity* hit;
+        trace(c, c.arg(2).truthy(), entityOf(c.arg(3)), f, pos, normal, hit);
+        return Value(f >= 1.0f);
+    });
+    vm_.registerBuiltin("physicstrace", [this](CallContext& c) {
+        const TraceResult tr = collision_->trace(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0}, Contents::Solid);
+        return Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]});
+    });
     vm_.registerBuiltin("issuppressed", [](CallContext&) { return Value(false); });
     vm_.registerBuiltin("getclosestenemysqdist", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
