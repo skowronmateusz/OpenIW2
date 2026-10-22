@@ -620,6 +620,15 @@ uint64_t VM::start(const std::string& file, const std::string& function, std::ve
     return id;
 }
 
+uint64_t VM::startFunction(const FunctionRef& function, std::vector<Value> args, Value self) {
+    if (function.function < 0 || size_t(function.function) >= functions_.size()) throw std::runtime_error("bad function reference");
+    Thread& t = newThread();
+    const uint64_t id = t.id;
+    enterFunction(t, function.function, std::move(args), std::move(self));
+    run(t);
+    return id;
+}
+
 void VM::fail(Thread& t, const std::string& msg) {
     std::string where;
     if (!t.frames.empty()) {
@@ -643,13 +652,21 @@ void VM::run(Thread& t) {
         return;
     }
     bool suspended = false;
+    const bool wasRunning = t.running;
+    t.running = true;
     while (!suspended && t.state != ThreadState::Done) {
         try {
             step(t, suspended);
         } catch (const std::exception& e) {
             fail(t, e.what());
         }
+        if (t.pendingUnwind >= 0 && t.state != ThreadState::Done) {
+            unwind(t, size_t(t.pendingUnwind));
+            suspended = false;
+        }
+        t.pendingUnwind = -1;
     }
+    t.running = wasRunning;
     --runDepth_;
 }
 
@@ -932,6 +949,8 @@ void VM::step(Thread& t, bool& suspended) {
             print("[trace " + std::to_string(nowMs_) + "] return " + f.name + " -> " + v.toString());
         t.stack.resize(fr.stackBase);
         t.frames.pop_back();
+        // The returning call's endons end with it (*inferred*, docs/spec/gsc-vm.md).
+        std::erase_if(t.endons, [&](const Thread::EndOn& e) { return e.frame >= t.frames.size(); });
         if (t.frames.empty()) {
             t.state = ThreadState::Done;
             suspended = true;
@@ -971,7 +990,7 @@ void VM::step(Thread& t, bool& suspended) {
         const Value ev = pop();
         const Value obj = pop();
         if (!obj.isObject()) throw std::runtime_error("endon on " + obj.typeName());
-        t.endons.emplace_back(obj.asObject(), ev.toString());
+        t.endons.push_back({obj.asObject(), ev.toString(), t.frames.size() - 1});
         break;
     }
     case Op::Notify: {
@@ -993,13 +1012,38 @@ void VM::finishNotifyWait(Thread& t, const std::vector<Value>& args) {
     t.state = ThreadState::Ready;
 }
 
+// Ends call `frame` and the calls it made; the caller continues with undefined as the call's result.
+void VM::unwind(Thread& t, size_t frame) {
+    t.stack.resize(t.frames[frame].stackBase);
+    t.frames.resize(frame);
+    std::erase_if(t.endons, [&](const Thread::EndOn& e) { return e.frame >= frame; });
+    t.waitObject.reset();
+    t.waitMatch.reset();
+    t.stack.push_back(Value());
+    t.state = ThreadState::Ready;
+}
+
 void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args) {
-    // endon: kill threads first (inferred ordering).
-    for (auto& th : threads_) {
-        if (th->state == ThreadState::Done) continue;
-        for (const auto& [o, e] : th->endons)
-            if (e == event && o.lock() == object) { th->state = ThreadState::Done; break; }
+    // endon: end threads first (inferred ordering). An endon registered by a called function ends that call (and
+    // the calls it made); the caller continues as if it returned undefined (*inferred*, docs/spec/gsc-vm.md).
+    std::vector<Thread*> resumed;
+    for (size_t i = 0; i < threads_.size(); ++i) {
+        Thread& th = *threads_[i];
+        if (th.state == ThreadState::Done) continue;
+        size_t frame = SIZE_MAX;
+        for (const auto& e : th.endons)
+            if (e.event == event && e.frame < frame && e.object.lock() == object) frame = e.frame;
+        if (frame == SIZE_MAX) continue;
+        if (frame == 0 || frame >= th.frames.size()) {
+            th.state = ThreadState::Done;
+        } else if (th.running) {
+            if (th.pendingUnwind < 0 || int(frame) < th.pendingUnwind) th.pendingUnwind = int(frame);
+        } else {
+            unwind(th, frame);
+            resumed.push_back(&th);
+        }
     }
+    for (Thread* th : resumed) run(*th);
     // Wake waiters registered before this notify; run them in registration order.
     std::vector<Thread*> woken;
     for (auto& th : threads_) {

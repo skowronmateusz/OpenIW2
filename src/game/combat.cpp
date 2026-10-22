@@ -152,14 +152,14 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     if (attacker && attacker->obj->get("weapon").isString()) target.obj->set("damageweapon", attacker->obj->get("weapon"));
     vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
     if (health > 0) {
-        if (target.isActor && target.animScript != "pain" && target.animScript != "death") startAnimScript(target, "pain");
+        if (target.isActor) actorPain(target, attacker); // pain callback 0x4ff3b0
         return;
     }
     if (target.isActor) {
         ++stats.kills;
-        target.path.clear();
-        startAnimScript(target, "death");
+        // G_Damage notifies "death" (attacker), then the die callback (0x4ff530) sets the death state.
         vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
+        actorDie(target, attacker);
     } else if (target.isPlayer) {
         vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
         print("player killed");

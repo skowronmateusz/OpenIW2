@@ -93,6 +93,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerCampaignBuiltins();
     registerVehicleBuiltins();
     registerTurretBuiltins();
+    registerActorStateBuiltins();
     registerMissingStubs();
 }
 
@@ -228,7 +229,15 @@ Entity* World::spawnActor(Entity& spawner) {
     }
     vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
     if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
-    startAnimScript(a, "init");
+    // 0x4fdee0: animscripts/init runs as a plain thread (not the actor's animscript), then the bottom state
+    // (exposed) starts.
+    try {
+        vm_.start("animscripts/init.gsc", "main", {}, Value(a.obj));
+    } catch (const std::exception& ex) {
+        print(std::string("animscripts/init: ") + ex.what());
+    }
+    a.ai.baseStateMs = timeMs_;
+    aiStart(a, a.ai.stack[0]);
     return &a;
 }
 
@@ -304,20 +313,6 @@ const std::map<std::string, std::string>* World::weapon(const std::string& name)
     return it->second ? &*it->second : nullptr;
 }
 
-// Engine animscripts (docs/spec/ai.md): the previous one gets "killanimscript", then animscripts/<name>::main()
-// starts on the actor.
-void World::startAnimScript(Entity& e, const std::string& name) {
-    if (!e.animScript.empty()) vm_.notify(e.obj, "killanimscript");
-    e.animScript = name;
-    e.animScriptStartMs = timeMs_;
-    try {
-        e.animScriptThread = vm_.start("animscripts/" + name + ".gsc", "main", {}, Value(e.obj));
-    } catch (const std::exception& ex) {
-        print("animscripts/" + name + ": " + ex.what());
-        e.animScriptThread = 0;
-    }
-}
-
 int World::nearestNode(const std::array<float, 3>& p) const {
     int best = -1;
     float bestD = 1e30f;
@@ -329,65 +324,32 @@ int World::nearestNode(const std::array<float, 3>& p) const {
     return best;
 }
 
-// Minimal AI state machine (inferred placeholder, docs/spec/ai.md): an actor with a goal outside its goal radius
-// runs "move" and follows the node graph; on arrival it is notified "goal" and runs "stop". When any animscript
-// ends on its own, the actor returns to "stop".
+// Every actor thinks once per frame (src/game/actorstate.cpp); corpses no longer think.
 void World::thinkActors() {
-    for (const auto& ep : entities_) {
-        Entity& e = *ep;
-        if (!e.isActor || e.obj->removed) continue;
-        if (!isAlive(e)) continue; // the death animscript runs on its own
-        updatePerception(e); // once per frame (0x4fe890)
+    for (size_t i = 0; i < entities_.size(); ++i) {
+        Entity& e = *entities_[i];
+        if (!e.isActor || e.obj->removed || e.ai.corpse) continue;
         {
             // lookforward: unit vector of the actor's facing (native field, docs/spec/ai.md).
             const Value ang = e.obj->get("angles");
             const float yaw = ang.isVector() ? ang.asVector()[1] * float(M_PI) / 180.0f : 0.0f;
             e.obj->set("lookforward", Value(Vec3{std::cos(yaw), std::sin(yaw), 0}));
         }
-        if (e.animScript == "init" && e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
-        if (actorTurretThink(e)) continue; // AI state 2 (src/game/actorturret.cpp)
-        const Value goal = e.obj->get("$goalpos");
-        const Value origin = e.obj->get("origin");
-        if (goal.isVector() && origin.isVector()) {
-            const auto g = goal.asVector(), o = origin.asVector();
-            const Value rv = e.obj->get("goalradius");
-            const float radius = std::max(rv.isNumber() ? rv.asFloat() : 0.0f, 16.0f);
-            const float dist = std::sqrt((g[0] - o[0]) * (g[0] - o[0]) + (g[1] - o[1]) * (g[1] - o[1]));
-            if (dist > radius) {
-                if (e.animScript != "move" || e.pathGoal != g) {
-                    e.path.clear();
-                    const int a = nearestNode(o), b = nearestNode(g);
-                    for (int n : paths_.findPath(a, b)) e.path.push_back(paths_.position(size_t(n)));
-                    e.path.push_back(g);
-                    e.pathIndex = 0;
-                    e.pathGoal = g;
-                    // Inferred placeholder: the engine's movement code maintains movemode.
-                    e.obj->set("movemode", Value("run"));
-                    if (e.animScript != "move") startAnimScript(e, "move");
-                }
-                moveActor(e, 0.05f);
-                continue;
-            }
-            if (e.animScript == "move") {
-                e.path.clear();
-                vm_.notify(e.obj, "goal");
-                e.obj->set("movemode", Value("stop"));
-                startAnimScript(e, "stop");
-                continue;
-            }
+        actorThink(e);
+    }
+    // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
+    if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
+        std::map<std::string, int> counts;
+        for (const auto& ep : entities_) {
+            const Entity& e = *ep;
+            if (!e.isActor || e.obj->removed) continue;
+            counts["st" + std::to_string(e.ai.stack[size_t(e.ai.depth)]) + "/" + std::to_string(e.ai.substate) + " " + e.animScript +
+                   (e.animScriptThread && vm_.isThreadAlive(e.animScriptThread) ? "" : "(done)") + (e.ai.corpse ? " corpse" : "") +
+                   (actorHasPath(e) ? " path" : "")]++;
         }
-        // With a live enemy and nowhere to go, fight (inferred: the engine runs "combat" for exposed AI).
-        Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (enemy && isAlive(*enemy) && e.animScript == "stop") {
-            startAnimScript(e, "combat");
-            continue;
-        }
-        if (e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
-        // A script's main may return while threads it started keep acting (e.g. combat starting a melee thread),
-        // so give it time before re-running the state script (inferred).
-        if (timeMs_ - e.animScriptStartMs < 1000) continue;
-        if (e.animScript == "stop" && !(enemy && isAlive(*enemy))) continue; // stop ended on its own; do not spin
-        startAnimScript(e, enemy && isAlive(*enemy) ? "combat" : "stop");
+        std::string line = "AI " + std::to_string(timeMs_ / 1000) + "s:";
+        for (const auto& [k, n] : counts) line += " [" + k + "]x" + std::to_string(n);
+        print(line);
     }
 }
 
@@ -413,6 +375,17 @@ void World::moveActor(Entity& e, float dt) {
             e.obj->set("angles", Value(Vec3{0, yaw, 0}));
             e.obj->set("$motionyaw", Value(yaw));
             budget = 0;
+        }
+    }
+    // Stop soon (0x503fe5…0x5040ad): once the path end is within a quarter second of travel the actor has 500 ms
+    // left (+0x704); when they are over the path is cleared. The speed is the placeholder move speed above.
+    if (e.pathIndex < e.path.size()) {
+        const auto& end = e.path.back();
+        const float ex = end[0] - o[0], ey = end[1] - o[1];
+        if (e.ai.stopSoonMs == 0 && ex * ex + ey * ey <= speed * speed * 0.0625f) e.ai.stopSoonMs = timeMs_ + 500;
+        if (e.ai.stopSoonMs != 0 && e.ai.stopSoonMs - timeMs_ <= 0) {
+            e.path.clear();
+            e.pathIndex = 0;
         }
     }
     // Stand on the ground.
