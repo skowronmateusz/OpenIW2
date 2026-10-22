@@ -106,14 +106,49 @@ Vehicle init (0x50da80): no path, wait node −1, wait speed −1, speed mode 0,
 | `getvehicleowner()` | the driving player, nothing otherwise (0x513ab0) |
 | `makevehicleusable()` / `makevehicleunusable()` | usable flag (0x513b20 / 0x513b80) |
 
+## Vehicle files (0x50cf60)
+
+`vehicles/<vehicletype>` starts with `VEHICLEFILE` followed by `\key\value` pairs; fields per the table at
+0x5a91e8: `type` (enum "4 wheel" 0, "tank" 1, "plane" 2, "boat" 3,
+"artillery" 4; strings at 0x5a91a8), `steerWheels`, `texureScroll`, `quadBarrel`, damage flags, floats
+`texureScrollScale`, `maxSpeed`, `accel`, `rotRate`, `rotAccel`, `collisionDamage`, `collisionSpeed`,
+`suspensionTravel`, `maxBodyPitch`, `maxBodyRoll`, turret fields, sound names and `engineSndSpeed`. `maxSpeed`,
+`accel`, `collisionSpeed` and `engineSndSpeed` are multiplied by 17.6 at load. An unknown type warns and uses
+`defaultvehicle` (0x50d1b0). Vehicle type 4 runs no think (0x512b80).
+
+## Ground alignment (0x50ef70, axis helpers 0x421da0 / 0x424b70)
+
+For types 0 (4 wheels) and 1 (6 wheels), after the path think (settling) and in `attachpath` (no settling):
+
+1. Wheel tags `tag_wheel_front_left`, `_front_right`, `_back_left`, `_back_right`, `_middle_left`,
+   `_middle_right` (constants 0x1c7f15a…164) are placed with the current angles at (origin x, origin y,
+   previous frame's z). A missing tag is an error ("Script vehicle [%s] needs [%s]"); here alignment is skipped.
+2. Each wheel traces a point from +64 to −256 (mask 0x211, 0x10211 for a player-driven vehicle). The hit height
+   (or the trace end) is the wheel's ground; the surface type `(surfaceFlags >> 20) & 31` is kept for
+   `getwheelsurface`. Settling: the wheel's vertical speed drops by 40 per frame and its height moves by speed ×
+   0.05, never below the ground; without settling the wheel sits on the ground.
+3. Plane: right − left wheel midpoints and front − back midpoints of the first four wheels give two unit vectors;
+   their cross product is the normal; the plane passes through the front-left wheel, raised so that no wheel is
+   more than `suspensionTravel` above it.
+4. New forward/left axes from the normal and the old forward give pitch and roll; each approaches the previous
+   frame's value at rate 6 and is clamped to ±60°. Yaw is unchanged. The origin's z is the plane height at the
+   origin.
+
+Matmata's jeep (`xmodel/vehicle_africa_jeep`) has its wheel tags at z = 0 (ground contact), so its origin ends on
+the ground, about 40 units below the path nodes there.
+
+`getwheelsurface(wheel)` (0x513920): wheel
+names `front_left` … `middle_right`; errors "Vehicle type [%s] has no wheels" for types other than 0/1 and
+"Vehicle has no middle wheels" for type 0; surface 0 → "none", 1–22 → the surface name table at 0x5a0344
+(bark, brick, carpet, cloth, concrete, dirt, flesh, foliage, glass, grass, gravel, ice, metal,
+mud, paper, plaster, rock, sand, snow, water, wood, asphalt), anything else → "default".
+
 ## Not implemented (TODO)
 
-- Ground alignment of vehicle types 0 and 1 (0x50ef70: wheel traces, pitch/roll clamped to ±60°, height from the
-  ground plane), also used by `attachpath`.
 - Free vehicle physics without a path (0x510d30), `joltbody` (0x5136e0 → 0x50dcf0), player driving
   (`useby`, VEH_LinkPlayer), vehicle turrets (`setturrettarget*`, `fireturret`, `isturretready`).
-- Vehicle files `vehicles/<type>` (`VEHICLEFILE\key\value…`): maxSpeed, type and the speed fraction (speed /
-  maxSpeed, vehicle +0x1fc) that presumably drives engine sounds and tread animation; texture scrolling
+- The speed fraction (speed / engineSndSpeed, vehicle +0x1fc / +0x1f8), engine sounds and texture scrolling
   (`g_vehicleTexScrollScale`).
-- `getwheelsurface` (0x513920) still returns the earlier inferred "dirt".
+- Animated wheel tags: the tag positions come from the entity's current animation pose (bind pose without one);
+  the exact pose the original samples (0x4d7460) is not checked.
 - Exact frame order of the vehicle think relative to script threads.

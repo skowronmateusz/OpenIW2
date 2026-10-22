@@ -3,6 +3,7 @@
 #include "game/world.h"
 
 #include <cmath>
+#include <cctype>
 #include <stdexcept>
 
 namespace iw2::game {
@@ -64,6 +65,50 @@ float approachAngle(float to, float from, float rate, float dt) {
     if (std::fabs(diff) > 0.001f && std::fabs(diff) >= std::fabs(step)) r = step + from;
     return angleNormalize180(r);
 }
+
+void anglesToAxis(const Vec3& a, Vec3& fwd, Vec3& right, Vec3& up) {
+    const float rad = 0.0174532924f; // 0x591f50
+    const float sy = std::sin(a[1] * rad), cy = std::cos(a[1] * rad);
+    const float sp = std::sin(a[0] * rad), cp = std::cos(a[0] * rad);
+    const float sr = std::sin(a[2] * rad), cr = std::cos(a[2] * rad);
+    fwd = {cp * cy, cp * sy, -sp};
+    right = {cr * sy - sr * sp * cy, cr * cy * -1.0f - sr * sp * sy, sr * cp * -1.0f};
+    up = {sr * sy + cr * sp * cy, cr * sp * sy - sr * cy, cr * cp};
+}
+
+// Pitch of a vector (0x421a70).
+float pitchOf(const Vec3& v) {
+    if (v[1] == 0.0f && v[0] == 0.0f) return v[2] > 0.0f ? -90.0f : 90.0f;
+    return std::atan2(v[2], std::sqrt(v[0] * v[0] + v[1] * v[1])) * -180.0f / float(M_PI);
+}
+
+// Angles from forward and left axes (0x424b70).
+Vec3 axisToAngles(const Vec3& fwd, const Vec3& left) {
+    Vec3 a = vectorToAngles(fwd);
+    const float rad = 0.0174532924f;
+    const float cy = std::cos(-a[1] * rad), sy = std::sin(-a[1] * rad);
+    const float x1 = left[0] * cy - left[1] * sy, y1 = left[1] * cy + left[0] * sy;
+    const float cp = std::cos(-a[0] * rad), sp = std::sin(-a[0] * rad);
+    const float x2 = x1 * cp + left[2] * sp, z2 = left[2] * cp - x1 * sp;
+    const float p = pitchOf({x2, y1, z2});
+    if (y1 < 0.0f) a[2] = p + (p >= 0.0f ? -180.0f : 180.0f);
+    else a[2] = -p;
+    return a;
+}
+
+std::string lowerCopy(std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Surface type names (table 0x5a0344, index 1..22; 0 is "none", others "default").
+const char* const kSurfaceNames[23] = {"none", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh", "foliage",
+                                       "glass", "grass", "gravel", "ice", "metal", "mud", "paper", "plaster", "rock",
+                                       "sand", "snow", "water", "wood", "asphalt"};
+// Wheel tags in wheel order (string constants 0x1c7f15a…0x1c7f164, table 0x5a91bc).
+const char* const kWheelTags[6] = {"tag_wheel_front_left", "tag_wheel_front_right", "tag_wheel_back_left",
+                                   "tag_wheel_back_right", "tag_wheel_middle_left", "tag_wheel_middle_right"};
+const char* const kWheelNames[6] = {"front_left", "front_right", "back_left", "back_right", "middle_left", "middle_right"};
 
 float numberField(const ObjectPtr& o, const char* key, float def) {
     const Value v = o->get(key);
@@ -308,6 +353,122 @@ void World::linkVehicleNodes() {
     }
 }
 
+// Loads vehicles/<type> (0x50cf60); an unknown type falls back to "defaultvehicle" (0x50d1b0).
+const VehicleInfo* World::vehicleInfo(const std::string& type) {
+    const std::string key = lowerCopy(type);
+    auto it = vehicleInfos_.find(key);
+    if (it != vehicleInfos_.end()) return it->second.get();
+    std::unique_ptr<VehicleInfo> info;
+    if (auto d = vfs_.read("vehicles/" + key)) {
+        const std::string text(d->begin(), d->end());
+        if (text.rfind("VEHICLEFILE", 0) == 0) {
+            std::vector<std::string> parts;
+            size_t start = 11;
+            if (start < text.size() && text[start] == '\\') ++start;
+            for (size_t i = start; i <= text.size(); ++i)
+                if (i == text.size() || text[i] == '\\') { parts.push_back(text.substr(start, i - start)); start = i + 1; }
+            info = std::make_unique<VehicleInfo>();
+            info->name = key;
+            static const char* const types[] = {"4 wheel", "tank", "plane", "boat", "artillery"};
+            for (size_t i = 0; i + 1 < parts.size(); i += 2) {
+                const std::string k = lowerCopy(parts[i]);
+                const std::string& v = parts[i + 1];
+                const float f = float(std::atof(v.c_str()));
+                if (k == "type") {
+                    for (int t = 0; t < 5; ++t)
+                        if (lowerCopy(v) == types[t]) info->type = t;
+                } else if (k == "maxspeed") info->maxSpeed = f * kMphToIps;
+                else if (k == "accel") info->accel = f * kMphToIps;
+                else if (k == "collisionspeed") info->collisionSpeed = f * kMphToIps;
+                else if (k == "enginesndspeed") info->engineSndSpeed = f * kMphToIps;
+                else if (k == "suspensiontravel") info->suspensionTravel = f;
+                else if (k == "maxbodypitch") info->maxBodyPitch = f;
+                else if (k == "maxbodyroll") info->maxBodyRoll = f;
+                else if (k == "turretweapon") info->turretWeapon = v;
+            }
+        }
+    }
+    if (!info) {
+        if (key == "defaultvehicle") throw std::runtime_error("Cannot find vehicle info for 'defaultvehicle'");
+        print("^3WARNING: couldn't find vehicle info for '" + type + "', attempting to use 'defaultvehicle'");
+        const VehicleInfo* def = vehicleInfo("defaultvehicle");
+        vehicleInfos_[key] = std::make_unique<VehicleInfo>(*def);
+        return vehicleInfos_[key].get();
+    }
+    return (vehicleInfos_[key] = std::move(info)).get();
+}
+
+// Settles a wheeled or tracked vehicle on the ground under its wheel tags (0x50ef70): pitch and roll from the
+// plane through the wheels, height from that plane. `baseZ` is the height of the previous frame.
+void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle) {
+    VehicleState& v = *e.vehicle;
+    if (!v.info || (v.info->type != 0 && v.info->type != 1)) return;
+    const int wheels = v.info->type != 0 ? 6 : 4;
+    const Value model = e.obj->get("model");
+    const assets::XModelParts* parts = model.isString() ? skeleton(model.asString()) : nullptr;
+    if (!parts) return;
+    const assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
+    Vec3 tagPos[6];
+    for (int w = 0; w < wheels; ++w) {
+        bool found = false;
+        for (size_t b = 0; b < parts->bones.size(); ++b)
+            if (lowerCopy(parts->bones[b].name) == kWheelTags[w]) { tagPos[w] = pose.position[b]; found = true; break; }
+        if (!found) {
+            print("Script vehicle [" + model.asString() + "] needs [" + kWheelTags[w] + "]");
+            return;
+        }
+    }
+    Vec3 fwd, right, up;
+    anglesToAxis(angles, fwd, right, up);
+    const Vec3 left{-right[0], -right[1], -right[2]};
+    Vec3 p[6];
+    for (int w = 0; w < wheels; ++w) {
+        const Vec3& o = tagPos[w];
+        Vec3 wp;
+        const Vec3 base{origin[0], origin[1], baseZ};
+        for (int i = 0; i < 3; ++i) wp[size_t(i)] = left[size_t(i)] * o[1] + up[size_t(i)] * o[2] + fwd[size_t(i)] * o[0] + base[size_t(i)];
+        const Vec3 start{wp[0], wp[1], wp[2] + 64.0f}, end{wp[0], wp[1], wp[2] - 256.0f};
+        const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, 0x211); // mask 0x10211 when driven
+        float hitZ = end[2];
+        v.wheelSurface[w] = 0;
+        if (tr.fraction < 1.0f) {
+            hitZ = (end[2] - start[2]) * tr.fraction + start[2];
+            v.wheelSurface[w] = int((tr.surfaceFlags >> 20) & 0x1f);
+        }
+        if (settle) {
+            const float h = (v.wheelVel[w] - 40.0f) * kFrameTime + v.wheelHeight[w];
+            v.wheelVel[w] -= 40.0f;
+            v.wheelHeight[w] = h;
+            if (h < hitZ) { v.wheelHeight[w] = hitZ; v.wheelVel[w] = 0; }
+        } else {
+            v.wheelHeight[w] = hitZ;
+            v.wheelVel[w] = 0;
+        }
+        p[w] = {wp[0], wp[1], v.wheelHeight[w]};
+    }
+    Vec3 d1, d2;
+    for (int i = 0; i < 3; ++i) {
+        d1[size_t(i)] = (p[1][size_t(i)] + p[3][size_t(i)]) * 0.5f - (p[0][size_t(i)] + p[2][size_t(i)]) * 0.5f;
+        d2[size_t(i)] = (p[1][size_t(i)] + p[0][size_t(i)]) * 0.5f - (p[2][size_t(i)] + p[3][size_t(i)]) * 0.5f;
+    }
+    normalize(d1);
+    normalize(d2);
+    const Vec3 n{d2[2] * d1[1] - d2[1] * d1[2], d1[2] * d2[0] - d2[2] * d1[0], d2[1] * d1[0] - d1[1] * d2[0]};
+    float dist = dot(p[0], n);
+    for (int w = 1; w < wheels; ++w) {
+        const float h = dot(n, p[w]);
+        if (v.info->suspensionTravel < h - dist) dist = h - v.info->suspensionTravel;
+    }
+    Vec3 l{fwd[2] * n[1] - fwd[1] * n[2], fwd[0] * n[2] - fwd[2] * n[0], fwd[1] * n[0] - fwd[0] * n[1]};
+    normalize(l);
+    Vec3 f{l[1] * n[2] - l[2] * n[1], l[2] * n[0] - l[0] * n[2], l[0] * n[1] - l[1] * n[0]};
+    normalize(f);
+    const Vec3 a = axisToAngles(f, l);
+    angles[0] = std::clamp(approachAngle(a[0], prevAngles[0], 6.0f, kFrameTime), -60.0f, 60.0f);
+    angles[2] = std::clamp(approachAngle(a[2], prevAngles[2], 6.0f, kFrameTime), -60.0f, 60.0f);
+    if (n[2] != 0.0f) origin[2] = -((n[1] * origin[1] + n[0] * origin[0]) - dist) / n[2];
+}
+
 int World::vehicleNodeIndex(const Value& v) const {
     if (!v.isObject()) throw std::runtime_error("Not a vehicle node");
     auto it = vnodeIndex_.find(v.asObject().get());
@@ -319,7 +480,10 @@ VehicleState& World::vehicleState(const Value& self) {
     Entity* e = entityOf(self);
     if (!e) throw std::runtime_error("not an entity");
     if (e->classname != "script_vehicle") throw std::runtime_error("entity " + std::to_string(e->number) + " is not a script_vehicle");
-    if (!e->vehicle) e->vehicle = std::make_unique<VehicleState>(); // vehicle init 0x50da80: no path, waits unset
+    if (!e->vehicle) {
+        e->vehicle = std::make_unique<VehicleState>(); // vehicle init 0x50da80: no path, waits unset
+        e->vehicle->info = vehicleInfo(e->obj->get("vehicletype").toString());
+    }
     return *e->vehicle;
 }
 
@@ -365,6 +529,7 @@ void World::thinkVehicles() {
         }
         static const float rates[3] = {6.0f, 4.0f, 6.0f};
         for (int i = 0; i < 3; ++i) angles[size_t(i)] = approachAngle(angles[size_t(i)], prevAngles[size_t(i)], rates[i], kFrameTime);
+        alignVehicleToGround(e, origin, angles, prevOrigin[2], prevAngles, true);
         for (int i = 0; i < 3; ++i) v.velocity[size_t(i)] = (origin[size_t(i)] - prevOrigin[size_t(i)]) * 20.0f;
         e.obj->set("origin", Value(origin));
         e.obj->set("angles", Value(angles));
@@ -393,9 +558,10 @@ void World::registerVehicleBuiltins() {
         p.angles = node.angles;
         p.lookPoint = node.origin;
         v.path = p;
-        c.self.asObject()->set("origin", Value(node.origin));
-        c.self.asObject()->set("angles", Value(node.angles));
-        // TODO: types 0/1 also snap to the ground here (0x50ef70 without settling).
+        Vec3 origin = node.origin, angles = node.angles;
+        alignVehicleToGround(*entityOf(c.self), origin, angles, origin[2], node.angles, false);
+        c.self.asObject()->set("origin", Value(origin));
+        c.self.asObject()->set("angles", Value(angles));
         return Value();
     });
     vm_.registerBuiltin("startpath", [this](CallContext& c) {
@@ -465,6 +631,19 @@ void World::registerVehicleBuiltins() {
     });
     // No player drives vehicles yet, so a vehicle has no owner (0x513ab0 returns nothing then).
     vm_.registerBuiltin("getvehicleowner", [this](CallContext& c) { vehicleState(c.self); return Value(); });
+    vm_.registerBuiltin("getwheelsurface", [this](CallContext& c) {
+        VehicleState& v = vehicleState(c.self);
+        if (!v.info || (v.info->type != 0 && v.info->type != 1))
+            throw std::runtime_error("Vehicle type [" + (v.info ? v.info->name : std::string()) + "] has no wheels");
+        const std::string w = c.arg(0).toString();
+        int i = -1;
+        for (int k = 0; k < 6; ++k)
+            if (w == kWheelNames[k]) i = k;
+        if (i < 0) throw std::runtime_error("unknown wheel " + w);
+        if (v.info->type == 0 && i > 3) throw std::runtime_error("Vehicle has no middle wheels");
+        const int s = v.wheelSurface[i];
+        return Value(s == 0 ? "none" : s < 23 ? kSurfaceNames[s] : "default");
+    });
     vm_.registerBuiltin("makevehicleusable", [this](CallContext& c) { vehicleState(c.self).usable = true; return Value(); });
     vm_.registerBuiltin("makevehicleunusable", [this](CallContext& c) { vehicleState(c.self).usable = false; return Value(); });
 }
