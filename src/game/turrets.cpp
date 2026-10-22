@@ -224,6 +224,7 @@ void World::registerTurretBuiltins() {
         Entity& a = actorOf(c);
         Entity* t = a.usingTurret ? entityOf(Value(a.usingTurret)) : nullptr;
         if (t && t->turret && t->turret->owner == a.obj) {
+            if (t->turret->inUse) vm_.notify(t->obj, "turret_deactivate");
             t->turret->inUse = false;
             t->turret->owner.reset();
             vm_.notify(t->obj, "turretownerchange");
