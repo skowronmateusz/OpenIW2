@@ -18,6 +18,8 @@ struct EfxGraph {
     float scaleMin = 1, scaleMax = 1;
     // Linearly interpolated value at t (0..1) of component c.
     float sample(float t, int c = 0) const;
+    // Area under component c from 0 to t (FUN_0047ecf0: trapezoids over the piecewise-linear curve).
+    float integral(float t, int c = 0) const;
 };
 
 struct EfxElement {

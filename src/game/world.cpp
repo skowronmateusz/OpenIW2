@@ -252,6 +252,12 @@ Entity* World::entityByNumber(int number) {
 void World::frame() {
     timeMs_ += 50;
     runMovers();
+    if (fxEvents_.size() > 4096) fxEvents_.erase(fxEvents_.begin(), fxEvents_.end() - 4096); // nobody draining
+    for (auto& l : loopedFx_)
+        if (timeMs_ >= l.nextMs) {
+            fxEvents_.push_back({fxNames_[size_t(l.id)], l.origin, Vec3{0, 0, 1}});
+            l.nextMs = timeMs_ + int64_t(l.delayS * 1000.0f);
+        }
     for (const auto& e : entities_) {
         if (!e->anim || e->obj->removed) continue;
         ObjectPtr obj = e->obj;
@@ -782,7 +788,40 @@ void World::registerBuiltins() {
         const int i = d.empty() ? 1 : std::clamp(std::atoi(d.c_str()), 0, 3);
         return Value(names[i]);
     });
-    vm_.registerBuiltin("loadfx", [this](CallContext&) { return Value(nextFx_++); });
+    // Effects (docs/spec/effects.md). TODO(spec): the argument order of playfx/playloopedfx is read from the
+    // shipped scripts' calls (id, origin[, forward]) and (id, repeat seconds, origin), not from the engine.
+    vm_.registerBuiltin("loadfx", [this](CallContext& c) {
+        fxNames_.push_back(c.arg(0).toString());
+        return Value(nextFx_++);
+    });
+    auto fxPath = [this](const Value& id) -> std::string {
+        if (!id.isNumber()) return {};
+        const int i = id.asInt();
+        return i >= 0 && size_t(i) < fxNames_.size() ? fxNames_[size_t(i)] : std::string();
+    };
+    vm_.registerBuiltin("playfx", [this, fxPath](CallContext& c) {
+        const std::string path = fxPath(c.arg(0));
+        if (!path.empty() && c.arg(1).isVector())
+            fxEvents_.push_back({path, c.arg(1).asVector(), c.args.size() > 2 && c.arg(2).isVector() ? c.arg(2).asVector() : Vec3{0, 0, 1}});
+        return Value();
+    });
+    vm_.registerBuiltin("playfxontag", [this, fxPath](CallContext& c) {
+        const std::string path = fxPath(c.arg(0));
+        Entity* e = entityOf(c.arg(1));
+        if (path.empty() || !e) return Value();
+        Vec3 at = e->obj->get("origin").asVector();
+        const auto bones = entityBones(*e);
+        std::string tag = c.arg(2).toString();
+        for (char& ch : tag) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+        if (auto it = bones.find(tag); it != bones.end()) at = it->second.position;
+        fxEvents_.push_back({path, at, Vec3{0, 0, 1}});
+        return Value();
+    });
+    vm_.registerBuiltin("playloopedfx", [this, fxPath](CallContext& c) {
+        if (fxPath(c.arg(0)).empty() || !c.arg(2).isVector()) return Value();
+        loopedFx_.push_back({c.arg(0).asInt(), std::max(0.05f, c.arg(1).asFloat()), c.arg(2).asVector(), timeMs_});
+        return Value();
+    });
     vm_.registerBuiltin("print", [this](CallContext& c) { print(c.arg(0).toString()); return Value(); });
 }
 

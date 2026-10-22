@@ -43,3 +43,12 @@ The spawnFlags parser uses the same table from its `org2fromTrace` row (0x56d648
 
 Implemented: `src/assets/efx.{h,cpp}`. Not specified yet: the runtime (spawning, element update, drawing) and the
 meaning of the flag bits.
+
+## Runtime (partial, `src/game/fx.cpp`)
+
+Particles and oriented particles are spawned by `playfx`, `playfxontag` and `playloopedfx` and drawn as
+camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
+the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
+the per-particle velocity scale, sprite size meaning (half width), atlas sequences (the whole texture is used),
+other element types (Tail, Emitter, FxRunner, Decal, Light, Cloud, CameraShake, Line), and the argument order of
+the script built-ins (taken from the shipped scripts' calls).

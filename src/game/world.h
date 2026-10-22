@@ -108,6 +108,11 @@ public:
     }
     const std::string& mapName() const { return mapName_; }
 
+    // Effects started by scripts since the last call: path, origin, forward.
+    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; };
+    std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
+    std::vector<FxEvent> fxEvents_;
+
     // The player's weapon inventory (throws for non-players).
     Inventory& inventory(Entity& player);
 
@@ -211,6 +216,9 @@ private:
     int64_t timeMs_ = 0;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;
+    std::vector<std::string> fxNames_;   // loadfx index → effect path
+    struct LoopedFx { int id; float delayS; Vec3 origin; int64_t nextMs; };
+    std::vector<LoopedFx> loopedFx_;
     std::map<std::string, int> missing_;
     std::vector<std::pair<Vec3, Vec3>> submodels_;
     std::unique_ptr<CollisionWorld> collision_;

@@ -72,6 +72,24 @@ float EfxGraph::sample(float t, int c) const {
     return points.back()[k];
 }
 
+float EfxGraph::integral(float t, int c) const {
+    if (points.size() < 2) return 0;
+    const size_t k = size_t(c) + 1;
+    float area = 0;
+    for (size_t i = 1; i < points.size(); ++i) {
+        const float t0 = points[i - 1][0], t1 = points[i][0];
+        if (t <= t0) break;
+        const float v0 = points[i - 1][k];
+        if (t < t1) {
+            const float v = v0 + (points[i][k] - v0) * (t - t0) / (t1 - t0);
+            area += (t - t0) * (v0 + v) * 0.5f;
+            break;
+        }
+        area += (t1 - t0) * (v0 + points[i][k]) * 0.5f;
+    }
+    return area;
+}
+
 std::vector<std::string> EfxElement::list(const std::string& key) const {
     auto it = keys.find(lower(key));
     return it == keys.end() ? std::vector<std::string>{} : it->second;
