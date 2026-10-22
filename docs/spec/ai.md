@@ -135,13 +135,86 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
 
 Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`. TODO(spec): grenade (0x5205b0/0x520c30: flee,
 takecover, cower, combat, coverattack, acquire, throwback substates 300…0x132), badplace (0x524060), animscripted
-(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), node claiming and cover scripts by node (0x54bb30), the path
-planner 0x503490 and follower 0x551960 (a node-graph placeholder is used), facing modes, AI events (0x535770), touch
-and damaged handlers, followed/blocking actors (+0x2148, +0x728).
+(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), the planner internals and the follower 0x551960 (see "Cover
+nodes"), facing modes, AI events (0x535770), touch and damaged handlers, followed/blocking actors (+0x2148, +0x728).
+
+## Cover nodes (observed; Ghidra decompiles and the objdump listing)
+
+**Runtime node** (0x78 bytes from 0x1c8da04; script value = node index): +0 type 1…18, +4 spawnflags (0x40 priority,
+0x8000 "cover script optional", 1 never a cover candidate), +0x14 origin, +0x20 yaw, +0x24 forward, +0x30/+0x32 linked
+nodes, +0x40 owner sentient, +0x44 hold time (0x7fffffff while claimed), +0x44 + 4·team per-team block time (1 axis,
+2 allies), +0x56 claims of linked nodes. A sentient's claimed node is +0x2c (script field `node`).
+- Usable (0x518f20): own node → yes; now ≤ team block → no; hold < now → yes; claimed nodes can be taken over
+  (0x518e80) and priority nodes shared (0x518dc0: owner dying, or a distance rule).
+- Claim (0x5152f0): release the old one (0x5191a0: owner and hold 0); a normal node, or a priority node whose hold
+  expired, is taken (0x518fa0: owner, hold 0x7fffffff); a held priority node is taken over (0x519050), evicting the
+  claiming owner (0x515330: its path is dropped if it ends at the node, then 0x519300).
+- 0x519300 (path failed / node given up): an owner of that team leaves with a 5 s hold (0x519200), owner cleared,
+  the team blocked 5 s. Give up (0x4fe670): drop a path ending at the node, then 0x519300. The sentient release
+  (0x514d50, death) frees the node.
+- Node update after each exposed/pain/death think (0x4fe8d0 → 0x4fe740): unless keepclaimednode(ingoal), keep the
+  claimed node while it is near (`nearnode` 0x502660: |dz| < 80, 2D < 30) the actor or its path end, or before the
+  plan time; else release it and claim the sentient's node (0x515040, within 192) when it is a cover type (mask
+  0x41ffc = types 2…12, 18) or flagged 0x8000, near and usable.
+
+**Cover script** (0x54bb30, `check`): type → `cover_stand` 2, `cover_crouch` 3/4/18, `cover_prone` 5, `cover_right` 6,
+`cover_left` 7, `cover_wide_right` 8, `cover_wide_left` 9, `concealment_stand/crouch/prone` 10/11/12 (slots
+0x1c7e090 + 8·i, names pushed at 0x4eb233); other types only with flag 0x8000 (no script). The node "does not cover"
+(true, no script) when the enemy (not ignoreme/notarget, last known time > 0; with `check`, else only when seen
+within 250 ms) is covered neither at its origin nor at its last known position, or without an enemy (with `check`)
+the grenade is not covered. Covered (0x54b960, arcs 0x54ba00): 2D distance² ≥ distSq, then either in front of the
+node (dot with the forward ≥ 0) or the yaw from the node minus the node yaw, normalised through 16 bits, inside
+[min, max] (wrapping): types 2/3/10/11 {285², facing}, 4 {285², facing}, 5 {800², facing}, 6/8 {285², 305…30},
+7/9 {285², 330…55}, 12 {285², facing}, 18 {285², turret arcs 0x5159f0 or 315…45}, others {0, facing}. With `check`
+the facing test becomes the arc test when the enemy was not seen within 5 s. Arc limits for the facing types:
+2/3/10/11 315…45, 4 350…10, 5/12 330…30, default 305…55.
+- Faces the enemy (0x54c000): the enemy is in front of the node, and the actor is not farther from the node than
+  the enemy on the enemy's side. Good claimed node (0x54c0c0): usable, faces, covers.
+- Animscript choice: stop (0x53aed0) and combat (0x53b050) use the claimed node's script when at the node (0x502910:
+  keepclaimednode or near); a node that does not cover is given up; else `stop` / `combat`. Combat without a path
+  (0x548c70): facing 6 inside the goal when the enemy was not seen for 5 s and a claimed 0x8000 node covers.
+
+**Search** (0x54c3f0(better, ignore, prefer, max)): candidates within goal radius (2D) and goal height of the goal
+position (0x516950/0x516820, node tree, at most 256, type in mask, not spawnflag 1); dropped (0x54c2a0): `ignore`,
+unusable, not facing, not covering, outside the goal volume; `prefer` scores 16, the others need score ≥ score(better)
++ 1.25e-5 when `better` is good and inside the goal. Ascending sort (qsort, 0x54c3b0), the last `max` are returned.
+Score (0x54bf10): (1 − min(d², 1200²)/1200²) + (enemy node visible from the node, 0x517ed0, else 1: 1) + 2·(not
+concealment) + 4·(enemy yaw inside the arcs, 0x54bdd0) + 8·priority. 0x517ed0 indexes the node visibility bits as
+(max − 1)·n + min (0x517e40, used by perception and `canattackenemynode`, as n·min + max).
+
+**Path update** (0x503490, exposed combat/noncombat): runs with a path or once the plan time (+0x720) passed.
+keepclaimednode → clear path, plan time +500. Fighting (0x503080): enemy known within 5 s (or, without a path, its
+node visible from the claimed node). Node (0x502da0): the claimed node if inside the goal and good, else the best
+cover node, else the claimed node if inside the goal. No node → path into the goal (0x502960; 0x502c70 on failure:
+plan time +500). Node → path to it (0x503650/0x502d00: a path ending within 2 units is kept, standing there needs
+none; with no previous path a non-corner node (types ≠ 6…9) that is near inside the goal needs none); failure →
+0x519300, plan time +500. Then 0x503200 (stop for the enemy within `pathenemyfightdist`) or claim the node.
+
+**Built-ins**: `findcovernode` (0x54c510: 1000 best into +0x798, enemy and exposed only), `getcovernode` (0x54c580:
+pops the best while there is a path or the plan time passed), `findbestcovernode(["prefer"|"ignore"|"better", node])`
+(0x53c730), `usecovernode(node)` (0x53c900/0x54c5e0: errors with keepclaimednode(ingoal); exposed or turret state;
+usable and facing → claim, turret replaced by exposed, substate combat), `findreacquirenode`/`getreacquirenode` (10
+best, +0x173c), `usereacquirenode` (0x548e60: usable, enemy eye visible from node origin + 64, path → claim, substate
+reacquire), `reacquirestep(d)` (0x548f10: side steps ±d perpendicular to the enemy direction, random order; eye +
+offset sees the enemy eye within maxsightdistsqrd; move check 0x543d30 (box −15,−15,step…15,15,72, step 10 crouched
+else 18; drop 72; ground normal z ≥ 0.7; within 72 of the target height) and inside the goal; path → substate
+reacquire, facing 3), `findreacquiredirectpath`/`findreacquireproximatepath` (0x549280/0x549340: path towards the
+enemy, cut to the goal 0x5434e0), `trimpathtoattack` (0x543580), `reacquiremove` (0x53ccb0: with a path → substate
+reacquire), `flagenemyunattackable` (0x53cd90: ignore-until 0x7fffffff, substate noncombat), `withinapproxpathdist`
+(0x545030: no path, or the rest of it shorter), `ispathdirect` (path flag +0x6e8 & 1), `nearnode` (0x502660),
+`canattackenemynode` (0x540500), `isnodeoccupied` (0x5158c0: now ≤ +0x44), `setnodepriority` (0x515810: flag 0x40,
+types 18, 2, 3, 5, 10, 11, 12, 6, 7). `findbestcovernode` options are the constant strings set at 0x506e95…: 0x1c7f12a
+"prefer", 0x1c7f128 "ignore", 0x1c7f12c "better".
+
+Implemented in `src/game/actorcover.cpp`. TODO(spec): the planner proper (0x5424d0, 0x542810, 0x5428a0, 0x545840,
+path points of 0x1c bytes at actor +0x330, flags +0x6e8; OpenIW2 plans A* between the nodes nearest to both ends),
+the sentient node query 0x517f90, node take-over 0x518e80/0x518dc0, linked nodes, 0x515390, goal volumes,
+0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move check's continuation after a block,
+the trim state of the reacquire paths (+0x70c/+0x710), `ispathdirect`, actor +0x20b4 in the score, 0x548be0.
 
 ## Not yet specified
 
-Path finding (0x503490, 0x551960) and the remaining states listed above.
+The path follower 0x551960 and the remaining states listed above.
 
 ## Native actor fields (observed)
 
