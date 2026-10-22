@@ -3,9 +3,12 @@
 //   iw2game <main-dir> <map> [seconds] [--cvar name=value ...]
 //   iw2game <main-dir> <map> --walk-test     drop the player at the spawn point and walk forward
 //   iw2game <main-dir> <map> --fall-test [walks] [seconds]   random player walks (tunnels, falls, solid)
+//   iw2game <main-dir> <map> --replay file      re-run moves recorded by iw2view (pmove_replay.bin)
+//   iw2game <main-dir> <map> --spot x,y,z yaw   replay an iw2view `P` view position: walk from it in 72 directions
 
 #include "audio/sound.h"
 #include "game/pmove.h"
+#include "game/pmoverecord.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -55,6 +58,227 @@ int main(int argc, char** argv) {
                 std::cout << "t=" << s << "s pos (" << ps.origin[0] << ", " << ps.origin[1] << ", " << ps.origin[2] << ") on ground " << ps.onGround << "\n";
             }
             return 0;
+        }
+        if (argc > 4 && std::string(argv[3]) == "--replay") {
+            // Each recorded move again from its recorded state with its entity clips: reports moves whose result
+            // differs from the recording and the first move after which nothing is under the player.
+            const auto moves = iw2::game::MoveRecorder::read(argv[4]);
+            iw2::game::CollisionWorld cw(world.bsp());
+            std::printf("%zu moves\n", moves.size());
+            int diffs = 0;
+            bool fell = false;
+            for (size_t i = 0; i < moves.size(); ++i) {
+                const auto& m = moves[i];
+                cw.setEntityClips(m.clips);
+                iw2::game::PlayerState ps = m.before;
+                iw2::game::playerMove(cw, ps, m.input, m.dt, m.params);
+                if (ps.origin != m.after.origin && diffs++ < 5)
+                    std::printf("move %zu differs from the recording: (%g %g %g) vs (%g %g %g)\n", i, ps.origin[0], ps.origin[1], ps.origin[2],
+                                m.after.origin[0], m.after.origin[1], m.after.origin[2]);
+                const auto under = cw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 4000}, {0, 0, 0}, {0, 0, 0},
+                                            m.params.traceMask, m.params.passEntity);
+                if (!fell && under.fraction == 1 && !under.startSolid) {
+                    fell = true;
+                    std::printf("move %zu: nothing under the player after it\n", i);
+                    for (size_t k = i > 12 ? i - 12 : 0; k <= i; ++k) {
+                        const auto& q = moves[k];
+                        std::printf("  move %zu dt %g fwd %g right %g jump %d stance %d->%d yaw %g onGround %d vel (%g %g %g)\n"
+                                    "    from (%a %a %a) = (%g %g %g)\n    to   (%g %g %g)\n",
+                                    k, q.dt, q.input.forward, q.input.right, q.input.jump, int(q.before.stance), int(q.input.stance),
+                                    q.input.yaw, q.before.onGround, q.before.velocity[0], q.before.velocity[1], q.before.velocity[2],
+                                    q.before.origin[0], q.before.origin[1], q.before.origin[2], q.before.origin[0], q.before.origin[1],
+                                    q.before.origin[2], q.after.origin[0], q.after.origin[1], q.after.origin[2]);
+                    }
+                }
+            }
+            std::printf("replay: %d moves differ, %s\n", diffs, fell ? "fell out" : "stayed in the world");
+            return 0;
+        }
+        if (argc > 5 && std::string(argv[3]) == "--spot") {
+            // The view position printed by iw2view (eye = origin + 60 standing). Walks every 5 degrees around the
+            // given yaw for a few seconds in each stance, reporting tunnels and falls below the map.
+            iw2::game::Vec eye{};
+            std::sscanf(argv[4], "%f,%f,%f", &eye[0], &eye[1], &eye[2]);
+            const float yaw0 = std::stof(argv[5]);
+            float floorZ = 1e9f;
+            for (const auto& v : world.bsp().vertices()) floorZ = std::min(floorZ, v.position[2]);
+            world.start();
+            const iw2::game::CollisionWorld& cw = world.collision();
+            iw2::game::MoveParams mp;
+            mp.passEntity = world.player()->number;
+            const uint32_t mask = mp.traceMask;
+            const iw2::game::Vec org{eye[0], eye[1], eye[2] - 60};
+            const auto down = cw.trace(eye, {eye[0], eye[1], eye[2] - 4000}, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+            std::printf("ray down: fraction %g z %g normal (%g %g %g) startSolid %d contents 0x%x; map floor %g\n", down.fraction,
+                        down.endPos[2], down.normal[0], down.normal[1], down.normal[2], down.startSolid, down.contents, floorZ);
+            // Drawn triangles under or over the spot (xy inside the triangle), for comparing with collision.
+            {
+                const auto& bsp = world.bsp();
+                float zmax = -1e9f;
+                for (const auto& v : bsp.vertices()) zmax = std::max(zmax, v.position[2]);
+                std::printf("map vertex z range %g..%g\n", floorZ, zmax);
+                for (const auto& so : bsp.soups())
+                    for (uint32_t i = 0; i + 2 < so.indexCount; i += 3) {
+                        const auto& a = bsp.vertices()[so.firstVertex + bsp.indices()[so.firstIndex + i]].position;
+                        const auto& b = bsp.vertices()[so.firstVertex + bsp.indices()[so.firstIndex + i + 1]].position;
+                        const auto& c = bsp.vertices()[so.firstVertex + bsp.indices()[so.firstIndex + i + 2]].position;
+                        auto side = [&](const auto& p, const auto& q) { return (q[0] - p[0]) * (eye[1] - p[1]) - (q[1] - p[1]) * (eye[0] - p[0]); };
+                        const float s0 = side(a, b), s1 = side(b, c), s2 = side(c, a);
+                        if (!((s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0))) continue;
+                        const float den = s0 + s1 + s2;
+                        if (std::fabs(den) < 1e-6f) continue;
+                        const float z = (s1 * a[2] + s2 * b[2] + s0 * c[2]) / den;
+                        std::printf("drawn tri z %g material %s (surf 0x%x contents 0x%x)\n", z, bsp.materials()[so.material].name.c_str(),
+                                    bsp.materials()[so.material].surfaceFlags, bsp.materials()[so.material].contentFlags);
+                    }
+            }
+            for (float top : {10400.0f, 10290.0f, 10280.0f}) {
+                const auto r = cw.trace({eye[0], eye[1], top}, {eye[0], eye[1], eye[2]}, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                std::printf("ray from z %g down: fraction %g z %g normal z %g startSolid %d\n", top, r.fraction, r.endPos[2], r.normal[2], r.startSolid);
+            }
+            const auto box = cw.trace(org, org, mp.mins, mp.maxs, mask, mp.passEntity);
+            std::printf("standing box at origin: startSolid %d allSolid %d\n", box.startSolid, box.allSolid);
+            const int seconds = argc > 6 ? std::stoi(argv[6]) : 4;
+            int bad = 0;
+            if (std::getenv("SPOT_CLIPS")) {
+                for (int f = 0; f < 40; ++f) world.frame();
+                for (const auto& c : cw.entityClips()) {
+                    const float dx = c.origin[0] - eye[0], dy = c.origin[1] - eye[1];
+                    if (dx * dx + dy * dy < 3000.0f * 3000.0f)
+                        std::printf("CLIP id %d model %d origin (%g %g %g) mins (%g %g %g) maxs (%g %g %g) contents 0x%x\n", c.id, c.model,
+                                    c.origin[0], c.origin[1], c.origin[2], c.mins[0], c.mins[1], c.mins[2], c.maxs[0], c.maxs[1], c.maxs[2], c.contents);
+                }
+            }
+            if (const char* h = std::getenv("SPOT_SWEEP")) {
+                // Standing capsules swept from 30 units above the surface to 30 below it (straight down and
+                // slanted): sweeps that get through report the world surface they crossed.
+                const float r = std::stof(h);
+                const float step = std::getenv("SPOT_STEP") ? std::stof(std::getenv("SPOT_STEP")) : 1.0f;
+                int through = 0, total = 0;
+                const float dirs[5][2] = {{0, 0}, {6, 0}, {-6, 0}, {0, 6}, {0, -6}};
+                for (float gx = -r; gx <= r; gx += step)
+                    for (float gy = -r; gy <= r; gy += step) {
+                        const iw2::game::Vec a{eye[0] + gx, eye[1] + gy, eye[2] + 1000}, b{a[0], a[1], eye[2] - 1000};
+                        const auto ground = cw.trace(a, b, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                        if (ground.fraction == 1 || ground.normal[2] < 0.7f) continue;
+                        for (const auto& dv : dirs) {
+                            const iw2::game::Vec s0{a[0] - dv[0], a[1] - dv[1], ground.endPos[2] + 30};
+                            const iw2::game::Vec s1{a[0] + dv[0], a[1] + dv[1], ground.endPos[2] - 30};
+                            const auto t = cw.trace(s0, s1, mp.mins, mp.maxs, mask, mp.passEntity);
+                            ++total;
+                            if (t.fraction == 1 && !t.startSolid && through++ < 200)
+                                std::printf("THROUGH (%g %g %g) -> (%g %g %g)\n", s0[0], s0[1], s0[2], s1[0], s1[1], s1[2]);
+                        }
+                    }
+                std::printf("%d of %d sweeps got through\n", through, total);
+                return 0;
+            }
+            if (std::getenv("SPOT_DEBUG")) {
+                // Capsule traces from the spot's origin: down by 0.25, 1, 9, 50, 400 units and a point ray.
+                auto show = [&](const char* what, const iw2::game::TraceResult& t) {
+                    std::printf("%s: fraction %g end z %g normal (%g %g %g) startSolid %d allSolid %d material %d\n", what, t.fraction,
+                                t.endPos[2], t.normal[0], t.normal[1], t.normal[2], t.startSolid, t.allSolid, t.material);
+                };
+                show("position", cw.trace(org, org, mp.mins, mp.maxs, mask, mp.passEntity));
+                for (float dz : {0.25f, 1.0f, 9.0f, 50.0f, 400.0f}) {
+                    char name[64];
+                    std::snprintf(name, sizeof name, "down %g", dz);
+                    show(name, cw.trace({org[0], org[1], org[2] + 0.25f}, {org[0], org[1], org[2] - dz}, mp.mins, mp.maxs, mask, mp.passEntity));
+                }
+                show("point down", cw.trace(org, {org[0], org[1], org[2] - 400}, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity));
+                show("point up", cw.trace(org, {org[0], org[1], org[2] + 100}, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity));
+                for (float yaw : {-180.0f, 0.0f, 90.0f, -90.0f}) {
+                    char name[64];
+                    std::snprintf(name, sizeof name, "move yaw %g", yaw);
+                    const float r = yaw * float(M_PI) / 180.0f;
+                    show(name, cw.trace(org, {org[0] + 3 * std::cos(r), org[1] + 3 * std::sin(r), org[2]}, mp.mins, mp.maxs, mask, mp.passEntity));
+                }
+            }
+            if (const char* h = std::getenv("SPOT_HOLES")) {
+                // Point rays straight down on a grid: columns with no collision between eye z + 1000 and eye z − 1000.
+                const float r = std::stof(h);
+                int holes = 0;
+                for (float gx = -r; gx <= r; gx += 4)
+                    for (float gy = -r; gy <= r; gy += 4) {
+                        const iw2::game::Vec a{eye[0] + gx, eye[1] + gy, eye[2] + 1000}, b{a[0], a[1], eye[2] - 1000};
+                        const auto t = cw.trace(a, b, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                        if (t.fraction == 1 && !t.startSolid && holes++ < 400) std::printf("HOLE %g %g\n", a[0], a[1]);
+                    }
+                std::printf("%d holes\n", holes);
+                return 0;
+            }
+            // Starts: the spot itself, then the ground on a grid around it (SPOT_RADIUS, default 1024, step 128).
+            std::vector<iw2::game::Vec> starts{org};
+            const float radius = std::getenv("SPOT_RADIUS") ? std::stof(std::getenv("SPOT_RADIUS")) : 1024.0f;
+            const float gstep = std::getenv("SPOT_STEP") ? std::stof(std::getenv("SPOT_STEP")) : 128.0f;
+            const int dstep = std::getenv("SPOT_DSTEP") ? std::stoi(std::getenv("SPOT_DSTEP")) : 9;
+            const float degStep = std::getenv("SPOT_DEG") ? std::stof(std::getenv("SPOT_DEG")) : 5.0f;
+            const float dt = std::getenv("SPOT_DT") ? std::stof(std::getenv("SPOT_DT")) : 1.0f / 60.0f;
+            for (float gx = -radius; gx <= radius; gx += gstep)
+                for (float gy = -radius; gy <= radius; gy += gstep) {
+                    // SPOT_TOP: start the drop from this z instead (to reach surfaces under another layer).
+                    const float top = std::getenv("SPOT_TOP") ? std::stof(std::getenv("SPOT_TOP")) : eye[2] + 2000;
+                    const iw2::game::Vec hi{eye[0] + gx, eye[1] + gy, top};
+                    const auto g = cw.trace(hi, {hi[0], hi[1], hi[2] - 4000}, mp.mins, mp.maxs, mask, mp.passEntity);
+                    if (g.fraction < 1 && !g.startSolid) starts.push_back({g.endPos[0], g.endPos[1], g.endPos[2] + 1});
+                }
+            std::printf("%zu starts\n", starts.size());
+            for (size_t si = 0; si < starts.size(); ++si)
+            for (int st = 0; st < 3; ++st)
+                for (int d = -36; d < 36; d += si ? dstep : 1) {
+                    iw2::game::PlayerState ps;
+                    ps.origin = starts[si];
+                    iw2::game::PlayerInput in;
+                    in.forward = 1;
+                    in.yaw = yaw0 + d * degStep;
+                    in.stance = iw2::game::Stance(st);
+                    // SPOT_RANDOM=1: random stance, strafe, jumps and frame times (1..16 ms) like --fall-test.
+                    const bool rnd = std::getenv("SPOT_RANDOM") != nullptr;
+                    const bool live = std::getenv("SPOT_LIVE") != nullptr; // run level frames (actors move)
+                    std::mt19937 rng(uint32_t(si * 1000 + st * 100 + d + 50));
+                    std::uniform_real_distribution<float> u(0, 1);
+                    for (int f = 0; f < int(seconds / dt); ++f) {
+                        in.jump = (f % 90) == 45 && st == 0;
+                        float fdt = dt;
+                        if (rnd) {
+                            if (f % 40 == 0) {
+                                in.right = u(rng) < 0.3f ? (u(rng) < 0.5f ? 1.0f : -1.0f) : 0.0f;
+                                in.yaw += (u(rng) - 0.5f) * 60.0f;
+                                const float sv = u(rng);
+                                in.stance = sv < 0.6f ? iw2::game::Stance::Stand : sv < 0.8f ? iw2::game::Stance::Crouch : iw2::game::Stance::Prone;
+                            }
+                            in.jump = u(rng) < 0.03f;
+                            fdt = (1 + int(u(rng) * 16)) * 0.001f;
+                        }
+                        const iw2::game::PlayerState before = ps;
+                        iw2::game::playerMove(cw, ps, in, fdt, mp);
+                        if (live && f % 3 == 0) {
+                            world.setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, in.yaw, 0});
+                            world.frame();
+                        }
+                        const iw2::game::Vec c0{before.origin[0], before.origin[1], before.origin[2] + 15};
+                        const iw2::game::Vec c1{ps.origin[0], ps.origin[1], ps.origin[2] + 15};
+                        const auto ray = cw.trace(c0, c1, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                        const bool tunnel = ray.fraction < 1 && !ray.startSolid;
+                        // Nothing under the player for 1500 units: it is below the terrain, like the reported spot.
+                        bool voidBelow = false;
+                        if (f % 10 == 9) {
+                            const auto under = cw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 1500}, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                            voidBelow = under.fraction == 1 && !under.startSolid && ps.origin[2] - 1500 > floorZ;
+                        }
+                        if (tunnel || voidBelow || ps.origin[2] < floorZ - 64) {
+                            std::printf("%s start %zu stance %d yaw %g frame %d from (%a %a %a) = (%g %g %g) to (%g %g %g) onGround %d; ray hit "
+                                        "fraction %g normal (%g %g %g) material %d\n",
+                                        tunnel ? "TUNNEL" : voidBelow ? "VOID" : "FELL", si, st, in.yaw, f, before.origin[0], before.origin[1],
+                                        before.origin[2], before.origin[0], before.origin[1], before.origin[2], ps.origin[0], ps.origin[1],
+                                        ps.origin[2], before.onGround, ray.fraction, ray.normal[0], ray.normal[1], ray.normal[2], ray.material);
+                            ++bad;
+                            break;
+                        }
+                    }
+                }
+            std::printf("spot test: %d bad walks\n", bad);
+            return bad ? 1 : 0;
         }
         if (argc > 3 && std::string(argv[3]) == "--fall-test") {
             // Random walks from the spawn point and the path nodes. Reports a walk whose lower capsule sphere centre
