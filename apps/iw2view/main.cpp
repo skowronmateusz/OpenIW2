@@ -18,6 +18,7 @@
 #include "game/collision.h"
 #include "game/playerweapon.h"
 #include "game/viewweapon.h"
+#include "game/fx.h"
 #include "game/pmove.h"
 #include "game/world.h"
 #include "util/png.h"
@@ -507,6 +508,72 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
     return &it->second;
 }
 
+// Builds camera-facing quads for effect sprites into a per-frame model (size = half width; inferred).
+const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::vector<game::FxSprite>& sprites,
+                            const Vec3& right, const Vec3& upv);
+
+
+const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::vector<game::FxSprite>& sprites,
+                            const Vec3& right, const Vec3& upv) {
+    if (sprites.empty()) return nullptr;
+    constexpr uint32_t kMax = 16384;
+    auto key = std::make_pair(-2, std::string("fx"));
+    auto it = scene.skinned.find(key);
+    if (it == scene.skinned.end()) {
+        GpuModel gm;
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = kMax * 4 * sizeof(GpuVertex);
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        SDL_GPUBufferCreateInfo ib{};
+        ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        ib.size = kMax * 6 * 4;
+        gm.indices = SDL_CreateGPUBuffer(dev, &ib);
+        std::vector<uint32_t> idx;
+        for (uint32_t q = 0; q < kMax; ++q)
+            for (uint32_t k : {0u, 1u, 2u, 0u, 2u, 3u}) idx.push_back(q * 4 + k);
+        up.buffer(gm.indices, idx.data(), uint32_t(idx.size() * 4));
+        it = scene.skinned.emplace(key, gm).first;
+    }
+    // Group by shader so each batch binds one texture.
+    std::map<std::string, std::vector<const game::FxSprite*>> byShader;
+    for (const auto& s : sprites) byShader[s.shader].push_back(&s);
+    std::vector<GpuVertex> verts;
+    std::vector<Batch> batches;
+    for (const auto& [shader, list] : byShader) {
+        const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
+        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        Batch b;
+        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
+        b.texture = mi.texture;
+        b.lightmap = -3;
+        b.fullbright = true;
+        b.firstIndex = uint32_t(verts.size() / 4 * 6);
+        for (const auto* s : list) {
+            if (verts.size() / 4 >= kMax) break;
+            const Vec3 c{s->position[0], s->position[1], s->position[2]};
+            const Vec3 r = right * s->size, u = upv * s->size;
+            const Vec3 nr = r * -1.0f, nu = u * -1.0f;
+            const Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
+            const float uv[4][2] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+            for (int k = 0; k < 4; ++k) {
+                GpuVertex g{};
+                g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
+                g.normal[2] = 1;
+                for (int ch = 0; ch < 4; ++ch) g.color[ch] = uint8_t(std::clamp(s->rgba[ch], 0.0f, 1.0f) * 255.0f);
+                g.uv[0] = uv[k][0];
+                g.uv[1] = uv[k][1];
+                verts.push_back(g);
+            }
+        }
+        b.indexCount = uint32_t(verts.size() / 4 * 6) - b.firstIndex;
+        if (b.indexCount) batches.push_back(b);
+    }
+    if (verts.empty()) return nullptr;
+    up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+    it->second.batches = batches;
+    return &it->second;
+}
 // Bone transforms by lower-case name, accumulated over a body and its attachments.
 using BoneMap = std::unordered_map<std::string, std::pair<std::array<float, 3>, assets::Quat>>;
 
@@ -1280,11 +1347,38 @@ int main(int argc, char** argv) {
         struct ScreenMessage { std::string text; uint64_t untilNs; };
         std::vector<ScreenMessage> screenMessages;
 
+        // Effects started by scripts (playfx & co.), simulated by FxSystem and drawn as sprites.
+        game::FxSystem fxSystem;
+        std::map<std::string, std::shared_ptr<const assets::EfxEffect>> efxCache;
+        auto efx = [&](const std::string& path) -> std::shared_ptr<const assets::EfxEffect> {
+            auto [it, inserted] = efxCache.try_emplace(path);
+            if (inserted) {
+                try {
+                    if (const auto d = vfs.read(path))
+                        it->second = std::make_shared<assets::EfxEffect>(
+                            assets::parseEfx(std::string_view(reinterpret_cast<const char*>(d->data()), d->size())));
+                } catch (const std::exception& e) {
+                    std::cerr << "warning: effect " << path << ": " << e.what() << "\n";
+                }
+            }
+            return it->second;
+        };
+        Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
+
         // Entity models currently visible in the game world.
         auto gatherItems = [&]() {
             std::vector<DrawItem> items;
             if (!world) return items;
             Uploader up(dev);
+            for (const auto& ev : world->takeFxEvents()) fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
+            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSystem.sprites(world->timeMs()), fxRight, fxUp)) {
+                DrawItem it;
+                it.model = fxm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
             for (const auto& e : world->entities()) {
                 if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");
@@ -1631,7 +1725,15 @@ int main(int argc, char** argv) {
             cam.pos.z += shotViewHeight - 60.0f;
             cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                       pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn());
+            fxRight = cam.right();
+            fxUp = cross(cam.right(), cam.forward());
+            if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
+                // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
+                const Vec3 at = cam.pos + cam.forward() * 150.0f;
+                fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+            }
             auto shotItems = gatherItems();
+            std::cout << "effect particles: " << fxSystem.count() << "\n";
             addViewModel(shotItems, cam);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
             SDL_DestroyGPUDevice(dev);
@@ -1756,6 +1858,8 @@ int main(int argc, char** argv) {
                     gameClock = 0;
                 }
             }
+            fxRight = cam.right();
+            fxUp = cross(cam.right(), cam.forward());
             auto items = gatherItems();
             addViewModel(items, cam);
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
