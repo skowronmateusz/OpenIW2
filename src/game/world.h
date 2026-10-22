@@ -213,6 +213,10 @@ private:
     TurretState& turretOf(const Value& self);
     // Turret think (src/game/turretthink.cpp)
     void thinkTurrets();
+    // Actor turret state (src/game/actorturret.cpp)
+    void releaseTurret(Entity& turret);
+    bool actorInGoal(Entity& e, float extra);
+    bool actorTurretThink(Entity& e);
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void shootTurret(Entity& t);

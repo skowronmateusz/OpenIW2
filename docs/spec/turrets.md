@@ -93,6 +93,13 @@ random offset of up to 8 units across the line of fire (0x5501e0) when it stays 
 else along the barrel; spread aiSpread (playerSpread for a player), range 8192. Scripts (`maps/_mg42.gsc`) call it
 every 0.1 s while `isfiringturret()`.
 
+## AI gunner turret state
+
+`useturret` records the turret on the actor (+0x2114). The actor's exposed state (0x5496f0) then enters the turret
+state (state 2 of the table at 0x56f720): start 0x549960 takes the free turret, think 0x54aba0 keeps it while the
+actor is inside its goal + 92 units (0x502760; not checked with `setturretignoregoals`) and runs the turret weapon's
+`script` animscript; 0x549a60 releases it. Implemented in `src/game/actorturret.cpp`.
+
 ## Not implemented (TODO)
 
 - Full AI gunner rules of 0x51c630 / 0x51cc80 (remembered target +0x60, suppression and visibility from node
@@ -101,6 +108,4 @@ every 0.1 s while `isfiringturret()`.
   the 0x48b090 visibility value, the bullet spread distribution (0x531210), drop pitch flags 0x100…0x400, projectile
   turret weapons, and turret fire sounds/effects (0x4d8020).
 - The enemy checks of 0x51d3c0 / 0x51d640: here a free turret can always be used.
-- Taking ownership: here `useturret` makes the actor the owner at once (inferred; the original sets the in-use flag
-  and owner elsewhere).
 - `restoredefaultdroppitch` (0x51cf10), player use of turrets (`useby`, `maketurretusable` effects).

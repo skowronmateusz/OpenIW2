@@ -345,6 +345,7 @@ void World::thinkActors() {
             e.obj->set("lookforward", Value(Vec3{std::cos(yaw), std::sin(yaw), 0}));
         }
         if (e.animScript == "init" && e.animScriptThread && vm_.isThreadAlive(e.animScriptThread)) continue;
+        if (actorTurretThink(e)) continue; // AI state 2 (src/game/actorturret.cpp)
         const Value goal = e.obj->get("$goalpos");
         const Value origin = e.obj->get("origin");
         if (goal.isVector() && origin.isVector()) {
