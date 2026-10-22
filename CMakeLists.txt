@@ -31,6 +31,7 @@ add_library(iw2_assets
   src/assets/lightgrid.cpp
   src/assets/xanim.cpp
   src/assets/font.cpp
+  src/assets/efx.cpp
   src/util/png.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
@@ -138,3 +139,7 @@ add_test(NAME menu COMMAND test_menu)
 add_executable(test_movers tests/test_movers.cpp)
 target_link_libraries(test_movers PRIVATE iw2_game)
 add_test(NAME movers COMMAND test_movers)
+
+add_executable(test_efx tests/test_efx.cpp)
+target_link_libraries(test_efx PRIVATE iw2_assets)
+add_test(NAME efx COMMAND test_efx)

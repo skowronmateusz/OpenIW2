@@ -19,6 +19,7 @@
 //   iw2asset <main-dir> sound-check                  decode every .wav and .mp3 under sound/
 
 #include "assets/d3dbsp.h"
+#include "assets/efx.h"
 #include "audio/decode.h"
 #include "assets/iwi.h"
 #include "assets/material.h"
@@ -335,6 +336,20 @@ int main(int argc, char** argv) {
             const auto w = audio::decodeSound(mustRead(vfs, args[2]), args[2]);
             std::cout << args[2] << ": " << w.rate << " Hz, " << w.channels << " channel(s), " << w.frames()
                       << " frames (" << double(w.frames()) / w.rate << " s)\n";
+        } else if (cmd == "efx-check") {
+            int ok = 0, bad = 0, elements = 0;
+            for (const auto& path : vfs.list("fx/")) {
+                if (path.size() < 4 || path.substr(path.size() - 4) != ".efx") continue;
+                const auto d = vfs.read(path);
+                try {
+                    elements += int(assets::parseEfx(std::string_view(reinterpret_cast<const char*>(d->data()), d->size())).elements.size());
+                    ++ok;
+                } catch (const std::exception& e) {
+                    ++bad;
+                    std::cout << path << ": " << e.what() << "\n";
+                }
+            }
+            std::cout << "efx: " << ok << " ok, " << bad << " failed, " << elements << " elements\n";
         } else if (cmd == "sound-check") {
             std::map<std::string, int> ok;
             int failed = 0;
