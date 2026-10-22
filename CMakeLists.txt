@@ -117,6 +117,10 @@ add_executable(test_xmodel tests/test_xmodel.cpp)
 target_link_libraries(test_xmodel PRIVATE iw2_assets)
 add_test(NAME xmodel COMMAND test_xmodel)
 
+add_executable(test_xanim tests/test_xanim.cpp)
+target_link_libraries(test_xanim PRIVATE iw2_assets)
+add_test(NAME xanim COMMAND test_xanim)
+
 add_executable(test_lightgrid tests/test_lightgrid.cpp)
 target_link_libraries(test_lightgrid PRIVATE iw2_assets)
 add_test(NAME lightgrid COMMAND test_lightgrid)
