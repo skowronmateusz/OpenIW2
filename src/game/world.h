@@ -35,6 +35,30 @@ struct Attachment {
     std::string tag;
 };
 
+// AI states (state table 0x56f720; docs/spec/ai.md "AI states").
+enum AiState { AiNone, AiExposed, AiTurret, AiGrenade, AiBadplace, AiDeath, AiPain, AiScripted, AiCustom, AiNegotiation };
+
+// The actor's state machine (actor +0x8 … +0xa4, +0x104, +0x204 … +0x220, +0x25c, +0x704).
+struct ActorAi {
+    std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
+    int depth = 0;
+    int64_t baseStateMs = 0;                  // +0x20 time the bottom state was last set
+    struct Request { int type, state; };      // 1 replace, 2 push, 3 pop
+    std::vector<Request> requests;            // +0x30, count +0x88
+    std::array<int, 5> predicted{AiExposed};  // +0x8c: the stack once the requests are applied, depth +0xa0
+    int predictedDepth = 0;
+    int substate = 0;                         // +0x28
+    int64_t perceptionFrameMs = -1;           // +0x24
+    int64_t painStartMs = 0;                  // +0xa4
+    int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
+    int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
+    int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
+    script::Value customScript;               // +0x208 animcustom function
+    bool alive = true;                        // +0x25c
+    int64_t stopSoonMs = 0;                   // +0x704
+    bool corpse = false;                      // turned into a corpse (0x4fdba0)
+};
+
 struct Entity {
     ObjectPtr obj;
     int number = 0;
@@ -55,6 +79,7 @@ struct Entity {
     std::unique_ptr<VehicleState> vehicle; // script_vehicle path state (src/game/vehicles.cpp)
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
+    ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
     std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
@@ -149,7 +174,6 @@ private:
     void runTriggers();
     void useAnimTree(Entity& e, const std::string& tree);
     void registerAnimBuiltins();
-    void startAnimScript(Entity& e, const std::string& name);
     void thinkActors();
     void moveActor(Entity& e, float dt);
 
@@ -216,7 +240,45 @@ private:
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
     bool actorInGoal(Entity& e, float extra);
-    bool actorTurretThink(Entity& e);
+    bool turretStateStart(Entity& e);
+    int turretStateThink(Entity& e);
+    void turretStateFinish(Entity& e);
+    // Actor state machine (src/game/actorstate.cpp)
+    void aiRequest(Entity& e, int type, int state);
+    void aiSetState(Entity& e, int state);
+    bool aiPushState(Entity& e, int state);
+    void aiPopState(Entity& e);
+    void aiKillState(Entity& e, int state);
+    void aiApplyRequests(Entity& e);
+    void aiResumeBelow(Entity& e);
+    bool aiStart(Entity& e, int state);
+    void aiFinish(Entity& e, int state);
+    void aiSuspend(Entity& e, int state);
+    bool aiResume(Entity& e, int state);
+    int aiThink(Entity& e, int state);
+    void actorThink(Entity& e);
+    void actorPerceive(Entity& e);
+    void actorPain(Entity& e, Entity* attacker);
+    void actorDie(Entity& e, Entity* attacker);
+    void actorBecomeCorpse(Entity& e);
+    void setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode);
+    void killActorAnimScript(Entity& e);
+    bool actorAnimScriptDone(Entity& e);
+    int exposedThink(Entity& e);
+    void exposedSubstate(Entity& e);
+    void exposedCombat(Entity& e);
+    void exposedNoncombat(Entity& e);
+    void updateActorPath(Entity& e);
+    bool actorHasPath(const Entity& e) const;
+    void clearActorPath(Entity& e);
+    void followActorPath(Entity& e, bool run);
+    void combatScript(Entity& e);
+    std::string stopScript(Entity& e);
+    bool seesEnemyRecently(Entity& e, int64_t withinMs);
+    int painThink(Entity& e);
+    int deathThink(Entity& e);
+    int customThink(Entity& e);
+    void registerActorStateBuiltins();
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void shootTurret(Entity& t);

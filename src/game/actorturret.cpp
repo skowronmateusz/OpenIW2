@@ -30,47 +30,61 @@ bool World::actorInGoal(Entity& e, float extra) {
     return dx * dx + dy * dy <= (extra + r) * (extra + r);
 }
 
-// Returns true while the actor is in its turret state (the rest of the actor think is skipped).
-bool World::actorTurretThink(Entity& e) {
-    if (!e.usingTurret) return false;
-    Entity* t = entityOf(Value(e.usingTurret));
+// Start (0x549960): take the recorded turret unless someone else uses it. TODO(spec): the actor is linked to the
+// turret there (0x4d6540).
+bool World::turretStateStart(Entity& e) {
+    Entity* t = e.usingTurret ? entityOf(Value(e.usingTurret)) : nullptr;
     if (!t || !t->turret || t->obj->removed) {
         e.usingTurret.reset();
         return false;
     }
     TurretState& ts = *t->turret;
-    if (!(ts.inUse && ts.owner == e.obj)) {
-        if (ts.inUse) { // someone else has it: the state cannot start
-            e.usingTurret.reset();
-            return false;
-        }
-        // Start (0x549960). TODO: the actor is linked to the turret there (0x4d6540).
-        ts.inUse = true;
-        ts.owner = e.obj;
-        vm_.notify(t->obj, "turretownerchange");
-        turretIdle(*t); // 0x51b850
-        ts.flags = (ts.flags & ~0xe8u) | 0x100u;
-        ts.rightArc = ts.setupRightArc;
-        ts.leftArc = ts.setupLeftArc;
-        ts.flags &= ~0x10u;
-    }
-    // Think (0x54aba0): leave unless inside the goal + 92 (or ignoring goals); then run the turret weapon's
-    // animscript (weapon key "script", e.g. "mg42/stand"; turret script table 0x1c7e128).
-    if (!(ts.flags & 0x2000u) && !actorInGoal(e, 92.0f)) {
-        releaseTurret(*t);
+    if (ts.inUse && ts.owner != e.obj) {
         e.usingTurret.reset();
         return false;
     }
+    ts.inUse = true;
+    ts.owner = e.obj;
+    vm_.notify(t->obj, "turretownerchange");
+    turretIdle(*t); // 0x51b850
+    ts.flags = (ts.flags & ~0xe8u) | 0x100u;
+    ts.rightArc = ts.setupRightArc;
+    ts.leftArc = ts.setupLeftArc;
+    ts.flags &= ~0x10u;
+    return true;
+}
+
+// Finish (0x549b20): release the turret this actor owns.
+void World::turretStateFinish(Entity& e) {
+    Entity* t = e.usingTurret ? entityOf(Value(e.usingTurret)) : nullptr;
+    if (t && t->turret && t->turret->inUse && t->turret->owner == e.obj) releaseTurret(*t);
+    e.usingTurret.reset();
+}
+
+// Think (0x54aba0). Leaving (the turret is gone or not ours, the actor is outside its goal + 92 unless the turret
+// ignores goals): release it and replace the state with exposed, returning 1 (think again). Otherwise run the
+// turret weapon's animscript (weapon key "script", e.g. "mg42/stand"; turret script table 0x1c7e128).
+int World::turretStateThink(Entity& e) {
+    clearActorPath(e);
+    Entity* t = e.usingTurret ? entityOf(Value(e.usingTurret)) : nullptr;
+    auto leave = [&] {
+        turretStateFinish(e);
+        aiSetState(e, AiExposed);
+        return 1;
+    };
+    if (!t || !t->turret || t->obj->removed || !(t->turret->inUse && t->turret->owner == e.obj)) return leave();
+    TurretState& ts = *t->turret;
+    if (!(ts.flags & 0x2000u) && !actorInGoal(e, 92.0f)) return leave();
+    actorPerceive(e);
     const auto* w = weapon(ts.weapon);
     auto it = w ? w->find("script") : decltype(w->end()){};
     if (!w || it == w->end() || it->second.empty()) {
         print("turret weapon " + ts.weapon + " has no script");
-        releaseTurret(*t);
-        e.usingTurret.reset();
-        return false;
+        return leave();
     }
-    if (e.animScript != it->second) startAnimScript(e, it->second); // 0x53ac90 keeps a running script
-    return true;
+    // TODO(spec): the movemode/anim mode arguments of this script start are not read yet.
+    if (e.animScript != it->second) setActorAnimScript(e, it->second, 0, e.ai.animMode);
+    return 0;
 }
 
 } // namespace iw2::game

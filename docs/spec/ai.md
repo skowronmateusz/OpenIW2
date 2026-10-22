@@ -58,13 +58,87 @@ Once per frame (0x4fe890):
    + (current enemy: visible/aware 1000, recent 500, else 100).
 
 TODO: the accuracy term (0x550da0: weapon accuracy graphs, player accuracy cvars), the 0x48b090 visibility value, the fog
-limit, setting "last attacked" from damage, `notarget` (entity flag 4 at +0x128), the player's real view height, and
+limit, `notarget` (entity flag 4 at +0x128), the player's real view height, and
 using a turret's eye for gunners (0x51b940).
+
+## AI states (observed; objdump where Ghidra has no function)
+
+State table 0x56f720, 0x1c bytes per state: {start, finish, suspend, resume, think, touch, damaged}. States: 0 none,
+1 exposed, 2 turret, 3 grenade, 4 badplace, 5 death, 6 pain, 7 animscripted, 8 animcustom, 9 negotiation (traverse).
+Suspend is "finish the current state" (0x5498a0) and resume "start the current state" (0x5498b0) except exposed
+(resume 0x548d40) and turret (suspend 0x549b70).
+
+**Stack and requests.** Stack of 5 at actor +0x8 (depth +0x1c, +0x20 = time the bottom entry was last set). Requests
+{type, state} queue at +0x30 (count +0x88): 1 replace (0x4feb00), 2 push (0x4feb40), 3 pop (0x4feba0). Each enqueue
+merges the last two (0x4fe980) with the 4×4 table 0x56f838 [previous][new]: −1 keep both, 0 drop both,
+else the previous takes that type and the new state (replace+replace→replace, replace+pop→pop, push+replace→replace,
+push+pop→nothing, pop+push→replace); with +0x25c = 0 (dead) only the first request is kept. A predicted stack
+(+0x8c, depth +0xa0) follows the queue. Push of 6…9: refused while levels 1…depth of the predicted stack hold a
+blocker (0x4fea00, table 0x56f878: pain ← 7, 9; animscripted ← none; animcustom ← 6, 9; negotiation ← 7); then the
+predicted stack is popped down below the first level holding a replaced state (0x4fea60, table 0x56f8b8: pain → 6;
+7, 8, 9 → 6, 7, 8, 9). Kill (0x4febd0): finish states depth…1, queue only a replace with the state.
+Apply (0x4fe4e0): replace = finish current, set, start (a failed start sets exposed and starts it);
+push = suspend current, depth+1, start (failure → 0x4fe460); pop = finish current, 0x4fe460. 0x4fe460: step down and resume until a resume succeeds, finishing the ones that fail; at depth 0 the state
+becomes exposed and starts.
+
+**Actor think** (0x4ff030, every 50 ms): loop {apply requests if any; r = think(current)} while
+r = 1. r = 2 → corpse (0x4fdba0: entity type 0xb, contents 0x4000000, notify "death"); otherwise
+when 0x4fef50 holds the actor is notified "goal": inside the goal (0x5026d0: |dz| ≤
+goalheight, 2D distance ≤ goalradius, inside the goal volume if any) and the path, if any, ends inside it (facing 6 at
+a cover node also needs the yaw near the node's angle). At spawn animscripts/init runs as a plain thread, then the
+bottom state starts (0x4fdee0).
+
+**Animscript** (0x53ac90): actor +0x204 current script handle, +0x214 movemode byte (field getter
+0x536960: 0 "stop", 1 "stop_soon", 2 "walk", 3 "run", constant strings 0x1c7f112…0x1c7f118), +0x218 anim mode
+(+0x21c override). The same script keeps running: anim mode updated, a changed movemode notifies "movemode".
+Another script: 0x53ac40 (notify "killanimscript" if a script thread exists, current = none), then
+the new one starts. The current script is not cleared when its thread ends. Choices: 0x53aed0 the
+claimed node's cover script when at the node (0x54bb30), else `stop`; 0x53ae40 that script (0, 1); 0x53b050 the node's cover script (0, 1) or `combat` (0, 4); 0x53afe0 / 0x53af20 while moving: the stop choice with movemode stop_soon when +0x704 − now ≤ 200 (af20: < 200), else
+`move` with movemode run / walk (anim mode 1); 0x53ade0 (followed actor +0x2148): stop choice if |velocity| < 1,
+else `move` walk.
+
+**Path follow** (0x552350): entering movement sets anim mode 1, movemode stop; step 0x551960; run →
+0x53afe0, else 0x53af20; on entering, +0x704 is cleared. Stop soon (0x503fe5…0x5040ad): when the path end is
+within |velocity|² · 0.0625 (a quarter second) +0x704 = now + 500; when it has passed the path is cleared.
+
+**Exposed** (think 0x5496f0; start/resume set substate 100): grenade (+0x20c4) → replace 3; bad
+place (+0x2128) → 4; a recorded turret (+0x2114) that is free → replace 2 (in use → forget it); then perception
+(0x4fe890) and the substate (0x548d50): no enemy → 0x65 noncombat; noncombat and the enemy seen
+(0x54ce10: the last sight check if within 250 ms, else a new one) → 100 combat; reacquire 0x66 →
+combat without a path (or with +0x728/+0x2148), or when seen and 0x54d010 passes.
+- Combat 100: path update 0x503490; with a path and the enemy seen: clear the path when inside the goal (always with
+  +0x728/+0x2148). No path → 0x548c70 (0x53b050; inside the goal, with the enemy not seen for 5 s, at a claimed
+  cover node: facing 6, else 3); else facing 4 and path follow (run).
+- Noncombat 0x65 (0x549520): path update; no path → facing 3 and, with a known enemy, 0x53b050, else
+  the stop choice (cover node with spawnflag 0x8000 at the goal: facing 6); with a path → follow, run when the
+  distance to the path goal exceeds `walkdist`, facing 2 (4 inside the goal; 6 near flagged nodes).
+- Reacquire 0x66 (0x5494a0): facing 5, path follow (run).
+
+**Damage.** G_Damage notifies "death" (attacker) when health ≤ 0 and calls the die callback, else the pain callback.
+Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "last attacked" (+0x1780)
+= now, push 6; when pushed, 0x53ac40. Die (0x4ff530): unless the state is death: damage fields, kill
+→ 5, +0x25c = 0, 0x53ac40.
+- Pain: start 0x54d2a0 (+0xa4 = now, clear path, `pain` (0, 4)); think 0x54d340: after the start
+  frame, once the script thread has ended → pop and think again; else notify "pain", perception, facing 1, `pain`
+  (0, 4); finish 0x54d300 broadcasts the pain AI event (0x535770).
+- Death: start 0x548980 (substate 200); think 0x548ab0: substate 200 and 800 ms
+  since the state was set → 0x548a10 (death AI event, grenade, sentient release, clear path), substate 201; the
+  `death` script's thread ended → 2 (corpse); else facing 1, `death` (0, override or 4); 500 ms after death the
+  contents become 0x4002000.
+- animcustom(func) (0x540450): push 8; when pushed 0x53ac40 and +0x208 = func. Think 0x54b240:
+  clear path, run func as the animscript `<custom>` (0, override or 4); when its thread ended → pop.
+- Turret 2: start 0x549960, finish 0x549b20 (release), think 0x54aba0: leaving → release, replace
+  with exposed, return 1 (see docs/spec/turrets.md).
+
+Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`. TODO(spec): grenade (0x5205b0/0x520c30: flee,
+takecover, cower, combat, coverattack, acquire, throwback substates 300…0x132), badplace (0x524060), animscripted
+(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), node claiming and cover scripts by node (0x54bb30), the path
+planner 0x503490 and follower 0x551960 (a node-graph placeholder is used), facing modes, AI events (0x535770), touch
+and damaged handlers, followed/blocking actors (+0x2148, +0x728).
 
 ## Not yet specified
 
-The engine's AI state machine (when `stop`, `move`, `combat`, `cover_*`, `pain` and `death` run), path finding,
-and target selection.
+Path finding (0x503490, 0x551960) and the remaining states listed above.
 
 ## Native actor fields (observed)
 

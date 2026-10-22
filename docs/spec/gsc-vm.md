@@ -31,8 +31,11 @@ animation reference, animation tree.
   frame.
 - `obj waittill("e", a, b)` suspends until `obj notify("e", x, y)`; the notify arguments are stored in `a`, `b`.
   `waittillmatch("e", m)` also requires the first notify argument to equal `m`.
-- `obj endon("e")` terminates the calling thread when `obj` is notified with `e`. Threads are killed before the
-  waiters of the same notify run (*inferred* ordering).
+- `obj endon("e")` ends the function call that registered it when `obj` is notified with `e`, together with the
+  calls it made; in the thread's first function that ends the thread, otherwise the caller continues as if the call
+  returned undefined. A call's endons are dropped when it returns (*inferred*: `animscripts/shared.gsc`
+  `DoNoteTracksForTime` ends a looping notetrack wait with `ent endon("stop_notetracks")` and `run.gsc` keeps going
+  after it). Threads are ended before the waiters of the same notify run (*inferred* ordering).
 - A runtime error stops only the failing thread and is reported. The original prints a script runtime error and,
   in developer mode, halts.
 

@@ -96,7 +96,10 @@ struct Thread {
     int waitVarCount = 0;
     std::vector<Value> received;
     // endon registrations
-    std::vector<std::pair<std::weak_ptr<Object>, std::string>> endons;
+    struct EndOn { std::weak_ptr<Object> object; std::string event; size_t frame; };
+    std::vector<EndOn> endons;  // frame: index of the function call that registered it
+    bool running = false;
+    int pendingUnwind = -1;     // an endon of frame k fired while this thread was running
 };
 
 class VM {
@@ -114,6 +117,8 @@ public:
 
     // Starts a thread running file::function with arguments; it runs until it first suspends.
     uint64_t start(const std::string& file, const std::string& function, std::vector<Value> args = {}, Value self = {});
+    // Starts a thread running a function value (e.g. the argument of animcustom).
+    uint64_t startFunction(const FunctionRef& function, std::vector<Value> args = {}, Value self = {});
 
     // Advances script time and runs every thread that is due. Call once per server frame.
     void runFrame(int64_t nowMs);
@@ -157,6 +162,7 @@ private:
     void step(Thread& t, bool& suspended);
     void fail(Thread& t, const std::string& msg);
     void finishNotifyWait(Thread& t, const std::vector<Value>& args);
+    void unwind(Thread& t, size_t frame);
     Value readRef(Thread& t, int refIndex);
     void writeRef(Thread& t, int refIndex, Value v);
     Value binary(Op op, const Value& a, const Value& b);

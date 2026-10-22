@@ -133,6 +133,41 @@ ender()
         if (h.joined() != "main|got 7x|after notify|") std::cerr << h.joined() << "\n";
     }
 
+    // An endon registered by a called function ends that call only; the caller continues (the shipped
+    // animscripts/shared.gsc DoNoteTracksForTime relies on it), and a returned call's endons no longer apply.
+    {
+        Harness h;
+        h.files["test/endon.gsc"] = R"(
+main()
+{
+    ent = spawnstruct();
+    level.ent = ent;
+    for (i = 0; i < 2; i++)
+    {
+        timed(ent);
+        println("back " + i);
+    }
+    level waittill("later");
+    println("later");
+}
+timed(ent)
+{
+    ent endon("stop");
+    level waittill("never");
+}
+)";
+        h.vm.start("test/endon.gsc", "main");
+        CHECK(h.joined() == "");
+        h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        CHECK(h.joined() == "back 0|");
+        h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        CHECK(h.joined() == "back 0|back 1|");
+        h.vm.notify(h.vm.level()->get("ent").asObject(), "stop"); // endon of the returned call is gone
+        h.vm.notify(h.vm.level(), "later");
+        CHECK(h.joined() == "back 0|back 1|later|");
+        if (h.joined() != "back 0|back 1|later|") std::cerr << h.joined() << "\n";
+    }
+
     // Includes and qualified calls, runtime errors kill only the failing thread.
     {
         Harness h;
