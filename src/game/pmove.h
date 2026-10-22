@@ -14,6 +14,7 @@ struct PlayerInput {
     float forward = 0, right = 0; // -1..1 (the original's -127..127 command bytes)
     bool jump = false;            // held
     Stance stance = Stance::Stand; // requested stance
+    bool leanLeft = false, leanRight = false; // +leanleft / +leanright (usercmd bits 0x40 / 0x80)
     float yaw = 0;                // view yaw in degrees
 };
 
@@ -29,7 +30,12 @@ struct PlayerState {
     bool transitionDown = false;
     int64_t lastJumpMs = -100000;
     bool jumpHeld = false;
+    float lean = 0;              // leanf: −0.5..0.5 (−0.25..0.25 prone), negative = left
 };
+
+// View offset of a lean (0x440380 with roll factor 16 and distance 20): g = (2 − |lean|)·lean, roll = 16·g
+// degrees; offset = 20·g·(cos(roll)·right − sin(roll)·up) for yaw in degrees.
+Vec leanOffset(float yawDeg, float lean);
 
 // Movement settings: dvar defaults and constants read from CoD2SP_s.exe (docs/spec/pmove.md).
 struct MoveParams {

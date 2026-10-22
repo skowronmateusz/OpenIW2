@@ -142,6 +142,7 @@ float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bo
         else if (ps.stance == Stance::Crouch) s *= 0.65f;
         if (mp.weaponSpeedScale > 0) s *= mp.weaponSpeedScale;
     }
+    if (ps.lean != 0) s *= 0.4f; // a nonzero leanf (ps+0x4c) slows movement (0x508140)
     return s;
 }
 
@@ -169,9 +170,42 @@ void accelerate(PlayerState& ps, const Vec& wishDir, float wishSpeed, float acce
     ps.velocity = ::iw2::game::add(ps.velocity, scale(wishDir, accelSpeed));
 }
 
+// Lean (0x50ade0): the target is −1 (left), +1 (right) or 0; only on the ground. The limit is 0.5, 0.25 at
+// view height 11. The value moves towards the target by ms · max/350 and back to 0 by ms · max/280. A 16-unit cube
+// traced from the eye to the leaned eye limits it to 1 − sqrt(1 − fraction).
+// TODO(spec): the disabling ps flags (0x8000, 0x2000000/0x4000000 for allowleanleft/right, 0x20300 in ps+0x7c).
+void updateLean(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float ms, float yaw) {
+    int dir = 0;
+    if (ps.onGround) {
+        if (in.leanLeft) dir -= 1;
+        if (in.leanRight) dir += 1;
+    }
+    const float maxLean = ps.viewHeightTarget == 11 && ps.viewHeight <= 11.0f ? 0.25f : 0.5f;
+    float f = ps.lean;
+    if (dir == 0) {
+        if (f > 0) f = std::max(0.0f, f - ms * (1.0f / 280.0f) * maxLean);
+        else if (f < 0) f = std::min(0.0f, f + ms * (1.0f / 280.0f) * maxLean);
+    } else if (dir < 0) {
+        if (f > -maxLean) f -= ms * (1.0f / 350.0f) * maxLean;
+        f = std::max(f, -maxLean);
+    } else {
+        if (f < maxLean) f += ms * (1.0f / 350.0f) * maxLean;
+        f = std::min(f, maxLean);
+    }
+    ps.lean = f;
+    if (f != 0) {
+        const Vec eye{ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
+        const Vec off = leanOffset(yaw, f);
+        const TraceResult tr = w.trace(eye, add(eye, off), {-8, -8, -8}, {8, 8, 8}, Contents::PlayerSolid);
+        const float limit = 1.0f - std::sqrt(std::max(0.0f, 1.0f - tr.fraction));
+        if (limit < std::fabs(ps.lean)) ps.lean = ps.lean < 0 ? -limit : limit;
+    }
+}
+
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp) {
     const Vec maxs{mp.maxs[0], mp.maxs[1], maxsZ(ps.stance, mp)};
     groundTrace(w, ps, mp.mins, maxs);
+    updateLean(w, ps, in, dt * 1000.0f, in.yaw);
     updateStance(w, ps, in, mp);
     updateViewHeight(ps);
 
@@ -226,6 +260,15 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, f
 }
 
 } // namespace
+
+Vec leanOffset(float yawDeg, float lean) {
+    if (lean == 0) return {0, 0, 0};
+    const float g = (2.0f - std::fabs(lean)) * lean;
+    const float roll = g * 16.0f * float(M_PI) / 180.0f;
+    const float yaw = yawDeg * float(M_PI) / 180.0f;
+    const float d = g * 20.0f;
+    return {std::cos(roll) * std::sin(yaw) * d, -std::cos(roll) * std::cos(yaw) * d, -std::sin(roll) * d};
+}
 
 void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp) {
     // Pmove (0x50cc10) runs steps of at most 66 ms; PmoveSingle (0x50c4a0) clamps a step to 1..200 ms.

@@ -1248,6 +1248,7 @@ int main(int argc, char** argv) {
     float fireSeconds = 0;
     bool audioOn = true;
     float shotViewHeight = 60;
+    float shotLean = 0;
     bool shotAds = false;
     std::string language = "polish";
     bool scripts = true;
@@ -1272,6 +1273,7 @@ int main(int argc, char** argv) {
             else if (a == "--no-audio") audioOn = false;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
             else if (a == "--ads") shotAds = true;
+            else if (a == "--lean") shotLean = std::stof(next());
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--spawn-all") spawnAll = true;
@@ -1332,7 +1334,8 @@ int main(int argc, char** argv) {
             // The viewer's controls, reported to scripts through getkeybinding (command names from the exe).
             w->keyBindings = {{"+forward", {"W"}}, {"+back", {"S"}}, {"+moveleft", {"A"}}, {"+moveright", {"D"}},
                               {"+attack", {"MOUSE1"}}, {"+speed", {"MOUSE2"}}, {"+reload", {"R"}},
-                              {"+gostand", {"SPACE"}}, {"togglecrouch", {"C"}}, {"toggleprone", {"Z"}}};
+                              {"+gostand", {"SPACE"}}, {"togglecrouch", {"C"}}, {"toggleprone", {"Z"}},
+                              {"+leanleft", {"Q"}}, {"+leanright", {"E"}}};
             w->start();
             return w;
         };
@@ -1720,9 +1723,13 @@ int main(int argc, char** argv) {
             pweapon.update(fireSeconds, {fireSeconds > 0, false, shotAds});
             for (int i = 0; i < 100; ++i) {
                 pweapon.update(0.02f, {false, false, shotAds});
-                vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac());
+                vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
             }
             cam.pos.z += shotViewHeight - 60.0f;
+            {
+                const game::Vec lo = game::leanOffset(cam.yaw, shotLean);
+                cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
+            }
             cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                       pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn());
             fxRight = cam.right();
@@ -1789,6 +1796,8 @@ int main(int argc, char** argv) {
                 in.right = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
                 in.jump = keys[SDL_SCANCODE_SPACE];
                 in.stance = stance;
+                in.leanLeft = keys[SDL_SCANCODE_Q];
+                in.leanRight = keys[SDL_SCANCODE_E];
                 in.yaw = cam.yaw;
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
@@ -1798,6 +1807,9 @@ int main(int argc, char** argv) {
                     remaining -= step;
                 }
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
+                // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
+                const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
+                cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
             } else {
                 const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
                 Vec3 move;
@@ -1821,7 +1833,7 @@ int main(int argc, char** argv) {
                 const int shots = pweapon.update(std::min(dt, 0.1f), wi);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
-                                ps.viewHeight, pweapon.adsFrac());
+                                ps.viewHeight, pweapon.adsFrac(), ps.lean);
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
                                           pweapon.adsZoomingIn());

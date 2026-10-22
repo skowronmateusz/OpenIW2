@@ -3,6 +3,7 @@
 #include "game/viewweapon.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace iw2::game {
 namespace {
@@ -31,7 +32,7 @@ V3 faded(const V3& v, float adsFrac) {
 
 } // namespace
 
-void ViewWeaponMotion::update(const Field& w, int ms, float xySpeed, float maxSpeed, float viewHeight, float adsFrac) {
+void ViewWeaponMotion::update(const Field& w, int ms, float xySpeed, float maxSpeed, float viewHeight, float adsFrac, float lean) {
     const bool prone = viewHeight <= 11.0f, crouched = !prone && viewHeight <= 40.0f;
     const char* st = prone ? "prone" : crouched ? "ducked" : "stand";
     auto f = [&](const char* suffix) { return w((std::string(st) + suffix).c_str()); };
@@ -64,6 +65,17 @@ void ViewWeaponMotion::update(const Field& w, int ms, float xySpeed, float maxSp
             for (float& x : target) x *= 1.0f - adsFrac;
         approach(curRot_, target, prone ? w("posProneRotRate") : w("posRotRate"), ms);
         outRot_ = faded(curRot_, adsFrac);
+    }
+    // Lean: g = (2 − |lean|)·lean. Position (0x4b61d0) while not fully aimed: + (0, −cos r, −sin r)·(1 − ads)·g·1.6
+    // with r = −2g degrees; roll (0x4b6420) += −2g.
+    if (lean != 0) {
+        const float g = (2.0f - std::fabs(lean)) * lean;
+        if (adsFrac < 1.0f) {
+            const float r = -2.0f * g * 3.14159265f / 180.0f, k = (1.0f - adsFrac) * g * 1.6f;
+            outMove_[1] += -std::cos(r) * k;
+            outMove_[2] += -std::sin(r) * k;
+        }
+        outRot_[2] += -2.0f * g;
     }
 }
 

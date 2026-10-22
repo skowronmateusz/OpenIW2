@@ -61,3 +61,16 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
 
 Implemented in `src/game/pmove.cpp`. Not implemented yet (TODO there): ground trace (0x50bd90), slide move
 (0x54f2e0), step (0x508390), inertiaMax, ladders, mantling, lean.
+
+## Lean (0x50ade0, 0x440380)
+
+- `+leanleft` / `+leanright` set usercmd button bits 0x40 / 0x80 (CL_CmdButtons near 0x409bfb).
+- leanf (ps+0x4c, also a player-state netfield "leanf") targets −1, +1 or 0; leaning needs the ground (or
+  pm_type 1). Limit 0.5, or 0.25 at view height 11. It moves towards the limit by ms · limit · (1/350) and back
+  to 0 by ms · limit · (1/280). A cube (−8..8) traced from the eye to the leaned eye limits |leanf| to
+  1 − sqrt(1 − fraction). A nonzero leanf scales movement by 0.4 (0x508140).
+- View offset (0x440380, called by cgame at 0x4ae770 with 16 and 20): g = (2 − |leanf|)·leanf, roll = 16·g
+  degrees, offset = 20·g·(cos(roll)·right − sin(roll)·up); the view angles are not rolled.
+- View weapon: position + (0, −cos r, −sin r)·(1 − adsFrac)·g·1.6 with r = −2g degrees while not fully aimed
+  (0x4b61d0), roll −2g (0x4b6420).
+- TODO(spec): the ps flags that forbid leaning (0x8000, 0x2000000 / 0x4000000, 0x20300 in ps+0x7c).

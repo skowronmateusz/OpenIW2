@@ -16,7 +16,7 @@ public:
 
     // Advances the smoothed offsets by ms milliseconds (0x4b5380 position, 0x4b5730 rotation).
     // xySpeed: horizontal player speed; maxSpeed: g_speed; viewHeight: current eye height (60/40/11 at rest).
-    void update(const Field& weapon, int ms, float xySpeed, float maxSpeed, float viewHeight, float adsFrac);
+    void update(const Field& weapon, int ms, float xySpeed, float maxSpeed, float viewHeight, float adsFrac, float lean = 0);
 
     // Offsets to add: forward/right/up and pitch/yaw/roll, already faded for aiming down the sights.
     const V3& move() const { return outMove_; }
