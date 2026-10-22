@@ -96,19 +96,27 @@ std::vector<int> PathGraph::findPath(int from, int to) const {
     return {path.rbegin(), path.rend()};
 }
 
+namespace {
+const char* const kNodeClasses[] = {"node_pathnode", "node_cover_stand", "node_cover_crouch", "node_cover_crouch_window",
+                                    "node_cover_prone", "node_cover_right", "node_cover_left", "node_cover_wide_right",
+                                    "node_cover_wide_left", "node_concealment_stand", "node_concealment_crouch",
+                                    "node_concealment_prone", "node_reacquire", "node_balcony", "node_scripted",
+                                    "node_negotiation_begin", "node_negotiation_end", "node_turret"};
+} // namespace
+
+int pathNodeTypeNum(const std::string& classname) {
+    for (size_t i = 0; i < std::size(kNodeClasses); ++i)
+        if (classname == kNodeClasses[i]) return int(i) + 1;
+    return 0;
+}
+
 std::string pathNodeTypeName(const std::string& classname) {
-    static const char* const classes[] = {"node_pathnode", "node_cover_stand", "node_cover_crouch", "node_cover_crouch_window",
-                                          "node_cover_prone", "node_cover_right", "node_cover_left", "node_cover_wide_right",
-                                          "node_cover_wide_left", "node_concealment_stand", "node_concealment_crouch",
-                                          "node_concealment_prone", "node_reacquire", "node_balcony", "node_scripted",
-                                          "node_negotiation_begin", "node_negotiation_end", "node_turret"};
     static const char* const names[] = {"BAD NODE", "Path", "Cover Stand", "Cover Crouch", "Cover Crouch Window", "Cover Prone",
                                         "Cover Right", "Cover Left", "Cover Wide Right", "Cover Wide Left", "Conceal Stand",
                                         "Conceal Crouch", "Conceal Prone", "Reacquire", "Balcony", "Scripted", "Begin", "End",
                                         "Turret"};
-    for (size_t i = 0; i < std::size(classes); ++i)
-        if (classname == classes[i]) return names[i + 1];
-    return {};
+    const int t = pathNodeTypeNum(classname);
+    return t ? names[t] : std::string();
 }
 
 } // namespace iw2::game
