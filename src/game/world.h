@@ -169,6 +169,8 @@ private:
     VehicleState& vehicleState(const script::Value& self);
     int vehicleNodeIndex(const script::Value& v) const;
     const VehicleInfo* vehicleInfo(const std::string& type);
+    void updateVehicleTurret(Entity& e);
+    Vec3 vehicleTagPosition(Entity& e, const char* tag, bool& found);
     void alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle);
     std::vector<VehicleNode> vnodes_;
     std::map<std::string, std::unique_ptr<VehicleInfo>> vehicleInfos_;

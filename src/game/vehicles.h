@@ -45,6 +45,8 @@ struct VehicleInfo {
     int type = 0; // 0 "4 wheel", 1 "tank", 2 "plane", 3 "boat", 4 "artillery"
     float maxSpeed = 0, accel = 0, collisionSpeed = 0, engineSndSpeed = 0;
     float suspensionTravel = 0, maxBodyPitch = 0, maxBodyRoll = 0;
+    float turretHorizSpanLeft = 0, turretHorizSpanRight = 0, turretVertSpanUp = 0, turretVertSpanDown = 0, turretRotRate = 0;
+    bool quadBarrel = false;
     std::string turretWeapon;
 };
 
@@ -62,6 +64,12 @@ struct VehicleState {
     float targetSpeed = 0, accel = 0, speed = 0;
     float stepFrac = 0;
     Vec3 velocity{};
+    // Turret (vehicle +0x1b4…+0x1d0; turret pitch/yaw relative to the body are entity +0x70/+0x74).
+    bool hasTarget = false;
+    ObjectPtr targetEnt;
+    Vec3 targetVec{}, targetOffset{};
+    float turretPitch = 0, turretYaw = 0;
+    bool altBarrel = false;
     int team = 0;              // 0 none, 1 axis, 2 allies
     bool usable = false;
 };

@@ -110,6 +110,27 @@ const char* const kWheelTags[6] = {"tag_wheel_front_left", "tag_wheel_front_righ
                                    "tag_wheel_back_right", "tag_wheel_middle_left", "tag_wheel_middle_right"};
 const char* const kWheelNames[6] = {"front_left", "front_right", "back_left", "back_right", "middle_left", "middle_right"};
 
+// Moves a towards b... at a constant rate (0x420970 / 0x4208f0): returns the angle `from` turned towards `to` by
+// rate * dt degrees, or `to` once within one step.
+float turnAngle(float to, float from, float rate, float dt) {
+    while (to - from > 180.0f) to -= 360.0f;
+    while (to - from < -180.0f) to += 360.0f;
+    const float diff = to - from;
+    float step = rate * dt;
+    if (diff <= 0.0f) step = -step;
+    float r = to;
+    if (std::fabs(diff) > 0.001f && std::fabs(diff) >= std::fabs(step)) r = step + from;
+    return angleNormalize180(r);
+}
+
+// Difference a - b wrapped into [-180, 180] (0x423f50).
+float angleDelta(float a, float b) {
+    float d = a - b;
+    while (d > 180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    return d;
+}
+
 float numberField(const ObjectPtr& o, const char* key, float def) {
     const Value v = o->get(key);
     return v.isNumber() ? v.asFloat() : def;
@@ -385,6 +406,12 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "maxbodypitch") info->maxBodyPitch = f;
                 else if (k == "maxbodyroll") info->maxBodyRoll = f;
                 else if (k == "turretweapon") info->turretWeapon = v;
+                else if (k == "turrethorizspanleft") info->turretHorizSpanLeft = f;
+                else if (k == "turrethorizspanright") info->turretHorizSpanRight = f;
+                else if (k == "turretvertspanup") info->turretVertSpanUp = f;
+                else if (k == "turretvertspandown") info->turretVertSpanDown = f;
+                else if (k == "turretrotrate") info->turretRotRate = f;
+                else if (k == "quadbarrel") info->quadBarrel = std::atoi(v.c_str()) != 0;
             }
         }
     }
@@ -469,6 +496,65 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
     if (n[2] != 0.0f) origin[2] = -((n[1] * origin[1] + n[0] * origin[0]) - dist) / n[2];
 }
 
+// World position of a model tag on the vehicle (0x4d75b0): the tag's model-space position through the entity's
+// axes. Turret bone rotation is not applied (TODO: the client-side turret controllers).
+Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found) {
+    found = false;
+    const Value model = e.obj->get("model");
+    const assets::XModelParts* parts = model.isString() ? skeleton(model.asString()) : nullptr;
+    const Vec3 origin = e.obj->get("origin").asVector(), angles = e.obj->get("angles").asVector();
+    if (!parts) return origin;
+    const assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
+    Vec3 o{};
+    for (size_t b = 0; b < parts->bones.size(); ++b)
+        if (lowerCopy(parts->bones[b].name) == tag) { o = pose.position[b]; found = true; break; }
+    if (!found) return origin;
+    Vec3 fwd, right, up;
+    anglesToAxis(angles, fwd, right, up);
+    Vec3 w;
+    for (int i = 0; i < 3; ++i) w[size_t(i)] = up[size_t(i)] * o[2] - right[size_t(i)] * o[1] + fwd[size_t(i)] * o[0] + origin[size_t(i)];
+    return w;
+}
+
+// Turns the turret towards its target (0x5102e0): relative pitch/yaw of the target seen from tag_barrel in the
+// vehicle's frame, approached at turretRotRate degrees per second, clamped to the turret spans. Within 1° on both
+// axes it notifies "turret_on_target", and for an entity target "turret_on_vistarget" when the line from the barrel
+// to the target is clear.
+void World::updateVehicleTurret(Entity& e) {
+    VehicleState& v = *e.vehicle;
+    const Value h = e.obj->get("health");
+    if (!v.hasTarget || !h.isNumber() || h.asInt() < 1 || !v.info) return;
+    Entity* target = v.targetEnt ? entityOf(Value(v.targetEnt)) : nullptr;
+    if (v.targetEnt && (!target || target->obj->removed)) return;
+    bool found = false;
+    const Vec3 barrel = vehicleTagPosition(e, "tag_barrel", found);
+    if (!found) return;
+    Vec3 point = v.targetVec;
+    if (target) {
+        const Vec3 o = target->obj->get("origin").asVector();
+        for (int i = 0; i < 3; ++i) point[size_t(i)] = o[size_t(i)] + v.targetOffset[size_t(i)];
+    }
+    Vec3 dir = sub(point, barrel);
+    normalize(dir);
+    Vec3 fwd, right, up;
+    anglesToAxis(e.obj->get("angles").asVector(), fwd, right, up);
+    const Vec3 local{dot(dir, fwd), -dot(dir, right), dot(dir, up)};
+    Vec3 want = vectorToAngles(local);
+    const float dPitch = angleDelta(want[0], v.turretPitch), dYaw = angleDelta(want[1], v.turretYaw);
+    v.turretPitch = turnAngle(want[0], v.turretPitch, v.info->turretRotRate, kFrameTime);
+    v.turretYaw = turnAngle(want[1], v.turretYaw, v.info->turretRotRate, kFrameTime);
+    v.turretPitch = std::clamp(v.turretPitch, -v.info->turretVertSpanUp, v.info->turretVertSpanDown);
+    v.turretYaw = std::clamp(v.turretYaw, -v.info->turretHorizSpanRight, v.info->turretHorizSpanLeft);
+    e.obj->set("$turretangles", Value(Vec3{v.turretPitch, v.turretYaw, 0}));
+    if (std::fabs(dPitch) < 1.0f && std::fabs(dYaw) < 1.0f) {
+        vm_.notify(e.obj, "turret_on_target");
+        if (target) {
+            const TraceResult tr = collision_->trace(barrel, point, {0, 0, 0}, {0, 0, 0}, 0x801);
+            if (tr.fraction >= 1.0f) vm_.notify(e.obj, "turret_on_vistarget");
+        }
+    }
+}
+
 int World::vehicleNodeIndex(const Value& v) const {
     if (!v.isObject()) throw std::runtime_error("Not a vehicle node");
     auto it = vnodeIndex_.find(v.asObject().get());
@@ -541,6 +627,8 @@ void World::thinkVehicles() {
             if (up || down) vm_.notify(e.obj, "reached_wait_speed");
         }
     }
+    for (const auto& ep : entities_)
+        if (ep->vehicle && !ep->obj->removed) updateVehicleTurret(*ep);
 }
 
 // Vehicle methods (registration table, docs/spec/builtins.md 0x513070…0x513ee0).
@@ -631,6 +719,70 @@ void World::registerVehicleBuiltins() {
     });
     // No player drives vehicles yet, so a vehicle has no owner (0x513ab0 returns nothing then).
     vm_.registerBuiltin("getvehicleowner", [this](CallContext& c) { vehicleState(c.self); return Value(); });
+    auto requireTurret = [this](CallContext& c) -> VehicleState& {
+        VehicleState& v = vehicleState(c.self);
+        const Value h = c.self.asObject()->get("health");
+        if (!h.isNumber() || h.asFloat() <= 0.0f) throw std::runtime_error("Vehicle must have health to control the turret");
+        return v;
+    };
+    vm_.registerBuiltin("setturrettargetvec", [requireTurret](CallContext& c) {
+        VehicleState& v = requireTurret(c);
+        v.hasTarget = true;
+        v.targetEnt.reset();
+        v.targetVec = c.arg(0).asVector();
+        v.targetOffset = {0, 0, 0};
+        return Value();
+    });
+    vm_.registerBuiltin("setturrettargetent", [this, requireTurret](CallContext& c) {
+        VehicleState& v = requireTurret(c);
+        if (!entityOf(c.arg(0))) throw std::runtime_error("not an entity");
+        v.hasTarget = true;
+        v.targetEnt = c.arg(0).asObject();
+        v.targetVec = {0, 0, 0};
+        v.targetOffset = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
+        return Value();
+    });
+    vm_.registerBuiltin("clearturrettarget", [this](CallContext& c) {
+        VehicleState& v = vehicleState(c.self);
+        v.hasTarget = false;
+        v.targetEnt.reset();
+        v.targetVec = v.targetOffset = {0, 0, 0};
+        return Value();
+    });
+    // fireturret (0x514260): bullet weapons fire one 8192-unit bullet from the barrel (two for quadBarrel,
+    // alternating the flash tags); projectile weapons need projectiles, which are not implemented (TODO).
+    vm_.registerBuiltin("fireturret", [this, requireTurret](CallContext& c) {
+        VehicleState& v = requireTurret(c);
+        Entity* e = entityOf(c.self);
+        if (!v.info || v.info->turretWeapon.empty()) throw std::runtime_error("No weapon specified for [" + e->obj->get("model").toString() + "]");
+        const auto* w = weapon(v.info->turretWeapon);
+        const std::string type = w && w->count("weapontype") ? w->at("weapontype") : std::string();
+        if (type != "bullet" && type != "projectile") throw std::runtime_error("Vehicles only support bullet and projectile weapons");
+        bool found = false;
+        vehicleTagPosition(*e, "tag_barrel", found);
+        if (!found) throw std::runtime_error("No tag_barrel for [" + e->obj->get("model").toString() + "]");
+        if (type == "bullet") {
+            static const char* const flash[4] = {"tag_flash", "tag_flash_11", "tag_flash_2", "tag_flash_22"};
+            const int count = v.info->quadBarrel ? 2 : 1;
+            const int first = v.info->quadBarrel && v.altBarrel ? 2 : 0;
+            // Direction: the body's axes turned by the turret angles (inferred: the original reads the flash tag's
+            // axis, which the turret bone controllers rotate).
+            Vec3 a = e->obj->get("angles").asVector();
+            a[0] += v.turretPitch;
+            a[1] += v.turretYaw;
+            Vec3 fwd, right, up;
+            anglesToAxis(a, fwd, right, up);
+            for (int k = 0; k < count; ++k) {
+                bool ok = false;
+                const Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
+                if (!ok) throw std::runtime_error(std::string("No ") + flash[first + k] + " for [" + e->obj->get("model").toString() + "]");
+                const Vec3 end{start[0] + fwd[0] * 8192.0f, start[1] + fwd[1] * 8192.0f, start[2] + fwd[2] * 8192.0f};
+                fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon));
+            }
+        }
+        if (v.info->quadBarrel) v.altBarrel = !v.altBarrel;
+        return Value();
+    });
     vm_.registerBuiltin("getwheelsurface", [this](CallContext& c) {
         VehicleState& v = vehicleState(c.self);
         if (!v.info || (v.info->type != 0 && v.info->type != 1))

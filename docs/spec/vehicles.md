@@ -143,10 +143,39 @@ names `front_left` … `middle_right`; errors "Vehicle type [%s] has no wheels" 
 (bark, brick, carpet, cloth, concrete, dirt, flesh, foliage, glass, grass, gravel, ice, metal,
 mud, paper, plaster, rock, sand, snow, water, wood, asphalt), anything else → "default".
 
+## Vehicle turret
+
+Targets: `setturrettargetvec(point)` (0x513f40) and `setturrettargetent(ent, offset)` (0x514050)
+store a target and error with "Can't set target on player's vehicle" or "Vehicle must have health to control the
+turret" (health ≤ 0); `clearturrettarget()` (0x5141b0) clears it.
+
+Per frame for every vehicle with a target and health ≥ 1 (0x5102e0):
+
+1. Direction from `tag_barrel` (world position, 0x4d75b0) to the target point (entity origin + offset, inferred from
+   the stored offset, or the vector), expressed in the vehicle's axes; its pitch and yaw are the wanted turret
+   angles (relative to the body).
+2. The turret pitch/yaw (entity +0x70/+0x74) turn towards them at `turretRotRate` degrees per second (0x420970 /
+   0x4208f0: constant step, snap within one step), pitch clamped to [−turretVertSpanUp, turretVertSpanDown], yaw to
+   [−turretHorizSpanRight, turretHorizSpanLeft].
+3. When both differences (before turning) are under 1°: notify `turret_on_target`; for an entity target also
+   `turret_on_vistarget` when a trace (mask 0x801) from the barrel to the target is clear. Constants 0x1c7f0f2 /
+   0x1c7f0f4.
+
+`fireturret()` (0x514260): needs health,
+the vehicle file's `turretWeapon` ("No weapon specified for [%s]"), a bullet or projectile weapon ("Vehicles only
+support bullet and projectile weapons") and `tag_barrel`. It fires from `tag_flash` (quadBarrel: two of
+`tag_flash`, `tag_flash_11` / `tag_flash_2`, `tag_flash_22`, alternating each shot); bullets reach 8192 units. It
+also jolts the body backwards (0x50dcf0) and stores the weapon's fire time.
+
+Here bullets fly along the body's axes turned by the turret angles (inferred: the original uses the flash tag's own
+axis, rotated by the client-side turret bone controllers).
+
 ## Not implemented (TODO)
 
 - Free vehicle physics without a path (0x510d30), `joltbody` (0x5136e0 → 0x50dcf0), player driving
-  (`useby`, VEH_LinkPlayer), vehicle turrets (`setturrettarget*`, `fireturret`, `isturretready`).
+  (`useby`, VEH_LinkPlayer, `isturretready`).
+- Turret projectiles (tank shells) from `fireturret`, the recoil jolt, turret spin/stop sounds, and turret bone
+  rotation in tag positions.
 - The speed fraction (speed / engineSndSpeed, vehicle +0x1fc / +0x1f8), engine sounds and texture scrolling
   (`g_vehicleTexScrollScale`).
 - Animated wheel tags: the tag positions come from the entity's current animation pose (bind pose without one);
