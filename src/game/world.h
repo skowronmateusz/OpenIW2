@@ -9,6 +9,7 @@
 #include "game/campaign.h"
 #include "game/collision.h"
 #include "game/pathnodes.h"
+#include "game/turrets.h"
 #include "game/vehicles.h"
 #include "script/vm.h"
 
@@ -51,6 +52,8 @@ struct Entity {
     size_t pathIndex = 0;
     std::array<float, 3> pathGoal{};
     std::unique_ptr<VehicleState> vehicle; // script_vehicle path state (src/game/vehicles.cpp)
+    std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
+    ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
 };
 
 struct PathNode {
@@ -182,6 +185,11 @@ private:
 
     // Vehicles (src/game/vehicles.cpp)
     void registerVehicleBuiltins();
+    // Turrets (src/game/turrets.cpp)
+    void registerTurretBuiltins();
+    void initTurret(Entity& e, const std::string& weaponInfo);
+    void initMapTurrets();
+    TurretState& turretOf(const Value& self);
     void linkVehicleNodes();
     void thinkVehicles();
     VehicleState& vehicleState(const script::Value& self);

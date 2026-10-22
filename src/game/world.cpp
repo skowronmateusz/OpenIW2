@@ -92,6 +92,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerMoverBuiltins();
     registerCampaignBuiltins();
     registerVehicleBuiltins();
+    registerTurretBuiltins();
     registerMissingStubs();
 }
 
@@ -237,6 +238,7 @@ void World::start() {
     cvars["mapname"] = mapName_;
     spawnMapEntities();
     linkVehicleNodes();
+    initMapTurrets();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
 }
