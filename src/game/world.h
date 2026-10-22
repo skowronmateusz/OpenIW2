@@ -9,6 +9,7 @@
 #include "game/campaign.h"
 #include "game/collision.h"
 #include "game/pathnodes.h"
+#include "game/perception.h"
 #include "game/turrets.h"
 #include "game/vehicles.h"
 #include "script/vm.h"
@@ -54,6 +55,12 @@ struct Entity {
     std::unique_ptr<VehicleState> vehicle; // script_vehicle path state (src/game/vehicles.cpp)
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
+    // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
+    // this sentient as their enemy (sentient +0x24).
+    std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
+    int attackers = 0;
+    int64_t eyeFrameMs = -1;               // per-frame cache of the eye (0x500910 caches by frame time)
+    Vec3 eyePos{}, eyeForward{};
 };
 
 struct PathNode {
@@ -159,6 +166,15 @@ private:
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount);
     int weaponDamage(const std::string& weaponName);
     void updatePerception(Entity& e);
+    // Perception helpers (src/game/perception.cpp)
+    bool isSentient(const Entity& e) const;
+    Vec3 sightEye(Entity& e, Vec3* forward);
+    bool sightTest(Entity& from, const Vec3& eye, const Vec3& forward, const Vec3& target, float fovCos, float maxDistSq);
+    bool sightCheck(Entity& actor, Entity& target);
+    int threatOf(Entity& actor, Entity& target);
+    void selectEnemy(Entity& actor);
+    void setEnemy(Entity& actor, Entity* enemy, bool notify);
+    int nearestNodeWithin(const Vec3& p, float radius) const;
     void registerCombatBuiltins();
     void registerSoundBuiltins();
     void registerHudBuiltins();

@@ -330,12 +330,11 @@ int World::nearestNode(const std::array<float, 3>& p) const {
 // runs "move" and follows the node graph; on arrival it is notified "goal" and runs "stop". When any animscript
 // ends on its own, the actor returns to "stop".
 void World::thinkActors() {
-    const bool perceive = (perceptionTick_++ % 4) == 0; // every 0.2 s (inferred cadence)
     for (const auto& ep : entities_) {
         Entity& e = *ep;
         if (!e.isActor || e.obj->removed) continue;
         if (!isAlive(e)) continue; // the death animscript runs on its own
-        if (perceive) updatePerception(e);
+        updatePerception(e); // once per frame (0x4fe890)
         {
             // lookforward: unit vector of the actor's facing (native field, docs/spec/ai.md).
             const Value ang = e.obj->get("angles");

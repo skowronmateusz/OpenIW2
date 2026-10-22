@@ -194,38 +194,6 @@ int World::weaponDamage(const std::string& weaponName) {
     return it == w->end() ? 35 : std::max(1, std::atoi(it->second.c_str()));
 }
 
-// Picks the closest visible opposing sentient as the actor's enemy (inferred placeholder for the engine's
-// perception: FOV and sight distance from the actor fields are not applied yet).
-void World::updatePerception(Entity& e) {
-    if (!isAlive(e) || e.obj->get("ignoreall").truthy()) return;
-    const std::string team = e.obj->get("team").toString();
-    const std::string other = team == "axis" ? "allies" : team == "allies" ? "axis" : "";
-    if (other.empty()) return;
-    const Vec3 o = e.obj->get("origin").asVector();
-    Entity* best = nullptr;
-    float bestD = 2048.0f * 2048.0f;
-    for (const auto& cp : entities_) {
-        Entity& c = *cp;
-        if (!isAlive(c) || c.obj->get("team").toString() != other || c.obj->get("ignoreme").truthy()) continue;
-        const Vec3 p = c.obj->get("origin").asVector();
-        const float d = dot(sub(p, o), sub(p, o));
-        if (d >= bestD) continue;
-        if (!canSee(e, c)) continue;
-        bestD = d;
-        best = &c;
-    }
-    const Value cur = e.obj->get("enemy");
-    if (best) {
-        if (!(cur.isObject() && cur.asObject() == best->obj)) {
-            e.obj->set("enemy", Value(best->obj));
-            vm_.notify(e.obj, "enemy");
-        }
-    } else if (cur.isObject()) {
-        Entity* ce = entityOf(cur);
-        if (!ce || !isAlive(*ce)) e.obj->set("enemy", Value());
-    }
-}
-
 void World::playerFire(const Vec3& eye, const Vec3& forward) {
     if (!player_ || !isAlive(*player_)) return;
     const Value w = player_->obj->get("$weapon");

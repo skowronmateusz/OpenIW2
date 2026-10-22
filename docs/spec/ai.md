@@ -23,6 +23,44 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   `animscripts/init::main()`. The errors "dospawn can only be called on actor spawners" and "Spawner at (%g %g %g)
   is in solid" exist in the executable.
 
+## Perception (observed)
+
+Sentients (player and actors; at most 33, 0x44 bytes from 0x1c60518, enumerated by team mask 0x515230 / 0x515270) have
+`threatbias` (+8), `ignoreme` (+0xc), the current enemy (+0x1c) and an attacker count (+0x24). Each actor keeps per
+sentient: visible (+0), last check time (+4), last seen (+8), last attacked (+0xc), last known time (+0x10), ignore-until
+(+0x14), last known position (+0x18), and its own position then (+0x28) (actor +0x1774 + index · 0x44).
+
+Once per frame (0x4fe890):
+
+1. Sight (0x54d0a0): sentients of the enemy team
+   (axis ↔ allies, table {0, 2, 1, 0, 0}) are sorted by (1 / distance) · max(now − last check − 100 ms, 0), highest first.
+   The first one with no check yet or an older check is checked (0x54ca60); candidates are tried until one sight trace was
+   made (trace counter actor +0xd4).
+2. Check: from the actor's eye (`tag_eye` world position and its horizontal forward, 0x500910; origin + 64 without the tag)
+   to the target's eye (actors: `tag_eye`; player: origin + view height, 0x4e8b70). Distance/cone test (0x54c840): fail
+   beyond `maxsightdistsqrd` (when ≠ 0) or the fog limit 0x1c61038; with a cone (`fovcosine` ≠ 0; the current enemy and
+   `favoriteenemy` get none) fail behind or when dot² < dist² · fov². A pass makes a sight trace (0x54c760, mask
+   0x280d803); a clear trace still needs a
+   visibility value ≥ 0.2 from 0x48b090.
+3. Update: visible, last check = now; if visible: last seen = now, ignore-until = 0 (not on a turret), last known time,
+   position and own position (0x500c50). If the target is an actor not on a turret, it gets the same update about this
+   actor when this actor is inside its own distance/cone limits (no second trace).
+4. Enemy (0x54e230): over enemy-team sentients with
+   a known position, not `ignoreme`: aware = (on a turret or seen within 5 s) and ignore-until ≤ now. Unaware candidates
+   are skipped once an aware one is the best. The best has the highest threat, aware beats unaware, and `favoriteenemy`
+   always wins. The enemy is set (0x515150): attacker counts follow and the actor is notified "enemy".
+5. Threat (0x54dea0): `pacifist` actors ignore
+   sentients that did not attack them within `pacifistwait`. Not visible: the current enemy counts as aware when its last
+   known position is within 64 units of where it is and both stand near path nodes (192 units) that see each other
+   (0x517e40: bit n·min + max of the node visibility), else as "recent" when known within 10 s; others are aware when known
+   within 5 s. Score = threatbias + (visible 1000 | aware 500 | recent 250) + clamp(−100 · accuracy difference, −500,
+   1000) + (dist < 2000 ? round((2000 − dist)² · 0.00125) : 0) + max(−100 · attackers (minus itself when current), −400)
+   + (current enemy: visible/aware 1000, recent 500, else 100).
+
+TODO: the accuracy term (0x550da0: weapon accuracy graphs, player accuracy cvars), the 0x48b090 visibility value, the fog
+limit, setting "last attacked" from damage, `notarget` (entity flag 4 at +0x128), the player's real view height, and
+using a turret's eye for gunners (0x51b940).
+
 ## Not yet specified
 
 The engine's AI state machine (when `stop`, `move`, `combat`, `cover_*`, `pain` and `death` run), path finding,
