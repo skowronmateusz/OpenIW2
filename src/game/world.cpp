@@ -10,6 +10,7 @@
 #include <cstring>
 #include <functional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace iw2::game {
@@ -33,11 +34,27 @@ const std::set<std::string> kEntityClasses = {
     "trigger_once", "trigger_damage", "trigger_lookat", "misc_mg42", "misc_turret", "corona", "sound_blend",
     "script_brushmodel", "script_model", "script_origin", "script_vehicle", "script_vehicle_collmap"};
 
-// Map key/values become typed script fields. Numeric text becomes an int or float and three numbers become a
-// vector (inferred: scripts use values such as script_delay and script_health directly as numbers).
-Value parseFieldValue(const std::string& key, const std::string& v) {
+// Map key/values become typed script fields. Keys named in radiant/*.txt ("<type> <key>", types float, int, string,
+// vector; parsed at 0x4686c0, looked up by 0x4682d0) take that type: atoi, atof, sscanf "%f %f %f", or the text
+// (entity 0x4f8ff0, node 0x515bf0). Native string fields stay text.
+// TODO(spec): the original drops keys that are neither native nor listed; here they stay, typed by their text
+// (numeric text becomes an int or float and three numbers a vector), because engine code reads spawn keys
+// (turret arcs, cursorhint, …) from the same object.
+Value parseFieldValue(const std::string& key, const std::string& v, const std::map<std::string, char>& keyTypes) {
     if (key == "targetname" || key == "target" || key == "classname" || key == "model" || key == "script_noteworthy")
         return Value(v);
+    if (auto t = keyTypes.find(key); t != keyTypes.end()) {
+        switch (t->second) {
+        case 'i': return Value(int32_t(std::atoi(v.c_str())));
+        case 'f': return Value(float(std::atof(v.c_str())));
+        case 'v': {
+            Vec3 vec{};
+            std::sscanf(v.c_str(), "%f %f %f", &vec[0], &vec[1], &vec[2]);
+            return Value(vec);
+        }
+        default: return Value(v);
+        }
+    }
     char* end = nullptr;
     const long i = std::strtol(v.c_str(), &end, 10);
     if (!v.empty() && *end == 0) return Value(int32_t(i));
@@ -48,6 +65,27 @@ Value parseFieldValue(const std::string& key, const std::string& v) {
     if (std::sscanf(v.c_str(), "%f %f %f%n", &vec[0], &vec[1], &vec[2], &consumed) == 3 && size_t(consumed) == v.size())
         return Value(vec);
     return Value(v);
+}
+
+// radiant/*.txt key type lists (0x4686c0): "float|int|string|vector name" per line, // comments.
+std::map<std::string, char> loadKeyTypes(const fs::Vfs& vfs) {
+    std::map<std::string, char> out;
+    for (const std::string& path : vfs.list("radiant/")) {
+        if (path.size() < 4 || lower(path.substr(path.size() - 4)) != ".txt") continue;
+        const auto data = vfs.read(path);
+        if (!data) continue;
+        std::istringstream in(std::string(data->begin(), data->end()));
+        std::string line;
+        while (std::getline(in, line)) {
+            if (const size_t c = line.find("//"); c != std::string::npos) line.resize(c);
+            std::istringstream ls(line);
+            std::string type, name;
+            if (!(ls >> type >> name)) continue;
+            const char t = type == "float" ? 'f' : type == "int" ? 'i' : type == "string" ? 's' : type == "vector" ? 'v' : 0;
+            if (t) out[lower(name)] = t;
+        }
+    }
+    return out;
 }
 
 ArrayPtr toArray(const std::vector<ObjectPtr>& objs) {
@@ -73,6 +111,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);
     bsp_ = std::make_unique<assets::D3dBsp>(bspData_);
+    keyTypes_ = loadKeyTypes(vfs_);
     collision_ = std::make_unique<CollisionWorld>(*bsp_);
     const auto models = bsp_->lump(35);
     for (size_t i = 0; i + 48 <= models.size(); i += 48) {
@@ -133,7 +172,7 @@ void World::spawnMapEntities() {
         auto fill = [&](const ObjectPtr& o) {
             for (const auto& [k, v] : be.fields) {
                 const std::string key = lower(k);
-                o->set(key, parseFieldValue(key, v));
+                o->set(key, parseFieldValue(key, v, keyTypes_));
             }
         };
         if (cls == "script_struct") {

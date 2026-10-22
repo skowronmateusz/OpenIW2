@@ -316,6 +316,7 @@ private:
     std::unordered_map<const script::Object*, int> vnodeIndex_;
 
     const fs::Vfs& vfs_;
+    std::map<std::string, char> keyTypes_; // radiant/*.txt map key types
     std::string mapName_;
     std::vector<uint8_t> bspData_;
     std::unique_ptr<assets::D3dBsp> bsp_;
