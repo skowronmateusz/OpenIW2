@@ -935,7 +935,9 @@ void VM::step(Thread& t, bool& suspended) {
             Thread& nt = newThread();
             enterFunction(nt, target, std::move(args), std::move(self));
             run(nt);
-            push(Value());
+            // A thread that ends before it first suspends gives the call its return value (0x4690c0: the new
+            // thread's end/return writes the slot above the caller's stack top).
+            push(nt.state == ThreadState::Done ? nt.result : Value());
         } else {
             if (traceSelf && self.isObject() && self.asObject() == traceSelf)
                 print("[trace " + std::to_string(nowMs_) + "] call " + functions_[size_t(target)].file + "::" + functions_[size_t(target)].name);
@@ -952,6 +954,7 @@ void VM::step(Thread& t, bool& suspended) {
         // The returning call's endons end with it (*inferred*, docs/spec/gsc-vm.md).
         std::erase_if(t.endons, [&](const Thread::EndOn& e) { return e.frame >= t.frames.size(); });
         if (t.frames.empty()) {
+            t.result = std::move(v);
             t.state = ThreadState::Done;
             suspended = true;
         } else {

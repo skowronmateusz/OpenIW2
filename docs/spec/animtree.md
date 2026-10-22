@@ -26,3 +26,11 @@ AI use the `generic_human` tree.
 
 After `init` ends, the actor runs `animscripts/stop::main()`. Before each switch the engine notifies
 `"killanimscript"`. The real state machine (move, combat, cover, pain, death) is still to be specified.
+
+## Animation start placement
+
+`getstartorigin(origin, angles, anim)` (0x53be50) and `getstartangles(origin, angles, anim)` (0x53bf80) take the
+animation's delta at time 0 (0x478740 → 0x475aa0, weight 1; an animation without delta gives yaw quaternion (0, 1)
+and no translation). The origin is `origin + forward·t.x + left·t.y + up·t.z` in the axes of `angles`. The angles
+come from the delta yaw `atan2(2zw, 1 − 2z²)` (normalized by z² + w², 0x423900) turned into an axis (0x424b20) and
+expressed in the axes of `angles` (0x422450), then back to angles (0x424b70).

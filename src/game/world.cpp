@@ -10,6 +10,7 @@
 #include <cstring>
 #include <functional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace iw2::game {
@@ -33,11 +34,27 @@ const std::set<std::string> kEntityClasses = {
     "trigger_once", "trigger_damage", "trigger_lookat", "misc_mg42", "misc_turret", "corona", "sound_blend",
     "script_brushmodel", "script_model", "script_origin", "script_vehicle", "script_vehicle_collmap"};
 
-// Map key/values become typed script fields. Numeric text becomes an int or float and three numbers become a
-// vector (inferred: scripts use values such as script_delay and script_health directly as numbers).
-Value parseFieldValue(const std::string& key, const std::string& v) {
+// Map key/values become typed script fields. Keys named in radiant/*.txt ("<type> <key>", types float, int, string,
+// vector; parsed at 0x4686c0, looked up by 0x4682d0) take that type: atoi, atof, sscanf "%f %f %f", or the text
+// (entity 0x4f8ff0, node 0x515bf0). Native string fields stay text.
+// TODO(spec): the original drops keys that are neither native nor listed; here they stay, typed by their text
+// (numeric text becomes an int or float and three numbers a vector), because engine code reads spawn keys
+// (turret arcs, cursorhint, …) from the same object.
+Value parseFieldValue(const std::string& key, const std::string& v, const std::map<std::string, char>& keyTypes) {
     if (key == "targetname" || key == "target" || key == "classname" || key == "model" || key == "script_noteworthy")
         return Value(v);
+    if (auto t = keyTypes.find(key); t != keyTypes.end()) {
+        switch (t->second) {
+        case 'i': return Value(int32_t(std::atoi(v.c_str())));
+        case 'f': return Value(float(std::atof(v.c_str())));
+        case 'v': {
+            Vec3 vec{};
+            std::sscanf(v.c_str(), "%f %f %f", &vec[0], &vec[1], &vec[2]);
+            return Value(vec);
+        }
+        default: return Value(v);
+        }
+    }
     char* end = nullptr;
     const long i = std::strtol(v.c_str(), &end, 10);
     if (!v.empty() && *end == 0) return Value(int32_t(i));
@@ -48,6 +65,27 @@ Value parseFieldValue(const std::string& key, const std::string& v) {
     if (std::sscanf(v.c_str(), "%f %f %f%n", &vec[0], &vec[1], &vec[2], &consumed) == 3 && size_t(consumed) == v.size())
         return Value(vec);
     return Value(v);
+}
+
+// radiant/*.txt key type lists (0x4686c0): "float|int|string|vector name" per line, // comments.
+std::map<std::string, char> loadKeyTypes(const fs::Vfs& vfs) {
+    std::map<std::string, char> out;
+    for (const std::string& path : vfs.list("radiant/")) {
+        if (path.size() < 4 || lower(path.substr(path.size() - 4)) != ".txt") continue;
+        const auto data = vfs.read(path);
+        if (!data) continue;
+        std::istringstream in(std::string(data->begin(), data->end()));
+        std::string line;
+        while (std::getline(in, line)) {
+            if (const size_t c = line.find("//"); c != std::string::npos) line.resize(c);
+            std::istringstream ls(line);
+            std::string type, name;
+            if (!(ls >> type >> name)) continue;
+            const char t = type == "float" ? 'f' : type == "int" ? 'i' : type == "string" ? 's' : type == "vector" ? 'v' : 0;
+            if (t) out[lower(name)] = t;
+        }
+    }
+    return out;
 }
 
 ArrayPtr toArray(const std::vector<ObjectPtr>& objs) {
@@ -73,6 +111,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);
     bsp_ = std::make_unique<assets::D3dBsp>(bspData_);
+    keyTypes_ = loadKeyTypes(vfs_);
     collision_ = std::make_unique<CollisionWorld>(*bsp_);
     const auto models = bsp_->lump(35);
     for (size_t i = 0; i + 48 <= models.size(); i += 48) {
@@ -105,8 +144,8 @@ Entity& World::spawnEntity(const std::string& classname) {
     e->obj->set("classname", Value(classname));
     e->obj->set("origin", Value(Vec3{0, 0, 0}));
     e->obj->set("angles", Value(Vec3{0, 0, 0}));
-    e->obj->set("spawnflags", Value(int32_t(0))); // native entity fields with default 0
-    e->obj->set("count", Value(int32_t(0)));
+    // Native integer entity fields (table at 0x56f4a8: spawnflags, count, health, dmg, maxhealth) of a zeroed entity.
+    for (const char* f : {"spawnflags", "count", "health", "dmg", "maxhealth"}) e->obj->set(f, Value(int32_t(0)));
     byObject_[e->obj.get()] = e.get();
     entities_.push_back(std::move(e));
     return *entities_.back();
@@ -133,7 +172,7 @@ void World::spawnMapEntities() {
         auto fill = [&](const ObjectPtr& o) {
             for (const auto& [k, v] : be.fields) {
                 const std::string key = lower(k);
-                o->set(key, parseFieldValue(key, v));
+                o->set(key, parseFieldValue(key, v, keyTypes_));
             }
         };
         if (cls == "script_struct") {
@@ -147,6 +186,12 @@ void World::spawnMapEntities() {
             PathNode n;
             n.obj = vm_.newObject(cls);
             n.type = cls;
+            // Native node fields (table 0x5a93b8) live in zero-filled hunk memory (0x5166fc → 0x426f30), so the
+            // numeric ones read 0 when the map gives no key.
+            n.obj->set("radius", Value(0.0f));
+            n.obj->set("spawnflags", Value(int32_t(0)));
+            n.obj->set("origin", Value(Vec3{0, 0, 0}));
+            n.obj->set("angles", Value(Vec3{0, 0, 0}));
             fill(n.obj);
             n.obj->set("type", Value(pathNodeTypeName(cls))); // engine field with a getter (0x515b60)
             n.typeNum = pathNodeTypeNum(cls);
@@ -170,6 +215,11 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             fill(e.obj);
             if (cls == "info_player_start") starts.push_back(e.obj);
+        } else if (startsWith(cls, "weapon_") && weapon(cls.substr(7))) {
+            // weapon_<name> with a known weapon is an item entity (0x4f96d0 → item spawn 0x522c70).
+            // TODO(spec): item spawn details (model from the weapon, drop to floor, pickup).
+            Entity& e = spawnEntity(cls);
+            fill(e.obj);
         }
     }
     if (!starts.empty()) playerStart = &starts.front();
@@ -230,10 +280,8 @@ Entity* World::spawnActor(Entity& spawner) {
     } catch (const std::exception& e) {
         print("aitype " + aitype + ": " + e.what());
     }
-    vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
-    if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
-    // 0x4fdee0: animscripts/init runs as a plain thread (not the actor's animscript), then the bottom state
-    // (exposed) starts.
+    // 0x4fdee0 / spawn 0x532558: animscripts/init runs as a plain thread (not the actor's animscript), then the
+    // bottom state (exposed) starts, and only then is the spawner notified "spawned" (0x5325ad).
     try {
         vm_.start("animscripts/init.gsc", "main", {}, Value(a.obj));
     } catch (const std::exception& ex) {
@@ -241,6 +289,8 @@ Entity* World::spawnActor(Entity& spawner) {
     }
     a.ai.baseStateMs = timeMs_;
     aiStart(a, a.ai.stack[0]);
+    vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
+    if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
     return &a;
 }
 
@@ -599,10 +649,12 @@ void World::registerBuiltins() {
             if (e->isSpawner && !e->obj->removed && startsWith(e->classname, prefix)) out.push_back(e->obj);
         return Value(toArray(out));
     });
+    // getaiarray(team) (0x4ec9f0) lists actors whose actor +0x25c is set; the die callback (0x4ff530) clears it, so
+    // dead actors are left out.
     vm_.registerBuiltin("getaiarray", [this](CallContext& c) {
         std::vector<ObjectPtr> out;
         for (const auto& e : entities_)
-            if (!e->obj->removed && e->obj->kind == "actor" && (!c.arg(0).isDefined() || e->obj->get("team") == c.arg(0)))
+            if (!e->obj->removed && e->obj->kind == "actor" && isAlive(*e) && (!c.arg(0).isDefined() || e->obj->get("team") == c.arg(0)))
                 out.push_back(e->obj);
         return Value(toArray(out));
     });
@@ -807,6 +859,16 @@ void World::registerBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("print", [this](CallContext& c) { print(c.arg(0).toString()); return Value(); });
+    // getpartname(model, index) (0x4f5bc0): the model's bone name at index; exactly two arguments.
+    vm_.registerBuiltin("getpartname", [this](CallContext& c) {
+        if (c.argc() != 2) throw std::runtime_error("Incorrect usage for getpartname()");
+        const assets::XModelParts* parts = skeleton(c.arg(0).toString());
+        if (!parts) throw std::runtime_error("bad model");
+        const int i = c.arg(1).asInt();
+        if (i < 0 || size_t(i) >= parts->bones.size())
+            throw std::runtime_error("index out of range (0 - " + std::to_string(int(parts->bones.size()) - 1) + ")");
+        return Value(parts->bones[size_t(i)].name);
+    });
 }
 
 void World::registerMissingStubs() {

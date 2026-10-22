@@ -631,8 +631,116 @@ void World::thinkVehicles() {
         if (ep->vehicle && !ep->obj->removed) updateVehicleTurret(*ep);
 }
 
+// A player starts using a vehicle (VEH_LinkPlayer 0x511610): the player is placed at tag_player with the vehicle's
+// pitch and yaw (roll 0) and linked to that tag; both entities record each other.
+// TODO(spec): the second tag the original prefers for the angles (vehicle +0x214), the client flags it sets
+// (pm_flags 0x60000) and player control of the vehicle.
+void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
+    VehicleState& v = *vehicle.vehicle;
+    if (player.usingVehicle >= 0) throw std::runtime_error("VEH_LinkPlayer: Player is already using a vehicle");
+    if (v.owner >= 0) throw std::runtime_error("VEH_LinkPlayer: Vehicle already has an owner");
+    bool found = false;
+    const Vec3 pos = vehicleTagPosition(vehicle, "tag_player", found);
+    if (!found) throw std::runtime_error("VEH_LinkPlayer: Trying to use vehicle without a bone [tag_player]");
+    const Vec3 a = vehicle.obj->get("angles").asVector();
+    player.obj->set("origin", Value(pos));
+    player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
+    Link l;
+    l.parent = vehicle.number;
+    l.tag = "tag_player";
+    links_[player.number] = l;
+    v.owner = player.number;
+    player.usingVehicle = vehicle.number;
+}
+
+// The player leaves the vehicle (VEH_UnlinkPlayer 0x511780): unlinked and placed at tag_detach, keeping its pitch
+// and yaw. TODO(spec): the fallback height above the vehicle origin without tag_detach (vehicle +0x108 → +0xfc).
+void World::unlinkPlayerFromVehicle(Entity& vehicle, Entity& player) {
+    if (player.usingVehicle < 0) throw std::runtime_error("VEH_UnlinkPlayer: Player is not using a vehicle");
+    links_.erase(player.number);
+    bool found = false;
+    const Vec3 pos = vehicleTagPosition(vehicle, "tag_detach", found);
+    if (!found) print("VEH_UnlinkPlayer: Warning - no [tag_detach] on vehicle");
+    player.obj->set("origin", Value(pos));
+    const Value pa = player.obj->get("angles");
+    const Vec3 a = pa.isVector() ? pa.asVector() : Vec3{0, 0, 0};
+    player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
+    vehicle.vehicle->owner = -1;
+    player.usingVehicle = -1;
+}
+
+// Delta of an animation at normalized time 0 (0x478740 → 0x475aa0 with weight 1): the yaw quaternion (z, w) and the
+// translation of its delta tracks; (0, 1) and zero for an animation without delta.
+static void animStartDelta(const assets::XAnim* a, float& qz, float& qw, Vec3& t) {
+    qz = 0.0f; qw = 1.0f; t = {0, 0, 0};
+    if (!a || !a->delta) return;
+    if (!a->deltaRot.keys.empty()) {
+        const assets::Quat q = assets::sampleRotRaw(a->deltaRot, 0.0f, a->keyCount());
+        if (q.z != 0.0f || q.w != 0.0f) { qz = q.z; qw = q.w; }
+    }
+    if (!a->deltaTrans.keys.empty()) {
+        const auto p = assets::sampleTrans(a->deltaTrans, 0.0f, a->keyCount());
+        t = {p[0], p[1], p[2]};
+    }
+}
+
 // Vehicle methods (registration table, docs/spec/builtins.md 0x513070…0x513ee0).
 void World::registerVehicleBuiltins() {
+    // getstartorigin(origin, angles, anim) (0x53be50): origin + the start delta in the frame of angles
+    // (forward, left, up).
+    vm_.registerBuiltin("getstartorigin", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(2).v)) throw std::runtime_error("type is not an animation");
+        const Vec3 o = c.arg(0).asVector(), ang = c.arg(1).asVector();
+        float qz, qw;
+        Vec3 t;
+        animStartDelta(animLib_.anim(std::get<script::AnimRef>(c.arg(2).v).name), qz, qw, t);
+        Vec3 f, r, u;
+        anglesToAxis(ang, f, r, u);
+        Vec3 out;
+        for (int i = 0; i < 3; ++i) out[size_t(i)] = u[size_t(i)] * t[2] - r[size_t(i)] * t[1] + f[size_t(i)] * t[0] + o[size_t(i)];
+        return Value(out);
+    });
+    // getstartangles(origin, angles, anim) (0x53bf80): the start delta's yaw (0x423900: atan2(2zw, 1 − 2z²) for a
+    // normalized quaternion) as an axis (0x424b20) applied in the frame of angles (0x422450), back to angles
+    // (0x424b70).
+    vm_.registerBuiltin("getstartangles", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(2).v)) throw std::runtime_error("type is not an animation");
+        const Vec3 ang = c.arg(1).asVector();
+        float qz, qw;
+        Vec3 t;
+        animStartDelta(animLib_.anim(std::get<script::AnimRef>(c.arg(2).v).name), qz, qw, t);
+        const float s = 2.0f / (qz * qz + qw * qw);
+        const float yaw = std::atan2(qw * qz * s, 1.0f - s * qz * qz) * 57.2957763671875f;
+        Vec3 yf, yr, yu;
+        anglesToAxis({0, yaw, 0}, yf, yr, yu);
+        Vec3 f, r, u;
+        anglesToAxis(ang, f, r, u);
+        const Vec3 left{-r[0], -r[1], -r[2]}, yl{-yr[0], -yr[1], -yr[2]};
+        Vec3 nf, nl;
+        for (int i = 0; i < 3; ++i) {
+            nf[size_t(i)] = yf[0] * f[size_t(i)] + yf[1] * left[size_t(i)] + yf[2] * u[size_t(i)];
+            nl[size_t(i)] = yl[0] * f[size_t(i)] + yl[1] * left[size_t(i)] + yl[2] * u[size_t(i)];
+        }
+        return Value(axisToAngles(nf, nl));
+    });
+    // useby(user) (0x4ef020): notifies "trigger" with the user, then runs the entity type's use function
+    // (table 0x5a5740). For vehicles (0x512f00) a player gets in, or out when already using a vehicle.
+    // TODO(spec): the use functions of turrets (0x529280) and entity type 8 (0x529450).
+    vm_.registerBuiltin("useby", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        Entity* user = entityOf(c.arg(0));
+        if (!e || !user) throw std::runtime_error("not an entity");
+        vm_.notify(e->obj, "trigger", {Value(user->obj)});
+        if (e->classname == "script_vehicle" && user->isPlayer && !e->obj->removed) {
+            vehicleState(c.self);
+            if (user->usingVehicle >= 0) {
+                if (Entity* ridden = entityByNumber(user->usingVehicle); ridden && ridden->vehicle) unlinkPlayerFromVehicle(*ridden, *user);
+            } else {
+                linkPlayerToVehicle(*e, *user);
+            }
+        }
+        return Value();
+    });
     vm_.registerBuiltin("attachpath", [this](CallContext& c) {
         VehicleState& v = vehicleState(c.self);
         const int n = vehicleNodeIndex(c.arg(0));
@@ -717,8 +825,12 @@ void World::registerVehicleBuiltins() {
         vm_.notify(e->obj, "death");
         return Value();
     });
-    // No player drives vehicles yet, so a vehicle has no owner (0x513ab0 returns nothing then).
-    vm_.registerBuiltin("getvehicleowner", [this](CallContext& c) { vehicleState(c.self); return Value(); });
+    // getvehicleowner (0x513ab0): the player using the vehicle, nothing otherwise.
+    vm_.registerBuiltin("getvehicleowner", [this](CallContext& c) {
+        const VehicleState& v = vehicleState(c.self);
+        Entity* o = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
+        return o ? Value(o->obj) : Value();
+    });
     auto requireTurret = [this](CallContext& c) -> VehicleState& {
         VehicleState& v = vehicleState(c.self);
         const Value h = c.self.asObject()->get("health");
@@ -777,7 +889,7 @@ void World::registerVehicleBuiltins() {
                 const Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
                 if (!ok) throw std::runtime_error(std::string("No ") + flash[first + k] + " for [" + e->obj->get("model").toString() + "]");
                 const Vec3 end{start[0] + fwd[0] * 8192.0f, start[1] + fwd[1] * 8192.0f, start[2] + fwd[2] * 8192.0f};
-                fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon));
+                fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e);
             }
         }
         if (v.info->quadBarrel) v.altBarrel = !v.altBarrel;

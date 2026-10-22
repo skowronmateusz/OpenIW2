@@ -149,7 +149,13 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     target.obj->set("damagedir", Value(dir));
     target.obj->set("damageyaw", Value(float(std::atan2(-dir[1], -dir[0]) * 180.0 / M_PI)));
     target.obj->set("damagelocation", Value(location));
-    if (attacker && attacker->obj->get("weapon").isString()) target.obj->set("damageweapon", attacker->obj->get("weapon"));
+    // damageweapon is the attacker entity's weapon (pain/die callbacks 0x4ff3b0 / 0x4ff530: entity state weapon
+    // index → weapon name). Without an attacker G_Damage (0x528050) credits the world entity, whose weapon is index 0,
+    // "none" (0x4dc210). TODO(spec): the weapon index a vehicle entity carries; vehicles leave the field unchanged.
+    if (!attacker || !attacker->vehicle) {
+        const Value w = attacker ? attacker->obj->get(attacker->isPlayer ? "$weapon" : "weapon") : Value();
+        target.obj->set("damageweapon", w.isString() && !w.asString().empty() ? w : Value("none"));
+    }
     vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
     if (health > 0) {
         if (target.isActor) actorPain(target, attacker); // pain callback 0x4ff3b0
@@ -220,7 +226,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
 }
 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
-Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount) {
+Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker) {
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
     const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
     const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
@@ -258,7 +264,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     if (hit) {
         ++stats.hits;
         const Vec3 dir = scale(sub(end, start), 1.0f / std::max(1.0f, len(sub(end, start))));
-        damage(*hit, &shooter, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
+        damage(*hit, attacker, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
     }
     return hit;
 }
@@ -274,7 +280,7 @@ void World::playerFire(const Vec3& eye, const Vec3& forward) {
     if (!player_ || !isAlive(*player_)) return;
     const Value w = player_->obj->get("$weapon");
     const int dmg = weaponDamage(w.isString() ? w.asString() : "kar98k");
-    fireBullet(*player_, eye, add(eye, scale(forward, 8192.0f)), dmg);
+    fireBullet(*player_, eye, add(eye, scale(forward, 8192.0f)), dmg, player_);
 }
 
 void World::registerCombatBuiltins() {
@@ -336,7 +342,7 @@ void World::registerCombatBuiltins() {
         }
         const Vec3 dir = sub(target, start);
         const Value wpn = a->obj->get("weapon");
-        fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""));
+        fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
         vm_.notify(a->obj, "weapon_fired");
         return Value();
     });
@@ -447,6 +453,14 @@ void World::registerCombatBuiltins() {
         if (tr.entity >= 0)
             if (Entity* e = entityByNumber(tr.entity)) put("entity", Value(e->obj));
         return Value(arr);
+    });
+    // getfxvisibility(start, end) (0x4f53b0 → 0x48b090): 1 while no sight-blocking effect is alive (the list at
+    // 0xc47a20 is empty) or the points are closer than a dvar (0x617eb0). TODO(spec): the effects runtime does not
+    // register blocksSight (0x1000) elements yet (0x480971), so the value is always 1 here.
+    vm_.registerBuiltin("getfxvisibility", [](CallContext& c) {
+        c.arg(0).asVector();
+        c.arg(1).asVector();
+        return Value(1.0f);
     });
     // bullettracepassed (FUN_004f24c0 → 0x4db890): a sight trace with the bullet masks.
     vm_.registerBuiltin("bullettracepassed", [this](CallContext& c) {

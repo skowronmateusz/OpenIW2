@@ -26,7 +26,10 @@ animation reference, animation tree.
 ## Threads
 
 - `f()` runs to completion in the caller's thread. `thread f()` creates a thread that starts running immediately
-  until it first suspends; then the caller continues (*inferred*).
+  until it first suspends; then the caller continues. The thread call's value is the thread's return value when
+  the thread ends before suspending, otherwise undefined (VM 0x4690c0: the new thread's frame base is the caller's
+  stack top; end/return writes the slot above it and the caller resumes with that slot pushed).
+  `_fx.gsc` relies on it: `ent = level thread createfx_showOrigin(...)`.
 - `wait s` suspends for `s` seconds of game time. `waittillframeend` resumes after the other threads of the current
   frame.
 - `obj waittill("e", a, b)` suspends until `obj notify("e", x, y)`; the notify arguments are stored in `a`, `b`.

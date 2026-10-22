@@ -52,3 +52,9 @@ the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius
 the per-particle velocity scale, sprite size meaning (half width), atlas sequences (the whole texture is used),
 other element types (Tail, Emitter, FxRunner, Decal, Light, Cloud, CameraShake, Line), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
+
+## Visibility through effects
+
+`getfxvisibility(start, end)` (0x4f53b0 → 0x48b090) is 1 while the list of sight-blocking effects (0xc47a20) is
+empty or the points are closer than a dvar (0x617eb0); otherwise it walks that list (TODO: elements with
+`blocksSight` 0x1000 are not registered by the runtime here, 0x480971, so the value is always 1).

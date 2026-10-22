@@ -72,6 +72,7 @@ struct VehicleState {
     bool altBarrel = false;
     int team = 0;              // 0 none, 1 axis, 2 allies
     bool usable = false;
+    int owner = -1;            // entity number of the player using it (entity +0xf4, 0x7ff = none)
 };
 
 } // namespace iw2::game

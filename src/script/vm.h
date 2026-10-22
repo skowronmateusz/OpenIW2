@@ -89,6 +89,7 @@ struct Thread {
     std::vector<Value> stack;
     std::vector<Ref> refs;
     int64_t wakeTimeMs = 0;
+    Value result;             // value of the first function's return; a thread call yields it if the thread ends at once
     // waittill / waittillmatch
     ObjectPtr waitObject;
     std::string waitEvent;

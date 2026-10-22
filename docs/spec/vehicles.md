@@ -170,10 +170,24 @@ also jolts the body backwards (0x50dcf0) and stores the weapon's fire time.
 Here bullets fly along the body's axes turned by the turret angles (inferred: the original uses the flash tag's own
 axis, rotated by the client-side turret bone controllers).
 
+## Player use (`useby`)
+
+`useby(user)` (0x4ef020) notifies `"trigger"` with the user, then calls the entity type's use function (table
+0x5a5740). For vehicles (0x512f00) a player user gets in, or out when already in a vehicle:
+
+- VEH_LinkPlayer (0x511610): errors "Player is already using a vehicle", "Player already has an owner", "Vehicle
+  already has an owner", "Trying to use vehicle without a bone [tag_player]"; the player is placed at `tag_player`
+  with the vehicle's pitch and yaw (roll 0) and linked to that tag; vehicle +0xf4 and player +0xf4 / client +0x568
+  record each other; the vehicle's +0x174 bit 0 (player-driven) is set; client flags `|= 0x60000`, `&= ~0x80000`.
+- VEH_UnlinkPlayer (0x511780): error "Player is not using a vehicle"; the player is placed at `tag_detach`
+  (warning "no [tag_detach] on vehicle" and a height above the origin otherwise), keeps pitch and yaw, and both
+  links are cleared.
+- `getvehicleowner()` returns the linked player.
+
 ## Not implemented (TODO)
 
-- Free vehicle physics without a path (0x510d30), `joltbody` (0x5136e0 → 0x50dcf0), player driving
-  (`useby`, VEH_LinkPlayer, `isturretready`).
+- Free vehicle physics without a path (0x510d30), `joltbody` (0x5136e0 → 0x50dcf0), player driving controls,
+  `isturretready`.
 - Turret projectiles (tank shells) from `fireturret`, the recoil jolt, turret spin/stop sounds, and turret bone
   rotation in tag positions.
 - The speed fraction (speed / engineSndSpeed, vehicle +0x1fc / +0x1f8), engine sounds and texture scrolling
