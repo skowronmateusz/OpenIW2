@@ -1461,6 +1461,14 @@ int main(int argc, char** argv) {
                     frame = pweapon.adsFrac() * float(std::max(0, up->numFrames - 1));
                 }
             }
+            if (const char* forced = std::getenv("IW2_VM_ANIM")) { // debug: "anim,frame"
+                std::string spec = forced;
+                const auto comma = spec.find(',');
+                if (const assets::XAnim* fa = viewAnim(vfs, spec.substr(0, comma))) {
+                    an = fa;
+                    frame = comma == std::string::npos ? 0.0f : std::stof(spec.substr(comma + 1));
+                }
+            }
             DrawItem base;
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
