@@ -30,7 +30,34 @@ std::vector<std::string> words(const std::string& line) {
     return out;
 }
 
+// {name, element-flag bit, spawn-flag bit} rows; one table serves both keys.
+struct FlagName { const char* name; uint32_t flag, spawn; };
+constexpr FlagName kFlagNames[] = {
+    {"depthHack", 0x1, 0}, {"setShaderTime", 0x4, 0}, {"useModel", 0x10, 0}, {"useBBox", 0x40, 0},
+    {"usePhysics", 0x20, 0}, {"impactKills", 0x400, 0}, {"impactFx", 0x800, 0}, {"deathFx", 0x200, 0},
+    {"useAlpha", 0x80, 0}, {"useRandomColors", 0x2000, 0}, {"useRandomAlpha", 0x4000, 0},
+    {"useRandomSize", 0x8000, 0}, {"useRandomSize2", 0x10000, 0}, {"useRandomLength", 0x20000, 0},
+    {"useRandomRotationDelta", 0x40000, 0}, {"useRandomVelocity", 0x80000, 0}, {"useRandomVelocity2", 0x100000, 0},
+    {"absoluteVel", 0x200000, 0}, {"absoluteVel2", 0x400000, 0}, {"affectedByWind", 0x800000, 0},
+    {"emitFx", 0x100, 0}, {"relative", 0x2, 0}, {"blocksSight", 0x1000, 0}, {"disableFarPlaneCulling", 0x2000000, 0},
+    {"org2fromTrace", 0, 0x8}, {"traceImpactFx", 0, 0x10}, {"org2isOffset", 0, 0x20}, {"cheapOrgCalc", 0, 0x40},
+    {"cheapOrg2Calc", 0, 0x80}, {"orgOnSphere", 0, 0x1}, {"orgOnCylinder", 0, 0x4}, {"axisFromSphere", 0, 0x2},
+    {"randrotaroundfwd", 0, 0x100}, {"evenDistribution", 0, 0x200}, {"frustumCull", 0, 0x400},
+    {"absoluteAccel", 0x400000, 0},
+};
+
+uint32_t bitsOf(const std::vector<std::string>& names, bool spawn) {
+    uint32_t bits = 0;
+    for (const auto& n : names)
+        for (const auto& f : kFlagNames)
+            if (lower(n) == lower(f.name)) bits |= spawn ? f.spawn : f.flag;
+    return bits;
+}
+
 } // namespace
+
+uint32_t EfxElement::flagBits() const { return bitsOf(list("flags"), false); }
+uint32_t EfxElement::spawnFlagBits() const { return bitsOf(list("spawnflags"), true); }
 
 float EfxGraph::sample(float t, int c) const {
     if (points.empty()) return 0;

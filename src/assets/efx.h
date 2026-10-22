@@ -1,6 +1,7 @@
 // Effect files (fx/*.efx): text definitions of particle and other elements (docs/spec/effects.md).
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <span>
 #include <string>
@@ -25,6 +26,9 @@ struct EfxElement {
     std::map<std::string, std::vector<std::string>> keys; // other keys with their whitespace-separated values
     std::map<std::string, EfxGraph> graphs;               // lower-case channel name → graph
     std::vector<std::string> flags() const { return list("flags"); }
+    // Bits of the `flags` and `spawnFlags` names (tables at 0x56d528 and 0x56d648 in CoD2SP_s.exe).
+    uint32_t flagBits() const;
+    uint32_t spawnFlagBits() const;
     std::vector<std::string> list(const std::string& key) const;
     // Numbers of a key (missing or non-numeric values read as 0).
     std::vector<float> numbers(const std::string& key) const;
