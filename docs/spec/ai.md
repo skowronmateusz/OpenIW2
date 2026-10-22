@@ -19,8 +19,11 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
 - `actor_*` entities are spawners. Those without spawnflag 1 (`SPAWNER`, described in the aitype headers as
   "makes this a spawner instead of a guy") spawn an AI at load.
 - `dospawn()` / `stalingradspawn()` on a spawner create an AI. It copies the spawner's key/values, decrements
-  `count`, runs `aitype main()` with `self` = the AI, notifies the spawner `"spawned"` with the AI, and starts
-  `animscripts/init::main()`. The errors "dospawn can only be called on actor spawners" and "Spawner at (%g %g %g)
+  `count`, runs `aitype main()` with `self` = the AI, starts `animscripts/init::main()` (handle 0x1c7e0f8, 0x532558)
+  and the bottom AI state, and then notifies the spawner `"spawned"` with the AI (0x5325ad).
+- An actor's `damageweapon` is the attacker's weapon name, set by the pain and die callbacks (0x4ff3b0 / 0x4ff530)
+  from the attacker entity's weapon index. G_Damage (0x528050) uses the world entity when there is no attacker, and
+  weapon index 0 is `none` (0x4dc210). A turret's bullets credit the turret's user, or the world (0x51ada0). The errors "dospawn can only be called on actor spawners" and "Spawner at (%g %g %g)
   is in solid" exist in the executable.
 
 ## Perception (observed)
@@ -178,8 +181,9 @@ A second table follows at 0x570800 with `threatbias` (0x8, int), `node` (0x2c, r
 There is no native `fightdist` or `maxdist` actor field: the only occurrences of these words in the executable (1.3
 and the protected original) are the weapon-file keys `maxDist`/`fightDist` and the built-ins `weaponmaxdist`,
 `weaponfightdist`, `pathenemyfightdist`. Scripts that read `ai.fightdist` (e.g. `toujane_ride.gsc::spawners_tweak`,
-`spawned.fightDist * 0.5`) therefore read an ordinary script variable that is undefined unless a script set it,
-and the original engine raises the same runtime error there.
+`spawned.fightDist * 0.5`) therefore read an ordinary script variable. `animscripts/init.gsc` sets it
+(`self.fightDist = WeaponFightDist(self.weapon)`), and init runs before the spawner's `"spawned"` notify (0x5325ad),
+so the value is defined there.
 
 ## Native actor field defaults (observed)
 

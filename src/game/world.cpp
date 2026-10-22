@@ -212,6 +212,11 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             fill(e.obj);
             if (cls == "info_player_start") starts.push_back(e.obj);
+        } else if (startsWith(cls, "weapon_") && weapon(cls.substr(7))) {
+            // weapon_<name> with a known weapon is an item entity (0x4f96d0 → item spawn 0x522c70).
+            // TODO(spec): item spawn details (model from the weapon, drop to floor, pickup).
+            Entity& e = spawnEntity(cls);
+            fill(e.obj);
         }
     }
     if (!starts.empty()) playerStart = &starts.front();
@@ -272,10 +277,8 @@ Entity* World::spawnActor(Entity& spawner) {
     } catch (const std::exception& e) {
         print("aitype " + aitype + ": " + e.what());
     }
-    vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
-    if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
-    // 0x4fdee0: animscripts/init runs as a plain thread (not the actor's animscript), then the bottom state
-    // (exposed) starts.
+    // 0x4fdee0 / spawn 0x532558: animscripts/init runs as a plain thread (not the actor's animscript), then the
+    // bottom state (exposed) starts, and only then is the spawner notified "spawned" (0x5325ad).
     try {
         vm_.start("animscripts/init.gsc", "main", {}, Value(a.obj));
     } catch (const std::exception& ex) {
@@ -283,6 +286,8 @@ Entity* World::spawnActor(Entity& spawner) {
     }
     a.ai.baseStateMs = timeMs_;
     aiStart(a, a.ai.stack[0]);
+    vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
+    if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
     return &a;
 }
 

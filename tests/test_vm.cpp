@@ -187,6 +187,15 @@ timed(ent)
         CHECK(h.joined() == "guy|");
     }
 
+    // A thread call yields the return value of a thread that ends before suspending, undefined otherwise.
+    {
+        Harness h;
+        h.files["test/threadret.gsc"] = "main() { a = thread now(); b = thread later(); println(a); println(isdefined(b)); }\n"
+                                        "now() { return 7; }\nlater() { wait 1; return 8; }\n";
+        h.vm.start("test/threadret.gsc", "main");
+        CHECK(h.joined() == "7|0|");
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;

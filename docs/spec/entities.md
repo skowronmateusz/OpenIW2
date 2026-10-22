@@ -36,3 +36,16 @@ Classes not in this table include path nodes (`node_*`, handled by the path-node
 `actor_*` spawners, `worldspawn` and vehicle nodes. Their handling is still to be specified.
 `misc_model`, `misc_prefab` and `script_struct` share one function. For `misc_model` this matches the map compiler
 baking static models into the level; that the entity is then dropped is *inferred*.
+
+## Map keys as script fields
+
+- Native entity fields (table at 0x56f4a8: classname, origin, model, spawnflags, target, targetname, count,
+  health, dmg, angles, script_linkname, script_noteworthy, maxhealth, anglelerprate) exist on every entity; the
+  integer ones read 0 when the map gives no key. Path nodes have their own table (0x5a93b8: targetname, target,
+  animscript, script_linkname, script_noteworthy, origin, angles, radius, spawnflags, type) in zero-filled memory.
+- Other keys are typed by `radiant/*.txt` ("float|int|string|vector name" lines, parsed at 0x4686c0, looked up
+  by 0x4682d0): int → atoi, float → atof, vector → sscanf "%f %f %f", string → text (entity 0x4f8ff0, node
+  0x515bf0). The original sets no field for a key that is neither native nor listed; here such keys stay, typed by
+  their text, because engine code reads spawn keys from the same object (TODO).
+- `weapon_<name>` with a known weapon spawns an item entity (0x4f96d0 → 0x522c70); item details are TODO.
+
