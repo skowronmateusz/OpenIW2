@@ -98,8 +98,8 @@ living actors and the player are entity clips with their spawn boxes and content
 (`fireBullet`, mask 0x280e831, priority map by `rifleBullet`) set `damagelocation`; an AI bullet that hits an actor
 of its own team continues from the hit point (Bullet_Fire_Extended, "Ignoring AI shooting teammate"); AI sight
 (0x54c760) and `sighttracepassed` / `bullettracepassed` use the sight trace. Not done: the player's stance-dependent
-box, corpses, xmodel collision surfaces (bit 4), bullet penetration, the cached brush of the sight trace, the
-player's movement mask 0x281c011 (pmove still clips only against the world mask 0x10001).
+box, corpses, xmodel collision surfaces (bit 4), bullet penetration, the cached brush of the sight trace. Pmove
+traces with the player's mask 0x281c011 and the player as pass entity (docs/spec/pmove.md).
 
 ## Brush submodels and entities (implemented)
 

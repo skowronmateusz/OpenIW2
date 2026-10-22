@@ -1814,9 +1814,14 @@ int main(int argc, char** argv) {
                 in.yaw = cam.yaw;
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
+                // With a running level the player clips against the world and its solid entities (brush models,
+                // actors) like G_Trace in the original pmove (0x507b00 → 0x4db7f0 → 0x44bf00), skipping itself.
+                game::MoveParams pmp = mp;
+                if (world && world->player()) pmp.passEntity = world->player()->number;
+                const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision;
                 while (remaining > 0) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
-                    game::playerMove(*scene.collision, ps, in, step, mp);
+                    game::playerMove(pcw, ps, in, step, pmp);
                     remaining -= step;
                 }
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};

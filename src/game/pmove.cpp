@@ -1,5 +1,4 @@
-// Player movement. Rules marked with an address follow CoD2SP_s.exe 1.3 (docs/spec/pmove.md); the ground trace,
-// slide and step code is still the id Tech 3 style approximation (TODO(spec): 0x54f2e0, 0x50bd90, 0x508390).
+// Player movement. Rules marked with an address follow CoD2SP_s.exe 1.3 (docs/spec/pmove.md).
 #include "game/pmove.h"
 
 #include <algorithm>
@@ -13,8 +12,306 @@ float dot(const Vec& a, const Vec& b) { return a[0] * b[0] + a[1] * b[1] + a[2] 
 Vec add(const Vec& a, const Vec& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
 Vec scale(const Vec& a, float s) { return {a[0] * s, a[1] * s, a[2] * s}; }
 
-constexpr float kMinWalkNormal = 0.7f;
-constexpr float kOverclip = 1.001f;
+Vec cross(const Vec& a, const Vec& b) { return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; }
+float normalize(Vec& v) {
+    const float l = std::sqrt(dot(v, v));
+    if (l != 0) v = scale(v, 1.0f / l);
+    return l;
+}
+
+constexpr float kMinWalkNormal = 0.7f;     // DAT_00591f30
+constexpr float kGroundTraceOffset = 0.25f; // DAT_00591fe0
+constexpr float kStepSize = 18.0f, kProneStepSize = 10.0f; // 0x54f2e0
+constexpr float kStickToGround = 9.0f;      // DAT_00591e88
+constexpr float kMinStepNormal = 0.3f;      // DAT_00592018
+constexpr uint32_t kBodyContents = 0x200c000; // 0x507b00: bodies a trace may start in
+constexpr int kMaxClipPlanes = 8;           // 0x54eac0
+
+// Per-move locals (the original's pml): frame time, ground state and the trace mask that 0x507b00 may narrow.
+struct Pml {
+    float frametime = 0;
+    bool walking = false, groundPlane = false;
+    TraceResult groundTrace;
+    uint32_t mask = 0;
+    int passEntity = -1;
+    Vec mins{}, maxs{};
+};
+
+// 0x507c20 and the inline copies: v − n·(d − |d|·0.001) with d = v·n.
+Vec clipVelocity(const Vec& v, const Vec& n) {
+    float d = dot(v, n);
+    d = -(d - std::fabs(d) * 0.001f);
+    return {d * n[0] + v[0], d * n[1] + v[1], d * n[2] + v[2]};
+}
+
+// 0x507b00: the player trace; a trace that starts inside a body (contents 0x200c000) drops those contents from the
+// mask for the rest of the move and is repeated.
+TraceResult pmTrace(const CollisionWorld& w, Pml& pml, const Vec& start, const Vec& end) {
+    TraceResult tr = w.trace(start, end, pml.mins, pml.maxs, pml.mask, pml.passEntity);
+    if (tr.startSolid && (tr.contents & kBodyContents) != 0) {
+        pml.mask &= ~kBodyContents;
+        tr = w.trace(start, end, pml.mins, pml.maxs, pml.mask, pml.passEntity);
+    }
+    return tr;
+}
+
+Vec lerpTo(const Vec& a, const Vec& b, float f) { return {(b[0] - a[0]) * f + a[0], (b[1] - a[1]) * f + a[1], (b[2] - a[2]) * f + a[2]}; }
+
+void noGround(PlayerState& ps, Pml& pml) {
+    ps.onGround = false;
+    pml.groundPlane = pml.walking = false;
+}
+
+// 0x5092f0: tries the 26 unit offsets of the table at 0x56f920; the first free position is taken and dropped by up
+// to one unit, and that trace becomes the ground trace.
+bool correctAllSolid(const CollisionWorld& w, PlayerState& ps, Pml& pml, TraceResult& tr) {
+    static constexpr float kJitter[26][3] = {
+        {0, 0, 1}, {-1, 0, 1}, {0, -1, 1}, {1, 0, 1}, {0, 1, 1}, {-1, 0, 0}, {0, -1, 0}, {1, 0, 0}, {0, 1, 0},
+        {0, 0, -1}, {-1, 0, -1}, {0, -1, -1}, {1, 0, -1}, {0, 1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1},
+        {-1, 1, 1}, {-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}, {-1, -1, -1}, {1, -1, -1}, {1, 1, -1},
+        {-1, 1, -1}};
+    for (const auto& j : kJitter) {
+        const Vec p{ps.origin[0] + j[0], ps.origin[1] + j[1], ps.origin[2] + j[2]};
+        if (pmTrace(w, pml, p, p).startSolid) continue;
+        ps.origin = p;
+        const Vec down{p[0], p[1], p[2] - 1.0f};
+        tr = pmTrace(w, pml, ps.origin, down);
+        pml.groundTrace = tr;
+        ps.origin = lerpTo(ps.origin, down, tr.fraction);
+        return true;
+    }
+    noGround(ps, pml);
+    ps.jumping = false;
+    ps.jumpOriginZ = 0;
+    return false;
+}
+
+// Ground trace (0x509480): a 0.25-unit trace above to below the origin. TODO(spec): the landing (fall damage and
+// slowdown, 0x508fe0) when the player lands, ladders (pm_flags 0x20).
+void groundTrace(const CollisionWorld& w, PlayerState& ps, Pml& pml) {
+    Vec start{ps.origin[0], ps.origin[1], ps.origin[2] + kGroundTraceOffset};
+    const Vec end{ps.origin[0], ps.origin[1], ps.origin[2] - kGroundTraceOffset};
+    TraceResult tr = pmTrace(w, pml, start, end);
+    pml.groundTrace = tr;
+    if (tr.allSolid && !correctAllSolid(w, ps, pml, tr)) return;
+    if (tr.startSolid) {
+        // Retried from just below the (possibly corrected) origin, at the first trace's x and y.
+        start[2] = ps.origin[2] - 0.001f;
+        tr = pmTrace(w, pml, start, end);
+        if (tr.startSolid) {
+            noGround(ps, pml);
+            return;
+        }
+        pml.groundTrace = tr;
+    }
+    if (tr.fraction == 1.0f) {
+        noGround(ps, pml);
+        return;
+    }
+    // Moving up and away from the plane: a jump, not ground.
+    if (ps.velocity[2] > 0 && dot(ps.velocity, tr.normal) > 10.0f) {
+        noGround(ps, pml);
+        return;
+    }
+    if (tr.normal[2] < kMinWalkNormal) {
+        ps.onGround = false;
+        pml.groundPlane = true;
+        pml.walking = false;
+        ps.jumping = false;
+        ps.jumpOriginZ = 0;
+        return;
+    }
+    pml.groundPlane = pml.walking = true;
+    ps.onGround = true;
+}
+
+// 0x54ea10: plane indices ordered by velocity·normal, ascending; returns the smallest.
+float sortPlanes(const Vec& v, const Vec* planes, int count, int* order) {
+    float d[kMaxClipPlanes + 1];
+    for (int i = 0; i < count; ++i) {
+        d[i] = dot(planes[i], v);
+        int k = i;
+        for (; k > 0 && d[i] <= d[order[k - 1]]; --k) order[k] = order[k - 1];
+        order[k] = i;
+    }
+    return d[order[0]];
+}
+
+// Slide move (0x54eac0): up to 4 traces, clipping the velocity against up to 8 planes (the ground plane and the
+// velocity direction first). With gravity the move uses the average of the start and end vertical speed.
+// Returns true when something was hit.
+bool slideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool gravity, const MoveParams& mp) {
+    Vec endVel = ps.velocity;
+    if (gravity) {
+        endVel[2] = ps.velocity[2] - mp.gravity * pml.frametime;
+        ps.velocity[2] = (endVel[2] + ps.velocity[2]) * 0.5f;
+        if (pml.groundPlane) ps.velocity = clipVelocity(ps.velocity, pml.groundTrace.normal);
+    }
+    const Vec primal{endVel[0], endVel[1], endVel[2]};
+    Vec planes[kMaxClipPlanes + 1];
+    int numPlanes = 0;
+    if (pml.groundPlane) planes[numPlanes++] = pml.groundTrace.normal;
+    planes[numPlanes] = ps.velocity;
+    normalize(planes[numPlanes++]);
+
+    float timeLeft = pml.frametime;
+    int bump = 0;
+    for (; bump < 4; ++bump) {
+        const Vec end = add(ps.origin, scale(ps.velocity, timeLeft));
+        const TraceResult tr = pmTrace(w, pml, ps.origin, end);
+        if (tr.allSolid) {
+            ps.velocity[2] = 0;
+            return true;
+        }
+        if (tr.fraction > 0) ps.origin = lerpTo(ps.origin, end, tr.fraction);
+        if (tr.fraction == 1.0f) break;
+        timeLeft -= tr.fraction * timeLeft;
+        if (numPlanes >= kMaxClipPlanes) {
+            ps.velocity = {0, 0, 0};
+            return true;
+        }
+        // The same plane again: nudge the velocity off it.
+        bool same = false;
+        for (int i = 0; i < numPlanes && !same; ++i)
+            if (dot(tr.normal, planes[i]) > 0.999f) {
+                ps.velocity = add(clipVelocity(ps.velocity, tr.normal), tr.normal);
+                same = true;
+            }
+        if (same) continue;
+        planes[numPlanes++] = tr.normal;
+        int order[kMaxClipPlanes + 1];
+        if (sortPlanes(ps.velocity, planes, numPlanes, order) >= 0.1f) continue;
+        const Vec& pi = planes[order[0]];
+        Vec clip = clipVelocity(ps.velocity, pi), endClip = clipVelocity(endVel, pi);
+        for (int k = 1; k < numPlanes; ++k) {
+            const Vec& pj = planes[order[k]];
+            if (dot(clip, pj) >= 0.1f) continue;
+            clip = clipVelocity(clip, pj);
+            endClip = clipVelocity(endClip, pj);
+            if (dot(clip, pi) >= 0) continue;
+            // Along the crease of both planes; stop when a third plane blocks that too.
+            Vec dir = cross(pi, pj);
+            normalize(dir);
+            clip = scale(dir, dot(dir, ps.velocity));
+            endClip = scale(dir, dot(dir, endVel));
+            for (int m = 1; m < numPlanes; ++m)
+                if (m != k && dot(clip, planes[order[m]]) < 0.1f) {
+                    ps.velocity = {0, 0, 0};
+                    return true;
+                }
+        }
+        ps.velocity = clip;
+        endVel = endClip;
+    }
+    if (gravity) ps.velocity = endVel;
+    if (ps.pmTimeMs != 0) ps.velocity = primal;
+    return bump != 0;
+}
+
+// 0x541270: a jump may step up to jump_stepSize, but not above the jump's apex (origin z + jump_height).
+bool jumpStep(const PlayerState& ps, float startZ, float& stepSize, const MoveParams& mp) {
+    const float apex = ps.jumpOriginZ + mp.jumpHeight;
+    if (!(apex > startZ)) return false;
+    stepSize = mp.jumpStepSize;
+    if (mp.jumpStepSize + startZ > apex) stepSize = apex - startZ;
+    return true;
+}
+
+// 0x541430: after a jump step the vertical speed may not carry the player above the apex.
+void capJumpStep(PlayerState& ps, float startZ, const MoveParams& mp) {
+    if (!(ps.origin[2] - startZ > 0)) return;
+    const float left = mp.jumpHeight + ps.jumpOriginZ - ps.origin[2];
+    if (left >= 0.1f) {
+        const float v = std::sqrt((left + left) * mp.gravity);
+        if (v < ps.velocity[2]) ps.velocity[2] = v;
+    } else {
+        ps.velocity[2] = 0;
+    }
+}
+
+// Step slide move (0x54f2e0): the slide, then on a hit the same move from up to 18 units higher (10 prone), dropped
+// back down; on the ground the result sticks to ground up to 9 units below. The step is kept when it got further
+// along the velocity. TODO(spec): ladders (pm_flags 0x20), the step event 0x8f and footsteps (0x50a830, 0x50a6d0).
+void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool gravity, const MoveParams& mp) {
+    const bool onGroundPlane = pml.groundPlane;
+    if (!onGroundPlane && ps.jumping && ps.pmTimeMs != 0) {
+        ps.jumping = false;
+        ps.jumpOriginZ = 0;
+    }
+    const Vec startO = ps.origin, startV = ps.velocity;
+    const bool hit = slideMove(w, ps, pml, gravity, mp);
+    float stepSize = ps.stance == Stance::Prone ? kProneStepSize : kStepSize;
+    bool jumpStepped = false;
+    if (!ps.onGround) {
+        if (ps.jumping && ps.pmTimeMs != 0) {
+            ps.jumping = false;
+            ps.jumpOriginZ = 0;
+        }
+        if (!hit || !ps.jumping || !jumpStep(ps, startO[2], stepSize, mp)) return;
+        if (stepSize < 1.0f) return;
+        jumpStepped = true;
+    }
+    const Vec downO = ps.origin, downV = ps.velocity;
+    float up = 0;
+    if (hit) {
+        const Vec top{startO[0], startO[1], startO[2] + stepSize + 1.0f};
+        const TraceResult tr = pmTrace(w, pml, startO, top);
+        up = (stepSize + 1.0f) * tr.fraction - 1.0f;
+        if (up >= 1.0f) {
+            ps.origin = {startO[0], startO[1], startO[2] + up};
+            ps.velocity = startV;
+            slideMove(w, ps, pml, gravity, mp);
+        } else {
+            up = 0;
+        }
+    }
+    if (onGroundPlane || up != 0) {
+        Vec down{ps.origin[0], ps.origin[1], ps.origin[2] - up};
+        if (onGroundPlane) down[2] -= kStickToGround;
+        const TraceResult tr = pmTrace(w, pml, ps.origin, down);
+        // Nothing below (the trace's hit id, trace+0x1c, is 0): keep the plain slide.
+        if (tr.fraction == 1.0f && !tr.startSolid) {
+            ps.origin = downO;
+            ps.velocity = downV;
+            return;
+        }
+        if (tr.fraction >= 1.0f) {
+            if (up != 0) ps.origin[2] -= up;
+        } else {
+            if (tr.normal[2] < kMinStepNormal) {
+                ps.origin = downO;
+                ps.velocity = downV;
+                return;
+            }
+            ps.origin = lerpTo(ps.origin, down, tr.fraction);
+            ps.velocity = clipVelocity(ps.velocity, tr.normal);
+        }
+    }
+    const float stepped = (ps.origin[0] - startO[0]) * ps.velocity[0] + (ps.origin[1] - startO[1]) * ps.velocity[1];
+    const float slid = (downO[0] - startO[0]) * ps.velocity[0] + (downO[1] - startO[1]) * ps.velocity[1];
+    if (stepped <= slid + 0.001f || (jumpStepped && ps.jumpOriginZ + mp.jumpHeight < ps.origin[2])) {
+        ps.origin = downO;
+        ps.velocity = downV;
+        if (onGroundPlane) {
+            const Vec down{ps.origin[0], ps.origin[1], ps.origin[2] - kStickToGround};
+            const TraceResult tr = pmTrace(w, pml, ps.origin, down);
+            if (tr.fraction < 1.0f) {
+                ps.origin = lerpTo(ps.origin, down, tr.fraction);
+                ps.velocity = clipVelocity(ps.velocity, tr.normal);
+            }
+        }
+    }
+    if (jumpStepped) capJumpStep(ps, startO[2], mp);
+    // Stairs (0x54f846): a height change of more than half a unit against the plain slide slows the player down.
+    // TODO(spec): the prone surface test 0x4fc000 (0x54e990) that undoes a prone step.
+    if (onGroundPlane) {
+        const float dz = ps.origin[2] - downO[2];
+        if (std::fabs(dz) > 0.5f && std::lrint(double(dz) + 9.313225746154785e-10) != 0) {
+            const float f = (1.0f - std::fabs(ps.origin[2] - startO[2]) / stepSize) * 0.8f + 0.2f;
+            ps.velocity = scale(ps.velocity, f);
+        }
+    }
+}
 
 // View-height keyframes {percent of the transition, height} (tables at 0x5a9088, 0x5a8fa8, 0x5a9130, 0x5a9018).
 struct Key { int percent; float height; };
@@ -43,57 +340,6 @@ float viewHeightAt(int target, bool down, int percent) {
 }
 
 float maxsZ(Stance s, const MoveParams& mp) { return s == Stance::Prone ? 30.0f : s == Stance::Crouch ? 50.0f : mp.maxs[2]; }
-
-Vec clipVelocity(const Vec& v, const Vec& n) {
-    float backoff = dot(v, n);
-    backoff = backoff < 0 ? backoff * kOverclip : backoff / kOverclip;
-    return {v[0] - n[0] * backoff, v[1] - n[1] * backoff, v[2] - n[2] * backoff};
-}
-
-bool slideMove(const CollisionWorld& w, PlayerState& ps, float dt, const Vec& mins, const Vec& maxs) {
-    Vec planes[5];
-    int numPlanes = 0;
-    float timeLeft = dt;
-    for (int bump = 0; bump < 4 && timeLeft > 0; ++bump) {
-        const Vec end = add(ps.origin, scale(ps.velocity, timeLeft));
-        const TraceResult tr = w.trace(ps.origin, end, mins, maxs, Contents::PlayerSolid);
-        if (tr.allSolid) {
-            ps.velocity[2] = 0;
-            return true;
-        }
-        if (tr.fraction > 0) ps.origin = tr.endPos;
-        if (tr.fraction == 1.0f) return bump > 0;
-        timeLeft -= timeLeft * tr.fraction;
-        if (numPlanes >= 5) {
-            ps.velocity = {0, 0, 0};
-            return true;
-        }
-        planes[numPlanes++] = tr.normal;
-        for (int i = 0; i < numPlanes; ++i) {
-            if (dot(ps.velocity, planes[i]) >= 0.1f) continue;
-            Vec clipped = clipVelocity(ps.velocity, planes[i]);
-            for (int j = 0; j < numPlanes; ++j) {
-                if (j == i || dot(clipped, planes[j]) >= 0.1f) continue;
-                clipped = clipVelocity(clipped, planes[j]);
-                if (dot(clipped, planes[i]) >= 0) continue;
-                const Vec dir{planes[i][1] * planes[j][2] - planes[i][2] * planes[j][1],
-                              planes[i][2] * planes[j][0] - planes[i][0] * planes[j][2],
-                              planes[i][0] * planes[j][1] - planes[i][1] * planes[j][0]};
-                clipped = scale(dir, dot(dir, ps.velocity));
-            }
-            ps.velocity = clipped;
-            break;
-        }
-    }
-    return true;
-}
-
-void groundTrace(const CollisionWorld& w, PlayerState& ps, const Vec& mins, const Vec& maxs) {
-    const Vec down = add(ps.origin, {0, 0, -0.25f});
-    const TraceResult tr = w.trace(ps.origin, down, mins, maxs, Contents::PlayerSolid);
-    ps.onGround = tr.fraction < 1.0f && tr.normal[2] >= kMinWalkNormal && ps.velocity[2] <= 10.0f;
-    if (ps.onGround && tr.fraction > 0) ps.origin = tr.endPos;
-}
 
 // Stance change (0x509d10): standing up needs room for the taller box; going prone needs ground
 // (TODO(spec): the prone surface test 0x4fc000). A change starts a view-height transition (0x509840).
@@ -202,61 +448,113 @@ void updateLean(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in,
     }
 }
 
-void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp) {
-    const Vec maxs{mp.maxs[0], mp.maxs[1], maxsZ(ps.stance, mp)};
-    groundTrace(w, ps, mp.mins, maxs);
-    updateLean(w, ps, in, dt * 1000.0f, in.yaw);
+// Jump (0x5416b0, 0x5414d0): standing on the ground, newly pressed, 500 ms after the previous jump; vertical speed
+// sqrt(2 · jump_height · gravity). Leaves the ground and remembers the jump's origin z (ps+0x74).
+bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParams& mp) {
+    const bool jumpPressed = in.jump && !ps.jumpHeld;
+    ps.jumpHeld = in.jump;
+    if (!jumpPressed || ps.stance != Stance::Stand || ps.viewHeightTarget != 60 || ps.timeMs - ps.lastJumpMs <= 499) return false;
+    pml.groundPlane = pml.walking = false;
+    ps.onGround = false;
+    ps.lastJumpMs = ps.timeMs;
+    ps.jumpOriginZ = ps.origin[2];
+    ps.pmTimeMs = 0;
+    ps.jumping = true;
+    ps.velocity[2] = std::sqrt(2.0f * mp.jumpHeight * mp.gravity);
+    return true;
+}
+
+// Landing timer (0x541300, called by the walk move while pm_flags 0x80000 is set): 1200 ms after landing at least
+// 18 units above the jump's origin, else 1800 ms; the flag is dropped once the timer reads above 1800. The speed
+// factors (0.5, 0.65) only apply with jump_slowdownEnable, which defaults to false.
+void landingTimer(PlayerState& ps) {
+    if (ps.pmTimeMs > 1800) {
+        ps.jumping = false;
+        ps.jumpOriginZ = 0;
+    } else if (ps.pmTimeMs == 0) {
+        ps.pmTimeMs = ps.jumpOriginZ + 18.0f <= ps.origin[2] ? 1200 : 1800;
+    }
+}
+
+Vec wishVelocity(const Vec& fwd, const Vec& right, float f, float r) { return add(scale(fwd, f), scale(right, r)); }
+
+void airMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, float f, float r, const Vec& fwd, const Vec& right,
+             const MoveParams& mp) {
+    // Air move (0x5085b0): horizontal wish direction, acceleration 1, clipped against a steep ground plane.
+    applyFriction(ps, pml.frametime, mp);
+    const float s = cmdScale(ps, f, r, mp, false);
+    Vec wish = wishVelocity(fwd, right, f, r);
+    const float wishSpeed = normalize(wish) * s;
+    accelerate(ps, wish, wishSpeed, 1.0f, pml.frametime, mp);
+    if (pml.groundPlane) ps.velocity = clipVelocity(ps.velocity, pml.groundTrace.normal);
+    stepSlideMove(w, ps, pml, true, mp);
+}
+
+void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float f, float r, Vec fwd,
+              Vec right, const MoveParams& mp) {
+    // Walk move (0x5086f0).
+    if (ps.jumping) landingTimer(ps);
+    if (checkJump(ps, pml, in, mp)) {
+        airMove(w, ps, pml, f, r, fwd, right, mp);
+        return;
+    }
+    applyFriction(ps, pml.frametime, mp);
+    const float s = cmdScale(ps, f, r, mp, true);
+    // The movement axes follow the ground plane.
+    const Vec& n = pml.groundTrace.normal;
+    fwd = clipVelocity(fwd, n);
+    right = clipVelocity(right, n);
+    normalize(fwd);
+    normalize(right);
+    Vec wish = wishVelocity(fwd, right, f, r);
+    const float wishSpeed = normalize(wish) * s;
+    // Acceleration 9 standing, 12 crouched, 19 prone, 1 on slick ground (surface flag 2). TODO(spec): ×0.25 with
+    // pm_flags 0x200 and knockback (0x400), both set by the landing code that is not implemented.
+    const bool slick = (pml.groundTrace.surfaceFlags & 2) != 0;
+    const float accel = slick ? 1.0f : ps.stance == Stance::Prone ? 19.0f : ps.stance == Stance::Crouch ? 12.0f : 9.0f;
+    accelerate(ps, wish, wishSpeed, accel, pml.frametime, mp);
+    if (slick) ps.velocity[2] -= mp.gravity * pml.frametime;
+    // Along the ground plane, keeping the speed.
+    const float speed = std::sqrt(dot(ps.velocity, ps.velocity));
+    const Vec old = ps.velocity;
+    ps.velocity = clipVelocity(ps.velocity, n);
+    if (dot(old, ps.velocity) > 0) {
+        normalize(ps.velocity);
+        ps.velocity = scale(ps.velocity, speed);
+    }
+    if (ps.velocity[0] != 0 || ps.velocity[1] != 0) stepSlideMove(w, ps, pml, false, mp);
+}
+
+// One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
+void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
+    Pml pml;
+    pml.frametime = float(ms) * 0.001f;
+    pml.mask = mp.traceMask;
+    pml.passEntity = mp.passEntity;
+    pml.mins = mp.mins;
+    pml.maxs = {mp.maxs[0], mp.maxs[1], maxsZ(ps.stance, mp)};
+    groundTrace(w, ps, pml);
+    updateLean(w, ps, in, float(ms), in.yaw);
     updateStance(w, ps, in, mp);
     updateViewHeight(ps);
+    pml.maxs[2] = maxsZ(ps.stance, mp);
+
+    // pm_time runs down; when it expires pm_flags 0x80000, 0x400 and 0x200 are cleared.
+    if (ps.pmTimeMs != 0) {
+        if (ms < ps.pmTimeMs) {
+            ps.pmTimeMs -= ms;
+        } else {
+            ps.pmTimeMs = 0;
+            ps.jumping = false;
+        }
+    }
 
     const float yaw = in.yaw * float(M_PI) / 180.0f;
     const Vec fwd{std::cos(yaw), std::sin(yaw), 0}, right{std::sin(yaw), -std::cos(yaw), 0};
     const float f = std::clamp(in.forward, -1.0f, 1.0f) * 127.0f, r = std::clamp(in.right, -1.0f, 1.0f) * 127.0f;
-
-    // Jump (0x5416b0, 0x5414d0): standing on the ground, newly pressed, 500 ms after the previous jump;
-    // vertical speed sqrt(2 · jump_height · gravity).
-    const bool jumpPressed = in.jump && !ps.jumpHeld;
-    ps.jumpHeld = in.jump;
-    if (ps.onGround && jumpPressed && ps.stance == Stance::Stand && ps.viewHeightTarget == 60 &&
-        ps.timeMs - ps.lastJumpMs > 499) {
-        ps.velocity[2] = std::sqrt(2.0f * mp.jumpHeight * mp.gravity);
-        ps.onGround = false;
-        ps.lastJumpMs = ps.timeMs;
-    }
-
-    applyFriction(ps, dt, mp);
-    const bool walking = ps.onGround;
-    const float s = cmdScale(ps, f, r, mp, walking);
-    Vec wish = add(scale(fwd, f), scale(right, r));
-    float wishSpeed = std::sqrt(dot(wish, wish));
-    if (wishSpeed > 0) wish = scale(wish, 1.0f / wishSpeed);
-    wishSpeed *= s;
-    // Walk acceleration 9 standing, 12 crouched, 19 prone (0x5086f0); air acceleration 1 (0x5085b0).
-    const float accel = walking ? (ps.stance == Stance::Prone ? 19.0f : ps.stance == Stance::Crouch ? 12.0f : 9.0f) : 1.0f;
-    accelerate(ps, wish, wishSpeed, accel, dt, mp);
-    if (walking) ps.velocity[2] = 0;
-    else ps.velocity[2] -= mp.gravity * dt;
-
-    const PlayerState before = ps;
-    const bool blocked = slideMove(w, ps, dt, mp.mins, maxs);
-    if (blocked && before.onGround) {
-        PlayerState up = before;
-        const TraceResult lift = w.trace(up.origin, add(up.origin, {0, 0, mp.stepHeight}), mp.mins, maxs, Contents::PlayerSolid);
-        if (!lift.allSolid) {
-            up.origin = lift.endPos;
-            slideMove(w, up, dt, mp.mins, maxs);
-            const TraceResult drop = w.trace(up.origin, add(up.origin, {0, 0, -(mp.stepHeight + 1)}), mp.mins, maxs, Contents::PlayerSolid);
-            if (!drop.allSolid) up.origin = drop.endPos;
-            const float d1 = (ps.origin[0] - before.origin[0]) * (ps.origin[0] - before.origin[0]) + (ps.origin[1] - before.origin[1]) * (ps.origin[1] - before.origin[1]);
-            const float d2 = (up.origin[0] - before.origin[0]) * (up.origin[0] - before.origin[0]) + (up.origin[1] - before.origin[1]) * (up.origin[1] - before.origin[1]);
-            if (d2 > d1 && drop.normal[2] >= kMinWalkNormal) {
-                ps.origin = up.origin;
-                ps.velocity = up.velocity;
-                ps.velocity[2] = 0;
-            }
-        }
-    }
-    groundTrace(w, ps, mp.mins, maxs);
+    if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
+    else airMove(w, ps, pml, f, r, fwd, right, mp);
+    groundTrace(w, ps, pml);
 }
 
 } // namespace
@@ -276,7 +574,7 @@ void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in,
     while (ms > 0) {
         const int step = std::min(ms, 66);
         ps.timeMs += step;
-        moveStep(w, ps, in, float(step) * 0.001f, mp);
+        moveStep(w, ps, in, step, mp);
         ms -= step;
     }
 }

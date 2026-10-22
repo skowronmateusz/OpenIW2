@@ -154,3 +154,7 @@ add_test(NAME efx COMMAND test_efx)
 add_executable(test_hitboxes tests/test_hitboxes.cpp)
 target_link_libraries(test_hitboxes PRIVATE iw2_game)
 add_test(NAME hitboxes COMMAND test_hitboxes)
+
+add_executable(test_pmove tests/test_pmove.cpp)
+target_link_libraries(test_pmove PRIVATE iw2_game)
+add_test(NAME pmove COMMAND test_pmove)
