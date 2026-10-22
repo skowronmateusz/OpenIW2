@@ -53,7 +53,8 @@ Errors: "entity type [%s] is not a turret" (0x5872f8) or "entity is not a turret
 - `canuseturret(t)` / `useturret(t)` (0x53f280 / 0x53f100 → 0x51d6d0): yes if the actor already owns the turret;
   no if the turret is in use by someone else; otherwise 0x51d3c0 (automatic turrets) or 0x51d640 (manual: only when
   an enemy is closer than a limit) decide from the actor's enemy (distance, turret range, sight). `useturret`
-  records the turret on the actor (+0x2114) or clears it.
+  records the turret on the actor (+0x2114) or clears it, and returns 1 or 0 (`animscripts/utility.gsc::tryTurret`
+  reads it).
 - `stopuseturret()` (0x53f200 → 0x549a60): notifies the turret "turret_deactivate" if it was active, clears the
   in-use flag and owner, notifies "turretownerchange".
 - `getturret()` (0x53f8e0): the turret if the actor is its owner.

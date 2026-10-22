@@ -216,7 +216,7 @@ void World::registerTurretBuiltins() {
         Entity& t = turretArg(c);
         if (!canUse(a, t)) {
             a.usingTurret.reset();
-            return Value();
+            return Value(false); // returns the 0x51d6d0 result (0x53f1c1…0x53f1ec)
         }
         a.usingTurret = t.obj;
         // Inferred: the original only records the turret here (actor +0x2114); taking ownership happens in code not
@@ -226,7 +226,7 @@ void World::registerTurretBuiltins() {
             t.turret->owner = a.obj;
             vm_.notify(t.obj, "turretownerchange");
         }
-        return Value();
+        return Value(true);
     });
     // stopuseturret (0x53f200 → 0x549a60): frees the turret and notifies "turretownerchange".
     vm_.registerBuiltin("stopuseturret", [this, actorOf](CallContext& c) {
