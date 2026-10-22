@@ -97,8 +97,10 @@ PmoveSingle for a normal player: ground trace, stance, pm_time countdown (at 0 i
 - Step slide move (0x54f2e0): step 18, 10 prone. After the slide, without ground only a jump may step
   (0x541270: jump_stepSize, limited to the jump's apex ps+0x74 + jump_height). After a hit the slide is repeated from
   up to step + 1 units higher (a trace up; kept when ≥ 1 unit). On a ground plane or after a step a trace goes down
-  by the step plus 9 (DAT_00591e88) on ground: nothing hit (trace+0x1c = 0) → plain slide result; normal z < 0.3 →
-  plain slide result; else land there and clip the velocity. The step is dropped for the plain slide (then stuck to
+  by the step plus 9 (DAT_00591e88) on ground: hit id (trace+0x1c, a word compared with 1 at 0x54f5e2) 0 → plain
+  slide result. G_Trace (0x44bf00) writes 0x7ff there when the fraction is 1 and 0x7fe for the world,
+  and an entity hit writes the entity number, so this only happens on a hit on entity 0. Fraction 1 → the origin
+  goes down by the step height only; normal z < 0.3 → plain slide result; else land there and clip the velocity. The step is dropped for the plain slide (then stuck to
   ground 9 units below) unless it got further along the velocity (+0.001), or a jump step went above the apex; a
   jump step caps the vertical speed at sqrt(2·g·(apex − z)) (0x541430). On a ground plane a height change of more
   than 0.5 against the plain slide scales the velocity by (1 − |z − start z|/step)·0.8 + 0.2.

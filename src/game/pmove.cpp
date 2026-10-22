@@ -269,8 +269,10 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
         Vec down{ps.origin[0], ps.origin[1], ps.origin[2] - up};
         if (onGroundPlane) down[2] -= kStickToGround;
         const TraceResult tr = pmTrace(w, pml, ps.origin, down);
-        // Nothing below (the trace's hit id, trace+0x1c, is 0): keep the plain slide.
-        if (tr.fraction == 1.0f && !tr.startSolid) {
+        // The trace's hit id (trace+0x1c, `cmp word [esp+0x90], 1; jnc` at 0x54f5e2) is 0: keep the plain slide.
+        // G_Trace (0x44bf00) sets it to 0x7ff when nothing was hit and 0x7fe for the world; an entity clip writes its
+        // entity number, so only a hit on entity 0 takes this path. A clear trace lowers the origin by `up` below.
+        if (tr.entity == 0) {
             ps.origin = downO;
             ps.velocity = downV;
             return;

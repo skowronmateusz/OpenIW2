@@ -20,6 +20,7 @@
 #include "game/viewweapon.h"
 #include "game/fx.h"
 #include "game/pmove.h"
+#include "game/pmoverecord.h"
 #include "game/world.h"
 #include "util/png.h"
 
@@ -1778,6 +1779,8 @@ int main(int argc, char** argv) {
         float gameClock = 0;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
+        game::MoveRecorder moveRecorder;
+        bool fellOut = false;
         const game::MoveParams mp;
         while (running) {
             SDL_Event ev;
@@ -1794,8 +1797,10 @@ int main(int argc, char** argv) {
                     stance = stance == game::Stance::Crouch ? game::Stance::Stand : game::Stance::Crouch;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_Z)
                     stance = stance == game::Stance::Prone ? game::Stance::Stand : game::Stance::Prone;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_P)
+                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_P) {
                     std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
+                    if (moveRecorder.write("pmove_replay.bin")) std::cout << "wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
+                }
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                     cam.yaw -= ev.motion.xrel * 0.15f;
                     cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f, -89.0f, 89.0f);
@@ -1823,8 +1828,21 @@ int main(int argc, char** argv) {
                 const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision;
                 while (remaining > 0) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
+                    game::RecordedMove rec{ps, {}, in, step, pmp, pcw.entityClips()};
                     game::playerMove(pcw, ps, in, step, pmp);
+                    rec.after = ps;
+                    moveRecorder.add(std::move(rec));
                     remaining -= step;
+                }
+                // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
+                if (!fellOut) {
+                    const game::TraceResult under = pcw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 4000}, {0, 0, 0},
+                                                              {0, 0, 0}, pmp.traceMask, pmp.passEntity);
+                    if (under.fraction == 1 && !under.startSolid) {
+                        fellOut = true;
+                        if (moveRecorder.write("pmove_replay.bin"))
+                            std::cout << "player fell out of the world; wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
+                    }
                 }
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
