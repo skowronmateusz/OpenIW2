@@ -78,6 +78,7 @@ struct Entity {
     size_t pathIndex = 0;
     std::array<float, 3> pathGoal{};
     std::unique_ptr<VehicleState> vehicle; // script_vehicle path state (src/game/vehicles.cpp)
+    int usingVehicle = -1;                 // player: the vehicle it rides (entity +0xf4 / client +0x568)
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
@@ -194,7 +195,8 @@ private:
     Vec3 eyePosition(Entity& e);
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                 const std::string& location = "none");
-    Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount);
+    // attacker: the entity credited with the damage (nullptr = the world).
+    Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker);
     int weaponDamage(const std::string& weaponName);
     void updatePerception(Entity& e);
     // Perception helpers (src/game/perception.cpp)
@@ -306,6 +308,8 @@ private:
     const VehicleInfo* vehicleInfo(const std::string& type);
     void updateVehicleTurret(Entity& e);
     Vec3 vehicleTagPosition(Entity& e, const char* tag, bool& found);
+    void linkPlayerToVehicle(Entity& vehicle, Entity& player);
+    void unlinkPlayerFromVehicle(Entity& vehicle, Entity& player);
     void alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle);
     std::vector<VehicleNode> vnodes_;
     std::map<std::string, std::unique_ptr<VehicleInfo>> vehicleInfos_;

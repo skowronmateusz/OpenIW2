@@ -631,8 +631,64 @@ void World::thinkVehicles() {
         if (ep->vehicle && !ep->obj->removed) updateVehicleTurret(*ep);
 }
 
+// A player starts using a vehicle (VEH_LinkPlayer 0x511610): the player is placed at tag_player with the vehicle's
+// pitch and yaw (roll 0) and linked to that tag; both entities record each other.
+// TODO(spec): the second tag the original prefers for the angles (vehicle +0x214), the client flags it sets
+// (pm_flags 0x60000) and player control of the vehicle.
+void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
+    VehicleState& v = *vehicle.vehicle;
+    if (player.usingVehicle >= 0) throw std::runtime_error("VEH_LinkPlayer: Player is already using a vehicle");
+    if (v.owner >= 0) throw std::runtime_error("VEH_LinkPlayer: Vehicle already has an owner");
+    bool found = false;
+    const Vec3 pos = vehicleTagPosition(vehicle, "tag_player", found);
+    if (!found) throw std::runtime_error("VEH_LinkPlayer: Trying to use vehicle without a bone [tag_player]");
+    const Vec3 a = vehicle.obj->get("angles").asVector();
+    player.obj->set("origin", Value(pos));
+    player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
+    Link l;
+    l.parent = vehicle.number;
+    l.tag = "tag_player";
+    links_[player.number] = l;
+    v.owner = player.number;
+    player.usingVehicle = vehicle.number;
+}
+
+// The player leaves the vehicle (VEH_UnlinkPlayer 0x511780): unlinked and placed at tag_detach, keeping its pitch
+// and yaw. TODO(spec): the fallback height above the vehicle origin without tag_detach (vehicle +0x108 → +0xfc).
+void World::unlinkPlayerFromVehicle(Entity& vehicle, Entity& player) {
+    if (player.usingVehicle < 0) throw std::runtime_error("VEH_UnlinkPlayer: Player is not using a vehicle");
+    links_.erase(player.number);
+    bool found = false;
+    const Vec3 pos = vehicleTagPosition(vehicle, "tag_detach", found);
+    if (!found) print("VEH_UnlinkPlayer: Warning - no [tag_detach] on vehicle");
+    player.obj->set("origin", Value(pos));
+    const Value pa = player.obj->get("angles");
+    const Vec3 a = pa.isVector() ? pa.asVector() : Vec3{0, 0, 0};
+    player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
+    vehicle.vehicle->owner = -1;
+    player.usingVehicle = -1;
+}
+
 // Vehicle methods (registration table, docs/spec/builtins.md 0x513070…0x513ee0).
 void World::registerVehicleBuiltins() {
+    // useby(user) (0x4ef020): notifies "trigger" with the user, then runs the entity type's use function
+    // (table 0x5a5740). For vehicles (0x512f00) a player gets in, or out when already using a vehicle.
+    // TODO(spec): the use functions of turrets (0x529280) and entity type 8 (0x529450).
+    vm_.registerBuiltin("useby", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        Entity* user = entityOf(c.arg(0));
+        if (!e || !user) throw std::runtime_error("not an entity");
+        vm_.notify(e->obj, "trigger", {Value(user->obj)});
+        if (e->classname == "script_vehicle" && user->isPlayer && !e->obj->removed) {
+            vehicleState(c.self);
+            if (user->usingVehicle >= 0) {
+                if (Entity* ridden = entityByNumber(user->usingVehicle); ridden && ridden->vehicle) unlinkPlayerFromVehicle(*ridden, *user);
+            } else {
+                linkPlayerToVehicle(*e, *user);
+            }
+        }
+        return Value();
+    });
     vm_.registerBuiltin("attachpath", [this](CallContext& c) {
         VehicleState& v = vehicleState(c.self);
         const int n = vehicleNodeIndex(c.arg(0));
@@ -717,8 +773,12 @@ void World::registerVehicleBuiltins() {
         vm_.notify(e->obj, "death");
         return Value();
     });
-    // No player drives vehicles yet, so a vehicle has no owner (0x513ab0 returns nothing then).
-    vm_.registerBuiltin("getvehicleowner", [this](CallContext& c) { vehicleState(c.self); return Value(); });
+    // getvehicleowner (0x513ab0): the player using the vehicle, nothing otherwise.
+    vm_.registerBuiltin("getvehicleowner", [this](CallContext& c) {
+        const VehicleState& v = vehicleState(c.self);
+        Entity* o = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
+        return o ? Value(o->obj) : Value();
+    });
     auto requireTurret = [this](CallContext& c) -> VehicleState& {
         VehicleState& v = vehicleState(c.self);
         const Value h = c.self.asObject()->get("health");
@@ -777,7 +837,7 @@ void World::registerVehicleBuiltins() {
                 const Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
                 if (!ok) throw std::runtime_error(std::string("No ") + flash[first + k] + " for [" + e->obj->get("model").toString() + "]");
                 const Vec3 end{start[0] + fwd[0] * 8192.0f, start[1] + fwd[1] * 8192.0f, start[2] + fwd[2] * 8192.0f};
-                fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon));
+                fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e);
             }
         }
         if (v.info->quadBarrel) v.altBarrel = !v.altBarrel;

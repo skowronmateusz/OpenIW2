@@ -277,7 +277,9 @@ void World::shootTurret(Entity& t) {
     const float spread = (player ? ts.playerSpread : ts.aiSpread) * float(M_PI) / 180.0f;
     const Vec3 a = toAngles(dir);
     const Vec3 sd = forwardOf({a[0] + rand11() * spread * 180.0f / float(M_PI), a[1] + rand11() * spread * 180.0f / float(M_PI), 0});
-    fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon));
+    // The damage attacker is the turret's user, or the world without one (0x51ada0 → 0x5312b0).
+    Entity* user = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
+    fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user);
 }
 
 // Turret think for one turret (0x51d250).
