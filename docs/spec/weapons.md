@@ -29,11 +29,6 @@ it is not taken from the executable.
   its root `tag_view` at the view origin. The gun model's root `j_gun` follows the hands' `tag_weapon`
   (inferred from the skeletons: no animation key moves `j_gun`).
 
-With these rules the Kar98k, Thompson, M1 Garand, MP40 and similar weapons look as expected. **Open issue:** the
-idle animations of the Enfield, Sten, Bren, Springfield and Mosin-Nagant put `tag_weapon` near (8, 11, 1) with a
-90° yaw, so these guns point to the left. Something in the original placement or posing for these rigs is not
-understood yet.
-
 ## View weapon offsets (CoD2SP_s.exe 1.3)
 
 Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
@@ -61,7 +56,18 @@ Not done yet: bob (0x4b4a90), sway (0x4b4dc0), idle motion (0x4b51a0), gun kick 
 OpenIW2 poses the view model with `adsUpAnim` at the aim fraction (inferred; the original's view-model anim
 tree is not specified).
 
-**Open issue (placement):** with these rules the Kar98k rests nearly centred with the eye at the receiver, and at
-full aim the eye ends inside the stock. The animations' `tag_weapon` positions (hip (7.9, 0.3, −1.6), aimed
-(3.5, −0.3, −0.3)) and zero `cg_gun` offsets suggest something else moves the whole rig in the original
-(renderer view-model transform, a tag the engine aligns to the eye, or a parsing error); not found yet.
+## View-model animation tree (0x4b2c90, 0x4b2550, 0x4b25e0)
+
+The engine builds a flat "VIEWMODEL" tree with the weapon's 22 view animations in field order (idleAnim,
+emptyIdleAnim, fireAnim, holdFireAnim, lastShotAnim, rechamberAnim, meleeAnim, reloadAnim, reloadEmptyAnim,
+reloadStartAnim, reloadEndAnim, raiseAnim, dropAnim, altRaiseAnim, altDropAnim, quickRaiseAnim, quickDropAnim,
+adsFireAnim, adsLastShotAnim, adsRechamberAnim, adsUpAnim, adsDownAnim; slots 1–22). The models are the hands
+(`handModel`) and the gun (`gunModel`) attached at `tag_weapon`.
+
+- Playing an action animation (slots 1–20) gives it weight 1 and the other action slots 0.
+- The aim animations are never switched off: while zooming in `adsUpAnim` has weight 1 and its time is set to the
+  aim fraction; otherwise `adsDownAnim` has weight 1 at time 1 − aim fraction (ADS anims must not loop).
+- The pose is the blend of the action animation and the aim animation. OpenIW2 averages them with equal weights
+  per bone (the XAnim blend itself is not implemented yet). With this the hip pose of every weapon (also the
+  Enfield, Sten, Bren, Springfield and Mosin, whose idle and adsDown poses are turned ±90° in opposite directions)
+  and the aimed sight picture match screenshots of the original.

@@ -54,6 +54,11 @@ XAnim parseXAnim(std::span<const uint8_t> data);
 // local transform; animated bones take the track's local rotation and, if present, local translation.
 XPose animatePose(const XModelParts& parts, const XAnim& anim, float frame);
 
+// Weighted blend of several animations: per bone, the weighted average of the animations that have a track for it
+// (normalized quaternion sum, averaged translation), else the model's local transform.
+struct PoseLayer { const XAnim* anim; float frame; float weight; };
+XPose blendPose(const XModelParts& parts, const std::vector<PoseLayer>& layers);
+
 // Samples a rotation or translation track at a fractional frame (linear / normalized-lerp interpolation).
 Quat sampleRot(const XAnimRotTrack& t, float frame, int keyCount);
 std::array<float, 3> sampleTrans(const XAnimTransTrack& t, float frame, int keyCount);

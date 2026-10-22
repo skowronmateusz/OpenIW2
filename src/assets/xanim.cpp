@@ -195,6 +195,54 @@ XPose animatePose(const XModelParts& parts, const XAnim& anim, float frame) {
     return pose;
 }
 
+XPose blendPose(const XModelParts& parts, const std::vector<PoseLayer>& layers) {
+    XPose pose;
+    pose.position.resize(parts.bones.size());
+    pose.rotation.resize(parts.bones.size());
+    for (size_t i = 0; i < parts.bones.size(); ++i) {
+        const XBone& b = parts.bones[i];
+        float q[4] = {0, 0, 0, 0}, t[3] = {0, 0, 0}, wq = 0, wt = 0;
+        for (const auto& layer : layers) {
+            if (!layer.anim || layer.weight <= 0) continue;
+            const int keys = layer.anim->keyCount();
+            for (const auto& ab : layer.anim->bones) {
+                if (ab.name.size() != b.name.size() || !std::equal(ab.name.begin(), ab.name.end(), b.name.begin(),
+                                                                    [](char x, char y) { return std::tolower(x) == std::tolower(y); }))
+                    continue;
+                if (!ab.rot.keys.empty()) {
+                    Quat r = sampleRot(ab.rot, layer.frame, keys);
+                    if (q[0] * r.x + q[1] * r.y + q[2] * r.z + q[3] * r.w < 0) r = {-r.x, -r.y, -r.z, -r.w};
+                    q[0] += r.x * layer.weight; q[1] += r.y * layer.weight; q[2] += r.z * layer.weight; q[3] += r.w * layer.weight;
+                    wq += layer.weight;
+                }
+                if (!ab.trans.keys.empty()) {
+                    const auto v = sampleTrans(ab.trans, layer.frame, keys);
+                    for (int k = 0; k < 3; ++k) t[k] += v[size_t(k)] * layer.weight;
+                    wt += layer.weight;
+                }
+                break;
+            }
+        }
+        Quat local = b.localRotation;
+        std::array<float, 3> offset = b.localOffset;
+        if (wq > 0) {
+            const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+            if (n > 0) local = {q[0] / n, q[1] / n, q[2] / n, q[3] / n};
+        }
+        if (wt > 0) offset = {t[0] / wt, t[1] / wt, t[2] / wt};
+        if (b.parent < 0) {
+            pose.rotation[i] = i < size_t(parts.rootCount) ? b.rotation : local;
+            pose.position[i] = i < size_t(parts.rootCount) ? b.position : offset;
+        } else {
+            const size_t p = size_t(b.parent);
+            pose.rotation[i] = multiply(pose.rotation[p], local);
+            const auto o = rotate(pose.rotation[p], offset);
+            pose.position[i] = {pose.position[p][0] + o[0], pose.position[p][1] + o[1], pose.position[p][2] + o[2]};
+        }
+    }
+    return pose;
+}
+
 Quat sampleRot(const XAnimRotTrack& t, float frame, int keyCount) {
     if (t.keys.empty()) return {0, 0, 0, 1};
     size_t i0, i1;

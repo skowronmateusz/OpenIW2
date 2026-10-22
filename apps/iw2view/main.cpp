@@ -1453,14 +1453,6 @@ int main(int argc, char** argv) {
                 const float f = pweapon.animTime() * float(an->frameRate);
                 frame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
             }
-            // While aiming, the resting pose follows adsUpAnim by the aim fraction (inferred; the original drives
-            // it through the view-model anim tree, not specified yet).
-            if (pweapon.adsFrac() > 0 && pweapon.animLoops()) {
-                if (const assets::XAnim* up = viewAnim(vfs, pweapon.field("adsUpAnim"))) {
-                    an = up;
-                    frame = pweapon.adsFrac() * float(std::max(0, up->numFrames - 1));
-                }
-            }
             if (const char* forced = std::getenv("IW2_VM_ANIM")) { // debug: "anim,frame"
                 std::string spec = forced;
                 const auto comma = spec.find(',');
@@ -1469,6 +1461,18 @@ int main(int argc, char** argv) {
                     frame = comma == std::string::npos ? 0.0f : std::stof(spec.substr(comma + 1));
                 }
             }
+            // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload…) and
+            // one aiming animation, both with weight 1. adsUpAnim plays at time = aim fraction while zooming in,
+            // adsDownAnim at time = 1 − aim fraction otherwise; the two are blended (equal weights, inferred blend).
+            std::vector<assets::PoseLayer> layers;
+            if (an) layers.push_back({an, frame, 1.0f});
+            {
+                const bool up = pweapon.adsZoomingIn() && pweapon.adsFrac() > 0;
+                const float t = up ? pweapon.adsFrac() : 1.0f - pweapon.adsFrac();
+                if (const assets::XAnim* ads = viewAnim(vfs, pweapon.field(up ? "adsUpAnim" : "adsDownAnim")))
+                    layers.push_back({ads, t * float(std::max(0, ads->numFrames - 1)), 1.0f});
+            }
+            if (std::getenv("IW2_VM_NOADS") && layers.size() > 1) layers.pop_back();
             DrawItem base;
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
@@ -1491,14 +1495,14 @@ int main(int argc, char** argv) {
             Uploader up(dev);
             BoneMap bones;
             if (hands) {
-                const assets::XPose hp = an ? assets::animatePose(hands->parts, *an, frame) : assets::bindPose(hands->parts);
+                const assets::XPose hp = an ? assets::blendPose(hands->parts, layers) : assets::bindPose(hands->parts);
                 addBones(bones, hands->parts, hp);
                 DrawItem it = base;
                 it.model = skinModel(scene, dev, up, -1, pweapon.handModel(), *hands, hp);
                 if (it.model) items.push_back(it);
             }
             if (gun) {
-                assets::XPose gp = an ? assets::animatePose(gun->parts, *an, frame) : assets::bindPose(gun->parts);
+                assets::XPose gp = an ? assets::blendPose(gun->parts, layers) : assets::bindPose(gun->parts);
                 if (const auto tw = bones.find("tag_weapon"); tw != bones.end()) {
                     for (size_t i = 0; i < gp.position.size(); ++i) {
                         const auto o = assets::rotate(tw->second.second, gp.position[i]);
