@@ -2,6 +2,7 @@
 //
 //   iw2game <main-dir> <map> [seconds] [--cvar name=value ...]
 //   iw2game <main-dir> <map> --walk-test     drop the player at the spawn point and walk forward
+//   iw2game <main-dir> <map> --fall-test [walks] [seconds]   random player walks (tunnels, falls, solid)
 
 #include "audio/sound.h"
 #include "game/pmove.h"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -52,6 +54,76 @@ int main(int argc, char** argv) {
                 std::cout << "t=" << s << "s pos (" << ps.origin[0] << ", " << ps.origin[1] << ", " << ps.origin[2] << ") on ground " << ps.onGround << "\n";
             }
             return 0;
+        }
+        if (argc > 3 && std::string(argv[3]) == "--fall-test") {
+            // Random walks from the spawn point and the path nodes. Reports a walk whose lower capsule sphere centre
+            // crosses world geometry (tunnel), that ends up inside solid, or that drops below the map's lowest vertex.
+            const int agents = argc > 4 ? std::stoi(argv[4]) : 50;
+            const int seconds = argc > 5 ? std::stoi(argv[5]) : 60;
+            iw2::game::CollisionWorld cw(world.bsp());
+            float floorZ = 1e9f;
+            for (const auto& v : world.bsp().vertices()) floorZ = std::min(floorZ, v.position[2]);
+            world.start();
+            const auto o = world.player()->obj->get("origin").asVector();
+            std::vector<iw2::game::Vec> starts{{o[0], o[1], o[2]}};
+            for (const auto& e : world.bsp().entities()) {
+                const std::string* cls = e.get("classname");
+                const std::string* org = e.get("origin");
+                iw2::game::Vec v{};
+                if (cls && org && cls->rfind("node_", 0) == 0 && std::sscanf(org->c_str(), "%f %f %f", &v[0], &v[1], &v[2]) == 3)
+                    starts.push_back(v);
+            }
+            const iw2::game::MoveParams mp;
+            const uint32_t mask = mp.traceMask;
+            int fell = 0, stuck = 0, tunnels = 0;
+            auto print = [](const char* what, int a, int f, const iw2::game::Vec& p) {
+                std::printf("%s agent %d frame %d at (%a %a %a) = (%g %g %g)\n", what, a, f, p[0], p[1], p[2], p[0], p[1], p[2]);
+            };
+            for (int a = 0; a < agents; ++a) {
+                std::mt19937 rng(a + 1);
+                std::uniform_real_distribution<float> u(0, 1);
+                iw2::game::PlayerState ps;
+                ps.origin = starts[a == 0 ? 0 : std::uniform_int_distribution<size_t>(0, starts.size() - 1)(rng)];
+                ps.origin[2] += 8;
+                const auto box = [&](const iw2::game::PlayerState& p) {
+                    return iw2::game::Vec{mp.maxs[0], mp.maxs[1], p.stance == iw2::game::Stance::Prone ? 30.0f : p.stance == iw2::game::Stance::Crouch ? 50.0f : 70.0f};
+                };
+                if (cw.trace(ps.origin, ps.origin, mp.mins, box(ps), mask).startSolid) continue; // node inside solid
+                iw2::game::PlayerInput in;
+                bool solidSeen = false;
+                for (int f = 0; f < seconds * 60; ++f) {
+                    if (f % 120 == 0) {
+                        in.forward = u(rng) < 0.7f ? 1.0f : u(rng) < 0.5f ? -1.0f : 0.0f;
+                        in.right = u(rng) < 0.3f ? (u(rng) < 0.5f ? 1.0f : -1.0f) : 0.0f;
+                        in.yaw = u(rng) * 360.0f;
+                        const float s = u(rng);
+                        in.stance = s < 0.8f ? iw2::game::Stance::Stand : s < 0.9f ? iw2::game::Stance::Crouch : iw2::game::Stance::Prone;
+                    }
+                    in.jump = u(rng) < 0.02f;
+                    const iw2::game::PlayerState before = ps;
+                    iw2::game::playerMove(cw, ps, in, (1 + int(u(rng) * 16)) * 0.001f, mp);
+                    const iw2::game::Vec c0{before.origin[0], before.origin[1], before.origin[2] + 15};
+                    const iw2::game::Vec c1{ps.origin[0], ps.origin[1], ps.origin[2] + 15};
+                    const auto ray = cw.trace(c0, c1, {0, 0, 0}, {0, 0, 0}, mask);
+                    if (ray.fraction < 1 && !ray.startSolid) {
+                        print("TUNNEL", a, f, before.origin);
+                        ++tunnels;
+                        break;
+                    }
+                    if (ps.origin[2] < floorZ - 64) {
+                        print("FELL", a, f, before.origin);
+                        ++fell;
+                        break;
+                    }
+                    if (!solidSeen && cw.trace(ps.origin, ps.origin, mp.mins, box(ps), mask).startSolid) {
+                        print("SOLID", a, f, before.origin);
+                        solidSeen = true;
+                        ++stuck;
+                    }
+                }
+            }
+            std::cout << "fall test: " << agents << " agents, " << tunnels << " tunnels, " << fell << " fell, " << stuck << " in solid\n";
+            return tunnels + fell ? 1 : 0;
         }
         int seconds = 10;
         bool spawnAll = false;
