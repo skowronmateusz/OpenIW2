@@ -31,6 +31,14 @@ struct FxSprite {
     std::string shader;
 };
 
+// A live particle of a blocksSight (0x1000) element as entered in the sight-blocker list (0x480970 → 0xc3ed80,
+// count 0xc47a20): its position (+0x7c), radius² from its size (+0x88), and 1 − alpha byte (+0x93) / 255.
+struct FxSightBlocker {
+    FVec origin{};
+    float radiusSq = 0;
+    float visibility = 1;
+};
+
 class FxSystem {
 public:
     // Spawns every element of an effect at `origin` facing `forward`.
@@ -38,6 +46,8 @@ public:
     // Drops finished particles and returns the visible ones at nowMs.
     std::vector<FxSprite> sprites(int64_t nowMs);
     size_t count() const { return particles_.size(); }
+    // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
+    const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
 
 private:
     uint32_t seed_ = 0x13579bdf;
@@ -45,6 +55,7 @@ private:
     float range(const std::vector<float>& v, float fallback);
     std::vector<std::shared_ptr<const assets::EfxEffect>> keep_;
     std::vector<FxParticle> particles_;
+    std::vector<FxSightBlocker> sightBlockers_;
 };
 
 } // namespace iw2::game

@@ -90,6 +90,7 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     std::erase_if(particles_, [&](const FxParticle& p) { return nowMs >= p.endMs; });
     std::vector<FxSprite> out;
+    sightBlockers_.clear();
     for (const FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
@@ -123,6 +124,11 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
         const auto shaders = e.list("shaders");
         if (!shaders.empty()) s.shader = shaders[std::min(p.shader, shaders.size() - 1)];
+        if (flags & 0x1000) {
+            // Alpha byte (0x481a40): the clamped alpha · 255 truncated (_ftol) with useAlpha (0x80), else 255.
+            const int alphaByte = flags & 0x80 ? int(s.rgba[3] * 255.0f) : 255;
+            sightBlockers_.push_back({pos, s.size * s.size, 1.0f - float(alphaByte) * (1.0f / 255.0f)});
+        }
         out.push_back(s);
     }
     return out;

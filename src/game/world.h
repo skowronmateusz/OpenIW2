@@ -7,6 +7,7 @@
 #include "game/inventory.h"
 #include "game/movers.h"
 #include "game/campaign.h"
+#include "game/fx.h"
 #include "game/collision.h"
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
@@ -204,6 +205,10 @@ public:
     struct FxEvent { std::string path; Vec3 origin; Vec3 forward; };
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     std::vector<FxEvent> fxEvents_;
+    // Sight-blocking particles of the effect runtime, rebuilt by the host after each effects update (0x48b000).
+    void setFxSightBlockers(std::vector<FxSightBlocker> b) { fxSightBlockers_ = std::move(b); }
+    // Visibility (0..1) through sight-blocking effects between two points (0x48b090).
+    float fxVisibility(const Vec3& start, const Vec3& end) const;
 
     // The player's weapon inventory (throws for non-players).
     Inventory& inventory(Entity& player);
@@ -466,6 +471,8 @@ private:
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;
+    std::string northYaw_ = "0";
+    std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;
     std::vector<std::string> fxNames_;   // loadfx index → effect path

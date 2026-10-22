@@ -1,9 +1,11 @@
-// Tests for the effect text parser.
+// Tests for the effect text parser and the sight blockers of the effect runtime.
 
 #include "assets/efx.h"
+#include "game/fx.h"
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 
 namespace {
 int failures = 0;
@@ -35,6 +37,29 @@ int main() {
     CHECK(size.points.size() == 3);                  // 0 and 1 added around the single row at 0.5
     CHECK(size.points[0][1] == 2 && size.points[2][1] == 2);
     CHECK(size.scaleMin == 10 && size.scaleMax == 20);
+
+    // blocksSight particles become sight blockers: radius² from the size, visibility 1 − alpha byte / 255 with
+    // useAlpha (alpha · 255 truncated) and 0 without it (0x481a40, 0x480970).
+    const char* smoke =
+        "Particle\n{\n\tname a\n\tflags blocksSight useAlpha\n\tlife 1000\n"
+        "\talpha\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 0.5\n\t\t]\n\t}\n"
+        "\tsize\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 3\n\t\t]\n\t}\n}\n"
+        "Particle\n{\n\tname b\n\tflags blocksSight\n\tlife 1000\n}\n"
+        "Particle\n{\n\tname c\n\tlife 1000\n}\n";
+    auto smokeFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(smoke));
+    iw2::game::FxSystem sys;
+    sys.play(smokeFx, {10, 20, 30}, {1, 0, 0}, 0);
+    sys.sprites(500);
+    const auto& blockers = sys.sightBlockers();
+    CHECK(blockers.size() == 2);
+    if (blockers.size() == 2) {
+        CHECK(blockers[0].origin[0] == 10 && blockers[0].origin[2] == 30);
+        CHECK(blockers[0].radiusSq == 9);
+        CHECK(std::fabs(blockers[0].visibility - (1.0f - 127.0f / 255.0f)) < 1e-6f);
+        CHECK(std::fabs(blockers[1].visibility) < 1e-6f);
+    }
+    sys.sprites(2000);
+    CHECK(sys.sightBlockers().empty());
     if (failures) return 1;
     std::cout << "efx tests passed\n";
     return 0;

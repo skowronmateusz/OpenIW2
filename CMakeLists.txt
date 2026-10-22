@@ -148,7 +148,7 @@ target_link_libraries(test_movers PRIVATE iw2_game)
 add_test(NAME movers COMMAND test_movers)
 
 add_executable(test_efx tests/test_efx.cpp)
-target_link_libraries(test_efx PRIVATE iw2_assets)
+target_link_libraries(test_efx PRIVATE iw2_game)
 add_test(NAME efx COMMAND test_efx)
 
 add_executable(test_hitboxes tests/test_hitboxes.cpp)

@@ -454,13 +454,10 @@ void World::registerCombatBuiltins() {
             if (Entity* e = entityByNumber(tr.entity)) put("entity", Value(e->obj));
         return Value(arr);
     });
-    // getfxvisibility(start, end) (0x4f53b0 → 0x48b090): 1 while no sight-blocking effect is alive (the list at
-    // 0xc47a20 is empty) or the points are closer than a dvar (0x617eb0). TODO(spec): the effects runtime does not
-    // register blocksSight (0x1000) elements yet (0x480971), so the value is always 1 here.
-    vm_.registerBuiltin("getfxvisibility", [](CallContext& c) {
-        c.arg(0).asVector();
-        c.arg(1).asVector();
-        return Value(1.0f);
+    // getfxvisibility(start, end) (0x4f53b0 → 0x48b090).
+    vm_.registerBuiltin("getfxvisibility", [this](CallContext& c) {
+        const Vec3 start = c.arg(0).asVector();
+        return Value(fxVisibility(start, c.arg(1).asVector()));
     });
     // bullettracepassed (FUN_004f24c0 → 0x4db890): a sight trace with the bullet masks.
     vm_.registerBuiltin("bullettracepassed", [this](CallContext& c) {
@@ -469,13 +466,16 @@ void World::registerCombatBuiltins() {
                                                c.arg(2).truthy() ? Contents::BulletMask : Contents::BulletMaskNoCharacters,
                                                ignore ? ignore->number : -1));
     });
-    // sighttracepassed (FUN_004f2580 → 0x44c3c0). TODO(spec): a clear trace is still blocked when FUN_0048b090 is
-    // below 0x592020 (not read).
+    // sighttracepassed (FUN_004f2580 → 0x44c3c0): a clear trace is still blocked when the visibility through
+    // effects (0x48b090) is below 0.2 (0x592020).
     vm_.registerBuiltin("sighttracepassed", [this](CallContext& c) {
         const Entity* ignore = entityOf(c.arg(3));
-        return Value(!collision_->sightBlocked(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0},
-                                               c.arg(2).truthy() ? Contents::SightMask : Contents::SightMaskNoCharacters,
-                                               ignore ? ignore->number : -1));
+        const Vec3 start = c.arg(0).asVector(), end = c.arg(1).asVector();
+        if (collision_->sightBlocked(start, end, {0, 0, 0}, {0, 0, 0},
+                                     c.arg(2).truthy() ? Contents::SightMask : Contents::SightMaskNoCharacters,
+                                     ignore ? ignore->number : -1))
+            return Value(false);
+        return Value(!(fxVisibility(start, end) < 0.2f));
     });
     vm_.registerBuiltin("physicstrace", [this](CallContext& c) {
         const TraceResult tr = collision_->trace(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0}, Contents::Solid);
@@ -527,6 +527,31 @@ void World::registerCombatBuiltins() {
         const float max = mh.isNumber() ? mh.asFloat() : 100.0f;
         return Value(e->obj->get("health").asFloat() / std::max(1.0f, max));
     });
+}
+
+// Visibility through sight-blocking effects (0x48b090): 1 without blockers or when the points are closer than
+// fx_visMinTraceDist (0x617eb0: default 80, range 0..1000, 0x40e544). Otherwise each blocker whose projection on the
+// segment lies within it (|t − len/2| ≤ len/2) and whose distance² from the segment is below its radius² multiplies
+// the result by its visibility.
+float World::fxVisibility(const Vec3& start, const Vec3& end) const {
+    if (fxSightBlockers_.empty()) return 1.0f;
+    Vec3 dir{end[0] - start[0], end[1] - start[1], end[2] - start[2]};
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (len != 0.0f)
+        for (float& d : dir) d *= 1.0f / len;
+    const auto it = cvars.find("fx_visMinTraceDist");
+    const float minDist = it != cvars.end() && !it->second.empty() ? float(std::atof(it->second.c_str())) : 80.0f;
+    if (len < minDist) return 1.0f;
+    const float half = len * 0.5f;
+    float vis = 1.0f;
+    for (const FxSightBlocker& b : fxSightBlockers_) {
+        const float t = (b.origin[0] - start[0]) * dir[0] + (b.origin[1] - start[1]) * dir[1] + (b.origin[2] - start[2]) * dir[2];
+        if (std::fabs(t - half) > half) continue;
+        const float dx = dir[0] * t + start[0] - b.origin[0], dy = dir[1] * t + start[1] - b.origin[1],
+                    dz = dir[2] * t + start[2] - b.origin[2];
+        if (dx * dx + dy * dy + dz * dz < b.radiusSq) vis *= b.visibility;
+    }
+    return vis;
 }
 
 } // namespace iw2::game

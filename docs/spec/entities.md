@@ -34,6 +34,9 @@ Source: the class spawn table in `CoD2SP_s.exe` (1.3) at 0x56f598, read with REA
 
 Classes not in this table include path nodes (`node_*`, handled by the path-node loader, string table at 0x5a946c),
 `actor_*` spawners, `worldspawn` and vehicle nodes. Their handling is still to be specified.
+`worldspawn` (part of it, 0x4fa480…): the `gravity` key (default "800") is parsed with atof and passed to 0x4325d0 (not read further); the
+`northyaw` key (default "", stored as "0" when empty) becomes configstring 10 (0x448b80, table 0x815420), which
+`getnorthyaw` (0x4f4a30) reads back: at most 31 characters, converted with atof.
 `misc_model`, `misc_prefab` and `script_struct` share one function. For `misc_model` this matches the map compiler
 baking static models into the level; that the entity is then dropped is *inferred*.
 

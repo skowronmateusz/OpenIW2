@@ -175,7 +175,12 @@ void World::spawnMapEntities() {
                 o->set(key, parseFieldValue(key, v, keyTypes_));
             }
         };
-        if (cls == "script_struct") {
+        if (cls == "worldspawn") {
+            // SP_worldspawn (0x4fa4cb) stores the "northyaw" key (default "", empty becomes "0") in configstring 10
+            // (0x448b80; table 0x815420), which getnorthyaw reads.
+            const std::string* ny = be.get("northyaw");
+            northYaw_ = ny && !ny->empty() ? *ny : "0";
+        } else if (cls == "script_struct") {
             vm_.start("codescripts/struct.gsc", "createstruct");
             const Value list = vm_.level()->get("struct");
             if (list.isArray() && std::get<script::ArrayPtr>(list.v)->size() > 0) {
@@ -860,6 +865,11 @@ void World::registerBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("print", [this](CallContext& c) { print(c.arg(0).toString()); return Value(); });
+    // getnorthyaw (0x4f4a30): configstring 10 (0x815434, the worldspawn "northyaw" key) copied to a 32-byte
+    // buffer (at most 31 characters, 0x553b70) and converted with atof (0x553d7f).
+    vm_.registerBuiltin("getnorthyaw", [this](CallContext&) {
+        return Value(float(std::atof(northYaw_.substr(0, 31).c_str())));
+    });
     // getpartname(model, index) (0x4f5bc0): the model's bone name at index; exactly two arguments.
     vm_.registerBuiltin("getpartname", [this](CallContext& c) {
         if (c.argc() != 2) throw std::runtime_error("Incorrect usage for getpartname()");

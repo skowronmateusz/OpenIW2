@@ -55,6 +55,20 @@ the script built-ins (taken from the shipped scripts' calls).
 
 ## Visibility through effects
 
-`getfxvisibility(start, end)` (0x4f53b0 → 0x48b090) is 1 while the list of sight-blocking effects (0xc47a20) is
-empty or the points are closer than a dvar (0x617eb0); otherwise it walks that list (TODO: elements with
-`blocksSight` 0x1000 are not registered by the runtime here, 0x480971, so the value is always 1).
+`getfxvisibility(start, end)` (0x4f53b0 → 0x48b090) returns the visibility (0..1) through sight-blocking effects:
+- The blocker list (0xc3ed80, 20-byte entries, count 0xc47a20) is rebuilt after every effects update (0x48b000,
+  called at 0x48c1ec): emptied, then every live element whose flags (+0xa8) have `blocksSight` 0x1000 adds itself
+  through its vtable slot +0x18 (0x480970, shared by all element vtables): position (+0x7c), size² (+0x88, the size
+  channel, 0x4818b0) and 1 − alpha byte (+0x93) · (1/255). The alpha byte (0x481a40) is the clamped alpha channel ·
+  255 truncated (`_ftol`) with `useAlpha` 0x80, else 255 (rgb is scaled by alpha instead), so a blocker without
+  `useAlpha` blocks fully.
+- With no blockers, or when |end − start| is below the dvar `fx_visMinTraceDist` (0x617eb0; float, default 80,
+  range 0..1000, registered at 0x40e544), the result is 1.
+- Otherwise, with d the unit direction and t = (blocker − start)·d, every blocker with |t − len/2| ≤ len/2 and
+  squared distance from start + d·t below its size² multiplies the result by its 1 − alpha/255.
+
+`sighttracepassed` (0x4f2580) also fails a clear trace when this visibility is below 0.2 (0x592020).
+
+In this engine `FxSystem::sprites` rebuilds the list from its live particles and `iw2view` hands it to the world
+(`World::setFxSightBlockers`); `iw2game` runs no effects, so its list stays empty. TODO(spec): particles still in
+their spawn delay are left out (the original lists every element in its two element arrays, 0x5a39e0 / 0x5a39dc).

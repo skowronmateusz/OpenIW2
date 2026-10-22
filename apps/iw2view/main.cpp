@@ -1374,7 +1374,9 @@ int main(int argc, char** argv) {
             if (!world) return items;
             Uploader up(dev);
             for (const auto& ev : world->takeFxEvents()) fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
-            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSystem.sprites(world->timeMs()), fxRight, fxUp)) {
+            const auto fxSprites = fxSystem.sprites(world->timeMs());
+            world->setFxSightBlockers(fxSystem.sightBlockers());
+            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
                 it.model = fxm;
                 it.transform = kIdentity;
