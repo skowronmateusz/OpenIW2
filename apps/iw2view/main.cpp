@@ -1463,7 +1463,8 @@ int main(int argc, char** argv) {
             }
             // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload…) and
             // one aiming animation, both with weight 1. adsUpAnim plays at time = aim fraction while zooming in,
-            // adsDownAnim at time = 1 − aim fraction otherwise; the two are blended (equal weights, inferred blend).
+            // adsDownAnim at time = 1 − aim fraction otherwise; both are children of the root, so the engine's calc
+            // adds them and divides by the weight sum (docs/spec/xanim.md, "Blending").
             std::vector<assets::PoseLayer> layers;
             if (an) layers.push_back({an, frame, 1.0f});
             {

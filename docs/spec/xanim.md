@@ -34,9 +34,52 @@ Rotation keys are `int16 x, y, z` (full) or `int16 z` (yaw-only); `w` is rebuilt
 `round(sqrt(32767² − Σ components²))` and every component is scaled by 1/32767. After loading, consecutive keys
 are sign-adjusted into the same hemisphere. Translation keys are `float x, y, z`.
 
-## Posing (implemented in `src/assets/xanim.cpp`; partly inferred)
+## Sampling (0x479980, 0x479ac0, 0x475530)
 
-For a bone named in the animation, the track gives the bone's local rotation and, if present, its local
-translation relative to the parent. Other bones keep the model's base local transform. Keys are interpolated
-linearly; rotations use normalized lerp. Posing `character_german_afrca_body` with `crouch2crouchrun_forward`
-gives a plausible crouched running pose.
+The frame for a normalized time `t` is `t × (keyCount − 1)`. Keys are located with a binary search over the frame
+numbers (0x47a3e0) and interpolated linearly, quaternions component-wise without normalizing (0x474b40); the loader has already put each key in the same hemisphere as the previous one. At `t = 1` the last
+key is used (0x475530). The two samplers differ only in the frame-number size (byte below 256 keys, else uint16).
+
+## Blending (0x4771e0, 0x4782d0, 0x472af0)
+
+Each model bone has an accumulator: quaternion sum, translation sum, weight sum. The tree is calculated
+recursively from the root with weight 1:
+
+- **Leaf** (an animation, with the weight it was given): for every bone the animation names, add the sampled
+  quaternion × weight (a bone without rotation keys adds identity, i.e. `w += weight`), the sampled translation ×
+  weight (nothing if it has no translation keys) and `weight` to the weight sum. The bone is marked animated.
+- **Node with one active child** (weight ≠ 0): the child is calculated with the node's weight; the child's own
+  weight is not used.
+- **Node with several active children**: each child is calculated with its own weight into one buffer (leaves add
+  their raw samples). For the first such node on the way down from the root the buffer is the output and every
+  bone's sums are divided by its weight sum. Deeper nodes use a temporary buffer and add their result to the
+  parent: the normalized quaternion × the node's weight and, if the translation weight is not 0, the translation ×
+  (node weight / translation weight), adding the node's weight to the parent's weight sum.
+- Buffers are 0x20 bytes per bone, at most 0x200 bones of temporaries ("MAX_CALC_ANIM_BUFFER exceeded").
+
+After the calc, bones that no animation names take the model's base rotation (identity for root bones) and a zero
+translation. The skeleton (0x472af0) then adds each non-root bone's **base offset** to its translation, so animation
+translations are offsets from the base pose (`crouch_aim_straight` moves `j_mainroot` by −21 from its base height
+37), builds rotations from the possibly unnormalized quaternion with scale `2 / |q|²` (a zero quaternion becomes
+identity) and composes each bone with its parent. Two quaternion products are used for the composition (0x4724d0 and 0x472560, opposite operand order), selected by a per-bone mask built from the
+model; which bones take the second order is not yet specified (OpenIW2 uses parent × local for all bones).
+
+## Weights and time (0x478f10, 0x476960, 0x476490)
+
+- Setting a node (goal weight, blend time, rate): blend time 0 sets the weight to the goal at once; otherwise a node
+  at weight 0 starts at goal × 0.001. Time left: going to 0, the blend time (if the old goal was also 0, the smaller
+  of the time left and the blend time); going down, `(weight − goal) / weight × blendTime`; going up,
+  `(goal − weight) / goal × blendTime`. The root always has weight 1, blend time 0 and rate 1.
+- Each frame, top-down: a node whose parent is inactive, or whose time left is ≤ dt, jumps to its goal; otherwise
+  `weight += (goal − weight) / timeLeft × dt` (if the result is below 1e-6 it becomes goal × 0.001) and the time
+  left shrinks by dt. A node with weight and goal 0 and no live children is released (a new set starts at time 0).
+- Time: nodes with weight 0 do not advance. A leaf advances by `frameRate / (keyCount − 1) × rate × dt`, wrapping
+  if it loops and otherwise stopping at 1. A blend node passes `dt × rate` to its children. Synced nodes
+  (`loopsync`/`nonloopsync`, 0x475bb0, 0x476370) are not specified yet.
+
+## Implementation
+
+`src/assets/xanim.cpp` (`accumulateAnim`, `mergeBlend`, `finishPose`, `animatePose`, `blendPose`) and
+`src/game/animtree.cpp` (`AnimState::calc`, `setWeight`, `updateWeight`, `updateTime`). The view model's tree (0x4b2c90)
+has the action animation and the aim animation as two active children of the root, so both are added with weight 1
+and divided by 2.

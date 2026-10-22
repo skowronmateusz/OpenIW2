@@ -16,6 +16,7 @@ struct TurretState {
     script::ObjectPtr target;    // +0x10 settargetentity
     script::Vec3 targetOffset{};
     float topArc = 0, rightArc = 0, bottomArc = 0, leftArc = 0; // +0x34/+0x38/+0x3c/+0x40
+    float setupRightArc = 0, setupLeftArc = 0;                  // +0x44/+0x48 (restored when a gunner takes it)
     float dropPitch = 0;         // +0x4c
     float yawConvergenceTime = 0, pitchConvergenceTime = 0;
     float suppressionTime = 0;   // seconds

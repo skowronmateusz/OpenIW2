@@ -52,7 +52,7 @@ private:
 };
 
 struct AnimNodeState {
-    float weight = 0, goalWeight = 0, weightRate = 0; // weight change per second
+    float weight = 0, goalWeight = 0, blendLeft = 0; // blendLeft: seconds left to reach goalWeight
     float time = 0;                                   // normalized 0..1
     float rate = 1;
     bool ended = false;
@@ -95,6 +95,9 @@ public:
 private:
     void setWeight(int n, float goal, float blendTime);
     float effectiveWeight(int n) const;
+    bool updateWeight(int n, float dt, bool parentActive);
+    void updateTime(int n, float dt, const std::function<void(const std::string&, const std::string&)>& onNote);
+    void calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const;
 
     const AnimTree& tree_;
     AnimLibrary& lib_;

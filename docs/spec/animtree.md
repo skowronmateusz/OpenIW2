@@ -16,12 +16,11 @@ Every tree has an implicit `root` node (scripts use `%root`).
   with `"end"` when a non-looping animation finishes. Scripts wait with `waittillmatch(notifyName, "end")`.
 - `clearanim(anim, goalTime)`, `getanimtime(anim)`, `getanimlength(anim)`, `animhasnotetrack(anim, note)`.
 
-## OpenIW2 blending (implemented; inferred until checked against the executable)
+## Blending
 
-Defaults are weight 1, blend time 0.2 s and rate 1. Weights move linearly to their goal over the blend time.
-A node's effective weight is the product, up the tree, of its weight divided by its siblings' total (or 1 if the
-total is below 1). Leaf poses are blended with weighted normalized quaternions; any remaining weight falls back to
-the model's base pose. AI use the `generic_human` tree.
+Specified from the executable in `docs/spec/xanim.md` ("Blending", "Weights and time"). `AnimState::moveSpeed`
+still uses an inferred effective weight (a node's weight over its siblings' total, multiplied up the tree).
+AI use the `generic_human` tree.
 
 ## Engine animscripts (placeholder)
 

@@ -100,15 +100,22 @@ AnimState::AnimState(const AnimTree& tree, AnimLibrary& lib) : tree_(tree), lib_
     nodes_[0].weight = nodes_[0].goalWeight = 1.0f; // the root is always on
 }
 
+// 0x478f10: a blend time of 0 jumps to the goal; otherwise a node at weight 0 starts from goal × 0.001 and the time
+// left is the blend time scaled by the fraction of the way still to go.
 void AnimState::setWeight(int n, float goal, float blendTime) {
+    if (n == 0) return; // the root stays at weight 1
     AnimNodeState& s = nodes_[size_t(n)];
-    s.goalWeight = goal;
-    if (blendTime <= 0) {
-        s.weight = goal;
-        s.weightRate = 0;
+    if (blendTime == 0) s.weight = goal;
+    else if (s.weight == 0) s.weight = goal * 0.001f;
+    if (goal == 0) {
+        if (s.goalWeight != 0) s.blendLeft = blendTime;
+        else if (blendTime < s.blendLeft) s.blendLeft = blendTime;
+    } else if (goal < s.weight) {
+        s.blendLeft = (s.weight - goal) / s.weight * blendTime;
     } else {
-        s.weightRate = std::fabs(goal - s.weight) / blendTime;
+        s.blendLeft = (goal - s.weight) / goal * blendTime;
     }
+    s.goalWeight = goal;
 }
 
 void AnimState::set(int n, const SetArgs& a) {
@@ -147,45 +154,78 @@ void AnimState::clear(int n, float blendTime) {
     setWeight(n, 0.0f, blendTime);
 }
 
-void AnimState::update(float dt, const std::function<void(const std::string&, const std::string&)>& onNote) {
-    const auto& nodes = tree_.nodes();
-    for (size_t i = 0; i < nodes_.size(); ++i) {
-        AnimNodeState& s = nodes_[i];
-        if (s.weight != s.goalWeight) {
-            const float step = s.weightRate * dt;
-            if (s.weightRate <= 0 || std::fabs(s.goalWeight - s.weight) <= step) s.weight = s.goalWeight;
-            else s.weight += s.goalWeight > s.weight ? step : -step;
-        }
-        if (s.weight <= 0 && s.goalWeight <= 0) continue;
-        const assets::XAnim* a = nodes[i].children.empty() ? lib_.anim(nodes[i].name) : nullptr;
-        if (!a) continue;
-        const float len = std::max(a->length(), 1.0f / 30.0f);
-        const float before = s.time;
-        float after = before + dt * s.rate / len;
-        if (a->looping) {
-            if (after >= 1.0f) {
-                for (const auto& note : a->notes)
-                    if (note.time > before && !s.notify.empty()) onNote(s.notify, note.name);
-                after = std::fmod(after, 1.0f);
-                for (const auto& note : a->notes)
-                    if (note.time <= after && note.name != "end" && !s.notify.empty()) onNote(s.notify, note.name);
-            } else {
-                for (const auto& note : a->notes)
-                    if (note.time > before && note.time <= after && note.name != "end" && !s.notify.empty()) onNote(s.notify, note.name);
-            }
+// 0x476960: weights move linearly to the goal over the time left; under an inactive parent they jump to the goal.
+// A node at weight and goal 0 with no live children is released, so its time starts again at 0 when it is next set.
+bool AnimState::updateWeight(int n, float dt, bool parentActive) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    const bool active = parentActive && s.weight != 0;
+    if (n != 0) {
+        if (!parentActive || s.blendLeft <= dt) {
+            s.weight = s.goalWeight;
+            s.blendLeft = 0;
         } else {
-            after = std::min(after, 1.0f);
-            for (const auto& note : a->notes) {
-                if (note.name == "end") continue;
-                if (note.time > before && note.time <= after && !s.notify.empty()) onNote(s.notify, note.name);
-            }
-            if (after >= 1.0f && !s.ended) {
-                s.ended = true;
-                if (!s.notify.empty()) onNote(s.notify, "end");
-            }
+            s.weight += (s.goalWeight - s.weight) / s.blendLeft * dt;
+            if (s.weight < 1e-6f) s.weight = s.goalWeight * 0.001f;
+            s.blendLeft -= dt;
         }
-        s.time = after;
     }
+    bool childAlive = false;
+    for (int c : tree_.nodes()[size_t(n)].children) childAlive |= updateWeight(c, dt, active);
+    const bool alive = n == 0 || active || s.goalWeight != 0 || childAlive;
+    if (!alive) {
+        s.time = 0;
+        s.ended = false;
+    }
+    return alive;
+}
+
+// 0x476490: only nodes with weight advance. A leaf moves by frameRate / (keyCount − 1) × rate × dt in normalized
+// time; a blend node passes dt × its rate to its children. (Synced blend nodes, 0x475bb0, are not done yet: they
+// are treated like the others.)
+void AnimState::updateTime(int n, float dt, const std::function<void(const std::string&, const std::string&)>& onNote) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    if (s.weight == 0) return;
+    const auto& node = tree_.nodes()[size_t(n)];
+    if (!node.children.empty()) {
+        if (s.rate * dt == 0) return;
+        for (int c : node.children) updateTime(c, dt * s.rate, onNote);
+        return;
+    }
+    const assets::XAnim* a = lib_.anim(node.name);
+    if (!a) return;
+    const int frames = a->keyCount() - 1;
+    const float step = (frames > 0 ? float(a->frameRate) / float(frames) : 0.0f) * s.rate * dt;
+    if (step == 0) return;
+    const float before = s.time;
+    float after = before + step;
+    if (a->looping) {
+        if (after >= 1.0f) {
+            for (const auto& note : a->notes)
+                if (note.time > before && !s.notify.empty()) onNote(s.notify, note.name);
+            after = std::fmod(after, 1.0f);
+            for (const auto& note : a->notes)
+                if (note.time <= after && note.name != "end" && !s.notify.empty()) onNote(s.notify, note.name);
+        } else {
+            for (const auto& note : a->notes)
+                if (note.time > before && note.time <= after && note.name != "end" && !s.notify.empty()) onNote(s.notify, note.name);
+        }
+    } else {
+        after = std::min(after, 1.0f);
+        for (const auto& note : a->notes) {
+            if (note.name == "end") continue;
+            if (note.time > before && note.time <= after && !s.notify.empty()) onNote(s.notify, note.name);
+        }
+        if (after >= 1.0f && !s.ended) {
+            s.ended = true;
+            if (!s.notify.empty()) onNote(s.notify, "end");
+        }
+    }
+    s.time = after;
+}
+
+void AnimState::update(float dt, const std::function<void(const std::string&, const std::string&)>& onNote) {
+    updateWeight(0, dt, true);
+    updateTime(0, dt, onNote);
 }
 
 float AnimState::effectiveWeight(int n) const {
@@ -233,76 +273,38 @@ float AnimState::moveSpeed() const {
     return speed;
 }
 
+// 0x4771e0: a node with one active child passes its weight down unchanged. The active children of a node with
+// several are added together with their own weights: leaves add their raw quaternions, deeper blend nodes add
+// their normalized result. At the top of the tree the sums are divided by the weight sum (finishPose); below it the
+// node's result is normalized and added to its parent with the node's weight (mergeBlend).
+void AnimState::calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const {
+    const auto& node = tree_.nodes()[size_t(n)];
+    if (node.children.empty()) {
+        if (const assets::XAnim* a = lib_.anim(node.name))
+            assets::accumulateAnim(parts, *a, nodes_[size_t(n)].time * float(a->keyCount() - 1), weight, acc);
+        return;
+    }
+    std::vector<int> active;
+    for (int c : node.children)
+        if (nodes_[size_t(c)].weight != 0) active.push_back(c);
+    if (active.empty()) return;
+    if (active.size() == 1) {
+        calc(active[0], weight, acc, top, parts);
+        return;
+    }
+    if (top) {
+        for (int c : active) calc(c, nodes_[size_t(c)].weight, acc, false, parts);
+        return;
+    }
+    assets::AnimAccum sub(acc.bones.size());
+    for (int c : active) calc(c, nodes_[size_t(c)].weight, sub, false, parts);
+    assets::mergeBlend(sub, weight, acc);
+}
+
 assets::XPose AnimState::pose(const assets::XModelParts& parts) const {
-    const auto& nodes = tree_.nodes();
-    const size_t nb = parts.bones.size();
-    std::vector<std::array<float, 4>> qsum(nb, {0, 0, 0, 0});
-    std::vector<std::array<float, 3>> tsum(nb, {0, 0, 0});
-    std::vector<float> wq(nb, 0), wt(nb, 0);
-
-    for (size_t i = 1; i < nodes.size(); ++i) {
-        if (!nodes[i].children.empty()) continue;
-        const float w = effectiveWeight(int(i));
-        if (w <= 0.001f) continue;
-        const assets::XAnim* a = lib_.anim(nodes[i].name);
-        if (!a) continue;
-        const float frame = nodes_[i].time * float(std::max(1, a->numFrames - 1));
-        for (const auto& ab : a->bones) {
-            for (size_t b = 0; b < nb; ++b) {
-                const std::string& bn = parts.bones[b].name;
-                if (bn.size() != ab.name.size() ||
-                    !std::equal(bn.begin(), bn.end(), ab.name.begin(), [](char x, char y) { return std::tolower(x) == std::tolower(y); }))
-                    continue;
-                if (!ab.rot.keys.empty()) {
-                    assets::Quat q = assets::sampleRot(ab.rot, frame, a->keyCount());
-                    // Keep quaternions in one hemisphere before summing.
-                    const auto& acc = qsum[b];
-                    if (acc[0] * q.x + acc[1] * q.y + acc[2] * q.z + acc[3] * q.w < 0) q = {-q.x, -q.y, -q.z, -q.w};
-                    qsum[b] = {acc[0] + q.x * w, acc[1] + q.y * w, acc[2] + q.z * w, acc[3] + q.w * w};
-                    wq[b] += w;
-                }
-                if (!ab.trans.keys.empty()) {
-                    const auto t = assets::sampleTrans(ab.trans, frame, a->keyCount());
-                    for (int k = 0; k < 3; ++k) tsum[b][size_t(k)] += t[size_t(k)] * w;
-                    wt[b] += w;
-                }
-                break;
-            }
-        }
-    }
-
-    assets::XPose pose;
-    pose.position.resize(nb);
-    pose.rotation.resize(nb);
-    for (size_t b = 0; b < nb; ++b) {
-        const assets::XBone& bone = parts.bones[b];
-        assets::Quat local = bone.localRotation;
-        std::array<float, 3> offset = bone.localOffset;
-        if (wq[b] > 0) {
-            // Blend towards the base pose for the remaining weight.
-            const float rest = std::max(0.0f, 1.0f - wq[b]);
-            assets::Quat base = local;
-            const auto& acc = qsum[b];
-            if (acc[0] * base.x + acc[1] * base.y + acc[2] * base.z + acc[3] * base.w < 0) base = {-base.x, -base.y, -base.z, -base.w};
-            assets::Quat q{acc[0] + base.x * rest, acc[1] + base.y * rest, acc[2] + base.z * rest, acc[3] + base.w * rest};
-            const float n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-            if (n > 0) local = {q.x / n, q.y / n, q.z / n, q.w / n};
-        }
-        if (wt[b] > 0) {
-            const float rest = std::max(0.0f, 1.0f - wt[b]);
-            for (int k = 0; k < 3; ++k) offset[size_t(k)] = tsum[b][size_t(k)] + offset[size_t(k)] * rest;
-        }
-        if (bone.parent < 0) {
-            pose.rotation[b] = bone.rotation;
-            pose.position[b] = bone.position;
-        } else {
-            const size_t p = size_t(bone.parent);
-            pose.rotation[b] = assets::multiply(pose.rotation[p], local);
-            const auto o = assets::rotate(pose.rotation[p], offset);
-            pose.position[b] = {pose.position[p][0] + o[0], pose.position[p][1] + o[1], pose.position[p][2] + o[2]};
-        }
-    }
-    return pose;
+    assets::AnimAccum acc(parts.bones.size());
+    calc(0, 1.0f, acc, true, parts);
+    return assets::finishPose(parts, acc);
 }
 
 } // namespace iw2::game

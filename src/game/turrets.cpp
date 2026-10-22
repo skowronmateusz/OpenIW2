@@ -42,6 +42,8 @@ void World::initTurret(Entity& e, const std::string& weaponInfo) {
     if (t->topArc > 0.0f) t->topArc = 0.0f;
     t->bottomArc = spawnOrWeapon(e.obj, "bottomarc", w, "bottomarc");
     if (t->bottomArc < 0.0f) t->bottomArc = 0.0f;
+    t->setupRightArc = t->rightArc;
+    t->setupLeftArc = t->leftArc;
     // yawconvergencetime, falling back to convergencetime, then the weapon (0x51dd80).
     const Value yc = e.obj->get("yawconvergencetime");
     t->yawConvergenceTime = yc.isDefined() ? spawnOrWeapon(e.obj, "yawconvergencetime", w, "yawconvergencetime")
@@ -211,33 +213,23 @@ void World::registerTurretBuiltins() {
         Entity& a = actorOf(c);
         return Value(canUse(a, turretArg(c)));
     });
-    vm_.registerBuiltin("useturret", [this, actorOf, turretArg, canUse](CallContext& c) {
+    vm_.registerBuiltin("useturret", [actorOf, turretArg, canUse](CallContext& c) {
         Entity& a = actorOf(c);
         Entity& t = turretArg(c);
         if (!canUse(a, t)) {
             a.usingTurret.reset();
             return Value(false); // returns the 0x51d6d0 result (0x53f1c1…0x53f1ec)
         }
+        // Only records the turret (actor +0x2114); the actor's turret state takes it on its next think
+        // (0x5496f0 → state 2, 0x549960).
         a.usingTurret = t.obj;
-        // Inferred: the original only records the turret here (actor +0x2114); taking ownership happens in code not
-        // read yet. Owning it at once lets getturret/getturretowner answer.
-        if (!t.turret->inUse) {
-            t.turret->inUse = true;
-            t.turret->owner = a.obj;
-            vm_.notify(t.obj, "turretownerchange");
-        }
         return Value(true);
     });
     // stopuseturret (0x53f200 → 0x549a60): frees the turret and notifies "turretownerchange".
     vm_.registerBuiltin("stopuseturret", [this, actorOf](CallContext& c) {
         Entity& a = actorOf(c);
         Entity* t = a.usingTurret ? entityOf(Value(a.usingTurret)) : nullptr;
-        if (t && t->turret && t->turret->owner == a.obj) {
-            if (t->turret->inUse) vm_.notify(t->obj, "turret_deactivate");
-            t->turret->inUse = false;
-            t->turret->owner.reset();
-            vm_.notify(t->obj, "turretownerchange");
-        }
+        if (t && t->turret && t->turret->owner == a.obj) releaseTurret(*t);
         a.usingTurret.reset();
         return Value();
     });

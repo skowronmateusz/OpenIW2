@@ -71,7 +71,7 @@ add_library(iw2_game
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/viewweapon.cpp
   src/game/vehicles.cpp src/game/campaign.cpp src/game/fx.cpp src/game/perception.cpp
-  src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/hitboxes.cpp)
+  src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
@@ -116,6 +116,10 @@ endif()
 add_executable(test_xmodel tests/test_xmodel.cpp)
 target_link_libraries(test_xmodel PRIVATE iw2_assets)
 add_test(NAME xmodel COMMAND test_xmodel)
+
+add_executable(test_xanim tests/test_xanim.cpp)
+target_link_libraries(test_xanim PRIVATE iw2_assets)
+add_test(NAME xanim COMMAND test_xanim)
 
 add_executable(test_lightgrid tests/test_lightgrid.cpp)
 target_link_libraries(test_lightgrid PRIVATE iw2_assets)

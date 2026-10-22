@@ -80,6 +80,12 @@ void readRotTrack(Reader& r, XAnimRotTrack& t, int keyCount, bool yawOnly, bool 
     }
     t.frames = readFrameIndices(r, count, keyCount);
     for (int i = 0; i < count; ++i) t.keys.push_back(yawOnly ? readYawQuat(r, flip) : readFullQuat(r, flip));
+    // The loader keeps each key in the same hemisphere as the previous one.
+    for (size_t i = 1; i < t.keys.size(); ++i) {
+        const Quat& a = t.keys[i - 1];
+        Quat& b = t.keys[i];
+        if (a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0) b = {-b.x, -b.y, -b.z, -b.w};
+    }
 }
 
 void readTransTrack(Reader& r, XAnimTransTrack& t, int keyCount) {
@@ -161,30 +167,75 @@ XAnim parseXAnim(std::span<const uint8_t> data) {
     return a;
 }
 
-XPose animatePose(const XModelParts& parts, const XAnim& anim, float frame) {
+namespace {
+
+bool sameName(const std::string& a, const std::string& b) {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return std::tolower(x) == std::tolower(y); });
+}
+
+} // namespace
+
+void accumulateAnim(const XModelParts& parts, const XAnim& anim, float frame, float weight, AnimAccum& acc) {
     const int keys = anim.keyCount();
+    for (const auto& ab : anim.bones) {
+        for (size_t i = 0; i < parts.bones.size(); ++i) {
+            if (!sameName(ab.name, parts.bones[i].name)) continue;
+            BoneAccum& b = acc.bones[i];
+            if (ab.rot.keys.empty()) {
+                b.q[3] += weight;
+            } else {
+                const Quat q = sampleRotRaw(ab.rot, frame, keys);
+                b.q[0] += q.x * weight; b.q[1] += q.y * weight; b.q[2] += q.z * weight; b.q[3] += q.w * weight;
+            }
+            if (!ab.trans.keys.empty()) {
+                const auto v = sampleTrans(ab.trans, frame, keys);
+                for (int k = 0; k < 3; ++k) b.t[k] += v[size_t(k)] * weight;
+            }
+            b.w += weight;
+            acc.animated[i] = 1;
+            break;
+        }
+    }
+}
+
+void mergeBlend(const AnimAccum& node, float weight, AnimAccum& parent) {
+    for (size_t i = 0; i < node.bones.size(); ++i) {
+        const BoneAccum& c = node.bones[i];
+        BoneAccum& p = parent.bones[i];
+        const float len2 = c.q[0] * c.q[0] + c.q[1] * c.q[1] + c.q[2] * c.q[2] + c.q[3] * c.q[3];
+        if (len2 != 0) {
+            const float s = weight / std::sqrt(len2);
+            for (int k = 0; k < 4; ++k) p.q[k] += c.q[k] * s;
+        }
+        if (c.w != 0) {
+            const float s = weight / c.w;
+            for (int k = 0; k < 3; ++k) p.t[k] += c.t[k] * s;
+            p.w += weight;
+        }
+        parent.animated[i] |= node.animated[i];
+    }
+}
+
+XPose finishPose(const XModelParts& parts, const AnimAccum& acc) {
     XPose pose;
     pose.position.resize(parts.bones.size());
     pose.rotation.resize(parts.bones.size());
     for (size_t i = 0; i < parts.bones.size(); ++i) {
         const XBone& b = parts.bones[i];
-        Quat local = b.localRotation;
-        std::array<float, 3> offset = b.localOffset;
-        for (const auto& ab : anim.bones) {
-            if (ab.name.size() != b.name.size() || !std::equal(ab.name.begin(), ab.name.end(), b.name.begin(),
-                                                                [](char x, char y) { return std::tolower(x) == std::tolower(y); }))
-                continue;
-            if (!ab.rot.keys.empty()) local = sampleRot(ab.rot, frame, keys);
-            if (!ab.trans.keys.empty()) offset = sampleTrans(ab.trans, frame, keys);
-            break;
+        const bool root = b.parent < 0;
+        Quat local = root ? Quat{} : b.localRotation;
+        std::array<float, 3> offset = root ? std::array<float, 3>{0, 0, 0} : b.localOffset;
+        if (acc.animated[i]) {
+            const BoneAccum& a = acc.bones[i];
+            const float n = std::sqrt(a.q[0] * a.q[0] + a.q[1] * a.q[1] + a.q[2] * a.q[2] + a.q[3] * a.q[3]);
+            local = n != 0 ? Quat{a.q[0] / n, a.q[1] / n, a.q[2] / n, a.q[3] / n} : Quat{};
+            if (a.w != 0)
+                for (int k = 0; k < 3; ++k) offset[size_t(k)] += a.t[k] / a.w;
         }
-        if (b.parent < 0) {
+        if (root) {
             pose.rotation[i] = local;
             pose.position[i] = offset;
-            if (i < size_t(parts.rootCount)) {
-                pose.rotation[i] = b.rotation;
-                pose.position[i] = b.position;
-            }
         } else {
             const size_t p = size_t(b.parent);
             pose.rotation[i] = multiply(pose.rotation[p], local);
@@ -195,52 +246,29 @@ XPose animatePose(const XModelParts& parts, const XAnim& anim, float frame) {
     return pose;
 }
 
+XPose animatePose(const XModelParts& parts, const XAnim& anim, float frame) {
+    AnimAccum acc(parts.bones.size());
+    accumulateAnim(parts, anim, frame, 1.0f, acc);
+    return finishPose(parts, acc);
+}
+
 XPose blendPose(const XModelParts& parts, const std::vector<PoseLayer>& layers) {
-    XPose pose;
-    pose.position.resize(parts.bones.size());
-    pose.rotation.resize(parts.bones.size());
-    for (size_t i = 0; i < parts.bones.size(); ++i) {
-        const XBone& b = parts.bones[i];
-        float q[4] = {0, 0, 0, 0}, t[3] = {0, 0, 0}, wq = 0, wt = 0;
-        for (const auto& layer : layers) {
-            if (!layer.anim || layer.weight <= 0) continue;
-            const int keys = layer.anim->keyCount();
-            for (const auto& ab : layer.anim->bones) {
-                if (ab.name.size() != b.name.size() || !std::equal(ab.name.begin(), ab.name.end(), b.name.begin(),
-                                                                    [](char x, char y) { return std::tolower(x) == std::tolower(y); }))
-                    continue;
-                if (!ab.rot.keys.empty()) {
-                    Quat r = sampleRot(ab.rot, layer.frame, keys);
-                    if (q[0] * r.x + q[1] * r.y + q[2] * r.z + q[3] * r.w < 0) r = {-r.x, -r.y, -r.z, -r.w};
-                    q[0] += r.x * layer.weight; q[1] += r.y * layer.weight; q[2] += r.z * layer.weight; q[3] += r.w * layer.weight;
-                    wq += layer.weight;
-                }
-                if (!ab.trans.keys.empty()) {
-                    const auto v = sampleTrans(ab.trans, layer.frame, keys);
-                    for (int k = 0; k < 3; ++k) t[k] += v[size_t(k)] * layer.weight;
-                    wt += layer.weight;
-                }
-                break;
-            }
-        }
-        Quat local = b.localRotation;
-        std::array<float, 3> offset = b.localOffset;
-        if (wq > 0) {
-            const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-            if (n > 0) local = {q[0] / n, q[1] / n, q[2] / n, q[3] / n};
-        }
-        if (wt > 0) offset = {t[0] / wt, t[1] / wt, t[2] / wt};
-        if (b.parent < 0) {
-            pose.rotation[i] = i < size_t(parts.rootCount) ? b.rotation : local;
-            pose.position[i] = i < size_t(parts.rootCount) ? b.position : offset;
-        } else {
-            const size_t p = size_t(b.parent);
-            pose.rotation[i] = multiply(pose.rotation[p], local);
-            const auto o = rotate(pose.rotation[p], offset);
-            pose.position[i] = {pose.position[p][0] + o[0], pose.position[p][1] + o[1], pose.position[p][2] + o[2]};
-        }
-    }
-    return pose;
+    AnimAccum acc(parts.bones.size());
+    size_t active = 0;
+    for (const auto& l : layers) active += l.anim && l.weight != 0;
+    for (const auto& l : layers)
+        if (l.anim && l.weight != 0) accumulateAnim(parts, *l.anim, l.frame, active == 1 ? 1.0f : l.weight, acc);
+    return finishPose(parts, acc);
+}
+
+Quat sampleRotRaw(const XAnimRotTrack& t, float frame, int keyCount) {
+    if (t.keys.empty()) return {0, 0, 0, 1};
+    size_t i0, i1;
+    float l;
+    locate(t, frame, keyCount, i0, i1, l);
+    const Quat& a = t.keys[i0];
+    const Quat& b = t.keys[i1];
+    return {a.x + (b.x - a.x) * l, a.y + (b.y - a.y) * l, a.z + (b.z - a.z) * l, a.w + (b.w - a.w) * l};
 }
 
 Quat sampleRot(const XAnimRotTrack& t, float frame, int keyCount) {
