@@ -23,7 +23,9 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   and the bottom AI state, and then notifies the spawner `"spawned"` with the AI (0x5325ad).
 - An actor's `damageweapon` is the attacker's weapon name, set by the pain and die callbacks (0x4ff3b0 / 0x4ff530)
   from the attacker entity's weapon index. G_Damage (0x528050) uses the world entity when there is no attacker, and
-  weapon index 0 is `none` (0x4dc210). A turret's bullets credit the turret's user, or the world (0x51ada0). The errors "dospawn can only be called on actor spawners" and "Spawner at (%g %g %g)
+  weapon index 0 is `none` (0x4dc210). A turret's bullets credit the turret's user, or the world (0x51ada0).
+- `getaiarray(team)` (0x4ec9f0) lists actors whose +0x25c is set; the die callback clears it, so the dead are
+  not listed. The errors "dospawn can only be called on actor spawners" and "Spawner at (%g %g %g)
   is in solid" exist in the executable.
 
 ## Perception (observed)

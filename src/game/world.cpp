@@ -646,10 +646,12 @@ void World::registerBuiltins() {
             if (e->isSpawner && !e->obj->removed && startsWith(e->classname, prefix)) out.push_back(e->obj);
         return Value(toArray(out));
     });
+    // getaiarray(team) (0x4ec9f0) lists actors whose actor +0x25c is set; the die callback (0x4ff530) clears it, so
+    // dead actors are left out.
     vm_.registerBuiltin("getaiarray", [this](CallContext& c) {
         std::vector<ObjectPtr> out;
         for (const auto& e : entities_)
-            if (!e->obj->removed && e->obj->kind == "actor" && (!c.arg(0).isDefined() || e->obj->get("team") == c.arg(0)))
+            if (!e->obj->removed && e->obj->kind == "actor" && isAlive(*e) && (!c.arg(0).isDefined() || e->obj->get("team") == c.arg(0)))
                 out.push_back(e->obj);
         return Value(toArray(out));
     });
@@ -854,6 +856,16 @@ void World::registerBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("print", [this](CallContext& c) { print(c.arg(0).toString()); return Value(); });
+    // getpartname(model, index) (0x4f5bc0): the model's bone name at index; exactly two arguments.
+    vm_.registerBuiltin("getpartname", [this](CallContext& c) {
+        if (c.argc() != 2) throw std::runtime_error("Incorrect usage for getpartname()");
+        const assets::XModelParts* parts = skeleton(c.arg(0).toString());
+        if (!parts) throw std::runtime_error("bad model");
+        const int i = c.arg(1).asInt();
+        if (i < 0 || size_t(i) >= parts->bones.size())
+            throw std::runtime_error("index out of range (0 - " + std::to_string(int(parts->bones.size()) - 1) + ")");
+        return Value(parts->bones[size_t(i)].name);
+    });
 }
 
 void World::registerMissingStubs() {
