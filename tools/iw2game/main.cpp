@@ -149,6 +149,31 @@ int main(int argc, char** argv) {
                                     c.origin[0], c.origin[1], c.origin[2], c.mins[0], c.mins[1], c.mins[2], c.maxs[0], c.maxs[1], c.maxs[2], c.contents);
                 }
             }
+            if (const char* h = std::getenv("SPOT_STAND")) {
+                // The player standing still on the topmost surface (0.125 above it) on a fine grid: positions the
+                // position test calls all solid, and positions after which nothing is under the player.
+                const float r = std::stof(h);
+                const float step = std::getenv("SPOT_STEP") ? std::stof(std::getenv("SPOT_STEP")) : 1.0f;
+                int solid = 0, lost = 0, total = 0;
+                for (float gx = -r; gx <= r; gx += step)
+                    for (float gy = -r; gy <= r; gy += step) {
+                        const iw2::game::Vec a{eye[0] + gx, eye[1] + gy, eye[2] + 1000}, b{a[0], a[1], eye[2] - 1000};
+                        const auto ground = cw.trace(a, b, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                        if (ground.fraction == 1 || ground.normal[2] < 0.7f) continue;
+                        iw2::game::PlayerState ps;
+                        ps.origin = {a[0], a[1], ground.endPos[2] + 0.125f};
+                        ++total;
+                        if (cw.trace(ps.origin, ps.origin, mp.mins, mp.maxs, mask, mp.passEntity).allSolid && solid++ < 50)
+                            std::printf("ALLSOLID (%g %g %g)\n", ps.origin[0], ps.origin[1], ps.origin[2]);
+                        iw2::game::PlayerInput in;
+                        for (int f = 0; f < 30; ++f) iw2::game::playerMove(cw, ps, in, 1.0f / 60.0f, mp);
+                        const auto under = cw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 1500}, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
+                        if (under.fraction == 1 && !under.startSolid && lost++ < 50)
+                            std::printf("LOST from (%g %g %g) to (%g %g %g)\n", a[0], a[1], ground.endPos[2] + 0.125f, ps.origin[0], ps.origin[1], ps.origin[2]);
+                    }
+                std::printf("%d positions: %d all solid, %d lost\n", total, solid, lost);
+                return 0;
+            }
             if (const char* h = std::getenv("SPOT_SWEEP")) {
                 // Standing capsules swept from 30 units above the surface to 30 below it (straight down and
                 // slanted): sweeps that get through report the world surface they crossed.
