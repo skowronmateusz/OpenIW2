@@ -168,6 +168,41 @@ timed(ent)
         if (h.joined() != "back 0|back 1|later|") std::cerr << h.joined() << "\n";
     }
 
+    // A call ended by endon in the middle of an assignment (`w = inner();`) leaves no reference behind: the
+    // caller's own pending assignment still targets its variable (crossroads --spawn-all wrote past the locals).
+    {
+        Harness h;
+        h.files["test/endonref.gsc"] = R"(
+main()
+{
+    ent = spawnstruct();
+    level.ent = ent;
+    a = 1;
+    b = 2;
+    c = 3;
+    x = timed(ent);
+    println(a + " " + b + " " + c + " " + isdefined(x));
+}
+timed(ent)
+{
+    ent endon("stop");
+    p = 0;
+    q = 0;
+    w = inner();
+    return 5;
+}
+inner()
+{
+    level waittill("never");
+    return 1;
+}
+)";
+        h.vm.start("test/endonref.gsc", "main");
+        h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        CHECK(h.joined() == "1 2 3 0|");
+        if (h.joined() != "1 2 3 0|") std::cerr << h.joined() << "\n";
+    }
+
     // Includes and qualified calls, runtime errors kill only the failing thread.
     {
         Harness h;

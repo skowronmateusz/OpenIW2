@@ -606,6 +606,7 @@ void VM::enterFunction(Thread& t, int function, std::vector<Value> args, Value s
     for (size_t i = 0; i < args.size() && i < size_t(f.paramCount); ++i) fr.locals[i] = std::move(args[i]);
     fr.self = std::move(self);
     fr.stackBase = t.stack.size();
+    fr.refBase = t.refs.size();
     t.frames.push_back(std::move(fr));
 }
 
@@ -1018,6 +1019,9 @@ void VM::finishNotifyWait(Thread& t, const std::vector<Value>& args) {
 // Ends call `frame` and the calls it made; the caller continues with undefined as the call's result.
 void VM::unwind(Thread& t, size_t frame) {
     t.stack.resize(t.frames[frame].stackBase);
+    // Drop the references the ended calls were building (e.g. `x = f();` inside them); left behind, the caller's
+    // next Store would write through them into its own, smaller frame.
+    t.refs.resize(t.frames[frame].refBase);
     t.frames.resize(frame);
     std::erase_if(t.endons, [&](const Thread::EndOn& e) { return e.frame >= frame; });
     t.waitObject.reset();

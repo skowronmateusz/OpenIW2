@@ -69,6 +69,7 @@ struct Frame {
     std::vector<Value> locals;
     Value self;
     size_t stackBase = 0;
+    size_t refBase = 0; // the thread's ref stack size when the call began
 };
 
 struct Ref {
