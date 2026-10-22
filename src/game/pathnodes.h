@@ -4,9 +4,14 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace iw2::game {
+
+// Script value of a path node's "type" field for its classname (spawn table 0x56fea8 maps node_* classes to
+// types 1..18; names from the table at 0x5a9368, e.g. "Cover Crouch", "Turret"). Empty for an unknown class.
+std::string pathNodeTypeName(const std::string& classname);
 
 struct PathLink {
     uint16_t target = 0;

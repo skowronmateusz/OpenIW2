@@ -146,6 +146,7 @@ void World::spawnMapEntities() {
             n.obj = vm_.newObject(cls);
             n.type = cls;
             fill(n.obj);
+            n.obj->set("type", Value(pathNodeTypeName(cls))); // engine field with a getter (0x515b60)
             nodes_.push_back(std::move(n));
         } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
