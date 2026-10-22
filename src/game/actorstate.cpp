@@ -359,6 +359,7 @@ int World::deathThink(Entity& e) {
     // (0x514d50); only the path is cleared here.
     if (ai.substate == kSubDeath && timeMs_ - ai.baseStateMs > 799) {
         clearActorPath(e);
+        releaseNode(e); // the sentient release (0x514d50) frees the claimed node (0x5191a0)
         ai.substate = kSubDeathDone;
     }
     if (e.animScript == "death" && actorAnimScriptDone(e)) {
@@ -421,6 +422,7 @@ int World::exposedThink(Entity& e) {
         ai.facing = 5;
         followActorPath(e, true);
     }
+    updateClaimedNode(e); // 0x4fe8d0 → 0x4fe740. TODO(spec): 0x504450 before it, the followed-actor check after.
     return 0;
 }
 
@@ -448,8 +450,18 @@ void World::exposedCombat(Entity& e) {
     // TODO(spec): +0x728 / +0x2148 (blocking actor / followed actor) also clear the path here.
     if (actorHasPath(e) && seesEnemyRecently(e, 250) && actorInGoal(e, 0.0f)) clearActorPath(e);
     if (!actorHasPath(e)) {
+        // 0x548c70: inside the goal, the enemy not seen for 5 s and a claimed node flagged 0x8000 that covers
+        // from it: facing 6, else 3. TODO(spec): 0x548be0 (moving back inside a shrunken goal) and the path end
+        // conditions of 0x502850.
         combatScript(e);
-        ai.facing = 3; // TODO(spec): facing 6 at a claimed cover node (0x548c70 / 0x54bb30)
+        ai.facing = 3;
+        if (actorInGoal(e, 0.0f) && e.claimedNode >= 0 && (nodes_[size_t(e.claimedNode)].spawnflags & 0x8000)) {
+            Entity* enemy = entityOf(e.obj->get("enemy"));
+            const auto it = enemy ? e.sentientInfo.find(enemy->obj.get()) : e.sentientInfo.end();
+            const bool seen = it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000;
+            std::string script;
+            if (!seen && (!coverScriptAt(e, e.claimedNode, true, script) || !script.empty())) ai.facing = 6;
+        }
         return;
     }
     ai.facing = 4;
@@ -482,15 +494,32 @@ void World::exposedNoncombat(Entity& e) {
     if (actorInGoal(e, 0.0f)) ai.facing = 4;
 }
 
-// 0x53b050: the cover script of the claimed node, else "combat" (anim mode 4). TODO(spec): node claiming.
+// 0x53b050: at the claimed node (0x502910) its cover script (0, anim mode 1); a node that no longer covers is given
+// up (0x4fe670); otherwise "combat" (anim mode 4, 1 when following an actor). TODO(spec): 0x504630 (crowding) and
+// clearing +0x728.
 void World::combatScript(Entity& e) {
+    if (e.claimedNode >= 0 && atClaimedNode(e)) {
+        std::string script;
+        if (coverScriptAt(e, e.claimedNode, false, script)) {
+            if (!script.empty()) {
+                setActorAnimScript(e, script, 0, 1);
+                return;
+            }
+            giveUpClaimedNode(e);
+        }
+    }
     setActorAnimScript(e, "combat", 0, 4);
 }
 
-// 0x53aed0: the cover script of the claimed node when the actor is at it (0x54bb30), else "stop".
-// TODO(spec): node claiming (actor sentient +0x2c) is not implemented.
+// 0x53aed0: at the claimed node its cover script; a node that no longer covers is given up; else "stop".
 std::string World::stopScript(Entity& e) {
-    (void)e;
+    if (e.claimedNode >= 0 && atClaimedNode(e)) {
+        std::string script;
+        if (coverScriptAt(e, e.claimedNode, false, script)) {
+            if (!script.empty()) return script;
+            giveUpClaimedNode(e);
+        }
+    }
     return "stop";
 }
 
@@ -500,24 +529,6 @@ void World::clearActorPath(Entity& e) {
     e.path.clear();
     e.pathIndex = 0;
     e.ai.stopSoonMs = 0;
-}
-
-// Stand-in for the path update 0x503490 (inferred placeholder, not the original planner): outside the goal plan a
-// node path to the goal position; inside it there is no path.
-void World::updateActorPath(Entity& e) {
-    const Value goal = e.obj->get("$goalpos");
-    if (!goal.isVector() || actorInGoal(e, 0.0f)) {
-        if (actorHasPath(e) && goal.isVector()) clearActorPath(e);
-        return;
-    }
-    const auto g = goal.asVector();
-    if (actorHasPath(e) && e.pathGoal == g) return;
-    const auto o = e.obj->get("origin").asVector();
-    clearActorPath(e);
-    const int a = nearestNode(o), b = nearestNode(g);
-    for (int n : paths_.findPath(a, b)) e.path.push_back(paths_.position(size_t(n)));
-    e.path.push_back(g);
-    e.pathGoal = g;
 }
 
 // Path following (0x552350): entering movement sets anim mode 1 / movemode stop; the step itself (0x551960) is the
@@ -540,6 +551,7 @@ void World::followActorPath(Entity& e, bool run) {
 }
 
 void World::registerActorStateBuiltins() {
+    registerCoverBuiltins();
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {

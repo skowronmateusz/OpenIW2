@@ -12,6 +12,8 @@ namespace iw2::game {
 // Script value of a path node's "type" field for its classname (spawn table 0x56fea8 maps node_* classes to
 // types 1..18; names from the table at 0x5a9368, e.g. "Cover Crouch", "Turret"). Empty for an unknown class.
 std::string pathNodeTypeName(const std::string& classname);
+// The node's type number (+0x0 of the runtime node): 1 node_pathnode … 18 node_turret, 0 for an unknown class.
+int pathNodeTypeNum(const std::string& classname);
 
 struct PathLink {
     uint16_t target = 0;

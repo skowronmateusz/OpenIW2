@@ -57,6 +57,10 @@ struct ActorAi {
     script::Value customScript;               // +0x208 animcustom function
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
+    int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
+    bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, TODO(spec))
+    std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
+    std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
     bool corpse = false;                      // turned into a corpse (0x4fdba0)
 };
 
@@ -81,6 +85,7 @@ struct Entity {
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
+    int claimedNode = -1;                  // sentient +0x2c: claimed path node (script field "node")
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
     std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
@@ -91,7 +96,12 @@ struct Entity {
 
 struct PathNode {
     ObjectPtr obj;
-    std::string type; // classname, e.g. node_pathnode
+    std::string type;               // classname, e.g. node_pathnode
+    int typeNum = 0;                // +0x0: 1…18 (spawn table 0x56fea8), 0 unknown
+    int spawnflags = 0;             // +0x4: 0x40 priority (setnodepriority), 0x8000 see 0x54bb30, 1 not a cover candidate
+    Entity* owner = nullptr;        // +0x40: sentient that claimed it (or just left it)
+    int64_t ownerUntilMs = 0;       // +0x44: kNodeClaimed while claimed, else the owner keeps it until then
+    std::array<int64_t, 4> teamBlockedMs{}; // +0x44 + 4·team: unusable for that team until then (1 axis, 2 allies)
 };
 
 class World {
@@ -286,6 +296,27 @@ private:
     int deathThink(Entity& e);
     int customThink(Entity& e);
     void registerActorStateBuiltins();
+    // Cover nodes and claiming (src/game/actorcover.cpp)
+    bool nodeUsable(Entity& e, int node);
+    void claimNode(Entity& e, int node);
+    void releaseNode(Entity& e);
+    void giveUpClaimedNode(Entity& e);
+    void blockNodeForTeam(int node, Entity& e);
+    bool coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& script);
+    bool nodeFacesEnemy(Entity& e, int node);
+    bool claimedNodeGood(Entity& e, int node);
+    float coverScore(Entity& e, int node);
+    std::vector<int> findCoverNodes(Entity& e, int better, int ignore, int prefer, size_t max);
+    int sentientNode(Entity& e);
+    bool keepClaimedNode(Entity& e);
+    bool atClaimedNode(Entity& e);
+    bool inActorGoal(Entity& e, const Vec3& p);
+    void updateClaimedNode(Entity& e);
+    bool pathToPoint(Entity& e, const Vec3& target);
+    bool pathToNode(Entity& e, int node);
+    bool pathToGoal(Entity& e);
+    bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
+    void registerCoverBuiltins();
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void shootTurret(Entity& t);
