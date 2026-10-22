@@ -70,7 +70,8 @@ add_library(iw2_game
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/viewweapon.cpp
-  src/game/vehicles.cpp src/game/campaign.cpp src/game/fx.cpp)
+  src/game/vehicles.cpp src/game/campaign.cpp src/game/fx.cpp
+  src/game/turrets.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)

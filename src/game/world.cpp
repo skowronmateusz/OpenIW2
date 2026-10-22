@@ -92,6 +92,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerMoverBuiltins();
     registerCampaignBuiltins();
     registerVehicleBuiltins();
+    registerTurretBuiltins();
     registerMissingStubs();
 }
 
@@ -146,6 +147,7 @@ void World::spawnMapEntities() {
             n.obj = vm_.newObject(cls);
             n.type = cls;
             fill(n.obj);
+            n.obj->set("type", Value(pathNodeTypeName(cls))); // engine field with a getter (0x515b60)
             nodes_.push_back(std::move(n));
         } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
@@ -236,6 +238,7 @@ void World::start() {
     cvars["mapname"] = mapName_;
     spawnMapEntities();
     linkVehicleNodes();
+    initMapTurrets();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
 }

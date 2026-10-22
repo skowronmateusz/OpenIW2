@@ -96,4 +96,19 @@ std::vector<int> PathGraph::findPath(int from, int to) const {
     return {path.rbegin(), path.rend()};
 }
 
+std::string pathNodeTypeName(const std::string& classname) {
+    static const char* const classes[] = {"node_pathnode", "node_cover_stand", "node_cover_crouch", "node_cover_crouch_window",
+                                          "node_cover_prone", "node_cover_right", "node_cover_left", "node_cover_wide_right",
+                                          "node_cover_wide_left", "node_concealment_stand", "node_concealment_crouch",
+                                          "node_concealment_prone", "node_reacquire", "node_balcony", "node_scripted",
+                                          "node_negotiation_begin", "node_negotiation_end", "node_turret"};
+    static const char* const names[] = {"BAD NODE", "Path", "Cover Stand", "Cover Crouch", "Cover Crouch Window", "Cover Prone",
+                                        "Cover Right", "Cover Left", "Cover Wide Right", "Cover Wide Left", "Conceal Stand",
+                                        "Conceal Crouch", "Conceal Prone", "Reacquire", "Balcony", "Scripted", "Begin", "End",
+                                        "Turret"};
+    for (size_t i = 0; i < std::size(classes); ++i)
+        if (classname == classes[i]) return names[i + 1];
+    return {};
+}
+
 } // namespace iw2::game
