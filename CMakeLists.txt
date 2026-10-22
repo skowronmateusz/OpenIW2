@@ -71,7 +71,7 @@ add_library(iw2_game
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/viewweapon.cpp
   src/game/vehicles.cpp src/game/campaign.cpp src/game/fx.cpp src/game/perception.cpp
-  src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp)
+  src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/hitboxes.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
@@ -144,3 +144,7 @@ add_test(NAME movers COMMAND test_movers)
 add_executable(test_efx tests/test_efx.cpp)
 target_link_libraries(test_efx PRIVATE iw2_assets)
 add_test(NAME efx COMMAND test_efx)
+
+add_executable(test_hitboxes tests/test_hitboxes.cpp)
+target_link_libraries(test_hitboxes PRIVATE iw2_game)
+add_test(NAME hitboxes COMMAND test_hitboxes)

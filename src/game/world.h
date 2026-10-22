@@ -8,6 +8,7 @@
 #include "game/movers.h"
 #include "game/campaign.h"
 #include "game/collision.h"
+#include "game/hitboxes.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
 #include "game/turrets.h"
@@ -160,9 +161,15 @@ private:
     };
     const assets::XModelParts* skeleton(const std::string& model);
     std::unordered_map<std::string, BoneXform> entityBones(Entity& e);
+    // The entity's models (body, then attachments) posed in entity space, with their hit boxes.
+    std::vector<HitBoxModel> entityModels(Entity& e);
+    // G_LocationalTrace (FUN_0044bf00 with locational set): world and entity clips, actors by hit boxes when a
+    // priority map is given; `location` gets the hit location (0 when none).
+    TraceResult locationalTrace(const Vec3& start, const Vec3& end, uint32_t mask, const Entity* pass, const uint8_t* priority,
+                                int& location);
     Vec3 eyePosition(Entity& e);
-    void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod);
-    Entity* traceSentients(const Vec3& start, const Vec3& end, const Entity* ignore, float& fraction);
+    void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
+                const std::string& location = "none");
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount);
     int weaponDamage(const std::string& weaponName);
     void updatePerception(Entity& e);
@@ -259,6 +266,7 @@ private:
     std::vector<std::pair<Vec3, Vec3>> submodels_;
     std::unique_ptr<CollisionWorld> collision_;
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
+    std::map<std::string, std::vector<assets::XBoneBox>> boneBoxes_; // xmodel bone hit boxes, filled by skeleton()
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;
     PathGraph paths_;

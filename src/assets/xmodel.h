@@ -15,10 +15,19 @@ struct XModelLod {
     std::vector<std::string> materials; // one per surface
 };
 
+// Hit box of one bone in bone space (FUN_0047d180 adds offset and radiusSquared, used by FUN_00473d20).
+struct XBoneBox {
+    std::array<float, 3> mins{}, maxs{};
+    std::array<float, 3> offset{}; // (mins + maxs) / 2
+    float radiusSquared = 0;       // |maxs − offset|²; 0 = no box
+};
+
 struct XModel {
     uint8_t flags = 0;
     std::array<float, 3> mins{}, maxs{};
     std::vector<XModelLod> lods; // only non-empty LODs, in file order
+    // One per bone of the skeleton (xmodelparts), after the LOD material lists.
+    std::vector<XBoneBox> boneBoxes;
 };
 
 // Parses the xmodel header and per-LOD material lists. Throws std::runtime_error on malformed input.
@@ -41,6 +50,7 @@ struct XBone {
 struct XModelParts {
     int rootCount = 0;
     std::vector<XBone> bones;
+    std::vector<uint8_t> classification; // per bone: hit location index (parts+0x10, read by FUN_00473d20)
 };
 
 XModelParts parseXModelParts(std::span<const uint8_t> data);

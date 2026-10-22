@@ -21,7 +21,8 @@ the renderer export `FUN_1002d480`.
 | collision surface count | uint32 | then per surface: `uint32 triCount; triCount × 48 bytes; float mins[3], maxs[3]; int32 bone; uint32 contents; int32 surfaceFlags` |
 | per non-empty LOD | `int16 count; count × char material[]` | one material per surface, in surface order |
 
-More data follows (per-bone hit boxes, 24 bytes each). It is not needed for rendering.
+Then one hit box per skeleton bone: `float mins[3], maxs[3]` in bone space (`FUN_0047d180`; see
+`docs/spec/collision.md`, "Hit boxes").
 
 ## `xmodelparts/<lod0 name>` (skeleton)
 
@@ -32,7 +33,7 @@ More data follows (per-bone hit boxes, 24 bytes each). It is not needed for rend
 | root bone count | int16 (total must be < 128: "has more than %d bones") |
 | per child bone | `uint8 parent; float offset[3]; int16 qx, qy, qz` |
 | per bone (roots first) | `char name[]` |
-| per bone | `uint8` part classification (inferred) |
+| per bone | `uint8` hit location (read by the hit-box trace `FUN_00473d20` at parts+0x10) |
 
 The parent is an absolute bone index (the loader stores `index − parent` internally).
 The rotation is a quaternion with components scaled by 32767; `w` is rebuilt as `round(sqrt(32767² − x² − y² − z²))`

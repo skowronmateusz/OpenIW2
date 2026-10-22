@@ -157,6 +157,12 @@ struct CollisionWorld::Data {
     void traceCapsuleThroughBorder(const TraceWork& tw, const Border& b, TraceResult& tr) const;
     void tracePointThroughTriangle(const TraceWork& tw, const Triangle& tri, TraceResult& tr) const;
 
+    // Sight trace (FUN_00418a70 and callees): a non-zero hit id when something blocks.
+    int sightThroughTree(const TraceWork& tw, int num, const float* p1, const float* p2, TraceResult& tr) const;
+    int sightThroughLeaf(const TraceWork& tw, const Leaf& leaf, TraceResult& tr) const;
+    int sightThroughLeafBrushNode(const TraceWork& tw, int node, const float* p1, const float* p2) const;
+    bool sightThroughBrush(const TraceWork& tw, const Brush& b) const;
+
     // Position test (start == end).
     void positionTest(const TraceWork& tw, TraceResult& tr) const;
     void boxLeafnums(const Vec& mins, const Vec& maxs, int nodeNum, std::vector<int>& list) const;
@@ -469,6 +475,7 @@ CollisionWorld::CollisionWorld(const assets::D3dBsp& bsp) : d_(std::make_unique<
     d.partitionStamps.assign(d.partitions.size(), 0);
 }
 
+CollisionWorld::CollisionWorld() = default;
 CollisionWorld::~CollisionWorld() = default;
 CollisionWorld::CollisionWorld(CollisionWorld&&) noexcept = default;
 CollisionWorld& CollisionWorld::operator=(CollisionWorld&&) noexcept = default;
@@ -1217,6 +1224,385 @@ void CollisionWorld::Data::testCapsuleInTriangle(const TraceWork& tw, const Tria
     solid();
 }
 
+// ---------------------------------------------------------------------------------------------- sight trace
+
+// FUN_00418a70: the trace's BSP walk without fraction checks; the first blocking leaf ends it.
+int CollisionWorld::Data::sightThroughTree(const TraceWork& tw, int num, const float* p1In, const float* p2, TraceResult& tr) const {
+    float p1[4] = {p1In[0], p1In[1], p1In[2], 0};
+    for (;;) {
+        if (num < 0) return sightThroughLeaf(tw, leafs[size_t(-1 - num)], tr);
+        const Node& node = nodes[size_t(num)];
+        const Plane& plane = planes[size_t(node.plane)];
+        float t1, t2, offset;
+        if (plane.type < 3) {
+            t1 = p1[plane.type] - plane.dist;
+            t2 = p2[plane.type] - plane.dist;
+            offset = tw.size[plane.type] + kSurfaceClipEpsilon;
+        } else {
+            t1 = p1[0] * plane.normal[0] + p1[1] * plane.normal[1] + p1[2] * plane.normal[2] - plane.dist;
+            t2 = p2[0] * plane.normal[0] + p2[1] * plane.normal[1] + p2[2] * plane.normal[2] - plane.dist;
+            offset = tw.isPoint ? 0.125f : 2048.0f;
+        }
+        const float diff = t2 - t1;
+        const float tmin = diff >= 0 ? t1 : t2;
+        if (!(tmin < offset)) {
+            num = node.children[0];
+            continue;
+        }
+        const float tmax = t1 - t2 >= 0 ? t1 : t2;
+        if (!(tmax > -offset)) {
+            num = node.children[1];
+            continue;
+        }
+        float frac2, frac;
+        int side;
+        if (std::fabs(diff) <= 4.76837158203125e-07f) {
+            frac2 = 0;
+            frac = 1;
+            side = 0;
+        } else {
+            const float t = diff >= 0 ? -t1 : t1;
+            const float idist = 1.0f / std::fabs(diff);
+            frac2 = (t - offset) * idist;
+            frac = (t + offset) * idist;
+            side = diff < 0 ? 0 : 1;
+        }
+        if (1.0f - frac < 0) frac = 1.0f;
+        float mid[4];
+        lerp4(mid, p1, p2, frac);
+        if (const int hit = sightThroughTree(tw, node.children[side], p1, mid, tr)) return hit;
+        if (frac2 < 0) frac2 = 0;
+        lerp4(p1, p1, p2, frac2);
+        num = node.children[side ^ 1];
+    }
+}
+
+// FUN_00418500: brushes (FUN_00418470) give brush + 1, AABB trees numBrushes + 1 + tree.
+int CollisionWorld::Data::sightThroughLeaf(const TraceWork& tw, const Leaf& leaf, TraceResult& tr) const {
+    if ((tw.contents & leaf.brushContents) != 0) {
+        Vec mins, maxs;
+        for (size_t i = 0; i < 3; ++i) {
+            mins[i] = leaf.mins[i] - tw.size[i];
+            maxs[i] = leaf.maxs[i] + tw.size[i];
+        }
+        if (!cullBox(tw, mins, maxs, 1.0f)) {
+            const float p1[4] = {tw.start[0], tw.start[1], tw.start[2], 0};
+            const float p2[4] = {tw.end[0], tw.end[1], tw.end[2], 1};
+            if (const int hit = sightThroughLeafBrushNode(tw, leaf.leafBrushNode, p1, p2)) return hit;
+        }
+    }
+    if ((tw.contents & leaf.terrainContents) == 0) return 0;
+    for (int i = 0; i < leaf.collAabbCount; ++i) {
+        const int tree = leaf.firstCollAabb + i;
+        if (tw.contents & materials[aabbTrees[size_t(tree)].material].contents) traceThroughAabbTree(tw, aabbTrees[size_t(tree)], tr);
+        if (tr.fraction != 1.0f) return int(brushes.size()) + 1 + tree;
+    }
+    return 0;
+}
+
+// FUN_00418190: the leaf brush tree walk of the trace without fraction checks.
+int CollisionWorld::Data::sightThroughLeafBrushNode(const TraceWork& tw, int nodeIndex, const float* p1In, const float* p2) const {
+    float p1[4] = {p1In[0], p1In[1], p1In[2], 0};
+    if ((tw.contents & leafBrushNodes[size_t(nodeIndex)].contents) == 0) return 0;
+    for (;;) {
+        const LeafBrushNode& node = leafBrushNodes[size_t(nodeIndex)];
+        if (node.leafBrushCount != 0) {
+            if (node.leafBrushCount > 0) {
+                for (int i = 0; i < node.leafBrushCount; ++i) {
+                    const uint16_t bi = leafBrushes[size_t(node.firstLeafBrush + i)];
+                    if ((tw.contents & brushes[bi].contents) && sightThroughBrush(tw, brushes[bi])) return bi + 1;
+                }
+                return 0;
+            }
+            if (const int hit = sightThroughLeafBrushNode(tw, nodeIndex + 1, p1, p2)) return hit;
+        }
+        const float t1 = p1[node.axis] - node.dist;
+        const float t2 = p2[node.axis] - node.dist;
+        const float offset = tw.size[node.axis] + kSurfaceClipEpsilon - node.range;
+        const float tmax = t1 - t2 >= 0 ? t1 : t2;
+        const float diff = t2 - t1;
+        const float tmin = diff >= 0 ? t1 : t2;
+        uint16_t next;
+        if (tmin < offset) {
+            if (tmax > -offset) {
+                float frac2, frac;
+                int side;
+                if (std::fabs(diff) <= 4.76837158203125e-07f) {
+                    frac2 = 0;
+                    frac = 1;
+                    side = 0;
+                } else {
+                    const float t = diff >= 0 ? -t1 : t1;
+                    const float idist = 1.0f / std::fabs(diff);
+                    frac2 = (t - offset) * idist;
+                    frac = (t + offset) * idist;
+                    side = diff < 0 ? 0 : 1;
+                }
+                if (1.0f - frac < 0) frac = 1.0f;
+                float mid[4];
+                lerp4(mid, p1, p2, frac);
+                if (const int hit = sightThroughLeafBrushNode(tw, nodeIndex + node.children[side], p1, mid)) return hit;
+                if (frac2 < 0) frac2 = 0;
+                lerp4(p1, p1, p2, frac2);
+                next = node.children[side ^ 1];
+            } else {
+                next = node.children[1];
+            }
+        } else {
+            if (!(tmax > -offset)) return 0;
+            next = node.children[0];
+        }
+        nodeIndex += next;
+        if ((tw.contents & leafBrushNodes[size_t(nodeIndex)].contents) == 0) return 0;
+    }
+}
+
+// FUN_00417f60: the brush clip without epsilon; true when the segment enters the brush.
+bool CollisionWorld::Data::sightThroughBrush(const TraceWork& tw, const Brush& b) const {
+    float enterFrac = 0, leaveFrac = 1;
+    for (int side = 0; side < 2; ++side) {
+        const float s = side == 0 ? -1.0f : 1.0f;
+        const Vec& bound = side == 0 ? b.mins : b.maxs;
+        for (size_t i = 0; i < 3; ++i) {
+            const float d1 = (tw.start[i] - bound[i]) * s - tw.extents[i];
+            const float d2 = (tw.end[i] - bound[i]) * s - tw.extents[i];
+            if (d1 <= 0) {
+                if (d2 > 0) {
+                    const float f = d1 * tw.invDelta[i] * s;
+                    if (f <= enterFrac) return false;
+                    if (f - leaveFrac < 0) leaveFrac = f;
+                }
+            } else {
+                if (d2 > 0) return false;
+                const float f = d1 * tw.invDelta[i] * s;
+                if (leaveFrac <= f) return false;
+                if (enterFrac - f < 0) enterFrac = f;
+            }
+        }
+    }
+    for (int k = 0; k < b.numSides; ++k) {
+        const Plane& p = planes[size_t(sides[size_t(b.firstSide + k)].plane)];
+        const float dist = std::fabs(p.normal[2] * tw.offsetZ) + p.dist + tw.radius;
+        const float d1 = dot(tw.start, p.normal) - dist;
+        const float d2 = dot(tw.end, p.normal) - dist;
+        if (d1 <= 0) {
+            if (d2 > 0 && leaveFrac * (d1 - d2) < d1) {
+                leaveFrac = d1 / (d1 - d2);
+                if (leaveFrac <= enterFrac) return false;
+            }
+        } else {
+            if (d2 > 0) return false;
+            if ((d1 - d2) * enterFrac < d1) {
+                enterFrac = d1 / (d1 - d2);
+                if (leaveFrac <= enterFrac) return false;
+            }
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------- box model 0x3ff
+
+namespace {
+
+// FUN_00421270: normalizes `v` into `out` and returns the length.
+float normalizeTo(const Vec& v, Vec& out) {
+    const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    out = v;
+    if (l != 0) {
+        const float il = 1.0f / l;
+        out = {v[0] * il, v[1] * il, v[2] * il};
+    }
+    return l;
+}
+
+// The box model as a vertical capsule (FUN_00416120 / FUN_00417060 / FUN_004187e0).
+struct BoxCapsule {
+    Vec centre, top, bottom;
+    float radius, halfHeight;
+    uint32_t contents;
+};
+
+BoxCapsule boxCapsule(const Vec& mins, const Vec& maxs, uint32_t contents) {
+    BoxCapsule b;
+    for (size_t i = 0; i < 3; ++i) b.centre[i] = (maxs[i] + mins[i]) * 0.5f;
+    const float hz = maxs[2] - b.centre[2];
+    const float hx = maxs[0] - b.centre[0];
+    b.radius = hx > hz ? hz : hx;
+    b.halfHeight = hz - b.radius;
+    b.top = {b.centre[0], b.centre[1], b.centre[2] + b.halfHeight};
+    b.bottom = {b.centre[0], b.centre[1], b.centre[2] - b.halfHeight};
+    b.contents = contents;
+    return b;
+}
+
+bool boundsTouchBox(const TraceWork& tw, const Vec& mins, const Vec& maxs) {
+    for (size_t i = 0; i < 3; ++i)
+        if (!(tw.boundsMins[i] <= maxs[i] + 1.0f) || !(mins[i] - 1.0f <= tw.boundsMaxs[i])) return false;
+    return true;
+}
+
+// FUN_00416cb0: sphere `a` (on the moving capsule) against sphere `p` of the box; true on a hit.
+bool sphereHit(const TraceWork& tw, const Vec& a, const Vec& p, const Vec& endPoint, float boxRadius, uint32_t contents,
+               TraceResult& tr) {
+    const Vec d = {a[0] - p[0], a[1] - p[1], a[2] - p[2]};
+    float r = boxRadius + tw.radius;
+    r = r * r;
+    const float c = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - r;
+    if (c <= 0) {
+        tr.fraction = 0;
+        tr.startSolid = true;
+        normalizeTo(d, tr.normal);
+        tr.contents = contents;
+        const float ex = endPoint[0] - p[0], ey = endPoint[1] - p[1], ez = endPoint[2] - p[2];
+        if (ex * ex + ey * ey + ez * ez <= r) tr.allSolid = true;
+        return true;
+    }
+    const float b = d[0] * tw.delta[0] + d[1] * tw.delta[1] + d[2] * tw.delta[2];
+    if (!(b < 0)) return false;
+    const float disc = b * b - tw.deltaLenSq * c;
+    if (!(disc >= 0)) return false;
+    Vec n;
+    const float len = normalizeTo(d, n);
+    const float t = (-b - std::sqrt(disc)) / tw.deltaLenSq + len * kSurfaceClipEpsilon / b;
+    if (!(t < tr.fraction)) return false;
+    tr.fraction = std::max(t, 0.0f);
+    tr.normal = n;
+    tr.contents = contents;
+    return true;
+}
+
+// FUN_00416e70: the capsule's side against the box's vertical cylinder; true on a hit.
+bool cylinderHit(const TraceWork& tw, const BoxCapsule& box, TraceResult& tr) {
+    const float dx = tw.start[0] - box.centre[0], dy = tw.start[1] - box.centre[1], dz = tw.start[2] - box.centre[2];
+    const float r = box.radius + tw.radius;
+    const float c = dx * dx + dy * dy - r * r;
+    const float limit = tw.offsetZ + box.halfHeight;
+    if (c <= 0) {
+        if (!(std::fabs(dz) <= limit)) return false;
+        tr.fraction = 0;
+        tr.startSolid = true;
+        normalizeTo({dx, dy, 0}, tr.normal);
+        tr.contents = box.contents;
+        if (std::fabs(tw.end[2] - box.centre[2]) <= limit) tr.allSolid = true;
+        return true;
+    }
+    const float b = dx * tw.delta[0] + dy * tw.delta[1];
+    if (!(b < 0)) return false;
+    const float a = tw.delta[1] * tw.delta[1] + tw.delta[0] * tw.delta[0];
+    const float disc = b * b - a * c;
+    if (!(disc >= 0)) return false;
+    Vec n;
+    const float eps = normalizeTo({dx, dy, 0}, n) * kSurfaceClipEpsilon / b;
+    const float t = (-b - std::sqrt(disc)) / a + eps;
+    if (!(t < tr.fraction)) return false;
+    if (!(std::fabs((t - eps) * tw.delta[2] + tw.start[2] - box.centre[2]) <= limit)) return false;
+    tr.fraction = std::max(t, 0.0f);
+    tr.normal = n;
+    tr.contents = box.contents;
+    return true;
+}
+
+// FUN_00417060
+void traceThroughBoxCapsule(const TraceWork& tw, const Vec& mins, const Vec& maxs, uint32_t contents, TraceResult& tr) {
+    if (!boundsTouchBox(tw, mins, maxs)) return;
+    const BoxCapsule box = boxCapsule(mins, maxs, contents);
+    const float o = tw.offsetZ;
+    const Vec sTop = {tw.start[0], tw.start[1], tw.start[2] + o}, sBot = {tw.start[0], tw.start[1], tw.start[2] - o};
+    const Vec eTop = {tw.end[0], tw.end[1], tw.end[2] + o}, eBot = {tw.end[0], tw.end[1], tw.end[2] - o};
+    if (sBot[2] > box.top[2]) {
+        if (sphereHit(tw, sBot, box.top, eBot, box.radius, contents, tr)) return;
+        if (!(tw.delta[2] < 0)) return;
+    } else if (sTop[2] < box.bottom[2]) {
+        if (sphereHit(tw, sTop, box.bottom, eTop, box.radius, contents, tr)) return;
+        if (!(tw.delta[2] > 0)) return;
+    }
+    if (cylinderHit(tw, box, tr)) return;
+    if (eBot[2] > box.top[2]) {
+        if (sBot[2] <= box.top[2]) sphereHit(tw, sBot, box.top, eBot, box.radius, contents, tr);
+    } else if (eTop[2] < box.bottom[2] && sTop[2] >= box.bottom[2]) {
+        sphereHit(tw, sTop, box.bottom, eTop, box.radius, contents, tr);
+    }
+}
+
+// FUN_00416120
+void testInBoxCapsule(const TraceWork& tw, const Vec& mins, const Vec& maxs, TraceResult& tr) {
+    const BoxCapsule box = boxCapsule(mins, maxs, 0);
+    const float r = box.radius + tw.radius;
+    const float r2 = r * r;
+    auto solid = [&] {
+        tr.allSolid = true;
+        tr.startSolid = true;
+        tr.fraction = 0;
+    };
+    const float dx = box.centre[0] - tw.start[0], dy = box.centre[1] - tw.start[1];
+    const float zs[2] = {tw.start[2] + tw.offsetZ, tw.start[2] - tw.offsetZ};
+    const float zb[2] = {box.top[2], box.bottom[2]};
+    for (float b : zb)
+        for (float s : zs) {
+            const float dz = b - s;
+            if (dx * dx + dy * dy + dz * dz < r2) solid();
+        }
+    if (std::fabs(tw.start[2] - box.centre[2]) <= box.halfHeight + tw.offsetZ && dx * dx + dy * dy < r2) solid();
+}
+
+// FUN_00418590: boolean sphere test of the sight trace (hit below fraction 1).
+bool sightSphereHit(const TraceWork& tw, const Vec& a, const Vec& p, float boxRadius) {
+    const Vec d = {a[0] - p[0], a[1] - p[1], a[2] - p[2]};
+    const float r = boxRadius + tw.radius;
+    const float c = d[1] * d[1] + d[0] * d[0] + d[2] * d[2] - r * r;
+    if (c <= 0) return true;
+    const float b = d[0] * tw.delta[0] + d[1] * tw.delta[1] + d[2] * tw.delta[2];
+    if (!(b < 0)) return false;
+    const float disc = b * b - tw.deltaLenSq * c;
+    if (!(disc >= 0)) return false;
+    Vec n;
+    const float eps = b * kSurfaceClipEpsilon / normalizeTo(d, n);
+    return (-b - std::sqrt(disc)) / tw.deltaLenSq + eps < 1.0f;
+}
+
+// FUN_004186a0: boolean cylinder test of the sight trace (uses the full |delta|² as the quadratic's a).
+bool sightCylinderHit(const TraceWork& tw, const BoxCapsule& box) {
+    const float dx = tw.start[0] - box.centre[0], dy = tw.start[1] - box.centre[1];
+    float dz = tw.start[2] - box.centre[2];
+    const float r = box.radius + tw.radius;
+    const float c = dx * dx + dy * dy - r * r;
+    if (!(c <= 0)) {
+        const float b = dx * tw.delta[0] + dy * tw.delta[1];
+        if (!(b < 0)) return false;
+        const float disc = b * b - tw.deltaLenSq * c;
+        if (!(disc >= 0)) return false;
+        Vec n;
+        const float eps = b * kSurfaceClipEpsilon / normalizeTo({dx, dy, 0}, n);
+        const float t = (-b - std::sqrt(disc)) / tw.deltaLenSq + eps;
+        if (!(t < 1.0f)) return false;
+        dz = (t - eps) * tw.delta[2] + tw.start[2] - box.centre[2];
+    }
+    return std::fabs(dz) <= tw.offsetZ + box.halfHeight;
+}
+
+// FUN_004187e0
+bool sightThroughBoxCapsule(const TraceWork& tw, const Vec& mins, const Vec& maxs) {
+    if (!boundsTouchBox(tw, mins, maxs)) return false;
+    const BoxCapsule box = boxCapsule(mins, maxs, 0);
+    const float o = tw.offsetZ;
+    const Vec sTop = {tw.start[0], tw.start[1], tw.start[2] + o}, sBot = {tw.start[0], tw.start[1], tw.start[2] - o};
+    const float eTopZ = tw.end[2] + o, eBotZ = tw.end[2] - o;
+    if (sBot[2] > box.top[2]) {
+        if (sightSphereHit(tw, sBot, box.top, box.radius)) return true;
+        if (!(tw.delta[2] < 0)) return false;
+    } else if (sTop[2] < box.bottom[2]) {
+        if (sightSphereHit(tw, sTop, box.bottom, box.radius)) return true;
+        if (!(tw.delta[2] > 0)) return false;
+    }
+    if (sightCylinderHit(tw, box)) return true;
+    if (eBotZ > box.top[2]) return sBot[2] <= box.top[2] && sightSphereHit(tw, sBot, box.top, box.radius);
+    if (eTopZ < box.bottom[2] && sTop[2] >= box.bottom[2]) return sightSphereHit(tw, sTop, box.bottom, box.radius);
+    return false;
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------------------------- entry
 
 namespace {
@@ -1344,19 +1730,80 @@ void CollisionWorld::setEntityClips(std::vector<EntityClip> clips) {
     if (d_) d_->entityClips = std::move(clips);
 }
 
+// FUN_00417c20 with zero angles → FUN_00417640 for model 0x3ff.
+TraceResult CollisionWorld::traceBox(const Vec& origin, const Vec& boxMins, const Vec& boxMaxs, uint32_t boxContents, const Vec& start,
+                                     const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
+    TraceResult tr;
+    tr.endPos = end;
+    if ((boxContents & mask) == 0) return tr;
+    Vec mid, size, s, e;
+    for (size_t i = 0; i < 3; ++i) {
+        mid[i] = (mins[i] + maxs[i]) * 0.5f;
+        size[i] = maxs[i] - mid[i];
+        s[i] = mid[i] + start[i] - origin[i];
+        e[i] = mid[i] + end[i] - origin[i];
+    }
+    TraceWork tw{};
+    setupTraceWork(tw, s, e, size, mask);
+    if (start == end) testInBoxCapsule(tw, boxMins, boxMaxs, tr);
+    else traceThroughBoxCapsule(tw, boxMins, boxMaxs, boxContents, tr);
+    for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
+    return tr;
+}
+
+const std::vector<EntityClip>& CollisionWorld::entityClips() const {
+    static const std::vector<EntityClip> none;
+    return d_ ? d_->entityClips : none;
+}
+
+int CollisionWorld::ownerOf(int entity) const {
+    if (entity < 0 || !d_) return -1;
+    for (const EntityClip& c : d_->entityClips)
+        if (c.id == entity) return c.owner;
+    return -1;
+}
+
+// 0x44b840 / 0x44b6f0: contents, the pass entity, entities it owns and its owner.
+bool CollisionWorld::skipClip(const EntityClip& c, uint32_t mask, int passEntity, int passOwner) {
+    if ((c.contents & mask) == 0) return true;
+    if (passEntity < 0) return false;
+    return c.id == passEntity || c.owner == passEntity || (passOwner >= 0 && c.id == passOwner);
+}
+
+namespace {
+
+// Absolute bounds of a clip (r.absmin / r.absmax): brush models use the model bounds (radius when rotated).
+void clipAbsBounds(const EntityClip& c, const Vec& modelMins, const Vec& modelMaxs, float modelRadius, Vec& amin, Vec& amax) {
+    const bool rotated = c.angles[0] != 0 || c.angles[1] != 0 || c.angles[2] != 0;
+    for (size_t i = 0; i < 3; ++i) {
+        if (c.model == 0) {
+            amin[i] = c.origin[i] + c.mins[i];
+            amax[i] = c.origin[i] + c.maxs[i];
+        } else {
+            amin[i] = c.origin[i] + (rotated ? -modelRadius : modelMins[i]);
+            amax[i] = c.origin[i] + (rotated ? modelRadius : modelMaxs[i]);
+        }
+    }
+}
+
+} // namespace
+
 // G_Trace (FUN_0044bf00): the world, then each entity clip whose contents match the mask and whose absolute bounds
 // the swept box touches (0x41a590 / 0x44b840); the closest hit wins and names the entity.
-TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
+TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask, int passEntity,
+                                  bool skipHitBoxes) const {
     TraceResult tr = traceWorld(start, end, mins, maxs, mask);
     if (!d_ || tr.fraction == 0.0f) return tr;
+    const int passOwner = ownerOf(passEntity);
     for (const EntityClip& c : d_->entityClips) {
-        if ((c.contents & mask) == 0 || c.model <= 0 || size_t(c.model) >= d_->models.size()) continue;
-        const Data::Model& m = d_->models[size_t(c.model)];
+        if (skipClip(c, mask, passEntity, passOwner) || (skipHitBoxes && c.hitBoxes)) continue;
+        if (c.model != 0 && (c.model < 0 || size_t(c.model) >= d_->models.size())) continue;
         Vec amin, amax;
-        const bool rotated = c.angles[0] != 0 || c.angles[1] != 0 || c.angles[2] != 0;
-        for (size_t i = 0; i < 3; ++i) {
-            amin[i] = c.origin[i] + (rotated ? -m.radius : m.mins[i]);
-            amax[i] = c.origin[i] + (rotated ? m.radius : m.maxs[i]);
+        if (c.model) {
+            const Data::Model& m = d_->models[size_t(c.model)];
+            clipAbsBounds(c, m.mins, m.maxs, m.radius, amin, amax);
+        } else {
+            clipAbsBounds(c, {}, {}, 0, amin, amax);
         }
         // Swept box against the absolute bounds (FUN_00419450 against the entity's absmin/absmax).
         bool miss = false;
@@ -1367,13 +1814,64 @@ TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& m
         }
         if (miss) continue;
         const float before = tr.fraction;
-        TraceResult et = traceModel(c.model, c.origin, c.angles, start, end, mins, maxs, mask);
+        TraceResult et = c.model ? traceModel(c.model, c.origin, c.angles, start, end, mins, maxs, mask)
+                                 : traceBox(c.origin, c.mins, c.maxs, c.contents, start, end, mins, maxs, mask);
         if (et.fraction < before) { // the closer hit replaces the result (0x44b840)
             tr = et;
             tr.entity = c.id;
         }
     }
     return tr;
+}
+
+// FUN_0044c3c0: the world sight trace (FUN_00418d10, model 0), then every entity: brush models through their leaf,
+// other entities as box model 0x3ff (FUN_0044bba0 / FUN_0044bc80 → FUN_004191a0).
+bool CollisionWorld::sightBlocked(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask, int pass1,
+                                  int pass2) const {
+    if (!d_) return false;
+    const Data& d = *d_;
+    auto setup = [&](TraceWork& tw, const Vec& origin, const Vec& angles, Vec& fwd, Vec& left, Vec& up) {
+        Vec mid, size, s, e;
+        for (size_t i = 0; i < 3; ++i) {
+            mid[i] = (mins[i] + maxs[i]) * 0.5f;
+            size[i] = maxs[i] - mid[i];
+            s[i] = mid[i] + start[i] - origin[i];
+            e[i] = mid[i] + end[i] - origin[i];
+        }
+        if (angles[0] != 0 || angles[1] != 0 || angles[2] != 0) {
+            Vec right;
+            anglesToAxis(angles, fwd, right, up);
+            left = {-right[0], -right[1], -right[2]};
+            s = {dot(fwd, s), dot(left, s), dot(up, s)};
+            e = {dot(fwd, e), dot(left, e), dot(up, e)};
+        }
+        setupTraceWork(tw, s, e, size, mask);
+        tw.checkcount = ++d.checkcount;
+    };
+    Vec fwd, left, up;
+    {
+        TraceWork tw{};
+        setup(tw, {0, 0, 0}, {0, 0, 0}, fwd, left, up);
+        TraceResult tr;
+        const float p1[4] = {tw.start[0], tw.start[1], tw.start[2], 0};
+        const float p2[4] = {tw.end[0], tw.end[1], tw.end[2], 1};
+        if (d.sightThroughTree(tw, 0, p1, p2, tr)) return true;
+    }
+    auto passed = [](const EntityClip& c, int pass) { return pass >= 0 && (c.id == pass || c.owner == pass); };
+    for (const EntityClip& c : d.entityClips) {
+        if ((c.contents & mask) == 0 || passed(c, pass1) || passed(c, pass2)) continue;
+        TraceWork tw{};
+        if (c.model == 0) {
+            setup(tw, c.origin, {0, 0, 0}, fwd, left, up);
+            if (sightThroughBoxCapsule(tw, c.mins, c.maxs)) return true;
+            continue;
+        }
+        if (c.model < 0 || size_t(c.model) >= d.models.size()) continue;
+        setup(tw, c.origin, c.angles, fwd, left, up);
+        TraceResult tr;
+        if (d.sightThroughLeaf(tw, d.models[size_t(c.model)].leaf, tr)) return true;
+    }
+    return false;
 }
 
 } // namespace iw2::game

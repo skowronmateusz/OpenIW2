@@ -87,6 +87,17 @@ XModel parseXModel(std::span<const uint8_t> data) {
         for (int i = 0; i < count; ++i) lod.materials.push_back(r.str());
         m.lods.push_back(std::move(lod));
     }
+    // Bone boxes: 24 bytes each, one per skeleton bone (the count comes from xmodelparts in FUN_0047d180).
+    while (r.remaining() >= 24) {
+        XBoneBox b;
+        b.mins = r.vec3();
+        b.maxs = r.vec3();
+        for (size_t i = 0; i < 3; ++i) b.offset[i] = (b.maxs[i] + b.mins[i]) * 0.5f;
+        const float dz = b.maxs[2] - b.offset[2];
+        b.radiusSquared = (b.maxs[0] - b.offset[0]) * (b.maxs[0] - b.offset[0]) +
+                          (b.maxs[1] - b.offset[1]) * (b.maxs[1] - b.offset[1]) + dz * dz;
+        m.boneBoxes.push_back(b);
+    }
     return m;
 }
 
@@ -111,7 +122,7 @@ XModelParts parseXModelParts(std::span<const uint8_t> data) {
         b.localRotation = {qx * s, qy * s, qz * s, qw * s};
     }
     for (auto& b : p.bones) b.name = r.str();
-    for (int i = 0; i < total; ++i) r.get<uint8_t>(); // per-bone part classification (inferred)
+    for (int i = 0; i < total; ++i) p.classification.push_back(r.get<uint8_t>()); // per-bone hit location
 
     for (int i = 0; i < total; ++i) {
         XBone& b = p.bones[size_t(i)];

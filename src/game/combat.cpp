@@ -38,7 +38,8 @@ const assets::XModelParts* World::skeleton(const std::string& model) {
         std::optional<assets::XModelParts> parts;
         try {
             if (auto md = vfs_.read(model)) {
-                const auto xm = assets::parseXModel(*md);
+                auto xm = assets::parseXModel(*md);
+                boneBoxes_[model] = std::move(xm.boneBoxes);
                 if (auto pd = vfs_.read("xmodelparts/" + xm.lods.at(0).name)) parts = assets::parseXModelParts(*pd);
             }
         } catch (const std::exception&) {
@@ -48,22 +49,33 @@ const assets::XModelParts* World::skeleton(const std::string& model) {
     return it->second ? &*it->second : nullptr;
 }
 
-// World-space bones of an entity's body and attachments (shared skeleton by bone name; tags place roots).
-std::unordered_map<std::string, World::BoneXform> World::entityBones(Entity& e) {
-    std::unordered_map<std::string, BoneXform> bones;
-    const Value m = e.obj->get("model"), o = e.obj->get("origin"), a = e.obj->get("angles");
-    if (!m.isString() || !o.isVector()) return bones;
-    const Vec3 origin = o.asVector();
-    const float yaw = a.isVector() ? a.asVector()[1] : 0.0f;
-    const assets::Quat er = yawQuat(yaw);
-    auto toWorld = [&](const std::array<float, 3>& p, const assets::Quat& q) {
-        return BoneXform{add(origin, assets::rotate(er, p)), assets::multiply(er, q)};
-    };
+// Body and attachments in entity space: tagless attachments share the body's bones by name, tagged ones hang their
+// roots on the tag.
+std::vector<HitBoxModel> World::entityModels(Entity& e) {
+    std::vector<HitBoxModel> models;
+    const Value m = e.obj->get("model");
+    if (!m.isString()) return models;
     const assets::XModelParts* body = skeleton(m.asString());
-    if (!body) return bones;
+    if (!body) return models;
     const assets::XPose pose = e.anim ? e.anim->pose(*body) : assets::bindPose(*body);
+    // Bone lookup by name; the first model that has a name keeps it.
     std::unordered_map<std::string, std::pair<std::array<float, 3>, assets::Quat>> local;
-    for (size_t i = 0; i < body->bones.size(); ++i) local.emplace(lowerStr(body->bones[i].name), std::make_pair(pose.position[i], pose.rotation[i]));
+    std::unordered_map<std::string, int> bodyIndex;
+    for (size_t i = 0; i < body->bones.size(); ++i) {
+        local.emplace(lowerStr(body->bones[i].name), std::make_pair(pose.position[i], pose.rotation[i]));
+        bodyIndex.emplace(lowerStr(body->bones[i].name), int(i));
+    }
+    auto addModel = [&](const std::string& name, const assets::XModelParts* parts, int attachBone, const assets::XPose& p) {
+        HitBoxModel hm;
+        hm.parts = parts;
+        auto bit = boneBoxes_.find(name);
+        hm.boxes = bit == boneBoxes_.end() ? nullptr : &bit->second;
+        hm.attachBone = attachBone;
+        hm.position = p.position;
+        hm.rotation = p.rotation;
+        models.push_back(std::move(hm));
+    };
+    addModel(m.asString(), body, -1, pose);
     for (const auto& at : e.attachments) {
         const assets::XModelParts* ap = skeleton(at.model);
         if (!ap) continue;
@@ -84,8 +96,26 @@ std::unordered_map<std::string, World::BoneXform> World::entityBones(Entity& e) 
             }
             local.emplace(lowerStr(ap->bones[i].name), std::make_pair(p.position[i], p.rotation[i]));
         }
+        int attachBone = -1;
+        if (!at.tag.empty())
+            if (auto bi = bodyIndex.find(lowerStr(at.tag)); bi != bodyIndex.end()) attachBone = bi->second;
+        addModel(at.model, ap, attachBone, p);
     }
-    for (const auto& [name, x] : local) bones.emplace(name, toWorld(x.first, x.second));
+    return models;
+}
+
+// World-space bones of an entity's body and attachments (shared skeleton by bone name; tags place roots).
+std::unordered_map<std::string, World::BoneXform> World::entityBones(Entity& e) {
+    std::unordered_map<std::string, BoneXform> bones;
+    const Value o = e.obj->get("origin"), a = e.obj->get("angles");
+    if (!o.isVector()) return bones;
+    const Vec3 origin = o.asVector();
+    const float yaw = a.isVector() ? a.asVector()[1] : 0.0f;
+    const assets::Quat er = yawQuat(yaw);
+    for (const HitBoxModel& m : entityModels(e))
+        for (size_t i = 0; i < m.parts->bones.size(); ++i)
+            bones.emplace(lowerStr(m.parts->bones[i].name),
+                          BoneXform{add(origin, assets::rotate(er, m.position[i])), assets::multiply(er, m.rotation[i])});
     return bones;
 }
 
@@ -109,7 +139,8 @@ bool World::isAlive(const Entity& e) const {
 }
 
 // Applies damage; notifies "damage" (amount, attacker, direction, point, type) and handles death.
-void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod) {
+void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
+                   const std::string& location) {
     if (!isAlive(target)) return;
     if (target.obj->get("$godmode").truthy()) return;
     const int health = target.obj->get("health").asInt() - amount;
@@ -117,7 +148,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     target.obj->set("damagetaken", Value(int32_t(amount)));
     target.obj->set("damagedir", Value(dir));
     target.obj->set("damageyaw", Value(float(std::atan2(-dir[1], -dir[0]) * 180.0 / M_PI)));
-    target.obj->set("damagelocation", Value("torso_upper")); // hit locations are not modelled yet
+    target.obj->set("damagelocation", Value(location));
     if (attacker && attacker->obj->get("weapon").isString()) target.obj->set("damageweapon", attacker->obj->get("weapon"));
     vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
     if (health > 0) {
@@ -138,51 +169,96 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     }
 }
 
-// Very simple hit test against sentients: a vertical capsule of radius 15 and height 70 around each origin.
-Entity* World::traceSentients(const Vec3& start, const Vec3& end, const Entity* ignore, float& fraction) {
-    Entity* best = nullptr;
-    const Vec3 d = sub(end, start);
-    const float L = len(d);
-    if (L <= 0) return nullptr;
-    const Vec3 dirN = scale(d, 1.0f / L);
-    for (const auto& ep : entities_) {
-        Entity& e = *ep;
-        if (&e == ignore || !isAlive(e)) continue;
-        const Vec3 o = e.obj->get("origin").asVector();
-        // Closest approach of the ray to the vertical axis, in 2D.
-        const float ox = o[0] - start[0], oy = o[1] - start[1];
-        const float dxy = dirN[0] * dirN[0] + dirN[1] * dirN[1];
-        float t = dxy > 1e-6f ? (ox * dirN[0] + oy * dirN[1]) / dxy : 0.0f;
-        t = std::clamp(t, 0.0f, L);
-        const Vec3 p = add(start, scale(dirN, t));
-        const float rx = p[0] - o[0], ry = p[1] - o[1];
-        if (rx * rx + ry * ry > 15.0f * 15.0f || p[2] < o[2] || p[2] > o[2] + 70.0f) continue;
-        if (t / L < fraction) {
-            fraction = t / L;
-            best = &e;
+// G_LocationalTrace: G_Trace over the world and the entity clips, except that with a priority map the entities
+// with hit boxes (actors, ent+0xa2 & 2) are traced against their bones (0x44b840 → FUN_00473d20) after a pre-test
+// against origin + (−64, −64, −32)…(64, 64, 72). Start and end go into the entity's space (yaw, as entityBones).
+TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t mask, const Entity* pass, const uint8_t* priority,
+                                   int& location) {
+    location = 0;
+    const int passNum = pass ? pass->number : -1;
+    TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, mask, passNum, priority != nullptr);
+    if (!priority || tr.fraction == 0) return tr;
+    const int passOwner = collision_->ownerOf(passNum);
+    for (const EntityClip& c : collision_->entityClips()) {
+        if (!c.hitBoxes || CollisionWorld::skipClip(c, mask, passNum, passOwner)) continue;
+        Entity* e = entityByNumber(c.id);
+        if (!e) continue;
+        // Segment against the pre-test box up to the current fraction (FUN_00419450).
+        float enter = 0, leave = tr.fraction;
+        bool miss = false;
+        for (size_t i = 0; i < 3 && !miss; ++i) {
+            const float lo = c.origin[i] + (i == 2 ? -32.0f : -64.0f), hi = c.origin[i] + (i == 2 ? 72.0f : 64.0f);
+            const float d = end[i] - start[i];
+            if (d == 0) {
+                miss = start[i] < lo || start[i] > hi;
+                continue;
+            }
+            float t0 = (lo - start[i]) / d, t1 = (hi - start[i]) / d;
+            if (t0 > t1) std::swap(t0, t1);
+            enter = std::max(enter, t0);
+            leave = std::min(leave, t1);
+            miss = enter > leave;
         }
+        if (miss) continue;
+        const Value a = e->obj->get("angles");
+        const assets::Quat er = yawQuat(a.isVector() ? a.asVector()[1] : 0.0f);
+        const assets::Quat inv = {-er.x, -er.y, -er.z, er.w};
+        const Vec3 ls = assets::rotate(inv, sub(start, c.origin)), le = assets::rotate(inv, sub(end, c.origin));
+        const HitBoxResult h = traceHitBoxes(entityModels(*e), ls, le, priority, tr.fraction);
+        if (!h.hit || !(h.fraction < tr.fraction)) continue;
+        tr.fraction = h.fraction;
+        tr.normal = assets::rotate(er, h.normal);
+        tr.surfaceFlags = 0;
+        tr.material = -1;
+        tr.contents = c.contents;
+        tr.entity = c.id;
+        tr.startSolid = tr.allSolid = false;
+        location = h.location;
     }
-    return best;
+    for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
+    return tr;
 }
 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
 Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount) {
-    const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, Contents::Solid);
-    float frac = tr.fraction;
-    Entity* hit = traceSentients(start, end, &shooter, frac);
-    ++stats.shots;
-    {
-        // Weapon sound: fireSoundPlayer without position for the player, fireSound at the shooter otherwise.
-        const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
-        if (const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr) {
-            auto it = def->find(shooter.isPlayer ? "firesoundplayer" : "firesound");
-            if (it != def->end() && !it->second.empty()) startSound(it->second, shooter.isPlayer ? nullptr : &start);
+    // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
+    const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
+    const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
+    bool rifle = false;
+    if (def) {
+        auto it = def->find("riflebullet");
+        rifle = it != def->end() && std::atoi(it->second.c_str()) != 0;
+    }
+    // An AI's bullet that hits an actor of its own team goes on from the hit point ignoring that actor, up to 12
+    // times ("Ignoring AI shooting teammate"). TODO(spec): penetration (surface flag 0x10), vehicles, the
+    // half-damage refire of rifleBullet hits on sentients.
+    int location = 0;
+    TraceResult tr;
+    Entity* hit = nullptr;
+    Vec3 from = start;
+    const Entity* pass = &shooter;
+    for (int depth = 0; depth <= 12; ++depth) {
+        tr = locationalTrace(from, end, Contents::BulletMask, pass, rifle ? kHitPriorityRifle : kHitPriorityDefault, location);
+        hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+        if (hit && shooter.isActor && hit->isActor && hit->obj->get("team").toString() == shooter.obj->get("team").toString()) {
+            from = tr.endPos;
+            pass = hit;
+            hit = nullptr;
+            continue;
         }
+        break;
+    }
+    if (hit && !isAlive(*hit)) hit = nullptr;
+    ++stats.shots;
+    if (def) {
+        // Weapon sound: fireSoundPlayer without position for the player, fireSound at the shooter otherwise.
+        auto it = def->find(shooter.isPlayer ? "firesoundplayer" : "firesound");
+        if (it != def->end() && !it->second.empty()) startSound(it->second, shooter.isPlayer ? nullptr : &start);
     }
     if (hit) {
         ++stats.hits;
         const Vec3 dir = scale(sub(end, start), 1.0f / std::max(1.0f, len(sub(end, start))));
-        damage(*hit, &shooter, damageAmount, dir, add(start, scale(sub(end, start), frac)), "MOD_RIFLE_BULLET");
+        damage(*hit, &shooter, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
     }
     return hit;
 }
@@ -355,51 +431,37 @@ void World::registerCombatBuiltins() {
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
     // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").
-    auto trace = [this](CallContext& c, bool hitCharacters, Entity* ignore, float& fraction, Vec3& pos, Vec3& normal,
-                        Entity*& hitEnt) {
+    // bullettrace (FUN_004f2230): G_Trace, mask 0x280e831 (0x802831 without characters), locational with no priority
+    // map, so characters are boxes.
+    vm_.registerBuiltin("bullettrace", [this](CallContext& c) {
         const Vec3 a = c.arg(0).asVector(), b = c.arg(1).asVector();
-        const TraceResult tr = collision_->trace(a, b, {0, 0, 0}, {0, 0, 0}, Contents::Solid);
-        fraction = tr.fraction;
-        pos = tr.endPos;
-        normal = tr.normal;
-        hitEnt = nullptr;
-        if (hitCharacters) {
-            float f = fraction;
-            if (Entity* e = traceSentients(a, b, ignore, f)) {
-                fraction = f;
-                pos = add(a, scale(sub(b, a), f));
-                normal = scale(sub(b, a), -1.0f / std::max(1.0f, len(sub(b, a))));
-                hitEnt = e;
-            }
-        }
-    };
-    vm_.registerBuiltin("bullettrace", [this, trace](CallContext& c) {
-        float f;
-        Vec3 pos, normal;
-        Entity* hit;
-        trace(c, c.arg(2).truthy(), entityOf(c.arg(3)), f, pos, normal, hit);
+        int location = 0;
+        const TraceResult tr = locationalTrace(a, b, c.arg(2).truthy() ? Contents::BulletMask : Contents::BulletMaskNoCharacters,
+                                               entityOf(c.arg(3)), nullptr, location);
         auto arr = std::make_shared<Array>();
         auto put = [&](const char* k, Value v) { arr->set(ArrayKey{true, 0, k}, std::move(v)); };
-        put("fraction", Value(f));
-        put("position", Value(pos));
-        put("normal", Value(normal));
-        put("surfacetype", Value(f < 1.0f ? "default" : "none"));
-        if (hit) put("entity", Value(hit->obj));
+        put("fraction", Value(tr.fraction));
+        put("position", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
+        put("normal", Value(Vec3{tr.normal[0], tr.normal[1], tr.normal[2]}));
+        put("surfacetype", Value(tr.fraction < 1.0f ? "default" : "none"));
+        if (tr.entity >= 0)
+            if (Entity* e = entityByNumber(tr.entity)) put("entity", Value(e->obj));
         return Value(arr);
     });
-    vm_.registerBuiltin("bullettracepassed", [trace, this](CallContext& c) {
-        float f;
-        Vec3 pos, normal;
-        Entity* hit;
-        trace(c, c.arg(2).truthy(), entityOf(c.arg(3)), f, pos, normal, hit);
-        return Value(f >= 1.0f);
+    // bullettracepassed (FUN_004f24c0 → 0x4db890): a sight trace with the bullet masks.
+    vm_.registerBuiltin("bullettracepassed", [this](CallContext& c) {
+        const Entity* ignore = entityOf(c.arg(3));
+        return Value(!collision_->sightBlocked(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0},
+                                               c.arg(2).truthy() ? Contents::BulletMask : Contents::BulletMaskNoCharacters,
+                                               ignore ? ignore->number : -1));
     });
-    vm_.registerBuiltin("sighttracepassed", [trace, this](CallContext& c) {
-        float f;
-        Vec3 pos, normal;
-        Entity* hit;
-        trace(c, c.arg(2).truthy(), entityOf(c.arg(3)), f, pos, normal, hit);
-        return Value(f >= 1.0f);
+    // sighttracepassed (FUN_004f2580 → 0x44c3c0). TODO(spec): a clear trace is still blocked when FUN_0048b090 is
+    // below 0x592020 (not read).
+    vm_.registerBuiltin("sighttracepassed", [this](CallContext& c) {
+        const Entity* ignore = entityOf(c.arg(3));
+        return Value(!collision_->sightBlocked(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0},
+                                               c.arg(2).truthy() ? Contents::SightMask : Contents::SightMaskNoCharacters,
+                                               ignore ? ignore->number : -1));
     });
     vm_.registerBuiltin("physicstrace", [this](CallContext& c) {
         const TraceResult tr = collision_->trace(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0}, Contents::Solid);

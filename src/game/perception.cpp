@@ -95,9 +95,9 @@ bool World::sightCheck(Entity& actor, Entity& target) {
     bool vis = false, traced = false;
     if (sightTest(actor, eye, fwd, targetEye, fov, maxd)) {
         traced = true;
-        const TraceResult tr = collision_->trace(eye, targetEye, {0, 0, 0}, {0, 0, 0}, kSightMask);
+        // 0x54c760 → 0x44c3c0: a sight trace that ignores the actor and the target.
         // TODO: after a clear trace the original also requires a visibility value ≥ 0.2 (0x48b090, not read).
-        vis = tr.fraction >= 1.0f && !tr.startSolid;
+        vis = !collision_->sightBlocked(eye, targetEye, {0, 0, 0}, {0, 0, 0}, kSightMask, actor.number, target.number);
     }
     SentientInfo& info = actor.sentientInfo[target.obj.get()];
     info.visible = vis;
