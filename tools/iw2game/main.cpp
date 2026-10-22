@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -60,10 +61,13 @@ int main(int argc, char** argv) {
             // crosses world geometry (tunnel), that ends up inside solid, or that drops below the map's lowest vertex.
             const int agents = argc > 4 ? std::stoi(argv[4]) : 50;
             const int seconds = argc > 5 ? std::stoi(argv[5]) : 60;
-            iw2::game::CollisionWorld cw(world.bsp());
+            iw2::game::CollisionWorld ownCw(world.bsp());
             float floorZ = 1e9f;
             for (const auto& v : world.bsp().vertices()) floorZ = std::min(floorZ, v.position[2]);
             world.start();
+            // FALL_WORLD=1: trace the running level's collision (entity clips) and run its frames, like iw2view.
+            const bool live = std::getenv("FALL_WORLD") != nullptr;
+            const iw2::game::CollisionWorld& cw = live ? world.collision() : ownCw;
             const auto o = world.player()->obj->get("origin").asVector();
             std::vector<iw2::game::Vec> starts{{o[0], o[1], o[2]}};
             for (const auto& e : world.bsp().entities()) {
@@ -73,7 +77,8 @@ int main(int argc, char** argv) {
                 if (cls && org && cls->rfind("node_", 0) == 0 && std::sscanf(org->c_str(), "%f %f %f", &v[0], &v[1], &v[2]) == 3)
                     starts.push_back(v);
             }
-            const iw2::game::MoveParams mp;
+            iw2::game::MoveParams mp;
+            if (live) mp.passEntity = world.player()->number;
             const uint32_t mask = mp.traceMask;
             int fell = 0, stuck = 0, tunnels = 0;
             auto print = [](const char* what, int a, int f, const iw2::game::Vec& p) {
@@ -88,7 +93,7 @@ int main(int argc, char** argv) {
                 const auto box = [&](const iw2::game::PlayerState& p) {
                     return iw2::game::Vec{mp.maxs[0], mp.maxs[1], p.stance == iw2::game::Stance::Prone ? 30.0f : p.stance == iw2::game::Stance::Crouch ? 50.0f : 70.0f};
                 };
-                if (cw.trace(ps.origin, ps.origin, mp.mins, box(ps), mask).startSolid) continue; // node inside solid
+                if (cw.trace(ps.origin, ps.origin, mp.mins, box(ps), mask, mp.passEntity).startSolid) continue; // node inside solid
                 iw2::game::PlayerInput in;
                 bool solidSeen = false;
                 for (int f = 0; f < seconds * 60; ++f) {
@@ -102,9 +107,13 @@ int main(int argc, char** argv) {
                     in.jump = u(rng) < 0.02f;
                     const iw2::game::PlayerState before = ps;
                     iw2::game::playerMove(cw, ps, in, (1 + int(u(rng) * 16)) * 0.001f, mp);
+                    if (live && f % 6 == 0) {
+                        world.setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, in.yaw, 0});
+                        world.frame();
+                    }
                     const iw2::game::Vec c0{before.origin[0], before.origin[1], before.origin[2] + 15};
                     const iw2::game::Vec c1{ps.origin[0], ps.origin[1], ps.origin[2] + 15};
-                    const auto ray = cw.trace(c0, c1, {0, 0, 0}, {0, 0, 0}, mask);
+                    const auto ray = cw.trace(c0, c1, {0, 0, 0}, {0, 0, 0}, mask, mp.passEntity);
                     if (ray.fraction < 1 && !ray.startSolid) {
                         print("TUNNEL", a, f, before.origin);
                         ++tunnels;
@@ -115,7 +124,7 @@ int main(int argc, char** argv) {
                         ++fell;
                         break;
                     }
-                    if (!solidSeen && cw.trace(ps.origin, ps.origin, mp.mins, box(ps), mask).startSolid) {
+                    if (!solidSeen && cw.trace(ps.origin, ps.origin, mp.mins, box(ps), mask, mp.passEntity).startSolid) {
                         print("SOLID", a, f, before.origin);
                         solidSeen = true;
                         ++stuck;
