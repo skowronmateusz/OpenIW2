@@ -284,6 +284,11 @@ void World::shootTurret(Entity& t) {
 void World::thinkTurret(Entity& t) {
     TurretState& ts = *t.turret;
     Entity* owner = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
+    if (owner && owner->isActor && !isAlive(*owner)) { // a dead gunner leaves the turret (state finish 0x549b20)
+        owner->usingTurret.reset();
+        releaseTurret(t);
+        owner = nullptr;
+    }
     if (owner && owner->isPlayer) return; // the player aims
     if (ts.fireCountdownMs > 0) ts.fireCountdownMs -= 50; // 0x51b320
     const bool ai = ts.flags & 1u, automatic = ts.flags & 2u;
