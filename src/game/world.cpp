@@ -741,7 +741,6 @@ void World::registerBuiltins() {
         if (c.self.isObject()) c.self.asObject()->set("$viewmodel", c.arg(0));
         return Value();
     });
-    vm_.registerBuiltin("getwheelsurface", [](CallContext&) { return Value("dirt"); }); // inferred default
     vm_.registerBuiltin("clearenemy", [](CallContext& c) {
         if (c.self.isObject()) c.self.asObject()->set("enemy", Value());
         return Value();
