@@ -176,10 +176,12 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiCustom: // 0x54b230
         return true;
+    case AiBadplace: // 0x524030: the flag keeps whether a flee target was found
+        e.ai.badPlace = badPlaceFlee(e);
+        return true;
     default:
-        // TODO(spec): grenade (0x5205b0), badplace (0x524030), animscripted (0x54b060) and negotiation (0x54b720)
-        // need grenade danger, bad places, animscripted and traversals, which are not implemented; their start
-        // fails, so the actor stays exposed.
+        // TODO(spec): animscripted (0x54b060) and negotiation (0x54b720) need animscripted and traversals, which
+        // are not implemented; their start fails, so the actor stays exposed.
         return false;
     }
 }
@@ -219,6 +221,7 @@ int World::aiThink(Entity& e, int state) {
     case AiDeath: return deathThink(e);       // 0x548ab0
     case AiPain: return painThink(e);         // 0x54d340
     case AiCustom: return customThink(e);     // 0x54b240
+    case AiBadplace: return badPlaceThink(e); // 0x524060
     default:
         aiSetState(e, AiExposed);
         return 1;
@@ -403,7 +406,10 @@ int World::exposedThink(Entity& e) {
         aiSetState(e, AiGrenade);
         return 1;
     }
-    // TODO(spec): bad places (+0x2128 → state 4) are not implemented.
+    if (ai.badPlace) {
+        aiSetState(e, AiBadplace);
+        return 1;
+    }
     if (e.usingTurret) {
         Entity* t = entityOf(Value(e.usingTurret));
         if (t && t->turret && !t->turret->inUse) {
@@ -527,7 +533,10 @@ bool World::actorHasPath(const Entity& e) const { return e.pathIndex < e.path.si
 
 void World::clearActorPath(Entity& e) {
     e.path.clear();
+    e.pathNodes.clear();
     e.pathIndex = 0;
+    e.pathTruncated = false;
+    e.pathPlannedCount = 0;
     e.ai.stopSoonMs = 0;
 }
 
@@ -552,6 +561,7 @@ void World::followActorPath(Entity& e, bool run) {
 
 void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
+    registerBadPlaceBuiltins();
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {

@@ -292,6 +292,7 @@ void World::frame() {
     vm_.runFrame(timeMs_);
     thinkVehicles();
     thinkTurrets();
+    runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
     thinkActors();
 }
 
@@ -388,7 +389,9 @@ void World::moveActor(Entity& e, float dt) {
         if (e.ai.stopSoonMs == 0 && ex * ex + ey * ey <= speed * speed * 0.0625f) e.ai.stopSoonMs = timeMs_ + 500;
         if (e.ai.stopSoonMs != 0 && e.ai.stopSoonMs - timeMs_ <= 0) {
             e.path.clear();
+            e.pathNodes.clear();
             e.pathIndex = 0;
+            e.pathTruncated = false;
         }
     }
     // Stand on the ground.

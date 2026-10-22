@@ -62,6 +62,7 @@ struct ActorAi {
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
     std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
     bool corpse = false;                      // turned into a corpse (0x4fdba0)
+    bool badPlace = false;                    // +0x2128: noticed a bad place (→ badplace state)
 };
 
 struct Entity {
@@ -81,6 +82,13 @@ struct Entity {
     std::vector<std::array<float, 3>> path;
     size_t pathIndex = 0;
     std::array<float, 3> pathGoal{};
+    std::vector<int> pathNodes;      // node of each path point, −1 for the goal position (point +0x18)
+    bool pathTruncated = false;      // +0x6e8 & 4: more than 32 points, the rest is planned later
+    size_t pathPlannedCount = 0;     // +0x6b2: points when planned
+    // Sentient node cache (0x515040: +0x38 node, +0x3c cached, +0x3d unreachable).
+    int cachedNode = -1;
+    bool nodeCached = false, nodeUnreachable = false;
+    int64_t nodeCacheMs = -1;
     std::unique_ptr<VehicleState> vehicle; // script_vehicle path state (src/game/vehicles.cpp)
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
@@ -92,6 +100,23 @@ struct Entity {
     int attackers = 0;
     int64_t eyeFrameMs = -1;               // per-frame cache of the eye (0x500910 caches by frame time)
     Vec3 eyePos{}, eyeForward{};
+};
+
+// A half plane the planners stay inside (normal · p ≤ dist), from the actor's danger planes (+0x2050).
+struct PathPlane {
+    std::array<float, 2> normal{};
+    float dist = 0;
+};
+
+// A bad place slot (0x1c90e00, 32 × 0x28 bytes).
+struct BadPlace {
+    int64_t expireMs = 0;   // +0
+    int64_t eventMs = 0;    // +4: creation, then the last awareness event
+    std::string name;       // +8
+    int type = 0;           // +0xa: 0 free, 1 cylinder / arc
+    uint32_t teamMask = 0;  // +0xb: bit 1 axis, 2 allies, 3 neutral
+    Vec3 origin{};          // +0xc
+    float radius = 0, halfHeight = 0, left = 0, right = 360; // +0x18 … +0x24
 };
 
 struct PathNode {
@@ -313,6 +338,28 @@ private:
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
     bool pathToPoint(Entity& e, const Vec3& target);
+    // Path planner (src/game/actorpath.cpp)
+    std::vector<std::pair<int, float>> nodesInRange(const Vec3& center, float radius, float height, size_t max,
+                                                    uint32_t typeMask) const;
+    int queryNode(const Vec3& pos, float radius, bool lowered, uint32_t typeMask, const std::vector<PathPlane>& planes,
+                  int* first);
+    bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
+                     std::vector<int>& chain);
+    void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
+    bool pathToNodeDirect(Entity& e, int node);
+    bool linkBlocked(size_t node, size_t link, int team) const;
+    // Bad places (src/game/badplace.cpp)
+    bool insideBadPlace(const BadPlace& b, const Vec3& p) const;
+    bool inBadPlace(const Vec3& p) const;
+    void markBadPlaceLinks(const BadPlace& b, int delta);
+    void removeBadPlace(size_t i);
+    void addBadPlace(const std::string& name, int durationMs, uint32_t teamMask, BadPlace data);
+    void recheckBadPlaceActors();
+    void runBadPlaces();
+    bool badPlaceFlee(Entity& e);
+    bool fleePathToNode(Entity& e, int node);
+    int badPlaceThink(Entity& e);
+    void registerBadPlaceBuiltins();
     bool pathToNode(Entity& e, int node);
     bool pathToGoal(Entity& e);
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
@@ -367,6 +414,11 @@ private:
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;
     PathGraph paths_;
+    struct NodeSearch { int id = 0; int next = -1, prev = -1; int parent = -1; float g = 0, h = 0; bool queued = false; };
+    std::vector<NodeSearch> search_;                          // per-node A* state (+0x5c … +0x70)
+    int searchId_ = 0;                                        // 0x1c61044
+    std::vector<std::vector<std::array<uint8_t, 4>>> linkBlock_; // per link and team: bad places blocking it (+8)
+    std::array<BadPlace, 32> badPlaces_{};
     std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
 
