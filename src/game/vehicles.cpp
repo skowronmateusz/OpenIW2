@@ -669,8 +669,60 @@ void World::unlinkPlayerFromVehicle(Entity& vehicle, Entity& player) {
     player.usingVehicle = -1;
 }
 
+// Delta of an animation at normalized time 0 (0x478740 → 0x475aa0 with weight 1): the yaw quaternion (z, w) and the
+// translation of its delta tracks; (0, 1) and zero for an animation without delta.
+static void animStartDelta(const assets::XAnim* a, float& qz, float& qw, Vec3& t) {
+    qz = 0.0f; qw = 1.0f; t = {0, 0, 0};
+    if (!a || !a->delta) return;
+    if (!a->deltaRot.keys.empty()) {
+        const assets::Quat q = assets::sampleRotRaw(a->deltaRot, 0.0f, a->keyCount());
+        if (q.z != 0.0f || q.w != 0.0f) { qz = q.z; qw = q.w; }
+    }
+    if (!a->deltaTrans.keys.empty()) {
+        const auto p = assets::sampleTrans(a->deltaTrans, 0.0f, a->keyCount());
+        t = {p[0], p[1], p[2]};
+    }
+}
+
 // Vehicle methods (registration table, docs/spec/builtins.md 0x513070…0x513ee0).
 void World::registerVehicleBuiltins() {
+    // getstartorigin(origin, angles, anim) (0x53be50): origin + the start delta in the frame of angles
+    // (forward, left, up).
+    vm_.registerBuiltin("getstartorigin", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(2).v)) throw std::runtime_error("type is not an animation");
+        const Vec3 o = c.arg(0).asVector(), ang = c.arg(1).asVector();
+        float qz, qw;
+        Vec3 t;
+        animStartDelta(animLib_.anim(std::get<script::AnimRef>(c.arg(2).v).name), qz, qw, t);
+        Vec3 f, r, u;
+        anglesToAxis(ang, f, r, u);
+        Vec3 out;
+        for (int i = 0; i < 3; ++i) out[size_t(i)] = u[size_t(i)] * t[2] - r[size_t(i)] * t[1] + f[size_t(i)] * t[0] + o[size_t(i)];
+        return Value(out);
+    });
+    // getstartangles(origin, angles, anim) (0x53bf80): the start delta's yaw (0x423900: atan2(2zw, 1 − 2z²) for a
+    // normalized quaternion) as an axis (0x424b20) applied in the frame of angles (0x422450), back to angles
+    // (0x424b70).
+    vm_.registerBuiltin("getstartangles", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(2).v)) throw std::runtime_error("type is not an animation");
+        const Vec3 ang = c.arg(1).asVector();
+        float qz, qw;
+        Vec3 t;
+        animStartDelta(animLib_.anim(std::get<script::AnimRef>(c.arg(2).v).name), qz, qw, t);
+        const float s = 2.0f / (qz * qz + qw * qw);
+        const float yaw = std::atan2(qw * qz * s, 1.0f - s * qz * qz) * 57.2957763671875f;
+        Vec3 yf, yr, yu;
+        anglesToAxis({0, yaw, 0}, yf, yr, yu);
+        Vec3 f, r, u;
+        anglesToAxis(ang, f, r, u);
+        const Vec3 left{-r[0], -r[1], -r[2]}, yl{-yr[0], -yr[1], -yr[2]};
+        Vec3 nf, nl;
+        for (int i = 0; i < 3; ++i) {
+            nf[size_t(i)] = yf[0] * f[size_t(i)] + yf[1] * left[size_t(i)] + yf[2] * u[size_t(i)];
+            nl[size_t(i)] = yl[0] * f[size_t(i)] + yl[1] * left[size_t(i)] + yl[2] * u[size_t(i)];
+        }
+        return Value(axisToAngles(nf, nl));
+    });
     // useby(user) (0x4ef020): notifies "trigger" with the user, then runs the entity type's use function
     // (table 0x5a5740). For vehicles (0x512f00) a player gets in, or out when already using a vehicle.
     // TODO(spec): the use functions of turrets (0x529280) and entity type 8 (0x529450).

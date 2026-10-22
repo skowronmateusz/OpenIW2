@@ -105,8 +105,8 @@ Entity& World::spawnEntity(const std::string& classname) {
     e->obj->set("classname", Value(classname));
     e->obj->set("origin", Value(Vec3{0, 0, 0}));
     e->obj->set("angles", Value(Vec3{0, 0, 0}));
-    e->obj->set("spawnflags", Value(int32_t(0))); // native entity fields with default 0
-    e->obj->set("count", Value(int32_t(0)));
+    // Native integer entity fields (table at 0x56f4a8: spawnflags, count, health, dmg, maxhealth) of a zeroed entity.
+    for (const char* f : {"spawnflags", "count", "health", "dmg", "maxhealth"}) e->obj->set(f, Value(int32_t(0)));
     byObject_[e->obj.get()] = e.get();
     entities_.push_back(std::move(e));
     return *entities_.back();
@@ -147,6 +147,12 @@ void World::spawnMapEntities() {
             PathNode n;
             n.obj = vm_.newObject(cls);
             n.type = cls;
+            // Native node fields (table 0x5a93b8) live in zero-filled hunk memory (0x5166fc → 0x426f30), so the
+            // numeric ones read 0 when the map gives no key.
+            n.obj->set("radius", Value(0.0f));
+            n.obj->set("spawnflags", Value(int32_t(0)));
+            n.obj->set("origin", Value(Vec3{0, 0, 0}));
+            n.obj->set("angles", Value(Vec3{0, 0, 0}));
             fill(n.obj);
             n.obj->set("type", Value(pathNodeTypeName(cls))); // engine field with a getter (0x515b60)
             nodes_.push_back(std::move(n));

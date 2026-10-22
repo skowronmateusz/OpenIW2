@@ -454,6 +454,14 @@ void World::registerCombatBuiltins() {
             if (Entity* e = entityByNumber(tr.entity)) put("entity", Value(e->obj));
         return Value(arr);
     });
+    // getfxvisibility(start, end) (0x4f53b0 → 0x48b090): 1 while no sight-blocking effect is alive (the list at
+    // 0xc47a20 is empty) or the points are closer than a dvar (0x617eb0). TODO(spec): the effects runtime does not
+    // register blocksSight (0x1000) elements yet (0x480971), so the value is always 1 here.
+    vm_.registerBuiltin("getfxvisibility", [](CallContext& c) {
+        c.arg(0).asVector();
+        c.arg(1).asVector();
+        return Value(1.0f);
+    });
     // bullettracepassed (FUN_004f24c0 → 0x4db890): a sight trace with the bullet masks.
     vm_.registerBuiltin("bullettracepassed", [this](CallContext& c) {
         const Entity* ignore = entityOf(c.arg(3));
