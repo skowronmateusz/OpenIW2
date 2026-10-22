@@ -103,12 +103,6 @@ bool World::inActorGoal(Entity& e, const Vec3& p) {
     return in;
 }
 
-// 0x515040: the sentient's node, the nearest one within 192 units, cached per frame in the original.
-// TODO(spec): 0x517f90 (the node query behind it) is not read; the nearest node by distance is used.
-int World::sentientNode(Entity& e) {
-    return nearestNodeWithin(vecField(e.obj, "origin"), 192.0f);
-}
-
 // Node usable by this sentient (0x518f20): its own node; not while the node is blocked for its team; free when the
 // owner's hold has expired. TODO(spec): taking a claimed node from another actor (0x518e80 / 0x518d80) and the
 // distance rule of priority nodes (0x518dc0: 0x420f00 against 225) are not implemented.
@@ -220,7 +214,7 @@ bool World::coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& scr
     Entity* enemy = entityOf(e.obj->get("enemy"));
     if (!enemy) {
         if (checkEnemy) {
-            Entity* g = entityOf(e.obj->get("grenade"));
+            Entity* g = e.ai.grenade;
             if (g && !covers(vecField(g->obj, "origin"))) return true;
         }
     } else if (!enemy->obj->get("ignoreme").truthy()) { // TODO(spec): also not with notarget (+0x128 & 4)
@@ -359,22 +353,6 @@ void World::updateClaimedNode(Entity& e) {
     if (nodeUsable(e, node)) claimNode(e, node);
 }
 
-// Plan a path to a point over the node graph. TODO(spec): the original planner (0x5424d0 / 0x542810 / 0x545840,
-// path points of 0x1c bytes at actor +0x330) is not read; this is A* between the nodes nearest to both ends.
-bool World::pathToPoint(Entity& e, const Vec3& target) {
-    clearActorPath(e);
-    const Vec3 o = vecField(e.obj, "origin");
-    const int a = nearestNode(o), b = nearestNode(target);
-    if (a >= 0 && b >= 0) {
-        const auto nodes = paths_.findPath(a, b);
-        if (nodes.empty()) return false;
-        for (int n : nodes) e.path.push_back(paths_.position(size_t(n)));
-    }
-    e.path.push_back(target);
-    e.pathGoal = target;
-    return true;
-}
-
 // 0x503650 / 0x502d00: a path to the node. A path that already ends at the node is kept; standing at it needs none.
 // When there was no path, a node that is not a corner (types 6…9) and that the actor is near inside the goal needs
 // no path either. A failure sets the plan time (0x502c70).
@@ -382,7 +360,9 @@ bool World::pathToNode(Entity& e, int node) {
     const Vec3 no = vecField(nodes_[size_t(node)].obj, "origin"), o = vecField(e.obj, "origin");
     const bool hadPath = actorHasPath(e);
     bool ok;
-    if (hadPath && samePoint(no, e.path.back())) {
+    // A truncated path is kept only while more than a quarter of its planned points are left (+0x6b2 < count · 4).
+    const bool keep = !e.pathTruncated || e.pathPlannedCount < (e.path.size() - e.pathIndex) * 4;
+    if (hadPath && keep && samePoint(no, e.path.back())) {
         ok = true;
     } else if (!hadPath && samePoint(no, o)) {
         ok = true;
@@ -649,6 +629,7 @@ void World::registerCoverBuiltins() {
                 size_t keep = 1;
                 while (keep < e.path.size() && inActorGoal(e, e.path[keep])) ++keep;
                 e.path.resize(keep);
+                e.pathNodes.resize(keep);
                 e.pathGoal = e.path.back();
             }
         }
@@ -666,10 +647,12 @@ void World::registerCoverBuiltins() {
         const Vec3 end = e.path[e.path.size() - 2];
         if (!collision_->sightBlocked({end[0], end[1], end[2] + 64.0f}, eye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) {
             e.path.pop_back();
+            e.pathNodes.pop_back();
             e.pathGoal = e.path.back();
             return Value(0);
         }
         e.path.pop_back();
+        e.pathNodes.pop_back();
         e.pathGoal = e.path.back();
         return Value(1);
     });

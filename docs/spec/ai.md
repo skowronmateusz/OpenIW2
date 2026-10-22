@@ -135,8 +135,8 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
 - Turret 2: start 0x549960, finish 0x549b20 (release), think 0x54aba0: leaving → release, replace
   with exposed, return 1 (see docs/spec/turrets.md).
 
-Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`. TODO(spec): grenade (0x5205b0/0x520c30: flee,
-takecover, cower, combat, coverattack, acquire, throwback substates 300…0x132), badplace (0x524060), animscripted
+Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`; grenade state in `actorgrenade.cpp`
+(docs/spec/grenades.md), badplace state in `badplace.cpp` ("Bad places" below). TODO(spec): animscripted
 (0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), the planner internals and the follower 0x551960 (see "Cover
 nodes"), facing modes, AI events (0x535770), touch and damaged handlers, followed/blocking actors (+0x2148, +0x728).
 
@@ -214,9 +214,29 @@ the sentient node query 0x517f90, node take-over 0x518e80/0x518dc0, linked nodes
 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move check's continuation after a block,
 the trim state of the reacquire paths (+0x70c/+0x710), `ispathdirect`, actor +0x20b4 in the score, 0x548be0.
 
+## Path planner (observed)
+
+Node query 0x517f90: candidates of 0x516950 (2D radius, height, ≤ 64, type mask; mode 0: centre 120
+below, height 184), linked nodes first then nearest (0x516640); a linked node is taken when the point is on it
+(−16…16, −1…73) or a box (−15,−15,17)…(15,15,72) traced to it (mask 0x820011) is clear; plane-excluded and unlinked
+ones are traced last. Sentient node 0x515040: radius 192, cached (+0x38, flags +0x3c/+0x3d). A* 0x545840: sorted open list by g + h (h = 2D distance to the goal position), insert before the first not lower,
+re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0 adds planes. Path points 0x541da0: goal first in the original (+0x330, 0x1c bytes: pos, dir, length, node), at most 32 (+0x6e8 |= 4),
+the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
+(start → goal order). TODO(spec): negotiation pairs (types 16/17), lookahead state (+0x3b0, 0x541a70, 0x544ca0),
+danger planes (+0x2050), 0x502960's offset goal (0x542340/0x545670).
+
+## Bad places (observed 0x524060 0x5199f0)
+
+32 slots at 0x1c90e00 (0x28 bytes: expire, last event, name, type, team mask, origin, radius, half height, left,
+right). badplace_cylinder / badplace_arc / badplace_delete (0x4f5880 / 0x4f5990 / 0x4f5800); teams axis 2, allies 4,
+neutral 8, default 0xe. Adding marks links into the volume per team (0x5199f0) and drops paths using them (0x503d60).
+Every 250 ms (0x523a60) actors of its teams inside (0x425c90) set +0x2128 with probability badplaceawareness; exposed →
+state 4 (start 0x524030 flee target 0x523f10, think 0x524060). Implemented in `src/game/badplace.cpp`.
+
 ## Not yet specified
 
-The path follower 0x551960 and the remaining states listed above.
+The follower 0x551960 beyond its wait on +0x720 (sentient blocking 0x551100/0x551490/0x551740, detours 0x5451b0) and
+the remaining states listed above.
 
 ## Native actor fields (observed)
 
@@ -295,4 +315,4 @@ Loaded by `FUN_0052e3c0`: `int32 version = 8; int16 nodeCount` (must equal the n
 run-length coded: a byte `b < 0x80` means `b` zero bytes then one literal byte, and `b ≥ 0x80` means `~b` literal
 bytes. `toujane`: 2,571 nodes, 21,583 links; the lump is consumed exactly.
 
-OpenIW2 moves actors along an A* path over this graph at the root-motion speed of their current animations.
+OpenIW2 moves actors along the planner's path ("Path planner") at the root-motion speed of their animations.

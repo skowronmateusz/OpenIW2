@@ -176,10 +176,14 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiCustom: // 0x54b230
         return true;
+    case AiGrenade: // 0x5205b0
+        return grenadeStateStart(e);
+    case AiBadplace: // 0x524030: the flag keeps whether a flee target was found
+        e.ai.badPlace = badPlaceFlee(e);
+        return true;
     default:
-        // TODO(spec): grenade (0x5205b0), badplace (0x524030), animscripted (0x54b060) and negotiation (0x54b720)
-        // need grenade danger, bad places, animscripted and traversals, which are not implemented; their start
-        // fails, so the actor stays exposed.
+        // TODO(spec): animscripted (0x54b060) and negotiation (0x54b720) need animscripted and traversals, which
+        // are not implemented; their start fails, so the actor stays exposed.
         return false;
     }
 }
@@ -188,6 +192,9 @@ void World::aiFinish(Entity& e, int state) {
     switch (state) {
     case AiTurret:
         turretStateFinish(e); // 0x549b20
+        break;
+    case AiGrenade:
+        grenadeStateFinish(e); // 0x520600
         break;
     default:
         // exposed 0x548d20, death / custom 0x549890: nothing. TODO(spec): pain 0x54d300 broadcasts the pending
@@ -209,6 +216,7 @@ bool World::aiResume(Entity& e, int state) {
         e.ai.substate = kSubCombat;
         return true;
     }
+    if (state == AiGrenade) return e.ai.grenade && e.ai.throwPending; // 0x5206a0
     return aiStart(e, state); // 0x5498b0
 }
 
@@ -219,6 +227,8 @@ int World::aiThink(Entity& e, int state) {
     case AiDeath: return deathThink(e);       // 0x548ab0
     case AiPain: return painThink(e);         // 0x54d340
     case AiCustom: return customThink(e);     // 0x54b240
+    case AiBadplace: return badPlaceThink(e); // 0x524060
+    case AiGrenade: return grenadeStateThink(e); // 0x520c30
     default:
         aiSetState(e, AiExposed);
         return 1;
@@ -399,11 +409,14 @@ bool World::seesEnemyRecently(Entity& e, int64_t withinMs) {
 // else perception, the substate (0x548d50) and its behaviour.
 int World::exposedThink(Entity& e) {
     ActorAi& ai = e.ai;
-    if (e.obj->get("grenade").isObject()) {
+    if (e.ai.grenade) {
         aiSetState(e, AiGrenade);
         return 1;
     }
-    // TODO(spec): bad places (+0x2128 → state 4) are not implemented.
+    if (ai.badPlace) {
+        aiSetState(e, AiBadplace);
+        return 1;
+    }
     if (e.usingTurret) {
         Entity* t = entityOf(Value(e.usingTurret));
         if (t && t->turret && !t->turret->inUse) {
@@ -527,19 +540,30 @@ bool World::actorHasPath(const Entity& e) const { return e.pathIndex < e.path.si
 
 void World::clearActorPath(Entity& e) {
     e.path.clear();
+    e.pathNodes.clear();
     e.pathIndex = 0;
+    e.pathTruncated = false;
+    e.pathPlannedCount = 0;
     e.ai.stopSoonMs = 0;
 }
 
-// Path following (0x552350): entering movement sets anim mode 1 / movemode stop; the step itself (0x551960) is the
-// placeholder moveActor. Then "move" runs (run: movemode run, else walk) until the stop-soon time (+0x704) is
-// within 200 ms, when the stop script starts with movemode stop_soon (0x53afe0 / 0x53af20).
+// Path following (0x552350): entering movement sets anim mode 1 / movemode stop. The step (0x551960) waits while the
+// plan time (+0x720) is ahead — the actor stands: the current animscript with movemode stop, anim mode 1
+// (0x53ac90(0, 1)) — else moves (the placeholder moveActor). Then "move" runs (run: movemode run, else walk) until
+// the stop-soon time (+0x704) is within 200 ms, when the stop script starts with movemode stop_soon (0x53afe0 /
+// 0x53af20). TODO(spec): the rest of the step: following an actor (+0x2148: wait 50 ms), the end of the path from
+// the lookahead (0x550fd0), and the sentients blocking the way (0x551100 / 0x551490 / 0x551740: waiting 500 ms with
+// the blocker in +0x728 / +0x72c, or a detour 0x5451b0); 0x504630 (crowding) when standing.
 void World::followActorPath(Entity& e, bool run) {
     ActorAi& ai = e.ai;
     const bool moving = ai.animMode == 1 && ai.movemode != 0;
     if (!moving) {
         ai.animMode = 1;
         ai.movemode = 0;
+    }
+    if (timeMs_ < ai.planTimeMs) {
+        if (!e.animScript.empty()) setActorAnimScript(e, e.animScript, 0, 1);
+        return;
     }
     moveActor(e, 0.05f);
     const int64_t left = ai.stopSoonMs - timeMs_;
@@ -552,6 +576,8 @@ void World::followActorPath(Entity& e, bool run) {
 
 void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
+    registerBadPlaceBuiltins();
+    registerGrenadeBuiltins();
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {
