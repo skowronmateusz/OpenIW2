@@ -214,7 +214,7 @@ bool World::coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& scr
     Entity* enemy = entityOf(e.obj->get("enemy"));
     if (!enemy) {
         if (checkEnemy) {
-            Entity* g = entityOf(e.obj->get("grenade"));
+            Entity* g = e.ai.grenade;
             if (g && !covers(vecField(g->obj, "origin"))) return true;
         }
     } else if (!enemy->obj->get("ignoreme").truthy()) { // TODO(spec): also not with notarget (+0x128 & 4)

@@ -342,6 +342,7 @@ void World::frame() {
     vm_.runFrame(timeMs_);
     thinkVehicles();
     thinkTurrets();
+    runGrenades();
     runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
     thinkActors();
 }

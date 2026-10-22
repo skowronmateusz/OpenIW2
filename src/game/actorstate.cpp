@@ -176,6 +176,8 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiCustom: // 0x54b230
         return true;
+    case AiGrenade: // 0x5205b0
+        return grenadeStateStart(e);
     case AiBadplace: // 0x524030: the flag keeps whether a flee target was found
         e.ai.badPlace = badPlaceFlee(e);
         return true;
@@ -190,6 +192,9 @@ void World::aiFinish(Entity& e, int state) {
     switch (state) {
     case AiTurret:
         turretStateFinish(e); // 0x549b20
+        break;
+    case AiGrenade:
+        grenadeStateFinish(e); // 0x520600
         break;
     default:
         // exposed 0x548d20, death / custom 0x549890: nothing. TODO(spec): pain 0x54d300 broadcasts the pending
@@ -211,6 +216,7 @@ bool World::aiResume(Entity& e, int state) {
         e.ai.substate = kSubCombat;
         return true;
     }
+    if (state == AiGrenade) return e.ai.grenade && e.ai.throwPending; // 0x5206a0
     return aiStart(e, state); // 0x5498b0
 }
 
@@ -222,6 +228,7 @@ int World::aiThink(Entity& e, int state) {
     case AiPain: return painThink(e);         // 0x54d340
     case AiCustom: return customThink(e);     // 0x54b240
     case AiBadplace: return badPlaceThink(e); // 0x524060
+    case AiGrenade: return grenadeStateThink(e); // 0x520c30
     default:
         aiSetState(e, AiExposed);
         return 1;
@@ -402,7 +409,7 @@ bool World::seesEnemyRecently(Entity& e, int64_t withinMs) {
 // else perception, the substate (0x548d50) and its behaviour.
 int World::exposedThink(Entity& e) {
     ActorAi& ai = e.ai;
-    if (e.obj->get("grenade").isObject()) {
+    if (e.ai.grenade) {
         aiSetState(e, AiGrenade);
         return 1;
     }
@@ -562,6 +569,7 @@ void World::followActorPath(Entity& e, bool run) {
 void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
     registerBadPlaceBuiltins();
+    registerGrenadeBuiltins();
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {

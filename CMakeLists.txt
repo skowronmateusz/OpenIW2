@@ -73,7 +73,7 @@ add_library(iw2_game
   src/game/vehicles.cpp src/game/campaign.cpp src/game/fx.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
-  src/game/actorpath.cpp src/game/badplace.cpp)
+  src/game/actorpath.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
