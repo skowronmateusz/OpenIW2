@@ -309,7 +309,7 @@ void World::actorThink(Entity& e) {
         bool pathInGoal = true;
         if (actorHasPath(e)) {
             const Value saved = e.obj->get("origin");
-            const auto& end = e.path.back();
+            const Vec3 end = pathEnd(e);
             e.obj->set("origin", Value(Vec3{end[0], end[1], end[2]}));
             pathInGoal = actorInGoal(e, 0.0f);
             e.obj->set("origin", saved);
@@ -478,7 +478,7 @@ void World::exposedCombat(Entity& e) {
         return;
     }
     ai.facing = 4;
-    followActorPath(e, true);
+    followActorPath(e, true, true); // 0x5494c0 (cl = 1)
 }
 
 // Noncombat (substate 0x65, 0x549520): without a path stop (a known enemy → the combat script); with one move,
@@ -498,7 +498,7 @@ void World::exposedNoncombat(Entity& e) {
         return;
     }
     const Vec3 o = e.obj->get("origin").asVector();
-    const float dx = o[0] - e.pathGoal[0], dy = o[1] - e.pathGoal[1], dz = o[2] - e.pathGoal[2];
+    const float dx = o[0] - e.path.goal[0], dy = o[1] - e.path.goal[1], dz = o[2] - e.path.goal[2];
     const Value wd = e.obj->get("walkdist");
     const float walkdist = wd.isNumber() ? wd.asFloat() : 0.0f;
     // TODO(spec): facing 6 near claimed nodes and the 0x1c148a8 override.
@@ -536,42 +536,42 @@ std::string World::stopScript(Entity& e) {
     return "stop";
 }
 
-bool World::actorHasPath(const Entity& e) const { return e.pathIndex < e.path.size(); }
+bool World::actorHasPath(const Entity& e) const { return e.path.count > 0; }
 
+// 0x503e10: the old path's area goes to the budget (0x541780), then no points and no detour wait (+0x724).
 void World::clearActorPath(Entity& e) {
-    e.path.clear();
-    e.pathNodes.clear();
-    e.pathIndex = 0;
-    e.pathTruncated = false;
-    e.pathPlannedCount = 0;
+    pathClearBudget(e.path, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
+    e.path.count = 0;
+    e.path.planned = 0;
+    e.ai.detourMs = 0;
     e.ai.stopSoonMs = 0;
 }
 
-// Path following (0x552350): entering movement sets anim mode 1 / movemode stop. The step (0x551960) waits while the
-// plan time (+0x720) is ahead — the actor stands: the current animscript with movemode stop, anim mode 1
-// (0x53ac90(0, 1)) — else moves (the placeholder moveActor). Then "move" runs (run: movemode run, else walk) until
-// the stop-soon time (+0x704) is within 200 ms, when the stop script starts with movemode stop_soon (0x53afe0 /
-// 0x53af20). TODO(spec): the rest of the step: following an actor (+0x2148: wait 50 ms), the end of the path from
-// the lookahead (0x550fd0), and the sentients blocking the way (0x551100 / 0x551490 / 0x551740: waiting 500 ms with
-// the blocker in +0x728 / +0x72c, or a detour 0x5451b0); 0x504630 (crowding) when standing.
-void World::followActorPath(Entity& e, bool run) {
+// Path following (0x552350): entering movement sets anim mode 1 / movemode stop. The step (0x551960,
+// src/game/actorfollow.cpp; `wide`: the interval radius) returns 1 to stand — the "stop" animscript with movemode
+// stop, anim mode 1 (0x53ac90(0, 1)) — 2 to walk (0x53af20), 0 to go on: run → 0x53afe0, else 0x53af20, i.e. "move"
+// (run: movemode run, else walk) until the stop-soon time (+0x704) is within 200 ms, when the stop script starts
+// with movemode stop_soon. TODO(spec): 0x504630 (crowding) and 0x53ade0 (a followed actor) when standing.
+void World::followActorPath(Entity& e, bool run, bool wide) {
     ActorAi& ai = e.ai;
     const bool moving = ai.animMode == 1 && ai.movemode != 0;
     if (!moving) {
         ai.animMode = 1;
         ai.movemode = 0;
     }
-    if (timeMs_ < ai.planTimeMs) {
-        if (!e.animScript.empty()) setActorAnimScript(e, e.animScript, 0, 1);
+    const int r = stepActorPath(e, wide, run);
+    if (r == 1) {
+        setActorAnimScript(e, "stop", 0, 1); // script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
         return;
     }
-    moveActor(e, 0.05f);
+    const bool runNow = r == 0 && run;
     const int64_t left = ai.stopSoonMs - timeMs_;
-    if (ai.stopSoonMs != 0 && (run ? left <= 200 : left < 200))
+    if (ai.stopSoonMs != 0 && (runNow ? left <= 200 : left < 200))
         setActorAnimScript(e, stopScript(e), 1, 1);
     else
-        setActorAnimScript(e, "move", run ? 3 : 2, 1);
+        setActorAnimScript(e, "move", runNow ? 3 : 2, 1);
     if (!moving && ai.animMode == 1 && ai.movemode != 0) ai.stopSoonMs = 0;
+    moveActor(e, 0.05f);
 }
 
 void World::registerActorStateBuiltins() {

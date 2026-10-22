@@ -115,7 +115,7 @@ void World::grenadeReact(Entity& e, bool keepPath) {
     }
     if (g.parent == &e) {
         updateActorPath(e);
-        if (actorHasPath(e) && safeFromGrenade(e, ge, e.path.back())) {
+        if (actorHasPath(e) && safeFromGrenade(e, ge, pathEnd(e))) {
             ai.substate = kFlee;
             return;
         }
@@ -137,8 +137,8 @@ void World::grenadeReact(Entity& e, bool keepPath) {
 // TODO(spec): the lookahead point (+0x398 / +0x3ac) and the extra segment (+0x3b4) it also tests.
 bool World::pathNearPoint(Entity& e, const Vec3& p, float r2) {
     Vec3 a = originOf(e.obj);
-    for (size_t i = e.pathIndex; i < e.path.size(); ++i) {
-        const Vec3& b = e.path[i];
+    for (int i = e.path.count - 2; i >= 0; --i) {
+        const Vec3& b = e.path.pts[size_t(i)].pos;
         const float ex = b[0] - a[0], ey = b[1] - a[1], l2 = ex * ex + ey * ey;
         float t = l2 > 0.0f ? ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / l2 : 0.0f;
         t = std::clamp(t, 0.0f, 1.0f);
@@ -321,8 +321,8 @@ int World::grenadeAcquireThink(Entity& e) {
         return 0;
     }
     const Vec3 o = originOf(e.obj);
-    if (dist2dSq(e.pathGoal, o) > 256.0f && grenadeGiveUp(e)) return 1;
-    if (std::fabs(o[2] - e.pathGoal[2]) > 32.0f && grenadeGiveUp(e)) return 1;
+    if (dist2dSq(e.path.goal, o) > 256.0f && grenadeGiveUp(e)) return 1;
+    if (std::fabs(o[2] - e.path.goal[2]) > 32.0f && grenadeGiveUp(e)) return 1;
     if (ai.substate != kAcquire) return 0;
     ai.facing = 1;
     if (ai.grenade->grenade->landingMs <= timeMs_) {

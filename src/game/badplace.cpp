@@ -186,8 +186,8 @@ void World::addBadPlace(const std::string& name, int durationMs, uint32_t teamMa
         if (!e.isActor || e.obj->removed || !actorHasPath(e)) continue;
         const int team = teamOf(e);
         bool blocked = false;
-        for (size_t i = e.pathIndex ? e.pathIndex - 1 : 0; i + 1 < e.path.size() && !blocked; ++i) {
-            const int a = e.pathNodes[i], b = e.pathNodes[i + 1];
+        for (int i = e.path.count - 2; i >= 0 && !blocked; --i) {
+            const int a = e.path.pts[size_t(i + 1)].node, b = e.path.pts[size_t(i)].node;
             if (a < 0 || b < 0) continue;
             const auto& links = paths_.links(size_t(a));
             for (size_t li = 0; li < links.size(); ++li)
@@ -250,8 +250,8 @@ bool World::badPlaceFlee(Entity& e) {
     };
     if (actorHasPath(e)) {
         int node = -1;
-        for (size_t i = e.pathIndex ? e.pathIndex - 1 : 0; i < e.path.size() && node < 0; ++i) {
-            const int n = e.pathNodes[i];
+        for (int i = e.path.count - 1; i >= 0 && node < 0; --i) {
+            const int n = e.path.pts[size_t(i)].node;
             if (n > 0 && !inBadPlace(originOf(nodes_[size_t(n)].obj)) && nodeUsable(e, n)) node = n;
         }
         if (node >= 0 && fleePathToNode(e, node)) return take(node);
@@ -287,8 +287,8 @@ bool World::fleePathToNode(Entity& e, int node) {
     if (!actorHasPath(e)) {
         if (same(no, o)) return true;
     } else {
-        const bool keep = !e.pathTruncated || e.pathPlannedCount < (e.path.size() - e.pathIndex) * 4;
-        if (keep && same(no, e.path.back())) return true;
+        const bool keep = !(e.path.flags & 4) || e.path.planned < e.path.count * 4;
+        if (keep && same(no, pathEnd(e))) return true;
         clearActorPath(e);
     }
     return pathToNodeDirect(e, node) && actorHasPath(e);

@@ -31,6 +31,42 @@ using script::ObjectPtr;
 using script::Value;
 using script::Vec3;
 
+// A path point (0x1c bytes): its position, the unit 2D direction from the next point (the one nearer the actor) to
+// this one and the 2D length of that segment (both 0 for the last point), and its path node (−1 for none).
+struct PathPoint {
+    Vec3 pos{};
+    std::array<float, 2> dir{};
+    float len = 0;
+    int node = -1;
+};
+
+// An actor's path (actor +0x330 … +0x707; cleared by 0x5436a0: budget 32768, avoided sentient none). Points are kept
+// goal first: point 0 is the goal, point count − 1 the end the actor started from. `start` is the actor's place on
+// the first segment (count − 1 → count − 2), `startLen` what is left of it. The lookahead point is `lookDist` along
+// `lookDir` from the actor (its segment `lookIndex`, `lookSegLen` back from that point); `budget` limits how much
+// area between the actor and the path the lookahead may cut (0x5447d0).
+struct ActorPath {
+    std::array<PathPoint, 32> pts{}; // +0x0
+    int count = 0;                   // +0x380 (actor +0x6b0)
+    int planned = 0;                 // +0x382: points when planned (or re-extended)
+    int detour = 0;                  // +0x384: points added by the last detour (−1: blocked at the path end)
+    int traversal = 0;               // +0x386: lowest point the follower may use (negotiation pairs, TODO(spec))
+    int lookIndex = 0;               // +0x388
+    int avoidEnt = 0x7ff;            // +0x38a: entity number of the sentient being avoided, 0x7ff none
+    Vec3 goal{};                     // +0x38c
+    Vec3 lookDir{};                  // +0x398: unit 2D direction, z = height change per unit
+    std::array<float, 2> farDir{};   // +0x3a4: direction to the point `budget` further along (0x544a10)
+    float lookDist = 0;              // +0x3ac
+    float budget = 32768.0f;         // +0x3b0
+    float lookSegLen = 0;            // +0x3b4
+    uint32_t flags = 0;              // +0x3b8: 1|0x40 lookahead at the end, 2 / 0x100 the lookahead was clear (the
+                                     // budget grows), 4 truncated, 0x10 traversals allowed, 0x20 far off the path
+    int64_t planMs = 0;              // +0x3bc
+    float planArg = 0;               // +0x3c0
+    float startLen = 0;              // +0x3c4
+    Vec3 start{};                    // +0x3c8
+};
+
 // Script-visible entity. Native state lives in the object's fields so scripts and engine share one view.
 struct Attachment {
     std::string model;
@@ -59,6 +95,11 @@ struct ActorAi {
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
+    int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
+    struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
+    struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
+    struct Entity* followed = nullptr;        // +0x2148 actor being followed (TODO(spec): set from +0x318)
+    int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
     bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, TODO(spec))
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
     std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
@@ -101,13 +142,9 @@ struct Entity {
     uint64_t animScriptThread = 0;   // thread of the running engine animscript (init, stop, …)
     std::string animScript;
     int64_t animScriptStartMs = 0;
-    // Movement towards the script goal.
-    std::vector<std::array<float, 3>> path;
-    size_t pathIndex = 0;
-    std::array<float, 3> pathGoal{};
-    std::vector<int> pathNodes;      // node of each path point, −1 for the goal position (point +0x18)
-    bool pathTruncated = false;      // +0x6e8 & 4: more than 32 points, the rest is planned later
-    size_t pathPlannedCount = 0;     // +0x6b2: points when planned
+    // Movement towards the script goal (actor +0x330, src/game/actorpath.cpp).
+    ActorPath path;
+    Vec3 velocity{};                 // actor +0x230 / the player's ps velocity (from the last frame's movement)
     // Sentient node cache (0x515040: +0x38 node, +0x3c cached, +0x3d unreachable).
     int cachedNode = -1;
     bool nodeCached = false, nodeUnreachable = false;
@@ -343,7 +380,9 @@ private:
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);
-    void followActorPath(Entity& e, bool run);
+    void followActorPath(Entity& e, bool run, bool wide = false);
+    int stepActorPath(Entity& e, bool wide, bool run);
+    Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);
     std::string stopScript(Entity& e);
     bool seesEnemyRecently(Entity& e, int64_t withinMs);
@@ -376,6 +415,27 @@ private:
     bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
                      std::vector<int>& chain);
     void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
+    void dropPathGoalPoints(ActorPath& p, int n);
+    void pathClearBudget(ActorPath& p, const Vec3& o);
+    void pathLookReset(Entity& e, const Vec3& o, bool correct);
+    void pathLookNew(Entity& e, const Vec3& o);
+    void pathBackUp(ActorPath& p, const Vec3& o);
+    void pathAdvance(ActorPath& p, const Vec3& o);
+    void pathCorrectBudget(ActorPath& p, const Vec3& o);
+    void pathLookAhead(Entity& e, const Vec3& o, bool shrink);
+    void pathLookPoint(Entity& e, const Vec3& o, const Vec3& pt, bool shrink, float segLen, int index, float area);
+    void pathFarDir(ActorPath& p, const Vec3& o);
+    void updatePathLook(Entity& e, const Vec3& o, bool shrink, bool correct);
+    bool replanActorPath(Entity& e, const Vec3& o);
+    // Path following (src/game/actorfollow.cpp)
+    bool aiReach(const Vec3& start, const Vec3& target, int passEnt, uint32_t mask, Vec3& out, float step);
+    bool aiReachPast(Vec3 start, const Vec3& target, const std::vector<int>& ents, int passEnt, uint32_t mask,
+                     Vec3& out);
+    bool pathLookClear(const ActorPath& p, const Vec3& o, const Vec3& target);
+    void resolveBlocker(Entity& a);
+    bool holdsPosition(Entity& e);
+    bool pathDetour(Entity& e, const Vec3& o, const Vec3& a, const Vec3& b, int k, const std::vector<int>& ents,
+                    uint32_t mask, bool split);
     bool pathToNodeDirect(Entity& e, int node);
     bool linkBlocked(size_t node, size_t link, int team) const;
     // Grenades (src/game/grenades.cpp, src/game/actorgrenade.cpp)
@@ -487,6 +547,8 @@ private:
     int perceptionTick_ = 0;
     PathGraph paths_;
     struct NodeSearch { int id = 0; int next = -1, prev = -1; int parent = -1; float g = 0, h = 0; bool queued = false; };
+    Vec3 playerPrev_{};                                       // player origin last frame (its velocity)
+    bool havePlayerPrev_ = false;
     std::vector<NodeSearch> search_;                          // per-node A* state (+0x5c … +0x70)
     int searchId_ = 0;                                        // 0x1c61044
     std::vector<std::vector<std::array<uint8_t, 4>>> linkBlock_; // per link and team: bad places blocking it (+8)

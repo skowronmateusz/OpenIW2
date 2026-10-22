@@ -156,7 +156,7 @@ void World::claimNode(Entity& e, int node) {
     if ((n.spawnflags & 0x40) && n.ownerUntilMs >= timeMs_ && n.owner && n.owner != &e && n.ownerUntilMs == kNodeClaimed) {
         Entity* owner = n.owner;
         if (owner->isActor && owner->claimedNode == node) {
-            if (actorHasPath(*owner) && samePoint(vecField(n.obj, "origin"), owner->path.back())) clearActorPath(*owner);
+            if (actorHasPath(*owner) && samePoint(vecField(n.obj, "origin"), pathEnd(*owner))) clearActorPath(*owner);
             blockNodeForTeam(node, *owner);
         }
     }
@@ -171,7 +171,7 @@ void World::claimNode(Entity& e, int node) {
 void World::giveUpClaimedNode(Entity& e) {
     if (e.claimedNode < 0) return;
     const int node = e.claimedNode;
-    if (actorHasPath(e) && samePoint(vecField(nodes_[size_t(node)].obj, "origin"), e.path.back())) clearActorPath(e);
+    if (actorHasPath(e) && samePoint(vecField(nodes_[size_t(node)].obj, "origin"), pathEnd(e))) clearActorPath(e);
     blockNodeForTeam(node, e);
 }
 
@@ -190,6 +190,16 @@ bool World::keepClaimedNode(Entity& e) {
 bool World::atClaimedNode(Entity& e) {
     if (keepClaimedNode(e)) return true;
     return nearPoint(vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), vecField(e.obj, "origin"));
+}
+
+// 0x502850: inside the goal, and either without a path at the claimed node (if any), or with a path that ends
+// inside the goal while the claimed node (if any) is kept or the actor stands on it (0x5027e0).
+bool World::holdsPosition(Entity& e) {
+    if (!actorInGoal(e, 0.0f)) return false;
+    if (e.path.count <= 0) return e.claimedNode < 0 || atClaimedNode(e);
+    if (!inActorGoal(e, e.path.goal)) return false;
+    if (e.claimedNode < 0 || keepClaimedNode(e)) return true;
+    return samePoint(vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), vecField(e.obj, "origin"));
 }
 
 // 0x54bb30: the animscript of a node, or none with true when the node does not cover the actor from its enemy
@@ -339,7 +349,7 @@ void World::updateClaimedNode(Entity& e) {
         if (e.claimedNode >= 0 && inActorGoal(e, vecField(nodes_[size_t(e.claimedNode)].obj, "origin"))) return;
         e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
     }
-    const Vec3 pos = actorHasPath(e) ? e.path.back() : vecField(e.obj, "origin");
+    const Vec3 pos = actorHasPath(e) ? pathEnd(e) : vecField(e.obj, "origin");
     if (e.claimedNode >= 0) {
         if (nearPoint(vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), pos)) return;
         if (timeMs_ < e.ai.planTimeMs) return;
@@ -361,8 +371,8 @@ bool World::pathToNode(Entity& e, int node) {
     const bool hadPath = actorHasPath(e);
     bool ok;
     // A truncated path is kept only while more than a quarter of its planned points are left (+0x6b2 < count · 4).
-    const bool keep = !e.pathTruncated || e.pathPlannedCount < (e.path.size() - e.pathIndex) * 4;
-    if (hadPath && keep && samePoint(no, e.path.back())) {
+    const bool keep = !(e.path.flags & 4) || e.path.planned < e.path.count * 4;
+    if (hadPath && keep && samePoint(no, pathEnd(e))) {
         ok = true;
     } else if (!hadPath && samePoint(no, o)) {
         ok = true;
@@ -385,7 +395,7 @@ bool World::pathToGoal(Entity& e) {
     if (!actorHasPath(e)) {
         if (actorInGoal(e, 0.0f)) return true;
     } else {
-        if (inActorGoal(e, e.path.back())) return true;
+        if (inActorGoal(e, pathEnd(e))) return true;
         clearActorPath(e);
     }
     const Value gv = e.obj->get("$goalpos");
@@ -449,21 +459,9 @@ void World::updateActorPath(Entity& e) {
     if (node >= 0) claimNode(e, node);
 }
 
-// Move check towards a point (0x543d30): a box (−15, −15, step)…(15, 15, 72) moved from the origin to the point,
-// then dropped by 72; the end must stand on ground no steeper than normal z 0.7 and within 72 units of the point's
-// height. TODO(spec): the original continues from where a world brush blocks it (when it moved at least 15 units)
-// and lets moving actors through; here any block fails.
+// Move check towards a point (0x543d30, src/game/actorfollow.cpp) from the actor's origin.
 bool World::aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out) {
-    const Vec3 o = vecField(e.obj, "origin");
-    const uint32_t mask = Contents::ActorClipMask | 4;
-    const Vec3 mins{-15, -15, step}, maxs{15, 15, 72};
-    TraceResult tr = collision_->trace(o, {target[0], target[1], o[2]}, mins, maxs, mask, e.number);
-    if (tr.startSolid || tr.fraction < 1.0f) return false;
-    const Vec3 mid = tr.endPos;
-    tr = collision_->trace(mid, {mid[0], mid[1], mid[2] - 72.0f}, mins, maxs, mask, e.number);
-    if (tr.fraction < 1.0f && tr.normal[2] < 0.7f) return false;
-    out = {tr.endPos[0], tr.endPos[1], tr.endPos[2] + step};
-    return std::fabs(out[2] - target[2]) < 72.0f;
+    return aiReach(vecField(e.obj, "origin"), target, e.number, Contents::ActorClipMask | 4, out, step);
 }
 
 void World::registerCoverBuiltins() {
@@ -623,14 +621,13 @@ void World::registerCoverBuiltins() {
         pathToPoint(e, vecField(enemy->obj, "origin"));
         // 0x5434e0: drop the path when its start is outside the goal, else cut it after the last point in the goal.
         if (actorHasPath(e)) {
-            if (!inActorGoal(e, e.path.front())) {
+            ActorPath& p = e.path;
+            if (!inActorGoal(e, p.pts[size_t(p.count - 1)].pos)) {
                 clearActorPath(e);
             } else {
-                size_t keep = 1;
-                while (keep < e.path.size() && inActorGoal(e, e.path[keep])) ++keep;
-                e.path.resize(keep);
-                e.pathNodes.resize(keep);
-                e.pathGoal = e.path.back();
+                int keep = p.count - 2; // lowest index still kept, walking from the start end
+                while (keep >= 0 && inActorGoal(e, p.pts[size_t(keep)].pos)) --keep;
+                dropPathGoalPoints(p, keep + 1);
             }
         }
         return Value();
@@ -642,18 +639,14 @@ void World::registerCoverBuiltins() {
     vm_.registerBuiltin("trimpathtoattack", [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (!enemy || e.path.size() < 2) return Value(0);
+        if (!enemy || e.path.count < 2) return Value(0);
         const Vec3 eye = sightEye(*enemy, nullptr);
-        const Vec3 end = e.path[e.path.size() - 2];
+        const Vec3 end = e.path.pts[1].pos;
         if (!collision_->sightBlocked({end[0], end[1], end[2] + 64.0f}, eye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) {
-            e.path.pop_back();
-            e.pathNodes.pop_back();
-            e.pathGoal = e.path.back();
+            dropPathGoalPoints(e.path, 1);
             return Value(0);
         }
-        e.path.pop_back();
-        e.pathNodes.pop_back();
-        e.pathGoal = e.path.back();
+        dropPathGoalPoints(e.path, 1);
         return Value(1);
     });
     // reacquiremove (0x53ccb0): with an enemy, in the exposed state and with a path: substate reacquire.
@@ -682,8 +675,8 @@ void World::registerCoverBuiltins() {
         const float limit = c.arg(0).asFloat();
         Vec3 p = vecField(e.obj, "origin");
         float len = 0.0f;
-        for (size_t i = e.pathIndex; i < e.path.size(); ++i) {
-            const Vec3& q = e.path[i];
+        for (int i = e.path.count > 1 ? e.path.count - 2 : 0; i >= 0; --i) {
+            const Vec3& q = e.path.pts[size_t(i)].pos;
             len += std::sqrt(dist2d(p, q));
             if (len >= limit) return Value(0);
             p = q;

@@ -222,7 +222,7 @@ below, height 184), linked nodes first then nearest (0x516640); a linked node is
 ones are traced last. Sentient node 0x515040: radius 192, cached (+0x38, flags +0x3c/+0x3d). A* 0x545840: sorted open list by g + h (h = 2D distance to the goal position), insert before the first not lower,
 re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0 adds planes. Path points 0x541da0: goal first in the original (+0x330, 0x1c bytes: pos, dir, length, node), at most 32 (+0x6e8 |= 4),
 the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
-(start → goal order). TODO(spec): negotiation pairs (types 16/17), lookahead state (+0x3b0, 0x541a70, 0x544ca0),
+(goal-first layout, see "Path following"). TODO(spec): negotiation pairs (types 16/17),
 danger planes (+0x2050), 0x502960's offset goal (0x542340/0x545670).
 
 ## Bad places (observed 0x524060 0x5199f0)
@@ -233,10 +233,36 @@ neutral 8, default 0xe. Adding marks links into the volume per team (0x5199f0) a
 Every 250 ms (0x523a60) actors of its teams inside (0x425c90) set +0x2128 with probability badplaceawareness; exposed →
 state 4 (start 0x524030 flee target 0x523f10, think 0x524060). Implemented in `src/game/badplace.cpp`.
 
-## Not yet specified
+## Path following (observed; objdump of 0x550f10…0x552350, 0x541780…0x542600, 0x543ae0…0x5454d0, 0x505230 and
+carved Ghidra decompiles)
 
-The follower 0x551960 beyond its wait on +0x720 (sentient blocking 0x551100/0x551490/0x551740, detours 0x5451b0) and
-the remaining states listed above.
+Path layout (actor +0x330, cleared by 0x5436a0: budget 32768, avoided sentient 0x7ff): 32 points of 0x1c bytes (pos,
+unit 2D dir from the next point, 2D length, node), goal first; count +0x6b0, planned +0x6b2, detour points +0x6b4,
+traversal +0x6b6, lookahead index +0x6b8, avoided sentient +0x6ba, goal +0x6bc, lookahead dir +0x6c8 (z = slope), far
+dir +0x6d4, lookahead distance +0x6dc, budget +0x6e0, lookahead segment part +0x6e4, flags +0x6e8, plan time +0x6ec,
+start length +0x6f4, start +0x6f8. 0x541da0 builds it (start = last point; the budget carries over via 0x541780;
+then 0x541a70). Lookahead update 0x544ca0 (each frame from the move 0x505230): start behind → 0x544310 advances it
+(dropping passed points), ahead → 0x544520 backs it up; a truncated path with count · 4 ≤ planned is replanned
+(0x542410); then 0x5447d0 puts the lookahead where the area between actor and path reaches the budget, checked by
+0x5440e0 (0x543d30 move check, or 0x543c30 past the avoided actor): blocked shrinks the budget (0x543b70: · 9/16 or
+3/4), clear grows it (0x543be0); 0x544a10 the far dir. Move 0x505230: distance · max(dot(far, look)^0.333, 0.6), at
+most the lookahead distance, along the lookahead dir. Stop soon 0x503ec0.
+
+Follower 0x551960 (from 0x552350; CL = use the interval, 1 only from combat 0x5494c0; result 1 → "stop" script
+0x1c7e118 with movemode stop, 2 → walk 0x53af20): waits on +0x720 (+50 ms with a followed actor +0x2148); move =
+velocity (+0x230) or 190 · lookahead dir (0x550fd0; no dir → path cleared when traversal < 1); radii 0x550f60.
+Sentients (0x551100): not enemy actors, not itself, not ones waiting on it; |dz| < 80, within max(interval²,
+speed²), ahead of the move or the far dir; moving ones are yielded to by entity number or walked behind (0x551740:
+running, or walking beyond the half radius). In the way (0x551490): within 30 of the move line up to the lookahead
+(+37.5 circle), special cases for the avoided sentient, the 60-unit lookahead point and the far dir. No blocker:
+0x551800 lets the avoided sentient go beyond 60 units. Enemy blocker < 37.5: stand 500 ms (dropping the path if it is
+the enemy). Otherwise wait out the blocker's own wait (0x504720 chain, +0x728/+0x72c), detour on either side 37.5
+off its centre (0x5451b0, corners 75 apart, stepping back to 37.5 first when closer; +0x724 = now + 1000), or stand
+blocked (+0x728 = self, 500 ms); when a detour was already tried the path is dropped every 2 s. Implemented in
+`src/game/actorfollow.cpp` and `src/game/actorpath.cpp`.
+TODO(spec): +0x318 (the bumped entity: following and 0x500d80), +0x250 move delta vs velocity, the actor clip mask
++0x28c, +0x288, 0x504630 crowding, 0x53ade0, negotiation (+0x244, flag 0x40), the facing blend +0x2150, +0x73c, the
+actor physics 0x501xxx.
 
 ## Native actor fields (observed)
 

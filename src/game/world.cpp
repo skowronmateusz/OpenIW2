@@ -319,6 +319,15 @@ Entity* World::entityByNumber(int number) {
 
 void World::frame() {
     timeMs_ += 50;
+    if (player_) { // the player's velocity for the AI (TODO(spec): the original reads ps->velocity)
+        const Value po = player_->obj->get("origin");
+        if (po.isVector()) {
+            const Vec3 o = po.asVector();
+            if (havePlayerPrev_) player_->velocity = {(o[0] - playerPrev_[0]) * 20.0f, (o[1] - playerPrev_[1]) * 20.0f, (o[2] - playerPrev_[2]) * 20.0f};
+            playerPrev_ = o;
+            havePlayerPrev_ = true;
+        }
+    }
     syncEntityClips();
     runMovers();
     if (fxEvents_.size() > 4096) fxEvents_.erase(fxEvents_.begin(), fxEvents_.end() - 4096); // nobody draining
@@ -395,6 +404,8 @@ void World::thinkActors() {
             const float yaw = ang.isVector() ? ang.asVector()[1] * float(M_PI) / 180.0f : 0.0f;
             e.obj->set("lookforward", Value(Vec3{std::cos(yaw), std::sin(yaw), 0}));
         }
+        e.ai.thoughtMs = timeMs_;
+        e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
         actorThink(e);
     }
     // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
@@ -413,47 +424,56 @@ void World::thinkActors() {
     }
 }
 
+// The actor's move along its path (0x504160 anim mode 1 → 0x505230, then 0x503ec0). The lookahead is updated
+// (0x544ca0), then the actor moves along it by the frame distance scaled by how far the far direction turns away
+// (dot^0.333, at least 0.6), no further than the lookahead point; the height follows the lookahead slope.
+// Stop soon (0x503ec0): once the lookahead reached the end and the end is within a quarter second of travel
+// (|velocity|² · 0.0625) the actor has 500 ms left (+0x704); when they are over the path is cleared.
+// TODO(spec): the frame distance comes from the move animation's delta (0x503e40); the placeholder is its move speed
+// (150 without one). Not modelled: 0x500d80 (the bumped entity +0x318, the lookahead shrink flag), the facing blend
+// (+0x2150), the side offset (+0x73c) and the actor physics (0x501xxx) that clips the move.
 void World::moveActor(Entity& e, float dt) {
-    if (e.pathIndex >= e.path.size()) return;
+    ActorPath& p = e.path;
+    if (p.count <= 0) return;
     auto o = e.obj->get("origin").asVector();
     float speed = e.anim ? e.anim->moveSpeed() : 0.0f;
     if (speed < 1.0f) speed = 150.0f; // fallback while the move script has not picked an animation yet
-    float budget = speed * dt;
-    while (budget > 0 && e.pathIndex < e.path.size()) {
-        const auto& t = e.path[e.pathIndex];
-        const float dx = t[0] - o[0], dy = t[1] - o[1];
-        const float d = std::sqrt(dx * dx + dy * dy);
-        if (d <= budget) {
-            o[0] = t[0];
-            o[1] = t[1];
-            budget -= d;
-            ++e.pathIndex;
-        } else {
-            o[0] += dx / d * budget;
-            o[1] += dy / d * budget;
-            const float yaw = std::atan2(dy, dx) * 180.0f / float(M_PI);
-            e.obj->set("angles", Value(Vec3{0, yaw, 0}));
-            e.obj->set("$motionyaw", Value(yaw));
-            budget = 0;
-        }
-    }
-    // Stop soon (0x503fe5…0x5040ad): once the path end is within a quarter second of travel the actor has 500 ms
-    // left (+0x704); when they are over the path is cleared. The speed is the placeholder move speed above.
-    if (e.pathIndex < e.path.size()) {
-        const auto& end = e.path.back();
-        const float ex = end[0] - o[0], ey = end[1] - o[1];
-        if (e.ai.stopSoonMs == 0 && ex * ex + ey * ey <= speed * speed * 0.0625f) e.ai.stopSoonMs = timeMs_ + 500;
-        if (e.ai.stopSoonMs != 0 && e.ai.stopSoonMs - timeMs_ <= 0) {
-            e.path.clear();
-            e.pathNodes.clear();
-            e.pathIndex = 0;
-            e.pathTruncated = false;
-        }
+    const Vec3 before = o;
+    updatePathLook(e, o, false, false);
+    if (p.count <= 0) return;
+    float turn = p.farDir[1] * p.lookDir[1] + p.farDir[0] * p.lookDir[0];
+    if (turn < 1e-6f) turn = 1e-6f;
+    float f = std::pow(turn, 0.333f);
+    if (f < 0.6f) f = 0.6f;
+    float step = f * speed * dt;
+    if (step > p.lookDist) step = p.lookDist;
+    o[0] += p.lookDir[0] * step;
+    o[1] += p.lookDir[1] * step;
+    o[2] += p.lookDir[2] * step;
+    if (step > 0.0f) {
+        const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
+        e.obj->set("angles", Value(Vec3{0, yaw, 0}));
+        e.obj->set("$motionyaw", Value(yaw));
     }
     // Stand on the ground.
     const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::PlayerSolid);
     if (!tr.startSolid && tr.fraction < 1.0f) o[2] = tr.endPos[2];
     e.obj->set("origin", Value(o));
+    e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
+    // 0x503ec0 (TODO(spec): the negotiation branch, +0x244 / +0x23c and flag 0x40).
+    const PathPoint& end = p.pts[size_t(p.traversal)];
+    const float ex = end.pos[0] - o[0], ey = end.pos[1] - o[1];
+    if (e.ai.stopSoonMs == 0) {
+        const float d2 = ex * ex + ey * ey;
+        if (d2 != 0.0f && !(p.flags & 1)) return;
+        if ((e.velocity[1] * e.velocity[1] + e.velocity[0] * e.velocity[0]) * 0.0625f < d2) return;
+        e.ai.stopSoonMs = timeMs_ + 500;
+    }
+    if (e.ai.stopSoonMs - timeMs_ <= 0) {
+        pathClearBudget(p, o);
+        p.count = p.planned = 0;
+        e.ai.detourMs = 0;
+    }
 }
 
 void World::useAnimTree(Entity& e, const std::string& tree) {
