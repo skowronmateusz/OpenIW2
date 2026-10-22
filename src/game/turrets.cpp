@@ -49,6 +49,8 @@ void World::initTurret(Entity& e, const std::string& weaponInfo) {
     t->pitchConvergenceTime = spawnOrWeapon(e.obj, "pitchconvergencetime", w, "pitchconvergencetime");
     t->suppressionTime = spawnOrWeapon(e.obj, "suppressiontime", w, "suppressiontime");
     t->aiSpread = spawnOrWeapon(e.obj, "aispread", w, "aispread");
+    const float range = spawnOrWeapon(e.obj, "maxrange", w, "maxrange");
+    t->maxRangeSq = range <= 0.0f ? 3.4028235e38f : range * range;
     t->playerSpread = spawnOrWeapon(e.obj, "playerspread", w, "playerspread");
     e.turret = std::move(t);
 }
@@ -109,8 +111,8 @@ void World::registerTurretBuiltins() {
     });
     vm_.registerBuiltin("startfiring", [this](CallContext& c) { turretOf(c.self).flags |= 4u; return Value(); });
     vm_.registerBuiltin("stopfiring", [this](CallContext& c) { turretOf(c.self).flags &= ~4u; return Value(); });
-    // Whether the turret is firing now (turret +0x4, set by the turret think).
-    vm_.registerBuiltin("isfiringturret", [this](CallContext& c) { turretOf(c.self); return Value(false); });
+    // Whether the turret think has it aiming or firing (turret +0x4 ≠ 0, 0x4eea60).
+    vm_.registerBuiltin("isfiringturret", [this](CallContext& c) { return Value(turretOf(c.self).state != 0); });
     // settargetentity(ent) stores the script target (+0x10); cleartargetentity clears it.
     vm_.registerBuiltin("settargetentity", [this](CallContext& c) {
         TurretState& t = turretOf(c.self);
@@ -119,8 +121,11 @@ void World::registerTurretBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("cleartargetentity", [this](CallContext& c) { turretOf(c.self).target.reset(); return Value(); });
-    // getturrettarget returns the target the turret is engaging (+0x14 with flag 0x40), chosen by the turret think.
-    vm_.registerBuiltin("getturrettarget", [this](CallContext& c) { turretOf(c.self); return Value(); });
+    // getturrettarget: the target being engaged (+0x14 with flag 0x40), chosen by the turret think.
+    vm_.registerBuiltin("getturrettarget", [this](CallContext& c) {
+        TurretState& t = turretOf(c.self);
+        return (t.flags & 0x40u) && t.engaged ? Value(t.engaged) : Value();
+    });
     vm_.registerBuiltin("setaispread", [this](CallContext& c) { turretOf(c.self).aiSpread = c.arg(0).asFloat(); return Value(); });
     // setconvergencetime(time, ["yaw" | "pitch"]) (0x4f05f0; default yaw).
     vm_.registerBuiltin("setconvergencetime", [this](CallContext& c) {
@@ -176,8 +181,12 @@ void World::registerTurretBuiltins() {
     vm_.registerBuiltin("setdefaultdroppitch", [this](CallContext& c) { turretOf(c.self).dropPitch = c.arg(0).asFloat(); return Value(); });
     // restoredefaultdroppitch calls 0x51cf10 (not read yet).
     vm_.registerBuiltin("restoredefaultdroppitch", [this](CallContext& c) { turretOf(c.self); return Value(); });
-    // shootturret fires once (0x51b250 → 0x51ada0, not implemented: needs the turret's aim).
-    vm_.registerBuiltin("shootturret", [this](CallContext& c) { turretOf(c.self); return Value(); });
+    // shootturret fires once (0x51b250 → 0x51ada0, src/game/turretthink.cpp).
+    vm_.registerBuiltin("shootturret", [this](CallContext& c) {
+        turretOf(c.self);
+        shootTurret(*entityOf(c.self));
+        return Value();
+    });
 
     // Gunner methods on actors (0x53f100…0x53f8e0).
     auto actorOf = [this](CallContext& c) -> Entity& {

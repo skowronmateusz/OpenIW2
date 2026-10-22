@@ -277,6 +277,7 @@ void World::frame() {
     }
     vm_.runFrame(timeMs_);
     thinkVehicles();
+    thinkTurrets();
     thinkActors();
 }
 

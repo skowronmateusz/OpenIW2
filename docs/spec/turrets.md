@@ -59,11 +59,46 @@ Errors: "entity type [%s] is not a turret" (0x5872f8) or "entity is not a turret
 - `getturret()` (0x53f8e0): the turret if the actor is its owner.
 - `setturretanim(anim)` (0x53f860): the gunner's turret animation.
 
+## Turret think (0x51d250; implemented in `src/game/turretthink.cpp`)
+
+Setup also sets flags 0x1003, team 3, and maxRange² from the `maxrange` key or the
+weapon's `maxRange` (unlimited when ≤ 0). Weapon fields (table 0x5a8d74…0x5a8e1c):
+leftArc 0x528, rightArc 0x52c, topArc 0x530, bottomArc 0x534, accuracy 0x538, aiSpread 0x53c, playerSpread 0x540,
+minVertTurnSpeed 0x544, minHorTurnSpeed 0x548, maxVertTurnSpeed 0x54c, maxHorTurnSpeed 0x550, pitchConvergenceTime
+0x554, yawConvergenceTime 0x558, suppressionTime 0x55c, maxRange 0x560; fireTime 0x204 (ms).
+
+Every frame per turret: nothing while a player uses it; the fire countdown drops by 50 ms; then
+- automatic without AI ("auto_nonai"): keep the engaged sentient for 4 s after engagement or while valid; check one
+  more enemy sentient per frame (round robin; turret team 1 → allies, 2 → axis, others none) and switch when it is valid
+  and closer. Valid (0x51c2c0): closer than maxRange², aimable inside the arcs from `tag_flash` (0x51ba20: the eye,
+  else the origin + 2, else the eye at pitch 0), clear trace (mask 0x801). Else the script target, else idle.
+- AI gunner: the gunner's enemy while known (visible or within the suppression time) and in range, else the script
+  target, else idle (simplified, see TODO).
+- AI flag without a gunner: state 0. Manual without a gunner: the script target in range, else idle.
+
+Engaging a sentient (0x51bef0): a new target restarts the engagement clock. Until the yaw convergence time has passed
+the turret first aims 63 units beside the target (perpendicular to the line of fire, on the side the target faces),
+then closes in by offset · (33 + 30 · remaining fraction); afterwards it aims at the target. The state (0x51bd40) goes
+idle → aiming (2) when within 5° of the wanted angles or 250 ms after engaging, and aiming → firing (1) after the yaw
+convergence time; each change notifies "turretstatechange". `isfiringturret` is state ≠ 0; `getturrettarget` returns
+the engaged target.
+
+Turning (0x51b610 / 0x51b4e0): with a target, the rate that reaches the wanted angles by the end of the pitch / yaw
+convergence time (else one frame), clamped to the weapon's min/max vert/hor turn speeds; without one 200°/s. The
+turret angles (entity +0x70 pitch, +0x74 yaw, relative) are published as `$turretangles` for the renderer.
+
+`shootturret` (0x51b250 → 0x51ada0): countdown = fireTime · 3; a bullet from `tag_flash`, towards the aim point with a
+random offset of up to 8 units across the line of fire (0x5501e0) when it stays within 0.95 of the barrel direction,
+else along the barrel; spread aiSpread (playerSpread for a player), range 8192. Scripts (`maps/_mg42.gsc`) call it
+every 0.1 s while `isfiringturret()`.
+
 ## Not implemented (TODO)
 
-- The turret think (0x51c630 and helpers 0x51b3d0…0x51cc80): target selection for AI gunners and automatic turrets
-  from the AI's sentient info, aiming with convergence, firing (`shootturret` → 0x51b250 / 0x51ada0), the
-  "turretstatechange" notify and `getturrettarget` / `isfiringturret`.
+- Full AI gunner rules of 0x51c630 / 0x51cc80 (remembered target +0x60, suppression and visibility from node
+  visibility, the 65536 distance check, giving up the turret 0x54b020); here simplified as above.
+- Turret bone rotation (tag positions ignore the turret angles), the near-miss spread 0x550740 before convergence,
+  the 0x48b090 visibility value, the bullet spread distribution (0x531210), drop pitch flags 0x100…0x400, projectile
+  turret weapons, and turret fire sounds/effects (0x4d8020).
 - The enemy checks of 0x51d3c0 / 0x51d640: here a free turret can always be used.
 - Taking ownership: here `useturret` makes the actor the owner at once (inferred; the original sets the in-use flag
   and owner elsewhere).

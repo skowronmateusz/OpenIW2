@@ -211,6 +211,20 @@ private:
     void initTurret(Entity& e, const std::string& weaponInfo);
     void initMapTurrets();
     TurretState& turretOf(const Value& self);
+    // Turret think (src/game/turretthink.cpp)
+    void thinkTurrets();
+    void thinkTurret(Entity& t);
+    void shootTurret(Entity& t);
+    bool turretTag(Entity& t, const char* tag, Vec3& pos);
+    bool turretAnglesTo(Entity& t, const Vec3& point, Vec3& angles);
+    bool turretAimSentient(Entity& t, Entity& target, Vec3& point, Vec3& angles);
+    bool turretTargetValid(Entity& t, Entity& target, float* distSq);
+    bool turretEngageSentient(Entity& t, Entity& target);
+    bool turretEngagePoint(Entity& t, Entity* target, const Vec3& point);
+    void turretUpdateState(Entity& t, bool aiming, const Vec3& point, const Vec3& angles);
+    void turretIdle(Entity& t);
+    void turretTurn(Entity& t, bool tracking);
+    void turretSetState(Entity& t, int state);
     void linkVehicleNodes();
     void thinkVehicles();
     VehicleState& vehicleState(const script::Value& self);
