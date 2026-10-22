@@ -239,6 +239,7 @@ void World::start() {
     spawnMapEntities();
     linkVehicleNodes();
     initMapTurrets();
+    syncEntityClips();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
 }
@@ -251,6 +252,7 @@ Entity* World::entityByNumber(int number) {
 
 void World::frame() {
     timeMs_ += 50;
+    syncEntityClips();
     runMovers();
     if (fxEvents_.size() > 4096) fxEvents_.erase(fxEvents_.begin(), fxEvents_.end() - 4096); // nobody draining
     for (auto& l : loopedFx_)

@@ -213,6 +213,7 @@ private:
     TurretState& turretOf(const Value& self);
     // Turret think (src/game/turretthink.cpp)
     void thinkTurrets();
+    void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void shootTurret(Entity& t);
     bool turretTag(Entity& t, const char* tag, Vec3& pos);

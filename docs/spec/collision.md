@@ -91,7 +91,28 @@ Constants (`DAT_…`): 0.125 (`591f80`), 0.7 (`591f30`), 16 (`591e84`), 1e-4 (`5
 
 `src/game/collision.cpp` follows the functions above for world model 0. Differences: arithmetic is single
 precision (the original uses x87 extended precision in places, the split score in double); one set of visit stamps
-instead of per-thread copies. TODO: submodel traces (`FUN_004114a0`), the temporary box/capsule model
-`0x3ff` (`FUN_00416120`, `FUN_00417060`), transformed traces (`FUN_00417c20`), sight traces (`FUN_00418d10`).
+instead of per-thread copies. TODO: the temporary box/capsule model `0x3ff` (`FUN_00416120`, `FUN_00417060`)
+for actor/player boxes, hitbox traces of entities with hit locations, sight traces (`FUN_00418d10`).
+
+## Brush submodels and entities (implemented)
+
+- Submodels (lump 35, 48-byte rows; `FUN_00410740`,
+  `FUN_004114a0`): bounds grown by 1 and a
+  bounding radius; for models ≥ 1 a leaf over AABB trees +0x20/+0x24 (first, count) and brushes +0x28/+0x2c (a
+  contiguous brush range turned into leaf brushes and a leaf brush tree, `FUN_004112c0`), with brush and terrain
+  contents ORed as for world leafs.
+- Model trace (`FUN_00417c20` →
+  `FUN_00417640`): the box centre's start and
+  end relative to the entity origin, rotated into (forward, left, up) when the angles are not zero; a position test
+  checks the leaf's brushes, then its triangles; a trace runs the leaf trace (`FUN_00416c20`). A hit normal is rotated
+  back.
+- Entities (`FUN_0044bf00` G_Trace → `FUN_0041a590` area walk → `FUN_0044b840`): after the world trace, every linked entity
+  whose contents match the mask (and that is not the pass entity or its owner) whose absolute bounds the sweep touches
+  is traced with its clip model; a smaller fraction replaces the result and names the entity.
+- OpenIW2: `CollisionWorld::trace` clips against the entity clips the world sets each frame
+  (`src/game/entityclips.cpp`): `script_brushmodel` and `script_vehicle_collmap` entities with a `*N` model, at
+  their current origin and angles, contents = their brushes' and triangles' contents, skipped after `notsolid`
+  (inferred: the entity contents the original stores are not read). There is no pass entity yet (no caller is a
+  brush model). `traceWorld` is the world-only trace.
 `src/game/pmove.cpp` implements walking, gravity, jumping, stepping (18 units) and sliding. Speed, gravity and
 jump values are placeholders still to be read from the executable.

@@ -127,6 +127,15 @@ struct CollisionWorld::Data {
     std::vector<Border> borders;
     std::vector<Partition> partitions;
     std::vector<AabbTree> aabbTrees;
+    // Brush submodels (lump 35; index 0 unused): bounds grown by 1, bounding radius, and a leaf over the model's
+    // brushes and AABB trees (FUN_00410740, FUN_004114a0).
+    struct Model {
+        Vec mins{}, maxs{};
+        float radius = 0;
+        Leaf leaf;
+    };
+    std::vector<Model> models;
+    std::vector<EntityClip> entityClips;
 
     // Per-trace visit stamps (one thread, like the original's thread-local copies).
     mutable uint32_t checkcount = 0;
@@ -403,6 +412,52 @@ CollisionWorld::CollisionWorld(const assets::D3dBsp& bsp) : d_(std::make_unique<
             leaf.leafBrushNode = d.buildLeafBrushNode(firstBrush, brushCount, mins, maxs);
         }
         d.leafs.push_back(leaf);
+    }
+
+    // FUN_00410740 / FUN_004114a0: lump 35 rows {mins, maxs, …, +0x20 firstCollAabb, +0x24 collAabbCount,
+    // +0x28 firstBrush, +0x2c brushCount}; model 0 is the world.
+    const auto mlump = bsp.lump(35);
+    for (size_t o = 0; o + 48 <= mlump.size(); o += 48) {
+        const uint8_t* p = mlump.data() + o;
+        Data::Model m;
+        float r2 = 0;
+        for (size_t k = 0; k < 3; ++k) {
+            m.mins[k] = rd<float>(p + 4 * k) - 1.0f;
+            m.maxs[k] = rd<float>(p + 12 + 4 * k) + 1.0f;
+            const float e = std::max(std::fabs(m.mins[k]), std::fabs(m.maxs[k]));
+            r2 += e * e;
+        }
+        m.radius = std::sqrt(r2);
+        if (o != 0) {
+            const uint32_t firstAabb = rd<uint32_t>(p + 0x20), aabbCount = rd<uint32_t>(p + 0x24);
+            const int firstBrush = rd<int32_t>(p + 0x28), brushCount = rd<int32_t>(p + 0x2c);
+            if (firstAabb > 0xffff || aabbCount > 0xffff || firstAabb + aabbCount > d.aabbTrees.size()) fail("bad model AABB range");
+            if (firstBrush < 0 || brushCount < 0 || size_t(firstBrush) + size_t(brushCount) > d.brushes.size()) fail("bad model brush range");
+            Leaf& leaf = m.leaf;
+            leaf.firstCollAabb = uint16_t(firstAabb);
+            leaf.collAabbCount = uint16_t(aabbCount);
+            for (uint32_t i = 0; i < aabbCount; ++i) leaf.terrainContents |= d.materials[d.aabbTrees[firstAabb + i].material].contents;
+            if (brushCount != 0) {
+                const int first = int(d.leafBrushes.size());
+                Vec bmins{FLT_MAX, FLT_MAX, FLT_MAX}, bmaxs{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+                for (int i = 0; i < brushCount; ++i) {
+                    if (firstBrush + i > 0xffff) fail("model brush index too large");
+                    d.leafBrushes.push_back(uint16_t(firstBrush + i));
+                    const Brush& b = d.brushes[size_t(firstBrush + i)];
+                    leaf.brushContents |= b.contents;
+                    for (size_t k = 0; k < 3; ++k) {
+                        bmins[k] = std::min(bmins[k], b.mins[k]);
+                        bmaxs[k] = std::max(bmaxs[k], b.maxs[k]);
+                    }
+                }
+                for (size_t k = 0; k < 3; ++k) {
+                    leaf.mins[k] = bmins[k] - kSurfaceClipEpsilon;
+                    leaf.maxs[k] = bmaxs[k] + kSurfaceClipEpsilon;
+                }
+                leaf.leafBrushNode = d.buildLeafBrushNode(first, brushCount, bmins, bmaxs); // FUN_004112c0
+            }
+        }
+        d.models.push_back(m);
     }
     if (d.nodes.empty() || d.leafs.empty()) fail("map has no nodes or leafs");
     for (const Node& n : d.nodes)
@@ -1164,20 +1219,14 @@ void CollisionWorld::Data::testCapsuleInTriangle(const TraceWork& tw, const Tria
 
 // ---------------------------------------------------------------------------------------------- entry
 
-// FUN_00417640 for model 0 (FUN_00417c20 adds the rotation of transformed models).
-TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
-    TraceResult tr;
-    tr.endPos = end;
-    if (!d_) return tr;
-    const Data& d = *d_;
+namespace {
 
-    TraceWork tw{};
-    Vec mid;
+// Trace setup shared by the world and model traces (FUN_00417640).
+void setupTraceWork(TraceWork& tw, const Vec& start, const Vec& end, const Vec& size, uint32_t mask) {
     for (size_t i = 0; i < 3; ++i) {
-        mid[i] = (mins[i] + maxs[i]) * 0.5f;
-        tw.size[i] = maxs[i] - mid[i];
-        tw.start[i] = mid[i] + start[i];
-        tw.end[i] = mid[i] + end[i];
+        tw.size[i] = size[i];
+        tw.start[i] = start[i];
+        tw.end[i] = end[i];
         tw.midpoint[i] = (tw.end[i] + tw.start[i]) * 0.5f;
         tw.delta[i] = tw.end[i] - tw.start[i];
         tw.halfDelta[i] = tw.delta[i] * 0.5f;
@@ -1198,19 +1247,132 @@ TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& m
     tw.axialCullOnly = (tw.boundsMaxs[2] - tw.boundsMins[2]) * (tw.boundsMaxs[1] - tw.boundsMins[1]) * (tw.boundsMaxs[0] - tw.boundsMins[0]) <
                        tw.size[1] * tw.size[2] * tw.size[0] * tw.deltaLen * 16.0f;
     tw.contents = mask;
-    tw.checkcount = ++d.checkcount;
+    tw.isPoint = tw.size[1] + tw.size[2] + tw.size[0] == 0;
+    tw.extents = {tw.radius, tw.radius, tw.offsetZ + tw.radius};
+}
 
+void anglesToAxis(const Vec& a, Vec& fwd, Vec& right, Vec& up) {
+    const float rad = 0.0174532924f;
+    const float sy = std::sin(a[1] * rad), cy = std::cos(a[1] * rad);
+    const float sp = std::sin(a[0] * rad), cp = std::cos(a[0] * rad);
+    const float sr = std::sin(a[2] * rad), cr = std::cos(a[2] * rad);
+    fwd = {cp * cy, cp * sy, -sp};
+    right = {cr * sy - sr * sp * cy, -cr * cy - sr * sp * sy, -sr * cp};
+    up = {sr * sy + cr * sp * cy, cr * sp * sy - sr * cy, cr * cp};
+}
+
+} // namespace
+
+// FUN_00417640 for model 0.
+TraceResult CollisionWorld::traceWorld(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
+    TraceResult tr;
+    tr.endPos = end;
+    if (!d_) return tr;
+    const Data& d = *d_;
+    TraceWork tw{};
+    Vec mid, size, s, e;
+    for (size_t i = 0; i < 3; ++i) {
+        mid[i] = (mins[i] + maxs[i]) * 0.5f;
+        size[i] = maxs[i] - mid[i];
+        s[i] = mid[i] + start[i];
+        e[i] = mid[i] + end[i];
+    }
+    setupTraceWork(tw, s, e, size, mask);
+    tw.checkcount = ++d.checkcount;
     if (start == end) {
         tw.isPoint = false;
         d.positionTest(tw, tr);
     } else {
-        tw.isPoint = tw.size[1] + tw.size[2] + tw.size[0] == 0;
-        tw.extents = {tw.radius, tw.radius, tw.offsetZ + tw.radius};
         const float p1[4] = {tw.start[0], tw.start[1], tw.start[2], 0};
         const float p2[4] = {tw.end[0], tw.end[1], tw.end[2], tr.fraction};
         d.traceThroughTree(tw, 0, p1, p2, tr);
     }
     for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
+    return tr;
+}
+
+// FUN_00417c20: the box centre's path relative to the model origin, rotated into the model's axes (forward, left,
+// up); FUN_00417640 with a submodel then tests or traces the model leaf; a hit normal is rotated back.
+TraceResult CollisionWorld::traceModel(int model, const Vec& origin, const Vec& angles, const Vec& start, const Vec& end,
+                                       const Vec& mins, const Vec& maxs, uint32_t mask) const {
+    TraceResult tr;
+    tr.endPos = end;
+    if (!d_ || model <= 0 || size_t(model) >= d_->models.size()) return tr;
+    const Data& d = *d_;
+    const Leaf& leaf = d.models[size_t(model)].leaf;
+    Vec mid, size, s, e;
+    for (size_t i = 0; i < 3; ++i) {
+        mid[i] = (mins[i] + maxs[i]) * 0.5f;
+        size[i] = maxs[i] - mid[i];
+        s[i] = mid[i] + start[i] - origin[i];
+        e[i] = mid[i] + end[i] - origin[i];
+    }
+    const bool rotated = angles[0] != 0 || angles[1] != 0 || angles[2] != 0;
+    Vec fwd{1, 0, 0}, left{0, 1, 0}, up{0, 0, 1};
+    if (rotated) {
+        Vec right;
+        anglesToAxis(angles, fwd, right, up);
+        left = {-right[0], -right[1], -right[2]};
+        s = {dot(fwd, s), dot(left, s), dot(up, s)};
+        e = {dot(fwd, e), dot(left, e), dot(up, e)};
+    }
+    TraceWork tw{};
+    setupTraceWork(tw, s, e, size, mask);
+    tw.checkcount = ++d.checkcount;
+    if (start == end) {
+        tw.isPoint = false;
+        if ((mask & leaf.brushContents) == 0 || !d.testInLeafBrushes(tw, leaf, tr))
+            if (!tr.allSolid && (mask & leaf.terrainContents) != 0) d.testInLeafTerrain(tw, leaf, tr);
+    } else {
+        d.traceThroughLeaf(tw, leaf, tr);
+    }
+    if (rotated && tr.fraction < 1.0f) {
+        const Vec n = tr.normal;
+        for (size_t i = 0; i < 3; ++i) tr.normal[i] = fwd[i] * n[0] + left[i] * n[1] + up[i] * n[2];
+    }
+    for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
+    return tr;
+}
+
+uint32_t CollisionWorld::modelContents(int model) const {
+    if (!d_ || model <= 0 || size_t(model) >= d_->models.size()) return 0;
+    const Leaf& l = d_->models[size_t(model)].leaf;
+    return l.brushContents | l.terrainContents;
+}
+
+void CollisionWorld::setEntityClips(std::vector<EntityClip> clips) {
+    if (d_) d_->entityClips = std::move(clips);
+}
+
+// G_Trace (FUN_0044bf00): the world, then each entity clip whose contents match the mask and whose absolute bounds
+// the swept box touches (0x41a590 / 0x44b840); the closest hit wins and names the entity.
+TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
+    TraceResult tr = traceWorld(start, end, mins, maxs, mask);
+    if (!d_ || tr.fraction == 0.0f) return tr;
+    for (const EntityClip& c : d_->entityClips) {
+        if ((c.contents & mask) == 0 || c.model <= 0 || size_t(c.model) >= d_->models.size()) continue;
+        const Data::Model& m = d_->models[size_t(c.model)];
+        Vec amin, amax;
+        const bool rotated = c.angles[0] != 0 || c.angles[1] != 0 || c.angles[2] != 0;
+        for (size_t i = 0; i < 3; ++i) {
+            amin[i] = c.origin[i] + (rotated ? -m.radius : m.mins[i]);
+            amax[i] = c.origin[i] + (rotated ? m.radius : m.maxs[i]);
+        }
+        // Swept box against the absolute bounds (FUN_00419450 against the entity's absmin/absmax).
+        bool miss = false;
+        for (size_t i = 0; i < 3 && !miss; ++i) {
+            const float lo = std::min(start[i], start[i] + (end[i] - start[i]) * tr.fraction) + mins[i];
+            const float hi = std::max(start[i], start[i] + (end[i] - start[i]) * tr.fraction) + maxs[i];
+            miss = hi < amin[i] || lo > amax[i];
+        }
+        if (miss) continue;
+        const float before = tr.fraction;
+        TraceResult et = traceModel(c.model, c.origin, c.angles, start, end, mins, maxs, mask);
+        if (et.fraction < before) { // the closer hit replaces the result (0x44b840)
+            tr = et;
+            tr.entity = c.id;
+        }
+    }
     return tr;
 }
 
