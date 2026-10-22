@@ -59,8 +59,52 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   since the previous jump, a standing view height; vertical speed = sqrt(2 · jump_height · gravity); sets the
   landing-slowdown flag (applied by 0x541300 only when `jump_slowdownEnable`).
 
-Implemented in `src/game/pmove.cpp`. Not implemented yet (TODO there): ground trace (0x50bd90), slide move
-(0x54f2e0), step (0x508390), inertiaMax, ladders, mantling, lean.
+Implemented in `src/game/pmove.cpp`. Not implemented yet (TODO there): inertiaMax, ladders (0x50bd90 is the ladder
+check, 0x50c070 the ladder move), mantling (0x5257f0), landing damage/slowdown (0x508fe0), movement-direction yaw
+(0x508390).
+
+## Ground, slide and step
+
+PmoveSingle for a normal player: ground trace, stance, pm_time countdown (at 0 it clears pm_flags 0x80000, 0x400,
+0x200), walk move when walking else air move, ground trace again.
+
+- Player trace (0x507b00): G_Trace (0x4db7f0 → 0x44bf00) with pm->tracemask, the player's clip mask 0x281c011, and
+  the player as pass entity; if it starts solid in contents 0x200c000 (bodies) those bits leave the mask for the rest
+  of the move and the trace is repeated.
+- Ground trace (0x509480): from origin + 0.25 to origin − 0.25 z (DAT_00591fe0). All solid →
+  stuck-in-solid escape (0x5092f0): position tests at origin + the 26 offsets of the table at
+  0x56f920 ((0,0,1), (−1,0,1), (0,−1,1), (1,0,1), (0,1,1), the 4 sides at 0, (0,0,−1), the 4 sides
+  at −1, then the 12 diagonals); the first free one becomes the origin, dropped by a 1-unit down trace that becomes
+  the ground trace; none free → no ground, jump flag and ps+0x74 cleared, done. Start solid → retried from
+  origin z − 0.001 to the first end; still start solid → no ground. Fraction 1 → no ground. Velocity z > 0 and
+  velocity·normal > 10 → no ground (a jump). Normal z < 0.7 → ground plane but not walking, jump flag cleared. Else
+  walking; the origin is never snapped to the trace end.
+- Walk move (0x5086f0): jump check (a jump goes to the air move), friction, forward/right flattened, clipped against
+  the ground normal and normalised; acceleration 9/12/19, 1 on slick ground (surface flag 2, which also applies
+  gravity); then the velocity is clipped against the ground normal and keeps its speed when the clip did not turn it
+  around; step slide move without gravity when there is horizontal velocity.
+- Air move (0x5085b0): friction, horizontal wish direction, acceleration 1, clipped against a steep ground plane,
+  step slide move with gravity.
+- Clip (0x507c20): v − n·(d − |d|·0.001), d = v·n.
+- Slide move (0x54eac0): with gravity the end vertical speed is v − g·t, the move uses their average
+  and the velocity is clipped against the ground plane. Planes: the ground normal, the normalised velocity, then each
+  hit (at most 8; more stops the player). Up to 4 traces of the remaining time; all solid → vertical speed 0, done.
+  A hit on a plane with normal·plane > 0.999 adds the normal to the clipped velocity. Otherwise the planes are
+  sorted by velocity·normal (0x54ea10, insertion sort, ascending); when the smallest is below 0.1 the velocity (and
+  the end velocity) are clipped against that plane, then against each further plane they still face (< 0.1); when
+  that turns them into the first plane they follow the crease (cross product), and a third plane still faced stops
+  the player. With gravity the end velocity becomes the velocity; with pm_time the start velocity is kept.
+- Step slide move (0x54f2e0): step 18, 10 prone. After the slide, without ground only a jump may step
+  (0x541270: jump_stepSize, limited to the jump's apex ps+0x74 + jump_height). After a hit the slide is repeated from
+  up to step + 1 units higher (a trace up; kept when ≥ 1 unit). On a ground plane or after a step a trace goes down
+  by the step plus 9 (DAT_00591e88) on ground: nothing hit (trace+0x1c = 0) → plain slide result; normal z < 0.3 →
+  plain slide result; else land there and clip the velocity. The step is dropped for the plain slide (then stuck to
+  ground 9 units below) unless it got further along the velocity (+0.001), or a jump step went above the apex; a
+  jump step caps the vertical speed at sqrt(2·g·(apex − z)) (0x541430). On a ground plane a height change of more
+  than 0.5 against the plain slide scales the velocity by (1 − |z − start z|/step)·0.8 + 0.2.
+- Jump (0x5414d0): also sets ps+0x74 = origin z, pm_time 0, pm_flags 0x80000. The walk move calls 0x541300 while the
+  flag is set: pm_time 1200 when landing at least 18 above the jump's origin, else 1800; above 1800 it clears the
+  flag; the 0.5 / 0.65 speed factors apply only with jump_slowdownEnable.
 
 ## Lean (0x50ade0, 0x440380)
 

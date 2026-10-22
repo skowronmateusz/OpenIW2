@@ -1,5 +1,5 @@
 // Player movement against world collision (docs/spec/pmove.md): stances with view-height transitions,
-// friction, acceleration, command scaling, jump, gravity, step and slide.
+// friction, acceleration, command scaling, jump, ground trace, slide and step moves.
 #pragma once
 
 #include "game/collision.h"
@@ -21,7 +21,10 @@ struct PlayerInput {
 struct PlayerState {
     Vec origin{};
     Vec velocity{};
-    bool onGround = false;
+    bool onGround = false;       // groundEntityNum (ps+0x60) != ENTITYNUM_NONE
+    bool jumping = false;        // pm_flags 0x80000: set by a jump, cleared by the landing timer
+    float jumpOriginZ = 0;       // ps+0x74: origin z at the jump
+    int pmTimeMs = 0;            // pm_time (ps+0x10)
     Stance stance = Stance::Stand;
     int viewHeightTarget = 60;   // 60 stand, 40 crouch, 11 prone
     float viewHeight = 60;       // current eye height above the origin
@@ -47,7 +50,9 @@ struct MoveParams {
     float backSpeedScale = 0.7f;      // player_backSpeedScale
     float strafeSpeedScale = 0.8f;    // player_strafeSpeedScale
     float weaponSpeedScale = 0.0f;    // current weapon's moveSpeedScale (0 = none)
-    float stepHeight = 18.0f;         // jump_stepSize (TODO(spec): step logic of 0x508390 not implemented)
+    float jumpStepSize = 18.0f;       // jump_stepSize
+    uint32_t traceMask = Contents::PlayerClipMask; // pm->tracemask: the player's clip mask (0x4e90e2)
+    int passEntity = -1;              // the player's entity number, skipped by the traces
     Vec mins{-15, -15, 0};
     Vec maxs{15, 15, 70};             // standing; crouch 50, prone 30
 };
