@@ -547,15 +547,23 @@ void World::clearActorPath(Entity& e) {
     e.ai.stopSoonMs = 0;
 }
 
-// Path following (0x552350): entering movement sets anim mode 1 / movemode stop; the step itself (0x551960) is the
-// placeholder moveActor. Then "move" runs (run: movemode run, else walk) until the stop-soon time (+0x704) is
-// within 200 ms, when the stop script starts with movemode stop_soon (0x53afe0 / 0x53af20).
+// Path following (0x552350): entering movement sets anim mode 1 / movemode stop. The step (0x551960) waits while the
+// plan time (+0x720) is ahead — the actor stands: the current animscript with movemode stop, anim mode 1
+// (0x53ac90(0, 1)) — else moves (the placeholder moveActor). Then "move" runs (run: movemode run, else walk) until
+// the stop-soon time (+0x704) is within 200 ms, when the stop script starts with movemode stop_soon (0x53afe0 /
+// 0x53af20). TODO(spec): the rest of the step: following an actor (+0x2148: wait 50 ms), the end of the path from
+// the lookahead (0x550fd0), and the sentients blocking the way (0x551100 / 0x551490 / 0x551740: waiting 500 ms with
+// the blocker in +0x728 / +0x72c, or a detour 0x5451b0); 0x504630 (crowding) when standing.
 void World::followActorPath(Entity& e, bool run) {
     ActorAi& ai = e.ai;
     const bool moving = ai.animMode == 1 && ai.movemode != 0;
     if (!moving) {
         ai.animMode = 1;
         ai.movemode = 0;
+    }
+    if (timeMs_ < ai.planTimeMs) {
+        if (!e.animScript.empty()) setActorAnimScript(e, e.animScript, 0, 1);
+        return;
     }
     moveActor(e, 0.05f);
     const int64_t left = ai.stopSoonMs - timeMs_;
