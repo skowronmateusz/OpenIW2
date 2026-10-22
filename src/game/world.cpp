@@ -216,9 +216,9 @@ Entity* World::spawnActor(Entity& spawner) {
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
     applyActorFieldDefaults(*a.obj); // docs/spec/ai.md
-    // TODO(spec): movemode and anim_pose are engine-maintained string fields whose initial values are not
-    // specified yet; these two are inferred.
-    a.obj->set("movemode", Value("run"));
+    // movemode is a byte enum shown as "stop", "stop soon", "walk", "run" (getter 0x536960); the zeroed actor
+    // starts at "stop". TODO(spec): anim_pose's initial value (a string index, 0 after allocation) is inferred.
+    a.obj->set("movemode", Value("stop"));
     a.obj->set("anim_pose", Value("stand"));
     const std::string aitype = "aitype/" + cls.substr(6) + ".gsc";
     try {
@@ -358,6 +358,8 @@ void World::thinkActors() {
                     e.path.push_back(g);
                     e.pathIndex = 0;
                     e.pathGoal = g;
+                    // Inferred placeholder: the engine's movement code maintains movemode.
+                    e.obj->set("movemode", Value("run"));
                     if (e.animScript != "move") startAnimScript(e, "move");
                 }
                 moveActor(e, 0.05f);
@@ -366,6 +368,7 @@ void World::thinkActors() {
             if (e.animScript == "move") {
                 e.path.clear();
                 vm_.notify(e.obj, "goal");
+                e.obj->set("movemode", Value("stop"));
                 startAnimScript(e, "stop");
                 continue;
             }

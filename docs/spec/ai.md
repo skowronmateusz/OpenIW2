@@ -88,9 +88,13 @@ displacements), so `pathenemylookahead` and `pathenemyfightdist` start at 0 and 
 `FUN_00505f70` uses it while the actor paths to its enemy (byte at actor+0x788 set): goal radius
 = max(`pathenemyfightdist`, 4), goal height = 512 if `pathenemyfightdist` > 80, else 80.
 
-TODO(spec): the initial values of the engine-maintained string fields `movemode` and `anim_pose` (zero string
-index after allocation; getter 0x536960 for `movemode`). OpenIW2 uses `"run"` and `"stand"` (inferred);
-`animscripts/init.gsc` sets `anim_pose = "stand"` itself.
+`movemode` (actor +0x214) is a byte; its getter 0x536960 (raw slice) returns the constant strings 0x1c7f112…118
+for values 0–3: "stop", "stop soon", "walk", "run" (constants set in 0x5064a0). The zeroed actor therefore starts with
+`movemode` "stop". The engine's movement code updates it; OpenIW2 sets "run" while moving to a goal and "stop" on
+arrival (inferred placeholder).
+
+TODO(spec): `anim_pose` (+0x146) is a string index, 0 after allocation; what the getter returns for 0 is not read.
+OpenIW2 uses "stand"; `animscripts/init.gsc` sets `anim_pose = "stand"` itself.
 
 ## Path data (lump 38, observed)
 
