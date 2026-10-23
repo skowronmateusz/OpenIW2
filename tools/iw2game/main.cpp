@@ -391,6 +391,8 @@ int main(int argc, char** argv) {
         bool playerShoots = false;
         bool drive = false;
         bool controls = false;
+        int turretTest = -1; // --turret N: stand behind the N-th usable turret, F at 1 s, aim + fire 2–3 s, F at 4 s
+        iw2::game::Entity* testTurret = nullptr;
         bool pmove = false;
         iw2::game::PlayerState pmoveState;
         bool pmoveInit = false;
@@ -408,6 +410,8 @@ int main(int argc, char** argv) {
                 spawnAll = true;
             } else if (a == "--controls") {
                 controls = true; // default.cfg keys through the client commands and PM_Weapon: 1, SHIFT, G, C, SPACE
+            } else if (a == "--turret" && i + 1 < argc) {
+                turretTest = std::stoi(argv[++i]);
             } else if (a == "--drive") {
                 drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
             } else if (a == "--player-at" && i + 2 < argc) {
@@ -529,6 +533,52 @@ int main(int argc, char** argv) {
                     world.playerFire(eye, dir);
                     playerHits += world.stats.hits - before;
                 }
+            }
+            if (turretTest >= 0 && world.player()) {
+                iw2::game::World::PlayerCommand cmd;
+                if (f == 19) {
+                    const auto p0 = world.player()->obj->get("origin").asVector();
+                    std::printf("turret: player start %.1f %.1f %.1f\n", p0[0], p0[1], p0[2]);
+                    int k = 0;
+                    for (const auto& e : world.entities())
+                        if (e->turret && !e->obj->removed && (e->turret->flags & 0x1000u) && !e->turret->inUse && k++ == turretTest) {
+                            testTurret = e.get();
+                            break;
+                        }
+                    if (!testTurret) std::printf("turret: no usable turret %d\n", turretTest);
+                }
+                if (testTurret) {
+                    const auto to = testTurret->obj->get("origin").asVector(), ta = testTurret->obj->get("angles").asVector();
+                    const float yr = ta[1] * 0.0174532924f;
+                    cmd.viewAngles = {0, ta[1], 0};
+                    if (f == 19) {
+                        // Stand on the ground 34 units behind the gun (where the turret code would put the player).
+                        const iw2::game::Vec start{to[0] - std::cos(yr) * 34.0f, to[1] - std::sin(yr) * 34.0f, to[2]};
+                        const auto tr = world.collision().trace(start, {start[0], start[1], start[2] - 200.0f}, {-15, -15, 0}, {15, 15, 70},
+                                                               iw2::game::Contents::PlayerClipMask, world.player()->number);
+                        world.setPlayerOrigin({tr.endPos[0], tr.endPos[1], tr.endPos[2]}, {0, ta[1], 0});
+                        std::printf("turret %d at %.1f %.1f %.1f yaw %.1f: player at %.1f %.1f %.1f\n", testTurret->number, to[0], to[1],
+                                    to[2], ta[1], tr.endPos[0], tr.endPos[1], tr.endPos[2]);
+                    }
+                    if (f == 20 || f == 80) cmd.buttons |= 8;                    // F
+                    if (f >= 40 && f < 80) cmd.viewAngles = {10.0f, ta[1] + 80.0f, 0}; // past any arc
+                    if (f >= 40 && f < 60) cmd.buttons |= 1;                    // fire
+                    if (f == 21 || f == 39 || f == 45 || f == 59 || f == 81) {
+                        float cp = cmd.viewAngles[0], cy = cmd.viewAngles[1];
+                        world.clampPlayerView(cp, cy);
+                        iw2::game::Vec3 eye{};
+                        const bool hasEye = world.playerTurretEye(eye);
+                        const auto po = world.player()->obj->get("origin").asVector();
+                        std::printf("turret t=%.2f on %d inUse %d player %.1f %.1f %.1f eye %s %.1f %.1f %.1f view clamp %.1f %.1f turret "
+                                    "angles %s shots %d\n",
+                                    f * 0.05f, world.playerOnTurret(), testTurret->turret->inUse, po[0], po[1], po[2], hasEye ? "yes" : "no",
+                                    eye[0], eye[1], eye[2], cp, cy, testTurret->obj->get("$turretangles").toString().c_str(), world.stats.shots);
+                    }
+                    if (const auto rel = world.takeTurretRelease())
+                        std::printf("turret t=%.2f released: origin %.1f %.1f %.1f stance %d\n", f * 0.05f, rel->origin[0], rel->origin[1],
+                                    rel->origin[2], rel->stance);
+                }
+                world.setPlayerCommand(cmd);
             }
             if (drive && world.player()) {
                 iw2::game::World::PlayerCommand cmd;

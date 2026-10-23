@@ -159,8 +159,8 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
 
 // A turret the player may use (0x51dac0): turret flag 0x1000, not in use, the player within its half arc
 // (0x51d8a0: the angle between the flat direction of the arc centre, yaw + right arc + (|right| + |left|) / 2, and
-// the flat turret → player direction at most (|right| + |left|) / 2), no grenade being cooked (ps+0x3c) and on
-// the ground.
+// the flat player → turret direction at most (|right| + |left|) / 2, so the player stands behind the gun), no
+// grenade being cooked (ps+0x3c) and on the ground.
 bool World::turretUsableByPlayer(Entity& t) {
     const TurretState& ts = *t.turret;
     if (!(ts.flags & 0x1000u) || ts.inUse) return false;
@@ -173,7 +173,7 @@ bool World::turretUsableByPlayer(Entity& t) {
     const float rad = 0.0174532924f;
     Vec3 dir{std::cos(centre * rad), std::sin(centre * rad), 0};
     normalize(dir);
-    Vec3 d{po[0] - to[0], po[1] - to[1], 0};
+    Vec3 d{to[0] - po[0], to[1] - po[1], 0}; // player → turret (0x51d962: turret +0xdc − player +0xdc)
     normalize(d);
     float a = std::acos(std::clamp(dot(d, dir), -1.0f, 1.0f)); // 0x565d70
     if (a > 3.1415927f || a < -3.1415927f) a = 3.1415927f;

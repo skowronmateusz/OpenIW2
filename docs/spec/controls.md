@@ -79,10 +79,15 @@ Firing, rechambering and reloading are still the inferred machine of `docs/spec/
   v̂ · (v̂ · player velocity).
 - 0xa8–0xac notify the player with script strings; 0xc8 (200) the cooked grenade.
 
-## Use key and turrets (not implemented)
+## Use key and turrets
 
-The use scan (0x534d40 → 0x534490) also offers turrets (entity type 8) through 0x51dac0: turret info flag 0x1000,
-not in use (+0x112), 0x51d8a0, no grenade fuse and the player on the ground. The use (0x5342b0 / 0x534350 →
-0x5341a0) calls the entity handler's use function: turrets have handlers 20 (think 0x51ced0) and 21 (think
-0x51d250), use 0x51db50 (no Ghidra procedure: carve it). On a turret, pressing use again sets +0x112 to 2 when
-pm_flags & 0x300. TODO(spec): the player-turret use, view limits, firing and getting off.
+The use scan (0x534d40 → 0x534490) also offers turrets (entity type 8) through 0x51dac0: turret info flag 0x1000
+(set by the turret setup with 1|2: info+8 = 0x1003 at 0x51e4ec), not in use (+0x112), 0x51d8a0, no grenade fuse
+and the player on the ground. 0x51d8a0 compares the flat arc-centre direction (yaw + right arc + (|right| +
+|left|)/2) with the flat player → turret direction (0x51d962: turret +0xdc − player +0xdc), so the player has to
+stand behind the gun, within half the total arc. The use (0x5342b0 / 0x534350 → 0x5341a0) calls the entity
+handler's use function: turrets have handlers 20 (think 0x51ced0) and 21 (think 0x51d250), use 0x51db50 (no
+Ghidra procedure: carve it). On a turret, pressing use again sets +0x112 to 2 when pm_flags & 0x300. The full
+player-turret use, view clamp, firing and release are in src/game/playeruse.cpp;
+on the client side (iw2view) PmoveSingle skips movement and PM_Weapon (0x50c918), the eye is the turret's
+tag_player (0x4e8b70), and no view model is drawn (0x4b6d40 returns with eFlags & 0x300).

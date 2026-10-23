@@ -56,6 +56,8 @@ public:
     int stock() const { return stock_; }
     // PM_Weapon's weapon state number (0 ready, 1 raising, 2 dropping, 10/11 melee, 12–16 offhand, …).
     int stateNumber() const { return int(state_); }
+    // The offhand fuse (ps+0x3c) in ms: non-zero while a grenade is being cooked.
+    int fuseMs() const { return int(fuse_ * 1000.0f); }
 
     // View model: xmodel paths for the gun and hands and the current animation with its elapsed time. During an
     // offhand throw these are the offhand weapon's (ps+0xac while flag 0x10 is set).
