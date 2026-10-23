@@ -16,6 +16,9 @@ struct PlayerInput {
     Stance stance = Stance::Stand; // requested stance
     bool leanLeft = false, leanRight = false; // +leanleft / +leanright (usercmd bits 0x40 / 0x80)
     float yaw = 0;                // view yaw in degrees
+    bool adsHeld = false;         // usercmd 0x1000, or the weapon state forces aim (0x13 / 0x14)
+    bool adsAllowed = false;      // 0x4dcf70: the weapon can aim now (PlayerWeapon::adsAllowed)
+    int weaponState = 0;          // ps+0xb4
 };
 
 struct PlayerState {
@@ -34,6 +37,9 @@ struct PlayerState {
     int64_t lastJumpMs = -100000;
     bool jumpHeld = false;
     float lean = 0;              // leanf: −0.5..0.5 (−0.25..0.25 prone), negative = left
+    bool ads = false;            // pm_flags 0x40: aiming down the sights (0x4dd020)
+    bool adsSlow = false;        // pm_flags 0x100: aiming slows movement (0x50bd00)
+    bool prevAdsHeld = false;    // the previous command's 0x1000 (pm+0x38)
 };
 
 // View offset of a lean (0x440380 with roll factor 16 and distance 20): g = (2 − |lean|)·lean, roll = 16·g

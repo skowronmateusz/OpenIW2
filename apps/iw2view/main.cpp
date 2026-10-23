@@ -1510,7 +1510,7 @@ int main(int argc, char** argv) {
         game::ViewWeaponMotion vmMotion;
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
-        std::string weaponSelect, weaponWritten;
+        std::string weaponSelect, weaponWritten, prevSelect;
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
@@ -1998,12 +1998,17 @@ int main(int argc, char** argv) {
                 in.leanLeft = (buttons & game::Button::LeanLeft) != 0;
                 in.leanRight = (buttons & game::Button::LeanRight) != 0;
                 in.yaw = cam.yaw;
+                in.adsHeld = (buttons & game::Button::Ads) != 0;
+                in.adsAllowed = pweapon.adsAllowed();
+                in.weaponState = pweapon.stateNumber();
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
                 // With a running level the player clips against the world and its solid entities (brush models,
                 // actors) like G_Trace in the original pmove (0x507b00 → 0x4db7f0 → 0x44bf00), skipping itself.
                 game::MoveParams pmp = mp;
                 if (world && world->player()) pmp.passEntity = world->player()->number;
+                // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
+                if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
                 const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision;
                 while (remaining > 0) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
@@ -2050,11 +2055,18 @@ int main(int argc, char** argv) {
                     if (!other.empty()) weaponSelect = other; // TODO(spec): weapons outside the slots (0x4b72f0)
                 }
                 wi.fire = (buttons & game::Button::Attack) != 0;
-                wi.ads = (buttons & game::Button::Ads) != 0;
+                // The aim fraction follows pm_flags 0x40 (0x4dd0d0), which pmove sets from the aim command (0x4dd020).
+                wi.ads = walk && !inVehicle && !onTurret ? ps.ads : (buttons & game::Button::Ads) != 0;
                 wi.reload = reloadPressed;
                 wi.melee = (buttons & game::Button::Melee) != 0;
                 wi.frag = (buttons & game::Button::Frag) != 0;
                 wi.smoke = (buttons & game::Button::Smoke) != 0;
+                // A new selected weapon ends the toggled aim unless it is the current weapon's altWeapon (cgame 0x4b8360).
+                if (weaponSelect != prevSelect) {
+                    if (!prevSelect.empty() && !(pweapon.name() == prevSelect && pweapon.field("altWeapon") == weaponSelect))
+                        input.clearAds();
+                    prevSelect = weaponSelect;
+                }
                 wi.weapon = weaponSelect;
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
@@ -2112,6 +2124,7 @@ int main(int argc, char** argv) {
                     pweapon = game::PlayerWeapon{};
                     weaponSelect.clear();
                     weaponWritten.clear();
+                    prevSelect.clear();
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
                     gameClock = 0;
                 }

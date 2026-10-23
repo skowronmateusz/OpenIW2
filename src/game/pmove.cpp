@@ -378,7 +378,8 @@ void updateViewHeight(PlayerState& ps) {
 
 // Command scale (0x508140, 0x5080a0): g_speed · max(|forward| (×backSpeedScale when backwards),
 // |right|·strafeSpeedScale) / (|command| · 127), then ×0.65 crouched, ×0.15 prone, × the weapon's
-// moveSpeedScale. TODO(spec): the blend during crouch/prone transitions (0x509760) and the ×0.4 cases.
+// moveSpeedScale; ×0.4 once while aiming (pm_flags 0x100) or leaning. TODO(spec): the blend during crouch/prone
+// transitions (0x509760), pm_type 2 (×3) and 3 (×6), the ×0.4 of command bit 0x800.
 float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bool walking) {
     const float fb = f < 0 && walking ? f * mp.backSpeedScale : f;
     const float rs = walking ? std::fabs(r * mp.strafeSpeedScale) : std::fabs(r);
@@ -390,7 +391,7 @@ float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bo
         else if (ps.stance == Stance::Crouch) s *= 0.65f;
         if (mp.weaponSpeedScale > 0) s *= mp.weaponSpeedScale;
     }
-    if (ps.lean != 0) s *= 0.4f; // a nonzero leanf (ps+0x4c) slows movement (0x508140)
+    if (ps.adsSlow || ps.lean != 0) s *= 0.4f; // pm_flags 0x100 or a nonzero leanf (ps+0x4c) (0x508140, 0x5080a0)
     return s;
 }
 
@@ -527,6 +528,20 @@ void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerIn
     if (ps.velocity[0] != 0 || ps.velocity[1] != 0) stepSlideMove(w, ps, pml, false, mp);
 }
 
+// Aiming (0x4dd020, then 0x50bd00): with the aim command and a weapon that may aim (0x4dcf70) the player aims
+// standing or crouched; prone only when the aim was just pressed or the player is not moving (then pm_flags 0x800
+// is set too, TODO(spec): what 0x800 does). Aiming slows movement unless prone or in weapon states 5–9.
+void updateAds(PlayerState& ps, const PlayerInput& in, float f, float r) {
+    const bool prone = ps.stance == Stance::Prone; // pm_flags 1
+    ps.ads = false;
+    if (in.adsHeld && in.adsAllowed) {
+        if (!prone) ps.ads = true;
+        else if (!ps.prevAdsHeld || (f == 0 && r == 0)) ps.ads = true;
+    }
+    ps.prevAdsHeld = in.adsHeld;
+    ps.adsSlow = ps.ads && !prone && !(in.weaponState >= 5 && in.weaponState <= 9);
+}
+
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     Pml pml;
@@ -535,11 +550,16 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     pml.passEntity = mp.passEntity;
     pml.mins = mp.mins;
     pml.maxs = {mp.maxs[0], mp.maxs[1], maxsZ(ps.stance, mp)};
+    // Aiming while prone (pm_flags 0x40 from the previous step, view height target 11) clears the command's forward
+    // and right moves (0x50c5c7).
+    float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);
+    if (ps.ads && ps.viewHeightTarget == 11) fwdMove = rightMove = 0;
     groundTrace(w, ps, pml);
     updateLean(w, ps, in, float(ms), in.yaw);
     updateStance(w, ps, in, mp);
     updateViewHeight(ps);
     pml.maxs[2] = maxsZ(ps.stance, mp);
+    updateAds(ps, in, fwdMove, rightMove);
 
     // pm_time runs down; when it expires pm_flags 0x80000, 0x400 and 0x200 are cleared.
     if (ps.pmTimeMs != 0) {
@@ -553,7 +573,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
 
     const float yaw = in.yaw * float(M_PI) / 180.0f;
     const Vec fwd{std::cos(yaw), std::sin(yaw), 0}, right{std::sin(yaw), -std::cos(yaw), 0};
-    const float f = std::clamp(in.forward, -1.0f, 1.0f) * 127.0f, r = std::clamp(in.right, -1.0f, 1.0f) * 127.0f;
+    const float f = fwdMove * 127.0f, r = rightMove * 127.0f;
     if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
