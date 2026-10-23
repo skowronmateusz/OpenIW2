@@ -103,6 +103,103 @@ V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, floa
     return b;
 }
 
+namespace {
+float stanceBobAmplitude(int vht) { return vht == 11 ? 0.03f : vht == 40 ? 0.0075f : 0.007f; }
+// 0x4adf90: (sin 2c + sin(4c + π/2) · 0.2) · min(speed · stance amplitude, max) · 0.75.
+float bobWave(float c, float speed, int vht, float cap) {
+    const float a = std::min(speed * stanceBobAmplitude(vht), cap);
+    return (std::sin(c + c) + std::sin(c * 4.0f + 1.5707963705062866f) * 0.2f) * a * 0.75f;
+}
+// 0x4ae010: sin c · min(speed · stance amplitude, max).
+float bobSide(float c, float speed, int vht, float cap) { return std::sin(c) * std::min(speed * stanceBobAmplitude(vht), cap); }
+} // namespace
+
+std::array<float, 4> viewBob(int bobCycle, float xySpeed, int vht, float adsFrac, float adsViewBobMult) {
+    constexpr float kTwoPi = 6.2831854820251465f;
+    const float c = float(bobCycle & 0xff) / 255.0f * kTwoPi + kTwoPi; // 0x4af4a8
+    std::array<float, 4> r{bobWave(c, xySpeed, vht, 8.0f), bobSide(c, xySpeed, vht, 8.0f), 0, 0};
+    if (adsFrac != 0 && adsViewBobMult != 0) {
+        r[2] = -adsFrac * adsViewBobMult * bobWave(c, xySpeed, vht, 45.0f);
+        r[3] = -adsFrac * adsViewBobMult * bobSide(c, xySpeed, vht, 45.0f);
+    }
+    return r;
+}
+
+namespace {
+// DiffTrack (0x420a20): moves cur towards target by (target − cur) · rate · dt unless that overshoots or the gap is
+// below 0.001; then target.
+float diffTrack(float target, float cur, float rate, float dt) {
+    const float d = target - cur, step = d * rate * dt;
+    if (std::fabs(d) > 0.001f && !(std::fabs(d) <= std::fabs(step))) return step + cur;
+    return target;
+}
+// DiffTrackAngle (0x420a90): target wrapped to within 180 of cur, then DiffTrack.
+float diffTrackAngle(float target, float cur, float rate, float dt) {
+    while (target - cur > 180.0f) target -= 360.0f;
+    while (target - cur < -180.0f) target += 360.0f;
+    return diffTrack(target, cur, rate, dt);
+}
+float angleDelta(float a, float b) { return std::remainder(a - b, 360.0f); } // 0x423f50
+} // namespace
+
+void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle) {
+    const bool adsWeapon = w("aimDownSight") != 0;
+    // Idle sway (0x4b51a0): amount / speed hipIdle* (aiming weapons lerp to adsIdle* by the aim fraction; without
+    // hipIdleAmount: 80 and 1), × the stance factor (idleProneFactor / idleCrouchFactor) the smoothed factor
+    // approaches at 0.0005 per ms (kept while a reticle weapon aims), × (1 − adsFrac) for reticle weapons; time
+    // advances by trunc(ms · speed); pitch/yaw/roll += sin(t · 0.001 / 0.0007 / 0.0005) · amount · 0.01.
+    {
+        float amount, speed;
+        if (adsWeapon) {
+            amount = w("hipIdleAmount") + (w("adsIdleAmount") - w("hipIdleAmount")) * adsFrac;
+            speed = w("hipIdleSpeed") + (w("adsIdleSpeed") - w("hipIdleSpeed")) * adsFrac;
+        } else if (w("hipIdleAmount") != 0) {
+            amount = w("hipIdleAmount");
+            speed = w("hipIdleSpeed");
+        } else {
+            amount = 80.0f;
+            speed = 1.0f;
+        }
+        const float target = stance == 2 ? w("idleProneFactor") : stance == 1 ? w("idleCrouchFactor") : 1.0f;
+        if (!(reticle && adsFrac != 0) && target != idleFactor_) {
+            const float step = float(ms) * 0.0005f;
+            idleFactor_ = target > idleFactor_ ? std::min(target, idleFactor_ + step) : std::max(target, idleFactor_ - step);
+        }
+        amount *= idleFactor_;
+        if (reticle) amount *= 1.0f - adsFrac;
+        idleTime_ += int(float(ms) * speed);
+        outRot_[2] += std::sin(float(idleTime_) * 0.0005f) * amount * 0.01f;
+        outRot_[1] += std::sin(float(idleTime_) * 0.0007f) * amount * 0.01f;
+        outRot_[0] += std::sin(float(idleTime_) * 0.001f) * amount * 0.01f;
+    }
+    // View-lag sway (0x4b4dc0): the view angle change since the last frame, scaled to 60 fps and clamped to
+    // swayMaxAngle, drives side/up offsets (swayHoriz/VertScale) and pitch/yaw (swayPitch/YawScale) tracked at
+    // swayLerpSpeed; aiming weapons lerp to the ads* values, none while a reticle weapon aims. 0x4b61d0 subtracts the
+    // side from the right offset and adds the up; 0x4b6420 subtracts pitch and yaw. TODO(spec): the shell-shock
+    // scale (swayShellShockScale), taken as 1.
+    if (ms > 0 && !(adsFrac > 0 && reticle && adsWeapon)) {
+        auto lerpF = [&](const char* hip, const char* ads) { return adsWeapon ? w(hip) + (w(ads) - w(hip)) * adsFrac : w(hip); };
+        const float maxAng = lerpF("swayMaxAngle", "adsSwayMaxAngle"), rate = lerpF("swayLerpSpeed", "adsSwayLerpSpeed");
+        const float pitchS = lerpF("swayPitchScale", "adsSwayPitchScale"), yawS = lerpF("swayYawScale", "adsSwayYawScale");
+        const float horizS = lerpF("swayHorizScale", "adsSwayHorizScale"), vertS = lerpF("swayVertScale", "adsSwayVertScale");
+        const float dt = float(ms) * 0.001f;
+        if (!havePrev_) { prevPitch_ = viewPitch; prevYaw_ = viewYaw; havePrev_ = true; }
+        const float k = 1.0f / (dt * 60.0f);
+        const float dp = std::clamp(angleDelta(viewPitch, prevPitch_) * k, -maxAng, maxAng);
+        const float dy = std::clamp(angleDelta(viewYaw, prevYaw_) * k, -maxAng, maxAng);
+        lagSide_ = diffTrack(dy * horizS, lagSide_, rate, dt);
+        lagUp_ = diffTrack(dp * vertS, lagUp_, rate, dt);
+        lagPitch_ = diffTrackAngle(dp * pitchS, lagPitch_, rate, dt);
+        lagYaw_ = diffTrackAngle(dy * yawS, lagYaw_, rate, dt);
+        prevPitch_ = viewPitch;
+        prevYaw_ = viewYaw;
+    }
+    outMove_[1] -= lagSide_;
+    outMove_[2] += lagUp_;
+    outRot_[0] = angleDelta(outRot_[0], lagPitch_);
+    outRot_[1] = angleDelta(outRot_[1], lagYaw_);
+}
+
 float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac, float adsFrac, bool zoomingIn) {
     const float zoom = std::min(adsZoomFov, cgFov);
     if (adsFrac == 1.0f) return zoom;

@@ -254,6 +254,9 @@ public:
     // max health). The aim spread scale also grows by count (ps+0x5b0).
     struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
+    // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
+    // weapon's enemyCrosshairRange), set by the client think (0x535070).
+    uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
@@ -628,6 +631,8 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
+    uint32_t crosshairFlags_ = 0;
+    void updateCrosshairTarget();
     int damageBlood_ = 0;                // client +0x8658
     Vec3 damageFrom_{};                  // +0x865c
     bool damageFromWorld_ = false;       // +0x8668

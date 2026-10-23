@@ -2101,7 +2101,13 @@ int main(int argc, char** argv) {
                 }
                 const float alpha = std::max((1.0f - hudAimSpread / 255.0f) * 1.0f * crossAlpha, 0.0f);
                 const float cx = 320.0f, cy = 240.0f + offY;
-                const uint8_t col[4] = {255, 255, 255, uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f)};
+                // Colour (0x4bce70): pm_flags 0x100000 → (0.25, 1, 0.25); 0x200000 with cg_crosshairEnemyColor (1) →
+                // (1, 0.25, 0.25); else white.
+                const uint32_t chf = world ? world->playerCrosshairFlags() : 0;
+                const bool friendly = chf & 0x100000u, enemy = !friendly && (chf & 0x200000u);
+                const uint8_t lo = uint8_t(0.25f * 255.0f);
+                const uint8_t col[4] = {friendly ? lo : uint8_t(255), enemy ? lo : uint8_t(255), friendly || enemy ? lo : uint8_t(255),
+                                        uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f)};
                 auto pic = [&](float x, float y, float sz, const std::string& mat, int rot) {
                     Quad2D q{left43 + x * sc, y * sc, 0, 0};
                     q.x1 = q.x0 + sz * sc;
@@ -2255,6 +2261,7 @@ int main(int argc, char** argv) {
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
         bool wasDead = false;
+        std::array<float, 2> bobAngles{0, 0};
         float deadYaw = 0;
         game::MoveRecorder moveRecorder;
         bool fellOut = false;
@@ -2442,6 +2449,15 @@ int main(int argc, char** argv) {
                     cam.roll = 0;
                 }
                 wasDead = playerDead;
+                // Camera bob (0x4ae290): up by the bob wave, sideways along the right vector (pitch/yaw/roll of the view).
+                // TODO(spec): the landing dip (0xf790a0), the damage kick (0xf79764), the minimum eye height (0x592010).
+                if (!playerDead) {
+                    const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
+                    const auto vb = game::viewBob(ps.bobCycle, xy, ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsViewBobMult"));
+                    bobAngles = {vb[2], vb[3]};
+                    const Vec3 rgt = cam.right();
+                    cam.pos = cam.pos + Vec3{0, 0, vb[0]} + rgt * vb[1];
+                }
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
@@ -2498,6 +2514,12 @@ int main(int argc, char** argv) {
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
+                {
+                    const std::string ret = pweapon.field("adsOverlayReticle");
+                    vmMotion.sway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), cam.pitch, cam.yaw,
+                                  pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
+                                  !ret.empty() && ret != "none");
+                }
                 {
                     const std::string ret = pweapon.field("adsOverlayReticle");
                     gunBobAngles = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
@@ -2624,6 +2646,9 @@ int main(int argc, char** argv) {
                     mixer.fade(1.0f, 0);
                 }
             }
+            const Camera camBase = cam;
+            cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
+            cam.yaw += bobAngles[1];
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
             auto items = gatherItems(cam);
@@ -2640,6 +2665,8 @@ int main(int argc, char** argv) {
             if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap)
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam));
             SDL_SubmitGPUCommandBuffer(cmd);
+            cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
+            cam.yaw = camBase.yaw;
         }
         if (audioStream) SDL_DestroyAudioStream(audioStream);
         SDL_ReleaseWindowFromGPUDevice(dev, window);
