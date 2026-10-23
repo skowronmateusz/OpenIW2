@@ -181,6 +181,27 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         // player_die (0x527d80) sets the client's respawn time to level time + 1700 ms (0x527e85); the client think
         // opens the death screen once the level time passes it (0x4e7eb7, World::runDeathScreen).
         if (playerRespawnMs_ < 0) playerRespawnMs_ = timeMs_ + 1700;
+        // player_die (0x527d80): TossClientItems (0x527bd0, unless the origin is in contents 0x80000000): the current
+        // weapon (the next one while dropping, ps+0x85cc) is dropped as its weapon_ item (0x521f70) when owned, not
+        // "none", with stock ammo of its ammoName (ps+0x118) and not on a turret. The entity's weapon becomes 0
+        // (ent+2), so the client draws no view weapon. LookAtKiller (0x527cd0): the dead yaw ps+0x10c faces the
+        // inflictor, else the attacker. TODO(spec): the toss velocity built from the view angles, the no-killer yaw.
+        Inventory& inv = inventory(target);
+        const std::string w = lowerStr(target.obj->get("$weapon").toString());
+        const Vec3 po = target.obj->get("origin").asVector();
+        const bool noDrop = collision_->trace(po, po, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid; // 0x44c840
+        if (!noDrop && !w.empty() && w != "none" && inv.owned.count(w) && inv.ammo[weaponField(w, "ammoName")] != 0 && !playerOnTurret()) {
+            Entity& item = spawnEntity("weapon_" + w);
+            item.obj->set("origin", target.obj->get("origin"));
+            item.obj->set("angles", target.obj->get("angles"));
+            const std::string wm = weaponField(w, "worldModel");
+            if (!wm.empty()) item.obj->set("model", Value(wm));
+        }
+        playerDeadWeaponless_ = true;
+        if (attacker && attacker != &target) {
+            const Vec3 d = sub(attacker->obj->get("origin").asVector(), target.obj->get("origin").asVector());
+            playerDeadYaw_ = std::atan2(d[1], d[0]) * 180.0f / float(M_PI);
+        }
     }
 }
 

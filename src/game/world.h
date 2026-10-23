@@ -247,6 +247,9 @@ public:
         std::string text;
     };
     const PlayerUseHint& playerUseHint() const { return playerUseHint_; }
+    // After the player's death: no view weapon (ent+2 = 0, cgame 0x4b6a0a) and the dead view yaw (ps+0x10c).
+    bool playerDeadWeaponless() const { return playerDeadWeaponless_; }
+    std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
@@ -608,6 +611,8 @@ private:
     uint32_t playerEFlags_ = 0;          // ps eFlags 0x100 / 0x200 (both: on a standing turret)
     float viewClampBase_[2] = {0, 0}, viewClampRange_[2] = {0, 0}; // ps+0xe8 / +0xec, +0xf0 / +0xf4
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
+    bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
+    std::optional<float> playerDeadYaw_; // ps+0x10c from LookAtKiller
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;
     PlayerCommand playerCmd_;

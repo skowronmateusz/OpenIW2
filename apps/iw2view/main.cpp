@@ -2395,7 +2395,7 @@ int main(int argc, char** argv) {
                 // (ps+0x10c). TODO(spec): that yaw (set at death towards the killer); the current yaw is kept.
                 // The command's view angles are not applied while dead (0x50b12b), so the yaw stays where it was.
                 if (playerDead) {
-                    if (!wasDead) deadYaw = cam.yaw;
+                    if (!wasDead) deadYaw = world->playerDeadYaw() ? *world->playerDeadYaw() : cam.yaw; // ps+0x10c (0x4ae314)
                     cam.yaw = deadYaw;
                     cam.pitch = -15.0f;
                     cam.roll = 40.0f;
@@ -2566,7 +2566,7 @@ int main(int argc, char** argv) {
             const int wstate = pweapon.stateNumber();
             if (!(world && world->playerOnTurret()) &&
                 !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
-                if (!(world && scopeAlpha() > 0)) // the gun is not drawn under a scope overlay (cgame 0x4b6d7c, cg_drawGun)
+                if (!(world && scopeAlpha() > 0) && !(world && world->playerDeadWeaponless())) // scope overlay (0x4b6d7c); dead: entity weapon 0 (0x4b6a0a)
                     addViewModel(items, cam);
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
