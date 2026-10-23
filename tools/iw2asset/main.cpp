@@ -276,6 +276,16 @@ int main(int argc, char** argv) {
                           << surfs.size() << " surfaces, " << verts << " verts, " << tris << " tris\n";
                 for (size_t i = 0; i < lod.materials.size(); ++i) std::cout << "    material " << lod.materials[i] << "\n";
             }
+        } else if (cmd == "model-bones" && args.size() > 2) {
+            const auto m = assets::parseXModel(mustRead(vfs, args[2]));
+            const auto parts = assets::parseXModelParts(mustRead(vfs, "xmodelparts/" + m.lods.at(0).name));
+            for (size_t i = 0; i < parts.bones.size(); ++i) {
+                const auto& b = parts.bones[i];
+                std::cout << i << " " << b.name << " parent " << b.parent << " local (" << b.localOffset[0] << " " << b.localOffset[1]
+                          << " " << b.localOffset[2] << ") q (" << b.localRotation.x << " " << b.localRotation.y << " "
+                          << b.localRotation.z << " " << b.localRotation.w << ") pos (" << b.position[0] << " " << b.position[1]
+                          << " " << b.position[2] << ")\n";
+            }
         } else if (cmd == "model-check") {
             int ok = 0, failed = 0;
             for (const auto& name : vfs.list("xmodel/")) {

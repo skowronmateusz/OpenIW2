@@ -839,61 +839,6 @@ bool World::vehicleUseBounds(Entity& e, Vec3& mins, Vec3& maxs) {
     return true;
 }
 
-// The player's use key (0x5343d0, pressed this frame: +activate 8 or +usereload 0x20). In a usable vehicle it gets
-// out (0x5341a0); otherwise the best usable vehicle in reach is used (scan 0x534490, g_useholdtime 0 so at once):
-// absbox touching eye ± (108, 108, 96), absbox centre within 128 of the eye, score = distance + (1 − (dir · view
-// forward + 1) / 2) · 144, +10000 when the eye → centre line (mask 0x11) is blocked; the first one passing 0x512200
-// (player not in a vehicle, vehicle without owner, |forward speed| ≤ 1, health > 0, usable).
-// TODO(spec): other usable entities (turrets, triggers with hint strings) are not part of this scan; the global
-// 0x9bef24 that gates it is treated as set.
-void World::runPlayerUse() {
-    if (!player_) return;
-    const uint32_t pressed = playerCmd_.buttons & ~playerOldButtons_;
-    playerOldButtons_ = playerCmd_.buttons;
-    if (!(pressed & 0x28)) return;
-    if ((pmFlags_ & 0x20000) && player_->usingVehicle >= 0) {
-        Entity* v = entityByNumber(player_->usingVehicle);
-        if (v && v->vehicle && v->vehicle->usable) useVehicle(*v, *player_);
-        return;
-    }
-    const Vec3 o = player_->obj->get("origin").asVector();
-    const Vec3 eye{o[0], o[1], o[2] + 60.0f}; // TODO(spec): the stance view height (0x4e8b70)
-    const float rad = 0.0174532924f;
-    const float yaw = playerCmd_.viewAngles[1] * rad, pitch = playerCmd_.viewAngles[0] * rad;
-    const Vec3 fwd{std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), -std::sin(pitch)};
-    struct Candidate { Entity* e; float score; Vec3 centre; };
-    std::vector<Candidate> list;
-    for (const auto& ep : entities_) {
-        Entity& e = *ep;
-        if (e.obj->removed || e.classname != "script_vehicle") continue;
-        if (!vehicleState(Value(e.obj)).usable) continue; // contents 0x200000
-        Vec3 mn, mx;
-        if (!vehicleUseBounds(e, mn, mx)) continue;
-        if (mn[0] > eye[0] + 108 || mx[0] < eye[0] - 108 || mn[1] > eye[1] + 108 || mx[1] < eye[1] - 108 ||
-            mn[2] > eye[2] + 96 || mx[2] < eye[2] - 96)
-            continue;
-        const Vec3 centre{(mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f};
-        Vec3 d = sub(centre, eye);
-        const float dist = normalize(d);
-        if (dist > 128.0f) continue;
-        list.push_back({&e, dist + (1.0f - (dot(d, fwd) + 1.0f) * 0.5f) * 144.0f, centre});
-    }
-    auto byScore = [](const Candidate& a, const Candidate& b) { return a.score < b.score; };
-    std::sort(list.begin(), list.end(), byScore);
-    for (Candidate& c : list)
-        if (collision_->trace(eye, c.centre, {0, 0, 0}, {0, 0, 0}, 0x11, player_->number).fraction < 1.0f) c.score += 10000.0f;
-    std::sort(list.begin(), list.end(), byScore);
-    for (const Candidate& c : list) {
-        const VehicleState& v = *c.e->vehicle;
-        const Value h = c.e->obj->get("health");
-        if ((pmFlags_ & 0x20000) || player_->usingVehicle >= 0 || v.owner >= 0 || v.forwardSpeed > 1.0f || !h.isNumber() ||
-            h.asInt() < 1 || !v.usable)
-            continue;
-        useVehicle(*c.e, *player_);
-        return;
-    }
-}
-
 // The ridden vehicle's tag_body axes (rows forward, left, up) for the view (cgame 0x4aeb60).
 bool World::playerVehicleBodyAxis(std::array<Vec3, 3>& axis) {
     if (!player_ || player_->usingVehicle < 0 || !(pmFlags_ & 0x20000)) return false;

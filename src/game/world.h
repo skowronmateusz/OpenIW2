@@ -221,10 +221,33 @@ public:
         int forward = 0, right = 0;
         uint32_t buttons = 0;
         Vec3 viewAngles{};
+        // Player state the use code reads (pmove runs in the front end): stance (pm_flags 1 prone → 2, 2 crouch → 1,
+        // else 0), eye height above the origin (ps+0xd4), on the ground (ps+0x60 ≠ none), mantling (pm_flags 4),
+        // weapon state (ps+0xb4) and the offhand fuse (ps+0x3c, cooking a grenade).
+        int stance = 0;
+        float viewHeight = 60.0f;
+        bool onGround = true;
+        bool mantling = false;
+        int weaponState = 0;
+        int grenadeFuseMs = 0;
+        float lean = 0.0f;     // leanf
     };
     void setPlayerCommand(const PlayerCommand& c) { playerCmd_ = c; }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
     uint32_t playerPmFlags() const { return pmFlags_; }
+    // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
+    bool playerOnTurret() const { return (playerEFlags_ & 0x300u) != 0; }
+    // The eye on a turret (0x4e8b70 → 0x4d7730): the turret's tag_player.
+    bool playerTurretEye(Vec3& eye);
+    // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
+    // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).
+    void clampPlayerView(float& pitch, float& yaw) const;
+    // Getting off a turret (0x51b3d0): the origin to continue from and the stance to return to (client stance
+    // event 0x8e prone / 0x8d crouch / 0x8c stand from turret +0x68; −1 none). Taken once by the front end.
+    struct TurretRelease { Vec3 origin; int stance = -1; };
+    std::optional<TurretRelease> takeTurretRelease() { return std::exchange(turretRelease_, std::nullopt); }
+    // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
+    static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
 
@@ -554,6 +577,22 @@ private:
     void useVehicle(Entity& vehicle, Entity& user);
     bool vehicleUseBounds(Entity& e, Vec3& mins, Vec3& maxs);
     void runPlayerUse();
+    // Player use of entities (src/game/playeruse.cpp).
+    struct UseCandidate { Entity* e; float score; };
+    std::vector<UseCandidate> scanUsables(const Vec3& eye, const Vec3& forward);
+    Vec3 playerEye();
+    void findPlayerUseEntity();
+    void usePlayerEntity(Entity& e);
+    bool turretUsableByPlayer(Entity& t);
+    void playerUseTurret(Entity& t);
+    void thinkPlayerTurret();
+    void releasePlayerTurret(Entity& t);
+    int playerUseState_ = 0;             // player entity +0x112: 1 on a turret, 2 getting off
+    Entity* playerTurret_ = nullptr;     // ps+0x568
+    uint32_t playerEFlags_ = 0;          // ps eFlags 0x100 / 0x200 (both: on a standing turret)
+    float viewClampBase_[2] = {0, 0}, viewClampRange_[2] = {0, 0}; // ps+0xe8 / +0xec, +0xf0 / +0xf4
+    int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
+    std::optional<TurretRelease> turretRelease_;
     PlayerCommand playerCmd_;
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;

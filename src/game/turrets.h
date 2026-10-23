@@ -35,6 +35,11 @@ struct TurretState {
     int fireCountdownMs = 0;     // +0x6c
     bool inUse = false;          // entity +0x112
     script::ObjectPtr owner;     // entity +0xf4 while in use
+    // Player use (0x51db50 … 0x51b3d0).
+    int stance = 0;              // +0x64: the weapon's `stance` (weapondef +0x8c: stand 0, duck 1, prone 2)
+    int savedStance = -1;        // +0x68: the user's stance when it got on (prone 2, crouch 1, stand 0), −1 none
+    script::Vec3 savedOrigin{};  // +0x74: the user's origin when it got on
+    int fireTimerMs = 0;         // +0x0c: time until the player's next shot
 };
 
 } // namespace iw2::game
