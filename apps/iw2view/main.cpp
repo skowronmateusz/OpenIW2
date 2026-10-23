@@ -1554,7 +1554,8 @@ int main(int argc, char** argv) {
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
             const script::Value w = world->player()->obj->get("$weapon");
-            std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : "thompson";
+            // No weapon ("none", ps weapon 0) means nothing in hand, as at the start of moscow (only the potato).
+            std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : std::string();
             if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
             if (name != weaponWritten) weaponSelect = name;
             if (!pweapon.equipped() && !pweapon.holstered()) // the first weapon is in hand at once
@@ -2560,6 +2561,15 @@ int main(int argc, char** argv) {
                         const int sh = int(y * (65536.0f / 360.0f)) & 0xffff;
                         damageIcons[slot] = {world->timeMs(), 2000, float(sh) * (360.0f / 65536.0f)};
                     }
+                }
+                if (const auto tp = world->takePlayerTeleport()) { // setorigin
+                    ps.origin = {(*tp)[0], (*tp)[1], (*tp)[2]};
+                    ps.velocity = {0, 0, 0};
+                    lerpPrev.erase(world->player()->number);
+                }
+                if (const auto va = world->takePlayerViewAngles()) { // setplayerangles
+                    cam.pitch = (*va)[0];
+                    cam.yaw = (*va)[1];
                 }
                 if (const auto rel = world->takeTurretRelease()) {
                     // Off the turret (0x51b3d0): back where the player got on, in the stance it had (events 0x8c–0x8e).
