@@ -33,6 +33,8 @@ struct TurretState {
     float pitch = 0, yaw = 0;    // entity +0x70 / +0x74
     int scanIndex = -1;          // +0x80
     int fireCountdownMs = 0;     // +0x6c
+    std::string loopSound;       // entity +6 (es.loopSound) as an alias, "" for none
+    int loopHandle = -1;         // the started loop sound
     bool inUse = false;          // entity +0x112
     script::ObjectPtr owner;     // entity +0xf4 while in use
     // Player use (0x51db50 … 0x51b3d0).

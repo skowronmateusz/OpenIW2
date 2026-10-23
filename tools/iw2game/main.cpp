@@ -731,6 +731,8 @@ int main(int argc, char** argv) {
             for (const auto& [k, n] : soundsPlayed) played += n;
             std::cout << "sound aliases " << aliases.size() << "; sounds started " << played << " (" << soundsPlayed.size()
                       << " aliases)";
+            if (std::getenv("IW2_SOUND_LIST"))
+                for (const auto& [k, n] : soundsPlayed) std::cout << "; " << k << " x" << n;
             for (const auto& [k, n] : soundsUnknown) std::cout << "; unknown " << k << " x" << n;
             std::cout << "\n";
         }

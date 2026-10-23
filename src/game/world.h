@@ -556,6 +556,7 @@ private:
     void registerCoverBuiltins();
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
+    void turretFireSound(Entity& t, bool playerOwner);
     void shootTurret(Entity& t);
     bool turretTag(Entity& t, const char* tag, Vec3& pos);
     bool turretAnglesTo(Entity& t, const Vec3& point, Vec3& angles);

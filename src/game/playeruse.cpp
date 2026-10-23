@@ -287,7 +287,6 @@ void World::releasePlayerTurret(Entity& t) {
 // (0x51b140), the player stands 34 units behind the turret origin along the barrel at its own height (0x51afe0),
 // and attack fires every fireTime (0x51b2b0: timer −50 per frame; at ≤ 0 with attack the timer restarts at
 // fireTime and 0x51b250 shoots); the fire countdown runs down (0x51b320). Otherwise the player gets off.
-// TODO(spec): the fire loop sound and the stop sound of 0x51b320.
 void World::thinkPlayerTurret() {
     if (!playerOnTurret() || !playerTurret_) return;
     Entity& t = *playerTurret_;
@@ -320,7 +319,7 @@ void World::thinkPlayerTurret() {
             shootTurret(t);
         }
     }
-    if (ts.fireCountdownMs > 0) ts.fireCountdownMs -= 50;
+    turretFireSound(t, true);
 }
 
 // The client think's use part (0x4e7f90): the use key pressed this frame (+activate 8 or +usereload 0x20; 0x5343d0,
