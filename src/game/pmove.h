@@ -80,6 +80,9 @@ struct MantleAnims {
 };
 // player_mantle_* animation names by tree index.
 const char* mantleAnimName(int index);
+// PM_Weapon's weapon change (0x4de880) puts the weapon away while mantling (mantle_enable and pm_flags 4) unless the
+// mantle's over animation is player_mantle_over_low (tree index 10, table 0x5a94bc).
+bool mantleLowersWeapon(const PlayerState& ps);
 // Mantle view yaw cap (0x525b60): while mantling the view yaw stays within mantle yaw ± mantle_view_yawcap.
 float mantleClampYaw(const PlayerState& ps, float yaw);
 

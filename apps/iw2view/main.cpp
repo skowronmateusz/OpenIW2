@@ -1553,7 +1553,7 @@ int main(int argc, char** argv) {
             std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : "thompson";
             if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
             if (name != weaponWritten) weaponSelect = name;
-            if (!pweapon.equipped()) // the first weapon is in hand at once
+            if (!pweapon.equipped() && !pweapon.holstered()) // the first weapon is in hand at once
                 if (const auto* def = world->weapon(weaponSelect)) pweapon.equip(weaponSelect, *def);
         };
         auto writeWeapon = [&]() {
@@ -2443,6 +2443,7 @@ int main(int argc, char** argv) {
                     prevSelect = weaponSelect;
                 }
                 wi.weapon = weaponSelect;
+                wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
