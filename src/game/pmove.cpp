@@ -795,13 +795,23 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     // Aiming while prone (pm_flags 0x40 from the previous step, view height target 11) clears the command's forward
     // and right moves (0x50c5c7).
     float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);
+    if (in.dead) fwdMove = rightMove = 0; // 0x50c733: pm_type ≥ 4 clears the command's moves
     if (ps.ads && ps.viewHeightTarget == 11) fwdMove = rightMove = 0;
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
     // While mantling (pm_flags 4) PmoveSingle skips the stance change and the ground trace (0x50c9b7).
     if (!ps.mantling) groundTrace(w, ps, pml);
     updateLean(w, ps, in, float(ms), in.yaw);
-    if (!ps.mantling) updateStance(w, ps, in, mp);
-    updateViewHeight(ps);
+    if (in.dead) {
+        // Dead (0x509d10 with pm_type ≥ 4): view height target 8, reached at 180 units/s (0x509840: targets other
+        // than 11, 40 and 60 move linearly by frametime · 180).
+        ps.viewHeightTarget = 8;
+        ps.transitionStartMs = -1;
+        const float stepH = pml.frametime * 180.0f;
+        ps.viewHeight = ps.viewHeight > 8.0f ? std::max(8.0f, ps.viewHeight - stepH) : std::min(8.0f, ps.viewHeight + stepH);
+    } else {
+        if (!ps.mantling) updateStance(w, ps, in, mp);
+        updateViewHeight(ps);
+    }
     pml.maxs[2] = maxsZ(ps.stance, mp);
     // Mantling (PmoveSingle 0x50c9dc → 0x50ca17): checked every step; while mantling the player is off the ground and
     // the mantle move replaces the walk and air moves.
@@ -831,6 +841,12 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     const float yaw = in.yaw * float(M_PI) / 180.0f;
     const Vec fwd{std::cos(yaw), std::sin(yaw), 0}, right{std::sin(yaw), -std::cos(yaw), 0};
     const float f = fwdMove * 127.0f, r = rightMove * 127.0f;
+    // Dead move (0x508a10, PmoveSingle 0x50ca6c): on the ground the speed drops by 20 per step, to 0.
+    if (in.dead && pml.walking) {
+        const float sp = std::sqrt(dot(ps.velocity, ps.velocity)) - 20.0f;
+        if (sp <= 0) ps.velocity = {0, 0, 0};
+        else { normalize(ps.velocity); ps.velocity = scale(ps.velocity, sp); }
+    }
     if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);

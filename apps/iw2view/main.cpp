@@ -93,6 +93,7 @@ Mat4 mul(const Mat4& a, const Mat4& b) {
 struct Camera {
     Vec3 pos;
     float yaw = 0, pitch = 0; // degrees; yaw 0 looks along +X, pitch positive looks down (game convention)
+    float roll = 0;           // degrees; positive tilts the right vector down (AngleVectors)
     float fovX43 = 80.0f;     // cg_fov: horizontal field of view of a 4:3 screen (default 80, 0x4a10f0)
 
     Vec3 forward() const {
@@ -103,7 +104,9 @@ struct Camera {
     Vec3 right() const { return normalize(cross(forward(), {0, 0, 1})); }
 
     Mat4 viewProj(float aspect) const {
-        const Vec3 f = forward(), r = right(), u = cross(r, f);
+        const Vec3 f = forward(), r0 = right(), u0 = cross(r0, f);
+        const float cr = std::cos(roll * float(M_PI) / 180), sr = std::sin(roll * float(M_PI) / 180);
+        const Vec3 r = r0 * cr + u0 * -sr, u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
         const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = 4.0f, fa = 40000.0f;
@@ -2212,6 +2215,8 @@ int main(int argc, char** argv) {
         float gameClock = 0;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
+        bool wasDead = false;
+        float deadYaw = 0;
         game::MoveRecorder moveRecorder;
         bool fellOut = false;
         std::array<game::Vec3, 3> prevBody{};
@@ -2256,6 +2261,8 @@ int main(int argc, char** argv) {
             const float dt = float(now - last) * 1e-9f;
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
+            const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
+                                    world->player()->obj->get("health").asInt() <= 0;
             // In a vehicle (pm_flags 0x20000) the player does not move by itself; the command drives the vehicle.
             const bool inVehicle = world && (world->playerPmFlags() & 0x20000);
             // On a turret (eFlags & 0x300) PmoveSingle skips the movement and PM_Weapon (0x50c918) and the view stays
@@ -2333,6 +2340,7 @@ int main(int argc, char** argv) {
                 in.leanLeft = (buttons & game::Button::LeanLeft) != 0;
                 in.leanRight = (buttons & game::Button::LeanRight) != 0;
                 in.yaw = cam.yaw;
+                in.dead = playerDead;
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
                 in.adsAllowed = pweapon.adsAllowed();
                 in.weaponState = pweapon.stateNumber();
@@ -2383,6 +2391,18 @@ int main(int argc, char** argv) {
                 hudViewHeight = ps.viewHeight;
                 cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
+                // Dead view (cgame 0x4ae2f5: pm_type ≥ 4): pitch −15, roll 40, yaw the player state's dead yaw
+                // (ps+0x10c). TODO(spec): that yaw (set at death towards the killer); the current yaw is kept.
+                // The command's view angles are not applied while dead (0x50b12b), so the yaw stays where it was.
+                if (playerDead) {
+                    if (!wasDead) deadYaw = cam.yaw;
+                    cam.yaw = deadYaw;
+                    cam.pitch = -15.0f;
+                    cam.roll = 40.0f;
+                } else {
+                    cam.roll = 0;
+                }
+                wasDead = playerDead;
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};

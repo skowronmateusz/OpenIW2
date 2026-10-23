@@ -25,6 +25,7 @@ struct PlayerInput {
     int weaponState = 0;          // ps+0xb4
     float pitch = 0;              // view pitch in degrees (with yaw: the command angles for the aim spread)
     float adsFrac = 0;            // ps+0xb8: the aim fraction
+    bool dead = false;            // pm_type ≥ 4
 };
 
 struct PlayerState {
