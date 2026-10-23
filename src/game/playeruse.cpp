@@ -5,10 +5,17 @@
 #include "game/pmove.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 
 namespace iw2::game {
+namespace {
+std::string lowerStr(std::string s) {
+    for (char& ch : s) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
+} // namespace
 
 using namespace script;
 
@@ -84,7 +91,7 @@ bool World::playerTurretEye(Vec3& eye) {
 // distance + (1 − (dir · forward + 1) / 2) · 144, −144 more for a trigger_use. Sorted; then each one but a
 // trigger_use_touch gets +10000 and drops off the end when the eye → absbox centre line (a turret: its tag_player)
 // is blocked (mask 0x11); sorted again.
-// TODO(spec): items (type 2, pickup check 0x4fad50) and actors (+0x211b) are not candidates yet; trigger absboxes
+// Weapon items are candidates (pick: 0x534c80). TODO(spec): other items and actors (+0x211b); trigger absboxes
 // ignore the entity angles.
 std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3& forward) {
     const Vec3 po = player_->obj->get("origin").asVector();
@@ -101,6 +108,11 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
             mx = {o[0] + 32, o[1] + 32, o[2] + 56};
         } else if (e.classname == "script_vehicle") {
             if (!vehicleState(Value(e.obj)).usable || !vehicleUseBounds(e, mn, mx)) continue;
+        } else if (e.classname.rfind("weapon_", 0) == 0) {
+            // A weapon item (type 2): LaunchItem (0x521e00) gives weapons the bounds (−1, −1, −1)…(1, 1, 1).
+            const Vec3 o = e.obj->get("origin").asVector();
+            mn = {o[0] - 1, o[1] - 1, o[2] - 1};
+            mx = {o[0] + 1, o[1] + 1, o[2] + 1};
         } else if (trigUse || trigTouch) {
             const Value m = e.obj->get("model");
             if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) continue;
@@ -139,7 +151,10 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
         } else {
             Vec3 mn, mx;
             if (c.e->classname == "script_vehicle") vehicleUseBounds(*c.e, mn, mx);
-            else {
+            else if (c.e->classname.rfind("weapon_", 0) == 0) {
+                const Vec3 o = c.e->obj->get("origin").asVector();
+                mn = mx = o;
+            } else {
                 submodelBounds(c.e->obj->get("model").asString(), mn, mx);
                 const Value ov = c.e->obj->get("origin");
                 const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
@@ -211,6 +226,15 @@ void World::findPlayerUseEntity() {
             if (str.isString()) playerUseHint_.text = str.asString();
             return;
         }
+        if (e.classname.rfind("weapon_", 0) == 0) {
+            // 0x534c80: a weapon item is usable when the weapon is not a grenade (weaponType, def +0x78 ≠ 1) and not
+            // owned; the hint is the weapon's (index + 4). TODO(spec): health items (giType 3, hint 3).
+            const std::string w = lowerStr(e.classname.substr(7));
+            if (!weapon(w) || lowerStr(weaponField(w, "weaponType")) == "grenade" || inventory(*player_).owned.count(w)) continue;
+            playerUseEntity_ = e.number;
+            playerUseHint_.weapon = w;
+            return;
+        }
         if (e.turret) {
             if (!turretUsableByPlayer(e)) continue;
             // Weapon hint (weapon index + 4) with useHintString when the weapon has one (+0x56c / +0x574).
@@ -232,6 +256,10 @@ void World::findPlayerUseEntity() {
 // A use (0x5341a0): "trigger" with the user, then the entity type's use function: a vehicle's 0x512f00 (in or
 // out), a turret's 0x51db50; trigger_use's (0x52cdd0) does nothing more.
 void World::usePlayerEntity(Entity& e) {
+    if (e.classname.rfind("weapon_", 0) == 0) {
+        pickUpWeaponItem(e);
+        return;
+    }
     if (e.classname == "script_vehicle") {
         vehicleState(Value(e.obj));
         useVehicle(e, *player_);
@@ -361,6 +389,50 @@ void World::runPlayerUse() {
     }
     thinkPlayerTurret();
     findPlayerUseEntity();
+}
+
+} // namespace iw2::game
+
+namespace iw2::game {
+
+// Using a weapon item (0x5341a0 type 2 → Touch_Item 0x521a90 → 0x521ad0 → Pickup_Weapon 0x521170): "touch" on the
+// item with the player; a weapon the player does not own is taken: with no free primary slot the current weapon
+// is dropped as its item where the player stands (0x5220f0) and its slot gets the new one; the item's ammo is
+// given (item +0x148 stock / +0x154 clip) and the player switches to it (0x532060); the item goes away (0x4d7c30).
+// TODO(spec): the exact slot test (weaponSlot class +0x80 and the per-slot ammo loop of 0x521170), the item ammo
+// rules for map-placed items (0x370/0x374 random ranges), "menu_show_notify" and the pickup events 0x90/0x91.
+void World::pickUpWeaponItem(Entity& item) {
+    const std::string w = lowerStr(item.classname.substr(7));
+    if (!player_ || !weapon(w)) return;
+    vm_.notify(item.obj, "touch", {Value(player_->obj)});
+    if (item.obj->removed) return;
+    Inventory& inv = inventory(*player_);
+    if (inv.owned.count(w)) return;
+    const std::string slotName = lowerStr(weaponField(w, "weaponSlot"));
+    const bool primary = slotName == "primary" || slotName == "primaryb";
+    if (primary && !inv.slot[1].empty() && !inv.slot[2].empty()) {
+        const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
+        if (!cur.empty() && cur != "none" && inv.owned.count(cur)) {
+            Entity& dropped = spawnEntity("weapon_" + cur);
+            dropped.obj->set("origin", player_->obj->get("origin"));
+            dropped.obj->set("angles", player_->obj->get("angles"));
+            const std::string wm = weaponField(cur, "worldModel");
+            if (!wm.empty()) dropped.obj->set("model", Value(wm));
+            const int slot = inv.slot[1] == cur ? 1 : 2;
+            takeWeapon(inv, cur);
+            giveWeapon(inv, w);
+            if (inv.slot[slot] != w) {
+                for (auto& sname : inv.slot)
+                    if (sname == w) sname.clear();
+                inv.slot[slot] = w;
+            }
+        }
+    } else {
+        giveWeapon(inv, w);
+    }
+    addAmmo(inv, w, weaponInt(w, "startAmmo"), true);
+    player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
+    item.obj->removed = true;
 }
 
 } // namespace iw2::game
