@@ -144,6 +144,9 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
                    const std::string& location) {
     if (!isAlive(target)) return;
     if (target.obj->get("$godmode").truthy()) return;
+    // Debug: IW2_DMG_DEBUG=1 prints every damage credited to the player (friendly-fire mission fails).
+    if (attacker && attacker->isPlayer && std::getenv("IW2_DMG_DEBUG"))
+        print("DBG player damage " + std::to_string(amount) + " to " + target.classname + " (" + mod + ") at " + std::to_string(timeMs_));
     const int health = target.obj->get("health").asInt() - amount;
     target.obj->set("health", Value(int32_t(health)));
     target.obj->set("damagetaken", Value(int32_t(amount)));
@@ -237,8 +240,8 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         auto it = def->find("riflebullet");
         rifle = it != def->end() && std::atoi(it->second.c_str()) != 0;
     }
-    // An AI's bullet that hits an actor of its own team goes on from the hit point ignoring that actor, up to 12
-    // times ("Ignoring AI shooting teammate"). TODO(spec): penetration (surface flag 0x10), vehicles, the
+    // An AI's bullet that hits a sentient of its own team (an actor or the player: hit entity +0x104 sentient,
+    // team at sentient +4) goes on from the hit point ignoring it, up to 12 times ("Ignoring AI shooting teammate"). TODO(spec): penetration (surface flag 0x10), vehicles, the
     // half-damage refire of rifleBullet hits on sentients.
     int location = 0;
     TraceResult tr;
@@ -248,7 +251,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     for (int depth = 0; depth <= 12; ++depth) {
         tr = locationalTrace(from, end, Contents::BulletMask, pass, rifle ? kHitPriorityRifle : kHitPriorityDefault, location);
         hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
-        if (hit && shooter.isActor && hit->isActor && hit->obj->get("team").toString() == shooter.obj->get("team").toString()) {
+        if (hit && shooter.isActor && isSentient(*hit) && hit->obj->get("team").toString() == shooter.obj->get("team").toString()) {
             from = tr.endPos;
             pass = hit;
             hit = nullptr;

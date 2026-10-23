@@ -391,6 +391,10 @@ int main(int argc, char** argv) {
         bool playerShoots = false;
         bool drive = false;
         bool controls = false;
+        bool pmove = false;
+        iw2::game::PlayerState pmoveState;
+        bool pmoveInit = false;
+        std::vector<std::pair<float, iw2::game::Vec3>> playerPath; // --player-at T x,y,z: player origin from time T (linear between)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--trace-actor" && i + 1 < argc) {
@@ -403,6 +407,14 @@ int main(int argc, char** argv) {
                 controls = true; // default.cfg keys through the client commands and PM_Weapon: 1, SHIFT, G, C, SPACE
             } else if (a == "--drive") {
                 drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
+            } else if (a == "--player-at" && i + 2 < argc) {
+                iw2::game::Vec3 p{};
+                const float t = std::stof(argv[++i]);
+                std::sscanf(argv[++i], "%f,%f,%f", &p[0], &p[1], &p[2]);
+                playerPath.push_back({t, p});
+            } else if (a == "--pmove") {
+                pmove = true; // the player stands still under pmove (pushed by entities, falls) as in iw2view
+            } else if (a == "--mixer") {
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
@@ -417,7 +429,12 @@ int main(int argc, char** argv) {
         aliases.load(vfs, argv[2]);
         std::mt19937 soundRng(1);
         std::map<std::string, int> soundsPlayed, soundsUnknown;
-        world.playSound = [&](const std::string& alias, const iw2::game::Vec3*, float*) {
+        // --mixer: start sounds in an (unheard) mixer as iw2view does, so scripts get the real sound lengths.
+        std::unique_ptr<iw2::audio::Mixer> mixer;
+        for (int i = 3; i < argc; ++i)
+            if (std::string(argv[i]) == "--mixer") mixer = std::make_unique<iw2::audio::Mixer>(vfs, aliases, 44100);
+        world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration) {
+            if (mixer) return mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration);
             if (aliases.pick(alias, soundRng)) ++soundsPlayed[alias];
             else ++soundsUnknown[alias];
             return 1;
@@ -532,6 +549,32 @@ int main(int argc, char** argv) {
                     ++t;
                 }
                 world.setPlayerCommand(cmd);
+            }
+            if (!playerPath.empty() && world.player()) {
+                const float t = f * 0.05f;
+                size_t k = 0;
+                while (k + 1 < playerPath.size() && playerPath[k + 1].first <= t) ++k;
+                if (t >= playerPath[k].first) {
+                    iw2::game::Vec3 p = playerPath[k].second;
+                    if (k + 1 < playerPath.size()) {
+                        const float u = (t - playerPath[k].first) / (playerPath[k + 1].first - playerPath[k].first);
+                        for (int c = 0; c < 3; ++c) p[c] += (playerPath[k + 1].second[c] - p[c]) * u;
+                    }
+                    world.setPlayerOrigin(p, world.player()->obj->get("angles").asVector());
+                }
+            }
+            if (pmove && world.player()) {
+                if (!pmoveInit) {
+                    const auto o = world.player()->obj->get("origin").asVector();
+                    pmoveState.origin = {o[0], o[1], o[2] + 8.0f};
+                    pmoveInit = true;
+                }
+                iw2::game::MoveParams mp;
+                mp.passEntity = world.player()->number;
+                iw2::game::PlayerInput in;
+                in.yaw = world.player()->obj->get("angles").asVector()[1];
+                for (int k = 0; k < 3; ++k) iw2::game::playerMove(world.collision(), pmoveState, in, 1.0f / 60.0f, mp);
+                world.setPlayerOrigin({pmoveState.origin[0], pmoveState.origin[1], pmoveState.origin[2]}, world.player()->obj->get("angles").asVector());
             }
             world.frame();
         }
