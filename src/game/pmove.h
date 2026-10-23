@@ -4,7 +4,11 @@
 
 #include "game/collision.h"
 
+#include <array>
+
 #include <cstdint>
+
+namespace iw2::assets { struct XAnim; }
 
 namespace iw2::game {
 
@@ -12,10 +16,13 @@ enum class Stance { Stand, Crouch, Prone };
 
 struct PlayerInput {
     float forward = 0, right = 0; // -1..1 (the original's -127..127 command bytes)
-    bool jump = false;            // held
+    bool jump = false;            // held (usercmd 0x400, also the mantle button)
     Stance stance = Stance::Stand; // requested stance
     bool leanLeft = false, leanRight = false; // +leanleft / +leanright (usercmd bits 0x40 / 0x80)
     float yaw = 0;                // view yaw in degrees
+    bool adsHeld = false;         // usercmd 0x1000, or the weapon state forces aim (0x13 / 0x14)
+    bool adsAllowed = false;      // 0x4dcf70: the weapon can aim now (PlayerWeapon::adsAllowed)
+    int weaponState = 0;          // ps+0xb4
 };
 
 struct PlayerState {
@@ -34,7 +41,29 @@ struct PlayerState {
     int64_t lastJumpMs = -100000;
     bool jumpHeld = false;
     float lean = 0;              // leanf: −0.5..0.5 (−0.25..0.25 prone), negative = left
+    bool ads = false;            // pm_flags 0x40: aiming down the sights (0x4dd020)
+    bool adsSlow = false;        // pm_flags 0x100: aiming slows movement (0x50bd00)
+    bool prevAdsHeld = false;    // the previous command's 0x1000 (pm+0x38)
+    // Mantle (ps+0x598..0x5a4, pm_flags 4). Flags: 1 over, 2 crouch at the start, 4 stand at the end, 8 hint.
+    bool mantling = false;
+    float mantleYaw = 0;
+    int mantleTimeMs = 0;
+    int mantleTrans = 0;
+    uint32_t mantleFlags = 0;
+    int stanceEvent = -1;        // client stance set by a mantle event this move (0x8d → 1, 0x8c → 0), else −1
 };
+
+// The mantle animations of the PLAYER_MANTLE tree (0x525360, names at 0x5a950c): index 0 player_mantle_root,
+// 1–7 player_mantle_up_57 … up_21, 8–10 player_mantle_over_high, over_mid, over_low. Only their delta
+// translation is used.
+struct MantleAnims {
+    std::array<const assets::XAnim*, 11> anims{};
+    bool loaded() const;
+};
+// player_mantle_* animation names by tree index.
+const char* mantleAnimName(int index);
+// Mantle view yaw cap (0x525b60): while mantling the view yaw stays within mantle yaw ± mantle_view_yawcap.
+float mantleClampYaw(const PlayerState& ps, float yaw);
 
 // View offset of a lean (0x440380 with roll factor 16 and distance 20): g = (2 − |lean|)·lean, roll = 16·g
 // degrees; offset = 20·g·(cos(roll)·right − sin(roll)·up) for yaw in degrees.
@@ -55,6 +84,7 @@ struct MoveParams {
     int passEntity = -1;              // the player's entity number, skipped by the traces
     Vec mins{-15, -15, 0};
     Vec maxs{15, 15, 70};             // standing; crouch 50, prone 30
+    const MantleAnims* mantle = nullptr; // no mantling without them
 };
 
 // Advances the player by dt seconds (split into steps of at most 66 ms like the original).

@@ -4,8 +4,10 @@
 //   iw2game <main-dir> <map> --walk-test     drop the player at the spawn point and walk forward
 //   iw2game <main-dir> <map> --fall-test [walks] [seconds]   random player walks (tunnels, falls, solid)
 //   iw2game <main-dir> <map> --replay file      re-run moves recorded by iw2view (pmove_replay.bin)
+//   iw2game <main-dir> <map> --mantle-test [runs]   mantle from every path node in 16 directions
 //   iw2game <main-dir> <map> --spot x,y,z yaw   replay an iw2view `P` view position: walk from it in 72 directions
 
+#include "assets/xanim.h"
 #include "audio/sound.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
@@ -305,6 +307,64 @@ int main(int argc, char** argv) {
                     }
                 }
             std::printf("spot test: %d bad walks\n", bad);
+            return bad ? 1 : 0;
+        }
+        if (argc > 3 && std::string(argv[3]) == "--mantle-test") {
+            // From every path node in 16 view directions: one standing step with the mantle button. Counts where a
+            // mantle is offered (hint) and starts, runs the first `runs` to the end and checks the end position.
+            const int runs = argc > 4 ? std::stoi(argv[4]) : 10;
+            std::vector<iw2::assets::XAnim> owned;
+            owned.reserve(11);
+            iw2::game::MantleAnims anims;
+            for (int i = 1; i < 11; ++i)
+                if (const auto d = vfs.read(std::string("xanim/") + iw2::game::mantleAnimName(i))) {
+                    owned.push_back(iw2::assets::parseXAnim(*d));
+                    anims.anims[size_t(i)] = &owned.back();
+                }
+            if (!anims.loaded()) { std::cout << "mantle test: animations missing\n"; return 1; }
+            iw2::game::CollisionWorld cw(world.bsp());
+            iw2::game::MoveParams mp;
+            mp.mantle = &anims;
+            int hints = 0, starts = 0, ran = 0, bad = 0;
+            for (const auto& e : world.bsp().entities()) {
+                const std::string* cls = e.get("classname");
+                const std::string* org = e.get("origin");
+                iw2::game::Vec v{};
+                if (!cls || !org || cls->rfind("node_", 0) != 0 || std::sscanf(org->c_str(), "%f %f %f", &v[0], &v[1], &v[2]) != 3) continue;
+                for (int d = 0; d < 16; ++d) {
+                    iw2::game::PlayerState ps;
+                    ps.origin = {v[0], v[1], v[2] + 1};
+                    if (cw.trace(ps.origin, ps.origin, mp.mins, mp.maxs, mp.traceMask).startSolid) break;
+                    iw2::game::PlayerInput in;
+                    in.yaw = float(d) * 22.5f;
+                    iw2::game::playerMove(cw, ps, in, 0.016f, mp); // settle
+                    in.jump = true;
+                    const iw2::game::Vec from = ps.origin;
+                    iw2::game::playerMove(cw, ps, in, 0.016f, mp);
+                    if (ps.mantleFlags & 8) ++hints;
+                    if (!ps.mantling) continue;
+                    ++starts;
+                    if (ran >= runs) continue;
+                    ++ran;
+                    in.jump = false;
+                    int ms = 16;
+                    iw2::game::Stance stance = ps.stance;
+                    for (; ps.mantling && ms < 5000; ms += 16) {
+                        if (ps.stanceEvent == 1) in.stance = iw2::game::Stance::Crouch;
+                        if (ps.stanceEvent == 0) in.stance = iw2::game::Stance::Stand;
+                        iw2::game::playerMove(cw, ps, in, 0.016f, mp);
+                        if (std::getenv("MANTLE_TRACE")) std::printf("  t %d (%g %g %g) mantling %d\n", ps.mantleTimeMs, ps.origin[0], ps.origin[1], ps.origin[2], ps.mantling);
+                        stance = ps.stance;
+                    }
+                    const iw2::game::Vec box{mp.maxs[0], mp.maxs[1], stance == iw2::game::Stance::Crouch ? 50.0f : 70.0f};
+                    const bool solid = cw.trace(ps.origin, ps.origin, mp.mins, box, mp.traceMask).startSolid;
+                    if (solid || ps.mantling) ++bad;
+                    std::printf("mantle from (%g %g %g) yaw %g: trans %d flags %u, %d ms, up %g, to (%g %g %g)%s%s\n", from[0], from[1], from[2],
+                                in.yaw, ps.mantleTrans, ps.mantleFlags, ms, ps.origin[2] - from[2], ps.origin[0], ps.origin[1], ps.origin[2],
+                                solid ? (cw.trace(ps.origin, ps.origin, mp.mins, {15, 15, 50}, mp.traceMask).startSolid ? " IN SOLID (also 50)" : " IN SOLID (70 only)") : "", ps.mantling ? " NOT DONE" : "");
+                }
+            }
+            std::printf("mantle test: %d hints, %d starts, %d run, %d bad\n", hints, starts, ran, bad);
             return bad ? 1 : 0;
         }
         if (argc > 3 && std::string(argv[3]) == "--fall-test") {

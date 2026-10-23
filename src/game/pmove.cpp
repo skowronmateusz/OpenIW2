@@ -1,6 +1,8 @@
 // Player movement. Rules marked with an address follow CoD2SP_s.exe 1.3 (docs/spec/pmove.md).
 #include "game/pmove.h"
 
+#include "assets/xanim.h"
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -378,7 +380,8 @@ void updateViewHeight(PlayerState& ps) {
 
 // Command scale (0x508140, 0x5080a0): g_speed · max(|forward| (×backSpeedScale when backwards),
 // |right|·strafeSpeedScale) / (|command| · 127), then ×0.65 crouched, ×0.15 prone, × the weapon's
-// moveSpeedScale. TODO(spec): the blend during crouch/prone transitions (0x509760) and the ×0.4 cases.
+// moveSpeedScale; ×0.4 once while aiming (pm_flags 0x100) or leaning. TODO(spec): the blend during crouch/prone
+// transitions (0x509760), pm_type 2 (×3) and 3 (×6), the ×0.4 of command bit 0x800.
 float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bool walking) {
     const float fb = f < 0 && walking ? f * mp.backSpeedScale : f;
     const float rs = walking ? std::fabs(r * mp.strafeSpeedScale) : std::fabs(r);
@@ -390,7 +393,7 @@ float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bo
         else if (ps.stance == Stance::Crouch) s *= 0.65f;
         if (mp.weaponSpeedScale > 0) s *= mp.weaponSpeedScale;
     }
-    if (ps.lean != 0) s *= 0.4f; // a nonzero leanf (ps+0x4c) slows movement (0x508140)
+    if (ps.adsSlow || ps.lean != 0) s *= 0.4f; // pm_flags 0x100 or a nonzero leanf (ps+0x4c) (0x508140, 0x5080a0)
     return s;
 }
 
@@ -527,6 +530,187 @@ void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerIn
     if (ps.velocity[0] != 0 || ps.velocity[1] != 0) stepSlideMove(w, ps, pml, false, mp);
 }
 
+// Mantle dvars (registered at 0x524a10): mantle_enable 1, mantle_check_range 20, mantle_check_radius 0.1,
+// mantle_check_angle 60, mantle_view_yawcap 60.
+constexpr float kMantleRange = 20.0f, kMantleRadius = 0.1f, kMantleAngle = 60.0f, kMantleYawCap = 60.0f;
+constexpr uint32_t kMantleContents = 0x1000000;                   // 0x525652
+constexpr uint32_t kMantleOn = 0x2000000, kMantleOver = 0x4000000; // surface flags
+// Table 0x5a94b8 {up anim, over anim, height}.
+struct MantleTrans { int up, over; float height; };
+constexpr MantleTrans kMantleTrans[7] = {{1, 8, 57}, {2, 8, 51}, {3, 9, 45}, {4, 9, 39}, {5, 9, 33}, {6, 10, 27}, {7, 10, 21}};
+
+// Length in ms (0x524b00): (key count − 1) / frame rate · 1000, truncated (0x565994).
+int animMs(const assets::XAnim* a) {
+    if (!a || a->frameRate <= 0) return 0;
+    return int(float(a->keyCount() - 1) / float(a->frameRate) * 1000.0f);
+}
+
+// Delta translation at normalized time t (0x478740).
+Vec animDelta(const assets::XAnim* a, float t) {
+    if (!a || !a->delta || a->deltaTrans.keys.empty()) return {0, 0, 0};
+    const auto p = assets::sampleTrans(a->deltaTrans, t * float(a->keyCount() - 1), a->keyCount());
+    return {p[0], p[1], p[2]};
+}
+
+int mantleTotalMs(const PlayerState& ps, const MantleAnims& m) {
+    const MantleTrans& tr = kMantleTrans[ps.mantleTrans];
+    return animMs(m.anims[size_t(tr.up)]) + ((ps.mantleFlags & 1) ? animMs(m.anims[size_t(tr.over)]) : 0);
+}
+
+// 0x524bd0: the up animation's delta at t / up length, or past it the whole up delta plus the over animation's at
+// (t − up) / over length; turned by the mantle yaw (0x423570).
+Vec mantleDelta(const PlayerState& ps, const MantleAnims& m, int t) {
+    const MantleTrans& tr = kMantleTrans[ps.mantleTrans];
+    const assets::XAnim* up = m.anims[size_t(tr.up)];
+    const int upMs = animMs(up);
+    Vec d;
+    if (t <= upMs) {
+        d = animDelta(up, upMs > 0 ? float(t) / float(upMs) : 1.0f);
+    } else {
+        const assets::XAnim* over = m.anims[size_t(tr.over)];
+        const int overMs = animMs(over);
+        d = add(animDelta(up, 1.0f), animDelta(over, overMs > 0 ? float(t - upMs) / float(overMs) : 1.0f));
+    }
+    const float y = ps.mantleYaw * float(M_PI) / 180.0f, c = std::cos(y), sn = std::sin(y);
+    return {c * d[0] - sn * d[1], sn * d[0] + c * d[1], d[2]};
+}
+
+// Result of the checks (the 0x34-byte block of 0x5257f0): direction, origin, ledge, over point, flags.
+struct MantleResult {
+    Vec dir{}, origin{}, ledge{}, over{};
+    uint32_t flags = 0;
+};
+
+// 0x524df0: with MANTLE_OVER the player box (top at 50) is traced 18 down from 31 past the ledge; a clear trace
+// makes its end the over point, otherwise the over flag is dropped and the over point is the ledge.
+void mantleOverPoint(const CollisionWorld& w, const Pml& pml, MantleResult& r) {
+    if (r.flags & 1) {
+        const Vec start = add(r.ledge, scale(r.dir, 31.0f));
+        const Vec end{start[0], start[1], start[2] - 18.0f};
+        const TraceResult tr = w.trace(start, end, pml.mins, {pml.maxs[0], pml.maxs[1], 50.0f}, pml.mask, pml.passEntity);
+        if (!tr.startSolid && tr.fraction >= 1.0f) {
+            r.over = {end[0], end[1], (end[2] - start[2]) * tr.fraction + start[2]};
+            return;
+        }
+        r.flags &= ~1u;
+    }
+    r.over = r.ledge;
+}
+
+// 0x524d00: the table row whose height is nearest the ledge height above the origin.
+int nearestTrans(float originZ, float ledgeZ) {
+    const float h = ledgeZ - originZ;
+    int best = 0;
+    for (int i = 1; i < 7; ++i)
+        if (std::fabs(kMantleTrans[i].height - h) < std::fabs(kMantleTrans[best].height - h)) best = i;
+    return best;
+}
+
+// 0x524f30: start mantling. The origin is put at the over point minus the whole move.
+void mantleStart(PlayerState& ps, const MantleAnims& m, const MantleResult& r) {
+    ps.mantleYaw = std::atan2(r.dir[1], r.dir[0]) * 180.0f / float(M_PI); // vectoyaw 0x421890
+    if (ps.mantleYaw < 0) ps.mantleYaw += 360.0f;
+    ps.mantleTimeMs = 0;
+    ps.mantleTrans = nearestTrans(r.origin[2], r.ledge[2]);
+    ps.mantleFlags = r.flags;
+    const Vec d = mantleDelta(ps, m, mantleTotalMs(ps, m));
+    ps.origin = {r.over[0] - d[0], r.over[1] - d[1], r.over[2] - d[2]};
+    ps.mantling = true;
+}
+
+// 0x525010: a ledge `height` above the origin. A box of the player's width (top 2R) moved 16 forward from that
+// height must be clear; dropped from there to 18 above the origin it must land on ground (normal z ≥ 0.7). A box
+// 50 high must fit on the ledge. Then the hint flag is set; with the mantle button the over point and the stance
+// flags are worked out and mantling starts.
+bool mantleLedge(const CollisionWorld& w, PlayerState& ps, const Pml& pml, const PlayerInput& in, const MantleAnims& m,
+                 MantleResult& r, float height) {
+    const float R = pml.maxs[0];
+    const Vec mins{-R, -R, 0}, maxs{R, R, R + R};
+    const Vec start{r.origin[0], r.origin[1], r.origin[2] + height};
+    const Vec fwd = add(start, scale(r.dir, 16.0f));
+    TraceResult tr = w.trace(start, fwd, mins, maxs, pml.mask, pml.passEntity);
+    if (tr.startSolid || tr.fraction < 1.0f) return false; // ledge too far away
+    const Vec down{fwd[0], fwd[1], r.origin[2] + 18.0f};
+    tr = w.trace(fwd, down, mins, maxs, pml.mask, pml.passEntity);
+    if (tr.startSolid || tr.fraction == 1.0f) return false; // can't find ledge
+    if (tr.normal[2] < 0.7f) return false;                  // ledge too steep
+    r.ledge = {fwd[0], fwd[1], (down[2] - fwd[2]) * tr.fraction + fwd[2]};
+    tr = w.trace(r.ledge, r.ledge, mins, {R, R, 50.0f}, pml.mask, pml.passEntity); // 0x507ac0
+    if (tr.startSolid) return false; // can't fit crouched on the ledge
+    ps.mantleFlags |= 8;
+    r.flags |= 8;
+    if (in.jump) {
+        mantleOverPoint(w, pml, r);
+        if (ps.stance == Stance::Stand) { // eFlags & 4 clear
+            if (w.trace(r.ledge, r.ledge, pml.mins, pml.maxs, pml.mask, pml.passEntity).startSolid) r.flags |= 2;
+            if (!w.trace(r.over, r.over, pml.mins, pml.maxs, pml.mask, pml.passEntity).startSolid) r.flags |= 4;
+        }
+        mantleStart(ps, m, r);
+    }
+    return true;
+}
+
+// Mantle check (0x5257f0, 0x5255d0): alive, not mantling, standing, not in the binocular weapon states 0x11–0x16.
+// A thin box (radius mantle_check_radius) is traced along the flat view direction against mantle brushes
+// (contents 0x1000000) from the back of the player box to mantle_check_range past its front. It must hit a
+// MANTLE_ON or MANTLE_OVER surface that the player faces within mantle_check_angle; then ledges 60, 40, 20 above
+// the origin are tried.
+void mantleCheck(const CollisionWorld& w, PlayerState& ps, const Pml& pml, const PlayerInput& in, const MantleAnims& m) {
+    ps.mantleFlags &= ~8u;
+    if (ps.mantling || ps.stance != Stance::Stand || (in.weaponState > 0x10 && in.weaponState < 0x17)) return;
+    const float yaw = in.yaw * float(M_PI) / 180.0f;
+    MantleResult r;
+    r.dir = {std::cos(yaw), std::sin(yaw), 0};
+    r.origin = ps.origin;
+    const float back = pml.maxs[0] - kMantleRadius;
+    const TraceResult tr = w.trace(add(ps.origin, scale(r.dir, -back)), add(ps.origin, scale(r.dir, back + kMantleRange)),
+                                   {-kMantleRadius, -kMantleRadius, pml.mins[2]}, {kMantleRadius, kMantleRadius, pml.maxs[2]},
+                                   kMantleContents, pml.passEntity);
+    if (tr.startSolid || tr.allSolid) return;           // mantle brush is too thick
+    if (tr.fraction == 1.0f) return;                    // no mantle surface found
+    if ((tr.surfaceFlags & (kMantleOn | kMantleOver)) == 0) return;
+    Vec n{-tr.normal[0], -tr.normal[1], 0};
+    if (normalize(n) < 1e-4f) return;                   // vertical normal
+    if (std::acos(std::clamp(dot(r.dir, n), -1.0f, 1.0f)) * 57.2957763671875f > kMantleAngle) return; // not facing it
+    if (tr.surfaceFlags & kMantleOver) r.flags |= 1;
+    if (!mantleLedge(w, ps, pml, in, m, r, 60.0f) && !mantleLedge(w, ps, pml, in, m, r, 40.0f))
+        mantleLedge(w, ps, pml, in, m, r, 20.0f);
+}
+
+// Mantle move (0x5259b0): the timer advances by the step, capped at the whole length; the origin follows the
+// delta and the velocity is that change over the step. Flag 2 asks the client to crouch (event 0x8d) every step;
+// at the end mantling stops and flag 4 asks it to stand (0x8c).
+void mantleMove(PlayerState& ps, const MantleAnims& m, int ms) {
+    ps.mantleFlags &= ~8u;
+    if (ps.mantleFlags & 2) ps.stanceEvent = 1;
+    const int total = mantleTotalMs(ps, m);
+    const int old = ps.mantleTimeMs;
+    ps.mantleTimeMs = std::min(old + ms, total);
+    const Vec a = mantleDelta(ps, m, old), b = mantleDelta(ps, m, ps.mantleTimeMs);
+    const Vec d{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    ps.origin = add(ps.origin, d);
+    // TODO(spec): with no time left the exe divides by zero; the velocity is kept then.
+    if (ps.mantleTimeMs != old) ps.velocity = scale(d, 1.0f / (float(ps.mantleTimeMs - old) * 0.001f));
+    if (ps.mantleTimeMs == total) {
+        ps.mantling = false;
+        if (ps.mantleFlags & 4) ps.stanceEvent = 0;
+    }
+}
+
+// Aiming (0x4dd020, then 0x50bd00): with the aim command and a weapon that may aim (0x4dcf70) the player aims
+// standing or crouched; prone only when the aim was just pressed or the player is not moving (then pm_flags 0x800
+// is set too, TODO(spec): what 0x800 does). Aiming slows movement unless prone or in weapon states 5–9.
+void updateAds(PlayerState& ps, const PlayerInput& in, float f, float r) {
+    const bool prone = ps.stance == Stance::Prone; // pm_flags 1
+    ps.ads = false;
+    if (in.adsHeld && in.adsAllowed) {
+        if (!prone) ps.ads = true;
+        else if (!ps.prevAdsHeld || (f == 0 && r == 0)) ps.ads = true;
+    }
+    ps.prevAdsHeld = in.adsHeld;
+    ps.adsSlow = ps.ads && !prone && !(in.weaponState >= 5 && in.weaponState <= 9);
+}
+
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     Pml pml;
@@ -535,11 +719,30 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     pml.passEntity = mp.passEntity;
     pml.mins = mp.mins;
     pml.maxs = {mp.maxs[0], mp.maxs[1], maxsZ(ps.stance, mp)};
-    groundTrace(w, ps, pml);
+    // Aiming while prone (pm_flags 0x40 from the previous step, view height target 11) clears the command's forward
+    // and right moves (0x50c5c7).
+    float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);
+    if (ps.ads && ps.viewHeightTarget == 11) fwdMove = rightMove = 0;
+    // While mantling (pm_flags 4) PmoveSingle skips the stance change and the ground trace (0x50c9b7).
+    if (!ps.mantling) groundTrace(w, ps, pml);
     updateLean(w, ps, in, float(ms), in.yaw);
-    updateStance(w, ps, in, mp);
+    if (!ps.mantling) updateStance(w, ps, in, mp);
     updateViewHeight(ps);
     pml.maxs[2] = maxsZ(ps.stance, mp);
+    // Mantling (PmoveSingle 0x50c9dc → 0x50ca17): checked every step; while mantling the player is off the ground and
+    // the mantle move replaces the walk and air moves.
+    if (mp.mantle && mp.mantle->loaded()) {
+        if (!ps.mantling) mantleCheck(w, ps, pml, in, *mp.mantle);
+        if (ps.mantling) {
+            ps.onGround = false;
+            updateStance(w, ps, in, mp); // 0x50ca29
+            updateViewHeight(ps);
+            updateAds(ps, in, fwdMove, rightMove);
+            mantleMove(ps, *mp.mantle, ms);
+            return;
+        }
+    }
+    updateAds(ps, in, fwdMove, rightMove);
 
     // pm_time runs down; when it expires pm_flags 0x80000, 0x400 and 0x200 are cleared.
     if (ps.pmTimeMs != 0) {
@@ -553,7 +756,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
 
     const float yaw = in.yaw * float(M_PI) / 180.0f;
     const Vec fwd{std::cos(yaw), std::sin(yaw), 0}, right{std::sin(yaw), -std::cos(yaw), 0};
-    const float f = std::clamp(in.forward, -1.0f, 1.0f) * 127.0f, r = std::clamp(in.right, -1.0f, 1.0f) * 127.0f;
+    const float f = fwdMove * 127.0f, r = rightMove * 127.0f;
     if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
@@ -570,7 +773,30 @@ Vec leanOffset(float yawDeg, float lean) {
     return {std::cos(roll) * std::sin(yaw) * d, -std::cos(roll) * std::cos(yaw) * d, -std::sin(roll) * d};
 }
 
+bool MantleAnims::loaded() const {
+    for (size_t i = 1; i < anims.size(); ++i)
+        if (!anims[i]) return false;
+    return true;
+}
+
+const char* mantleAnimName(int index) {
+    static constexpr const char* kNames[11] = {"player_mantle_root", "player_mantle_up_57", "player_mantle_up_51",
+                                               "player_mantle_up_45", "player_mantle_up_39", "player_mantle_up_33",
+                                               "player_mantle_up_27", "player_mantle_up_21", "player_mantle_over_high",
+                                               "player_mantle_over_mid", "player_mantle_over_low"};
+    return index >= 0 && index < 11 ? kNames[index] : "";
+}
+
+float mantleClampYaw(const PlayerState& ps, float yaw) {
+    if (!ps.mantling) return yaw;
+    float d = std::remainder(ps.mantleYaw - yaw, 360.0f); // AngleNormalize180 (0x424040)
+    if (d >= -kMantleYawCap && d <= kMantleYawCap) return yaw;
+    // Past the cap the view is put on the near edge: mantle yaw + cap when the view is to the left, − cap otherwise.
+    return ps.mantleYaw + (d <= 0 ? kMantleYawCap : -kMantleYawCap);
+}
+
 void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp) {
+    ps.stanceEvent = -1;
     // Pmove (0x50cc10) runs steps of at most 66 ms; PmoveSingle (0x50c4a0) clamps a step to 1..200 ms.
     int ms = std::max(1, int(std::lround(dt * 1000.0f)));
     while (ms > 0) {

@@ -73,6 +73,12 @@ public:
     bool adsZoomingIn() const { return zoomingIn_; }
     float number(const char* key) const { return time(key, 0.0f); }
     std::string field(const char* key) const { return fieldValue(key); }
+    // 0x4dcf70 for a player on foot: the weapon has aimDownSight (def +0x32c) and the state is not raising,
+    // dropping, melee or offhand (1, 2, 10, 11, 12–16). TODO(spec): binocular states 0x11–0x16 (0x4dcf50).
+    bool adsAllowed() const {
+        const int s = int(state_);
+        return equipped() && time("aimDownSight", 0) != 0 && s != 1 && s != 2 && s != 10 && s != 11 && !(s >= 12 && s <= 16);
+    }
     bool animLoops() const { return state_ == State::Ready; }
 
 private:

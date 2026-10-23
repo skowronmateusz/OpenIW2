@@ -1516,7 +1516,7 @@ int main(int argc, char** argv) {
         game::ViewWeaponMotion vmMotion;
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
-        std::string weaponSelect, weaponWritten;
+        std::string weaponSelect, weaponWritten, prevSelect;
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
@@ -1639,6 +1639,28 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("deadscreen"))
             for (const auto& it : m->items)
                 if (it->name == "quote") deadQuoteItem = it.get();
+        // The mantle hint item (menu "MantleHint", ownerdraw CG_MANTLE_HINT 80) and whether pmove offers a mantle
+        // (ps mantle flags & 8).
+        const ui::Item* mantleHintItem = nullptr;
+        if (const ui::Menu* m = hudMenus.find("MantleHint"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") mantleHintItem = it.get();
+        bool mantleHint = false;
+        // Scope overlay (cgame 0x4bc8a0): the weapon has an adsOverlayShader or adsOverlayReticle and the aim fraction
+        // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
+        // zooming out), shown above 0.01 and capped at 1.
+        auto scopeAlpha = [&]() -> float {
+            if (!pweapon.equipped()) return 0;
+            const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
+            if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
+            const float f = pweapon.adsFrac();
+            if (f == 0) return 0;
+            const float z = pweapon.number(pweapon.adsZoomingIn() ? "adsZoomInFrac" : "adsZoomOutFrac");
+            float a = f - (1.0f - z);
+            if (a > 0) a /= z;
+            if (!(a > 0.01f)) return 0;
+            return std::min(a, 1.0f);
+        };
         auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
                            const uint8_t rgba[4], float alignX, float alignY) {
             // alignX/alignY: 0 = left/top, 0.5 = centre, 1 = right/bottom of the text box at (x, y).
@@ -1771,6 +1793,76 @@ int main(int argc, char** argv) {
                         hudText(out, t ? *t : m.text, float(w) * 0.5f, my, 0.75f * sc, *f, white, 0.5f, 0);
                         my += 18 * sc;
                     }
+            }
+            // Scope overlay (0x4bcdd0 → 0x4bca90): the weapon's adsOverlayShader, white with the overlay alpha. Wider than
+            // 320 or taller than 240 (adsOverlayWidth / Height, virtual units): one quad of that size centred on the
+            // view; else four quads of that size around the centre, mirrored (u and/or v flipped) towards the right and
+            // bottom. Outside it (0x4bc980) the rest of the screen is filled with the same material: left and right
+            // strips with u = 0 (t 0..1), top and bottom with v = 0 (s 0..1). TODO(spec): the centre follows the gun
+            // sway (0x4bc6e0 projects the weapon angles); adsOverlayReticle drawing.
+            if (const float sa = world ? scopeAlpha() : 0.0f; sa > 0) {
+                const std::string shader = pweapon.field("adsOverlayShader");
+                const int tex = shader.empty() ? -1 : materialTexture(shader);
+                if (tex >= 0) {
+                    const float ow = pweapon.number("adsOverlayWidth"), oh = pweapon.number("adsOverlayHeight");
+                    const float cx = left43 + 320.0f * sc, cy = 240.0f * sc;
+                    const uint8_t col[4] = {255, 255, 255, uint8_t(sa * 255.0f)};
+                    auto quad = [&](float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
+                        Quad2D q{x0, y0, x1, y1, s0, t0, s1, t1};
+                        std::memcpy(q.rgba, col, 4);
+                        q.texture = tex;
+                        out.push_back(q);
+                    };
+                    float l, r, t, b;
+                    if (ow > 320.0f || oh > 240.0f) {
+                        l = cx - ow * 0.5f * sc; t = cy - oh * 0.5f * sc; r = l + ow * sc; b = t + oh * sc;
+                        quad(l, t, r, b, 0, 0, 1, 1);
+                    } else {
+                        l = cx - ow * sc; t = cy - oh * sc; r = cx + ow * sc; b = cy + oh * sc;
+                        quad(l, t, cx, cy, 0, 0, 1, 1);
+                        quad(cx, t, r, cy, 1, 0, 0, 1);
+                        quad(l, cy, cx, b, 0, 1, 1, 0);
+                        quad(cx, cy, r, b, 1, 1, 0, 0);
+                    }
+                    const float sw = float(w), sh = float(h);
+                    if (l > 0) quad(0, 0, l, sh, 0, 0, 0, 1);
+                    if (r < sw) quad(r, 0, sw, sh, 0, 0, 0, 1);
+                    if (t > 0) quad(l, 0, r, t, 0, 0, 1, 0);
+                    if (b < sh) quad(l, b, r, sh, 0, 0, 1, 0);
+                }
+            }
+            // Mantle hint (ownerdraw CG_MANTLE_HINT, 0x4a9f90): PLATFORM_MANTLE with &&1 = the key bound to +gostand (else
+            // +moveup, 0x4cdbf0), then the hint_mantle icon right of it; both centred on the item rect's x. The rect is
+            // the menu's "0 130 40 40" with HORIZONTAL_ALIGN_CENTER / VERTICAL_ALIGN_CENTER: (320, 370) virtual, 40×40.
+            // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
+            // (that x + text width, rect.y − rect.h/2). TODO(spec): ITEM_TEXTSTYLE_SHADOWED, the dvars it also tests.
+            if (world && mantleHint && mantleHintItem) {
+                const float ts = mantleHintItem->textScale;
+                const float fs = ts * float(h) / 480.0f;
+                const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
+                const std::string* t = loc.find("PLATFORM_MANTLE");
+                std::string text = t ? *t : "PLATFORM_MANTLE";
+                auto keys = input.keysFor("+gostand");
+                if (keys.empty()) keys = input.keysFor("+moveup");
+                if (const auto at = text.find("&&1"); at != std::string::npos)
+                    text = text.substr(0, at) + (keys.empty() ? std::string() : keys.front()) + text.substr(at + 3);
+                if (f) {
+                    const float gs = ts * 48.0f / float(f->pixelHeight);
+                    float tw = 0;
+                    for (unsigned char ch : text)
+                        if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                    const float textH = float(int(ts * 48.0f));
+                    const float rx = 320.0f, ry = 370.0f, rw = 40.0f, rh = 40.0f;
+                    const float x0 = rx - (tw + rw) * 0.5f;
+                    const uint8_t white[4] = {255, 255, 255, 255};
+                    hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f);
+                    Quad2D q{left43 + (x0 + tw) * sc, (ry - rh * 0.5f) * sc, 0, 0};
+                    q.x1 = q.x0 + rw * sc;
+                    q.y1 = q.y0 + rh * sc;
+                    std::memcpy(q.rgba, white, 4);
+                    q.texture = materialTexture("hint_mantle");
+                    out.push_back(q);
+                }
             }
             // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
             // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
@@ -1935,7 +2027,7 @@ int main(int argc, char** argv) {
             }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
-            if (!(world && world->playerOnTurret())) addViewModel(shotItems, cam);
+            if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
@@ -1961,6 +2053,8 @@ int main(int argc, char** argv) {
         std::array<game::Vec3, 3> prevBody{};
         bool havePrevBody = false;
         const game::MoveParams mp;
+        game::MantleAnims mantleAnims;
+        for (int i = 1; i < 11; ++i) mantleAnims.anims[size_t(i)] = viewAnim(vfs, game::mantleAnimName(i));
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
@@ -2071,17 +2165,25 @@ int main(int argc, char** argv) {
                 in.leanLeft = (buttons & game::Button::LeanLeft) != 0;
                 in.leanRight = (buttons & game::Button::LeanRight) != 0;
                 in.yaw = cam.yaw;
+                in.adsHeld = (buttons & game::Button::Ads) != 0;
+                in.adsAllowed = pweapon.adsAllowed();
+                in.weaponState = pweapon.stateNumber();
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
                 // With a running level the player clips against the world and its solid entities (brush models,
                 // actors) like G_Trace in the original pmove (0x507b00 → 0x4db7f0 → 0x44bf00), skipping itself.
                 game::MoveParams pmp = mp;
                 if (world && world->player()) pmp.passEntity = world->player()->number;
+                pmp.mantle = &mantleAnims;
+                // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
+                if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
                 const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision;
                 while (remaining > 0) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
                     game::RecordedMove rec{ps, {}, in, step, pmp, pcw.entityClips()};
                     game::playerMove(pcw, ps, in, step, pmp);
+                    // Mantle stance events (0x8d crouch, 0x8c stand) set the client stance.
+                    if (ps.stanceEvent >= 0) input.setStance(ps.stanceEvent);
                     rec.after = ps;
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
@@ -2096,6 +2198,8 @@ int main(int argc, char** argv) {
                             std::cout << "player fell out of the world; wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
                     }
                 }
+                mantleHint = (ps.mantleFlags & 8) != 0;
+                cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
@@ -2123,11 +2227,18 @@ int main(int argc, char** argv) {
                     if (!other.empty()) weaponSelect = other; // TODO(spec): weapons outside the slots (0x4b72f0)
                 }
                 wi.fire = (buttons & game::Button::Attack) != 0;
-                wi.ads = (buttons & game::Button::Ads) != 0;
+                // The aim fraction follows pm_flags 0x40 (0x4dd0d0), which pmove sets from the aim command (0x4dd020).
+                wi.ads = walk && !inVehicle && !onTurret ? ps.ads : (buttons & game::Button::Ads) != 0;
                 wi.reload = reloadPressed;
                 wi.melee = (buttons & game::Button::Melee) != 0;
                 wi.frag = (buttons & game::Button::Frag) != 0;
                 wi.smoke = (buttons & game::Button::Smoke) != 0;
+                // A new selected weapon ends the toggled aim unless it is the current weapon's altWeapon (cgame 0x4b8360).
+                if (weaponSelect != prevSelect) {
+                    if (!prevSelect.empty() && !(pweapon.name() == prevSelect && pweapon.field("altWeapon") == weaponSelect))
+                        input.clearAds();
+                    prevSelect = weaponSelect;
+                }
                 wi.weapon = weaponSelect;
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
@@ -2213,6 +2324,7 @@ int main(int argc, char** argv) {
                     pweapon = game::PlayerWeapon{};
                     weaponSelect.clear();
                     weaponWritten.clear();
+                    prevSelect.clear();
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
                     gameClock = 0;
                     // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
@@ -2231,7 +2343,8 @@ int main(int argc, char** argv) {
             const int wstate = pweapon.stateNumber();
             if (!(world && world->playerOnTurret()) &&
                 !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
-                addViewModel(items, cam);
+                if (!(world && scopeAlpha() > 0)) // the gun is not drawn under a scope overlay (cgame 0x4b6d7c, cg_drawGun)
+                    addViewModel(items, cam);
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
