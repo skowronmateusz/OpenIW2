@@ -2,7 +2,7 @@
 
 ## Data (observed in the shipped files)
 
-`animtrees/<name>.atr` is text. Each name is a node; `{ … }` holds a node's children; `// …` comments;
+`animtrees/<name>.atr` is text. Each name is a node; `{ … }` holds a node's children; `// …` and `/* … */` comments;
 `: complete`, `: loopsync` and `: nonloopsync` modifiers follow a name. Leaves are names of `xanim/` files.
 Scripts select a tree with `#using_animtree("name")` / `useanimtree(#animtree)` and refer to nodes as `%name`.
 Every tree has an implicit `root` node (scripts use `%root`).
@@ -18,8 +18,7 @@ Every tree has an implicit `root` node (scripts use `%root`).
 
 ## Blending
 
-Specified from the executable in `docs/spec/xanim.md` ("Blending", "Weights and time"). `AnimState::moveSpeed`
-still uses an inferred effective weight (a node's weight over its siblings' total, multiplied up the tree).
+Specified from the executable in `docs/spec/xanim.md` ("Blending", "Weights and time", "Anim delta").
 AI use the `generic_human` tree.
 
 ## Engine animscripts (placeholder)

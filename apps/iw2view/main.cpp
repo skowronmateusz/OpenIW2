@@ -1283,6 +1283,7 @@ static std::string keyName(SDL_Scancode sc) {
 }
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0); // line-buffered, so a log written to a file is current while playing
     std::vector<std::string> args;
     std::string shot;
     std::optional<Vec3> pos;

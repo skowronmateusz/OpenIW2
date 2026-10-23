@@ -91,6 +91,7 @@ struct ActorAi {
     int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
+    bool animDeltaGoalWeights = false;        // +0x220 anim deltas weigh by goal weights (TODO(spec): the states that set it)
     script::Value customScript;               // +0x208 animcustom function
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704

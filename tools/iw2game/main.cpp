@@ -1,6 +1,6 @@
 // iw2game: run a level headless (scripts, entities, no rendering).
 //
-//   iw2game <main-dir> <map> [seconds] [--cvar name=value ...]
+//   iw2game <main-dir> <map> [seconds] [--cvar name=value ...] [--spawn-all] [--move-stats] …
 //   iw2game <main-dir> <map> --walk-test     drop the player at the spawn point and walk forward
 //   iw2game <main-dir> <map> --fall-test [walks] [seconds]   random player walks (tunnels, falls, solid)
 //   iw2game <main-dir> <map> --replay file      re-run moves recorded by iw2view (pmove_replay.bin)
@@ -391,10 +391,17 @@ int main(int argc, char** argv) {
         bool playerShoots = false;
         bool drive = false;
         bool controls = false;
+        bool pmove = false;
+        iw2::game::PlayerState pmoveState;
+        bool pmoveInit = false;
+        std::vector<std::pair<float, iw2::game::Vec3>> playerPath; // --player-at T x,y,z: player origin from time T (linear between)
+        bool moveStats = false;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--trace-actor" && i + 1 < argc) {
                 traceActor = std::stoi(argv[++i]);
+            } else if (a == "--move-stats") {
+                moveStats = true; // speed of actors moving along a path (anim mode 1, movemode walk/run)
             } else if (a == "--player-shoots") {
                 playerShoots = true; // the player fires at the nearest axis actor twice a second
             } else if (a == "--spawn-all") {
@@ -403,6 +410,14 @@ int main(int argc, char** argv) {
                 controls = true; // default.cfg keys through the client commands and PM_Weapon: 1, SHIFT, G, C, SPACE
             } else if (a == "--drive") {
                 drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
+            } else if (a == "--player-at" && i + 2 < argc) {
+                iw2::game::Vec3 p{};
+                const float t = std::stof(argv[++i]);
+                std::sscanf(argv[++i], "%f,%f,%f", &p[0], &p[1], &p[2]);
+                playerPath.push_back({t, p});
+            } else if (a == "--pmove") {
+                pmove = true; // the player stands still under pmove (pushed by entities, falls) as in iw2view
+            } else if (a == "--mixer") {
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
@@ -417,7 +432,12 @@ int main(int argc, char** argv) {
         aliases.load(vfs, argv[2]);
         std::mt19937 soundRng(1);
         std::map<std::string, int> soundsPlayed, soundsUnknown;
-        world.playSound = [&](const std::string& alias, const iw2::game::Vec3*, float*) {
+        // --mixer: start sounds in an (unheard) mixer as iw2view does, so scripts get the real sound lengths.
+        std::unique_ptr<iw2::audio::Mixer> mixer;
+        for (int i = 3; i < argc; ++i)
+            if (std::string(argv[i]) == "--mixer") mixer = std::make_unique<iw2::audio::Mixer>(vfs, aliases, 44100);
+        world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration) {
+            if (mixer) return mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration);
             if (aliases.pick(alias, soundRng)) ++soundsPlayed[alias];
             else ++soundsUnknown[alias];
             return 1;
@@ -440,6 +460,8 @@ int main(int argc, char** argv) {
                 }
         }
         int playerHits = 0;
+        struct MoveStat { int frames = 0, stalls = 0; double sum = 0; float max = 0; };
+        std::map<int, MoveStat> moveStatsBy;
         iw2::game::ClientInput input;
         iw2::game::PlayerWeapon pweapon;
         std::string weaponSelect;
@@ -533,8 +555,52 @@ int main(int argc, char** argv) {
                 }
                 world.setPlayerCommand(cmd);
             }
+            if (!playerPath.empty() && world.player()) {
+                const float t = f * 0.05f;
+                size_t k = 0;
+                while (k + 1 < playerPath.size() && playerPath[k + 1].first <= t) ++k;
+                if (t >= playerPath[k].first) {
+                    iw2::game::Vec3 p = playerPath[k].second;
+                    if (k + 1 < playerPath.size()) {
+                        const float u = (t - playerPath[k].first) / (playerPath[k + 1].first - playerPath[k].first);
+                        for (int c = 0; c < 3; ++c) p[c] += (playerPath[k + 1].second[c] - p[c]) * u;
+                    }
+                    world.setPlayerOrigin(p, world.player()->obj->get("angles").asVector());
+                }
+            }
+            if (pmove && world.player()) {
+                if (!pmoveInit) {
+                    const auto o = world.player()->obj->get("origin").asVector();
+                    pmoveState.origin = {o[0], o[1], o[2] + 8.0f};
+                    pmoveInit = true;
+                }
+                iw2::game::MoveParams mp;
+                mp.passEntity = world.player()->number;
+                iw2::game::PlayerInput in;
+                in.yaw = world.player()->obj->get("angles").asVector()[1];
+                for (int k = 0; k < 3; ++k) iw2::game::playerMove(world.collision(), pmoveState, in, 1.0f / 60.0f, mp);
+                world.setPlayerOrigin({pmoveState.origin[0], pmoveState.origin[1], pmoveState.origin[2]}, world.player()->obj->get("angles").asVector());
+            }
+            std::map<const iw2::game::Entity*, iw2::script::Vec3> before;
+            if (moveStats)
+                for (const auto& e : world.entities())
+                    if (e->isActor && !e->obj->removed && e->path.count > 0 && e->ai.animMode == 1 && e->ai.movemode >= 2)
+                        before[e.get()] = e->obj->get("origin").asVector();
             world.frame();
+            for (const auto& [e, o0] : before) {
+                if (e->obj->removed) continue;
+                const auto o = e->obj->get("origin").asVector();
+                const float v = std::sqrt((o[0] - o0[0]) * (o[0] - o0[0]) + (o[1] - o0[1]) * (o[1] - o0[1])) * 20.0f;
+                auto& st = moveStatsBy[e->ai.movemode];
+                st.frames++;
+                st.sum += v;
+                st.stalls += v < 1.0f;
+                st.max = std::max(st.max, v);
+            }
         }
+        for (const auto& [mode, st] : moveStatsBy)
+            std::printf("move stats movemode %d: %d actor frames, mean %.1f u/s, max %.1f, stalled frames %d\n", mode,
+                        st.frames, st.frames ? st.sum / st.frames : 0.0, st.max, st.stalls);
         if (playerShoots) std::cout << "player hits " << playerHits << "\n";
         if (controls) {
             std::cout << "controls: weapon " << pweapon.name() << ", events";
@@ -586,6 +652,19 @@ int main(int argc, char** argv) {
                     std::cout << "death actor anim state:\n" << e->anim->debugString();
                     break;
                 }
+            {
+                // Weapon drop on death (death.gsc → DropAIWeapon → dropweapon): corpses still holding a gun, items spawned.
+                int corpses = 0, armed = 0, items = 0;
+                for (const auto& e : world.entities()) {
+                    if (e->obj->removed) continue;
+                    if (e->classname.rfind("weapon_", 0) == 0) ++items;
+                    if (!e->isActor || !e->ai.corpse) continue;
+                    ++corpses;
+                    for (const auto& a : e->attachments)
+                        if (a.tag == "tag_weapon_right" || a.tag == "tag_weapon_left") { ++armed; break; }
+                }
+                std::cout << "corpses " << corpses << ", still holding a gun " << armed << ", weapon items " << items << "\n";
+            }
             if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
         }
         {
