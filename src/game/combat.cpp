@@ -145,6 +145,8 @@ bool World::isAlive(const Entity& e) const {
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                    const std::string& location) {
     if (!isAlive(target)) return;
+    // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage
+    // (0x5282b3). TODO(spec): the knockback computed before that check still applies in the exe.
     if (target.obj->get("$godmode").truthy()) return;
     // Debug: IW2_DMG_DEBUG=1 prints every damage credited to the player (friendly-fire mission fails).
     if (attacker && attacker->isPlayer && std::getenv("IW2_DMG_DEBUG"))
