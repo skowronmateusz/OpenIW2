@@ -26,6 +26,10 @@ AnimTree::AnimTree(std::string name, std::string_view text) : name_(std::move(na
         const char c = text[i];
         if (c == '/' && i + 1 < text.size() && text[i + 1] == '/') {
             while (i < text.size() && text[i] != '\n') ++i;
+        } else if (c == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+            // The tokenizer (0x43e4f0) also skips /* … */ (generic_human.atr comments out a block of 30cal nodes).
+            const size_t e = text.find("*/", i + 2);
+            i = e == std::string_view::npos ? text.size() : e + 2;
         } else if (c == '{') {
             if (last < 0) throw std::runtime_error("animtree " + name_ + ": '{' without a node");
             stack.push_back(last);
@@ -61,6 +65,21 @@ AnimTree::AnimTree(std::string name, std::string_view text) : name_(std::move(na
             ++i;
         }
     }
+    markSync(0, 0);
+}
+
+// 0x479260: a blend node with loopsync / nonloopsync gets flag 4 and its type (1 / 2); 0x479120 gives every blend
+// node below it the same type (a node may not carry both, nor a second sync modifier below a synced one).
+void AnimTree::markSync(int n, int type) {
+    AnimNode& node = nodes_[size_t(n)];
+    if (node.children.empty()) return;
+    if (type) {
+        node.syncFlags |= type;
+    } else if (!node.sync.empty()) {
+        type = node.sync == "loopsync" ? 1 : 2;
+        node.syncFlags |= 4 | type;
+    }
+    for (int c : std::vector<int>(node.children)) markSync(c, type);
 }
 
 int AnimTree::find(const std::string& name) const {
@@ -151,7 +170,7 @@ void AnimState::clearNode(int n, float blendTime) {
 // - setanimknob: the siblings are knobbed (0x4789e0) first, then as setanim.
 // - setanimknoball (0x478c40): knob, set the node, then each ancestor below the given root is knobbed and set to
 //   goal 1 over the blend time at rate 1.
-// The restart variants restart the node's time after it is set (0x4793c0).
+// The restart variants restart the node's time after it is set (0x4793c0); knoball also restarts each ancestor it sets.
 void AnimState::set(int n, const SetArgs& a) {
     if (n < 0 || size_t(n) >= nodes_.size()) return;
     const auto& nodes = tree_.nodes();
@@ -169,6 +188,7 @@ void AnimState::set(int n, const SetArgs& a) {
         for (int p = nodes[size_t(n)].parent; p >= 0 && p != a.knobAllRoot; p = nodes[size_t(p)].parent) {
             knobSiblings(p, 1.0f, a.blendTime);
             setNode(p, 1.0f, 1.0f, {});
+            if (a.restart) restart(p);
         }
         return;
     }
@@ -183,18 +203,56 @@ void AnimState::clear(int n, float blendTime) {
     for (int c : tree_.nodes()[size_t(n)].children) clear(c, blendTime);
 }
 
-// 0x4793c0: TODO(spec): a node under a synced blend node (tree flag 4) restarts that whole synced subtree; only
-// the node itself is restarted here.
-void AnimState::restart(int n) {
-    AnimNodeState& s = nodes_[size_t(n)];
-    s.time = 0;
-    s.ended = false;
+namespace {
+
+// Normalized time per second of an animation (the xanim's frequency, XAnim +8); 0 without frames.
+float animFreq(const assets::XAnim* a) {
+    if (!a) return 0.0f;
+    const int frames = a->keyCount() - 1;
+    return frames > 0 ? float(a->frameRate) / float(frames) : 0.0f;
 }
 
-// 0x476960: weights move linearly to the goal over the time left; under an inactive parent they jump to the goal.
-// A node at weight and goal 0 with no live children is released, so its time starts again at 0 when it is next set.
-bool AnimState::updateWeight(int n, float dt, bool parentActive) {
+} // namespace
+
+// 0x4793c0: the node or its nearest ancestor that tops a synced subtree (flag 4) restarts that whole subtree (time
+// and cycle 0, 0x4768e0 for the descendants) unless it already stands at 0. Outside a synced subtree only a leaf
+// restarts; a plain blend node keeps its time.
+void AnimState::restart(int n) {
+    const auto& nodes = tree_.nodes();
+    auto zero = [](AnimNodeState& s) {
+        s.time = s.oldTime = 0;
+        s.cycle = s.oldCycle = 0;
+        s.ended = false;
+    };
+    for (int p = n; p > 0; p = nodes[size_t(p)].parent) {
+        if (nodes[size_t(p)].children.empty() || !(nodes[size_t(p)].syncFlags & 4)) continue;
+        AnimNodeState& s = nodes_[size_t(p)];
+        if (s.time == 0 && s.cycle == 0) return;
+        zero(s);
+        for (int c : nodes[size_t(p)].children) resetSubtree(c);
+        return;
+    }
+    if (nodes[size_t(n)].children.empty()) zero(nodes_[size_t(n)]);
+}
+
+// 0x4768e0: time and cycle 0 for the node and every descendant.
+void AnimState::resetSubtree(int n) {
     AnimNodeState& s = nodes_[size_t(n)];
+    s.time = s.oldTime = 0;
+    s.cycle = s.oldCycle = 0;
+    s.ended = false;
+    for (int c : tree_.nodes()[size_t(n)].children) resetSubtree(c);
+}
+
+// 0x476960: weights move linearly to the goal over the time left (below 1e-6 they restart at goal × 0.001); under an
+// inactive parent they jump to the goal. A node is alive while it is active (weight under an active parent), has a
+// goal weight or has a live child; it is playing when active with a leaf of nonzero frequency below. A node that is
+// alive but not playing takes the time handed down (the synced top's time inside a synced subtree, else 0); a synced
+// top that is not playing restarts its subtree (0x4768a0). Then the old time is the time. A node that is not alive
+// is released: its state starts again from scratch when it is next set.
+void AnimState::updateWeight(int n, float inheritedTime, int inheritedCycle, float dt, bool parentActive, bool& alive, bool& playing) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    const auto& node = tree_.nodes()[size_t(n)];
     const bool active = parentActive && s.weight != 0;
     if (n != 0) {
         if (!parentActive || s.blendLeft <= dt) {
@@ -206,77 +264,159 @@ bool AnimState::updateWeight(int n, float dt, bool parentActive) {
             s.blendLeft -= dt;
         }
     }
-    bool childAlive = false;
-    for (int c : tree_.nodes()[size_t(n)].children) childAlive |= updateWeight(c, dt, active);
-    const bool alive = n == 0 || active || s.goalWeight != 0 || childAlive;
-    if (!alive) {
-        s.time = 0;
-        s.ended = false;
+    bool live = n == 0 || active || s.goalWeight != 0;
+    bool childPlaying = false;
+    const bool syncTop = !node.children.empty() && (node.syncFlags & 4);
+    if (node.children.empty()) {
+        childPlaying = animFreq(lib_.anim(node.name)) != 0;
+    } else {
+        const float t = syncTop ? s.time : inheritedTime;
+        const int c = syncTop ? s.cycle : inheritedCycle;
+        for (int ch : node.children) updateWeight(ch, t, c, dt, active, live, childPlaying);
     }
-    return alive;
-}
-
-// 0x476490: only nodes with weight advance. A leaf moves by frameRate / (keyCount − 1) × rate × dt in normalized
-// time; a blend node passes dt × its rate to its children. (Synced blend nodes, 0x475bb0, are not done yet: they
-// are treated like the others.)
-void AnimState::updateTime(int n, float dt, const std::function<void(const std::string&, const std::string&)>& onNote) {
-    AnimNodeState& s = nodes_[size_t(n)];
-    if (s.weight == 0) return;
-    const auto& node = tree_.nodes()[size_t(n)];
-    if (!node.children.empty()) {
-        if (s.rate * dt == 0) return;
-        for (int c : node.children) updateTime(c, dt * s.rate, onNote);
+    if (!live) {
+        s = AnimNodeState{};
         return;
     }
-    const assets::XAnim* a = lib_.anim(node.name);
-    if (!a) return;
-    const int frames = a->keyCount() - 1;
-    const float step = (frames > 0 ? float(a->frameRate) / float(frames) : 0.0f) * s.rate * dt;
-    if (step == 0) return;
-    const float before = s.time;
-    float after = before + step;
-    if (a->looping) {
-        if (after >= 1.0f) {
-            for (const auto& note : a->notes)
-                if (note.time > before && !s.notify.empty()) onNote(s.notify, note.name);
-            after = std::fmod(after, 1.0f);
-            for (const auto& note : a->notes)
-                if (note.time <= after && note.name != "end" && !s.notify.empty()) onNote(s.notify, note.name);
-        } else {
-            for (const auto& note : a->notes)
-                if (note.time > before && note.time <= after && note.name != "end" && !s.notify.empty()) onNote(s.notify, note.name);
+    if (!active || !childPlaying) {
+        if (!syncTop) {
+            if (s.time != inheritedTime || s.cycle != inheritedCycle) {
+                s.time = inheritedTime;
+                s.cycle = inheritedCycle;
+                s.ended = false;
+            }
+        } else if (s.time != 0 || s.cycle != 0) {
+            s.time = s.oldTime = 0;
+            s.cycle = s.oldCycle = 0;
+            for (int ch : node.children) resetSubtree(ch);
         }
     } else {
-        after = std::min(after, 1.0f);
-        for (const auto& note : a->notes) {
-            if (note.name == "end") continue;
-            if (note.time > before && note.time <= after && !s.notify.empty()) onNote(s.notify, note.name);
-        }
-        if (after >= 1.0f && !s.ended) {
-            s.ended = true;
-            if (!s.notify.empty()) onNote(s.notify, "end");
-        }
+        playing = true;
     }
-    s.time = after;
+    s.oldTime = s.time;
+    s.oldCycle = s.cycle;
+    alive = true;
 }
 
-void AnimState::update(float dt, const std::function<void(const std::string&, const std::string&)>& onNote) {
-    updateWeight(0, dt, true);
-    updateTime(0, dt, onNote);
+// 0x475bb0: a leaf's frequency, or the average over the weighted children (with nonzero frequency) of frequency ×
+// rate, weighted by the child weights.
+float AnimState::syncFreq(int n) const {
+    const auto& node = tree_.nodes()[size_t(n)];
+    if (node.children.empty()) return animFreq(lib_.anim(node.name));
+    float sum = 0, acc = 0;
+    for (int c : node.children) {
+        const AnimNodeState& s = nodes_[size_t(c)];
+        if (s.weight == 0) continue;
+        const float f = syncFreq(c);
+        if (f == 0) continue;
+        sum += s.weight;
+        acc += f * s.rate * s.weight;
+    }
+    return sum != 0 ? acc / sum : 0.0f;
 }
 
-float AnimState::effectiveWeight(int n) const {
-    const auto& nodes = tree_.nodes();
-    float w = 1.0f;
-    for (int c = n; c > 0; c = nodes[size_t(c)].parent) {
-        const int p = nodes[size_t(c)].parent;
-        float sum = 0;
-        for (int sib : nodes[size_t(p)].children) sum += std::max(0.0f, nodes_[size_t(sib)].weight);
-        const float own = std::max(0.0f, nodes_[size_t(c)].weight);
-        if (sum <= 0 || own <= 0) return 0.0f;
-        w *= own / std::max(sum, 1.0f); // weights below 1 in total fade towards the base pose (inferred)
+// Moves a leaf from its time to `to` (cycle `toCycle`) and calls `onNote` for the notetracks crossed (0x476f10).
+void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
+    const float before = s.time;
+    const bool wrapped = toCycle > s.cycle;
+    if (notes && a && !s.notify.empty()) {
+        if (a->looping) {
+            if (wrapped) {
+                for (const auto& note : a->notes)
+                    if (note.time > before) onNote(s.notify, note.name);
+                for (const auto& note : a->notes)
+                    if (note.time <= to && note.name != "end") onNote(s.notify, note.name);
+            } else {
+                for (const auto& note : a->notes)
+                    if (note.time > before && note.time <= to && note.name != "end") onNote(s.notify, note.name);
+            }
+        } else {
+            for (const auto& note : a->notes)
+                if (note.name != "end" && note.time > before && note.time <= to) onNote(s.notify, note.name);
+        }
     }
-    return w;
+    if (a && !a->looping && to >= 1.0f && !s.ended) {
+        s.ended = true;
+        if (notes && !s.notify.empty()) onNote(s.notify, "end");
+    }
+    s.time = to;
+    s.cycle = toCycle;
+}
+
+// 0x476490: only weighted nodes advance; notetracks are off below a node with goal weight 0. A leaf moves from its old
+// time by frequency × rate × dt (looping anims wrap and count a cycle, others stop at 1). A plain blend node passes
+// dt × rate to its children. A synced blend node advances by its weighted frequency (0x475bb0) × rate × dt (wrapping
+// unless nonloopsync) and sets every weighted descendant to its time (0x476370). A time is only taken when it does
+// not go back.
+void AnimState::updateTime(int n, float dt, bool notes, const NoteFn& onNote) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    if (s.weight == 0) return;
+    if (s.goalWeight == 0) notes = false;
+    const auto& node = tree_.nodes()[size_t(n)];
+    float step;
+    bool wrap;
+    if (node.children.empty()) {
+        const assets::XAnim* a = lib_.anim(node.name);
+        step = animFreq(a) * s.rate * dt;
+        wrap = a && a->looping;
+    } else if (!(node.syncFlags & 3)) {
+        if (s.rate * dt == 0) return;
+        for (int c : node.children) updateTime(c, dt * s.rate, notes, onNote);
+        return;
+    } else {
+        step = syncFreq(n) * s.rate * dt;
+        wrap = !(node.syncFlags & 2);
+    }
+    if (step == 0) return;
+    float to = s.oldTime + step;
+    int cycle = s.oldCycle;
+    if (to >= 1.0f) {
+        if (wrap) {
+            while (to >= 1.0f) {
+                to -= 1.0f;
+                ++cycle;
+            }
+        } else {
+            to = 1.0f;
+        }
+    }
+    if (s.time - to > float(cycle - s.cycle)) return;
+    if (node.children.empty()) {
+        advanceLeaf(n, to, cycle, notes, onNote);
+        return;
+    }
+    s.time = to;
+    s.cycle = cycle;
+    for (int c : node.children) syncTo(c, s, notes, onNote);
+}
+
+// 0x476370: a weighted node under a synced top restarts from the top's old time if it is out of step, then moves to
+// the top's time and cycle (notetracks off below a goal weight of 0).
+void AnimState::syncTo(int n, const AnimNodeState& top, bool notes, const NoteFn& onNote) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    if (s.weight == 0) return;
+    if (s.goalWeight == 0) notes = false;
+    if (s.oldTime != top.oldTime || s.oldCycle != top.oldCycle) {
+        s.time = s.oldTime = top.oldTime;
+        s.cycle = s.oldCycle = top.oldCycle;
+        s.ended = false;
+    }
+    const auto& node = tree_.nodes()[size_t(n)];
+    if (node.children.empty()) {
+        advanceLeaf(n, top.time, top.cycle, notes, onNote);
+        return;
+    }
+    s.time = top.time;
+    s.cycle = top.cycle;
+    for (int c : node.children) syncTo(c, top, notes, onNote);
+}
+
+void AnimState::update(float dt, const NoteFn& onNote) {
+    bool alive = false, playing = false;
+    updateWeight(0, 0.0f, 0, dt, true, alive, playing);
+    updateTime(0, dt, true, onNote);
 }
 
 std::string AnimState::debugString() const {
@@ -286,28 +426,70 @@ std::string AnimState::debugString() const {
         const AnimNodeState& s = nodes_[i];
         if (s.weight <= 0 && s.goalWeight <= 0) continue;
         char buf[256];
-        std::snprintf(buf, sizeof buf, "  %s w=%.2f goal=%.2f t=%.2f rate=%.2f notify=%s leaf=%d anim=%d\n", nodes[i].name.c_str(), s.weight, s.goalWeight,
+        std::snprintf(buf, sizeof buf, "  %s(p%d,f%d) w=%.2f goal=%.2f t=%.2f rate=%.2f notify=%s leaf=%d anim=%d\n", nodes[i].name.c_str(), nodes[i].parent, nodes[i].syncFlags, s.weight, s.goalWeight,
                       s.time, s.rate, s.notify.c_str(), int(nodes[i].children.empty()), lib_.anim(nodes[i].name) != nullptr);
         out += buf;
     }
     return out;
 }
 
-float AnimState::moveSpeed() const {
-    const auto& nodes = tree_.nodes();
-    float speed = 0;
-    for (size_t i = 1; i < nodes.size(); ++i) {
-        if (!nodes[i].children.empty()) continue;
-        const float w = effectiveWeight(int(i));
-        if (w <= 0.001f) continue;
-        const assets::XAnim* a = lib_.anim(nodes[i].name);
-        if (!a || !a->delta || a->deltaTrans.keys.size() < 2 || a->length() <= 0) continue;
-        const auto& f = a->deltaTrans.keys.front();
-        const auto& l = a->deltaTrans.keys.back();
-        const float d = std::sqrt((l[0] - f[0]) * (l[0] - f[0]) + (l[1] - f[1]) * (l[1] - f[1]));
-        speed += w * d / a->length() * nodes_[i].rate;
+// 0x477b80 (called by 0x478550 with weight 1, first, not nested). A leaf with a delta track adds weight × the
+// translation from its old to its new time (0x475960: a looping anim whose time went back adds one whole cycle) and
+// adds its weight. A node with one weighted child hands it its own weight. Several weighted children are summed with
+// their own weights; nested, the sum is normalized and added with the node's weight, at the top it is divided by the
+// weight sum. The weights are the current ones, or the goal weights with `goalWeights`.
+void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, AnimDelta& out) const {
+    const auto& node = tree_.nodes()[size_t(n)];
+    if (first) out = AnimDelta{};
+    if (node.children.empty()) {
+        const assets::XAnim* a = lib_.anim(node.name);
+        if (!a || !a->delta) return;
+        const AnimNodeState& s = nodes_[size_t(n)];
+        const int keys = a->keyCount();
+        const float span = float(keys - 1);
+        const auto from = assets::sampleTrans(a->deltaTrans, s.oldTime * span, keys);
+        auto to = assets::sampleTrans(a->deltaTrans, s.time * span, keys);
+        if (a->looping && s.time < s.oldTime && !a->deltaTrans.keys.empty()) {
+            const auto& f = a->deltaTrans.keys.front();
+            const auto& l = a->deltaTrans.keys.back();
+            for (int k = 0; k < 3; ++k) to[size_t(k)] += l[size_t(k)] - f[size_t(k)];
+        }
+        out.weight += weight;
+        for (int k = 0; k < 3; ++k) out.trans[size_t(k)] += (to[size_t(k)] - from[size_t(k)]) * weight;
+        return;
     }
-    return speed;
+    auto w = [&](int c) { return goalWeights ? nodes_[size_t(c)].goalWeight : nodes_[size_t(c)].weight; };
+    std::vector<int> active;
+    for (int c : node.children)
+        if (w(c) != 0) active.push_back(c);
+    if (active.empty()) return;
+    if (active.size() == 1) {
+        deltaNode(active[0], weight, first, nested, goalWeights, out);
+        return;
+    }
+    AnimDelta local;
+    AnimDelta& sum = first ? out : local;
+    for (size_t i = 0; i < active.size(); ++i) deltaNode(active[i], w(active[i]), i == 0, true, goalWeights, sum);
+    if (!nested) {
+        if (out.weight == 0) return;
+        for (float& v : out.trans) v /= out.weight;
+        return;
+    }
+    if (sum.weight == 0) return;
+    const float scale = weight / sum.weight;
+    if (first) {
+        for (float& v : out.trans) v *= scale;
+        out.weight = weight;
+        return;
+    }
+    for (int k = 0; k < 3; ++k) out.trans[size_t(k)] += sum.trans[size_t(k)] * scale;
+    out.weight += weight;
+}
+
+AnimDelta AnimState::delta(bool goalWeights) const {
+    AnimDelta d;
+    deltaNode(0, 1.0f, true, false, goalWeights, d);
+    return d;
 }
 
 // 0x4771e0: a node with one active child passes its weight down unchanged. The active children of a node with
