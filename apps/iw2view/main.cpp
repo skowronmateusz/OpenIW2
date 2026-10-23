@@ -1750,11 +1750,21 @@ int main(int argc, char** argv) {
             // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
             // it at spaces to the item width, centres each line on rect x + textalignx, line step text height + 5;
             // the glyph scale is textscale × 48 / font pixel height (gfx refexport +0x128, 0x1000bfa0).
-            // TODO(spec): the font of textfont 0 (normalfont assumed), the shadow of ITEM_TEXTSTYLE_SHADOWED, and which
+            // TODO(spec): the shadow of ITEM_TEXTSTYLE_SHADOWED, and which
             // ownerdraw arguments carry textalignx/textaligny (from the menu's "point to center around" comments).
             if (world && deadQuoteItem && deadScreenMs && deadScreenMs < world->timeMs()) {
                 const auto qv = world->cvars.find("ui_deadquote");
-                const assets::Font* f = font("normalfont");
+                // Font for textfont 0 (0x4c38e0): textscale × (screen height / 480) ≤ ui_smallFont (0.25) → $smallfont,
+                // ≥ ui_extraBigFont (0.55) → $extrabigfont, < ui_bigFont (0.4) → $font, else $bigfont. The aliases
+                // are the assetGlobalDef fonts of ui/main.menu (smallFont, font = normalFont, bigFont, extraBigFont).
+                auto cvarF = [&](const char* k, float def) {
+                    auto it = world->cvars.find(k);
+                    return it == world->cvars.end() ? def : float(std::atof(it->second.c_str()));
+                };
+                const float fs = deadQuoteItem->textScale * float(h) / 480.0f;
+                const char* fontName = fs <= cvarF("ui_smallFont", 0.25f) ? "smallFont" : fs >= cvarF("ui_extraBigFont", 0.55f) ? "extraBigFont"
+                                     : fs < cvarF("ui_bigFont", 0.4f) ? "normalFont" : "bigFont";
+                const assets::Font* f = font(fontName);
                 if (qv != world->cvars.end() && f) {
                     int fadeMs = 1000;
                     if (auto it = world->cvars.find("hud_deathQuoteFadeTime"); it != world->cvars.end()) fadeMs = std::atoi(it->second.c_str());
