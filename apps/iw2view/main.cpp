@@ -2173,10 +2173,12 @@ int main(int argc, char** argv) {
             shotIn.ads = shotAds;
             pweapon.update(fireSeconds, shotIn);
             shotIn.fire = false;
+            shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
                 pweapon.update(0.02f, shotIn);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
             }
+            if (shotIn.frag) std::cout << "shot weapon state " << pweapon.stateNumber() << " anim " << pweapon.anim() << " t " << pweapon.animTime() << "\n";
             cam.pos.z += shotViewHeight - 60.0f;
             {
                 const game::Vec lo = game::leanOffset(cam.yaw, shotLean);
