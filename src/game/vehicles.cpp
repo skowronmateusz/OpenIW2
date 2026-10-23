@@ -738,10 +738,13 @@ void World::thinkVehicles() {
             const Value h = owner ? owner->obj->get("health") : Value();
             if (owner && (!h.isNumber() || h.asInt() < 1)) unlinkPlayerFromVehicle(e, *owner);
         }
+        if (!e.vehicle || e.obj->removed) continue;
         if (v.info && v.info->type != 4) {
             if (v.started) vehiclePathMove(e, prevOrigin, prevAngles);
             else vehicleFreeMove(e, prevOrigin, prevAngles);
         }
+        // Path notifies run scripts at once; freevehicle there drops the vehicle state.
+        if (!e.vehicle || e.obj->removed) continue;
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
         updateVehicleTurret(e);
