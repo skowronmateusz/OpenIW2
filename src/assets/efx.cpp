@@ -56,8 +56,14 @@ uint32_t bitsOf(const std::vector<std::string>& names, bool spawn) {
 
 } // namespace
 
-uint32_t EfxElement::flagBits() const { return bitsOf(list("flags"), false); }
-uint32_t EfxElement::spawnFlagBits() const { return bitsOf(list("spawnflags"), true); }
+uint32_t EfxElement::flagBits() const {
+    if (flagBitsCache_ < 0) flagBitsCache_ = bitsOf(list("flags"), false);
+    return uint32_t(flagBitsCache_);
+}
+uint32_t EfxElement::spawnFlagBits() const {
+    if (spawnFlagBitsCache_ < 0) spawnFlagBitsCache_ = bitsOf(list("spawnflags"), true);
+    return uint32_t(spawnFlagBitsCache_);
+}
 
 float EfxGraph::sample(float t, int c) const {
     if (points.empty()) return 0;

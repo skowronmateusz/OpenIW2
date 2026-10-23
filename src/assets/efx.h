@@ -34,6 +34,9 @@ struct EfxElement {
     std::vector<std::string> list(const std::string& key) const;
     // Numbers of a key (missing or non-numeric values read as 0).
     std::vector<float> numbers(const std::string& key) const;
+
+private:
+    mutable int64_t flagBitsCache_ = -1, spawnFlagBitsCache_ = -1; // the name lookups are too slow per particle and frame
 };
 
 struct EfxEffect {
