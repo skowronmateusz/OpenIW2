@@ -239,6 +239,8 @@ public:
     bool playerOnTurret() const { return (playerEFlags_ & 0x300u) != 0; }
     // The eye on a turret (0x4e8b70 → 0x4d7730): the turret's tag_player.
     bool playerTurretEye(Vec3& eye);
+    // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
+    std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
     // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).
     void clampPlayerView(float& pitch, float& yaw) const;

@@ -1924,8 +1924,34 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // Crosshair: four bars, separated by the weapon's hip spread (inferred look).
-            if (pweapon.equipped()) {
+            // Crosshair (cgame 0x4bd760). On a turret (eFlags & 0x300) only the turret's: with cg_drawTurretCrosshair (1)
+            // and cg_crosshairAlpha (1) ≥ 0.01, its weapon's reticleCenter, reticleCenterSize virtual units square,
+            // centred (0x4bcef0). In a vehicle the vehicle's (0x4bd000, not drawn yet). Otherwise the hand weapon's
+            // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
+            // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
+            // TODO(spec): the friend / enemy colours (ps flags 0x100000 / 0x200000), the reticleCenter +
+            // four reticleSide drawing with the spread (0x4bd2c0, 0x4bd520) and the sway offset (0x4bc6e0).
+            const bool onTurretHud = world && world->playerOnTurret();
+            const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
+            if (onTurretHud) {
+                const std::string tw = world->playerTurretWeapon();
+                const auto* td = tw.empty() ? nullptr : world->weapon(tw);
+                const std::string reticle = td && td->count("reticlecenter") ? td->at("reticlecenter") : std::string();
+                const float size = td && td->count("reticlecentersize") ? float(std::atof(td->at("reticlecentersize").c_str())) : 0.0f;
+                if (!reticle.empty() && size > 0) {
+                    Quad2D q{left43 + (320.0f - size * 0.5f) * sc, (240.0f - size * 0.5f) * sc, 0, 0};
+                    q.x1 = q.x0 + size * sc;
+                    q.y1 = q.y0 + size * sc;
+                    q.texture = materialTexture(reticle);
+                    out.push_back(q);
+                }
+            }
+            const int wst = pweapon.stateNumber();
+            const float crossAlpha = 1.0f - (world ? scopeAlpha() : 0.0f);
+            const bool drawCross = !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
+                                   wst != 1 && wst != 2 && wst != 5 && wst != 10 && wst != 11;
+            // Look: four bars, separated by the weapon's hip spread (inferred).
+            if (pweapon.equipped() && drawCross) {
                 float spread = 2.0f;
                 if (const auto* d = world ? world->weapon(pweapon.name()) : nullptr)
                     if (auto it = d->find("hipspreadstandmin"); it != d->end()) spread = std::max(1.0f, float(std::atof(it->second.c_str())));
@@ -1934,10 +1960,13 @@ int main(int argc, char** argv) {
                 const Quad2D bars[4] = {{cx - gap - len, cy - th / 2, cx - gap, cy + th / 2}, {cx + gap, cy - th / 2, cx + gap + len, cy + th / 2},
                                         {cx - th / 2, cy - gap - len, cx + th / 2, cy - gap}, {cx - th / 2, cy + gap, cx + th / 2, cy + gap + len}};
                 for (Quad2D q : bars) {
-                    q.rgba[3] = 200;
+                    q.rgba[3] = uint8_t(200.0f * crossAlpha);
                     out.push_back(q);
                 }
-                // Ammo counter, bottom right of the 4:3 area.
+            }
+            // Ammo counter, bottom right of the 4:3 area. The ammo ownerdraws (0x4a7818 …) special-case only vehicles
+            // (pm_flags 0x20000), not turrets, so the hand weapon's ammo stays on a turret.
+            if (pweapon.equipped()) {
                 if (const assets::Font* f = font("bigfont")) {
                     const uint8_t white[4] = {255, 255, 255, 230};
                     hudText(out, std::to_string(pweapon.clip()) + " | " + std::to_string(pweapon.stock()), left43 + 620 * sc, 460 * sc,
