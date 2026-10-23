@@ -278,6 +278,7 @@ public:
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
+    void playerGrenadeInHand(const Vec3& eye);
     bool isAlive(const Entity& e) const;
     bool canSee(Entity& from, Entity& to);
     struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0; } stats;

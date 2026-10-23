@@ -99,4 +99,10 @@ void World::playerMelee(const Vec3& eye, const Vec3& viewAngles) {
     }
 }
 
+// Event 200 (0x4e775d): a cooked grenade went off in the player's hand: 100000 damage to the player, MOD_SUICIDE.
+// TODO(spec): it goes through the radius damage 0x527d80 (others nearby are hurt too).
+void World::playerGrenadeInHand(const Vec3& eye) {
+    if (player_ && isAlive(*player_)) damage(*player_, player_, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
+}
+
 } // namespace iw2::game

@@ -1791,9 +1791,13 @@ int main(int argc, char** argv) {
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
             syncWeapon();
             pweapon.update(1.0f, {});
-            pweapon.update(fireSeconds, {fireSeconds > 0, false, shotAds});
+            game::PlayerWeapon::Input shotIn;
+            shotIn.fire = fireSeconds > 0;
+            shotIn.ads = shotAds;
+            pweapon.update(fireSeconds, shotIn);
+            shotIn.fire = false;
             for (int i = 0; i < 100; ++i) {
-                pweapon.update(0.02f, {false, false, shotAds});
+                pweapon.update(0.02f, shotIn);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
             }
             cam.pos.z += shotViewHeight - 60.0f;
@@ -1999,7 +2003,7 @@ int main(int argc, char** argv) {
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
-                        world->damage(*world->player(), world->player(), 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
+                        world->playerGrenadeInHand(eye);
                 }
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
