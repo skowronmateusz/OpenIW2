@@ -238,6 +238,15 @@ public:
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
     bool playerOnTurret() const { return (playerEFlags_ & 0x300u) != 0; }
     // The eye on a turret (0x4e8b70 → 0x4d7730): the turret's tag_player.
+    // Cursor hint of what the use key would use (ps+0x578 hint, +0x57c string; 0x534d40). hint: 0 none, 1 HINT_NONE,
+    // 2 HINT_ACTIVATE, 3 HINT_HEALTH, 4 HINT_FRIENDLY (setcursorhint 0x4f0c50, table 0x5a965c); a weapon hint
+    // (weapon index + 4) is given as `weapon`. text: the localized string key of the hint string, "" for none.
+    struct PlayerUseHint {
+        int hint = 0;
+        std::string weapon;
+        std::string text;
+    };
+    const PlayerUseHint& playerUseHint() const { return playerUseHint_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
@@ -599,6 +608,7 @@ private:
     uint32_t playerEFlags_ = 0;          // ps eFlags 0x100 / 0x200 (both: on a standing turret)
     float viewClampBase_[2] = {0, 0}, viewClampRange_[2] = {0, 0}; // ps+0xe8 / +0xec, +0xf0 / +0xf4
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
+    PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;
     PlayerCommand playerCmd_;
     uint32_t playerOldButtons_ = 0;

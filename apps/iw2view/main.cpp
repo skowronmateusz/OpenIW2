@@ -1646,6 +1646,10 @@ int main(int argc, char** argv) {
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
         bool mantleHint = false;
+        const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
+        if (const ui::Menu* m = hudMenus.find("Cursorhints"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") cursorHintItem = it.get();
         // Scope overlay (cgame 0x4bc8a0): the weapon has an adsOverlayShader or adsOverlayReticle and the aim fraction
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
@@ -1829,6 +1833,62 @@ int main(int argc, char** argv) {
                     if (r < sw) quad(r, 0, sw, sh, 0, 0, 0, 1);
                     if (t > 0) quad(l, 0, r, t, 0, 0, 1, 0);
                     if (b < sh) quad(l, b, r, sh, 0, 0, 1, 0);
+                }
+            }
+            // Cursor hint (ownerdraw CG_CURSORHINT, 0x4a9b50) for what the use key would use. Icon (0xf5b4a8 by hint,
+            // registered at 0x4a2ca6…): 2 gfx/icons/hint_usable, 3 hint_health, 4 hint_friendly, a weapon hint the
+            // weapon's hudIcon (else hint_usable, 0x4b3cb7), twice as wide with wideListIcon. Text: the hint string
+            // localized ("Hint String", 0x4a9ac0) with &&1 = the key bound to +activate (else KEY_USE); weapon hints
+            // only for turret-class weapons. Rect: menu "Cursorhints" "0 70 40 40" centred → (320, 310) virtual.
+            // With text: x = rect.x − (icon width + text width)/2, text baseline rect.y + text height/2, icon right of
+            // it at y = rect.y − h/2; without: icon at x = rect.x − icon width/2, y = rect.y. cg_cursorHints default
+            // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). TODO(spec): the fade (cg_hintFadeTime, 0x4b0900), the
+            // weapon pickup text (0x4a99b0), HINT_HEALTH's key text, the text shadow.
+            if (world && cursorHintItem && !world->playerOnTurret()) {
+                const auto& uh = world->playerUseHint();
+                std::string icon;
+                bool wide = false;
+                std::string text = uh.text;
+                if (!uh.weapon.empty()) {
+                    const auto* wd = world->weapon(uh.weapon);
+                    icon = wd && wd->count("hudicon") && !wd->at("hudicon").empty() ? wd->at("hudicon") : "gfx/icons/hint_usable";
+                    wide = wd && wd->count("widelisticon") && wd->at("widelisticon") != "0";
+                    if (!(wd && wd->count("weaponclass") && wd->at("weaponclass") == "turret")) text.clear();
+                } else if (uh.hint == 2) icon = "gfx/icons/hint_usable";
+                else if (uh.hint == 3) icon = "hint_health";
+                else if (uh.hint == 4) icon = "hint_friendly";
+                if (!icon.empty()) {
+                    const float rx = 320.0f, ry = 310.0f, rw = 40.0f, rh = 40.0f;
+                    const float iw = (wide ? 2.0f : 1.0f) * rw;
+                    const uint8_t white[4] = {255, 255, 255, 255};
+                    float ix = rx - iw * 0.5f, iy = ry;
+                    if (!text.empty()) {
+                        const std::string* t = loc.find(text);
+                        text = t ? *t : text;
+                        auto keys = input.keysFor("+activate");
+                        std::string key = keys.empty() ? std::string() : keys.front();
+                        if (key.empty()) { const std::string* k = loc.find("KEY_USE"); key = k ? *k : "KEY_USE"; }
+                        if (const auto at = text.find("&&1"); at != std::string::npos) text = text.substr(0, at) + key + text.substr(at + 3);
+                        const float ts = cursorHintItem->textScale;
+                        const float fs = ts * float(h) / 480.0f;
+                        if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                            const float gs = ts * 48.0f / float(f->pixelHeight);
+                            float tw = 0;
+                            for (unsigned char ch : text)
+                                if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                            const float textH = float(int(ts * 48.0f));
+                            const float x0 = rx - (iw + tw) * 0.5f;
+                            hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f);
+                            ix = x0 + tw;
+                            iy = ry - rh * 0.5f;
+                        }
+                    }
+                    Quad2D q{left43 + ix * sc, iy * sc, 0, 0};
+                    q.x1 = q.x0 + iw * sc;
+                    q.y1 = q.y0 + rh * sc;
+                    std::memcpy(q.rgba, white, 4);
+                    q.texture = materialTexture(icon);
+                    out.push_back(q);
                 }
             }
             // Mantle hint (ownerdraw CG_MANTLE_HINT, 0x4a9f90): PLATFORM_MANTLE with &&1 = the key bound to +gostand (else

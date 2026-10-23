@@ -188,7 +188,15 @@ bool World::turretUsableByPlayer(Entity& t) {
 // either way, a turret (0x51dac0) or a vehicle (0x512200) only when usable, anything else is skipped.
 void World::findPlayerUseEntity() {
     playerUseEntity_ = -1;
+    playerUseHint_ = {};
     if (!player_ || !isAlive(*player_)) return;
+    // On a turret (0x534ce0): its weapon's hint with dropHintString when the weapon has one.
+    if (playerOnTurret() && playerTurret_ && playerTurret_->turret) {
+        const std::string& w = playerTurret_->turret->weapon;
+        const std::string drop = weaponField(w, "dropHintString");
+        if (!drop.empty()) playerUseHint_ = {0, w, drop};
+        return;
+    }
     if (playerCmd_.weaponState >= 0x11 && playerCmd_.weaponState <= 0x16) return;
     if ((pmFlags_ & 0x20000) || player_->usingVehicle >= 0) return;
     if (playerUseState_ != 0 || playerCmd_.mantling) return;
@@ -196,15 +204,23 @@ void World::findPlayerUseEntity() {
     for (const UseCandidate& c : scanUsables(eye, viewForward(playerCmd_.viewAngles))) {
         Entity& e = *c.e;
         if (e.classname == "trigger_use" || e.classname == "trigger_use_touch") {
+            // Hint +0x98 (setcursorhint, 2 from spawn), string +3 (sethintstring).
             playerUseEntity_ = e.number;
+            const Value h = e.obj->get("$cursorhint"), str = e.obj->get("$hintstring");
+            playerUseHint_.hint = h.isNumber() ? h.asInt() : 2;
+            if (str.isString()) playerUseHint_.text = str.asString();
             return;
         }
         if (e.turret) {
             if (!turretUsableByPlayer(e)) continue;
+            // Weapon hint (weapon index + 4) with useHintString when the weapon has one (+0x56c / +0x574).
+            playerUseHint_.weapon = e.turret->weapon;
+            playerUseHint_.text = weaponField(e.turret->weapon, "useHintString");
         } else if (e.classname == "script_vehicle") {
             const VehicleState& v = *e.vehicle;
             const Value h = e.obj->get("health");
             if (v.owner >= 0 || std::fabs(v.forwardSpeed) > 1.0f || !h.isNumber() || h.asInt() < 1 || !v.usable) continue;
+            playerUseHint_.hint = 2; // TODO(spec): the vehicle weapon's useHintString (0x534d40 case 0xc)
         } else {
             continue;
         }
