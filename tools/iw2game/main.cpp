@@ -581,6 +581,11 @@ int main(int argc, char** argv) {
                     std::cout << "combat actor anim state:\n" << e->anim->debugString();
                     break;
                 }
+            for (const auto& e : world.entities())
+                if (e->isActor && e->animScript == "death" && e->anim) {
+                    std::cout << "death actor anim state:\n" << e->anim->debugString();
+                    break;
+                }
             if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
         }
         {
@@ -592,6 +597,8 @@ int main(int argc, char** argv) {
             std::sort(top.rbegin(), top.rend());
             std::cout << "top animscript waits:\n";
             for (size_t i = 0; i < top.size() && i < 15; ++i) std::cout << "  " << top[i].first << " " << top[i].second << "\n";
+            for (const auto& [n, k] : top)
+                if (k.find("death") != std::string::npos) std::cout << "  death wait: " << n << " " << k << "\n";
         }
         std::map<std::string, int> errs;
         for (const auto& e : world.vm().errors()) ++errs[e];

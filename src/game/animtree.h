@@ -76,6 +76,7 @@ public:
     // Applies one of the setanim* calls to node `n`.
     void set(int n, const SetArgs& a);
     void clear(int n, float blendTime);
+    void restart(int n);
 
     // Advances time; `onNote(notifyName, noteName)` is called for crossed notetracks and "end".
     void update(float dt, const std::function<void(const std::string&, const std::string&)>& onNote);
@@ -94,6 +95,8 @@ public:
 
 private:
     void setWeight(int n, float goal, float blendTime);
+    void clearNode(int n, float blendTime);
+    void knobSiblings(int n, float goal, float blendTime);
     float effectiveWeight(int n) const;
     bool updateWeight(int n, float dt, bool parentActive);
     void updateTime(int n, float dt, const std::function<void(const std::string&, const std::string&)>& onNote);

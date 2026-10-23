@@ -118,40 +118,77 @@ void AnimState::setWeight(int n, float goal, float blendTime) {
     s.goalWeight = goal;
 }
 
+// Knob (0x4789e0): the node's siblings go to goal 0 over the blend time scaled by the largest change in the
+// family, i.e. the largest sibling weight or the node's own |goal − weight| (clear 0x478890).
+void AnimState::knobSiblings(int n, float goal, float blendTime) {
+    const auto& nodes = tree_.nodes();
+    const int p = nodes[size_t(n)].parent;
+    if (p < 0) return;
+    float most = 0;
+    for (int sib : nodes[size_t(p)].children) {
+        const AnimNodeState& s = nodes_[size_t(sib)];
+        most = std::max(most, sib == n ? std::fabs(goal - s.weight) : s.weight);
+    }
+    for (int sib : nodes[size_t(p)].children)
+        if (sib != n) clearNode(sib, most * blendTime);
+}
+
+// 0x478890: goal 0 over the time (keeping a shorter time already running to 0), a time of 0 zeroes the weight;
+// the notify name is dropped.
+void AnimState::clearNode(int n, float blendTime) {
+    if (n == 0) return; // the root stays at weight 1
+    AnimNodeState& s = nodes_[size_t(n)];
+    if (s.goalWeight != 0 || blendTime < s.blendLeft) s.blendLeft = blendTime;
+    s.goalWeight = 0;
+    if (blendTime == 0) s.weight = 0;
+    s.notify.clear();
+}
+
+// The script calls (0x4f6930 setanim, 0x4f63d0 setanimknob, 0x4f6660 setanimknoball). A weight below 0.001 counts
+// as 0. Setting a node (0x478f10) also replaces its notify name (none for the unflagged calls).
+// - setanim (0x4795e0): the node is set, then every ancestor whose goal weight is 0 goes to goal 1 over the same
+//   blend time at rate 1.
+// - setanimknob: the siblings are knobbed (0x4789e0) first, then as setanim.
+// - setanimknoball (0x478c40): knob, set the node, then each ancestor below the given root is knobbed and set to
+//   goal 1 over the blend time at rate 1.
+// The restart variants restart the node's time after it is set (0x4793c0).
 void AnimState::set(int n, const SetArgs& a) {
     if (n < 0 || size_t(n) >= nodes_.size()) return;
     const auto& nodes = tree_.nodes();
-    auto knobSiblings = [&](int node) {
-        const int p = nodes[size_t(node)].parent;
-        if (p < 0) return;
-        for (int sib : nodes[size_t(p)].children)
-            if (sib != node) setWeight(sib, 0.0f, a.blendTime);
+    const float weight = a.weight < 0.001f ? 0.0f : a.weight;
+    auto setNode = [&](int node, float w, float rate, const std::string& notify) {
+        setWeight(node, w, a.blendTime);
+        AnimNodeState& s = nodes_[size_t(node)];
+        s.rate = rate;
+        s.notify = notify;
     };
-    setWeight(n, a.weight, a.blendTime);
-    AnimNodeState& s = nodes_[size_t(n)];
-    s.rate = a.rate;
-    if (!a.notify.empty()) s.notify = a.notify;
-    if (a.restart) {
-        s.time = 0;
-        s.ended = false;
-    }
-    if (a.knob || a.knobAllRoot >= 0) knobSiblings(n);
+    if (a.knob || a.knobAllRoot >= 0) knobSiblings(n, weight, a.blendTime);
+    setNode(n, weight, a.rate, a.notify);
+    if (a.restart) restart(n);
     if (a.knobAllRoot >= 0) {
-        // Walk up to (but not past) the given root: each ancestor goes to weight 1 and its siblings to 0.
         for (int p = nodes[size_t(n)].parent; p >= 0 && p != a.knobAllRoot; p = nodes[size_t(p)].parent) {
-            setWeight(p, 1.0f, a.blendTime);
-            knobSiblings(p);
+            knobSiblings(p, 1.0f, a.blendTime);
+            setNode(p, 1.0f, 1.0f, {});
         }
-    }
-}
-
-void AnimState::clear(int n, float blendTime) {
-    if (n < 0 || size_t(n) >= nodes_.size()) return;
-    if (n == 0) {
-        for (size_t i = 1; i < nodes_.size(); ++i) setWeight(int(i), 0.0f, blendTime);
         return;
     }
-    setWeight(n, 0.0f, blendTime);
+    for (int p = nodes[size_t(n)].parent; p > 0; p = nodes[size_t(p)].parent)
+        if (nodes_[size_t(p)].goalWeight == 0) setNode(p, 1.0f, 1.0f, {});
+}
+
+// clearanim (0x4f6300 → 0x478940): the node and every descendant go to goal 0 (0x478890).
+void AnimState::clear(int n, float blendTime) {
+    if (n < 0 || size_t(n) >= nodes_.size()) return;
+    clearNode(n, blendTime);
+    for (int c : tree_.nodes()[size_t(n)].children) clear(c, blendTime);
+}
+
+// 0x4793c0: TODO(spec): a node under a synced blend node (tree flag 4) restarts that whole synced subtree; only
+// the node itself is restarted here.
+void AnimState::restart(int n) {
+    AnimNodeState& s = nodes_[size_t(n)];
+    s.time = 0;
+    s.ended = false;
 }
 
 // 0x476960: weights move linearly to the goal over the time left; under an inactive parent they jump to the goal.
