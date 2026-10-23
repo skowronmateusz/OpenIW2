@@ -273,8 +273,21 @@ void World::runGrenade(Entity& e) {
                     return;
                 }
                 const int64_t hitMs = timeMs_ - 50 + int64_t(50.0f * tr.fraction);
-                if (bounceGrenade(e, tr, hitMs)) {
-                    // TODO(spec): the bounce event (0xbd / 0xbe) and its surface sound.
+                if (bounceGrenade(e, tr, hitMs) && !tr.startSolid) {
+                    // The bounce event (0x5262bf): EV_POTATO_BOUNCE 0xbd for the weapon "potato", else
+                    // EV_GRENADE_BOUNCE 0xbe, with the surface type (surface flags >> 20 & 0x1f). The client
+                    // (0x4ba8d0 case 0xbd/0xbe) plays <potato|grenade>_bounce_<surface> (sounds built at 0x4a28c5 /
+                    // 0x4a28dc by 0x4a27b0) and the impact table's grenade_bounce effect (type 8) along the normal.
+                    static const char* const kSurf[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                                        "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                                        "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+                    const int surface = int((tr.surfaceFlags >> 20) & 0x1f);
+                    if (surface < 23) {
+                        const Vec3 at = grenadePosition(g, hitMs);
+                        startSound(std::string(lowerStr(g.weapon) == "potato" ? "potato_bounce_" : "grenade_bounce_") + kSurf[surface], &at);
+                        const std::string& fx = impactEffect(8, surface);
+                        if (!fx.empty()) fxEvents_.push_back({fx, at, Vec3{tr.normal[0], tr.normal[1], tr.normal[2]}});
+                    }
                 }
             } else if (len(g.trDelta) != 0.0f) {
                 g.onGround = false;
