@@ -137,6 +137,8 @@ public:
     bool isThreadAlive(uint64_t id) const;
     // Debug: "file:line function (state event)" for each live thread's innermost frame.
     std::vector<std::string> describeThreads() const;
+    // Debug: " < file:line function" for each frame of a thread, outermost first.
+    std::string backtrace(const Thread& t) const;
     const std::vector<std::string>& errors() const { return errors_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
     ObjectPtr traceSelf; // debug: log built-in calls made with this self

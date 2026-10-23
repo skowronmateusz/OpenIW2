@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace iw2::script {
@@ -99,8 +100,9 @@ private:
     void statement(const Node& n) {
         switch (n.kind) {
         case NodeKind::Block:
-        case NodeKind::DevBlock: // developer blocks run as normal code (dev builds); harmless here
             for (const auto& c : n.children) statement(*c);
+            break;
+        case NodeKind::DevBlock: // compiled only with developer_script, a bool dvar defaulting to 0 (0x42df9d; lexer 0x457820)
             break;
         case NodeKind::Empty:
         case NodeKind::Breakpoint:
@@ -435,7 +437,12 @@ VM::VM(SourceLoader loader) : loader_(std::move(loader)) {
     level_ = newObject("level");
     game_ = newObject("game");
     anim_ = newObject("anim");
-    registerBuiltin("isdefined", [](CallContext& c) { return Value(c.arg(0).isDefined()); });
+    // isdefined (0x4ebf20): an object reference is undefined once the object is freed (object types 0x14 and ≥ 0x17,
+    // e.g. a deleted entity).
+    registerBuiltin("isdefined", [](CallContext& c) {
+        if (c.arg(0).isObject()) return Value(!c.arg(0).asObject()->removed);
+        return Value(c.arg(0).isDefined());
+    });
     registerBuiltin("isstring", [](CallContext& c) { return Value(c.arg(0).isString()); });
     registerBuiltin("spawnstruct", [](CallContext& c) { return Value(c.vm.newObject("struct")); });
     registerBuiltin("int", [](CallContext& c) {
@@ -630,6 +637,15 @@ uint64_t VM::startFunction(const FunctionRef& function, std::vector<Value> args,
     return id;
 }
 
+std::string VM::backtrace(const Thread& t) const {
+    std::string out;
+    for (const Frame& fr : t.frames) {
+        const CompiledFunction& f = functions_[size_t(fr.function)];
+        out += " < " + f.file + ":" + std::to_string(fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0) + " " + f.name;
+    }
+    return out;
+}
+
 void VM::fail(Thread& t, const std::string& msg) {
     std::string where;
     if (!t.frames.empty()) {
@@ -640,6 +656,7 @@ void VM::fail(Thread& t, const std::string& msg) {
     }
     errors_.push_back(where + msg);
     print("script runtime error: " + where + msg);
+    if (std::getenv("IW2_SCRIPT_BACKTRACE")) print("  backtrace:" + backtrace(t)); // debug
     t.state = ThreadState::Done;
 }
 

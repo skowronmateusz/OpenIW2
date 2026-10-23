@@ -305,25 +305,42 @@ void World::registerMoverBuiltins() {
         }
         return Value();
     });
-    // istouching(other) (0x4ef100): TODO(spec) the exact shape tests (0x4f9f50, 0x447830); here the brush
-    // model's bounds against a 15-unit-radius, 72-unit-high box at the other entity (actor bounds of 0x4fc640).
+    // istouching(other) (0x4ef100): one entity is the shape (a brush model, trigger_radius or trigger_disk), the other
+    // the box at its origin + r.mins / r.maxs, tested with SV_EntityContact (0x447830, triggerContact). When self is not
+    // a shape, other is taken as the shape; two shapes are an error. Box bounds: actors (-15,-15,0)-(15,15,72)
+    // (0x4fc640), the player (-15,-15,0)-(15,15,70); TODO(spec) other entities' r.mins/r.maxs (taken as a point here),
+    // and two plain boxes (0x447830 then traces against a temporary box model; tested as box overlap here).
     vm_.registerBuiltin("istouching", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         Entity* b = entityOf(c.arg(0));
         if (!a || !b) return Value(false);
-        auto box = [this](Entity& e, Vec3& mn, Vec3& mx) {
+        auto isShape = [](Entity& e) {
             const Value m = e.obj->get("model");
-            if (m.isString() && submodelBounds(m.asString(), mn, mx)) return true;
-            const Vec3 o = e.obj->get("origin").asVector();
-            mn = {o[0] - 15, o[1] - 15, o[2]};
-            mx = {o[0] + 15, o[1] + 15, o[2] + 72};
-            return false;
+            return (m.isString() && !m.asString().empty() && m.asString()[0] == '*') || e.classname == "trigger_radius" ||
+                   e.classname == "trigger_disk";
         };
-        Vec3 amn, amx, bmn, bmx;
-        const bool ab = box(*a, amn, amx), bb = box(*b, bmn, bmx);
-        if (ab && bb) throw std::runtime_error("istouching cannot be called on 2 brush/cylinder entities");
-        for (int k = 0; k < 3; ++k)
-            if (amn[size_t(k)] > bmx[size_t(k)] || bmn[size_t(k)] > amx[size_t(k)]) return Value(false);
+        Entity* shape = a;
+        Entity* box = b;
+        if (isShape(*a)) {
+            if (isShape(*b)) throw std::runtime_error("istouching cannot be called on 2 brush/cylinder entities");
+        } else {
+            shape = b;
+            box = a;
+        }
+        auto bounds = [](Entity& e, Vec3& mn, Vec3& mx) {
+            const Value ov = e.obj->get("origin");
+            const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+            const float r = e.isActor || e.isPlayer ? 15.0f : 0.0f, h = e.isActor ? 72.0f : e.isPlayer ? 70.0f : 0.0f;
+            mn = {o[0] - r, o[1] - r, o[2]};
+            mx = {o[0] + r, o[1] + r, o[2] + h};
+        };
+        Vec3 mn, mx;
+        bounds(*box, mn, mx);
+        if (isShape(*shape)) return Value(triggerContact(*shape, mn, mx));
+        Vec3 smn, smx;
+        bounds(*shape, smn, smx);
+        for (size_t k = 0; k < 3; ++k)
+            if (mn[k] > smx[k] || smn[k] > mx[k]) return Value(false);
         return Value(true);
     });
 }
