@@ -130,8 +130,9 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
 
 // Radius damage (0x5289d0): every damageable entity but `ignore` within `radius` of `origin` (distance to its origin;
 // brush models: to their bounds) that the explosion can reach (0x5285b0) takes inner + (outer − inner)·d/r, pushed
-// along (target − origin + (0, 0, 24)). TODO(spec): the bounds of brush models, the knockback and the dvar that spares
-// players (0x1c61054).
+// along (target − origin + (0, 0, 24)). Entities with a client (the player) are spared while the script radiusdamage
+// runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). TODO(spec): the bounds of brush models and the
+// knockback.
 void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                          const std::string& mod) {
     if (radius < 1.0f) radius = 1.0f;
@@ -139,6 +140,7 @@ void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, floa
     for (const auto& ep : entities_) {
         Entity& t = *ep;
         if (&t == ignore || t.obj->removed || !isAlive(t)) continue;
+        if (t.isPlayer && sparePlayerRadiusDamage_) continue;
         const float dist = len(sub(originOf(t.obj), origin));
         if (dist >= radius) continue;
         if (!canDamage(t, origin, radius)) continue;
@@ -416,6 +418,22 @@ bool World::throwSolution(Entity& actor, const Vec3& from, const Vec3& armOffset
 }
 
 void World::registerGrenadeBuiltins() {
+    // radiusdamage(origin, range, maxDamage, minDamage) (0x4f3e70): radius damage from the world entity (no attacker),
+    // inner = maxDamage, outer = minDamage, nothing ignored, MOD_EXPLOSIVE (14); the player is spared while
+    // setplayerignoreradiusdamage is on (0x1c61058 copied to 0x1c61054 for the call).
+    vm_.registerBuiltin("radiusdamage", [this](CallContext& c) {
+        const Vec3 origin = c.arg(0).asVector();
+        const float range = c.arg(1).asFloat(), maxDamage = c.arg(2).asFloat(), minDamage = c.arg(3).asFloat();
+        sparePlayerRadiusDamage_ = ignorePlayerRadiusDamage_;
+        radiusDamage(origin, nullptr, maxDamage, minDamage, range, nullptr, "MOD_EXPLOSIVE");
+        sparePlayerRadiusDamage_ = false;
+        return Value();
+    });
+    // setplayerignoreradiusdamage(flag) (0x4f3ef0): the int argument is kept for radiusdamage (saved with the game).
+    vm_.registerBuiltin("setplayerignoreradiusdamage", [this](CallContext& c) {
+        ignorePlayerRadiusDamage_ = c.arg(0).asInt() != 0;
+        return Value();
+    });
     auto actorOf = [this](CallContext& c) -> Entity& {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("not an actor");
