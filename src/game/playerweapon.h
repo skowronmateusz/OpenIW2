@@ -24,6 +24,7 @@ public:
         bool frag = false;   // +frag held (0x10000)
         bool smoke = false;  // +smoke held (0x20000)
         std::string weapon;  // the command's weapon (cg.weaponSelect); empty = keep the current one
+        bool holster = false; // 0x4de880: mantling (mantleLowersWeapon), on a ladder or in a vehicle: weapon 0
     };
 
     // Things the game side acts on (player-state events of PM_Weapon).
@@ -52,6 +53,8 @@ public:
 
     const std::string& name() const { return name_; }
     bool equipped() const { return !name_.empty(); }
+    // Put away by a holster (weapon 0) and waiting to raise the command's weapon again.
+    bool holstered() const { return holstered_; }
     int clip() const { return clip_; }
     int stock() const { return stock_; }
     // PM_Weapon's weapon state number (0 ready, 1 raising, 2 dropping, 10/11 melee, 12–16 offhand, …).
@@ -112,6 +115,7 @@ private:
     bool offhandActive_ = false;   // ps+0xc 0x10
     bool offhandHeldPrev_ = false; // previous command's 0x30000
     std::string next_;             // weapon the drop leads to
+    bool holstered_ = false;
     std::string offhand_;          // ps+0xac
     Def offDef_;
     float fuse_ = 0;               // ps+0x3c, seconds

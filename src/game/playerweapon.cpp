@@ -96,10 +96,19 @@ void PlayerWeapon::finishDrop() {
     const Def* d = lookup && !next_.empty() ? lookup(next_) : nullptr;
     const std::string old = name_;
     const bool alt = !old.empty() && d && next_ == fieldValue("altWeapon");
+    if (next_.empty() && !old.empty()) {
+        // To weapon 0 (a holster): the player state has no weapon until the command's weapon is raised again.
+        ammo_[old] = {clip_, stock_};
+        name_.clear();
+        holstered_ = true;
+        enter(State::Ready, nullptr, 0);
+        return;
+    }
     if (!d || next_ == old) {
         enter(State::Ready, nullptr, 0);
         return;
     }
+    holstered_ = false;
     equip(next_, *d);
     if (alt) enter(State::Raising, "altRaiseAnim", time("altRaiseTime", 0));
     else enter(State::Raising, "raiseAnim", time("raiseTime", 0));
@@ -114,7 +123,8 @@ void PlayerWeapon::meleeHit() {
 }
 
 int PlayerWeapon::update(float dt, const Input& in) {
-    if (name_.empty() && (in.weapon.empty() || !lookup)) return 0;
+    if (name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster))) return 0;
+    if (name_.empty() && holstered_ && state_ == State::Ready) startDrop(in.weapon); // no weapon: raise at once
     // Aiming (0x4dd0d0): only weapons with aimDownSight; not while reloading, nor while rechambering unless
     // rechamberWhileAds. The fraction moves by ms / adsTransInTime (or adsTransOutTime) and is clamped to 0..1.
     {
@@ -174,7 +184,11 @@ int PlayerWeapon::update(float dt, const Input& in) {
 
     // Weapon change (0x4de880): not during the offhand states; while the weapon is busy (timer running) only a
     // rechamber or reload may be interrupted.
-    if (!inOffhand() && !in.weapon.empty() && in.weapon != name_ && state_ != State::Dropping) {
+    if (in.holster && !inOffhand() && !name_.empty() && state_ != State::Dropping) {
+        const bool busy = timer_ > 0 && state_ != State::Rechamber && state_ != State::Reloading &&
+                          (state_ == State::Firing || state_ == State::Melee || state_ == State::MeleeEnd || delay_ > 0);
+        if (!busy) startDrop(std::string());
+    } else if (!in.holster && !inOffhand() && !in.weapon.empty() && in.weapon != name_ && state_ != State::Dropping) {
         const bool busy = timer_ > 0 && state_ != State::Rechamber && state_ != State::Reloading &&
                           (state_ == State::Firing || state_ == State::Melee || state_ == State::MeleeEnd || delay_ > 0);
         if (!busy && lookup && lookup(in.weapon)) startDrop(in.weapon);

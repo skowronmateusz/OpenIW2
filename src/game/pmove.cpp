@@ -878,6 +878,8 @@ void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac) {
     ps.aimSpread = std::min(ps.aimSpread + h.fireAdd * 255.0f, 255.0f);
 }
 
+bool mantleLowersWeapon(const PlayerState& ps) { return ps.mantling && kMantleTrans[ps.mantleTrans].over != 10; }
+
 bool MantleAnims::loaded() const {
     for (size_t i = 1; i < anims.size(); ++i)
         if (!anims[i]) return false;
