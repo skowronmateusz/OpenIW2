@@ -65,6 +65,10 @@ public:
 
     int active() const;
     float masterVolume = 0.8f;
+    // snd_fade (0x4431a0): volume scale moving linearly to `fadeTarget` at `fadeRate` per ms (fadeStep advances it).
+    float fadeVolume = 1.0f, fadeTarget = 1.0f, fadeRate = 0.0f;
+    void fade(float target, int ms);
+    void fadeStep(float ms);
 
 private:
     struct Voice {

@@ -251,6 +251,9 @@ public:
         return std::nullopt;
     }
     const std::string& mapName() const { return mapName_; }
+    // Real (wall-clock) time in ms for the timers the original runs on timeGetTime (the death screen's
+    // g_deathDelay). Hosts that never set it (iw2game) run them on world time.
+    void setRealTimeMs(int64_t ms) { realMs_ = ms; }
 
     // Effects started by scripts since the last call: path, origin, forward.
     struct FxEvent { std::string path; Vec3 origin; Vec3 forward; };
@@ -339,6 +342,14 @@ private:
     std::vector<ClientCommand> clientCommands_;
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
+    // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
+    void openDeathScreen();
+    void runDeathScreen();
+    int64_t realNowMs() const { return realMs_ >= 0 ? realMs_ : timeMs_; }
+    int64_t realMs_ = -1;
+    int64_t playerRespawnMs_ = -1;   // client +0x866c: level time + 1700 when the player died (0x527e85)
+    bool reloading_ = false;         // g_reloading
+    int64_t loadGameAtRealMs_ = -1;  // 0x1c60f58: when loadgame_continue runs
     void runMovers();
     Entity* entityByNumber(int number);
     std::map<int, MoverState> movers_;
@@ -469,6 +480,8 @@ private:
     void radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                       const std::string& mod);
     bool canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at = nullptr);
+    bool ignorePlayerRadiusDamage_ = false; // setplayerignoreradiusdamage (0x1c61058)
+    bool sparePlayerRadiusDamage_ = false;  // in effect during radiusdamage (0x1c61054)
     void explodeGrenade(Entity& e);
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);

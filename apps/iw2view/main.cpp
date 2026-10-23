@@ -25,6 +25,7 @@
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
 #include "game/world.h"
+#include "ui/menu.h"
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -1396,6 +1397,11 @@ int main(int argc, char** argv) {
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
         struct ScreenMessage { std::string text; uint64_t untilNs; };
         std::vector<ScreenMessage> screenMessages;
+        // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
+        // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
+        int64_t deadScreenMs = 0;
+        uint64_t slowStartNs = 0, slowEndNs = 0;
+        float slowFrom = 1, slowTo = 1, slowmo = 1;
 
         // Effects started by scripts (playfx & co.), simulated by FxSystem and drawn as sprites.
         game::FxSystem fxSystem;
@@ -1600,6 +1606,13 @@ int main(int argc, char** argv) {
             Uploader up(dev);
             return sceneMaterial(scene, dev, up, vfs, name).texture;
         };
+        // The death screen's quote item comes from the HUD menus (ui/hud.txt → ui/hud.menu, menu "deadscreen").
+        ui::MenuLibrary hudMenus(vfs);
+        hudMenus.loadList("ui/hud.txt");
+        const ui::Item* deadQuoteItem = nullptr;
+        if (const ui::Menu* m = hudMenus.find("deadscreen"))
+            for (const auto& it : m->items)
+                if (it->name == "quote") deadQuoteItem = it.get();
         auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
                            const uint8_t rgba[4], float alignX, float alignY) {
             // alignX/alignY: 0 = left/top, 0.5 = centre, 1 = right/bottom of the text box at (x, y).
@@ -1732,6 +1745,56 @@ int main(int argc, char** argv) {
                         hudText(out, t ? *t : m.text, float(w) * 0.5f, my, 0.75f * sc, *f, white, 0.5f, 0);
                         my += 18 * sc;
                     }
+            }
+            // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
+            // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
+            // it at spaces to the item width, centres each line on rect x + textalignx, line step text height + 5;
+            // the glyph scale is textscale × 48 / font pixel height (gfx refexport +0x128, 0x1000bfa0).
+            // TODO(spec): the font of textfont 0 (normalfont assumed), the shadow of ITEM_TEXTSTYLE_SHADOWED, and which
+            // ownerdraw arguments carry textalignx/textaligny (from the menu's "point to center around" comments).
+            if (world && deadQuoteItem && deadScreenMs && deadScreenMs < world->timeMs()) {
+                const auto qv = world->cvars.find("ui_deadquote");
+                const assets::Font* f = font("normalfont");
+                if (qv != world->cvars.end() && f) {
+                    int fadeMs = 1000;
+                    if (auto it = world->cvars.find("hud_deathQuoteFadeTime"); it != world->cvars.end()) fadeMs = std::atoi(it->second.c_str());
+                    const int64_t since = world->timeMs() - deadScreenMs;
+                    const float alpha = fadeMs > 0 && since <= fadeMs ? float(since) / float(fadeMs) : 1.0f;
+                    std::string key = qv->second;
+                    if (!key.empty() && key[0] == '@') key.erase(0, 1);
+                    const std::string* t = loc.find(key);
+                    const std::string text = t ? *t : key;
+                    const ui::Item& qi = *deadQuoteItem;
+                    const float gs = qi.textScale * 48.0f / float(f->pixelHeight); // virtual units per font pixel
+                    auto width = [&](const std::string& str) {
+                        float wd = 0;
+                        for (unsigned char ch : str)
+                            if (const auto* g = f->find(ch)) wd += float(g->dx) * gs;
+                        return wd;
+                    };
+                    std::vector<std::string> lines;
+                    std::string line, word;
+                    auto flushWord = [&] {
+                        if (!line.empty() && width(line + " " + word) > qi.rect.w) { lines.push_back(line); line.clear(); }
+                        line += (line.empty() ? "" : " ") + word;
+                        word.clear();
+                    };
+                    for (char ch : text) {
+                        if (ch == ' ' || ch == '\t') { if (!word.empty()) flushWord(); }
+                        else if (ch == '\n') { if (!word.empty()) flushWord(); lines.push_back(line); line.clear(); }
+                        else word += ch;
+                    }
+                    if (!word.empty()) flushWord();
+                    if (!line.empty()) lines.push_back(line);
+                    const uint8_t rgba[4] = {uint8_t(qi.foreColor[0] * 255), uint8_t(qi.foreColor[1] * 255), uint8_t(qi.foreColor[2] * 255),
+                                             uint8_t(std::clamp(qi.foreColor[3] * alpha, 0.0f, 1.0f) * 255)};
+                    const float step = float(int(qi.textScale * 48.0f) + 5);
+                    float y = qi.rect.y + qi.textAlignY;
+                    for (const auto& l : lines) {
+                        hudText(out, l, left43 + (qi.rect.x + qi.textAlignX) * sc, y * sc, gs * sc, *f, rgba, 0.5f, 1.0f);
+                        y += step;
+                    }
+                }
             }
             // Crosshair: four bars, separated by the weapon's hip spread (inferred look).
             if (pweapon.equipped()) {
@@ -2021,14 +2084,42 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
-                gameClock += std::min(dt, 0.25f);
+                // time_slow: the frame scale moves linearly from `from` to `to` over the real time (0x4bee00).
+                if (slowStartNs) {
+                    const uint64_t nowNs = SDL_GetTicksNS();
+                    if (nowNs >= slowEndNs) slowmo = slowTo, slowStartNs = slowEndNs = 0;
+                    else if (nowNs > slowStartNs) {
+                        const float t = float(nowNs - slowStartNs) / float(slowEndNs - slowStartNs);
+                        slowmo = (1.0f - t) * slowFrom + slowTo * t;
+                    }
+                }
+                mixer.fadeStep(dt * 1000.0f);
+                world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
+                gameClock += std::min(dt, 0.25f) * slowmo;
                 while (gameClock >= 0.05f) {
                     world->frame();
                     gameClock -= 0.05f;
                 }
-                for (const auto& cmd : world->takeClientCommands())
+                for (const auto& cmd : world->takeClientCommands()) {
+                    std::istringstream a(cmd.arg);
                     if (cmd.name == "obj_update" || cmd.name == "obj_complete")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 4000000000ull}); // display time inferred
+                    else if (cmd.name == "opendeadscreen")
+                        deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
+                    else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
+                        int ms = 0;
+                        a >> ms >> slowFrom >> slowTo;
+                        slowStartNs = SDL_GetTicksNS();
+                        slowEndNs = slowStartNs + uint64_t(std::max(ms, 0)) * 1000000ull;
+                    } else if (cmd.name == "snd_fade") { // snd_fade <volume> <ms> (0x4a6ec4)
+                        float vol = 1;
+                        int ms = 0;
+                        a >> vol >> ms;
+                        mixer.fade(vol, ms);
+                    }
+                    // TODO(spec): scr_blur <ms> <radius> <realtime> <priority> / clear_blur (0x4beb80, 0x4bebf0) set the
+                    // full-screen blur radius the renderer applies (0xf79658 → refdef 0xf79188); OpenIW2 has no blur pass.
+                }
                 if (auto change = world->dueLevelChange()) {
                     // Level change or restart: rebuild the world and the scene for the next map.
                     currentMap = change->map;
@@ -2046,6 +2137,12 @@ int main(int argc, char** argv) {
                     weaponWritten.clear();
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
                     gameClock = 0;
+                    // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
+                    // original's reset on load is not read).
+                    deadScreenMs = 0;
+                    slowStartNs = slowEndNs = 0;
+                    slowmo = 1;
+                    mixer.fade(1.0f, 0);
                 }
             }
             fxRight = cam.right();
