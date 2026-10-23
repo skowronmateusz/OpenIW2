@@ -1646,6 +1646,21 @@ int main(int argc, char** argv) {
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
         bool mantleHint = false;
+        // Scope overlay (cgame 0x4bc8a0): the weapon has an adsOverlayShader or adsOverlayReticle and the aim fraction
+        // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
+        // zooming out), shown above 0.01 and capped at 1.
+        auto scopeAlpha = [&]() -> float {
+            if (!pweapon.equipped()) return 0;
+            const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
+            if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
+            const float f = pweapon.adsFrac();
+            if (f == 0) return 0;
+            const float z = pweapon.number(pweapon.adsZoomingIn() ? "adsZoomInFrac" : "adsZoomOutFrac");
+            float a = f - (1.0f - z);
+            if (a > 0) a /= z;
+            if (!(a > 0.01f)) return 0;
+            return std::min(a, 1.0f);
+        };
         auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
                            const uint8_t rgba[4], float alignX, float alignY) {
             // alignX/alignY: 0 = left/top, 0.5 = centre, 1 = right/bottom of the text box at (x, y).
@@ -1778,6 +1793,43 @@ int main(int argc, char** argv) {
                         hudText(out, t ? *t : m.text, float(w) * 0.5f, my, 0.75f * sc, *f, white, 0.5f, 0);
                         my += 18 * sc;
                     }
+            }
+            // Scope overlay (0x4bcdd0 → 0x4bca90): the weapon's adsOverlayShader, white with the overlay alpha. Wider than
+            // 320 or taller than 240 (adsOverlayWidth / Height, virtual units): one quad of that size centred on the
+            // view; else four quads of that size around the centre, mirrored (u and/or v flipped) towards the right and
+            // bottom. Outside it (0x4bc980) the rest of the screen is filled with the same material: left and right
+            // strips with u = 0 (t 0..1), top and bottom with v = 0 (s 0..1). TODO(spec): the centre follows the gun
+            // sway (0x4bc6e0 projects the weapon angles); adsOverlayReticle drawing.
+            if (const float sa = world ? scopeAlpha() : 0.0f; sa > 0) {
+                const std::string shader = pweapon.field("adsOverlayShader");
+                const int tex = shader.empty() ? -1 : materialTexture(shader);
+                if (tex >= 0) {
+                    const float ow = pweapon.number("adsOverlayWidth"), oh = pweapon.number("adsOverlayHeight");
+                    const float cx = left43 + 320.0f * sc, cy = 240.0f * sc;
+                    const uint8_t col[4] = {255, 255, 255, uint8_t(sa * 255.0f)};
+                    auto quad = [&](float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
+                        Quad2D q{x0, y0, x1, y1, s0, t0, s1, t1};
+                        std::memcpy(q.rgba, col, 4);
+                        q.texture = tex;
+                        out.push_back(q);
+                    };
+                    float l, r, t, b;
+                    if (ow > 320.0f || oh > 240.0f) {
+                        l = cx - ow * 0.5f * sc; t = cy - oh * 0.5f * sc; r = l + ow * sc; b = t + oh * sc;
+                        quad(l, t, r, b, 0, 0, 1, 1);
+                    } else {
+                        l = cx - ow * sc; t = cy - oh * sc; r = cx + ow * sc; b = cy + oh * sc;
+                        quad(l, t, cx, cy, 0, 0, 1, 1);
+                        quad(cx, t, r, cy, 1, 0, 0, 1);
+                        quad(l, cy, cx, b, 0, 1, 1, 0);
+                        quad(cx, cy, r, b, 1, 1, 0, 0);
+                    }
+                    const float sw = float(w), sh = float(h);
+                    if (l > 0) quad(0, 0, l, sh, 0, 0, 0, 1);
+                    if (r < sw) quad(r, 0, sw, sh, 0, 0, 0, 1);
+                    if (t > 0) quad(l, 0, r, t, 0, 0, 1, 0);
+                    if (b < sh) quad(l, b, r, sh, 0, 0, 1, 0);
+                }
             }
             // Mantle hint (ownerdraw CG_MANTLE_HINT, 0x4a9f90): PLATFORM_MANTLE with &&1 = the key bound to +gostand (else
             // +moveup, 0x4cdbf0), then the hint_mantle icon right of it; both centred on the item rect's x. The rect is
@@ -1975,7 +2027,7 @@ int main(int argc, char** argv) {
             }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
-            if (!(world && world->playerOnTurret())) addViewModel(shotItems, cam);
+            if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
@@ -2291,7 +2343,8 @@ int main(int argc, char** argv) {
             const int wstate = pweapon.stateNumber();
             if (!(world && world->playerOnTurret()) &&
                 !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
-                addViewModel(items, cam);
+                if (!(world && scopeAlpha() > 0)) // the gun is not drawn under a scope overlay (cgame 0x4b6d7c, cg_drawGun)
+                    addViewModel(items, cam);
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
