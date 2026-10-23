@@ -152,6 +152,10 @@ add_executable(test_movers tests/test_movers.cpp)
 target_link_libraries(test_movers PRIVATE iw2_game)
 add_test(NAME movers COMMAND test_movers)
 
+add_executable(test_animtree tests/test_animtree.cpp)
+target_link_libraries(test_animtree PRIVATE iw2_game)
+add_test(NAME animtree COMMAND test_animtree)
+
 add_executable(test_efx tests/test_efx.cpp)
 target_link_libraries(test_efx PRIVATE iw2_game)
 add_test(NAME efx COMMAND test_efx)

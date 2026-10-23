@@ -72,14 +72,43 @@ model; which bones take the second order is not yet specified (OpenIW2 uses pare
   `(goal − weight) / goal × blendTime`. The root always has weight 1, blend time 0 and rate 1.
 - Each frame, top-down: a node whose parent is inactive, or whose time left is ≤ dt, jumps to its goal; otherwise
   `weight += (goal − weight) / timeLeft × dt` (if the result is below 1e-6 it becomes goal × 0.001) and the time
-  left shrinks by dt. A node with weight and goal 0 and no live children is released (a new set starts at time 0).
-- Time: nodes with weight 0 do not advance. A leaf advances by `frameRate / (keyCount − 1) × rate × dt`, wrapping
-  if it loops and otherwise stopping at 1. A blend node passes `dt × rate` to its children. Synced nodes
-  (`loopsync`/`nonloopsync`, 0x475bb0, 0x476370) are not specified yet.
+  left shrinks by dt. A node is *active* when its weight is nonzero under an active parent, *alive* when active, with
+  a nonzero goal or with a live child, *playing* when active with a playing leaf below (a leaf plays when its
+  frequency is nonzero). An alive node that is not playing takes the time handed down (inside a synced subtree the
+  synced top's time, elsewhere 0); a synced top that is not playing restarts its subtree (0x4768a0, 0x4768e0). Then
+  the old time and cycle are set to the time and cycle (they are the base of the time step and of the anim delta).
+  A node that is not alive is released (a new set starts from scratch).
+- Time (0x476490): nodes with weight 0 do not advance; below a node with goal weight 0 notetracks are not reported.
+  A leaf moves from its old time by `frameRate / (keyCount − 1) × rate × dt`, wrapping (and counting a cycle) if
+  it loops and otherwise stopping at 1. A plain blend node passes `dt × rate` to its children. A synced blend node
+  advances by its frequency (0x475bb0: the average of the weighted children's frequency × rate, weighted by the
+  child weights; children with frequency 0 are skipped) × rate × dt, wrapping unless `nonloopsync`, and every
+  weighted descendant is set to its time and cycle (0x476370: a descendant out of step first restarts from the
+  top's old time). A new time is only taken when it does not go back.
+- Sync flags (0x479260 / 0x479120): a blend node with `loopsync` gets flags 1|4, with `nonloopsync` 2|4; every blend
+  node below it gets the same 1 or 2 without 4. A synced subtree may hold only looping (loopsync) or non-looping
+  (nonloopsync) leaves (TODO(spec): the `void_loop` / `void` replacement of mismatched leaves, 0x479154).
+- Restart (0x4793c0, the `…restart` calls): the node or its nearest ancestor with flag 4 restarts that subtree (time
+  and cycle 0) unless it already stands at 0; outside a synced subtree only a leaf restarts. `setanimknoball…restart`
+  (0x478c40) restarts each ancestor it sets as well.
+- The .atr tokenizer (0x43e4f0) skips `//` and `/* … */` comments; the modifiers parsed by 0x452420 are `loopsync`
+  (bit 1), `nonloopsync` (bit 2) and `complete` (bit 8).
+
+## Anim delta (0x478550 → 0x477b80, 0x475960)
+
+The root motion of the last time step: each weighted leaf with a delta track contributes the translation from its
+old time to its time (if it loops and the time went back, plus one whole cycle, last key − first key), times its
+weight, and adds its weight. A node with one weighted child hands it its own weight; several weighted children are
+summed with their own weights, then normalized and added with the node's weight (nested), or at the top divided by
+the weight sum. The weights are the current ones, or the goal weights when the caller asks (actor byte +0x220). The
+translation is turned into the frame of the old time's delta rotation (0x4758f0, a 2D rotation: its length is kept).
+
+The actor path move (0x504160 anim mode 1, movemode ≠ stop, with a path and no followed actor) takes the horizontal
+length of this delta as the frame distance (0x5041ad → 0x505230).
 
 ## Implementation
 
 `src/assets/xanim.cpp` (`accumulateAnim`, `mergeBlend`, `finishPose`, `animatePose`, `blendPose`) and
-`src/game/animtree.cpp` (`AnimState::calc`, `setWeight`, `updateWeight`, `updateTime`). The view model's tree (0x4b2c90)
+`src/game/animtree.cpp` (`AnimState::calc`, `setWeight`, `updateWeight`, `updateTime`, `syncTo`, `restart`, `delta`). The view model's tree (0x4b2c90)
 has the action animation and the aim animation as two active children of the root, so both are added with weight 1
 and divided by 2.

@@ -4,6 +4,7 @@
 #include "assets/xanim.h"
 #include "fs/vfs.h"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -20,6 +21,9 @@ struct AnimNode {
     std::vector<int> children;
     std::string sync;          // "loopsync", "nonloopsync" or empty
     bool complete = false;     // ": complete …"
+    // Runtime sync flags (0x479260 / 0x479120): 1 loop synced, 2 nonloop synced (a blend node with the modifier and
+    // every blend node below it), 4 the synced node that carries the modifier (the top of the synced subtree).
+    int syncFlags = 0;
 };
 
 class AnimTree {
@@ -32,6 +36,8 @@ public:
     int find(const std::string& name) const; // -1 if absent
 
 private:
+    void markSync(int n, int type);
+
     std::string name_;
     std::vector<AnimNode> nodes_;
     std::unordered_map<std::string, int> index_;
@@ -51,12 +57,22 @@ private:
     std::map<std::string, bool> missing_;
 };
 
+// One node's state (the exe's 0x28-byte entries at 0xa0a200: +0xc time, +0x10 old time, +0x14 / +0x16 cycle and
+// old cycle, +0x18 blend time left, +0x1c goal weight, +0x20 weight, +0x24 rate, +0x4 notify name).
 struct AnimNodeState {
     float weight = 0, goalWeight = 0, blendLeft = 0; // blendLeft: seconds left to reach goalWeight
     float time = 0;                                   // normalized 0..1
+    float oldTime = 0;                                // the time at the start of this frame's time update
+    int cycle = 0, oldCycle = 0;                      // loops completed (time wraps)
     float rate = 1;
     bool ended = false;
     std::string notify;                               // flagged: notify name for notetracks
+};
+
+// Root motion of the weighted animations over the last time update (0x478550 → 0x477b80).
+struct AnimDelta {
+    float weight = 0;              // summed weight of the animations with delta tracks
+    std::array<float, 3> trans{};  // translation (length preserved; TODO(spec): the rotation into the start frame, 0x4758f0)
 };
 
 // Per-entity animation state on one tree.
@@ -87,8 +103,9 @@ public:
     // Debug: active nodes with weight, goal, time, rate and notify name.
     std::string debugString() const;
 
-    // Horizontal root-motion speed (units/s) of the currently weighted animations with delta tracks.
-    float moveSpeed() const;
+    // Translation of the delta tracks between the old and new time of every weighted leaf (0x478550). With
+    // `goalWeights` the goal weights pick and weigh the animations instead of the current ones (actor byte +0x220).
+    AnimDelta delta(bool goalWeights) const;
 
     // Blended local pose for a skeleton.
     assets::XPose pose(const assets::XModelParts& parts) const;
@@ -97,9 +114,14 @@ private:
     void setWeight(int n, float goal, float blendTime);
     void clearNode(int n, float blendTime);
     void knobSiblings(int n, float goal, float blendTime);
-    float effectiveWeight(int n) const;
-    bool updateWeight(int n, float dt, bool parentActive);
-    void updateTime(int n, float dt, const std::function<void(const std::string&, const std::string&)>& onNote);
+    using NoteFn = std::function<void(const std::string&, const std::string&)>;
+    void updateWeight(int n, float inheritedTime, int inheritedCycle, float dt, bool parentActive, bool& alive, bool& playing);
+    void resetSubtree(int n);
+    float syncFreq(int n) const;
+    void updateTime(int n, float dt, bool notes, const NoteFn& onNote);
+    void syncTo(int n, const AnimNodeState& top, bool notes, const NoteFn& onNote);
+    void advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote);
+    void deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, AnimDelta& out) const;
     void calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const;
 
     const AnimTree& tree_;

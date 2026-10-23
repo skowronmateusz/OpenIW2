@@ -432,15 +432,19 @@ void World::thinkActors() {
 // (dot^0.333, at least 0.6), no further than the lookahead point; the height follows the lookahead slope.
 // Stop soon (0x503ec0): once the lookahead reached the end and the end is within a quarter second of travel
 // (|velocity|² · 0.0625) the actor has 500 ms left (+0x704); when they are over the path is cleared.
-// TODO(spec): the frame distance comes from the move animation's delta (0x503e40); the placeholder is its move speed
-// (150 without one). Not modelled: 0x500d80 (the bumped entity +0x318, the lookahead shrink flag), the facing blend
+// The frame distance is the horizontal length of this frame's anim delta (0x5041ad: 0x503e40 → 0x478550, current
+// weights since the move script choices 0x53af20 / 0x53afe0 clear actor byte +0x220), so an actor whose move script has
+// not set a moving animation yet stands still. Not modelled: 0x500d80 (the bumped entity +0x318, the lookahead shrink flag), the facing blend
 // (+0x2150), the side offset (+0x73c) and the actor physics (0x501xxx) that clips the move.
 void World::moveActor(Entity& e, float dt) {
     ActorPath& p = e.path;
     if (p.count <= 0) return;
     auto o = e.obj->get("origin").asVector();
-    float speed = e.anim ? e.anim->moveSpeed() : 0.0f;
-    if (speed < 1.0f) speed = 150.0f; // fallback while the move script has not picked an animation yet
+    float dist = 0.0f;
+    if (e.anim) {
+        const AnimDelta d = e.anim->delta(e.ai.animDeltaGoalWeights);
+        dist = std::sqrt(d.trans[0] * d.trans[0] + d.trans[1] * d.trans[1]);
+    }
     const Vec3 before = o;
     updatePathLook(e, o, false, false);
     if (p.count <= 0) return;
@@ -448,7 +452,7 @@ void World::moveActor(Entity& e, float dt) {
     if (turn < 1e-6f) turn = 1e-6f;
     float f = std::pow(turn, 0.333f);
     if (f < 0.6f) f = 0.6f;
-    float step = f * speed * dt;
+    float step = f * dist;
     if (step > p.lookDist) step = p.lookDist;
     o[0] += p.lookDir[0] * step;
     o[1] += p.lookDir[1] * step;
