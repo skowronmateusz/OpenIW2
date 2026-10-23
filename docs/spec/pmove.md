@@ -39,7 +39,7 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   - to crouch from prone: 0→11, 5→10, 30→21, 50→25, 67→31, 83→34, 100→40
   - to stand: 0→40, 5→40.5, 10→41.5, 20→44, 70→56, 96→58.5, 99→59.5, 100→60
 - Standing up traces the taller box first. TODO(spec): the prone surface check (0x4fc000), the
-  crouch/prone button logic (cmd bits 0x100/0x200), mantling.
+  crouch/prone button logic (cmd bits 0x100/0x200). Mantling: see "Mantle" below.
 
 ## Movement
 
@@ -120,3 +120,16 @@ PmoveSingle for a normal player: ground trace, stance, pm_time countdown (at 0 i
 - View weapon: position + (0, −cos r, −sin r)·(1 − adsFrac)·g·1.6 with r = −2g degrees while not fully aimed
   (0x4b61d0), roll −2g (0x4b6420).
 - TODO(spec): the ps flags that forbid leaning (0x8000, 0x2000000 / 0x4000000, 0x20300 in ps+0x7c).
+
+## Aiming (0x4dd020, 0x50bd00, 0x50c5c7)
+
+pm_flags 0x40 = aiming: the aim command (0x1000 or weapon state 0x13/0x14) with a weapon that may aim (0x4dcf70:
+aimDownSight, weapon state not 1, 2, 10–16); prone only when the aim was just pressed or not moving (+ pm_flags
+0x800). Prone and aiming from the previous step clears forward/right. pm_flags 0x100 = aiming, not prone, weapon
+state not 5–9: the ×0.4 of cmdScale.
+
+## Mantle (0x5257f0 check, 0x5259b0 move, 0x524bd0 delta, 0x525b60 yaw cap)
+
+Mantle brushes are found with contents
+0x1000000 and surface flags 0x2000000 (MANTLE_ON) / 0x4000000 (MANTLE_OVER); the move follows the delta translation
+of player_mantle_up_* (+ player_mantle_over_*) rotated by the mantle yaw.
