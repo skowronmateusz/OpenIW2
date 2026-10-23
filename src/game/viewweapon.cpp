@@ -79,6 +79,30 @@ void ViewWeaponMotion::update(const Field& w, int ms, float xySpeed, float maxSp
     }
 }
 
+// Dvars: cg_bobWeaponLag 0.25, cg_bobWeaponAmplitude 0.16, cg_bobWeaponRollAmplitude 1.5, cg_bobWeaponMax 10,
+// bg_bobAmplitudeProne 0.03, bg_bobAmplitudeDucked 0.0075, bg_bobAmplitudeStanding 0.007 (registered at 0x4a1xxx
+// and 0x4fab..). The cycle (0x4af4a8) is bobCycle / 255 · 2π + 2π; c = lag · π + that + 2π. With
+// a = min(speed · amplitude · stance amplitude, max): pitch = −(sin 2c + sin(4c + π/2) · 0.2) · a · 0.75 (0x4adf90),
+// yaw = −sin c · a, roll = min(0, sin(c − 0.4712389) · min(speed · amplitude · 1.5 · stance amplitude, max)).
+// Aiming scales all by 1 − (1 − adsBobFactor) · adsFrac.
+V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, float adsBobFactor, bool reticle) {
+    constexpr float kPi = 3.1415927410125732f, kTwoPi = 6.2831854820251465f;
+    const float cyc = float(bobCycle & 0xff) / 255.0f * kTwoPi + kTwoPi;
+    const float c = 0.25f * kPi + cyc + kTwoPi;
+    const float amp = xySpeed * 0.16f;
+    const float stance = viewHeightTarget == 11 ? 0.03f : viewHeightTarget == 40 ? 0.0075f : 0.007f;
+    const float a = std::min(amp * stance, 10.0f);
+    V3 b{-(std::sin(c + c) + std::sin(c * 4.0f + 1.5707963705062866f) * 0.2f) * a * 0.75f, -(std::sin(c) * a),
+         std::min(0.0f, std::sin(c - 0.4712389409542084f) * std::min(amp * 1.5f * stance, 10.0f))};
+    if (adsFrac != 0) {
+        const float k = 1.0f - (1.0f - adsBobFactor) * adsFrac;
+        for (float& x : b) x *= k;
+    }
+    if (reticle)
+        for (float& x : b) x *= 1.0f - adsFrac;
+    return b;
+}
+
 float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac, float adsFrac, bool zoomingIn) {
     const float zoom = std::min(adsZoomFov, cgFov);
     if (adsFrac == 1.0f) return zoom;

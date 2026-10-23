@@ -903,6 +903,7 @@ struct Quad2D {
     float s0 = 0, t0 = 0, s1 = 1, t1 = 1;
     uint8_t rgba[4] = {255, 255, 255, 255};
     int texture = 0; // index into Scene::textures
+    int rot = 0;     // quarter turns of the image, clockwise on screen (0x4b0310 with 90 · rot degrees)
 };
 
 struct Renderer {
@@ -1076,7 +1077,13 @@ struct Renderer {
             for (size_t i = 0; i < nq; ++i) {
                 const Quad2D& q = overlay[i];
                 const float xs[4] = {q.x0, q.x1, q.x1, q.x0}, ys[4] = {q.y0, q.y0, q.y1, q.y1};
-                const float ss[4] = {q.s0, q.s1, q.s1, q.s0}, ts[4] = {q.t0, q.t0, q.t1, q.t1};
+                const float s4[4] = {q.s0, q.s1, q.s1, q.s0}, t4[4] = {q.t0, q.t0, q.t1, q.t1};
+                // 0x4b0310: the corner the image's corner i lands on is i + rot (TL, TR, BR, BL order).
+                float ss[4], ts[4];
+                for (int k = 0; k < 4; ++k) {
+                    ss[(k + q.rot) & 3] = s4[k];
+                    ts[(k + q.rot) & 3] = t4[k];
+                }
                 for (int k = 0; k < 4; ++k) {
                     GpuVertex g{};
                     g.pos[0] = xs[k] / float(w) * 2.0f - 1.0f;
@@ -1514,6 +1521,7 @@ int main(int argc, char** argv) {
         // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
+        game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
@@ -1568,7 +1576,8 @@ int main(int argc, char** argv) {
             DrawItem base;
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
-            const auto rt = vmMotion.rot();
+            auto rt = vmMotion.rot();
+            for (int k = 0; k < 3; ++k) rt[size_t(k)] += gunBobAngles[size_t(k)]; // 0x4b4d10
             base.transform = entityTransform(c.pos + c.forward() * mv[0] + c.right() * mv[1] + cross(c.right(), c.forward()) * mv[2],
                                              {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
             if (const char* dbg = std::getenv("IW2_VIEWMODEL_DEBUG")) {
@@ -1646,6 +1655,7 @@ int main(int argc, char** argv) {
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
         bool mantleHint = false;
+        float hudAimSpread = 255.0f, hudViewHeight = 60.0f; // ps+0x5b0 and the view height for the crosshair
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
             for (const auto& it : m->items)
@@ -2010,18 +2020,65 @@ int main(int argc, char** argv) {
             const float crossAlpha = 1.0f - (world ? scopeAlpha() : 0.0f);
             const bool drawCross = !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
                                    wst != 1 && wst != 2 && wst != 5 && wst != 10 && wst != 11;
-            // Look: four bars, separated by the weapon's hip spread (inferred).
+            // Look (0x4bd760 → 0x4bd2c0 centre, 0x4bd520 sides). Aiming (0x4bd230, fraction past 1 − adsCrosshairInFrac
+            // while zooming in, adsCrosshairOutFrac out): scale 1 − f/2 and the centre moved down by 480 / fov_y ·
+            // adsAimPitch · f. cg_crosshairDynamic (0) keeps it otherwise at the screen centre. Alpha (0x4bd450):
+            // (1 − aim spread / 255) · cg_crosshairAlpha (1) · (1 − scope alpha), at least cg_crosshairAlphaMin (0).
+            // Centre: reticleCenter, reticleCenterSize · scale (+ fuse % 1000 · 0.01 while cooking a cookOffHold
+            // grenade). Sides: reticleSide, reticleSideSize · scale square, at d = max(reticleMinOfs,
+            // tan(spread · scale) / tan(fov_y / 2) · 240) − hipReticleSidePos · size from the centre, spread = hip min
+            // + (max − min) · aim spread / 255 (0x4bd3a0, 0x4dceb0); top 0°, right 90°, bottom 180°, left 270°, with
+            // the 0.125 · size placement terms of 0x4bd4a0. TODO(spec): the friend / enemy colours.
             if (pweapon.equipped() && drawCross) {
-                float spread = 2.0f;
-                if (const auto* d = world ? world->weapon(pweapon.name()) : nullptr)
-                    if (auto it = d->find("hipspreadstandmin"); it != d->end()) spread = std::max(1.0f, float(std::atof(it->second.c_str())));
-                const float gap = std::tan(spread * float(M_PI) / 180.0f) / std::tan(32.5f * float(M_PI) / 180.0f) * float(h) * 0.5f;
-                const float cx = float(w) * 0.5f, cy = float(h) * 0.5f, len = 10 * sc, th = std::max(2.0f, 2.0f * sc);
-                const Quad2D bars[4] = {{cx - gap - len, cy - th / 2, cx - gap, cy + th / 2}, {cx + gap, cy - th / 2, cx + gap + len, cy + th / 2},
-                                        {cx - th / 2, cy - gap - len, cx + th / 2, cy - gap}, {cx - th / 2, cy + gap, cx + th / 2, cy + gap + len}};
-                for (Quad2D q : bars) {
-                    q.rgba[3] = uint8_t(200.0f * crossAlpha);
+                auto num = [&](const char* k) { return pweapon.number(k); };
+                float scale = 1.0f, offY = 0.0f;
+                const float fovY = 2.0f * std::atan(std::tan(c.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f) * 180.0f / float(M_PI);
+                if (const float af = pweapon.adsFrac(); af != 0) {
+                    const float cf = num(pweapon.adsZoomingIn() ? "adsCrosshairInFrac" : "adsCrosshairOutFrac");
+                    float t = af - (1.0f - cf);
+                    if (t > 0 && cf != 0) {
+                        t /= cf;
+                        scale = 1.0f - 0.5f * t;
+                        offY = 480.0f / fovY * num("adsAimPitch") * t;
+                    }
+                }
+                const float alpha = std::max((1.0f - hudAimSpread / 255.0f) * 1.0f * crossAlpha, 0.0f);
+                const float cx = 320.0f, cy = 240.0f + offY;
+                const uint8_t col[4] = {255, 255, 255, uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f)};
+                auto pic = [&](float x, float y, float sz, const std::string& mat, int rot) {
+                    Quad2D q{left43 + x * sc, y * sc, 0, 0};
+                    q.x1 = q.x0 + sz * sc;
+                    q.y1 = q.y0 + sz * sc;
+                    std::memcpy(q.rgba, col, 4);
+                    q.texture = materialTexture(mat);
+                    q.rot = rot;
                     out.push_back(q);
+                };
+                const std::string center = pweapon.field("reticleCenter"), side = pweapon.field("reticleSide");
+                if (!center.empty()) {
+                    float cs = num("reticleCenterSize");
+                    if (num("cookOffHold") != 0 && pweapon.fuseMs() != 0 && pweapon.field("weaponType") == "grenade")
+                        cs += float(pweapon.fuseMs() % 1000) * 0.01f;
+                    cs *= scale;
+                    pic(cx - cs * 0.5f, cy - cs * 0.5f, cs, center, 0);
+                }
+                if (!side.empty()) {
+                    const float size = num("reticleSideSize") * scale;
+                    if (const auto* d = world ? world->weapon(pweapon.name()) : nullptr) {
+                        auto fld = [&](const char* k) { auto it = d->find(k); return it == d->end() ? 0.0f : float(std::atof(it->second.c_str())); };
+                        game::HipSpread hs;
+                        hs.standMin = fld("hipspreadstandmin"); hs.duckedMin = fld("hipspreadduckedmin"); hs.proneMin = fld("hipspreadpronemin");
+                        hs.max = fld("hipspreadmax"); hs.duckedMax = fld("hipspreadduckedmax"); hs.proneMax = fld("hipspreadpronemax");
+                        const auto range = game::hipSpreadRange(hs, hudViewHeight);
+                        const float spread = range[0] + (range[1] - range[0]) * hudAimSpread / 255.0f;
+                        float px = std::tan(spread * scale * float(M_PI) / 180.0f) / std::tan(fovY * float(M_PI) / 180.0f * 0.5f) * 240.0f;
+                        px = std::max(px, num("reticleMinOfs"));
+                        const float sp = px - num("hipReticleSidePos") * size, k = size * 0.125f;
+                        pic(cx - size * 0.5f, cy - size - sp - k, size, side, 0);
+                        pic(sp + cx, cy - size * 0.5f, size, side, 1);
+                        pic(cx - size * 0.5f - k, sp + cy, size, side, 2);
+                        pic(cx - size - sp - k, cy - size * 0.5f - k, size, side, 3);
+                    }
                 }
             }
             // Ammo counter, bottom right of the 4:3 area. The ammo ownerdraws (0x4a7818 …) special-case only vehicles
@@ -2114,6 +2171,7 @@ int main(int argc, char** argv) {
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
+            if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
@@ -2266,6 +2324,14 @@ int main(int argc, char** argv) {
                 pmp.mantle = &mantleAnims;
                 // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
+                if (pweapon.equipped()) {
+                    auto n = [&](const char* k) { return pweapon.number(k); };
+                    pmp.hipSpread = {n("hipSpreadStandMin"), n("hipSpreadDuckedMin"), n("hipSpreadProneMin"), n("hipSpreadMax"),
+                                     n("hipSpreadDuckedMax"), n("hipSpreadProneMax"), n("hipSpreadDecayRate"), n("hipSpreadFireAdd"),
+                                     n("hipSpreadTurnAdd"), n("hipSpreadMoveAdd"), n("hipSpreadDuckedDecay"), n("hipSpreadProneDecay")};
+                }
+                in.pitch = cam.pitch;
+                in.adsFrac = pweapon.adsFrac();
                 const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision;
                 while (remaining > 0) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
@@ -2288,6 +2354,12 @@ int main(int argc, char** argv) {
                     }
                 }
                 mantleHint = (ps.mantleFlags & 8) != 0;
+                // PM_Weapon (0x4dfce0): crawling or meleeing keeps the aim spread at its maximum.
+                if ((ps.stance == game::Stance::Prone && (in.forward != 0 || in.right != 0)) || pweapon.stateNumber() == 10 ||
+                    pweapon.stateNumber() == 11)
+                    ps.aimSpread = 255.0f;
+                hudAimSpread = ps.aimSpread;
+                hudViewHeight = ps.viewHeight;
                 cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
@@ -2344,6 +2416,12 @@ int main(int argc, char** argv) {
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
+                {
+                    const std::string ret = pweapon.field("adsOverlayReticle");
+                    gunBobAngles = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
+                                                ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"),
+                                                !ret.empty() && ret != "none");
+                }
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
                                           pweapon.adsZoomingIn());
@@ -2353,6 +2431,11 @@ int main(int argc, char** argv) {
                     mixer.setListener({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, {r.x, r.y, r.z});
                 }
                 const Vec3 f = cam.forward();
+                {
+                    game::HipSpread hs;
+                    hs.fireAdd = pweapon.number("hipSpreadFireAdd");
+                    for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
+                }
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
