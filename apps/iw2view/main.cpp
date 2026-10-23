@@ -1521,6 +1521,7 @@ int main(int argc, char** argv) {
         // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
+        game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
@@ -1575,7 +1576,8 @@ int main(int argc, char** argv) {
             DrawItem base;
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
-            const auto rt = vmMotion.rot();
+            auto rt = vmMotion.rot();
+            for (int k = 0; k < 3; ++k) rt[size_t(k)] += gunBobAngles[size_t(k)]; // 0x4b4d10
             base.transform = entityTransform(c.pos + c.forward() * mv[0] + c.right() * mv[1] + cross(c.right(), c.forward()) * mv[2],
                                              {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
             if (const char* dbg = std::getenv("IW2_VIEWMODEL_DEBUG")) {
@@ -2414,6 +2416,12 @@ int main(int argc, char** argv) {
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
+                {
+                    const std::string ret = pweapon.field("adsOverlayReticle");
+                    gunBobAngles = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
+                                                ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"),
+                                                !ret.empty() && ret != "none");
+                }
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
                                           pweapon.adsZoomingIn());

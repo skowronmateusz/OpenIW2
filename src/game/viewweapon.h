@@ -26,6 +26,11 @@ private:
     V3 curMove_{}, curRot_{}, outMove_{}, outRot_{};
 };
 
+// Gun bob angles (cgame 0x4b4a90, added to the weapon angles by 0x4b4d10): pitch, yaw, roll in degrees from the
+// player state's bob cycle (0..255), the horizontal speed and the view height target (11 prone, 40 crouched).
+// adsBobFactor: the weapon's; reticle: the weapon has an adsOverlayReticle (then also × (1 − adsFrac)).
+V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, float adsBobFactor, bool reticle);
+
 // Field of view while aiming (0x4ae7d9): horizontal cg_fov towards min(adsZoomFov, cg_fov). `zoomingIn` is true
 // while the aim fraction rises (it becomes true at fraction 0 and false at 1).
 float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac, float adsFrac, bool zoomingIn);

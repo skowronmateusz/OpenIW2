@@ -748,6 +748,42 @@ void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, f
     ps.havePrevCmd = true;
 }
 
+// Bob cycle (PM_Footsteps 0x50a850, after the move): not on a turret; in the air it stays. Slower than
+// player_moveThreshhold (or pm_type 1) it is only reset below 1 unit/s. Otherwise bobmove = xy speed / s · k, s =
+// g_speed scaled like the command (forward + right: ((strafe − 1)·0.75 + 2)·s/2, then backwards (back + 1)·s/2;
+// backwards only: × back; right only: ((strafe − 1)·0.75 + 1)·s), × 0.4 while leaning or with pm_flags 0x100; prone
+// × 0.15 and k 0.25 (0.24 with the 0.4), crouched × 0.65 and k 0.34 (0.315), standing k 0.335 (0.305), with
+// pm_flags 0x80 0.36 (0.325); the cycle advances by trunc(bobmove · msec + cycle) & 0xff.
+// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf), the footstep
+// events (0x50a6d0) and the ladder case.
+void updateBobCycle(PlayerState& ps, float f, float r, int ms, const MoveParams& mp) {
+    if (!ps.onGround) return;
+    const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
+    if (xy < mp.moveThreshold) {
+        if (xy < 1.0f) ps.bobCycle = 0;
+        return;
+    }
+    float s = float(mp.speed);
+    if (f != 0) {
+        if (r != 0) {
+            s = ((mp.strafeSpeedScale - 1.0f) * 0.75f + 1.0f + 1.0f) * s * 0.5f;
+            if (f < 0) s = (mp.backSpeedScale + 1.0f) * s * 0.5f;
+        } else if (f < 0) {
+            s *= mp.backSpeedScale;
+        }
+    } else if (r != 0) {
+        s = ((mp.strafeSpeedScale - 1.0f) * 0.75f + 1.0f) * s;
+    }
+    const bool slow = ps.adsSlow || ps.lean != 0;
+    if (slow) s *= 0.4f;
+    float k;
+    if (ps.viewHeightTarget == 11) { s *= 0.15f; k = slow ? 0.24f : 0.25f; }
+    else if (ps.viewHeightTarget == 40) { s *= 0.65f; k = slow ? 0.315f : 0.34f; }
+    else k = slow ? 0.305f : 0.335f;
+    const float bobmove = xy / s * k;
+    ps.bobCycle = int(bobmove * float(ms) + float(ps.bobCycle)) & 0xff;
+}
+
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     Pml pml;
@@ -798,6 +834,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
+    updateBobCycle(ps, f, r, ms, mp);
 }
 
 } // namespace

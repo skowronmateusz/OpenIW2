@@ -54,6 +54,7 @@ struct PlayerState {
     uint32_t mantleFlags = 0;
     int stanceEvent = -1;        // client stance set by a mantle event this move (0x8d → 1, 0x8c → 0), else −1
     float aimSpread = 255;       // ps+0x5b0: aim spread scale 0..255 (0x4de540)
+    int bobCycle = 0;            // ps+8: 0..255 (PM_Footsteps 0x50a850)
     float prevCmdPitch = 0, prevCmdYaw = 0; // the previous command's angles (pm+0x40)
     bool havePrevCmd = false;
 };
@@ -104,6 +105,7 @@ struct MoveParams {
     HipSpread hipSpread;              // the current weapon's
     float aimSpreadMoveSpeedThreshold = 11.0f; // bg_aimSpreadMoveSpeedThreshold (0x4fa98e)
     float jumpSpreadAdd = 64.0f;      // jump_spreadAdd (0x541240)
+    float moveThreshold = 10.0f;      // player_moveThreshhold (0x4fab25)
 };
 
 // Advances the player by dt seconds (split into steps of at most 66 ms like the original).
