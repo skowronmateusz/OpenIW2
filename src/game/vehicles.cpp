@@ -1,7 +1,9 @@
 // Script vehicles: info_vehicle_node paths and the path-following think (docs/spec/vehicles.md). The rules mirror
 // the executable's path code (node linking 0x52ada0, path step 0x52b290, vehicle think 0x5110a0).
 #include "game/world.h"
+#include "game/vehicledrive.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <stdexcept>
@@ -400,6 +402,8 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                         if (lowerCopy(v) == types[t]) info->type = t;
                 } else if (k == "maxspeed") info->maxSpeed = f * kMphToIps;
                 else if (k == "accel") info->accel = f * kMphToIps;
+                else if (k == "rotrate") info->rotRate = f;
+                else if (k == "rotaccel") info->rotAccel = f;
                 else if (k == "collisionspeed") info->collisionSpeed = f * kMphToIps;
                 else if (k == "enginesndspeed") info->engineSndSpeed = f * kMphToIps;
                 else if (k == "suspensiontravel") info->suspensionTravel = f;
@@ -455,7 +459,8 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
         const Vec3 base{origin[0], origin[1], baseZ};
         for (int i = 0; i < 3; ++i) wp[size_t(i)] = left[size_t(i)] * o[1] + up[size_t(i)] * o[2] + fwd[size_t(i)] * o[0] + base[size_t(i)];
         const Vec3 start{wp[0], wp[1], wp[2] + 64.0f}, end{wp[0], wp[1], wp[2] - 256.0f};
-        const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, 0x211); // mask 0x10211 when driven
+        const bool driven = v.owner >= 0;
+        const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, driven ? 0x10211u : 0x211u);
         float hitZ = end[2];
         v.wheelSurface[w] = 0;
         if (tr.fraction < 1.0f) {
@@ -493,7 +498,9 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
     const Vec3 a = axisToAngles(f, l);
     angles[0] = std::clamp(approachAngle(a[0], prevAngles[0], 6.0f, kFrameTime), -60.0f, 60.0f);
     angles[2] = std::clamp(approachAngle(a[2], prevAngles[2], 6.0f, kFrameTime), -60.0f, 60.0f);
-    if (n[2] != 0.0f) origin[2] = -((n[1] * origin[1] + n[0] * origin[0]) - dist) / n[2];
+    // The height follows the plane unless a player drives the vehicle off a path (then the physics keep it).
+    if ((v.started || v.owner < 0) && n[2] != 0.0f) origin[2] = -((n[1] * origin[1] + n[0] * origin[0]) - dist) / n[2];
+    for (int i = 0; i < 3; ++i) v.angularVelocity[size_t(i)] = angleDelta(angles[size_t(i)], prevAngles[size_t(i)]) * 20.0f;
 }
 
 // World position of a model tag on the vehicle (0x4d75b0): the tag's model-space position through the entity's
@@ -537,9 +544,26 @@ void World::updateVehicleTurret(Entity& e) {
     Vec3 dir = sub(point, barrel);
     normalize(dir);
     Vec3 fwd, right, up;
-    anglesToAxis(e.obj->get("angles").asVector(), fwd, right, up);
-    const Vec3 local{dot(dir, fwd), -dot(dir, right), dot(dir, up)};
-    Vec3 want = vectorToAngles(local);
+    Vec3 want;
+    Vec3 frame = e.obj->get("angles").asVector();
+    if (v.owner >= 0 && player_ && v.owner == player_->number) {
+        // Driven: the wanted direction keeps the view yaw (roll 0); the frame is the body, with the view yaw while
+        // the vehicle turns towards the view (ps 0x40000 clear). Relative angles = axis(want) · axis(frame)ᵀ.
+        const float viewYaw = playerCmd_.viewAngles[1];
+        if (!(pmFlags_ & 0x40000)) frame[1] = viewYaw;
+        Vec3 wa = vectorToAngles(dir);
+        wa[1] = viewYaw;
+        wa[2] = 0.0f;
+        Vec3 wf, wr, wu;
+        anglesToAxis(wa, wf, wr, wu);
+        anglesToAxis(frame, fwd, right, up);
+        const Vec3 left{-right[0], -right[1], -right[2]}, wl{-wr[0], -wr[1], -wr[2]};
+        want = axisToAngles({dot(wf, fwd), dot(wf, left), dot(wf, up)}, {dot(wl, fwd), dot(wl, left), dot(wl, up)});
+    } else {
+        anglesToAxis(frame, fwd, right, up);
+        const Vec3 local{dot(dir, fwd), -dot(dir, right), dot(dir, up)};
+        want = vectorToAngles(local);
+    }
     const float dPitch = angleDelta(want[0], v.turretPitch), dYaw = angleDelta(want[1], v.turretYaw);
     v.turretPitch = turnAngle(want[0], v.turretPitch, v.info->turretRotRate, kFrameTime);
     v.turretYaw = turnAngle(want[1], v.turretYaw, v.info->turretRotRate, kFrameTime);
@@ -569,72 +593,171 @@ VehicleState& World::vehicleState(const Value& self) {
     if (!e->vehicle) {
         e->vehicle = std::make_unique<VehicleState>(); // vehicle init 0x50da80: no path, waits unset
         e->vehicle->info = vehicleInfo(e->obj->get("vehicletype").toString());
+        const Value sf = e->obj->get("spawnflags");
+        e->vehicle->usable = sf.isInt() && (sf.asInt() & 1) != 0; // 0x50dcd5
     }
     return *e->vehicle;
 }
 
-// Path following for vehicles after startpath (0x5110a0); other vehicles stand still here.
-// TODO: ground alignment of vehicle types 0/1 (0x50ef70), free physics without a path (0x510d30) and player
-// driving are not implemented.
-void World::thinkVehicles() {
-    for (const auto& ep : entities_) {
-        Entity& e = *ep;
-        if (!e.vehicle || e.obj->removed || !e.vehicle->started) continue;
-        VehicleState& v = *e.vehicle;
-        VehiclePathPos& p = v.path;
-        if (p.node < 0) continue;
-        const Vec3 prevOrigin = e.obj->get("origin").asVector(), prevAngles = e.obj->get("angles").asVector();
-        const float prevSpeed = v.speed;
-        if (v.speedMode == 0) {
-            v.speed = p.speed;
+// Path following after startpath (0x5110a0).
+void World::vehiclePathMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles) {
+    VehicleState& v = *e.vehicle;
+    VehiclePathPos& p = v.path;
+    if (p.node < 0) return;
+    const float prevSpeed = v.speed;
+    if (v.speedMode == 0) {
+        v.speed = p.speed;
+    } else {
+        const float target = v.speedMode == 2 ? p.speed : v.targetSpeed;
+        if (target <= v.speed) {
+            v.speed -= v.accel * kFrameTime;
+            if (v.speed < target) v.speed = target;
         } else {
-            const float target = v.speedMode == 2 ? p.speed : v.targetSpeed;
-            if (target <= v.speed) {
-                v.speed -= v.accel * kFrameTime;
-                if (v.speed < target) v.speed = target;
-            } else {
-                v.speed += v.accel * kFrameTime;
-                if (target < v.speed) v.speed = target;
-            }
-            if (v.speedMode == 2 && v.speed == target) v.speedMode = 0;
+            v.speed += v.accel * kFrameTime;
+            if (target < v.speed) v.speed = target;
         }
-        if (p.speed > 0.0f) v.stepFrac += v.speed / p.speed;
-        VehiclePathPos ahead = p;
-        stepPath(vnodes_, ahead, v.waitNode);
-        bool passedWait = false;
-        while (v.stepFrac > 1.0f) {
-            p = ahead;
-            v.stepFrac -= 1.0f;
-            if (stepPath(vnodes_, ahead, v.waitNode)) passedWait = true;
+        if (v.speedMode == 2 && v.speed == target) v.speedMode = 0;
+    }
+    if (p.speed > 0.0f) v.stepFrac += v.speed / p.speed;
+    VehiclePathPos ahead = p;
+    stepPath(vnodes_, ahead, v.waitNode);
+    bool passedWait = false;
+    while (v.stepFrac > 1.0f) {
+        p = ahead;
+        v.stepFrac -= 1.0f;
+        if (stepPath(vnodes_, ahead, v.waitNode)) passedWait = true;
+    }
+    if (p.end) v.speed = 0.0f;
+    Vec3 origin, angles;
+    for (int i = 0; i < 3; ++i) {
+        origin[size_t(i)] = (ahead.origin[size_t(i)] - p.origin[size_t(i)]) * v.stepFrac + p.origin[size_t(i)];
+        angles[size_t(i)] = lerpAngle(p.angles[size_t(i)], ahead.angles[size_t(i)], v.stepFrac);
+    }
+    static const float rates[3] = {6.0f, 4.0f, 6.0f};
+    for (int i = 0; i < 3; ++i) angles[size_t(i)] = approachAngle(angles[size_t(i)], prevAngles[size_t(i)], rates[i], kFrameTime);
+    alignVehicleToGround(e, origin, angles, prevOrigin[2], prevAngles, true);
+    for (int i = 0; i < 3; ++i) v.velocity[size_t(i)] = (origin[size_t(i)] - prevOrigin[size_t(i)]) * 20.0f;
+    e.obj->set("origin", Value(origin));
+    e.obj->set("angles", Value(angles));
+    if (passedWait && v.waitNode >= 0) vm_.notify(e.obj, "reached_wait_node");
+    if (p.end) vm_.notify(e.obj, "reached_end_node");
+    if (v.waitSpeed >= 0.0f) {
+        const bool up = prevSpeed <= v.waitSpeed && v.speed >= v.waitSpeed;
+        const bool down = prevSpeed >= v.waitSpeed && v.speed <= v.waitSpeed;
+        if (up || down) vm_.notify(e.obj, "reached_wait_speed");
+    }
+}
+
+// Free movement without a path (0x510d30): the driver's command (zero without one) through the drive physics, then
+// ground alignment for wheeled and tracked vehicles.
+void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles) {
+    VehicleState& v = *e.vehicle;
+    DriveCommand cmd;
+    if (v.owner >= 0 && player_ && v.owner == player_->number) {
+        pmFlags_ |= 0x40000;
+        // TODO(spec): the client state bit ps+0xc 0x8000 that also blocks the command is not tracked.
+        if (!(pmFlags_ & 0x80000)) {
+            cmd.forward = playerCmd_.forward;
+            cmd.right = playerCmd_.right;
+            cmd.jump = (playerCmd_.buttons & 0x400) ? 127 : 0;
+            if (cmd.jump) pmFlags_ &= ~0x40000u;
         }
-        if (p.end) v.speed = 0.0f;
-        Vec3 origin, angles;
-        for (int i = 0; i < 3; ++i) {
-            origin[size_t(i)] = (ahead.origin[size_t(i)] - p.origin[size_t(i)]) * v.stepFrac + p.origin[size_t(i)];
-            angles[size_t(i)] = lerpAngle(p.angles[size_t(i)], ahead.angles[size_t(i)], v.stepFrac);
+        cmd.viewYaw = playerCmd_.viewAngles[1];
+    }
+    DriveParams params;
+    if (v.info) params = {v.info->maxSpeed, v.info->accel, v.info->rotRate, v.info->rotAccel};
+    DriveBody b;
+    b.origin = e.obj->get("origin").asVector();
+    b.angles = e.obj->get("angles").asVector();
+    b.prevAngles = prevAngles;
+    b.velocity = v.velocity;
+    b.localVelocity = v.localVelocity;
+    b.angularVelocity = v.angularVelocity;
+    DriveTrace t;
+    t.passEntity = e.number;
+    driveMove(*collision_, b, params, cmd, t);
+    v.velocity = b.velocity;
+    v.localVelocity = b.localVelocity;
+    v.angularVelocity = b.angularVelocity;
+    Vec3 origin = b.origin, angles = b.angles;
+    alignVehicleToGround(e, origin, angles, prevOrigin[2], prevAngles, true); // also sets the angular velocity
+    v.forwardSpeed = std::fabs(b.localVelocity[0]);
+    e.obj->set("origin", Value(origin));
+    e.obj->set("angles", Value(angles));
+    // TODO(spec): the engine sound blend (+0x1f8 / +0x1fc, approached at 4 per second from the forward command).
+}
+
+// Aim of a player-driven vehicle (0x5108e0): the turret target becomes the point the player looks at (eye + view
+// direction × 10240, cut short by a trace), "turret_fire" is notified while attack is held and the fire timer has
+// run out, and a blocked tag_barrel → tag_flash line marks the shot as unbent (+0x19c).
+void World::vehiclePlayerAim(Entity& e) {
+    VehicleState& v = *e.vehicle;
+    v.hasTarget = false;
+    v.targetEnt.reset();
+    v.targetOffset = {0, 0, 0};
+    Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
+    if (!owner || owner != player_ || (pmFlags_ & 0x80000)) return;
+    if (v.fireTimerMs < 1) {
+        // TODO(spec): ps+0xc bit 0x8000 also blocks firing; it is not tracked.
+        if (playerCmd_.buttons & 1) vm_.notify(e.obj, "turret_fire");
+    } else {
+        v.fireTimerMs -= 50;
+    }
+    v.hasTarget = true;
+    bool flashFound = false, barrelFound = false;
+    const Vec3 flash = vehicleTagPosition(e, "tag_flash", flashFound);
+    const Vec3 barrel = vehicleTagPosition(e, "tag_barrel", barrelFound);
+    if (!flashFound) throw std::runtime_error("Player vehicle has no tag_flash");
+    if (!barrelFound) throw std::runtime_error("Player vehicle has no tag_barrel");
+    const Vec3 o = owner->obj->get("origin").asVector();
+    const Vec3 eye{o[0], o[1], o[2] + 60.0f}; // in a vehicle the player stands with view height 60 (0x509d10)
+    const float rad = 0.0174532924f;
+    const float yaw = playerCmd_.viewAngles[1] * rad, pitch = playerCmd_.viewAngles[0] * rad;
+    const Vec3 dir{std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), -std::sin(pitch)};
+    const Vec3 end{dir[0] * 10240.0f + eye[0], dir[1] * 10240.0f + eye[1], dir[2] * 10240.0f + eye[2]};
+    v.aimPoint = end;
+    const TraceResult tr = collision_->trace(eye, end, {0, 0, 0}, {0, 0, 0}, 0x280e891, owner->number);
+    if (tr.fraction < 1.0f)
+        for (int i = 0; i < 3; ++i) v.aimPoint[size_t(i)] = (end[size_t(i)] - eye[size_t(i)]) * tr.fraction + eye[size_t(i)];
+    v.targetVec = v.aimPoint;
+    const TraceResult sight = collision_->trace(barrel, flash, {0, 0, 0}, {0, 0, 0}, 0x810211, e.number);
+    if (sight.fraction < 1.0f || sight.startSolid) v.sightBlocked = true;
+}
+
+// Vehicle think (0x512b80), for every script_vehicle: the owner dies → it is let out; types other than artillery
+// move along their path or freely; a driven vehicle aims where the player looks; then the turret.
+// TODO(spec): touch damage (0x50ff00) and the remaining calls 0x510770 / 0x5107e0 / 0x510870 / 0x510be0.
+void World::thinkVehicles() {
+    for (size_t i = 0; i < entities_.size(); ++i) {
+        Entity& e = *entities_[i];
+        if (e.obj->removed || e.classname != "script_vehicle") continue;
+        VehicleState& v = vehicleState(Value(e.obj));
+        const Vec3 prevOrigin = e.obj->get("origin").asVector(), prevAngles = e.obj->get("angles").asVector();
+        if (v.owner >= 0) {
+            Entity* owner = entityByNumber(v.owner);
+            const Value h = owner ? owner->obj->get("health") : Value();
+            if (owner && (!h.isNumber() || h.asInt() < 1)) unlinkPlayerFromVehicle(e, *owner);
         }
-        static const float rates[3] = {6.0f, 4.0f, 6.0f};
-        for (int i = 0; i < 3; ++i) angles[size_t(i)] = approachAngle(angles[size_t(i)], prevAngles[size_t(i)], rates[i], kFrameTime);
-        alignVehicleToGround(e, origin, angles, prevOrigin[2], prevAngles, true);
-        for (int i = 0; i < 3; ++i) v.velocity[size_t(i)] = (origin[size_t(i)] - prevOrigin[size_t(i)]) * 20.0f;
-        e.obj->set("origin", Value(origin));
-        e.obj->set("angles", Value(angles));
-        if (passedWait && v.waitNode >= 0) vm_.notify(e.obj, "reached_wait_node");
-        if (p.end) vm_.notify(e.obj, "reached_end_node");
-        if (v.waitSpeed >= 0.0f) {
-            const bool up = prevSpeed <= v.waitSpeed && v.speed >= v.waitSpeed;
-            const bool down = prevSpeed >= v.waitSpeed && v.speed <= v.waitSpeed;
-            if (up || down) vm_.notify(e.obj, "reached_wait_speed");
+        if (v.info && v.info->type != 4) {
+            if (v.started) vehiclePathMove(e, prevOrigin, prevAngles);
+            else vehicleFreeMove(e, prevOrigin, prevAngles);
+        }
+        v.sightBlocked = false;
+        if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
+        updateVehicleTurret(e);
+        // The driver rides at tag_player (linked in VEH_LinkPlayer).
+        if (Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr) {
+            bool found = false;
+            const Vec3 pos = vehicleTagPosition(e, "tag_player", found);
+            if (found) owner->obj->set("origin", Value(pos));
         }
     }
-    for (const auto& ep : entities_)
-        if (ep->vehicle && !ep->obj->removed) updateVehicleTurret(*ep);
 }
 
 // A player starts using a vehicle (VEH_LinkPlayer 0x511610): the player is placed at tag_player with the vehicle's
 // pitch and yaw (roll 0) and linked to that tag; both entities record each other.
-// TODO(spec): the second tag the original prefers for the angles (vehicle +0x214), the client flags it sets
-// (pm_flags 0x60000) and player control of the vehicle.
+// pm_flags become 0x60000 (in a vehicle, view turns with it; 0x80000 cleared).
+// TODO(spec): the second tag the original prefers for the angles (vehicle +0x214).
 void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     VehicleState& v = *vehicle.vehicle;
     if (player.usingVehicle >= 0) throw std::runtime_error("VEH_LinkPlayer: Player is already using a vehicle");
@@ -649,24 +772,146 @@ void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     l.parent = vehicle.number;
     l.tag = "tag_player";
     links_[player.number] = l;
+    if (v.targetEnt && v.targetEnt == player.obj) { // a turret aimed at the new driver loses its target
+        v.hasTarget = false;
+        v.targetEnt.reset();
+    }
     v.owner = player.number;
     player.usingVehicle = vehicle.number;
+    if (&player == player_) pmFlags_ = (pmFlags_ & ~0x80000u) | 0x60000u;
 }
 
-// The player leaves the vehicle (VEH_UnlinkPlayer 0x511780): unlinked and placed at tag_detach, keeping its pitch
-// and yaw. TODO(spec): the fallback height above the vehicle origin without tag_detach (vehicle +0x108 → +0xfc).
+// The player leaves the vehicle (VEH_UnlinkPlayer 0x511780): unlinked and placed at tag_detach, keeping its view
+// pitch and yaw; pm_flags 0xe0000 are cleared.
 void World::unlinkPlayerFromVehicle(Entity& vehicle, Entity& player) {
     if (player.usingVehicle < 0) throw std::runtime_error("VEH_UnlinkPlayer: Player is not using a vehicle");
     links_.erase(player.number);
     bool found = false;
     const Vec3 pos = vehicleTagPosition(vehicle, "tag_detach", found);
-    if (!found) print("VEH_UnlinkPlayer: Warning - no [tag_detach] on vehicle");
+    if (!found) print("VEH_UnlinkPlayer: Warning - no [tag_detach] on vehicle"); // then the vehicle origin + maxs z (0)
     player.obj->set("origin", Value(pos));
-    const Value pa = player.obj->get("angles");
-    const Vec3 a = pa.isVector() ? pa.asVector() : Vec3{0, 0, 0};
+    // The player keeps its view pitch and yaw (client +0xc4 / +0xc8).
+    Vec3 a{0, 0, 0};
+    if (&player == player_) a = playerCmd_.viewAngles;
+    else if (const Value pa = player.obj->get("angles"); pa.isVector()) a = pa.asVector();
     player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
     vehicle.vehicle->owner = -1;
     player.usingVehicle = -1;
+    if (&player == player_) pmFlags_ &= ~0xe0000u;
+}
+
+// A use of a vehicle (0x5341a0 / useby 0x4ef020): "trigger" with the user, then the vehicle's use function
+// (0x512f00): a player gets in, or out when already using a vehicle.
+void World::useVehicle(Entity& vehicle, Entity& user) {
+    vm_.notify(vehicle.obj, "trigger", {Value(user.obj)});
+    if (!user.isPlayer || vehicle.obj->removed) return;
+    if (user.usingVehicle >= 0) {
+        if (Entity* ridden = entityByNumber(user.usingVehicle); ridden && ridden->vehicle) unlinkPlayerFromVehicle(*ridden, user);
+    } else {
+        linkPlayerToVehicle(vehicle, user);
+    }
+}
+
+// World bounds of a vehicle for the use scan. The original uses the absbox of the vehicle's collmap brush
+// (0x50dc40); here the xmodel bounds turned by the angles stand in for it (inferred).
+bool World::vehicleUseBounds(Entity& e, Vec3& mins, Vec3& maxs) {
+    const Value model = e.obj->get("model");
+    if (!model.isString() || !skeleton(model.asString())) return false;
+    auto it = modelBounds_.find(model.asString());
+    if (it == modelBounds_.end()) return false;
+    const Vec3 origin = e.obj->get("origin").asVector();
+    Vec3 fwd, right, up;
+    anglesToAxis(e.obj->get("angles").asVector(), fwd, right, up);
+    mins = {1e30f, 1e30f, 1e30f};
+    maxs = {-1e30f, -1e30f, -1e30f};
+    for (int c = 0; c < 8; ++c) {
+        const Vec3 l{(c & 1) ? it->second.second[0] : it->second.first[0], (c & 2) ? it->second.second[1] : it->second.first[1],
+                     (c & 4) ? it->second.second[2] : it->second.first[2]};
+        for (int i = 0; i < 3; ++i) {
+            const float w = origin[size_t(i)] + fwd[size_t(i)] * l[0] - right[size_t(i)] * l[1] + up[size_t(i)] * l[2];
+            mins[size_t(i)] = std::min(mins[size_t(i)], w);
+            maxs[size_t(i)] = std::max(maxs[size_t(i)], w);
+        }
+    }
+    return true;
+}
+
+// The player's use key (0x5343d0, pressed this frame: +activate 8 or +usereload 0x20). In a usable vehicle it gets
+// out (0x5341a0); otherwise the best usable vehicle in reach is used (scan 0x534490, g_useholdtime 0 so at once):
+// absbox touching eye ± (108, 108, 96), absbox centre within 128 of the eye, score = distance + (1 − (dir · view
+// forward + 1) / 2) · 144, +10000 when the eye → centre line (mask 0x11) is blocked; the first one passing 0x512200
+// (player not in a vehicle, vehicle without owner, |forward speed| ≤ 1, health > 0, usable).
+// TODO(spec): other usable entities (turrets, triggers with hint strings) are not part of this scan; the global
+// 0x9bef24 that gates it is treated as set.
+void World::runPlayerUse() {
+    if (!player_) return;
+    const uint32_t pressed = playerCmd_.buttons & ~playerOldButtons_;
+    playerOldButtons_ = playerCmd_.buttons;
+    if (!(pressed & 0x28)) return;
+    if ((pmFlags_ & 0x20000) && player_->usingVehicle >= 0) {
+        Entity* v = entityByNumber(player_->usingVehicle);
+        if (v && v->vehicle && v->vehicle->usable) useVehicle(*v, *player_);
+        return;
+    }
+    const Vec3 o = player_->obj->get("origin").asVector();
+    const Vec3 eye{o[0], o[1], o[2] + 60.0f}; // TODO(spec): the stance view height (0x4e8b70)
+    const float rad = 0.0174532924f;
+    const float yaw = playerCmd_.viewAngles[1] * rad, pitch = playerCmd_.viewAngles[0] * rad;
+    const Vec3 fwd{std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), -std::sin(pitch)};
+    struct Candidate { Entity* e; float score; Vec3 centre; };
+    std::vector<Candidate> list;
+    for (const auto& ep : entities_) {
+        Entity& e = *ep;
+        if (e.obj->removed || e.classname != "script_vehicle") continue;
+        if (!vehicleState(Value(e.obj)).usable) continue; // contents 0x200000
+        Vec3 mn, mx;
+        if (!vehicleUseBounds(e, mn, mx)) continue;
+        if (mn[0] > eye[0] + 108 || mx[0] < eye[0] - 108 || mn[1] > eye[1] + 108 || mx[1] < eye[1] - 108 ||
+            mn[2] > eye[2] + 96 || mx[2] < eye[2] - 96)
+            continue;
+        const Vec3 centre{(mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f};
+        Vec3 d = sub(centre, eye);
+        const float dist = normalize(d);
+        if (dist > 128.0f) continue;
+        list.push_back({&e, dist + (1.0f - (dot(d, fwd) + 1.0f) * 0.5f) * 144.0f, centre});
+    }
+    auto byScore = [](const Candidate& a, const Candidate& b) { return a.score < b.score; };
+    std::sort(list.begin(), list.end(), byScore);
+    for (Candidate& c : list)
+        if (collision_->trace(eye, c.centre, {0, 0, 0}, {0, 0, 0}, 0x11, player_->number).fraction < 1.0f) c.score += 10000.0f;
+    std::sort(list.begin(), list.end(), byScore);
+    for (const Candidate& c : list) {
+        const VehicleState& v = *c.e->vehicle;
+        const Value h = c.e->obj->get("health");
+        if ((pmFlags_ & 0x20000) || player_->usingVehicle >= 0 || v.owner >= 0 || v.forwardSpeed > 1.0f || !h.isNumber() ||
+            h.asInt() < 1 || !v.usable)
+            continue;
+        useVehicle(*c.e, *player_);
+        return;
+    }
+}
+
+// The ridden vehicle's tag_body axes (rows forward, left, up) for the view (cgame 0x4aeb60).
+bool World::playerVehicleBodyAxis(std::array<Vec3, 3>& axis) {
+    if (!player_ || player_->usingVehicle < 0 || !(pmFlags_ & 0x20000)) return false;
+    Entity* e = entityByNumber(player_->usingVehicle);
+    if (!e || e->obj->removed) return false;
+    Vec3 fwd, right, up;
+    anglesToAxis(e->obj->get("angles").asVector(), fwd, right, up);
+    const Vec3 left{-right[0], -right[1], -right[2]};
+    assets::Quat q;
+    const Value model = e->obj->get("model");
+    if (const assets::XModelParts* parts = model.isString() ? skeleton(model.asString()) : nullptr) {
+        const assets::XPose pose = e->anim ? e->anim->pose(*parts) : assets::bindPose(*parts);
+        for (size_t b = 0; b < parts->bones.size(); ++b)
+            if (lowerCopy(parts->bones[b].name) == "tag_body") { q = pose.rotation[b]; break; }
+    }
+    static const Vec3 units[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (int r = 0; r < 3; ++r) {
+        const Vec3 l = assets::rotate(q, units[r]);
+        for (int i = 0; i < 3; ++i) axis[size_t(r)][size_t(i)] = fwd[size_t(i)] * l[0] + left[size_t(i)] * l[1] + up[size_t(i)] * l[2];
+    }
+    return true;
 }
 
 // Delta of an animation at normalized time 0 (0x478740 → 0x475aa0 with weight 1): the yaw quaternion (z, w) and the
@@ -730,14 +975,11 @@ void World::registerVehicleBuiltins() {
         Entity* e = entityOf(c.self);
         Entity* user = entityOf(c.arg(0));
         if (!e || !user) throw std::runtime_error("not an entity");
-        vm_.notify(e->obj, "trigger", {Value(user->obj)});
-        if (e->classname == "script_vehicle" && user->isPlayer && !e->obj->removed) {
+        if (e->classname == "script_vehicle" && !e->obj->removed) {
             vehicleState(c.self);
-            if (user->usingVehicle >= 0) {
-                if (Entity* ridden = entityByNumber(user->usingVehicle); ridden && ridden->vehicle) unlinkPlayerFromVehicle(*ridden, *user);
-            } else {
-                linkPlayerToVehicle(*e, *user);
-            }
+            useVehicle(*e, *user);
+        } else {
+            vm_.notify(e->obj, "trigger", {Value(user->obj)});
         }
         return Value();
     });
@@ -893,6 +1135,8 @@ void World::registerVehicleBuiltins() {
             }
         }
         if (v.info->quadBarrel) v.altBarrel = !v.altBarrel;
+        // The player's fire timer (+0x184) restarts with the weapon's fireTime (ms, weapon +0x204).
+        if (w && w->count("firetime")) v.fireTimerMs = int(float(std::atof(w->at("firetime").c_str())) * 1000.0f);
         return Value();
     });
     vm_.registerBuiltin("getwheelsurface", [this](CallContext& c) {

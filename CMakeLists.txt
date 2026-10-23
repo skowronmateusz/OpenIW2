@@ -70,7 +70,7 @@ add_library(iw2_game
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/viewweapon.cpp
-  src/game/vehicles.cpp src/game/campaign.cpp src/game/fx.cpp src/game/perception.cpp
+  src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp)
@@ -158,3 +158,7 @@ add_test(NAME hitboxes COMMAND test_hitboxes)
 add_executable(test_pmove tests/test_pmove.cpp)
 target_link_libraries(test_pmove PRIVATE iw2_game)
 add_test(NAME pmove COMMAND test_pmove)
+
+add_executable(test_vehicledrive tests/test_vehicledrive.cpp)
+target_link_libraries(test_vehicledrive PRIVATE iw2_game)
+add_test(NAME vehicledrive COMMAND test_vehicledrive)

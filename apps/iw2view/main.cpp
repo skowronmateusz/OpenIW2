@@ -1336,7 +1336,7 @@ int main(int argc, char** argv) {
             w->keyBindings = {{"+forward", {"W"}}, {"+back", {"S"}}, {"+moveleft", {"A"}}, {"+moveright", {"D"}},
                               {"+attack", {"MOUSE1"}}, {"+speed", {"MOUSE2"}}, {"+reload", {"R"}},
                               {"+gostand", {"SPACE"}}, {"togglecrouch", {"C"}}, {"toggleprone", {"Z"}},
-                              {"+leanleft", {"Q"}}, {"+leanright", {"E"}}};
+                              {"+leanleft", {"Q"}}, {"+leanright", {"E"}}, {"+activate", {"F"}}};
             w->start();
             return w;
         };
@@ -1781,13 +1781,15 @@ int main(int argc, char** argv) {
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
         game::MoveRecorder moveRecorder;
         bool fellOut = false;
+        std::array<game::Vec3, 3> prevBody{};
+        bool havePrevBody = false;
         const game::MoveParams mp;
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_EVENT_QUIT) running = false;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_F) renderer.fullbright = !renderer.fullbright;
+                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
                     if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
@@ -1810,7 +1812,55 @@ int main(int argc, char** argv) {
             const float dt = float(now - last) * 1e-9f;
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
-            if (walk) {
+            // In a vehicle (pm_flags 0x20000) the player does not move by itself; the command drives the vehicle.
+            const bool inVehicle = world && (world->playerPmFlags() & 0x20000);
+            if (world) {
+                game::World::PlayerCommand pc;
+                pc.forward = (int(keys[SDL_SCANCODE_W]) - int(keys[SDL_SCANCODE_S])) * 127;
+                pc.right = (int(keys[SDL_SCANCODE_D]) - int(keys[SDL_SCANCODE_A])) * 127;
+                if (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) pc.buttons |= 1; // +attack
+                if (keys[SDL_SCANCODE_F]) pc.buttons |= 8;                                    // +activate
+                if (keys[SDL_SCANCODE_SPACE]) pc.buttons |= 0x400;                            // +gostand
+                pc.viewAngles = {cam.pitch, cam.yaw, 0};
+                world->setPlayerCommand(pc);
+            }
+            if (inVehicle) {
+                // The view turns with the vehicle's tag_body (cgame 0x4aeb60, cg_viewVehicleInfluence 1): the view axes
+                // times Bprevᵀ·Bcur; the pitch always follows, the yaw only while pm_flags 0x40000 is set.
+                std::array<game::Vec3, 3> body;
+                if (world->playerVehicleBodyAxis(body)) {
+                    if (!havePrevBody) prevBody = body;
+                    float d[3][3], v[3][3], m[3][3];
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j) {
+                            d[i][j] = 0;
+                            for (int k = 0; k < 3; ++k) d[i][j] += prevBody[size_t(k)][size_t(i)] * body[size_t(k)][size_t(j)];
+                        }
+                    const Vec3 f = cam.forward(), r = cam.right(), u = cross(r, f);
+                    const float rows[3][3] = {{f.x, f.y, f.z}, {-r.x, -r.y, -r.z}, {u.x, u.y, u.z}};
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j) {
+                            v[i][j] = rows[i][j];
+                            m[i][j] = 0;
+                        }
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j)
+                            for (int k = 0; k < 3; ++k) m[i][j] += v[i][k] * d[k][j];
+                    cam.pitch = std::clamp(-std::atan2(m[0][2], std::sqrt(m[0][0] * m[0][0] + m[0][1] * m[0][1])) * 180.0f / float(M_PI), -89.0f, 89.0f);
+                    if (world->playerPmFlags() & 0x40000) cam.yaw = std::atan2(m[0][1], m[0][0]) * 180.0f / float(M_PI);
+                    prevBody = body;
+                    havePrevBody = true;
+                }
+                const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                cam.pos = {po[0], po[1], po[2] + 60.0f}; // stand view height 60 in a vehicle (0x509d10)
+                ps.origin = {po[0], po[1], po[2]};
+                ps.velocity = {0, 0, 0};
+            } else if (walk) {
+                if (havePrevBody) { // just got out: continue from where the vehicle code put the player (tag_detach)
+                    const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                    ps.origin = {po[0], po[1], po[2]};
+                }
+                havePrevBody = false;
                 game::PlayerInput in;
                 in.forward = float(keys[SDL_SCANCODE_W]) - float(keys[SDL_SCANCODE_S]);
                 in.right = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
@@ -1868,6 +1918,7 @@ int main(int argc, char** argv) {
                 wi.ads = (mouse & SDL_BUTTON_RMASK) != 0;
                 wi.reload = reloadPressed;
                 reloadPressed = false;
+                if (inVehicle) wi.fire = false; // the weapon fire mask excludes attack in a vehicle (0x4df9b0: 0x30014)
                 const int shots = pweapon.update(std::min(dt, 0.1f), wi);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
@@ -1883,7 +1934,7 @@ int main(int argc, char** argv) {
                 const Vec3 f = cam.forward();
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
-                world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                if (!inVehicle) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
                 gameClock += std::min(dt, 0.25f);
                 while (gameClock >= 0.05f) {
                     world->frame();

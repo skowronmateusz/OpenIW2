@@ -40,6 +40,7 @@ const assets::XModelParts* World::skeleton(const std::string& model) {
             if (auto md = vfs_.read(model)) {
                 auto xm = assets::parseXModel(*md);
                 boneBoxes_[model] = std::move(xm.boneBoxes);
+                modelBounds_[model] = {xm.mins, xm.maxs};
                 if (auto pd = vfs_.read("xmodelparts/" + xm.lods.at(0).name)) parts = assets::parseXModelParts(*pd);
             }
         } catch (const std::exception&) {
