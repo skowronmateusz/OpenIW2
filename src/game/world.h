@@ -265,6 +265,10 @@ public:
     // event 0x8e prone / 0x8d crouch / 0x8c stand from turret +0x68; −1 none). Taken once by the front end.
     struct TurretRelease { Vec3 origin; int stance = -1; };
     std::optional<TurretRelease> takeTurretRelease() { return std::exchange(turretRelease_, std::nullopt); }
+    // Script teleports of the player for the front end's player state: setorigin (0x538410 → SetClientOrigin
+    // 0x4e8890) and setplayerangles (0x538560 → 0x4e8940).
+    std::optional<Vec3> takePlayerTeleport() { return std::exchange(playerTeleport_, std::nullopt); }
+    std::optional<Vec3> takePlayerViewAngles() { return std::exchange(playerViewAngles_, std::nullopt); }
     // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
@@ -625,6 +629,7 @@ private:
     std::optional<float> playerDeadYaw_; // ps+0x10c from LookAtKiller
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;
+    std::optional<Vec3> playerTeleport_, playerViewAngles_;
     PlayerCommand playerCmd_;
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;

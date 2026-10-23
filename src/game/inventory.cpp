@@ -114,6 +114,25 @@ void World::registerInventoryBuiltins() {
         if (w != "none" && !weapon(w)) throw std::runtime_error("Unknown weapon " + v.toString() + ".");
         return w;
     };
+    // setorigin (0x538410): players only ("entity %i is not a player"); SetClientOrigin (0x4e8890) puts the player
+    // state at the origin raised by 1, toggles the teleport bit (eFlags 2) and copies it to the entity.
+    vm_.registerBuiltin("setorigin", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
+        Vec3 o = c.arg(0).asVector();
+        o[2] += 1.0f;
+        e->obj->set("origin", Value(o));
+        playerTeleport_ = o;
+        return Value();
+    });
+    // setplayerangles (0x538560 → SetClientViewAngle 0x4e8940). TODO(spec): the prone pitch limits of 0x4e8940.
+    vm_.registerBuiltin("setplayerangles", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
+        playerViewAngles_ = c.arg(0).asVector();
+        e->obj->set("angles", Value(Vec3{0, (*playerViewAngles_)[1], 0}));
+        return Value();
+    });
     vm_.registerBuiltin("giveweapon", [this, player, known](CallContext& c) {
         Entity& p = player(c);
         Inventory& inv = inventory(p);
