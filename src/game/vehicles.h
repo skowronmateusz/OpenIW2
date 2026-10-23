@@ -44,6 +44,7 @@ struct VehicleInfo {
     std::string name;
     int type = 0; // 0 "4 wheel", 1 "tank", 2 "plane", 3 "boat", 4 "artillery"
     float maxSpeed = 0, accel = 0, collisionSpeed = 0, engineSndSpeed = 0;
+    float rotRate = 0, rotAccel = 0; // degrees per second (and per second²), not scaled at load
     float suspensionTravel = 0, maxBodyPitch = 0, maxBodyRoll = 0;
     float turretHorizSpanLeft = 0, turretHorizSpanRight = 0, turretVertSpanUp = 0, turretVertSpanDown = 0, turretRotRate = 0;
     bool quadBarrel = false;
@@ -63,7 +64,16 @@ struct VehicleState {
     int speedMode = 0;         // 0 path speed, 1 setspeed, 2 resumespeed
     float targetSpeed = 0, accel = 0, speed = 0;
     float stepFrac = 0;
-    Vec3 velocity{};
+    Vec3 velocity{};           // world velocity (vehicle +0x100)
+    // Free physics (0x510d30): velocity in the vehicle's frame (forward, left, up, +0x10c), angular velocity
+    // (pitch, yaw, roll, +0x118) and |forward speed| after the move (+0x1b0).
+    Vec3 localVelocity{}, angularVelocity{};
+    float forwardSpeed = 0;
+    // Player aim (0x5108e0): fire timer in ms (+0x184, set by fireturret), the aim point (+0x1bc) and whether the
+    // barrel-to-flash sight line was blocked this frame (+0x19c).
+    int fireTimerMs = 0;
+    Vec3 aimPoint{};
+    bool sightBlocked = false;
     // Turret (vehicle +0x1b4…+0x1d0; turret pitch/yaw relative to the body are entity +0x70/+0x74).
     bool hasTarget = false;
     ObjectPtr targetEnt;
@@ -71,7 +81,7 @@ struct VehicleState {
     float turretPitch = 0, turretYaw = 0;
     bool altBarrel = false;
     int team = 0;              // 0 none, 1 axis, 2 allies
-    bool usable = false;
+    bool usable = false;       // contents 0x200000; initially spawnflags & 1 (0x50dcd5)
     int owner = -1;            // entity number of the player using it (entity +0xf4, 0x7ff = none)
 };
 

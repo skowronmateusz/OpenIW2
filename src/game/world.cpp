@@ -354,6 +354,7 @@ void World::frame() {
         }
     }
     vm_.runFrame(timeMs_);
+    runPlayerUse(); // TODO(spec): the client think (0x4da970) order relative to the script frame is not read
     thinkVehicles();
     thinkTurrets();
     runGrenades();

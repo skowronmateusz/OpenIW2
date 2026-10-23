@@ -214,6 +214,19 @@ public:
     // Moves the player entity (set by the movement code each frame).
     void setPlayerOrigin(const Vec3& origin, const Vec3& angles);
 
+    // The player's command (usercmd), set by the front end before each frame: forward / right −127…127, button bits
+    // (attack 1, melee 4, +activate 8, reload 0x10, +usereload 0x20, jump 0x400) and the view angles.
+    struct PlayerCommand {
+        int forward = 0, right = 0;
+        uint32_t buttons = 0;
+        Vec3 viewAngles{};
+    };
+    void setPlayerCommand(const PlayerCommand& c) { playerCmd_ = c; }
+    // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
+    uint32_t playerPmFlags() const { return pmFlags_; }
+    // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
+    bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
+
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
 
@@ -514,6 +527,15 @@ private:
     void linkPlayerToVehicle(Entity& vehicle, Entity& player);
     void unlinkPlayerFromVehicle(Entity& vehicle, Entity& player);
     void alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle);
+    void vehiclePathMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
+    void vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
+    void vehiclePlayerAim(Entity& e);
+    void useVehicle(Entity& vehicle, Entity& user);
+    bool vehicleUseBounds(Entity& e, Vec3& mins, Vec3& maxs);
+    void runPlayerUse();
+    PlayerCommand playerCmd_;
+    uint32_t playerOldButtons_ = 0;
+    uint32_t pmFlags_ = 0;
     std::vector<VehicleNode> vnodes_;
     std::map<std::string, std::unique_ptr<VehicleInfo>> vehicleInfos_;
     std::unordered_map<const script::Object*, int> vnodeIndex_;
@@ -543,6 +565,7 @@ private:
     std::unique_ptr<CollisionWorld> collision_;
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
     std::map<std::string, std::vector<assets::XBoneBox>> boneBoxes_; // xmodel bone hit boxes, filled by skeleton()
+    std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;
     PathGraph paths_;

@@ -387,6 +387,7 @@ int main(int argc, char** argv) {
         bool spawnAll = false;
         int traceActor = -1;
         bool playerShoots = false;
+        bool drive = false;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--trace-actor" && i + 1 < argc) {
@@ -395,6 +396,8 @@ int main(int argc, char** argv) {
                 playerShoots = true; // the player fires at the nearest axis actor twice a second
             } else if (a == "--spawn-all") {
                 spawnAll = true;
+            } else if (a == "--drive") {
+                drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
@@ -453,6 +456,31 @@ int main(int argc, char** argv) {
                     world.playerFire(eye, dir);
                     playerHits += world.stats.hits - before;
                 }
+            }
+            if (drive && world.player()) {
+                iw2::game::World::PlayerCommand cmd;
+                if (world.player()->usingVehicle >= 0) {
+                    static int t = 0;
+                    const int phase = t / 60; // 3 s each
+                    cmd.forward = phase < 3 ? 127 : 0;
+                    cmd.right = phase == 1 ? 127 : 0;
+                    cmd.viewAngles = {0, 90, 0};
+                    if (phase == 2) cmd.buttons |= 0x400;
+                    if (phase == 3 && t % 20 == 0) cmd.buttons |= 1;
+                    if (t % 20 == 0) {
+                        const auto* v = world.entities()[0].get();
+                        for (const auto& e : world.entities())
+                            if (e->number == world.player()->usingVehicle) v = e.get();
+                        const auto o = v->obj->get("origin").asVector(), a = v->obj->get("angles").asVector();
+                        const auto ta = v->obj->get("$turretangles");
+                        std::printf("drive t=%.1f phase %d: origin %.1f %.1f %.1f angles %.1f %.1f %.1f speed %.1f turret %s flags %x\n",
+                                    t * 0.05f, phase, o[0], o[1], o[2], a[0], a[1], a[2], v->vehicle ? v->vehicle->forwardSpeed : 0.0f,
+                                    ta.toString().c_str(), world.playerPmFlags());
+                        if (v->vehicle) std::printf("  velocity %.1f %.1f %.1f\n", v->vehicle->velocity[0], v->vehicle->velocity[1], v->vehicle->velocity[2]);
+                    }
+                    ++t;
+                }
+                world.setPlayerCommand(cmd);
             }
             world.frame();
         }

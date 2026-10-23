@@ -170,6 +170,78 @@ also jolts the body backwards (0x50dcf0) and stores the weapon's fire time.
 Here bullets fly along the body's axes turned by the turret angles (inferred: the original uses the flash tag's own
 axis, rotated by the client-side turret bone controllers).
 
+## Entity think (0x512b80)
+
+Every script vehicle, each frame: previous origin/angles = the entity's (0x50fc40); a dead owner (health < 1) is
+let out (VEH_UnlinkPlayer); types other than 4 run the path think (started, +0x174 bit 2) or free physics; the
+body is applied to the entity (0x50d3e0); touch (0x50ff00, TODO); +0x19c = 0; a player-driven vehicle (+0x174 bit
+0) runs the player aim (0x5108e0); then the turret (0x5102e0). So artillery (type 4, flak88) does not move but
+still aims and fires for its driver. Here the driver is kept at `tag_player` right after the think.
+
+## Free physics and player driving (0x510d30)
+
+Body layout from vehicle +0xb8: origin, previous origin +0xc, angles +0x18, previous angles +0x24, mins/maxs
++0x30/+0x3c (zero: the vehicle traces a point, 0x50d970), velocity +0x48, local velocity (forward, left, up) +0x54,
+angular velocity +0x60. Clip mask 0x810211 (0x50d900), skipping the vehicle.
+
+1. Command: zero without a driver. With one, pm_flags 0x40000 is set; unless pm_flags 0x80000 or ps+0xc 0x8000
+   the command is the usercmd forward (+0x85dc) and right (+0x85dd) bytes and 127 while button 0x400 (jump:
+   `+gostand` / `+moveup`, in a vehicle kbutton 0x5d2098 always counts, 0x409c56) is held; jump clears 0x40000.
+2. Accelerations (0x50de40): forward target
+   = (local forward ± accel × 0.05) × |forward| / 127, clamped to ±maxSpeed, acceleration (target − speed) × 20
+   clamped to ±accel; sideways target 0; vertical target the speed clamped to ±maxSpeed. Yaw: right / left
+   (right negative) like forward with rotAccel and rotRate; with jump held the target is (view yaw − previous yaw)
+   × 20 clamped to ±rotRate, without the rotAccel limit. Pitch and roll speeds go to 0. The jolt override
+   (+0x1dc/+0x1e4/+0x1e8, only set by `joltbody` 0x50dcf0) is not used.
+3. Angular velocity += acceleration × 0.05; yaw = 16-bit-normalized(previous yaw + yaw speed × 0.05); pitch and roll
+   0. Velocity += (forward, left, up of that yaw) · acceleration × 0.05.
+4. If moving: ground trace 0.25 above to below (0x50e4f0, unstick 0x50e3a0 with the player's 26 offsets);
+   walkable (normal z ≥ 0.7) → ground move (0x50ee50: clip keeping the speed, step slide without gravity);
+   otherwise clip to a hit plane and step slide with gravity (0x50ebe0 / slide 0x50e630: 40 per frame, step 18).
+   The clip rule (0x50e2f0) keeps a mostly horizontal velocity on walkable planes and gives it the plane's slope;
+   other planes remove the normal part × 1.01 (into) / 0.99 (away).
+5. Types 0/1: ground alignment with settling. For a player-driven vehicle off a path its height is not set from
+   the wheel plane (0x50ef70 writes z only when +0x174 bit 2 is set or bit 0 is clear); alignment always sets the
+   angular velocity to (angles − previous angles) × 20.
+6. +0x1b0 = |local forward speed|. TODO: the engine sound blend +0x1f8/+0x1fc.
+
+`rotRate` and `rotAccel` (vehicle info +0x70 / +0x74) are degrees per second and per second², not scaled.
+
+### Player aim (0x5108e0)
+
+Clears the turret target, then (driver present, no pm_flags 0x80000): fire timer +0x184 −= 50 ms while > 0,
+otherwise attack (bit 1) held and no ps+0xc 0x8000 → notify **`turret_fire`** (scripts such as `_tank.gsc shoot()`
+then call `fireturret`, which restarts the timer with the weapon's fireTime). Errors "Player vehicle has no
+tag_flash" / "…tag_barrel". Target (+0x1bc) = eye (0x4e8b70, view height 60 in a vehicle) + view direction
+(client +0xc4 pitch, +0xc8 yaw) × 10240, cut at a trace with mask 0x280e891 skipping the player. A blocked sight
+line `tag_barrel` → `tag_flash` sets +0x19c (with it clear, `fireturret` bends a player vehicle's shot towards the
+target within ±10°, 0x5144ce–0x5147ae, TODO).
+
+Turret for a driven vehicle (0x5102e0): frame = vehicle angles, with the view yaw as yaw while pm_flags 0x40000 is
+clear; wanted = vectoangles(target − `tag_barrel`) with the view yaw as yaw and roll 0; relative angles =
+AxisToAngles(axis(wanted) · axis(frame)ᵀ); then the same turning, clamping and notifies as above.
+
+### Use key (0x5343d0 → 0x5342b0 / 0x534350)
+
+`+activate` (button 8) or `+usereload` (0x20) pressed this frame (client +0x863c): in a vehicle (pm_flags 0x20000,
+owner set) that is usable (contents 0x200000) → 0x5341a0: notify `trigger` with the player, then the use function
+(= get out). Otherwise the hint entity of the scan (0x534490)
+is used after `g_useholdtime` (default 0): entities whose absbox touches eye ± (108, 108, 96) with contents
+0x200000; absbox centre within 128 of the eye for vehicles (72 for others); score = distance + (1 − (dir · view
+forward + 1) / 2) × 144, sorted; +10000 when the eye → centre trace (mask 0x11) is blocked, sorted again; the first
+passing 0x512200 (player not in a vehicle and not linked, vehicle without owner, |+0x1b0| ≤ 1, health > 0,
+usable). The vehicle's usable flag starts as spawnflags & 1 (0x50dcd5). The scan is gated by a global 0x9bef24
+(treated as set). The vehicle absbox comes from its collmap brush (0x50dc40); OpenIW2 uses the xmodel bounds turned
+by the angles instead (inferred).
+
+### Player in a vehicle
+
+Pmove with pm_flags 0x20000 (and no 0x80000) stands with view height 60 (0x509d10); the weapon fire mask excludes
+attack (0x4df9b0 uses 0x30014), so the player's own weapon does not fire. View (cgame 0x4aeb60): each frame D = Bprevᵀ · Bcur of `tag_body`'s
+world axes (previous stored transposed, 0x422ab0), lerped from identity by `cg_viewVehicleInfluence` (default 1)
+through quaternions; view axes · D (0x422450) → angles; pitch always taken, yaw only while pm_flags 0x40000. The
+command's delta angles are adjusted so the input keeps that view.
+
 ## Player use (`useby`)
 
 `useby(user)` (0x4ef020) notifies `"trigger"` with the user, then calls the entity type's use function (table
@@ -180,14 +252,14 @@ axis, rotated by the client-side turret bone controllers).
   with the vehicle's pitch and yaw (roll 0) and linked to that tag; vehicle +0xf4 and player +0xf4 / client +0x568
   record each other; the vehicle's +0x174 bit 0 (player-driven) is set; client flags `|= 0x60000`, `&= ~0x80000`.
 - VEH_UnlinkPlayer (0x511780): error "Player is not using a vehicle"; the player is placed at `tag_detach`
-  (warning "no [tag_detach] on vehicle" and a height above the origin otherwise), keeps pitch and yaw, and both
-  links are cleared.
+  (warning "no [tag_detach] on vehicle" and the vehicle origin + body maxs z, which is 0, otherwise), takes the
+  client's view pitch and yaw (roll 0), +0x174 bit 0 and pm_flags 0xe0000 are cleared, and both links are cleared.
 - `getvehicleowner()` returns the linked player.
 
 ## Not implemented (TODO)
 
-- Free vehicle physics without a path (0x510d30), `joltbody` (0x5136e0 → 0x50dcf0), player driving controls,
-  `isturretready`.
+- `joltbody` (0x5136e0 → 0x50dcf0), `isturretready`, touch damage (0x50ff00), the aim bend of player shots, the
+  ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
 - Turret projectiles (tank shells) from `fireturret`, the recoil jolt, turret spin/stop sounds, and turret bone
   rotation in tag positions.
 - The speed fraction (speed / engineSndSpeed, vehicle +0x1fc / +0x1f8), engine sounds and texture scrolling
