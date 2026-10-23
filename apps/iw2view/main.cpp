@@ -1441,6 +1441,10 @@ int main(int argc, char** argv) {
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
 
         // Entity models currently visible in the game world.
+        // Client interpolation state: entity origin/angles before the latest server frame and the fraction of the
+        // next frame already elapsed (cg.frameInterpolation).
+        std::map<int, std::pair<script::Vec3, script::Vec3>> lerpPrev;
+        float lerpFrac = 1.0f;
         auto gatherItems = [&](const Camera& view) {
             std::vector<DrawItem> items;
             if (!world) return items;
@@ -1462,8 +1466,19 @@ int main(int argc, char** argv) {
                 if (!m.isString() || m.asString().rfind("xmodel/", 0) != 0) continue;
                 const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                 if (!o.isVector()) continue;
-                const auto ov = o.asVector();
-                const auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
+                auto ov = o.asVector();
+                auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
+                // CG_CalcEntityLerpPositions (0x4acca0): entities the server moves every frame (TR_INTERPOLATE) are
+                // drawn between the previous and the latest server frame at cg.frameInterpolation (0xf708d0):
+                // origin lerped (0x4acb90), angles by LerpAngle (0x4acc10 → 0x423ee0). TODO(spec): entities with
+                // other trajectory types (evaluated at cg.time) and the anim poses, which still step at 20 Hz.
+                if (auto pv = lerpPrev.find(e->number); pv != lerpPrev.end()) {
+                    for (int k = 0; k < 3; ++k) {
+                        ov[size_t(k)] = pv->second.first[size_t(k)] + (ov[size_t(k)] - pv->second.first[size_t(k)]) * lerpFrac;
+                        const float d = std::remainder(av[size_t(k)] - pv->second.second[size_t(k)], 360.0f);
+                        av[size_t(k)] = pv->second.second[size_t(k)] + d * lerpFrac;
+                    }
+                }
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                 assets::LightGridCoeffs c;
@@ -2459,9 +2474,17 @@ int main(int argc, char** argv) {
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
                 gameClock += std::min(dt, 0.25f) * slowmo;
                 while (gameClock >= 0.05f) {
+                    // The previous server frame's entity placement, for the client interpolation below.
+                    lerpPrev.clear();
+                    for (const auto& e : world->entities()) {
+                        const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
+                        if (o.isVector())
+                            lerpPrev[e->number] = {o.asVector(), a.isVector() ? a.asVector() : script::Vec3{0, 0, 0}};
+                    }
                     world->frame();
                     gameClock -= 0.05f;
                 }
+                lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
                 if (const auto rel = world->takeTurretRelease()) {
                     // Off the turret (0x51b3d0): back where the player got on, in the stance it had (events 0x8c–0x8e).
                     ps.origin = {rel->origin[0], rel->origin[1], rel->origin[2]};
@@ -2505,6 +2528,7 @@ int main(int argc, char** argv) {
                     weaponWritten.clear();
                     prevSelect.clear();
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
+                    lerpPrev.clear();
                     gameClock = 0;
                     // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
                     // original's reset on load is not read).
