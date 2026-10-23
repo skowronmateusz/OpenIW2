@@ -684,6 +684,14 @@ static void animStartDelta(const assets::XAnim* a, float& qz, float& qw, Vec3& t
     }
 }
 
+// Translation of an animation's delta at normalized time t (0x478740 → 0x475810; frame t × (keyCount − 1),
+// docs/spec/xanim.md); zero without a delta.
+static Vec3 animDeltaTrans(const assets::XAnim* a, float t) {
+    if (!a || !a->delta || a->deltaTrans.keys.empty()) return {0, 0, 0};
+    const auto p = assets::sampleTrans(a->deltaTrans, t * float(a->keyCount() - 1), a->keyCount());
+    return {p[0], p[1], p[2]};
+}
+
 // Vehicle methods (registration table, docs/spec/builtins.md 0x513070…0x513ee0).
 void World::registerVehicleBuiltins() {
     // getstartorigin(origin, angles, anim) (0x53be50): origin + the start delta in the frame of angles
@@ -698,6 +706,20 @@ void World::registerVehicleBuiltins() {
         anglesToAxis(ang, f, r, u);
         Vec3 out;
         for (int i = 0; i < 3; ++i) out[size_t(i)] = u[size_t(i)] * t[2] - r[size_t(i)] * t[1] + f[size_t(i)] * t[0] + o[size_t(i)];
+        return Value(out);
+    });
+    // getcycleoriginoffset(angles, anim) (0x53c080): the delta translation from time 0 to time 1 in the frame of
+    // angles (forward, left, up).
+    vm_.registerBuiltin("getcycleoriginoffset", [this](CallContext& c) {
+        if (!std::holds_alternative<script::AnimRef>(c.arg(1).v)) throw std::runtime_error("type is not an animation");
+        const Vec3 ang = c.arg(0).asVector();
+        const assets::XAnim* a = animLib_.anim(std::get<script::AnimRef>(c.arg(1).v).name);
+        const Vec3 t0 = animDeltaTrans(a, 0.0f), t1 = animDeltaTrans(a, 1.0f);
+        const Vec3 d{t1[0] - t0[0], t1[1] - t0[1], t1[2] - t0[2]};
+        Vec3 f, r, u;
+        anglesToAxis(ang, f, r, u);
+        Vec3 out;
+        for (int i = 0; i < 3; ++i) out[size_t(i)] = f[size_t(i)] * d[0] - r[size_t(i)] * d[1] + u[size_t(i)] * d[2];
         return Value(out);
     });
     // getstartangles(origin, angles, anim) (0x53bf80): the start delta's yaw (0x423900: atan2(2zw, 1 − 2z²) for a

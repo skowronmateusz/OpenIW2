@@ -266,7 +266,9 @@ Entity* World::spawnActor(Entity& spawner) {
     a.obj->kind = "actor";
     // Spawned AI keep the spawner's key/values except its targetname; map-start AI (no spawner flag 1) are the
     // placed entity itself, so they keep it. A spawner whose count runs out is removed. (Inferred from scripts
-    // that getent() a spawner by targetname and later getent() the AI by script_noteworthy.)
+    // that getent() a spawner by targetname and later getent() the AI by script_noteworthy, e.g. eldaba
+    // intro_actors_setup; the actor spawn 0x5325ca itself only decrements a positive count, TODO(spec) where the
+    // spent spawner is freed.)
     const Value flags = spawner.obj->get("spawnflags");
     const bool placed = !(flags.isInt() && (flags.asInt() & 1));
     for (const auto& [k, v] : spawner.obj->fields)
@@ -573,8 +575,37 @@ bool World::submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) con
     return true;
 }
 
-// Fires "trigger" on triggers the player is touching (inferred behaviour: every server frame while touching;
-// trigger_once is removed after it fires). Player box: (-15,-15,0)-(15,15,70) around the origin.
+// SV_EntityContact (0x447830): does the box absmin..absmax touch trigger `e`? trigger_radius (shape flags 0x11 at
+// ent+0xa2, spawn 0x528ee0: mins (-radius, -radius, 0), maxs (radius, radius, height)) is a vertical cylinder: the
+// box must reach above the base and below the top, and the box centre must lie within radius + half the box width
+// (x) of the axis. Brush triggers: a zero-length trace of the box against the brush model at the entity's origin and
+// angles (CM_TransformedBoxTrace 0x417c20, mask -1) that starts solid.
+// TODO(spec): trigger_disk (flag 0x20, spawn 0x529070 not decoded): 0x447830 then touches when the centre distance is
+// at least radius + half width - 64; only AI-only disks (spawnflags 8) exist in the SP maps.
+bool World::triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax) {
+    const Value ov = e.obj->get("origin");
+    const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+    if (e.classname == "trigger_radius") {
+        const float r = e.obj->get("radius").isNumber() ? e.obj->get("radius").asFloat() : 0.0f;
+        const float h = e.obj->get("height").isNumber() ? e.obj->get("height").asFloat() : 0.0f;
+        if (!(absmax[2] > o[2]) || !(o[2] + h > absmin[2])) return false;
+        const float cx = (absmin[0] + absmax[0]) * 0.5f, cy = (absmin[1] + absmax[1]) * 0.5f;
+        const float rr = absmax[0] - cx + r, dx = cx - o[0], dy = cy - o[1];
+        return dx * dx + dy * dy < rr * rr;
+    }
+    const Value m = e.obj->get("model");
+    if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') return false;
+    const int model = std::atoi(m.asString().c_str() + 1);
+    const Value av = e.obj->get("angles");
+    const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+    return collision_->traceModel(model, o, a, {0, 0, 0}, {0, 0, 0}, absmin, absmax, 0xffffffffu).startSolid;
+}
+
+// G_TouchTriggers for the player (0x4e7320): the entities in the player's area whose contents match the client mask
+// 0x40000000 are tested with SV_EntityContact (0x447830) against the player's absolute box, and their touch function
+// runs. Trigger contents (0x528dc0): 0x40000000 unless spawnflags & 8, so those triggers never fire for the player.
+// Inferred: every server frame while touching; trigger_once is removed after it fires. Player box: (-15,-15,0)-(15,15,70)
+// around the origin (TODO(spec): the stance-dependent r.maxs).
 void World::runTriggers() {
     if (!player_) return;
     const Value po = player_->obj->get("origin");
@@ -585,23 +616,12 @@ void World::runTriggers() {
     for (const auto& e : entities_) {
         if (e->obj->removed || e->isSpawner || !startsWith(e->classname, "trigger_")) continue;
         if (e->classname == "trigger_damage" || e->classname == "trigger_lookat" || e->classname == "trigger_use" ||
-            e->classname == "trigger_use_touch")
+            e->classname == "trigger_use_touch" || e->classname == "trigger_disk")
             continue;
         if (e->obj->get("$disabled").truthy()) continue;
-        bool touching = false;
-        if (e->classname == "trigger_radius") {
-            const Vec3 o = e->obj->get("origin").asVector();
-            const float r = e->obj->get("radius").isDefined() ? e->obj->get("radius").asFloat() : 0.0f;
-            const float h = e->obj->get("height").isDefined() ? e->obj->get("height").asFloat() : 0.0f;
-            const float dx = std::max({o[0] - pmax[0], pmin[0] - o[0], 0.0f}), dy = std::max({o[1] - pmax[1], pmin[1] - o[1], 0.0f});
-            touching = dx * dx + dy * dy <= r * r && pmax[2] >= o[2] && pmin[2] <= o[2] + h;
-        } else {
-            Vec3 mn, mx;
-            const Value m = e->obj->get("model");
-            if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) continue;
-            touching = pmin[0] <= mx[0] && pmax[0] >= mn[0] && pmin[1] <= mx[1] && pmax[1] >= mn[1] && pmin[2] <= mx[2] && pmax[2] >= mn[2];
-        }
-        if (touching) fired.push_back(e.get());
+        const Value sf = e->obj->get("spawnflags");
+        if (sf.isNumber() && (sf.asInt() & 8)) continue;
+        if (triggerContact(*e, pmin, pmax)) fired.push_back(e.get());
     }
     for (Entity* e : fired) {
         if (e->obj->removed) continue;

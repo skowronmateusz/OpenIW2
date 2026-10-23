@@ -274,6 +274,7 @@ private:
     void registerBuiltins();
     void registerMissingStubs();
     void runTriggers();
+    bool triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax);
     void useAnimTree(Entity& e, const std::string& tree);
     void registerAnimBuiltins();
     void thinkActors();

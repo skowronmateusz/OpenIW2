@@ -134,7 +134,8 @@ void World::registerCampaignBuiltins() {
     vm_.registerBuiltin("missionsuccess", [change](CallContext& c) { return change(c, true); });
     // TODO(spec): the original shows the failure screen and waits for the player (opendeadscreen); OpenIW2
     // restarts the level.
-    vm_.registerBuiltin("missionfailed", [this](CallContext&) {
+    vm_.registerBuiltin("missionfailed", [this](CallContext& c) {
+        print("missionfailed at " + std::to_string(timeMs_) + " ms from" + vm_.backtrace(c.thread));
         levelChange_ = {true, true, mapName_, false, timeMs_ + 3000};
         return Value();
     });

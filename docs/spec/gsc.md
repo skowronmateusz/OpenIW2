@@ -14,7 +14,7 @@ compiler (in the executable) has not been analyzed yet.
 
 `{ … }`, `expr;`, `if (c) s [else s]`, `while (c) s`, `for (init; cond; step) s` (any part may be empty),
 `switch (e) { case v: … default: … }`, `break;`, `continue;`, `return [e];`, `wait e;`,
-`waittillframeend;`, `breakpoint;`, and developer blocks `/# … #/` (dev builds only, inferred).
+`waittillframeend;`, `breakpoint;`, and developer blocks `/# … #/` (compiled only when the bool dvar `developer_script`, default 0, is set: registration 0x42df9d, lexer 0x457820).
 
 ## Expressions
 
