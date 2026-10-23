@@ -1639,6 +1639,13 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("deadscreen"))
             for (const auto& it : m->items)
                 if (it->name == "quote") deadQuoteItem = it.get();
+        // The mantle hint item (menu "MantleHint", ownerdraw CG_MANTLE_HINT 80) and whether pmove offers a mantle
+        // (ps mantle flags & 8).
+        const ui::Item* mantleHintItem = nullptr;
+        if (const ui::Menu* m = hudMenus.find("MantleHint"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") mantleHintItem = it.get();
+        bool mantleHint = false;
         auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
                            const uint8_t rgba[4], float alignX, float alignY) {
             // alignX/alignY: 0 = left/top, 0.5 = centre, 1 = right/bottom of the text box at (x, y).
@@ -1771,6 +1778,39 @@ int main(int argc, char** argv) {
                         hudText(out, t ? *t : m.text, float(w) * 0.5f, my, 0.75f * sc, *f, white, 0.5f, 0);
                         my += 18 * sc;
                     }
+            }
+            // Mantle hint (ownerdraw CG_MANTLE_HINT, 0x4a9f90): PLATFORM_MANTLE with &&1 = the key bound to +gostand (else
+            // +moveup, 0x4cdbf0), then the hint_mantle icon right of it; both centred on the item rect's x. The rect is
+            // the menu's "0 130 40 40" with HORIZONTAL_ALIGN_CENTER / VERTICAL_ALIGN_CENTER: (320, 370) virtual, 40×40.
+            // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
+            // (that x + text width, rect.y − rect.h/2). TODO(spec): ITEM_TEXTSTYLE_SHADOWED, the dvars it also tests.
+            if (world && mantleHint && mantleHintItem) {
+                const float ts = mantleHintItem->textScale;
+                const float fs = ts * float(h) / 480.0f;
+                const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
+                const std::string* t = loc.find("PLATFORM_MANTLE");
+                std::string text = t ? *t : "PLATFORM_MANTLE";
+                auto keys = input.keysFor("+gostand");
+                if (keys.empty()) keys = input.keysFor("+moveup");
+                if (const auto at = text.find("&&1"); at != std::string::npos)
+                    text = text.substr(0, at) + (keys.empty() ? std::string() : keys.front()) + text.substr(at + 3);
+                if (f) {
+                    const float gs = ts * 48.0f / float(f->pixelHeight);
+                    float tw = 0;
+                    for (unsigned char ch : text)
+                        if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                    const float textH = float(int(ts * 48.0f));
+                    const float rx = 320.0f, ry = 370.0f, rw = 40.0f, rh = 40.0f;
+                    const float x0 = rx - (tw + rw) * 0.5f;
+                    const uint8_t white[4] = {255, 255, 255, 255};
+                    hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f);
+                    Quad2D q{left43 + (x0 + tw) * sc, (ry - rh * 0.5f) * sc, 0, 0};
+                    q.x1 = q.x0 + rw * sc;
+                    q.y1 = q.y0 + rh * sc;
+                    std::memcpy(q.rgba, white, 4);
+                    q.texture = materialTexture("hint_mantle");
+                    out.push_back(q);
+                }
             }
             // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
             // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
@@ -1961,6 +2001,8 @@ int main(int argc, char** argv) {
         std::array<game::Vec3, 3> prevBody{};
         bool havePrevBody = false;
         const game::MoveParams mp;
+        game::MantleAnims mantleAnims;
+        for (int i = 1; i < 11; ++i) mantleAnims.anims[size_t(i)] = viewAnim(vfs, game::mantleAnimName(i));
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
@@ -2080,6 +2122,7 @@ int main(int argc, char** argv) {
                 // actors) like G_Trace in the original pmove (0x507b00 → 0x4db7f0 → 0x44bf00), skipping itself.
                 game::MoveParams pmp = mp;
                 if (world && world->player()) pmp.passEntity = world->player()->number;
+                pmp.mantle = &mantleAnims;
                 // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
                 const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision;
@@ -2087,6 +2130,8 @@ int main(int argc, char** argv) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
                     game::RecordedMove rec{ps, {}, in, step, pmp, pcw.entityClips()};
                     game::playerMove(pcw, ps, in, step, pmp);
+                    // Mantle stance events (0x8d crouch, 0x8c stand) set the client stance.
+                    if (ps.stanceEvent >= 0) input.setStance(ps.stanceEvent);
                     rec.after = ps;
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
@@ -2101,6 +2146,8 @@ int main(int argc, char** argv) {
                             std::cout << "player fell out of the world; wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
                     }
                 }
+                mantleHint = (ps.mantleFlags & 8) != 0;
+                cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
