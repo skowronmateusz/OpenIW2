@@ -2,6 +2,7 @@
 // (docs/spec/turrets.md). The turret think that picks targets and fires for AI gunners is not implemented.
 #include "game/world.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -26,6 +27,22 @@ float spawnOrWeapon(const ObjectPtr& o, const char* key, const std::map<std::str
 }
 
 } // namespace
+
+// Bone controls of a turret model, the same on the server (0x51d740, entity type callback +0x10) and in cgame
+// (0x4ab0d0): tag_aim and tag_aim_animated turn by (pitch − e+0x78, yaw, 0), tag_flash by (e+0x78, 0, 0). e+0x78 is
+// cleared by every think (0x51d279) and only set by the turn (0x51b7a3) with turret flag 0x200, which nothing in
+// OpenIW2 sets yet, so it is 0 here.
+std::vector<std::pair<int, assets::Quat>> World::turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw) {
+    std::vector<std::pair<int, assets::Quat>> out;
+    const float drop = 0.0f;
+    for (size_t i = 0; i < parts.bones.size(); ++i) {
+        std::string n = parts.bones[i].name;
+        for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+        if (n == "tag_aim" || n == "tag_aim_animated") out.push_back({int(i), assets::anglesQuat(pitch - drop, yaw, 0)});
+        else if (n == "tag_flash") out.push_back({int(i), assets::anglesQuat(drop, 0, 0)});
+    }
+    return out;
+}
 
 // Turret setup (0x51dd80): weapon from `weaponinfo`; arcs from the rightarc/leftarc/toparc/bottomarc keys or the
 // weapon's rightArc/leftArc/topArc/bottomArc. Right and top arcs are negated and kept ≤ 0, left and bottom ≥ 0.
@@ -54,6 +71,8 @@ void World::initTurret(Entity& e, const std::string& weaponInfo) {
     const float range = spawnOrWeapon(e.obj, "maxrange", w, "maxrange");
     t->maxRangeSq = range <= 0.0f ? 3.4028235e38f : range * range;
     t->playerSpread = spawnOrWeapon(e.obj, "playerspread", w, "playerspread");
+    // stance (0x51df5d: weapondef +0x8c, field table 0x5a8e40 "stance", enum 0x5a7e64 stand / duck / prone).
+    if (auto it = w->find("stance"); it != w->end()) t->stance = it->second == "prone" ? 2 : it->second == "duck" ? 1 : 0;
     e.turret = std::move(t);
 }
 

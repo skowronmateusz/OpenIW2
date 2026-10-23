@@ -144,6 +144,35 @@ XPose bindPose(const XModelParts& parts) {
     return p;
 }
 
+XPose controlledPose(const XModelParts& parts, const std::vector<std::pair<int, Quat>>& controls) {
+    XPose p = bindPose(parts);
+    if (controls.empty()) return p;
+    for (size_t i = 0; i < parts.bones.size(); ++i) {
+        const XBone& b = parts.bones[i];
+        Quat local = b.localRotation;
+        bool controlled = false;
+        for (const auto& c : controls)
+            if (c.first == int(i)) { local = multiply(local, c.second); controlled = true; }
+        if (b.parent < 0) {
+            if (controlled) p.rotation[i] = local;
+            continue;
+        }
+        const size_t pi = size_t(b.parent);
+        p.rotation[i] = multiply(p.rotation[pi], local);
+        const auto o = rotate(p.rotation[pi], b.localOffset);
+        for (int a = 0; a < 3; ++a) p.position[i][size_t(a)] = p.position[pi][size_t(a)] + o[size_t(a)];
+    }
+    return p;
+}
+
+Quat anglesQuat(float pitch, float yaw, float roll) {
+    const float k = 0.00872664626f; // degrees to half-angle radians (0x591fa4)
+    const float sy = std::sin(yaw * k), cy = std::cos(yaw * k), sp = std::sin(pitch * k), cp = std::cos(pitch * k),
+                sr = std::sin(roll * k), cr = std::cos(roll * k);
+    const float a = -(sy * sp), b = cy * sp, c = cp * sy, d = cp * cy;
+    return {cr * a + sr * d, cr * b + sr * c, cr * c - sr * b, cr * d - sr * a};
+}
+
 void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& position, std::array<float, 3>& normal) {
     position = {0, 0, 0};
     for (const auto& inf : v.influences) {
