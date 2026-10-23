@@ -305,6 +305,7 @@ void World::start() {
     // maps/_load.gsc sets level.script from getcvar("mapname"), so the cvar must name the running map before the
     // level script starts (docs/spec/ui.md, intro screen).
     cvars["mapname"] = mapName_;
+    cvars["g_gameskill"] = "1"; // registered at 0x446b33 with default 1 (Regular), range 0..3
     spawnMapEntities();
     linkVehicleNodes();
     initMapTurrets();

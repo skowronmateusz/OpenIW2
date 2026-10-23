@@ -536,6 +536,18 @@ int main(int argc, char** argv) {
             pweapon.findOffhand = [&](const std::string& cls) { return world.playerOffhandFor(cls); };
         }
         for (int f = 0; f < seconds * 20; ++f) {
+            // IW2_HEALTH_LOG=1: the player's health and the low-health overlay hud element's alpha every 0.5 s.
+            if (std::getenv("IW2_HEALTH_LOG") && world.player() && f % 10 == 0) {
+                float overlayAlpha = -1;
+                for (const auto& h : world.hudElems())
+                    if (h->get("$shader").toString() == "overlay_low_health") overlayAlpha = h->get("alpha").isNumber() ? h->get("alpha").asFloat() : -2;
+                const auto lvl = world.vm().level();
+                const auto fl = lvl->get("flag");
+                std::printf("t=%.1f dmgEvent %d yaw %d health %s overlay alpha %g cutoff %s gameskill %s flag %s\n", f * 0.05f,
+                            world.playerDamageFeedback().event, world.playerDamageFeedback().yaw, world.player()->obj->get("health").toString().c_str(), overlayAlpha,
+                            lvl->get("healthoverlaycutoff").toString().c_str(), lvl->get("gameskill").toString().c_str(),
+                            fl.isObject() ? fl.asObject()->get("player_has_red_flashing_overlay").toString().c_str() : "?");
+            }
             if (controls && world.player()) {
                 // A key script: weapnext at 1 s, melee at 3 s, frag held 5–6 s, crouch at 8 s, stand up at 9 s.
                 const std::map<int, std::pair<const char*, bool>> keys{
