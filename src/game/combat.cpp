@@ -151,6 +151,18 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // Debug: IW2_DMG_DEBUG=1 prints every damage credited to the player (friendly-fire mission fails).
     if (attacker && attacker->isPlayer && std::getenv("IW2_DMG_DEBUG"))
         print("DBG player damage " + std::to_string(amount) + " to " + target.classname + " (" + mod + ") at " + std::to_string(timeMs_));
+    // G_Damage (0x52835c): a client accumulates the damage; with a direction the direction is kept, else the
+    // target's origin and the world flag (P_DamageFeedback turns that into 255/255).
+    if (target.isPlayer) {
+        damageBlood_ += amount;
+        if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0) {
+            damageFrom_ = dir;
+            damageFromWorld_ = false;
+        } else {
+            damageFrom_ = target.obj->get("origin").asVector();
+            damageFromWorld_ = true;
+        }
+    }
     const int health = target.obj->get("health").asInt() - amount;
     target.obj->set("health", Value(int32_t(health)));
     target.obj->set("damagetaken", Value(int32_t(amount)));
@@ -582,6 +594,34 @@ float World::fxVisibility(const Vec3& start, const Vec3& end) const {
         if (dx * dx + dy * dy + dz * dz < b.radiusSq) vis *= b.visibility;
     }
     return vis;
+}
+
+} // namespace iw2::game
+
+namespace iw2::game {
+
+void World::damageFeedback() {
+    if (!player_ || !isAlive(*player_)) return;
+    damageFeedback_.count = 0;
+    const Value mh = player_->obj->get("maxhealth");
+    const int maxHealth = mh.isNumber() ? mh.asInt() : 100;
+    if (damageBlood_ <= 0 || maxHealth <= 0) return;
+    const int count = std::min(127, damageBlood_ * 100 / maxHealth);
+    if (damageFromWorld_) {
+        damageFeedback_.pitch = damageFeedback_.yaw = 0xff;
+        damageFromWorld_ = false;
+    } else {
+        const Vec3& d = damageFrom_; // vectoangles (0x421b30)
+        float yaw = std::atan2(d[1], d[0]) * 180.0f / float(M_PI);
+        if (yaw < 0) yaw += 360.0f;
+        float pitch = std::atan2(d[2], std::sqrt(d[0] * d[0] + d[1] * d[1])) * 180.0f / float(M_PI);
+        pitch = pitch > 0 ? 360.0f - pitch : -pitch;
+        damageFeedback_.pitch = int(pitch * 0.7111111283302307f);
+        damageFeedback_.yaw = int(yaw * 0.7111111283302307f);
+    }
+    damageFeedback_.count = count;
+    ++damageFeedback_.event;
+    damageBlood_ = 0;
 }
 
 } // namespace iw2::game

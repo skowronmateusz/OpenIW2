@@ -345,6 +345,7 @@ void World::thinkPlayerTurret() {
 // 0x9bef24 that gates the press is treated as set.
 void World::runPlayerUse() {
     if (!player_) return;
+    damageFeedback(); // P_DamageFeedback (0x4e7040) in the client think
     const uint32_t pressed = playerCmd_.buttons & ~playerOldButtons_;
     playerOldButtons_ = playerCmd_.buttons;
     const bool binoculars = playerCmd_.weaponState >= 0x11 && playerCmd_.weaponState <= 0x16;

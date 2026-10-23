@@ -249,6 +249,11 @@ public:
     const PlayerUseHint& playerUseHint() const { return playerUseHint_; }
     // After the player's death: no view weapon (ent+2 = 0, cgame 0x4b6a0a) and the dead view yaw (ps+0x10c).
     bool playerDeadWeaponless() const { return playerDeadWeaponless_; }
+    // P_DamageFeedback (0x4e7040): damageEvent (ps+0xf8) counts damage frames; pitch/yaw (ps+0x100/+0xfc) are the
+    // damage direction's angles · 256/360 (255/255 for world damage), count (ps+0x104) = min(127, blood · 100 /
+    // max health). The aim spread scale also grows by count (ps+0x5b0).
+    struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
+    const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
@@ -612,6 +617,11 @@ private:
     float viewClampBase_[2] = {0, 0}, viewClampRange_[2] = {0, 0}; // ps+0xe8 / +0xec, +0xf0 / +0xf4
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
+    DamageFeedback damageFeedback_;
+    int damageBlood_ = 0;                // client +0x8658
+    Vec3 damageFrom_{};                  // +0x865c
+    bool damageFromWorld_ = false;       // +0x8668
+    void damageFeedback();
     std::optional<float> playerDeadYaw_; // ps+0x10c from LookAtKiller
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;

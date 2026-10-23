@@ -907,6 +907,8 @@ struct Quad2D {
     uint8_t rgba[4] = {255, 255, 255, 255};
     int texture = 0; // index into Scene::textures
     int rot = 0;     // quarter turns of the image, clockwise on screen (0x4b0310 with 90 · rot degrees)
+    bool free = false; // corners qx/qy (screen pixels) in vertex order instead of the x0..y1 box
+    float qx[4] = {}, qy[4] = {};
 };
 
 struct Renderer {
@@ -1079,7 +1081,9 @@ struct Renderer {
             verts.reserve(nq * 4);
             for (size_t i = 0; i < nq; ++i) {
                 const Quad2D& q = overlay[i];
-                const float xs[4] = {q.x0, q.x1, q.x1, q.x0}, ys[4] = {q.y0, q.y0, q.y1, q.y1};
+                float xs[4] = {q.x0, q.x1, q.x1, q.x0}, ys[4] = {q.y0, q.y0, q.y1, q.y1};
+                if (q.free)
+                    for (int k = 0; k < 4; ++k) { xs[k] = q.qx[k]; ys[k] = q.qy[k]; }
                 const float s4[4] = {q.s0, q.s1, q.s1, q.s0}, t4[4] = {q.t0, q.t0, q.t1, q.t1};
                 // 0x4b0310: the corner the image's corner i lands on is i + rot (TL, TR, BR, BL order).
                 float ss[4], ts[4];
@@ -1676,6 +1680,10 @@ int main(int argc, char** argv) {
                 if (it->name == "chRect") mantleHintItem = it.get();
         bool mantleHint = false;
         float hudAimSpread = 255.0f, hudViewHeight = 60.0f; // ps+0x5b0 and the view height for the crosshair
+        // Damage direction icons (cgame 0x4ba2a0 → 8 slots at 0xf79704: start, duration, yaw).
+        struct DamageIcon { int64_t start = -1000000; int duration = 0; float yaw = 0; };
+        std::array<DamageIcon, 8> damageIcons{};
+        int lastDamageEvent = 0;
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
             for (const auto& it : m->items)
@@ -1918,6 +1926,34 @@ int main(int argc, char** argv) {
                     q.y1 = q.y0 + rh * sc;
                     std::memcpy(q.rgba, white, 4);
                     q.texture = materialTexture(icon);
+                    out.push_back(q);
+                }
+            }
+            // Damage direction icons (0x4bdcb0): for each slot alive (0 < elapsed < cg_hudDamageIconTime 2000), the
+            // material hit_direction as a quad of cg_hudDamageIconWidth 128 × cg_hudDamageIconHeight 64 screen pixels,
+            // cg_hudDamageIconOffset 128 below the screen centre, turned clockwise by view yaw − icon yaw about the
+            // centre (0x4b0490); alpha 2 − 2 · elapsed / duration, at most 1. Not under a scope overlay
+            // (cg_hudDamageIconInScope 0). TODO(spec): the corner-to-UV order of the gfx quad draw (0x617b68) is
+            // taken as (0,0) (1,0) (1,1) (0,1).
+            if (world && !(scopeAlpha() > 0)) {
+                const int64_t nowMs = world->timeMs();
+                const float W = 128.0f, H = 64.0f, O = 128.0f;
+                const float px[4] = {W * 0.5f, -W * 0.5f, -W * 0.5f, W * 0.5f}, py[4] = {O + H, O + H, O, O};
+                const float cxs = left43 + 320.0f * sc, cys = 240.0f * sc;
+                for (const auto& di : damageIcons) {
+                    const int64_t el = nowMs - di.start;
+                    if (!(el > 0 && el < di.duration)) continue;
+                    float a = 2.0f - float(el + el) / float(di.duration);
+                    if (a - 1.0f >= 0) a = 1.0f;
+                    const float ang = (c.yaw - di.yaw) * float(M_PI) / 180.0f, cs = std::cos(ang), sn = std::sin(ang);
+                    Quad2D q{0, 0, 0, 0};
+                    q.free = true;
+                    for (int k = 0; k < 4; ++k) {
+                        q.qx[k] = cs * px[k] + cxs - sn * py[k];
+                        q.qy[k] = cs * py[k] + sn * px[k] + cys;
+                    }
+                    q.rgba[3] = uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f);
+                    q.texture = materialTexture("hit_direction");
                     out.push_back(q);
                 }
             }
@@ -2499,6 +2535,7 @@ int main(int argc, char** argv) {
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
+                    lastDamageEvent = 0;
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                         if (o.isVector())
@@ -2508,6 +2545,22 @@ int main(int argc, char** argv) {
                     gameClock -= 0.05f;
                 }
                 lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
+                // Damage feedback (cgame 0x4ba2a0 on a new damageEvent): the aim spread scale grows by the count; unless
+                // the damage came from the world (pitch and yaw 255), the oldest of 8 icon slots gets the time,
+                // cg_hudDamageIconTime and yaw = yaw byte / 255 · 360 + (rand / 32768 − 0.5) · 20, through a short
+                // angle. TODO(spec): the view kick (0xf7979c / 0xf797a0) and the "Health" menu flag.
+                if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
+                    lastDamageEvent = df.event;
+                    ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
+                    if (!(df.pitch == 0xff && df.yaw == 0xff)) {
+                        size_t slot = 0;
+                        for (size_t k = 1; k < damageIcons.size(); ++k)
+                            if (damageIcons[k].start < damageIcons[slot].start) slot = k;
+                        const float y = float(df.yaw) / 255.0f * 360.0f + (float(std::rand() % 32768) / 32768.0f - 0.5f) * 20.0f;
+                        const int sh = int(y * (65536.0f / 360.0f)) & 0xffff;
+                        damageIcons[slot] = {world->timeMs(), 2000, float(sh) * (360.0f / 65536.0f)};
+                    }
+                }
                 if (const auto rel = world->takeTurretRelease()) {
                     // Off the turret (0x51b3d0): back where the player got on, in the stance it had (events 0x8c–0x8e).
                     ps.origin = {rel->origin[0], rel->origin[1], rel->origin[2]};
