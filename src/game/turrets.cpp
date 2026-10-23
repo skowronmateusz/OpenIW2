@@ -173,6 +173,25 @@ void World::registerTurretBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("maketurretusable", [this](CallContext& c) { turretOf(c.self).flags |= 0x1000u; return Value(); });
+    // setcursorhint (0x4f0c50): HINT_NONE 1, HINT_ACTIVATE 2, HINT_HEALTH 3, HINT_FRIENDLY 4 (table 0x5a965c) into
+    // +0x98. TODO(spec): HINT_INHERIT (trigger_use only) and the weapon-name hints.
+    vm_.registerBuiltin("setcursorhint", [](CallContext& c) {
+        static const char* const kHints[] = {"HINT_NONE", "HINT_ACTIVATE", "HINT_HEALTH", "HINT_FRIENDLY"};
+        const std::string h = c.arg(0).toString();
+        for (int i = 0; i < 4; ++i)
+            if (h == kHints[i]) c.self.asObject()->set("$cursorhint", Value(int32_t(i + 1)));
+        return Value();
+    });
+    // sethintstring (0x4f0ec0): trigger_use / trigger_use_touch (+3) or actors (+0x2124); "" clears it.
+    // TODO(spec): the extra parameters appended to the string (0x4eb9b0 "Hint String").
+    vm_.registerBuiltin("sethintstring", [](CallContext& c) {
+        const Value v = c.arg(0);
+        std::string key;
+        if (std::holds_alternative<script::LocalizedString>(v.v)) key = std::get<script::LocalizedString>(v.v).key;
+        else key = v.toString();
+        c.self.asObject()->set("$hintstring", key.empty() ? Value() : Value(key));
+        return Value();
+    });
     vm_.registerBuiltin("maketurretunusable", [this](CallContext& c) { turretOf(c.self).flags &= ~0x1000u; return Value(); });
     // Arcs (0x4f8440…0x4f85f0): right and top are stored negated and clamped to ≤ 0, left and bottom to ≥ 0.
     vm_.registerBuiltin("setrightarc", [this](CallContext& c) {

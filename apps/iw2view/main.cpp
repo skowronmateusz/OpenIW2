@@ -1646,6 +1646,10 @@ int main(int argc, char** argv) {
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
         bool mantleHint = false;
+        const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
+        if (const ui::Menu* m = hudMenus.find("Cursorhints"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") cursorHintItem = it.get();
         // Scope overlay (cgame 0x4bc8a0): the weapon has an adsOverlayShader or adsOverlayReticle and the aim fraction
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
@@ -1831,6 +1835,62 @@ int main(int argc, char** argv) {
                     if (b < sh) quad(l, b, r, sh, 0, 0, 1, 0);
                 }
             }
+            // Cursor hint (ownerdraw CG_CURSORHINT, 0x4a9b50) for what the use key would use. Icon (0xf5b4a8 by hint,
+            // registered at 0x4a2ca6…): 2 gfx/icons/hint_usable, 3 hint_health, 4 hint_friendly, a weapon hint the
+            // weapon's hudIcon (else hint_usable, 0x4b3cb7), twice as wide with wideListIcon. Text: the hint string
+            // localized ("Hint String", 0x4a9ac0) with &&1 = the key bound to +activate (else KEY_USE); weapon hints
+            // only for turret-class weapons. Rect: menu "Cursorhints" "0 70 40 40" centred → (320, 310) virtual.
+            // With text: x = rect.x − (icon width + text width)/2, text baseline rect.y + text height/2, icon right of
+            // it at y = rect.y − h/2; without: icon at x = rect.x − icon width/2, y = rect.y. cg_cursorHints default
+            // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). TODO(spec): the fade (cg_hintFadeTime, 0x4b0900), the
+            // weapon pickup text (0x4a99b0), HINT_HEALTH's key text, the text shadow.
+            if (world && cursorHintItem && !world->playerOnTurret()) {
+                const auto& uh = world->playerUseHint();
+                std::string icon;
+                bool wide = false;
+                std::string text = uh.text;
+                if (!uh.weapon.empty()) {
+                    const auto* wd = world->weapon(uh.weapon);
+                    icon = wd && wd->count("hudicon") && !wd->at("hudicon").empty() ? wd->at("hudicon") : "gfx/icons/hint_usable";
+                    wide = wd && wd->count("widelisticon") && wd->at("widelisticon") != "0";
+                    if (!(wd && wd->count("weaponclass") && wd->at("weaponclass") == "turret")) text.clear();
+                } else if (uh.hint == 2) icon = "gfx/icons/hint_usable";
+                else if (uh.hint == 3) icon = "hint_health";
+                else if (uh.hint == 4) icon = "hint_friendly";
+                if (!icon.empty()) {
+                    const float rx = 320.0f, ry = 310.0f, rw = 40.0f, rh = 40.0f;
+                    const float iw = (wide ? 2.0f : 1.0f) * rw;
+                    const uint8_t white[4] = {255, 255, 255, 255};
+                    float ix = rx - iw * 0.5f, iy = ry;
+                    if (!text.empty()) {
+                        const std::string* t = loc.find(text);
+                        text = t ? *t : text;
+                        auto keys = input.keysFor("+activate");
+                        std::string key = keys.empty() ? std::string() : keys.front();
+                        if (key.empty()) { const std::string* k = loc.find("KEY_USE"); key = k ? *k : "KEY_USE"; }
+                        if (const auto at = text.find("&&1"); at != std::string::npos) text = text.substr(0, at) + key + text.substr(at + 3);
+                        const float ts = cursorHintItem->textScale;
+                        const float fs = ts * float(h) / 480.0f;
+                        if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                            const float gs = ts * 48.0f / float(f->pixelHeight);
+                            float tw = 0;
+                            for (unsigned char ch : text)
+                                if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                            const float textH = float(int(ts * 48.0f));
+                            const float x0 = rx - (iw + tw) * 0.5f;
+                            hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f);
+                            ix = x0 + tw;
+                            iy = ry - rh * 0.5f;
+                        }
+                    }
+                    Quad2D q{left43 + ix * sc, iy * sc, 0, 0};
+                    q.x1 = q.x0 + iw * sc;
+                    q.y1 = q.y0 + rh * sc;
+                    std::memcpy(q.rgba, white, 4);
+                    q.texture = materialTexture(icon);
+                    out.push_back(q);
+                }
+            }
             // Mantle hint (ownerdraw CG_MANTLE_HINT, 0x4a9f90): PLATFORM_MANTLE with &&1 = the key bound to +gostand (else
             // +moveup, 0x4cdbf0), then the hint_mantle icon right of it; both centred on the item rect's x. The rect is
             // the menu's "0 130 40 40" with HORIZONTAL_ALIGN_CENTER / VERTICAL_ALIGN_CENTER: (320, 370) virtual, 40×40.
@@ -1924,8 +1984,34 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // Crosshair: four bars, separated by the weapon's hip spread (inferred look).
-            if (pweapon.equipped()) {
+            // Crosshair (cgame 0x4bd760). On a turret (eFlags & 0x300) only the turret's: with cg_drawTurretCrosshair (1)
+            // and cg_crosshairAlpha (1) ≥ 0.01, its weapon's reticleCenter, reticleCenterSize virtual units square,
+            // centred (0x4bcef0). In a vehicle the vehicle's (0x4bd000, not drawn yet). Otherwise the hand weapon's
+            // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
+            // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
+            // TODO(spec): the friend / enemy colours (ps flags 0x100000 / 0x200000), the reticleCenter +
+            // four reticleSide drawing with the spread (0x4bd2c0, 0x4bd520) and the sway offset (0x4bc6e0).
+            const bool onTurretHud = world && world->playerOnTurret();
+            const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
+            if (onTurretHud) {
+                const std::string tw = world->playerTurretWeapon();
+                const auto* td = tw.empty() ? nullptr : world->weapon(tw);
+                const std::string reticle = td && td->count("reticlecenter") ? td->at("reticlecenter") : std::string();
+                const float size = td && td->count("reticlecentersize") ? float(std::atof(td->at("reticlecentersize").c_str())) : 0.0f;
+                if (!reticle.empty() && size > 0) {
+                    Quad2D q{left43 + (320.0f - size * 0.5f) * sc, (240.0f - size * 0.5f) * sc, 0, 0};
+                    q.x1 = q.x0 + size * sc;
+                    q.y1 = q.y0 + size * sc;
+                    q.texture = materialTexture(reticle);
+                    out.push_back(q);
+                }
+            }
+            const int wst = pweapon.stateNumber();
+            const float crossAlpha = 1.0f - (world ? scopeAlpha() : 0.0f);
+            const bool drawCross = !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
+                                   wst != 1 && wst != 2 && wst != 5 && wst != 10 && wst != 11;
+            // Look: four bars, separated by the weapon's hip spread (inferred).
+            if (pweapon.equipped() && drawCross) {
                 float spread = 2.0f;
                 if (const auto* d = world ? world->weapon(pweapon.name()) : nullptr)
                     if (auto it = d->find("hipspreadstandmin"); it != d->end()) spread = std::max(1.0f, float(std::atof(it->second.c_str())));
@@ -1934,10 +2020,13 @@ int main(int argc, char** argv) {
                 const Quad2D bars[4] = {{cx - gap - len, cy - th / 2, cx - gap, cy + th / 2}, {cx + gap, cy - th / 2, cx + gap + len, cy + th / 2},
                                         {cx - th / 2, cy - gap - len, cx + th / 2, cy - gap}, {cx - th / 2, cy + gap, cx + th / 2, cy + gap + len}};
                 for (Quad2D q : bars) {
-                    q.rgba[3] = 200;
+                    q.rgba[3] = uint8_t(200.0f * crossAlpha);
                     out.push_back(q);
                 }
-                // Ammo counter, bottom right of the 4:3 area.
+            }
+            // Ammo counter, bottom right of the 4:3 area. The ammo ownerdraws (0x4a7818 …) special-case only vehicles
+            // (pm_flags 0x20000), not turrets, so the hand weapon's ammo stays on a turret.
+            if (pweapon.equipped()) {
                 if (const assets::Font* f = font("bigfont")) {
                     const uint8_t white[4] = {255, 255, 255, 230};
                     hudText(out, std::to_string(pweapon.clip()) + " | " + std::to_string(pweapon.stock()), left43 + 620 * sc, 460 * sc,

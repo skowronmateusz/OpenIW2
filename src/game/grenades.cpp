@@ -4,7 +4,11 @@
 // pickUpGrenade.
 #include "game/world.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <sstream>
 
 namespace iw2::game {
 
@@ -192,6 +196,31 @@ void World::explodeGrenade(Entity& e) {
     const float radius = weaponFloat(g.weapon, "explosionRadius");
     radiusDamage(at, g.parent, weaponFloat(g.weapon, "explosionInnerDamage"), weaponFloat(g.weapon, "explosionOuterDamage"),
                  radius, nullptr, "MOD_GRENADE_SPLASH");
+    // The explode event (0x526700 → 0x4d8020, EV_GRENADE_EXPLODE 0xbf for projExplosionType grenade): a point trace
+    // 16 down from the grenade (mask 0x811, skipping it) gives the direction (its normal, sent as a dir byte) and the
+    // surface type (surface flags >> 20 & 0x1f; 20 = water when the point is in water, 0x44c840 mask 0x20). The client
+    // (0x4ba8d0 case 0xbf) plays grenade_explode_<surface> (sounds 0xf5b7a4, built by 0x4a27b0 as "%s_%s") and the
+    // impact table's grenade_explode effect for the surface along the direction, then the weapon's own
+    // projExplosionEffect and projExplosionSound. A trace that hits nothing has a zero normal, which the dir byte
+    // (0x420c30) turns into bytedirs[0] (0x59ab10). TODO(spec): rocket / custom explosion events (0xc0–0xc3).
+    {
+        const TraceResult tr = collision_->trace(at, {at[0], at[1], at[2] - 16.0f}, {0, 0, 0}, {0, 0, 0}, 0x811, e.number);
+        const bool water = collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x20).startSolid;
+        const int surface = water ? 20 : int((tr.surfaceFlags >> 20) & 0x1f);
+        Vec3 dir{tr.normal[0], tr.normal[1], tr.normal[2]};
+        if (tr.fraction == 1.0f) dir = {-0.525731f, 0.0f, 0.850651f};
+        static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                                    "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                                    "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+        if (surface < 23) {
+            startSound(std::string("grenade_explode_") + kSurfaceAlias[surface], &at);
+            const std::string& impact = impactEffect(9, surface);
+            if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
+            if (std::getenv("IW2_GRENADE_DEBUG"))
+                std::printf("grenade %s explodes at (%g %g %g), surface %s, effect %s\n", g.weapon.c_str(), at[0], at[1], at[2],
+                            kSurfaceAlias[surface], impact.c_str());
+        }
+    }
     const std::string fx = weaponField(g.weapon, "projExplosionEffect");
     if (!fx.empty()) fxEvents_.push_back({fx, at, Vec3{0, 0, 1}});
     const std::string snd = weaponField(g.weapon, "projExplosionSound");
@@ -567,6 +596,53 @@ void World::releaseHeldGrenade(Entity& actor) {
     gs.inHand = false;
     gs.holder = nullptr;
     gs.landing = {0, 0, 0};
+}
+
+} // namespace iw2::game
+
+namespace iw2::game {
+
+// 0x4b9090 → 0x4b8f00: every .csv in fx/, then in fx/maps/<map>/, in name order (qsort 0x4b8ee0); each row
+// "impact type,surface,effect" sets that cell, so later files override earlier ones. Type names are the table at
+// 0x56ea58, surface names the surfaceparm table (0x5a0344, "default" for 0).
+const std::string& World::impactEffect(int type, int surface) {
+    static const std::string kNone;
+    if (impactEffects_.empty()) {
+        impactEffects_.resize(11);
+        static const char* const kTypes[] = {"bullet_small_normal", "bullet_small_reflect", "bullet_large_normal", "bullet_large_reflect",
+                                             "shotgun_normal", "shotgun_reflect", "bullet_ap_normal", "bullet_ap_reflect",
+                                             "grenade_bounce", "grenade_explode", "rocket_explode"};
+        static const char* const kSurf[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                            "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                            "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+        for (const std::string dir : {std::string("fx/"), "fx/maps/" + mapName_ + "/"}) {
+            std::vector<std::string> files;
+            for (const auto& f : vfs_.list(dir)) {
+                const std::string rest = f.substr(dir.size());
+                if (rest.find('/') == std::string::npos && rest.size() > 4 && lowerStr(rest.substr(rest.size() - 4)) == ".csv") files.push_back(f);
+            }
+            std::sort(files.begin(), files.end());
+            for (const auto& f : files) {
+                const auto data = vfs_.read(f);
+                if (!data) continue;
+                std::istringstream in(std::string(data->begin(), data->end()));
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    std::vector<std::string> col;
+                    std::stringstream ls(line);
+                    for (std::string c; std::getline(ls, c, ',');) col.push_back(c);
+                    if (col.size() < 2) continue;
+                    const auto t = std::find_if(std::begin(kTypes), std::end(kTypes), [&](const char* n) { return lowerStr(col[0]) == n; });
+                    const auto su = std::find_if(std::begin(kSurf), std::end(kSurf), [&](const char* n) { return lowerStr(col[1]) == n; });
+                    if (t == std::end(kTypes) || su == std::end(kSurf)) continue;
+                    impactEffects_[size_t(t - std::begin(kTypes))][size_t(su - std::begin(kSurf))] = col.size() > 2 ? col[2] : std::string();
+                }
+            }
+        }
+    }
+    if (type < 0 || type >= 11 || surface < 0 || surface >= 23) return kNone;
+    return impactEffects_[size_t(type)][size_t(surface)];
 }
 
 } // namespace iw2::game

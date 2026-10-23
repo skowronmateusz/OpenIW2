@@ -282,6 +282,38 @@ void World::shootTurret(Entity& t) {
     fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user);
 }
 
+// Fire sounds (0x51b320): the entity's loop sound is cleared; while the fire countdown (+0x6c, set to fireTime · 3 by
+// a shot) runs it is loopFireSoundPlayer (info +0xae) when a client owns the turret and that is set, else
+// loopFireSound (+0xac). The countdown drops by 50; when it ends and stopFireSound (+0xb0) is set the loop stops and
+// stopFireSoundPlayer (+0xb2, client owner, 0x4d8360) or stopFireSound (event 0xb3) plays. Sound fields are set
+// from the weapon at turret setup (0x51df70…0x51e04c). TODO(spec): the loop also ends without a stop sound only
+// when the countdown is re-read next frame (the entity loop sound is rewritten every frame, as here).
+void World::turretFireSound(Entity& t, bool playerOwner) {
+    TurretState& ts = *t.turret;
+    std::string loop;
+    if (ts.fireCountdownMs > 0) {
+        const std::string playerLoop = weaponField(ts.weapon, "loopFireSoundPlayer");
+        loop = playerOwner && !playerLoop.empty() ? playerLoop : weaponField(ts.weapon, "loopFireSound");
+        ts.fireCountdownMs -= 50;
+        const std::string stop = weaponField(ts.weapon, "stopFireSound");
+        if (ts.fireCountdownMs < 1 && !stop.empty()) {
+            loop.clear();
+            const std::string playerStop = weaponField(ts.weapon, "stopFireSoundPlayer");
+            const Vec3 at = t.obj->get("origin").asVector();
+            startSound(playerOwner && !playerStop.empty() ? playerStop : stop, &at);
+        }
+    }
+    if (loop != ts.loopSound) {
+        if (ts.loopHandle > 0) stopSound(ts.loopHandle);
+        ts.loopHandle = -1;
+        ts.loopSound = loop;
+        if (!loop.empty()) {
+            const Vec3 at = t.obj->get("origin").asVector();
+            ts.loopHandle = startSound(loop, &at);
+        }
+    }
+}
+
 // Turret think for one turret (0x51d250).
 void World::thinkTurret(Entity& t) {
     TurretState& ts = *t.turret;
@@ -292,7 +324,7 @@ void World::thinkTurret(Entity& t) {
         owner = nullptr;
     }
     if (owner && owner->isPlayer) return; // the player aims
-    if (ts.fireCountdownMs > 0) ts.fireCountdownMs -= 50; // 0x51b320
+    turretFireSound(t, false);
     const bool ai = ts.flags & 1u, automatic = ts.flags & 2u;
     // Enemy team of the turret team (table {0, 2, 1, 0, 0} in 0x51c400): axis ↔ allies, others none.
     const std::string enemyTeam = ts.team == 1 ? "allies" : ts.team == 2 ? "axis" : "";
