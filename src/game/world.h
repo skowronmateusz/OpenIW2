@@ -610,6 +610,7 @@ private:
     std::vector<UseCandidate> scanUsables(const Vec3& eye, const Vec3& forward);
     Vec3 playerEye();
     void findPlayerUseEntity();
+    void pickUpWeaponItem(Entity& item);
     void usePlayerEntity(Entity& e);
     bool turretUsableByPlayer(Entity& t);
     void playerUseTurret(Entity& t);
