@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 namespace iw2::game {
 
@@ -132,13 +133,48 @@ void World::registerCampaignBuiltins() {
     };
     vm_.registerBuiltin("changelevel", [change](CallContext& c) { return change(c, false); });
     vm_.registerBuiltin("missionsuccess", [change](CallContext& c) { return change(c, true); });
-    // TODO(spec): the original shows the failure screen and waits for the player (opendeadscreen); OpenIW2
-    // restarts the level.
+    // missionfailed() (0x4f4080): when a player entity is in use (0x4d7850 finds the classname 0x1c7f0ac at +0x118)
+    // the death screen opens (0x4e8e10) and 0x1c60fe8 is set, which turns a pending changelevel into
+    // loadgame_continue (0x4d9f90).
     vm_.registerBuiltin("missionfailed", [this](CallContext& c) {
         print("missionfailed at " + std::to_string(timeMs_) + " ms from" + vm_.backtrace(c.thread));
-        levelChange_ = {true, true, mapName_, false, timeMs_ + 3000};
+        if (player_ && !player_->obj->removed) {
+            openDeathScreen();
+            if (levelChange_.pending && !levelChange_.failed) levelChange_ = {true, true, mapName_, false, levelChange_.atMs};
+        }
         return Value();
     });
+}
+
+// 0x4e8e10: once per level (g_reloading set to 1), schedules loadgame_continue g_deathDelay ms (default 3000, real
+// time) from now and sends the client "snd_fade 0 <delay>", "clear_blur", "scr_blur <delay> 32 1 2",
+// "time_slow <delay> 1 0.1" and, when the dvar ui_deadquote exists, "opendeadscreen <ui_deadquote>".
+void World::openDeathScreen() {
+    if (reloading_) return;
+    reloading_ = true;
+    int delay = 3000;
+    if (auto it = cvars.find("g_deathDelay"); it != cvars.end()) delay = std::max(0, std::atoi(it->second.c_str()));
+    loadGameAtRealMs_ = realNowMs() + delay;
+    const std::string d = std::to_string(delay);
+    clientCommands_.push_back({"snd_fade", "0 " + d});
+    clientCommands_.push_back({"clear_blur", ""});
+    clientCommands_.push_back({"scr_blur", d + " 32.000000 1 2"});
+    clientCommands_.push_back({"time_slow", d + " 1.000000 0.100000"});
+    if (auto it = cvars.find("ui_deadquote"); it != cvars.end()) clientCommands_.push_back({"opendeadscreen", it->second});
+    print("death screen at " + std::to_string(timeMs_) + " ms, loadgame_continue in " + d + " ms");
+}
+
+// Per frame: the client think opens the death screen when the player is dead and the level time is past the
+// respawn time (0x4e7eb7: pm_type >= 4 and level time > client +0x866c); the server frame runs loadgame_continue
+// when its real-time deadline passes (0x4d9f90).
+// TODO(spec): loadgame_continue loads sv_lastSaveGame (0x447190); OpenIW2 has no save games yet and restarts the
+// level instead (the level-start save).
+void World::runDeathScreen() {
+    if (player_ && playerRespawnMs_ >= 0 && !isAlive(*player_) && timeMs_ > playerRespawnMs_) openDeathScreen();
+    if (loadGameAtRealMs_ >= 0 && realNowMs() >= loadGameAtRealMs_) {
+        loadGameAtRealMs_ = -1;
+        levelChange_ = {true, true, mapName_, false, timeMs_};
+    }
 }
 
 } // namespace iw2::game

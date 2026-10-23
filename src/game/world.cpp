@@ -362,6 +362,7 @@ void World::frame() {
     runGrenades();
     runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
     thinkActors();
+    runDeathScreen();
 }
 
 const std::map<std::string, std::string>* World::weapon(const std::string& name) {
@@ -867,7 +868,13 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("getcvarint", [this](CallContext& c) { return Value(int32_t(std::atoi(cvars[c.arg(0).toString()].c_str()))); });
     vm_.registerBuiltin("getdebugcvarint", [this](CallContext& c) { return Value(int32_t(std::atoi(cvars[c.arg(0).toString()].c_str()))); });
     vm_.registerBuiltin("getcvarfloat", [this](CallContext& c) { return Value(float(std::atof(cvars[c.arg(0).toString()].c_str()))); });
-    vm_.registerBuiltin("setcvar", [this](CallContext& c) { cvars[c.arg(0).toString()] = c.arg(1).toString(); return Value(); });
+    // A localized string value is stored as its reference (the VM keeps it as a string; inferred from
+    // matmata.gsc setCvar("ui_deadquote", &"MATMATA_…") read back by the dead quote, 0x4aa2a0).
+    vm_.registerBuiltin("setcvar", [this](CallContext& c) {
+        const Value v = c.arg(1);
+        cvars[c.arg(0).toString()] = std::holds_alternative<LocalizedString>(v.v) ? std::get<LocalizedString>(v.v).key : v.toString();
+        return Value();
+    });
     vm_.registerBuiltin("setsavedcvar", [this](CallContext& c) { cvars[c.arg(0).toString()] = c.arg(1).toString(); return Value(); });
     vm_.registerBuiltin("getdifficulty", [this](CallContext&) {
         const std::string d = cvars["g_gameskill"];

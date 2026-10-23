@@ -232,14 +232,31 @@ void Mixer::gains(const Voice& v, float& left, float& right) const {
     right = std::min(right, v.volume);
 }
 
+// snd_fade <volume> <ms> (0x4431a0): the rate is (target − current) / ms; ms 0 sets the volume at once.
+void Mixer::fade(float target, int ms) {
+    fadeTarget = target;
+    if (ms > 0) fadeRate = (target - fadeVolume) / float(ms);
+    else fadeVolume = target, fadeRate = 0;
+}
+
+// TODO(spec): the per-frame step of the volume (0x793a28 by 0x793a30) is not read; linear in real ms is inferred.
+void Mixer::fadeStep(float ms) {
+    if (fadeRate == 0) return;
+    fadeVolume += fadeRate * ms;
+    if ((fadeRate < 0 && fadeVolume <= fadeTarget) || (fadeRate > 0 && fadeVolume >= fadeTarget)) {
+        fadeVolume = fadeTarget;
+        fadeRate = 0;
+    }
+}
+
 void Mixer::mix(float* out, int frames) {
     std::fill(out, out + size_t(frames) * 2, 0.0f);
     std::lock_guard lock(mutex_);
     for (Voice& v : voices_) {
         float gl, gr;
         gains(v, gl, gr);
-        gl *= masterVolume;
-        gr *= masterVolume;
+        gl *= masterVolume * fadeVolume;
+        gr *= masterVolume * fadeVolume;
         const Wav& w = *v.wav;
         const size_t n = w.frames();
         for (int i = 0; i < frames; ++i) {
