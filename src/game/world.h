@@ -536,6 +536,11 @@ private:
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
     void runGrenades();
+    // Weapon items (classname weapon_*): LaunchItem (0x521f70 → 0x521e00) gives a dropped item a gravity
+    // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
+    // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.
+    void launchItem(Entity& item, const Entity& dropper);
+    void runItems();
     void predictGrenadeLanding(Entity& e);
     bool solveThrow(Entity& actor, const std::string& method, const Vec3& start, const Vec3& aim, Vec3& vel);
     bool throwArcClear(Entity& actor, const Vec3& start, const Vec3& vel, const Vec3& target);

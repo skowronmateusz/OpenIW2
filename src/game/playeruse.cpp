@@ -418,6 +418,7 @@ void World::pickUpWeaponItem(Entity& item) {
             dropped.obj->set("angles", player_->obj->get("angles"));
             const std::string wm = weaponField(cur, "worldModel");
             if (!wm.empty()) dropped.obj->set("model", Value(wm));
+            launchItem(dropped, *player_); // 0x5220f0 → 0x521f70
             const int slot = inv.slot[1] == cur ? 1 : 2;
             takeWeapon(inv, cur);
             giveWeapon(inv, w);

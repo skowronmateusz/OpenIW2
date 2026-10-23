@@ -208,6 +208,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
             item.obj->set("angles", target.obj->get("angles"));
             const std::string wm = weaponField(w, "worldModel");
             if (!wm.empty()) item.obj->set("model", Value(wm));
+            launchItem(item, target); // 0x527bd0 → 0x521f70
         }
         playerDeadWeaponless_ = true;
         if (attacker && attacker != &target) {
@@ -542,6 +543,9 @@ void World::registerCombatBuiltins() {
         item.obj->set("angles", e->obj->get("angles"));
         const auto* def = weapon(w);
         if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
+        // 0x5220f0 → 0x521f70: the item is launched and falls (G_RunItem). TODO(spec): from the hand tag, as above.
+        launchItem(item, *e);
+        if (hand == "left" || hand == "right") item.obj->set("origin", Value(at)), item.obj->set("$trbase", Value(at));
         return Value(item.obj);
     });
     vm_.registerBuiltin("issuppressed", [](CallContext&) { return Value(false); });

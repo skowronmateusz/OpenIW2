@@ -659,3 +659,66 @@ const std::string& World::impactEffect(int type, int surface) {
 }
 
 } // namespace iw2::game
+
+namespace iw2::game {
+
+// LaunchItem (0x521f70): from the dropper's origin raised by half its height, velocity (cos yaw · 150, sin yaw · 150,
+// (2·rand − 1) · 50 + 200) with the dropper's yaw; trajectory TR_GRAVITY from now (0x521e00). TODO(spec): the
+// callers that pass no velocity (ecx ≠ 0) and the yaw offset argument.
+void World::launchItem(Entity& item, const Entity& dropper) {
+    const Vec3 o = dropper.obj->get("origin").asVector();
+    const Value av = dropper.obj->get("angles");
+    const float yaw = (av.isVector() ? av.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
+    const float height = dropper.isPlayer ? 70.0f : dropper.isActor ? 72.0f : 0.0f; // TODO(spec): the entity's maxs.z − mins.z
+    const float r = float(std::rand() % 32768) / 32768.0f;
+    item.obj->set("origin", Value(Vec3{o[0], o[1], o[2] + height * 0.5f}));
+    item.obj->set("$trbase", item.obj->get("origin"));
+    item.obj->set("$trdelta", Value(Vec3{std::cos(yaw) * 150.0f, std::sin(yaw) * 150.0f, (r + r - 1.0f) * 50.0f + 200.0f}));
+    item.obj->set("$trtime", Value(float(timeMs_)));
+}
+
+// G_RunItem (0x523040) for weapon items with a gravity trajectory: the position at the level time (z − 400·t²),
+// traced from the current origin with the item box (−1, −1, −1)…(1, 1, 1) and mask 0x491 (clipmask 0 → 0x491),
+// skipping the owner; on a hit the item stops at the hit point (the exe eases there over 50 ms, TR 3, and lays a
+// weapon flat on the surface 0x522ea0: TODO(spec)), in no-drop contents (0x80000000) it is freed. A map-placed item
+// (FinishSpawningItem 0x5225e0, unless spawnflags 1 = suspended) is dropped 4096 down once, retried from 15 down
+// when the first trace starts solid; still solid → freed.
+void World::runItems() {
+    const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1};
+    for (const auto& ep : entities_) {
+        Entity& e = *ep;
+        if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) continue;
+        const Value tb = e.obj->get("$trbase");
+        if (!tb.isVector()) {
+            if (e.obj->get("$itemsettled").truthy()) continue;
+            e.obj->set("$itemsettled", Value(true));
+            const Value sf = e.obj->get("spawnflags");
+            if (sf.isNumber() && (sf.asInt() & 1)) continue;
+            Vec3 o = e.obj->get("origin").asVector();
+            TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
+            if (tr.startSolid) {
+                o[2] -= 15.0f;
+                tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
+                if (tr.startSolid) { e.obj->removed = true; continue; }
+            }
+            e.obj->set("origin", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
+            continue;
+        }
+        const Vec3 base = tb.asVector(), delta = e.obj->get("$trdelta").asVector();
+        const float t = (float(timeMs_) - e.obj->get("$trtime").asFloat()) * 0.001f;
+        const Vec3 cur = e.obj->get("origin").asVector();
+        const Vec3 next{base[0] + delta[0] * t, base[1] + delta[1] * t, base[2] + delta[2] * t - 400.0f * t * t};
+        const TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
+        if (tr.fraction < 1.0f) {
+            const Vec3 at{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
+            if (collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
+            e.obj->set("origin", Value(at));
+            e.obj->set("$trbase", Value());
+            e.obj->set("$itemsettled", Value(true));
+        } else {
+            e.obj->set("origin", Value(next));
+        }
+    }
+}
+
+} // namespace iw2::game
