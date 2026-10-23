@@ -1845,7 +1845,10 @@ int main(int argc, char** argv) {
                 else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat)
                     input.key(keyName(ev.key.scancode), ev.type == SDL_EVENT_KEY_DOWN);
                 else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP)
-                    input.key("MOUSE" + std::to_string(int(ev.button.button)), ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+                    // SDL numbers left, middle, right as 1, 2, 3; the engine's MOUSE2 is the right button.
+                    input.key(ev.button.button == SDL_BUTTON_RIGHT ? "MOUSE2" : ev.button.button == SDL_BUTTON_MIDDLE ? "MOUSE3"
+                                                                                                                     : "MOUSE" + std::to_string(int(ev.button.button)),
+                              ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
                 else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0)
                     input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", true), input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", false);
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
@@ -1995,6 +1998,8 @@ int main(int argc, char** argv) {
                     if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
+                    else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
+                        world->damage(*world->player(), world->player(), 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
                 }
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,

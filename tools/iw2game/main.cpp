@@ -9,6 +9,8 @@
 #include "audio/sound.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
+#include "game/clientinput.h"
+#include "game/playerweapon.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -388,6 +390,7 @@ int main(int argc, char** argv) {
         int traceActor = -1;
         bool playerShoots = false;
         bool drive = false;
+        bool controls = false;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--trace-actor" && i + 1 < argc) {
@@ -396,6 +399,8 @@ int main(int argc, char** argv) {
                 playerShoots = true; // the player fires at the nearest axis actor twice a second
             } else if (a == "--spawn-all") {
                 spawnAll = true;
+            } else if (a == "--controls") {
+                controls = true; // default.cfg keys through the client commands and PM_Weapon: 1, SHIFT, G, C, SPACE
             } else if (a == "--drive") {
                 drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
             } else if (a == "--cvar" && i + 1 < argc) {
@@ -435,7 +440,53 @@ int main(int argc, char** argv) {
                 }
         }
         int playerHits = 0;
+        iw2::game::ClientInput input;
+        iw2::game::PlayerWeapon pweapon;
+        std::string weaponSelect;
+        std::map<int, int> weaponEvents;
+        if (controls) {
+            if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
+            pweapon.lookup = [&](const std::string& n) { return world.weapon(n); };
+            pweapon.findOffhand = [&](const std::string& cls) { return world.playerOffhandFor(cls); };
+        }
         for (int f = 0; f < seconds * 20; ++f) {
+            if (controls && world.player()) {
+                // A key script: weapnext at 1 s, melee at 3 s, frag held 5–6 s, crouch at 8 s, stand up at 9 s.
+                const std::map<int, std::pair<const char*, bool>> keys{
+                    {20, {"1", true}},     {21, {"1", false}},    {60, {"SHIFT", true}}, {62, {"SHIFT", false}},
+                    {100, {"G", true}},    {120, {"G", false}},   {160, {"C", true}},    {161, {"C", false}},
+                    {180, {"SPACE", true}}, {181, {"SPACE", false}}};
+                if (auto k = keys.find(f); k != keys.end()) input.key(k->second.first, k->second.second);
+                const uint32_t b = input.buttons(false);
+                const auto w = world.player()->obj->get("$weapon");
+                if (weaponSelect.empty() || (w.isString() && w.asString() != pweapon.name() && pweapon.equipped() && f % 20 == 0))
+                    weaponSelect = w.isString() && !w.asString().empty() ? w.asString() : "none";
+                if (!pweapon.equipped())
+                    if (const auto* d = world.weapon(weaponSelect)) pweapon.equip(weaponSelect, *d);
+                if (input.takeWeaponCycle()) {
+                    const auto& inv = world.inventory(*world.player());
+                    const std::string& other = inv.slot[inv.slot[2] == weaponSelect ? 1 : 2];
+                    if (!other.empty()) weaponSelect = other;
+                }
+                iw2::game::PlayerWeapon::Input wi;
+                wi.fire = b & iw2::game::Button::Attack;
+                wi.melee = b & iw2::game::Button::Melee;
+                wi.frag = b & iw2::game::Button::Frag;
+                wi.smoke = b & iw2::game::Button::Smoke;
+                wi.weapon = weaponSelect;
+                pweapon.update(0.05f, wi);
+                if (pweapon.equipped()) world.player()->obj->set("$weapon", iw2::script::Value(pweapon.name()));
+                const auto o = world.player()->obj->get("origin").asVector();
+                const iw2::game::Vec3 eye{o[0], o[1], o[2] + 60.0f};
+                for (const auto& e : pweapon.takeEvents()) {
+                    ++weaponEvents[int(e.kind)];
+                    if (e.kind == iw2::game::PlayerWeapon::Event::MeleeHit) world.playerMelee(eye, {0, 0, 0});
+                    if (e.kind == iw2::game::PlayerWeapon::Event::OffhandThrow) world.playerThrowGrenade(e.weapon, eye, {-20, 0, 0}, {0, 0, 0});
+                    std::printf("controls t=%.2f event %d %s (state %d, weapon %s, stance %d)\n", f * 0.05f, int(e.kind),
+                                e.weapon.c_str(), pweapon.stateNumber(), pweapon.name().c_str(), input.stance());
+                }
+                if (f == 170 || f == 190) std::printf("controls t=%.2f buttons %x stance %d\n", f * 0.05f, b, input.stance());
+            }
             if (playerShoots && f % 10 == 0 && world.player()) {
                 const auto eye = iw2::script::Vec3{world.player()->obj->get("origin").asVector()[0], world.player()->obj->get("origin").asVector()[1],
                                               world.player()->obj->get("origin").asVector()[2] + 60.0f};
@@ -485,6 +536,11 @@ int main(int argc, char** argv) {
             world.frame();
         }
         if (playerShoots) std::cout << "player hits " << playerHits << "\n";
+        if (controls) {
+            std::cout << "controls: weapon " << pweapon.name() << ", events";
+            for (const auto& [k, n] : weaponEvents) std::cout << " " << k << "x" << n;
+            std::cout << "\n";
+        }
         for (int i = 0; i < 16; ++i) {
             const auto& o = world.objectives()[size_t(i)];
             if (o.state) std::cout << "objective " << i << " state " << o.state << " " << o.text << "\n";
