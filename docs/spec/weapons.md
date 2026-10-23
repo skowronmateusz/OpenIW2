@@ -17,7 +17,7 @@ case-insensitively (`World::weapon()` lower-cases them). Fields used by the engi
 | `standMoveF`, `standMoveR`, `standMoveU` | standing view-model offset in view space (forward, right, up) |
 
 The firing, rechamber and reload state machine in `src/game/playerweapon.cpp` is **inferred** from these fields;
-it is not taken from the executable.
+it is not taken from the executable. Weapon changes, melee and offhand grenades follow PM_Weapon (docs/spec/controls.md).
 
 ## View model placement
 

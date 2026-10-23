@@ -54,11 +54,101 @@ void automatic() {
     CHECK(w.stock() == 0);
 }
 
+using Def = PlayerWeapon::Def;
+
+// Weapon change (0x4ddb40 / PM_Weapon state 2): dropTime, then the new weapon's raiseTime.
+void weaponChange() {
+    const Def a{{"firetime", "0.1"}, {"clipsize", "5"}, {"startammo", "10"}, {"droptime", "0.3"}, {"raisetime", "0.4"},
+                {"dropanim", "a_drop"}, {"raiseanim", "a_raise"}, {"meleedamage", "50"}};
+    const Def b{{"firetime", "0.1"}, {"clipsize", "8"}, {"startammo", "8"}, {"droptime", "0.2"}, {"raisetime", "0.5"},
+                {"raiseanim", "b_raise"}};
+    PlayerWeapon w;
+    w.lookup = [&](const std::string& n) -> const Def* { return n == "a" ? &a : n == "b" ? &b : nullptr; };
+    w.equip("a", a);
+    PlayerWeapon::Input in;
+    in.weapon = "a";
+    for (int i = 0; i < 50; ++i) w.update(0.01f, in); // raised
+    in.fire = true;
+    w.update(0.01f, in);
+    CHECK(w.clip() == 4);
+    in.fire = false;
+    for (int i = 0; i < 20; ++i) w.update(0.01f, in);
+    in.weapon = "b";
+    w.update(0.01f, in);
+    CHECK(w.anim() == "a_drop" && w.stateNumber() == 2);
+    for (int i = 0; i < 29; ++i) w.update(0.01f, in);
+    CHECK(w.name() == "a");
+    w.update(0.01f, in);
+    w.update(0.01f, in);
+    CHECK(w.name() == "b" && w.anim() == "b_raise" && w.stateNumber() == 1 && w.clip() == 8);
+    bool raised = false;
+    for (const auto& e : w.takeEvents()) raised |= e.kind == PlayerWeapon::Event::WeaponRaised && e.weapon == "b";
+    CHECK(raised);
+    in.weapon = "a";
+    for (int i = 0; i < 200; ++i) w.update(0.01f, in);
+    CHECK(w.name() == "a" && w.clip() == 4); // ammo kept while put away
+}
+
+// Melee (0x4def20): meleeDelay until the blow (MeleeHit), meleeTime in all.
+void melee() {
+    const Def a{{"meleedamage", "50"}, {"meleetime", "0.6"}, {"meleedelay", "0.2"}, {"meleeanim", "melee"}, {"raisetime", "0"}};
+    PlayerWeapon w;
+    w.lookup = [&](const std::string&) { return &a; };
+    w.equip("a", a);
+    PlayerWeapon::Input in;
+    in.weapon = "a";
+    w.update(0.01f, in);
+    in.melee = true;
+    w.update(0.01f, in);
+    CHECK(w.anim() == "melee" && w.stateNumber() == 10);
+    int hits = 0;
+    for (int i = 0; i < 100; ++i) {
+        w.update(0.01f, in); // held: no second swing
+        for (const auto& e : w.takeEvents()) hits += e.kind == PlayerWeapon::Event::MeleeHit;
+        if (i == 15) CHECK(hits == 0);
+        if (i == 25) CHECK(hits == 1);
+    }
+    CHECK(hits == 1 && w.stateNumber() == 0);
+}
+
+// Offhand (0x4df470 and states 12–16): quick drop, pull the pin (holdFireTime), hold, throw on release, quick raise.
+void offhand() {
+    const Def a{{"quickdroptime", "0.1"}, {"quickraisetime", "0.1"}, {"raisetime", "0"}, {"quickdropanim", "qd"}};
+    const Def g{{"weapontype", "grenade"}, {"holdfiretime", "0.3"}, {"firetime", "0.2"}, {"fusetime", "3"},
+                {"holdfireanim", "pullpin"}, {"fireanim", "throw"}, {"gunmodel", "grenade"}};
+    PlayerWeapon w;
+    w.lookup = [&](const std::string& n) -> const Def* { return n == "frag" ? &g : &a; };
+    w.findOffhand = [](const std::string& cls) { return cls == "Frag Grenade" ? std::string("frag") : std::string(); };
+    w.equip("a", a);
+    PlayerWeapon::Input in;
+    in.weapon = "a";
+    w.update(0.01f, in);
+    in.frag = true;
+    w.update(0.01f, in);
+    CHECK(w.stateNumber() == 12 && w.anim() == "qd");
+    for (int i = 0; i < 11; ++i) w.update(0.01f, in);
+    CHECK(w.stateNumber() == 13 && w.anim() == "pullpin" && w.gunModel() == "xmodel/grenade");
+    for (int i = 0; i < 60; ++i) w.update(0.01f, in);
+    CHECK(w.stateNumber() == 14); // held
+    int throws = 0;
+    in.frag = false;
+    for (int i = 0; i < 2; ++i) {
+        w.update(0.01f, in);
+        for (const auto& e : w.takeEvents()) throws += e.kind == PlayerWeapon::Event::OffhandThrow && e.weapon == "frag";
+    }
+    CHECK(throws == 1 && w.stateNumber() == 15 && w.anim() == "throw");
+    for (int i = 0; i < 40; ++i) w.update(0.01f, in);
+    CHECK(w.stateNumber() == 0 && w.name() == "a");
+}
+
 } // namespace
 
 int main() {
     boltAction();
     automatic();
+    weaponChange();
+    melee();
+    offhand();
     if (failures) return 1;
     std::cout << "playerweapon tests passed\n";
     return 0;

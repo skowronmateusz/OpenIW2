@@ -274,6 +274,11 @@ public:
 
     // Player fires the current weapon from `eye` along `forward` (unit vector).
     void playerFire(const Vec3& eye, const Vec3& forward);
+    // Player weapon events (src/game/playeractions.cpp): the melee blow, the offhand throw and the offhand pick.
+    void playerMelee(const Vec3& eye, const Vec3& viewAngles);
+    void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
+    std::string playerOffhandFor(const std::string& offhandClass);
+    void playerGrenadeInHand(const Vec3& eye);
     bool isAlive(const Entity& e) const;
     bool canSee(Entity& from, Entity& to);
     struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0; } stats;
@@ -338,6 +343,7 @@ private:
     std::map<int, MoverState> movers_;
     std::map<int, Link> links_;
     std::map<int, Inventory> inventories_;
+    uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);
     void fillClip(Inventory& inv, const std::string& weapon);

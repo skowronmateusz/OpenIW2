@@ -3,8 +3,10 @@
 //   iw2view <main-dir> <map-name> [--shot out.png] [--pos x,y,z] [--yaw deg] [--pitch deg]
 //           [--size WxH] [--lm-scale s] [--lm-weights a,b,c,d]
 //
-// Controls: mouse to look, WASD to move, Space jump (walk) / up (fly), C down (fly), Shift faster,
-// V toggles walk/fly, F fullbright, P prints the camera position, Esc quits.
+// Controls: the game's own bindings from default.cfg (W/A/S/D move, mouse look, MOUSE1 fire, MOUSE2 toggleads,
+// R reload, F use, SHIFT melee / hold breath, G or MOUSE3 frag, 4 smoke, 1/2 next weapon, SPACE stand up / jump,
+// C crouch, CTRL prone, Q/E lean). Viewer keys: V toggles walk/fly (fly: Space up, C down, Shift faster),
+// L fullbright, P prints the camera position, Esc quits.
 
 #include "assets/d3dbsp.h"
 #include "assets/font.h"
@@ -15,6 +17,7 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
 #include "game/viewweapon.h"
@@ -1238,6 +1241,47 @@ std::vector<float> parseFloats(const std::string& s) {
 
 } // namespace
 
+// The engine's key names (as default.cfg binds them) for SDL scancodes; both shift, ctrl and alt keys count as one.
+static std::string keyName(SDL_Scancode sc) {
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) return std::string(1, char('A' + (sc - SDL_SCANCODE_A)));
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) return std::string(1, char('1' + (sc - SDL_SCANCODE_1)));
+    if (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F12) return "F" + std::to_string(1 + (sc - SDL_SCANCODE_F1));
+    switch (sc) {
+    case SDL_SCANCODE_0: return "0";
+    case SDL_SCANCODE_LSHIFT: case SDL_SCANCODE_RSHIFT: return "SHIFT";
+    case SDL_SCANCODE_LCTRL: case SDL_SCANCODE_RCTRL: return "CTRL";
+    case SDL_SCANCODE_LALT: case SDL_SCANCODE_RALT: return "ALT";
+    case SDL_SCANCODE_SPACE: return "SPACE";
+    case SDL_SCANCODE_TAB: return "TAB";
+    case SDL_SCANCODE_RETURN: return "ENTER";
+    case SDL_SCANCODE_ESCAPE: return "ESCAPE";
+    case SDL_SCANCODE_BACKSPACE: return "BACKSPACE";
+    case SDL_SCANCODE_UP: return "UPARROW";
+    case SDL_SCANCODE_DOWN: return "DOWNARROW";
+    case SDL_SCANCODE_LEFT: return "LEFTARROW";
+    case SDL_SCANCODE_RIGHT: return "RIGHTARROW";
+    case SDL_SCANCODE_INSERT: return "INS";
+    case SDL_SCANCODE_DELETE: return "DEL";
+    case SDL_SCANCODE_PAGEUP: return "PGUP";
+    case SDL_SCANCODE_PAGEDOWN: return "PGDN";
+    case SDL_SCANCODE_HOME: return "HOME";
+    case SDL_SCANCODE_END: return "END";
+    case SDL_SCANCODE_PAUSE: return "PAUSE";
+    case SDL_SCANCODE_GRAVE: return "`";
+    case SDL_SCANCODE_MINUS: return "-";
+    case SDL_SCANCODE_EQUALS: return "=";
+    case SDL_SCANCODE_LEFTBRACKET: return "[";
+    case SDL_SCANCODE_RIGHTBRACKET: return "]";
+    case SDL_SCANCODE_SEMICOLON: return ";";
+    case SDL_SCANCODE_APOSTROPHE: return "'";
+    case SDL_SCANCODE_COMMA: return ",";
+    case SDL_SCANCODE_PERIOD: return ".";
+    case SDL_SCANCODE_SLASH: return "/";
+    case SDL_SCANCODE_BACKSLASH: return "\\";
+    default: return std::string();
+    }
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> args;
     std::string shot;
@@ -1321,6 +1365,10 @@ int main(int argc, char** argv) {
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
 
+        // Key bindings: the game's default.cfg (exec'd at startup; default_localize.cfg only changes the console key).
+        game::ClientInput input;
+        if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
+        else std::cerr << "warning: default.cfg not found, no key bindings\n";
         // A level's game world. game[] survives level changes (maps/_endmission.gsc and _loadout.gsc rely on it,
         // docs/spec/campaign.md), so its fields are copied into the new world before its script starts.
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
@@ -1332,11 +1380,8 @@ int main(int argc, char** argv) {
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
-            // The viewer's controls, reported to scripts through getkeybinding (command names from the exe).
-            w->keyBindings = {{"+forward", {"W"}}, {"+back", {"S"}}, {"+moveleft", {"A"}}, {"+moveright", {"D"}},
-                              {"+attack", {"MOUSE1"}}, {"+speed", {"MOUSE2"}}, {"+reload", {"R"}},
-                              {"+gostand", {"SPACE"}}, {"togglecrouch", {"C"}}, {"toggleprone", {"Z"}},
-                              {"+leanleft", {"Q"}}, {"+leanright", {"E"}}, {"+activate", {"F"}}};
+            // The bindings from default.cfg, reported to scripts through getkeybinding.
+            for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
             w->start();
             return w;
         };
@@ -1436,14 +1481,24 @@ int main(int argc, char** argv) {
         // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
+        // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
+        // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
+        std::string weaponSelect, weaponWritten;
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
+            pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
+            pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
             const script::Value w = world->player()->obj->get("$weapon");
-            std::string name = w.isString() && !w.asString().empty() ? w.asString() : "thompson";
+            std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : "thompson";
             if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
-            if (!w.isString() || w.asString() != name) world->player()->obj->set("$weapon", script::Value(name));
-            if (name == pweapon.name()) return;
-            if (const auto* def = world->weapon(name)) pweapon.equip(name, *def);
+            if (name != weaponWritten) weaponSelect = name;
+            if (!pweapon.equipped()) // the first weapon is in hand at once
+                if (const auto* def = world->weapon(weaponSelect)) pweapon.equip(weaponSelect, *def);
+        };
+        auto writeWeapon = [&]() {
+            if (!world || !world->player() || !pweapon.equipped()) return;
+            world->player()->obj->set("$weapon", script::Value(pweapon.name()));
+            weaponWritten = pweapon.name();
         };
         auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c) {
             if (!pweapon.equipped()) return;
@@ -1736,9 +1791,13 @@ int main(int argc, char** argv) {
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
             syncWeapon();
             pweapon.update(1.0f, {});
-            pweapon.update(fireSeconds, {fireSeconds > 0, false, shotAds});
+            game::PlayerWeapon::Input shotIn;
+            shotIn.fire = fireSeconds > 0;
+            shotIn.ads = shotAds;
+            pweapon.update(fireSeconds, shotIn);
+            shotIn.fire = false;
             for (int i = 0; i < 100; ++i) {
-                pweapon.update(0.02f, {false, false, shotAds});
+                pweapon.update(0.02f, shotIn);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
             }
             cam.pos.z += shotViewHeight - 60.0f;
@@ -1774,8 +1833,7 @@ int main(int argc, char** argv) {
         uint64_t last = SDL_GetTicksNS();
         bool running = true;
         bool walk = true;
-        bool reloadPressed = false;
-        game::Stance stance = game::Stance::Stand;
+        uint32_t prevButtons = 0;
         float gameClock = 0;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
@@ -1788,24 +1846,29 @@ int main(int argc, char** argv) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_EVENT_QUIT) running = false;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_V) {
-                    walk = !walk;
-                    if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
-                }
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_R) reloadPressed = true;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_C)
-                    stance = stance == game::Stance::Crouch ? game::Stance::Stand : game::Stance::Crouch;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_Z)
-                    stance = stance == game::Stance::Prone ? game::Stance::Stand : game::Stance::Prone;
-                else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_P) {
-                    std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
-                    if (moveRecorder.write("pmove_replay.bin")) std::cout << "wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
-                }
+                else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat)
+                    input.key(keyName(ev.key.scancode), ev.type == SDL_EVENT_KEY_DOWN);
+                else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP)
+                    // SDL numbers left, middle, right as 1, 2, 3; the engine's MOUSE2 is the right button.
+                    input.key(ev.button.button == SDL_BUTTON_RIGHT ? "MOUSE2" : ev.button.button == SDL_BUTTON_MIDDLE ? "MOUSE3"
+                                                                                                                     : "MOUSE" + std::to_string(int(ev.button.button)),
+                              ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+                else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0)
+                    input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", true), input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", false);
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                     cam.yaw -= ev.motion.xrel * 0.15f;
                     cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f, -89.0f, 89.0f);
+                }
+                if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
+                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
+                else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
+                else if (ev.key.scancode == SDL_SCANCODE_V) {
+                    walk = !walk;
+                    if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
+                }
+                else if (ev.key.scancode == SDL_SCANCODE_P) {
+                    std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
+                    if (moveRecorder.write("pmove_replay.bin")) std::cout << "wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
                 }
             }
             const uint64_t now = SDL_GetTicksNS();
@@ -1814,13 +1877,15 @@ int main(int argc, char** argv) {
             const bool* keys = SDL_GetKeyboardState(nullptr);
             // In a vehicle (pm_flags 0x20000) the player does not move by itself; the command drives the vehicle.
             const bool inVehicle = world && (world->playerPmFlags() & 0x20000);
+            // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
+            const uint32_t buttons = input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
+            const bool reloadPressed = (buttons & game::Button::Reload) && !(prevButtons & game::Button::Reload);
+            prevButtons = buttons;
             if (world) {
                 game::World::PlayerCommand pc;
-                pc.forward = (int(keys[SDL_SCANCODE_W]) - int(keys[SDL_SCANCODE_S])) * 127;
-                pc.right = (int(keys[SDL_SCANCODE_D]) - int(keys[SDL_SCANCODE_A])) * 127;
-                if (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) pc.buttons |= 1; // +attack
-                if (keys[SDL_SCANCODE_F]) pc.buttons |= 8;                                    // +activate
-                if (keys[SDL_SCANCODE_SPACE]) pc.buttons |= 0x400;                            // +gostand
+                pc.forward = input.forwardMove();
+                pc.right = input.rightMove();
+                pc.buttons = buttons;
                 pc.viewAngles = {cam.pitch, cam.yaw, 0};
                 world->setPlayerCommand(pc);
             }
@@ -1862,12 +1927,13 @@ int main(int argc, char** argv) {
                 }
                 havePrevBody = false;
                 game::PlayerInput in;
-                in.forward = float(keys[SDL_SCANCODE_W]) - float(keys[SDL_SCANCODE_S]);
-                in.right = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
-                in.jump = keys[SDL_SCANCODE_SPACE];
-                in.stance = stance;
-                in.leanLeft = keys[SDL_SCANCODE_Q];
-                in.leanRight = keys[SDL_SCANCODE_E];
+                in.forward = float(input.forwardMove()) / 127.0f;
+                in.right = float(input.rightMove()) / 127.0f;
+                in.jump = (buttons & game::Button::Jump) != 0;
+                in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
+                            : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
+                in.leanLeft = (buttons & game::Button::LeanLeft) != 0;
+                in.leanRight = (buttons & game::Button::LeanRight) != 0;
                 in.yaw = cam.yaw;
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
@@ -1913,13 +1979,32 @@ int main(int argc, char** argv) {
             if (world) {
                 syncWeapon();
                 game::PlayerWeapon::Input wi;
-                const SDL_MouseButtonFlags mouse = SDL_GetMouseState(nullptr, nullptr);
-                wi.fire = (mouse & SDL_BUTTON_LMASK) != 0;
-                wi.ads = (mouse & SDL_BUTTON_RMASK) != 0;
+                // weapnext / weapprev (cgame 0x4b7410): the weapon in the other of the two slots (primary, primaryb).
+                if (const int cycle = input.takeWeaponCycle(); cycle && world->player()) {
+                    const game::Inventory& inv = world->inventory(*world->player());
+                    const int cur = inv.slot[2] == weaponSelect ? 2 : 1;
+                    const std::string& other = inv.slot[cur == 1 ? 2 : 1];
+                    if (!other.empty()) weaponSelect = other; // TODO(spec): weapons outside the slots (0x4b72f0)
+                }
+                wi.fire = (buttons & game::Button::Attack) != 0;
+                wi.ads = (buttons & game::Button::Ads) != 0;
                 wi.reload = reloadPressed;
-                reloadPressed = false;
-                if (inVehicle) wi.fire = false; // the weapon fire mask excludes attack in a vehicle (0x4df9b0: 0x30014)
+                wi.melee = (buttons & game::Button::Melee) != 0;
+                wi.frag = (buttons & game::Button::Frag) != 0;
+                wi.smoke = (buttons & game::Button::Smoke) != 0;
+                wi.weapon = weaponSelect;
+                if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
+                    wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = pweapon.update(std::min(dt, 0.1f), wi);
+                writeWeapon();
+                for (const auto& e : pweapon.takeEvents()) {
+                    const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
+                    if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
+                    else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
+                        world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
+                    else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
+                        world->playerGrenadeInHand(eye);
+                }
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -1956,6 +2041,9 @@ int main(int argc, char** argv) {
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
                     pweapon = game::PlayerWeapon{};
+                    weaponSelect.clear();
+                    weaponWritten.clear();
+                    input.clearAds(); // the toggled aim ends with the level (0x40e821)
                     gameClock = 0;
                 }
             }

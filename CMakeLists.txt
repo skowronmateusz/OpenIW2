@@ -73,7 +73,8 @@ add_library(iw2_game
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
-  src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp)
+  src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp
+  src/game/clientinput.cpp src/game/playeractions.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
@@ -134,6 +135,10 @@ add_test(NAME vm COMMAND test_vm)
 add_executable(test_playerweapon tests/test_playerweapon.cpp)
 target_link_libraries(test_playerweapon PRIVATE iw2_game)
 add_test(NAME playerweapon COMMAND test_playerweapon)
+
+add_executable(test_clientinput tests/test_clientinput.cpp)
+target_link_libraries(test_clientinput PRIVATE iw2_game)
+add_test(NAME clientinput COMMAND test_clientinput)
 
 add_executable(test_sound tests/test_sound.cpp)
 target_link_libraries(test_sound PRIVATE iw2_audio)
