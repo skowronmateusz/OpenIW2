@@ -1312,6 +1312,7 @@ int main(int argc, char** argv) {
     float shotViewHeight = 60;
     float shotLean = 0;
     bool shotAds = false;
+    bool godMode = false; // --god / F10: the "god" cheat (0x4e9f90 toggles FL_GODMODE on the player)
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
     std::string language = "polish";
     bool scripts = true;
@@ -1334,6 +1335,7 @@ int main(int argc, char** argv) {
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
             else if (a == "--fire-seconds") fireSeconds = std::stof(next());
             else if (a == "--no-audio") audioOn = false;
+            else if (a == "--god") godMode = true;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
             else if (a == "--ads") shotAds = true;
             else if (a == "--use") shotUse = true;
@@ -2222,6 +2224,10 @@ int main(int argc, char** argv) {
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
                 if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
+                else if (ev.key.scancode == SDL_SCANCODE_F10) {
+                    godMode = !godMode;
+                    std::cout << (godMode ? "godmode ON" : "godmode OFF") << "\n"; // GAME_GODMODE_ON / _OFF
+                }
                 else if (ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
                     if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
@@ -2377,6 +2383,7 @@ int main(int argc, char** argv) {
                 cam.pos = cam.pos + normalize(move) * speed;
             }
 
+            if (world && world->player()) world->player()->obj->set("$godmode", script::Value(godMode));
             if (world) {
                 syncWeapon();
                 game::PlayerWeapon::Input wi;
