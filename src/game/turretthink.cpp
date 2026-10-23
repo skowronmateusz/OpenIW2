@@ -280,6 +280,14 @@ void World::shootTurret(Entity& t) {
     // The damage attacker is the turret's user, or the world without one (0x51ada0 → 0x5312b0).
     Entity* user = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
     fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user);
+    // EV_FIRE_WEAPON_MG42 (0xaf, sent at 0x51afc1) → cgame 0x4b7800: for an entity that is not the local client
+    // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
+    // (empty for the MG42s) plays too. TODO(spec): the effect is bolted to the tag (follows it), the shell eject
+    // (0x4b7730), the view shake 0x4bf5e0 (0.05, 100, 100) of the event.
+    const std::string flash = weaponField(ts.weapon, "worldFlashEffect");
+    if (!flash.empty()) fxEvents_.push_back({flash, muzzle, dir});
+    const std::string fireSnd = weaponField(ts.weapon, "fireSound");
+    if (!fireSnd.empty()) startSound(fireSnd, &muzzle);
 }
 
 // Fire sounds (0x51b320): the entity's loop sound is cleared; while the fire countdown (+0x6c, set to fireTime · 3 by
