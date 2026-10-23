@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <string>
@@ -74,8 +75,13 @@ public:
     // Aim fraction 0..1 and whether it is rising (docs/spec/weapons.md, 0x4dd0d0).
     float adsFrac() const { return adsFrac_; }
     bool adsZoomingIn() const { return zoomingIn_; }
-    float number(const char* key) const { return time(key, 0.0f); }
-    std::string field(const char* key) const { return fieldValue(key); }
+    // Fields of the weapon the client shows: the offhand's while flag 0x10 is set (ps+0xac), else the player
+    // state's weapon (ps+0xb0), as cgame selects it (e.g. 0x4b6420, 0x4bc8a0). This feeds the view model's aim
+    // animations, so a grenade throw is not blended with the hand weapon's adsDownAnim.
+    float number(const char* key) const {
+        return offhandActive_ ? float(std::atof(defValue(offDef_, key).c_str())) : time(key, 0.0f);
+    }
+    std::string field(const char* key) const { return offhandActive_ ? defValue(offDef_, key) : fieldValue(key); }
     // 0x4dcf70 for a player on foot: the weapon has aimDownSight (def +0x32c) and the state is not raising,
     // dropping, melee or offhand (1, 2, 10, 11, 12–16). TODO(spec): binocular states 0x11–0x16 (0x4dcf50).
     bool adsAllowed() const {
