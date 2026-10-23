@@ -1,7 +1,7 @@
 // iw2view: fly through a single-player map with its textures and lightmaps (SDL3 GPU / Metal).
 //
 //   iw2view <main-dir> <map-name> [--shot out.png] [--pos x,y,z] [--yaw deg] [--pitch deg]
-//           [--size WxH] [--lm-scale s] [--lm-weights a,b,c,d]
+//           [--size WxH] [--lm-scale s] [--lm-weights a,b,c,d] [--sim-seconds s] [--use]
 //
 // Controls: the game's own bindings from default.cfg (W/A/S/D move, mouse look, MOUSE1 fire, MOUSE2 toggleads,
 // R reload, F use, SHIFT melee / hold breath, G or MOUSE3 frag, 4 smoke, 1/2 next weapon, SPACE stand up / jump,
@@ -24,6 +24,7 @@
 #include "game/fx.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
+#include "game/turrets.h"
 #include "game/world.h"
 #include "util/png.h"
 
@@ -63,6 +64,13 @@ struct Vec3 {
 Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 Vec3 operator*(Vec3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
 float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+// AngleDelta (0x423f50): a − b wrapped to [−180, 180].
+float angleDelta(float a, float b) {
+    float d = a - b;
+    while (d > 180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    return d;
+}
 Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 Vec3 normalize(Vec3 a) {
     const float l = std::sqrt(dot(a, a));
@@ -1296,6 +1304,7 @@ int main(int argc, char** argv) {
     float shotViewHeight = 60;
     float shotLean = 0;
     bool shotAds = false;
+    bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
     std::string language = "polish";
     bool scripts = true;
     bool spawnAll = false;
@@ -1319,6 +1328,7 @@ int main(int argc, char** argv) {
             else if (a == "--no-audio") audioOn = false;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
             else if (a == "--ads") shotAds = true;
+            else if (a == "--use") shotUse = true;
             else if (a == "--lean") shotLean = std::stof(next());
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
@@ -1416,7 +1426,7 @@ int main(int argc, char** argv) {
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
 
         // Entity models currently visible in the game world.
-        auto gatherItems = [&]() {
+        auto gatherItems = [&](const Camera& view) {
             std::vector<DrawItem> items;
             if (!world) return items;
             Uploader up(dev);
@@ -1467,6 +1477,22 @@ int main(int argc, char** argv) {
                         ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
                         if (ai.model) items.push_back(ai);
                     }
+                    continue;
+                }
+                if (e->turret) {
+                    // Turrets are posed by their bone controls (cgame 0x4ab0d0): the turret's pitch and yaw relative
+                    // to its angles; the player's turret follows the view (view angles − base, already clamped).
+                    const Scene::CpuModel* tm = sceneCpuModel(scene, dev, vfs, m.asString());
+                    if (!tm) continue;
+                    float tp = e->turret->pitch, ty = e->turret->yaw;
+                    if (world->playerOnTurret() && e->turret->owner == world->player()->obj) {
+                        tp = angleDelta(view.pitch, av[0]);
+                        ty = angleDelta(view.yaw, av[1]);
+                    }
+                    DrawItem it = base;
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm,
+                                         assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty)));
+                    if (it.model) items.push_back(it);
                     continue;
                 }
                 const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
@@ -1786,6 +1812,25 @@ int main(int argc, char** argv) {
                     world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     world->frame();
                 }
+                if (shotUse) {
+                    game::World::PlayerCommand pc;
+                    pc.viewAngles = {cam.pitch, cam.yaw, 0};
+                    for (int f = 0; f < 3; ++f) {
+                        pc.buttons = f == 1 ? 8u : 0u;
+                        world->setPlayerCommand(pc);
+                        world->frame();
+                    }
+                    if (world->playerOnTurret()) {
+                        world->clampPlayerView(cam.pitch, cam.yaw);
+                        pc.viewAngles = {cam.pitch, cam.yaw, 0};
+                        pc.buttons = 0;
+                        world->setPlayerCommand(pc);
+                        world->frame();
+                        game::Vec3 eye;
+                        if (world->playerTurretEye(eye)) cam.pos = {eye[0], eye[1], eye[2] + 60.0f - shotViewHeight};
+                    }
+                    std::cout << "use: on turret " << world->playerOnTurret() << "\n";
+                }
                 std::cout << "script errors: " << world->vm().errors().size() << ", live threads: " << world->vm().liveThreadCount()
                           << ", hud elements: " << world->hudElems().size() << "\n";
             }
@@ -1815,9 +1860,9 @@ int main(int argc, char** argv) {
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
-            auto shotItems = gatherItems();
+            auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
-            addViewModel(shotItems, cam);
+            if (!(world && world->playerOnTurret())) addViewModel(shotItems, cam);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
@@ -1878,6 +1923,10 @@ int main(int argc, char** argv) {
             const bool* keys = SDL_GetKeyboardState(nullptr);
             // In a vehicle (pm_flags 0x20000) the player does not move by itself; the command drives the vehicle.
             const bool inVehicle = world && (world->playerPmFlags() & 0x20000);
+            // On a turret (eFlags & 0x300) PmoveSingle skips the movement and PM_Weapon (0x50c918) and the view stays
+            // inside the turret's arcs (PM_UpdateViewAngles 0x50b120).
+            const bool onTurret = world && world->playerOnTurret();
+            if (onTurret) world->clampPlayerView(cam.pitch, cam.yaw);
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
             const uint32_t buttons = input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
             const bool reloadPressed = (buttons & game::Button::Reload) && !(prevButtons & game::Button::Reload);
@@ -1888,9 +1937,22 @@ int main(int argc, char** argv) {
                 pc.right = input.rightMove();
                 pc.buttons = buttons;
                 pc.viewAngles = {cam.pitch, cam.yaw, 0};
+                pc.stance = ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0;
+                pc.viewHeight = ps.viewHeight;
+                pc.onGround = ps.onGround;
+                pc.weaponState = pweapon.stateNumber();
+                pc.grenadeFuseMs = pweapon.fuseMs();
+                pc.lean = ps.lean;
                 world->setPlayerCommand(pc);
             }
-            if (inVehicle) {
+            if (onTurret) {
+                // The eye is the turret's tag_player (0x4e8b70); the turret code places the player behind it.
+                game::Vec3 eye;
+                const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                if (world->playerTurretEye(eye)) cam.pos = {eye[0], eye[1], eye[2]};
+                ps.origin = {po[0], po[1], po[2]};
+                ps.velocity = {0, 0, 0};
+            } else if (inVehicle) {
                 // The view turns with the vehicle's tag_body (cgame 0x4aeb60, cg_viewVehicleInfluence 1): the view axes
                 // times Bprevᵀ·Bcur; the pitch always follows, the yaw only while pm_flags 0x40000 is set.
                 std::array<game::Vec3, 3> body;
@@ -1996,7 +2058,7 @@ int main(int argc, char** argv) {
                 wi.weapon = weaponSelect;
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
-                const int shots = pweapon.update(std::min(dt, 0.1f), wi);
+                const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
                 writeWeapon();
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
@@ -2020,11 +2082,17 @@ int main(int argc, char** argv) {
                 const Vec3 f = cam.forward();
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
-                if (!inVehicle) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                if (!inVehicle && !onTurret) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
                 gameClock += std::min(dt, 0.25f);
                 while (gameClock >= 0.05f) {
                     world->frame();
                     gameClock -= 0.05f;
+                }
+                if (const auto rel = world->takeTurretRelease()) {
+                    // Off the turret (0x51b3d0): back where the player got on, in the stance it had (events 0x8c–0x8e).
+                    ps.origin = {rel->origin[0], rel->origin[1], rel->origin[2]};
+                    ps.velocity = {0, 0, 0};
+                    if (rel->stance >= 0) input.setStance(rel->stance);
                 }
                 for (const auto& cmd : world->takeClientCommands())
                     if (cmd.name == "obj_update" || cmd.name == "obj_complete")
@@ -2050,8 +2118,13 @@ int main(int argc, char** argv) {
             }
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
-            auto items = gatherItems();
-            addViewModel(items, cam);
+            auto items = gatherItems(cam);
+            // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
+            // binocular weapon states 0x11–0x16.
+            const int wstate = pweapon.stateNumber();
+            if (!(world && world->playerOnTurret()) &&
+                !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
+                addViewModel(items, cam);
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;

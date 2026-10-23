@@ -89,6 +89,15 @@ struct XPose {
 // Base pose of a skeleton.
 XPose bindPose(const XModelParts& parts);
 
+// Base pose with bone controls (DObj control tags, 0x4746e0): each controlled bone's local rotation is followed by
+// the control rotation, then the skeleton is rebuilt from the roots (the order local · control is inferred; the
+// turret tags it is used for have identity local rotations).
+XPose controlledPose(const XModelParts& parts, const std::vector<std::pair<int, Quat>>& controls);
+
+// Control quaternion of angles in degrees (pitch, yaw, roll) as 0x4746e0 builds it: yaw about z, pitch about y,
+// roll about x.
+Quat anglesQuat(float pitch, float yaw, float roll);
+
 // Re-skins a vertex with a pose (position and normal in model space).
 void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& position, std::array<float, 3>& normal);
 
