@@ -54,27 +54,25 @@ float num(const std::string& s, float fallback) {
     return end == s.c_str() ? fallback : v;
 }
 
-// loadspec: empty = all levels; "!a !b" = all but those; "a b" = only those.
+// loadspec (0x428f40): lower-cased; a leading '!' makes the whole list exclusive. The level matches when its name
+// occurs as a word (preceded by the start or a character below '"', followed by one below '!', so "!libya" lists
+// libya). Plain list: allowed when listed; '!' list: allowed when not listed. An empty spec allows every level.
+// TODO(spec): the "menu" level special case and the compare against the first argument when nothing matched.
 bool loadspecAllows(const std::string& spec, const std::string& level) {
-    bool any = false, positive = false, listed = false;
-    size_t i = 0;
-    while (i < spec.size()) {
-        while (i < spec.size() && std::isspace(static_cast<unsigned char>(spec[i]))) ++i;
-        size_t j = i;
-        while (j < spec.size() && !std::isspace(static_cast<unsigned char>(spec[j]))) ++j;
-        if (j > i) {
-            std::string w = lower(spec.substr(i, j - i));
-            any = true;
-            if (w[0] == '!') {
-                if (w.substr(1) == level) return false;
-            } else {
-                positive = true;
-                if (w == level) listed = true;
-            }
+    const std::string s = lower(spec);
+    if (s.empty()) return true;
+    const bool exclusive = s[0] == '!';
+    bool listed = false;
+    for (size_t at = s.find(level); !level.empty() && at != std::string::npos; at = s.find(level, at + 1)) {
+        const bool startOk = at == 0 || static_cast<unsigned char>(s[at - 1]) < '"';
+        const size_t end = at + level.size();
+        const bool endOk = end >= s.size() || static_cast<unsigned char>(s[end]) < '!';
+        if (startOk && endOk) {
+            listed = true;
+            break;
         }
-        i = j;
     }
-    return !any || !positive || listed;
+    return exclusive ? !listed : listed;
 }
 
 } // namespace
