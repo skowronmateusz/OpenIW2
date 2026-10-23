@@ -374,6 +374,7 @@ void World::thinkPlayerTurret() {
 void World::runPlayerUse() {
     if (!player_) return;
     damageFeedback(); // P_DamageFeedback (0x4e7040) in the client think
+    updateCrosshairTarget(); // 0x535070
     const uint32_t pressed = playerCmd_.buttons & ~playerOldButtons_;
     playerOldButtons_ = playerCmd_.buttons;
     const bool binoculars = playerCmd_.weaponState >= 0x11 && playerCmd_.weaponState <= 0x16;
@@ -434,6 +435,40 @@ void World::pickUpWeaponItem(Entity& item) {
     addAmmo(inv, w, weaponInt(w, "startAmmo"), true);
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
     item.obj->removed = true;
+}
+
+} // namespace iw2::game
+
+namespace iw2::game {
+
+// 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
+// eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
+// the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
+// 0x100000. TODO(spec): the name target (ps+0x8678, g_friendlyNameDist), the 0x8000000 flag, non-actor hits
+// (turrets/vehicles, +0x1b4), the trace surface-flag 0x10 exception.
+void World::updateCrosshairTarget() {
+    crosshairFlags_ = 0;
+    if (!player_ || !isAlive(*player_)) return;
+    const Vec3 eye = playerEye(), f = viewForward(playerCmd_.viewAngles);
+    int loc = 0;
+    const TraceResult tr = locationalTrace(eye, Vec3{eye[0] + f[0] * 15000.0f, eye[1] + f[1] * 15000.0f, eye[2] + f[2] * 15000.0f}, 0x2280e801u, player_, nullptr, loc);
+    Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+    if (!hit || !hit->isActor || !isAlive(*hit)) return;
+    const Vec3 d = sub(hit->obj->get("origin").asVector(), eye);
+    const float dist2 = dot(d, d);
+    const std::string w = playerOnTurret() ? playerTurretWeapon() : lowerStr(player_->obj->get("$weapon").toString());
+    const auto team = [](const Value& v) {
+        const std::string s = v.isString() ? v.asString() : std::string();
+        return s == "axis" ? 1 : s == "allies" ? 2 : s == "neutral" ? 3 : 0;
+    };
+    const int pt = team(player_->obj->get("team")) ? team(player_->obj->get("team")) : 2;
+    const int enemy = pt == 1 ? 2 : pt == 2 ? 1 : 0; // 0x4e7010
+    if (team(hit->obj->get("team")) == enemy) {
+        const float range = weaponFloat(w, "enemyCrosshairRange");
+        if (dist2 < range * range) crosshairFlags_ |= 0x200000u;
+    } else if (dist2 < 128.0f * 128.0f) {
+        crosshairFlags_ |= 0x100000u;
+    }
 }
 
 } // namespace iw2::game
