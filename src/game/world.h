@@ -506,6 +506,10 @@ private:
     bool ignorePlayerRadiusDamage_ = false; // setplayerignoreradiusdamage (0x1c61058)
     bool sparePlayerRadiusDamage_ = false;  // in effect during radiusdamage (0x1c61054)
     void explodeGrenade(Entity& e);
+    // Impact effects (cgame 0x4b9090): impact type (0 bullet_small_normal … 9 grenade_explode, 10 rocket_explode)
+    // × surface type (0 default … 22 asphalt) → effect file, "" for none.
+    const std::string& impactEffect(int type, int surface);
+    std::vector<std::array<std::string, 23>> impactEffects_;
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
     void runGrenades();

@@ -560,7 +560,11 @@ int main(int argc, char** argv) {
                 wi.frag = b & iw2::game::Button::Frag;
                 wi.smoke = b & iw2::game::Button::Smoke;
                 wi.weapon = weaponSelect;
-                pweapon.update(0.05f, wi);
+                // CONTROLS_SUBSTEPS=n: n weapon updates per 50 ms server frame, like iw2view's per-frame updates.
+                {
+                    static const int sub = std::getenv("CONTROLS_SUBSTEPS") ? std::max(1, std::atoi(std::getenv("CONTROLS_SUBSTEPS"))) : 1;
+                    for (int k = 0; k < sub; ++k) pweapon.update(0.05f / float(sub), wi);
+                }
                 if (pweapon.equipped()) world.player()->obj->set("$weapon", iw2::script::Value(pweapon.name()));
                 const auto o = world.player()->obj->get("origin").asVector();
                 const iw2::game::Vec3 eye{o[0], o[1], o[2] + 60.0f};
