@@ -466,6 +466,7 @@ bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParam
     ps.pmTimeMs = 0;
     ps.jumping = true;
     ps.velocity[2] = std::sqrt(2.0f * mp.jumpHeight * mp.gravity);
+    ps.aimSpread = std::min(ps.aimSpread + mp.jumpSpreadAdd, 255.0f); // jump_spreadAdd (0x54153a)
     return true;
 }
 
@@ -711,6 +712,42 @@ void updateAds(PlayerState& ps, const PlayerInput& in, float f, float r) {
     ps.adsSlow = ps.ads && !prone && !(in.weaponState >= 5 && in.weaponState <= 9);
 }
 
+// Aim spread scale (0x4de540, from PmoveSingle 0x50c6cb before the view angles are taken): decay = hipSpreadDecayRate
+// (none, and no increase, when 0), halved in the air (no ground and pm_type ≠ 1), else × hipSpreadProneDecay prone
+// or × hipSpreadDuckedDecay crouched (eFlags 8 / 4), × frametime. Unless fully aimed the increase is, per pitch and
+// yaw, |AngleDelta(command angle, previous command angle)| · hipSpreadTurnAdd · 0.01 / frametime, plus
+// hipSpreadMoveAdd with a forward or right move faster than bg_aimSpreadMoveSpeedThreshold, plus 2 · 1.28 in the
+// air, × frametime. scale += (increase − decay) · 255, kept in 0..255.
+void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, float frametime, const MoveParams& mp) {
+    const HipSpread& h = mp.hipSpread;
+    const bool inAir = !ps.onGround;
+    float decay = h.decayRate, inc = 0;
+    if (decay == 0) {
+        decay = 1.0f;
+    } else {
+        if (inAir) decay *= 0.5f;
+        else if (ps.stance == Stance::Prone) decay *= h.proneDecay;
+        else if (ps.stance == Stance::Crouch) decay *= h.duckedDecay;
+        decay *= frametime;
+        if (in.adsFrac != 1.0f) {
+            if (h.turnAdd != 0 && ps.havePrevCmd) {
+                const float cur[2] = {in.pitch, in.yaw}, old[2] = {ps.prevCmdPitch, ps.prevCmdYaw};
+                for (int i = 0; i < 2; ++i)
+                    inc += std::fabs(std::remainder(cur[i] - old[i], 360.0f)) * h.turnAdd * 0.01f * (1.0f / frametime);
+            }
+            if (h.moveAdd != 0 && (f != 0 || r != 0) &&
+                mp.aimSpreadMoveSpeedThreshold * mp.aimSpreadMoveSpeedThreshold < ps.velocity[1] * ps.velocity[1] + ps.velocity[0] * ps.velocity[0])
+                inc += h.moveAdd;
+            if (inAir) inc += 1.28f + 1.28f;
+            inc *= frametime;
+        }
+    }
+    ps.aimSpread = std::clamp(ps.aimSpread + (inc - decay) * 255.0f, 0.0f, 255.0f);
+    ps.prevCmdPitch = in.pitch;
+    ps.prevCmdYaw = in.yaw;
+    ps.havePrevCmd = true;
+}
+
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     Pml pml;
@@ -723,6 +760,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     // and right moves (0x50c5c7).
     float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);
     if (ps.ads && ps.viewHeightTarget == 11) fwdMove = rightMove = 0;
+    updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
     // While mantling (pm_flags 4) PmoveSingle skips the stance change and the ground trace (0x50c9b7).
     if (!ps.mantling) groundTrace(w, ps, pml);
     updateLean(w, ps, in, float(ms), in.yaw);
@@ -771,6 +809,20 @@ Vec leanOffset(float yawDeg, float lean) {
     const float yaw = yawDeg * float(M_PI) / 180.0f;
     const float d = g * 20.0f;
     return {std::cos(roll) * std::sin(yaw) * d, -std::cos(roll) * std::cos(yaw) * d, -std::sin(roll) * d};
+}
+
+std::array<float, 2> hipSpreadRange(const HipSpread& h, float vh) {
+    if (vh > 40.0f) {
+        const float t = (vh - 40.0f) * 0.05f;
+        return {(h.standMin - h.duckedMin) * t + h.duckedMin, (h.max - h.duckedMax) * t + h.duckedMax};
+    }
+    const float t = (vh - 11.0f) * 0.03448275849223137f;
+    return {(h.duckedMin - h.proneMin) * t + h.proneMin, (h.duckedMax - h.proneMax) * t + h.proneMax};
+}
+
+void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac) {
+    if (adsFrac == 1.0f) return;
+    ps.aimSpread = std::min(ps.aimSpread + h.fireAdd * 255.0f, 255.0f);
 }
 
 bool MantleAnims::loaded() const {

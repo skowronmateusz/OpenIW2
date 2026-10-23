@@ -23,6 +23,8 @@ struct PlayerInput {
     bool adsHeld = false;         // usercmd 0x1000, or the weapon state forces aim (0x13 / 0x14)
     bool adsAllowed = false;      // 0x4dcf70: the weapon can aim now (PlayerWeapon::adsAllowed)
     int weaponState = 0;          // ps+0xb4
+    float pitch = 0;              // view pitch in degrees (with yaw: the command angles for the aim spread)
+    float adsFrac = 0;            // ps+0xb8: the aim fraction
 };
 
 struct PlayerState {
@@ -51,7 +53,21 @@ struct PlayerState {
     int mantleTrans = 0;
     uint32_t mantleFlags = 0;
     int stanceEvent = -1;        // client stance set by a mantle event this move (0x8d → 1, 0x8c → 0), else −1
+    float aimSpread = 255;       // ps+0x5b0: aim spread scale 0..255 (0x4de540)
+    float prevCmdPitch = 0, prevCmdYaw = 0; // the previous command's angles (pm+0x40)
+    bool havePrevCmd = false;
 };
+
+// Hip spread fields of the current weapon (weapon def +0x28c … +0x2b8).
+struct HipSpread {
+    float standMin = 0, duckedMin = 0, proneMin = 0, max = 0, duckedMax = 0, proneMax = 0;
+    float decayRate = 0, fireAdd = 0, turnAdd = 0, moveAdd = 0, duckedDecay = 0, proneDecay = 0;
+};
+// The spread angle range for the current view height (0x4dceb0): between ducked (40) and stand (60) above 40,
+// between prone (11) and ducked below. Returns {min, max} in degrees.
+std::array<float, 2> hipSpreadRange(const HipSpread& h, float viewHeight);
+// A shot adds hipSpreadFireAdd · 255 to the aim spread scale unless fully aimed (0x4dece0).
+void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac);
 
 // The mantle animations of the PLAYER_MANTLE tree (0x525360, names at 0x5a950c): index 0 player_mantle_root,
 // 1–7 player_mantle_up_57 … up_21, 8–10 player_mantle_over_high, over_mid, over_low. Only their delta
@@ -85,6 +101,9 @@ struct MoveParams {
     Vec mins{-15, -15, 0};
     Vec maxs{15, 15, 70};             // standing; crouch 50, prone 30
     const MantleAnims* mantle = nullptr; // no mantling without them
+    HipSpread hipSpread;              // the current weapon's
+    float aimSpreadMoveSpeedThreshold = 11.0f; // bg_aimSpreadMoveSpeedThreshold (0x4fa98e)
+    float jumpSpreadAdd = 64.0f;      // jump_spreadAdd (0x541240)
 };
 
 // Advances the player by dt seconds (split into steps of at most 66 ms like the original).
