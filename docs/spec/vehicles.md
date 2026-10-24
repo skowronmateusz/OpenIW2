@@ -287,7 +287,15 @@ command's delta angles are adjusted so the input keeps that view.
 
 ## Not implemented (TODO)
 
-- `joltbody` (0x5136e0 → 0x50dcf0), `isturretready`, touch damage (0x50ff00), the aim bend of player shots, the
+- `joltbody(point, intensity [, speedFraction 0…1, deceleration mph])` (0x5136e0; errors "Speed fraction must be
+  between…", "Deceleration can't be negative"; deceleration × 17.6) → 0x50dcf0(dir = origin − point normalized):
+  intensity clamped to [0, 1]; +0x1d4 / +0x1d8 = the direction against two of the body axes (0x421da0; which rows
+  is not settled from the decompile), 2D-normalized (0x421160), × intensity × maxBodyPitch (info +0x78) /
+  maxBodyRoll (+0x7c); +0x1dc = 1, +0x1e0 = 0, +0x1e4 = speedFraction × |speed| (+0x1b0), +0x1e8 = deceleration.
+  Every think 0x510770: while +0x1dc > 0, es +0x64 / +0x6c = sin(+0x1e0°) · +0x1dc · +0x1d4 / +0x1d8, +0x1dc −=
+  0.05, +0x1e0 += 36. Free physics (0x50de40) uses +0x1e4 / +0x1e8 instead of maxSpeed / accel while +0x1dc >
+  0.5 (0x591e70). Open: the axis rows, and how the client draws es +0x64 / +0x6c (vehicle draw 0x4ac760, case 0xc
+  of 0x4acf30). The fireturret recoil calls 0x50dcf0(−flash forward, 1, 0, 0). `isturretready`, touch damage (0x50ff00), the aim bend of player shots, the
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
 - The recoil jolt, turret spin/stop sounds, and turret bone rotation in tag positions.
 - Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
