@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace iw2::game {
 namespace {
@@ -54,8 +56,12 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
     r = mul(r, 1.0f / rl);
     const FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
     for (const auto& e : fx->elements) {
-        if (e.type != "Particle" && e.type != "OrientedParticle") continue; // TODO(spec): other element types
         const uint32_t flags = e.flagBits();
+        if (e.type == "Decal") {
+            spawnDecals(e, flags, origin, f, r, up, nowMs);
+            continue;
+        }
+        if (e.type != "Particle" && e.type != "OrientedParticle") continue; // TODO(spec): other element types
         const int count = std::max(1, int(std::lround(range(e.numbers("count"), 1))));
         const auto org = e.numbers("origin");
         for (int i = 0; i < count; ++i) {
@@ -85,6 +91,53 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
             particles_.push_back(p);
         }
     }
+}
+
+// Decal spawn (0x485b60) at the graph start (time 0) of each channel: rotation random in the `rotation` range
+// (element +0x220); colour (0x4857d0) = rgb · a random scale from its range, lerped towards rgbRand by a random
+// with useRandomColors 0x2000; alpha (0x4858c0) the same with useRandomAlpha 0x4000, clamped to 0..1; size
+// (0x485a30) with useRandomSize 0x8000; the material picked at random from `shaders` ((seed >> 17)·count >> 15).
+// The direction is the effect's forward axis (0x485bd9 passes the effect to 0x4ad430). TODO(spec): the spawn
+// position (0x48c290; the particles' origin box is used), count / delay / spawnRange handling, the frustumCull
+// spawn flag (spawnFrustumCullRadius), the exact order of the random draws.
+void FxSystem::spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, const FVec& f, const FVec& r,
+                           const FVec& up, int64_t nowMs) {
+    const int count = std::max(1, int(std::lround(range(e.numbers("count"), 1))));
+    const auto org = e.numbers("origin");
+    const auto shaders = e.list("shaders");
+    if (std::getenv("IW2_MARK_DEBUG")) std::fprintf(stderr, "decal element %s: %zu shaders\n", e.name.c_str(), shaders.size());
+    if (shaders.empty()) return;
+    for (int i = 0; i < count; ++i) {
+        FxDecal d;
+        d.startMs = nowMs + int64_t(range(e.numbers("delay"), 0));
+        FVec off{0, 0, 0};
+        if (org.size() >= 6)
+            for (int k = 0; k < 3; ++k) off[size_t(k)] = org[size_t(k)] + (org[size_t(k) + 3] - org[size_t(k)]) * frand();
+        d.origin = add(origin, add(add(mul(f, off[0]), mul(r, off[1])), mul(up, off[2])));
+        d.dir = f;
+        d.rotation = range(e.numbers("rotation"), 0);
+        auto scaled = [&](const char* name, const char* rname, bool useRand, int c, float fallback) {
+            const auto* g = graph(e, name);
+            const float sc = g ? g->scaleMin + (g->scaleMax - g->scaleMin) * frand() : 1.0f;
+            return channel(e, name, rname, useRand, useRand ? frand() : 0.0f, 0.0f, c, fallback) * sc;
+        };
+        for (int c = 0; c < 3; ++c) d.rgba[size_t(c)] = scaled("rgb", "rgbrand", flags & 0x2000, c, 1.0f);
+        d.rgba[3] = std::clamp(scaled("alpha", "alpharand", flags & 0x4000, 0, 1.0f), 0.0f, 1.0f);
+        d.size = scaled("size", "sizerand", flags & 0x8000, 0, 1.0f);
+        seed_ = seed_ * 0x343fd + 0x269ec3;
+        d.material = shaders[std::min(shaders.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * shaders.size()) >> 15))];
+        decals_.push_back(std::move(d));
+    }
+}
+
+std::vector<FxDecal> FxSystem::takeDecals(int64_t nowMs) {
+    std::vector<FxDecal> due;
+    std::erase_if(decals_, [&](FxDecal& d) {
+        if (d.startMs > nowMs) return false;
+        due.push_back(std::move(d));
+        return true;
+    });
+    return due;
 }
 
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {

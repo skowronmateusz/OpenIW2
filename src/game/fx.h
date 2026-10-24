@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace iw2::game {
@@ -39,8 +40,21 @@ struct FxSightBlocker {
     float visibility = 1;
 };
 
+// A Decal element instance (0x48da90 → 0x485b60) waiting for its spawn time; the host turns it into marks
+// (CG_ImpactMark 0x4ad430, game/marks.h).
+struct FxDecal {
+    int64_t startMs = 0;
+    std::string material;
+    FVec origin{}, dir{};
+    float rotation = 0;
+    std::array<float, 4> rgba{1, 1, 1, 1};
+    float size = 0;
+};
+
 class FxSystem {
 public:
+    // Decals whose spawn time has come.
+    std::vector<FxDecal> takeDecals(int64_t nowMs);
     // Spawns every element of an effect at `origin` facing `forward`.
     void play(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FVec& forward, int64_t nowMs);
     // Drops finished particles and returns the visible ones at nowMs.
@@ -53,8 +67,11 @@ private:
     uint32_t seed_ = 0x13579bdf;
     float frand();
     float range(const std::vector<float>& v, float fallback);
+    void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, const FVec& f, const FVec& r, const FVec& up,
+                     int64_t nowMs);
     std::vector<std::shared_ptr<const assets::EfxEffect>> keep_;
     std::vector<FxParticle> particles_;
+    std::vector<FxDecal> decals_;
     std::vector<FxSightBlocker> sightBlockers_;
 };
 
