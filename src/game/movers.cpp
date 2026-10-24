@@ -144,6 +144,15 @@ void World::runMovers() {
         Entity* c = entityByNumber(child);
         Entity* p = entityByNumber(link.parent);
         if (!c || !p || c->obj->removed || p->obj->removed) continue;
+        if (link.fullFrame) {
+            // G_GeneralLink: the offset frame taken in the parent's tag frame (0x4d6ad0).
+            Vec3 po;
+            Axis pa;
+            if (!linkParentFrame(link, po, pa)) continue;
+            c->obj->set("origin", Value(axisApply(po, pa, link.originOffset)));
+            c->obj->set("angles", Value(axisAngles(axisMul(anglesAxis(link.anglesOffset), pa))));
+            continue;
+        }
         const Value po = p->obj->get("origin"), pa = p->obj->get("angles");
         Vec3 base = po.isVector() ? po.asVector() : Vec3{0, 0, 0}, ang = pa.isVector() ? pa.asVector() : Vec3{0, 0, 0};
         if (!link.tag.empty()) {
@@ -279,23 +288,35 @@ void World::registerMoverBuiltins() {
         Entity* e = entityOf(c.self);
         Entity* p = entityOf(c.arg(0));
         if (!e || !p) throw std::runtime_error("linkto needs two entities");
+        // linkto(parent [, tag [, originOffset, anglesOffset]]) (0x4ed770): an empty tag name is no tag. With up to
+        // two arguments the child keeps its placement in the parent's tag frame (0x4d6540, then 0x4d6ca0); with
+        // offsets they are the placement (0x4d66a0). TODO(spec): the "failed to link" errors (missing tag, parent
+        // without a model, link loops).
         Link l;
         l.parent = p->number;
+        l.fullFrame = true;
         l.tag = c.args.size() > 1 && c.arg(1).isString() ? c.arg(1).asString() : std::string();
-        if (c.args.size() > 2 && c.arg(2).isVector()) { const Vec3 o = c.arg(2).asVector(); l.originOffset = {o[0], o[1], o[2]}; }
-        if (c.args.size() > 3 && c.arg(3).isVector()) { const Vec3 o = c.arg(3).asVector(); l.anglesOffset = {o[0], o[1], o[2]}; }
-        if (c.args.size() <= 2) {
-            // Without offsets the child keeps its current placement relative to the parent (inferred).
-            const Vec3 po = p->obj->get("origin").asVector(), co = e->obj->get("origin").asVector();
-            const float yaw = -p->obj->get("angles").asVector()[1] * float(M_PI) / 180.0f;
-            const float dx = co[0] - po[0], dy = co[1] - po[1];
-            l.originOffset = {dx * std::cos(yaw) - dy * std::sin(yaw), dx * std::sin(yaw) + dy * std::cos(yaw), co[2] - po[2]};
+        if (c.args.size() > 2) {
+            if (c.arg(2).isVector()) { const Vec3 o = c.arg(2).asVector(); l.originOffset = {o[0], o[1], o[2]}; }
+            if (c.args.size() > 3 && c.arg(3).isVector()) { const Vec3 o = c.arg(3).asVector(); l.anglesOffset = {o[0], o[1], o[2]}; }
+        } else {
+            Vec3 po;
+            Axis pa;
+            linkParentFrame(l, po, pa);
+            const Value cov = e->obj->get("origin"), cav = e->obj->get("angles");
+            const Vec3 co = cov.isVector() ? cov.asVector() : Vec3{0, 0, 0}, ca = cav.isVector() ? cav.asVector() : Vec3{0, 0, 0};
+            l.originOffset = axisLocal(po, pa, co);
+            l.anglesOffset = axisAngles(axisMul(anglesAxis(ca), axisTranspose(pa)));
         }
         links_[e->number] = l;
         return Value();
     });
     vm_.registerBuiltin("unlink", [this](CallContext& c) {
-        if (Entity* e = entityOf(c.self)) links_.erase(e->number);
+        // 0x4ede30: a player also drops its link view fraction and mode.
+        if (Entity* e = entityOf(c.self)) {
+            links_.erase(e->number);
+            if (e->isPlayer) playerLink_.reset();
+        }
         return Value();
     });
     vm_.registerBuiltin("enablelinkto", [](CallContext& c) {

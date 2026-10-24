@@ -2183,8 +2183,12 @@ int main(int argc, char** argv) {
             }
             if (world) {
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
-                    world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
+                    if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     world->frame();
+                }
+                if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
+                    const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                    cam.pos = {po[0], po[1], po[2] + 60.0f};
                 }
                 if (shotUse) {
                     game::World::PlayerCommand pc;
@@ -2371,6 +2375,12 @@ int main(int argc, char** argv) {
                 cam.pos = {po[0], po[1], po[2] + 60.0f}; // stand view height 60 in a vehicle (0x509d10)
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
+            } else if (world && world->playerLinked()) {
+                // Linked by script (pm_type 1): the link places the player (src/game/playerlink.cpp); no own movement.
+                const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                cam.pos = {po[0], po[1], po[2] + ps.viewHeight};
+                ps.origin = {po[0], po[1], po[2]};
+                ps.velocity = {0, 0, 0};
             } else if (walk) {
                 if (havePrevBody) { // just got out: continue from where the vehicle code put the player (tag_detach)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
@@ -2542,7 +2552,7 @@ int main(int argc, char** argv) {
                 }
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
-                if (!inVehicle && !onTurret) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                if (!inVehicle && !onTurret && !world->playerLinked()) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
                 // time_slow: the frame scale moves linearly from `from` to `to` over the real time (0x4bee00).
                 if (slowStartNs) {
                     const uint64_t nowNs = SDL_GetTicksNS();

@@ -129,6 +129,8 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerHudBuiltins();
     registerInventoryBuiltins();
     registerMoverBuiltins();
+    registerScriptedAnimBuiltins();
+    registerPlayerLinkBuiltins();
     registerCampaignBuiltins();
     registerVehicleBuiltins();
     registerTurretBuiltins();
@@ -363,7 +365,9 @@ void World::frame() {
     runGrenades();
     runItems();
     runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
+    runScriptedModels();
     thinkActors();
+    updatePlayerLink(); // ClientEndFrame (0x4e7f90) after the entities. TODO(spec): the exact frame order
     runDeathScreen();
 }
 
