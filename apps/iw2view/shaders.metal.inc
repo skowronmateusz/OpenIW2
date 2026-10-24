@@ -30,6 +30,7 @@ struct VertexOut {
 vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
     VertexOut o;
     o.position = u.viewProj * (u.model * float4(in.position, 1.0));
+    o.position.z += u.eye.w * o.position.w; // polygon offset: constant depth bias (D3DRS_DEPTHBIAS)
     o.normal = (u.model * float4(in.normal, 0.0)).xyz;
     o.color = in.color;
     o.uv = in.uv;
