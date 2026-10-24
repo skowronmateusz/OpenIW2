@@ -286,6 +286,9 @@ public:
     // 0x4e8890) and setplayerangles (0x538560 → 0x4e8940).
     std::optional<Vec3> takePlayerTeleport() { return std::exchange(playerTeleport_, std::nullopt); }
     std::optional<Vec3> takePlayerViewAngles() { return std::exchange(playerViewAngles_, std::nullopt); }
+    // playerlinktodelta / playerlinktoabsolute: the player is placed by the link (pm_type 1, no own movement);
+    // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
+    bool playerLinked() const { return playerLink_.has_value(); }
     // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
@@ -401,6 +404,8 @@ private:
     void registerMoverBuiltins();
     // animscripted (src/game/animscripted.cpp).
     void registerScriptedAnimBuiltins();
+    void registerPlayerLinkBuiltins();
+    void updatePlayerLink();
     bool linkParentFrame(const Link& l, Vec3& origin, Axis& axis);
     void startScriptedAnim(Entity& e, const Vec3& origin, const Vec3& angles, int anim, int root, const std::string& notify,
                            bool deathplant);
@@ -665,6 +670,15 @@ private:
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;
     std::optional<Vec3> playerTeleport_, playerViewAngles_;
+    struct PlayerLink {
+        int parent = -1;
+        std::string tag;
+        float fraction = 0.0f; // client +0x8694
+        bool absolute = false; // client +0x8698
+        bool haveRef = false;  // client +0x8680
+        assets::Quat ref;      // client +0x8684 (kept unconjugated here)
+    };
+    std::optional<PlayerLink> playerLink_;
     PlayerCommand playerCmd_;
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;

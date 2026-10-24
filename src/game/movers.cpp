@@ -312,7 +312,11 @@ void World::registerMoverBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("unlink", [this](CallContext& c) {
-        if (Entity* e = entityOf(c.self)) links_.erase(e->number);
+        // 0x4ede30: a player also drops its link view fraction and mode.
+        if (Entity* e = entityOf(c.self)) {
+            links_.erase(e->number);
+            if (e->isPlayer) playerLink_.reset();
+        }
         return Value();
     });
     vm_.registerBuiltin("enablelinkto", [](CallContext& c) {
