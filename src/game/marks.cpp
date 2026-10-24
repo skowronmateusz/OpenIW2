@@ -90,7 +90,7 @@ size_t clipPolygon(const ClipVert* in, size_t n, ClipVert* out, const MVec& norm
 
 // World surfaces for marks (FUN_100157f0 / FUN_10015640): triangle soups whose material does not have bit 4 at +0xc
 // (set on skies, water and clip materials) and, in FUN_10015df0, whose material byte +0x30 has no 0x30 bits
-// (decal-sorted materials). The runtime material is the relocated materials/<name> file.
+// (mtlPolygonOffset, the statemap variable at 0x1018fe20: decal layers). The runtime material is the relocated materials/<name> file.
 void MarkSystem::setWorld(const assets::D3dBsp& bsp, const fs::Vfs& vfs) {
     soups_ = bsp.soups();
     vertices_ = bsp.vertices();

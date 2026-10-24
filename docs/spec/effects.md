@@ -105,7 +105,7 @@ their spawn delay are left out (the original lists every element in its two elem
   becomes one pool mark, its vertices coloured with the rgba bytes (0x4ad1b0, round(c·255) clamped).
 - MarkFragments: box = corners ± r·a0 (FUN_10015c70); world surfaces touching it (cells FUN_100157f0, AABB trees
   FUN_10015640; skipped when the material byte +0xc has bit 4, set on skies, water and clip materials; deduplicated
-  FUN_100157c0); per surface with no 0x30 bits in material byte +0x30 (decal-sorted materials) each triangle
+  FUN_100157c0); per surface with no 0x30 bits in material byte +0x30 (mtlPolygonOffset, i.e. no decal layers) each triangle
   (i0, i1, i2) with n = (v0 − v1) × (v2 − v1), n·a0 ≥ 0 and |n|²/4 ≤ (n·a0)² is clipped (FUN_10015a80 →
   FUN_100154b0: ±0.5 on-plane band, FUN_10015430 lerps position, lightmap uv, normal) by the four edge planes
   ((c_i+1 − c_i) × a0 normalized, through c_i) and a0·p ≥ a0·c0 − r, −a0·p ≥ −a0·c0 − r. A fragment that does not

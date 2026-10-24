@@ -207,6 +207,9 @@ private:
 // ---------------------------------------------------------------------------------------------
 // Scene
 
+// r_polygonOffsetScale / r_polygonOffsetBias defaults (1.3 renderer dvars registered at 0x1000adaa / 0x1000adce).
+constexpr float kPolygonOffsetScale = -1.0f, kPolygonOffsetBias = -1.0f;
+
 struct GpuVertex {
     float pos[3];
     float normal[3];
@@ -224,6 +227,7 @@ struct Batch {
     int texture = 0;   // index into Scene::textures
     int lightmap = -1; // -1 = none, -2 = per-vertex light from the light grid
     bool fullbright = false;
+    int polygonOffset = 0; // mtlPolygonOffset level 0..2 (material state bits)
     uint32_t firstIndex = 0, indexCount = 0;
 };
 
@@ -235,6 +239,9 @@ struct Lightmap {
 struct MatInfo {
     Pass pass;
     int texture;
+    // mtlPolygonOffset: bits 4–5 of the material's second state word (file offset 0x30; statemap variable table of
+    // the 1.3 renderer at 0x1018fe20: mask 0x30 of loadBits[1], values "0" / "1" / "2" = 0 / 0x10 / 0x20).
+    int polygonOffset = 0;
 };
 
 // A model uploaded for dynamic (entity) drawing, in model space.
@@ -363,6 +370,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
     if (auto it = scene.matCache.find(name); it != scene.matCache.end()) return it->second;
     MatInfo mi{Pass::Opaque, 0};
     if (const auto md = vfs.read("materials/" + name)) {
+        if (md->size() > 0x30) mi.polygonOffset = ((*md)[0x30] >> 4) & 3;
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
@@ -625,6 +633,7 @@ const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         b.pass = mi.pass == Pass::Additive ? Pass::Additive : Pass::Blend;
         b.texture = mi.texture;
         b.lightmap = k.second < int(scene.lightmaps.size()) ? k.second : -3;
+        b.polygonOffset = mi.polygonOffset;
         b.firstIndex = uint32_t(idx.size());
         for (const game::Mark* m : list) {
             if (verts.size() + m->vertices.size() > kMaxVerts) break;
@@ -773,12 +782,12 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int>, std::vector<uint32_t>> groups;
+    std::map<std::tuple<int, int, int, int>, std::vector<uint32_t>> groups;
     for (const auto& s : bsp.soups()) {
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
-        auto& dst = groups[{int(mi.pass), mi.texture, lm}];
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -871,7 +880,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -884,6 +893,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.pass = Pass(std::get<0>(key));
         b.texture = std::get<1>(key);
         b.lightmap = std::get<2>(key);
+        b.polygonOffset = std::get<3>(key);
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -981,6 +991,7 @@ struct Renderer {
     SDL_GPUBuffer* overlayIndices = nullptr;
     static constexpr uint32_t kMaxQuads = 8192;
     SDL_GPUGraphicsPipeline* pipelines[4] = {}; // Opaque, AlphaTest, Blend, Additive
+    SDL_GPUGraphicsPipeline* offsetPipelines[4][3] = {}; // the same with the slope-scaled depth bias of polygon offset 1, 2
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
@@ -1053,6 +1064,19 @@ struct Renderer {
             pi.target_info.has_depth_stencil_target = true;
             pipelines[p] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
             if (!pipelines[p]) sdlFail("SDL_CreateGPUGraphicsPipeline");
+            // Polygon offset (1.3 renderer 0x1003d230): level = state bits 4–5; D3DRS_SLOPESCALEDEPTHBIAS =
+            // level · r_polygonOffsetScale and D3DRS_DEPTHBIAS = level · r_polygonOffsetBias / 65536 (0x1019be30);
+            // both dvars default −1 (0x1000adaa / 0x1000adce). Without slope-scale support the depth bias is
+            // doubled instead (not used here). The slope part is the pipeline's slope factor; the constant part is
+            // added to the clip depth in the vertex shader (eye.w), which is the D3D9 meaning of DEPTHBIAS.
+            for (int lvl = 1; lvl <= 2; ++lvl) {
+                pi.rasterizer_state.enable_depth_bias = true;
+                pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                offsetPipelines[p][lvl] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!offsetPipelines[p][lvl]) sdlFail("SDL_CreateGPUGraphicsPipeline");
+            }
+            pi.rasterizer_state.enable_depth_bias = false;
+            pi.rasterizer_state.depth_bias_slope_factor = 0;
         }
         {
             SDL_GPUShaderCreateInfo svs = vs;
@@ -1184,7 +1208,13 @@ struct Renderer {
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
-        struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 1}, kIdentity};
+        struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 0}, kIdentity};
+        // Binds the pass pipeline for a batch's polygon offset level; w of eye carries the constant depth bias.
+        auto bindOffset = [&](Pass p, int level, VU u) {
+            SDL_BindGPUGraphicsPipeline(pass, level > 0 ? offsetPipelines[int(p)][level] : pipelines[int(p)]);
+            u.eye[3] = float(level) * kPolygonOffsetBias / 65536.0f;
+            SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
+        };
         SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         SDL_GPUBufferBinding vb{scene.vertices, 0};
         SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
@@ -1202,6 +1232,7 @@ struct Renderer {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
                 if (b.pass != p) continue;
+                if (b.polygonOffset) bindOffset(p, b.polygonOffset, vu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[3] = {
                     {scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}};
@@ -1214,6 +1245,7 @@ struct Renderer {
                     {0, 0, 0, 0}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                if (b.polygonOffset) bindOffset(p, 0, vu);
             }
             // Entity models of this pass.
             for (const DrawItem& it : items) {
@@ -1241,7 +1273,17 @@ struct Renderer {
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility}};
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    if (b.polygonOffset) {
+                        VU mu = vu;
+                        mu.model = it.transform;
+                        bindOffset(p, b.polygonOffset, mu);
+                    }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                    if (b.polygonOffset) {
+                        VU mu = vu;
+                        mu.model = it.transform;
+                        bindOffset(p, 0, mu);
+                    }
                 }
                 if (bound) {
                     // Restore world buffers for the next pass's world batches.
@@ -1253,7 +1295,7 @@ struct Renderer {
         }
         if (nq) {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(Pass::Blend)]);
-            struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 1}, kIdentity};
+            struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
             SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
             SDL_GPUBufferBinding ovb{overlayVerts, 0};
             SDL_BindGPUVertexBuffers(pass, 0, &ovb, 1);
