@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,6 +25,10 @@ struct FxParticle {
     float gravity = 0;
     float scale[8]{};                   // per-channel scale picked from the scale range
     size_t shader = 0;                  // index into the element's shader list
+    // Atlas sequence (0x48cd20): start frame (+0x108), frames per ms (+0x10c), loop mode / times (+0x110 / +0x114).
+    int seqStart = 0;
+    float seqRate = 0;
+    int seqLoopMode = 0, seqLoopTimes = 0;
 };
 
 struct FxSprite {
@@ -30,6 +36,7 @@ struct FxSprite {
     float rgba[4]{};
     float size = 0;
     std::string shader;
+    float uv[4]{0, 0, 1, 1}; // atlas frame rectangle u0, v0, u1, v1 (renderer 0x1003fa60)
 };
 
 // A live particle of a blocksSight (0x1000) element as entered in the sight-blocker list (0x480970 → 0xc3ed80,
@@ -53,6 +60,9 @@ struct FxDecal {
 
 class FxSystem {
 public:
+    // Atlas size of a material: {byte 0xe, byte 0xf} of materials/<name> (frame count = their product, refexport
+    // 0x617ae8 → 1.3 DLL 0x10017580); {1, 1} when unknown. Set by the host.
+    std::function<std::pair<int, int>(const std::string&)> atlas;
     // Decals whose spawn time has come.
     std::vector<FxDecal> takeDecals(int64_t nowMs);
     // Spawns every element of an effect at `origin` facing `forward`.
@@ -71,6 +81,7 @@ private:
                      int64_t nowMs);
     std::vector<std::shared_ptr<const assets::EfxEffect>> keep_;
     std::vector<FxParticle> particles_;
+    std::pair<int, int> atlasOf(const std::string& material);
     std::vector<FxDecal> decals_;
     std::vector<FxSightBlocker> sightBlockers_;
 };

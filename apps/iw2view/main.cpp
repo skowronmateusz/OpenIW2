@@ -573,7 +573,7 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             const Vec3 r = right * s->size, u = upv * s->size;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
             const Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
-            const float uv[4][2] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+            const float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
@@ -1499,6 +1499,18 @@ int main(int argc, char** argv) {
 
         // Effects started by scripts (playfx & co.), simulated by FxSystem and drawn as sprites.
         game::FxSystem fxSystem;
+        {
+            auto cache = std::make_shared<std::unordered_map<std::string, std::pair<int, int>>>();
+            fxSystem.atlas = [cache, &vfs](const std::string& name) {
+                auto it = cache->find(name);
+                if (it == cache->end()) {
+                    std::pair<int, int> rc{1, 1};
+                    if (const auto md = vfs.read("materials/" + name); md && md->size() > 0x10) rc = {(*md)[0xe], (*md)[0xf]};
+                    it = cache->emplace(name, rc).first;
+                }
+                return it->second;
+            };
+        }
         std::map<std::string, std::shared_ptr<const assets::EfxEffect>> efxCache;
         auto efx = [&](const std::string& path) -> std::shared_ptr<const assets::EfxEffect> {
             auto [it, inserted] = efxCache.try_emplace(path);
