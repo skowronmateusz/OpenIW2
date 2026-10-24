@@ -114,6 +114,15 @@ struct ActorAi {
     Vec3 throwStart{}, throwTarget{}, throwVel{}; // +0x20dc / +0x20e8 / +0x20f4
 };
 
+// A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
+struct RocketState {
+    std::string weapon;
+    struct Entity* parent = nullptr; // +0x134
+    int64_t explodeMs = 0;           // +0x138 think
+    int64_t trTime = 0;              // s.pos: linear (2)
+    Vec3 trBase{}, trDelta{};
+};
+
 // A grenade missile entity (0x5275f0; s.pos trajectory at +0x14, fuse +0x138, AI fields +0x150 … +0x164).
 struct GrenadeState {
     std::string weapon;
@@ -170,6 +179,7 @@ struct Entity {
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
     std::unique_ptr<GrenadeState> grenade; // grenade missile (src/game/grenades.cpp)
+    std::unique_ptr<RocketState> rocket;   // rocket missile (src/game/rockets.cpp)
     int claimedNode = -1;                  // sentient +0x2c: claimed path node (script field "node")
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
@@ -296,6 +306,7 @@ public:
 
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
+    std::string vehicleCollmap(Entity& vehicle);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
@@ -568,6 +579,10 @@ private:
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
     void runGrenades();
+    Entity& spawnRocket(Entity& parent, const std::string& weaponName, const Vec3& start, const Vec3& dir);
+    void missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface);
+    void rocketImpact(Entity& e, const TraceResult& tr);
+    void runRockets();
     // Weapon items (classname weapon_*): LaunchItem (0x521f70 → 0x521e00) gives a dropped item a gravity
     // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
     // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.
@@ -711,7 +726,8 @@ private:
     std::unique_ptr<CollisionWorld> collision_;
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
     std::map<std::string, std::vector<assets::XBoneBox>> boneBoxes_; // xmodel bone hit boxes, filled by skeleton()
-    std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;        // xmodel mins / maxs, filled by skeleton()
+    std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;
+    std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;
     PathGraph paths_;
@@ -723,6 +739,7 @@ private:
     std::vector<std::vector<std::array<uint8_t, 4>>> linkBlock_; // per link and team: bad places blocking it (+8)
     std::array<BadPlace, 32> badPlaces_{};
     std::vector<Entity*> grenades_;
+    std::vector<Entity*> rockets_;
     std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
 

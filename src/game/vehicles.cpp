@@ -815,21 +815,26 @@ void World::useVehicle(Entity& vehicle, Entity& user) {
     }
 }
 
-// World bounds of a vehicle for the use scan. The original uses the absbox of the vehicle's collmap brush
-// (0x50dc40); here the xmodel bounds turned by the angles stand in for it (inferred).
+// World bounds of a vehicle for the use scan: the absbox of the vehicle's collmap brush (0x50dc40) at its origin and
+// angles. TODO(spec): a vehicle without a collmap; the xmodel bounds stand in for it (inferred).
 bool World::vehicleUseBounds(Entity& e, Vec3& mins, Vec3& maxs) {
-    const Value model = e.obj->get("model");
-    if (!model.isString() || !skeleton(model.asString())) return false;
-    auto it = modelBounds_.find(model.asString());
-    if (it == modelBounds_.end()) return false;
+    std::pair<Vec3, Vec3> local;
+    const std::string brush = vehicleCollmap(e);
+    if (brush.empty() || !submodelBounds(brush, local.first, local.second)) {
+        const Value model = e.obj->get("model");
+        if (!model.isString() || !skeleton(model.asString())) return false;
+        auto mb = modelBounds_.find(model.asString());
+        if (mb == modelBounds_.end()) return false;
+        local = mb->second;
+    }
     const Vec3 origin = e.obj->get("origin").asVector();
     Vec3 fwd, right, up;
     anglesToAxis(e.obj->get("angles").asVector(), fwd, right, up);
     mins = {1e30f, 1e30f, 1e30f};
     maxs = {-1e30f, -1e30f, -1e30f};
     for (int c = 0; c < 8; ++c) {
-        const Vec3 l{(c & 1) ? it->second.second[0] : it->second.first[0], (c & 2) ? it->second.second[1] : it->second.first[1],
-                     (c & 4) ? it->second.second[2] : it->second.first[2]};
+        const Vec3 l{(c & 1) ? local.second[0] : local.first[0], (c & 2) ? local.second[1] : local.first[1],
+                     (c & 4) ? local.second[2] : local.first[2]};
         for (int i = 0; i < 3; ++i) {
             const float w = origin[size_t(i)] + fwd[size_t(i)] * l[0] - right[size_t(i)] * l[1] + up[size_t(i)] * l[2];
             mins[size_t(i)] = std::min(mins[size_t(i)], w);
@@ -1074,7 +1079,13 @@ void World::registerVehicleBuiltins() {
         return Value();
     });
     // fireturret (0x514260): bullet weapons fire one 8192-unit bullet from the barrel (two for quadBarrel,
-    // alternating the flash tags); projectile weapons need projectiles, which are not implemented (TODO).
+    // alternating the flash tags), projectile weapons a rocket from each flash tag (0x531a40 with no spread →
+    // G_FireRocket 0x527810). Then the fire event: EV_FIRE_WEAPON (0x9e), quad barrels EV_FIRE_QUADBARREL_1 / _2
+    // (0xb0 / 0xb1, by the barrel pair); the client (0x4b7800 per flash tag: tag_flash, tag_flash_11, tag_flash_2,
+    // tag_flash_22 for the quad events) plays the weapon's fireSound and, for an entity that is not the local
+    // client, its worldFlashEffect at the flash tag. TODO(spec): the effect bolted to the tag, the shell eject
+    // (0x4b7730), the recoil jolt (0x50dcf0), the aim bend towards a driving player's aim point and the barrel
+    // pull-back (+0x19c / +0x198).
     vm_.registerBuiltin("fireturret", [this, requireTurret](CallContext& c) {
         VehicleState& v = requireTurret(c);
         Entity* e = entityOf(c.self);
@@ -1085,7 +1096,7 @@ void World::registerVehicleBuiltins() {
         bool found = false;
         vehicleTagPosition(*e, "tag_barrel", found);
         if (!found) throw std::runtime_error("No tag_barrel for [" + e->obj->get("model").toString() + "]");
-        if (type == "bullet") {
+        {
             static const char* const flash[4] = {"tag_flash", "tag_flash_11", "tag_flash_2", "tag_flash_22"};
             const int count = v.info->quadBarrel ? 2 : 1;
             const int first = v.info->quadBarrel && v.altBarrel ? 2 : 0;
@@ -1096,12 +1107,26 @@ void World::registerVehicleBuiltins() {
             a[1] += v.turretYaw;
             Vec3 fwd, right, up;
             anglesToAxis(a, fwd, right, up);
+            const std::string flashFx = weaponField(v.info->turretWeapon, "worldFlashEffect");
+            const std::string fireSnd = weaponField(v.info->turretWeapon, "fireSound");
             for (int k = 0; k < count; ++k) {
                 bool ok = false;
                 const Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
                 if (!ok) throw std::runtime_error(std::string("No ") + flash[first + k] + " for [" + e->obj->get("model").toString() + "]");
-                const Vec3 end{start[0] + fwd[0] * 8192.0f, start[1] + fwd[1] * 8192.0f, start[2] + fwd[2] * 8192.0f};
-                fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e);
+                if (type == "bullet") {
+                    const Vec3 end{start[0] + fwd[0] * 8192.0f, start[1] + fwd[1] * 8192.0f, start[2] + fwd[2] * 8192.0f};
+                    fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e);
+                } else {
+                    spawnRocket(*e, v.info->turretWeapon, start, fwd);
+                }
+            }
+            // The fire event's client side: the quad events show both tags of the pair, EV_FIRE_WEAPON tag_flash.
+            for (int k = 0; k < (v.info->quadBarrel ? 2 : 1); ++k) {
+                bool ok = false;
+                const Vec3 at = vehicleTagPosition(*e, flash[first + k], ok);
+                if (!ok) continue;
+                if (!fireSnd.empty()) startSound(fireSnd, &at);
+                if (!flashFx.empty()) fxEvents_.push_back({flashFx, at, fwd});
             }
         }
         if (v.info->quadBarrel) v.altBarrel = !v.altBarrel;

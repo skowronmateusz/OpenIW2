@@ -170,6 +170,26 @@ also jolts the body backwards (0x50dcf0) and stores the weapon's fire time.
 Here bullets fly along the body's axes turned by the turret angles (inferred: the original uses the flash tag's own
 axis, rotated by the client-side turret bone controllers).
 
+### Turret projectiles and the fire event
+
+A projectile turret weapon fires through 0x531a40 with no spread: a rocket from each flash tag along the same
+direction (G_FireRocket 0x527810): classname `rocket`, ET_MISSILE, explode think in 30 s, flags 0x400, parent
+(+0xf4 / +0x134), direct damage = the weapon's `damage` (+0x1ec), clip 0x280e891, linear trajectory at
+`projectileSpeed` (+0x384) from 50 ms ago, the weapon's `projectileModel`. G_RunMissile (0x526c30) traces from the
+origin to the trajectory point each frame (the parent passes); the sky (surface 0x10) frees it, else the impact
+(0x526200): the hit entity takes the direct damage (MOD_PROJECTILE = 5, the missile classname's means of death at
+0x5a5754 + 0xf · 0x2c; splash +4 = 6, MOD_PROJECTILE_SPLASH); with `projImpactExplode` the event by
+`projExplosionType` (+0x390: 0 → 0xbf EV_GRENADE_EXPLODE, 1 → 0xc0 / 0xc1 EV_ROCKET_EXPLODE when a sentient was hit,
+else 0xc2 / 0xc3) with the hit surface and normal, then radius damage (`explosionInnerDamage` +0x37c,
+`explosionOuterDamage` +0x380, `explosionRadius` +0x378, the hit entity skipped). Client (0x4ba8d0): 0xc0 plays
+`rocket_explode_<surface>` (0xf5b800, built from "rocket_explode" at 0x4a28f5) and impact effect type 10 (+0x398);
+all explode events then play the weapon's `projExplosionEffect` and `projExplosionSound`.
+
+The shot sends EV_FIRE_WEAPON (0x9e) or, for quad barrels, EV_FIRE_QUADBARREL_1 / _2 (0xb0 / 0xb1 by the barrel
+pair). The client (0x4b7800, per flash tag) plays the weapon's `fireSound` and, for an entity that is not the local
+client, its `worldFlashEffect` at the flash tag (0x4b6660). Open: projImpactExplode 0 (bounce), whizby, water, the
+0xc1 / 0xc3 flag 0xf79778, the shell eject 0x4b7730, the recoil jolt 0x50dcf0.
+
 ## Entity think (0x512b80)
 
 Every script vehicle, each frame: previous origin/angles = the entity's (0x50fc40); a dead owner (health < 1) is
@@ -231,8 +251,17 @@ is used after `g_useholdtime` (default 0): entities whose absbox touches eye ± 
 forward + 1) / 2) × 144, sorted; +10000 when the eye → centre trace (mask 0x11) is blocked, sorted again; the first
 passing 0x512200 (player not in a vehicle and not linked, vehicle without owner, |+0x1b0| ≤ 1, health > 0,
 usable). The vehicle's usable flag starts as spawnflags & 1 (0x50dcd5). The scan is gated by a global 0x9bef24
-(treated as set). The vehicle absbox comes from its collmap brush (0x50dc40); OpenIW2 uses the xmodel bounds turned
-by the angles instead (inferred).
+(treated as set). The vehicle absbox comes from its collmap brush (0x50dc40), turned by the angles; a vehicle without
+one uses the xmodel bounds (inferred).
+
+### Collmap (0x50dc40, finder 0x50d270, collmap spawn 0x512fd0)
+
+After the level load (0x4d9c6f, every vehicle slot) and when a vehicle's model changes (0x511a6f, 0x511c5b) the
+vehicle takes the brush model of the in-use `script_vehicle_collmap` whose targetname equals the vehicle's model
+name (case-insensitive) and becomes solid with contents 0x800000 (0xa00000 with spawnflag 1); an empty brush model
+warns "Cannot use empty vehicle collmap for [%s]". The collmap entities themselves have no contents (eType 0xe,
+contents 0). The player (mask 0x281c011), bullets (0x280e831), rockets (0x280e891) and other vehicles (0x810211)
+collide with it.
 
 ### Player in a vehicle
 
@@ -260,10 +289,22 @@ command's delta angles are adjusted so the input keeps that view.
 
 - `joltbody` (0x5136e0 → 0x50dcf0), `isturretready`, touch damage (0x50ff00), the aim bend of player shots, the
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
-- Turret projectiles (tank shells) from `fireturret`, the recoil jolt, turret spin/stop sounds, and turret bone
-  rotation in tag positions.
-- The speed fraction (speed / engineSndSpeed, vehicle +0x1fc / +0x1f8), engine sounds and texture scrolling
-  (`g_vehicleTexScrollScale`).
+- The recoil jolt, turret spin/stop sounds, and turret bone rotation in tag positions.
+- Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
+  +0x26a after loading (0x5118b0, G_SoundAliasIndex 0x4d5860). Spawn (0x50dbb7): +0x1ec = 1 (engine on; script
+  `startenginesound` 0x513e80 sets 1, `stopenginesound` 0x513ee0 sets 0), fractions +0x1f8 / +0x1fc = 0, and an
+  ET_SOUND_BLEND helper (0x52f6f0 → G_Spawn, eType 6) for low/high idle (+0x1f0) and for low/high engine (+0x1f4)
+  when both names of the pair are set. Fractions: path think (0x511513) f = clamp(+0x1b0 / engineSndSpeed, 0, 1),
+  engine = f, idle = 1 − f; free physics (0x510fe6) DiffTrack (0x420a20, rate 4, 0.05 s) towards idle 1 / engine 0
+  when the driver's forwardmove (client +0x85dc) is 0, else idle 0 / engine 1. Every think (0x510be0): dead (health
+  < 1) or engine off → the helpers' aliases are 0; else helper es +0x8c / +0x8e = low / high alias, +0x94 = its
+  fraction. Turret state +0x18c = 2 with turretSpinSnd: the vehicle's loop sound (es +6); = 1 with turretStopSnd:
+  event 0xb3. cgame (0x4acf30 case 6 → 0x4ac8a0): with both aliases, the fraction interpolated between snapshots,
+  play blend 0x442900 → 0x4423d0 at the helper's origin: culled beyond lerp(distMax), an already playing loop of the
+  same pair only takes the volume lerp(volMin) (0x441f80), a new one a random volume in lerp(volMin…volMax) and
+  pitch in lerp(pitchMin…pitchMax) (0x442310); both aliases must use the same file (0x442650). Open: where the
+  helper entities get their origin (no vehicle code writes it; G_Spawn leaves it at 0), so playback is not wired.
+- Texture scrolling (`g_vehicleTexScrollScale`).
 - Animated wheel tags: the tag positions come from the entity's current animation pose (bind pose without one);
   the exact pose the original samples (0x4d7460) is not checked.
 - Exact frame order of the vehicle think relative to script threads.

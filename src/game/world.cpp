@@ -363,6 +363,7 @@ void World::frame() {
     thinkVehicles();
     thinkTurrets();
     runGrenades();
+    runRockets(); // TODO(spec): G_RunFrame runs every missile in entity order
     runItems();
     runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
     runScriptedModels();
