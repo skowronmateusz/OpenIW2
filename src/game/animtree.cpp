@@ -433,6 +433,17 @@ std::string AnimState::debugString() const {
     return out;
 }
 
+void AnimState::clearChildren(int n, float blendTime) {
+    if (n < 0 || size_t(n) >= nodes_.size()) return;
+    for (int c : tree_.nodes()[size_t(n)].children) clear(c, blendTime);
+}
+
+bool AnimState::looping(int n) const {
+    if (n < 0 || size_t(n) >= nodes_.size() || !tree_.nodes()[size_t(n)].children.empty()) return false;
+    const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
+    return a && a->looping;
+}
+
 // 0x477b80 (called by 0x478550 with weight 1, first, not nested). A leaf with a delta track adds weight × the
 // translation from its old to its new time (0x475960: a looping anim whose time went back adds one whole cycle) and
 // adds its weight. A node with one weighted child hands it its own weight. Several weighted children are summed with
@@ -484,6 +495,34 @@ void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goa
     }
     for (int k = 0; k < 3; ++k) out.trans[size_t(k)] += sum.trans[size_t(k)] * scale;
     out.weight += weight;
+}
+
+void AnimState::nodeDelta(int n, float& qz, float& qw, std::array<float, 3>& trans) const {
+    qz = 0.0f;
+    qw = 1.0f;
+    trans = {0, 0, 0};
+    if (n <= 0 || size_t(n) >= nodes_.size() || !tree_.nodes()[size_t(n)].children.empty()) return;
+    const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
+    if (!a || !a->delta) return;
+    const int keys = a->keyCount();
+    const float frame = nodes_[size_t(n)].time * float(keys - 1);
+    if (!a->deltaRot.keys.empty()) {
+        const assets::Quat q = assets::sampleRotRaw(a->deltaRot, frame, keys);
+        if (q.z != 0.0f || q.w != 0.0f) {
+            qz = q.z;
+            qw = q.w;
+        }
+    }
+    if (!a->deltaTrans.keys.empty()) trans = assets::sampleTrans(a->deltaTrans, frame, keys);
+}
+
+// The exe's "no state" (entry index 0) is taken as a node at weight and goal weight 0 (inferred: entries are
+// handed out when a node is set).
+bool AnimState::playedThrough(int n) const {
+    if (n <= 0 || size_t(n) >= nodes_.size()) return true;
+    const AnimNodeState& s = nodes_[size_t(n)];
+    if (s.weight == 0 && s.goalWeight == 0) return true;
+    return !(s.oldTime <= s.time && s.time != 1.0f && s.cycle <= s.oldCycle);
 }
 
 AnimDelta AnimState::delta(bool goalWeights) const {

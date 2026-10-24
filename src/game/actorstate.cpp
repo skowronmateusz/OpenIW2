@@ -176,14 +176,16 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiCustom: // 0x54b230
         return true;
+    case AiScripted: // 0x54b060
+        return true;
     case AiGrenade: // 0x5205b0
         return grenadeStateStart(e);
     case AiBadplace: // 0x524030: the flag keeps whether a flee target was found
         e.ai.badPlace = badPlaceFlee(e);
         return true;
     default:
-        // TODO(spec): animscripted (0x54b060) and negotiation (0x54b720) need animscripted and traversals, which
-        // are not implemented; their start fails, so the actor stays exposed.
+        // TODO(spec): negotiation (0x54b720) needs traversals, which are not implemented; its start fails, so the
+        // actor stays exposed.
         return false;
     }
 }
@@ -195,6 +197,9 @@ void World::aiFinish(Entity& e, int state) {
         break;
     case AiGrenade:
         grenadeStateFinish(e); // 0x520600
+        break;
+    case AiScripted: // 0x54b070: the scripted block is freed
+        e.scripted.reset();
         break;
     default:
         // exposed 0x548d20, death / custom 0x549890: nothing. TODO(spec): pain 0x54d300 broadcasts the pending
@@ -227,6 +232,7 @@ int World::aiThink(Entity& e, int state) {
     case AiDeath: return deathThink(e);       // 0x548ab0
     case AiPain: return painThink(e);         // 0x54d340
     case AiCustom: return customThink(e);     // 0x54b240
+    case AiScripted: return scriptedThink(e); // 0x54b0a0
     case AiBadplace: return badPlaceThink(e); // 0x524060
     case AiGrenade: return grenadeStateThink(e); // 0x520c30
     default:

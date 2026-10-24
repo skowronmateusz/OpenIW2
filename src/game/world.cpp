@@ -129,6 +129,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerHudBuiltins();
     registerInventoryBuiltins();
     registerMoverBuiltins();
+    registerScriptedAnimBuiltins();
     registerCampaignBuiltins();
     registerVehicleBuiltins();
     registerTurretBuiltins();
@@ -363,6 +364,7 @@ void World::frame() {
     runGrenades();
     runItems();
     runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
+    runScriptedModels();
     thinkActors();
     runDeathScreen();
 }

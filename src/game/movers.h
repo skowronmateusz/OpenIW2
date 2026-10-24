@@ -38,6 +38,14 @@ struct Link {
     int parent = -1; // entity number
     std::string tag;
     MVec originOffset{}, anglesOffset{};
+    // Script links (linkto, tagInfo +0x10) keep the offset in the full frame of the parent's tag (0x4d6ad0); the
+    // player's vehicle link keeps the older tag-position + parent-yaw placement.
+    bool fullFrame = false;
+    // tagInfo +0x40: the parent frame when animscripted started (0x4f60ad); scripted poses move with the parent
+    // from there (0x53bcf5).
+    bool hasStartFrame = false;
+    MVec startOrigin{};
+    std::array<MVec, 3> startAxis{};
 };
 
 // Shortest signed difference a − b in degrees, wrapped to [−180, 180] (0x423f50).

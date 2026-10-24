@@ -4,6 +4,7 @@
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
 #include "game/animtree.h"
+#include "game/axis.h"
 #include "game/inventory.h"
 #include "game/movers.h"
 #include "game/campaign.h"
@@ -130,6 +131,18 @@ struct GrenadeState {
     int64_t pingMs = -1000;           // +0x164 last grenade_ping
 };
 
+// The scripted animation block of an entity (+0x1d0, 0x60 bytes from the pool 0x82e980; src/game/animscripted.cpp).
+struct ScriptedAnim {
+    Axis axis{};              // +0x0: frame of the scripted angles
+    Vec3 origin{};            // +0x24: scripted origin
+    Vec3 originOffset{};      // +0x30: where the entity was, relative to the start pose; slides to 0
+    Vec3 anglesOffset{};      // +0x3c
+    int anim = 0;             // +0x48: tree node, 0 when finished
+    int root = 0;             // +0x4a
+    bool started = false;     // +0x4c: set after the first update
+    bool deathplant = false;  // +0x4d
+};
+
 struct Entity {
     ObjectPtr obj;
     int number = 0;
@@ -140,6 +153,7 @@ struct Entity {
     std::vector<Attachment> attachments;
     std::string animTree; // set by useanimtree
     std::unique_ptr<AnimState> anim;
+    std::unique_ptr<ScriptedAnim> scripted; // animscripted / startscriptedanim (+0x1d0)
     uint64_t animScriptThread = 0;   // thread of the running engine animscript (init, stop, …)
     std::string animScript;
     int64_t animScriptStartMs = 0;
@@ -385,6 +399,16 @@ private:
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();
+    // animscripted (src/game/animscripted.cpp).
+    void registerScriptedAnimBuiltins();
+    bool linkParentFrame(const Link& l, Vec3& origin, Axis& axis);
+    void startScriptedAnim(Entity& e, const Vec3& origin, const Vec3& angles, int anim, int root, const std::string& notify,
+                           bool deathplant);
+    void updateScriptedAnim(Entity& e);
+    void updateScriptedPose(Entity& e, bool slide);
+    void stopScriptedAnim(Entity& e);
+    void runScriptedModels();
+    int scriptedThink(Entity& e);
     void registerCampaignBuiltins();
     void objectiveMessage(int state, const std::string& text);
     std::array<Objective, 16> objectives_{};

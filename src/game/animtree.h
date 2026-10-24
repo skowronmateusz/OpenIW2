@@ -92,6 +92,10 @@ public:
     // Applies one of the setanim* calls to node `n`.
     void set(int n, const SetArgs& a);
     void clear(int n, float blendTime);
+    // 0x4789a0: clear (0x478940) every child of the node.
+    void clearChildren(int n, float blendTime);
+    // The looping flag of a leaf's animation (xanim +2). TODO(spec): a blend node's flag (entry +0x10 bit 1).
+    bool looping(int n) const;
     void restart(int n);
 
     // Advances time; `onNote(notifyName, noteName)` is called for crossed notetracks and "end".
@@ -106,6 +110,12 @@ public:
     // Translation of the delta tracks between the old and new time of every weighted leaf (0x478550). With
     // `goalWeights` the goal weights pick and weigh the animations instead of the current ones (actor byte +0x220).
     AnimDelta delta(bool goalWeights) const;
+    // Delta of one animation at its current time (0x4785d0 → 0x477b80 with +6 set → 0x475aa0): the yaw quaternion
+    // (z, w), (0, 1) without rotation, and the translation. TODO(spec): blend nodes (0x477b80's child walk) give none.
+    void nodeDelta(int n, float& qz, float& qw, std::array<float, 3>& trans) const;
+    // 0x478020: the node has played through (its time reached 1, went back or completed a cycle since the last
+    // update), or has no state.
+    bool playedThrough(int n) const;
 
     // Blended local pose for a skeleton.
     assets::XPose pose(const assets::XModelParts& parts) const;
