@@ -49,7 +49,7 @@ meaning of the flag bits.
 Particles and oriented particles are spawned by `playfx`, `playfxontag` and `playloopedfx` and drawn as
 camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
 the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
-the per-particle velocity scale, sprite size meaning (half width), atlas sequences (the whole texture is used),
+the per-particle velocity scale, sprite size meaning (half width),
 other element types (Tail, Emitter, FxRunner, Decal, Light, Cloud, CameraShake, Line), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
 
@@ -120,3 +120,18 @@ their spawn delay are left out (the original lists every element in its two elem
   surface lightmap (`iw2view … --shot x.png --shoot N`, `IW2_MARK_DEBUG=1`). TODO(spec): 0x48c290 spawn position,
   frustumCull spawn flag, the per-mark cull, the renderer's mark draw (0x10024320, depth offset), 0xf79778, BSP walk
   order (only matters at the limits).
+
+## Atlas sequences
+
+- Frame count of a material = byte 0xe · byte 0xf of materials/<name> (refexport 0x617ae8 → 1.3 DLL 0x10017580); e.g.
+  gfx_fire_atlas 4 · 4.
+- Spawn (0x48cd20): material at random ((seed >> 17)·count >> 15); with n ≠ 1 frames:
+  start frame by sequenceStartFrameMode (+0x288, 0..2; 0 = sequenceFixedFrameValue (+0x28c) − 1, 1 = random
+  (seed >> 17)·n >> 15, 2 = a caller value), rate by sequencePlayRateMode (+0x290, 0..1; 0 = sequenceFixedFpsValue
+  (+0x294) / 1000 per ms, 1 = n / life), sequenceLoopMode (+0x298, 0..1) and sequenceLoopTimes (+0x29c) copied. The
+  element is zeroed before parsing (0x4878c0), so all default to 0.
+- Frame (0x481c30): start + _ftol((now − spawn)·rate); loop mode 0: mod n once past the end; mode 1 with times > 0: mod
+  n below (times + 1)·n, else the last frame and times = 0; mode 1 with times ≤ 0: the last frame.
+- Rectangle (1.3 DLL 0x1003fa60): c = byte 0xf, r = byte 0xe, u0 = (frame % c)/c, v0 = (frame / c)/r, u1 = u0 + 1/c,
+  v1 = v0 + 1/r; a single frame uses 0..1.
+- OpenIW2: `FxSystem::atlas` (host reads the material bytes), `FxSprite::uv`. TODO(spec): start mode 2's value.

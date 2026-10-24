@@ -86,8 +86,32 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
                 const auto* g = graph(e, scaled[k]);
                 p.scale[k] = g ? g->scaleMin + (g->scaleMax - g->scaleMin) * frand() : 1.0f;
             }
+            // Material and sequence (0x48cd20): the material at random ((seed >> 17)·count >> 15); with a frame
+            // count n > 1 the start frame by sequenceStartFrameMode (+0x288; 0 fixed: sequenceFixedFrameValue − 1,
+            // 1 random: (seed >> 17)·n >> 15, 2: the caller's value, TODO(spec)) and the rate by
+            // sequencePlayRateMode (+0x290; 0: sequenceFixedFpsValue / 1000 frames per ms, 1: n / life), loop mode
+            // and times copied (+0x298 / +0x29c). All of these default to 0 (the element is zeroed, 0x4878c0).
             const auto shaders = e.list("shaders");
-            p.shader = shaders.empty() ? 0 : size_t(frand() * float(shaders.size() - 1) + 0.5f);
+            if (!shaders.empty()) {
+                seed_ = seed_ * 0x343fd + 0x269ec3;
+                p.shader = std::min(shaders.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * shaders.size()) >> 15));
+                const auto [rows, cols] = atlasOf(shaders[p.shader]);
+                const int n = rows * cols;
+                if (n != 1) {
+                    const auto num = [&](const char* k) { const auto v = e.numbers(k); return v.empty() ? 0.0f : v[0]; };
+                    const int startMode = int(num("sequenceStartFrameMode"));
+                    if (startMode == 0) p.seqStart = int(num("sequenceFixedFrameValue")) - 1;
+                    else if (startMode == 1) {
+                        seed_ = seed_ * 0x343fd + 0x269ec3;
+                        p.seqStart = int((uint64_t(seed_ >> 17 & 0x7fff) * uint64_t(n)) >> 15);
+                    }
+                    const int rateMode = int(num("sequencePlayRateMode"));
+                    p.seqRate = rateMode == 0 ? num("sequenceFixedFpsValue") / 1000.0f
+                                              : rateMode == 1 ? float(n) / float(p.endMs - p.startMs) : 0.0f;
+                    p.seqLoopMode = int(num("sequenceLoopMode"));
+                    p.seqLoopTimes = int(num("sequenceLoopTimes"));
+                }
+            }
             particles_.push_back(p);
         }
     }
@@ -130,6 +154,10 @@ void FxSystem::spawnDecals(const assets::EfxElement& e, uint32_t flags, const FV
     }
 }
 
+std::pair<int, int> FxSystem::atlasOf(const std::string& material) {
+    return atlas ? atlas(material) : std::pair<int, int>{1, 1};
+}
+
 std::vector<FxDecal> FxSystem::takeDecals(int64_t nowMs) {
     std::vector<FxDecal> due;
     std::erase_if(decals_, [&](FxDecal& d) {
@@ -144,7 +172,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     std::erase_if(particles_, [&](const FxParticle& p) { return nowMs >= p.endMs; });
     std::vector<FxSprite> out;
     sightBlockers_.clear();
-    for (const FxParticle& p : particles_) {
+    for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
         const uint32_t flags = e.flagBits();
@@ -177,6 +205,37 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
         const auto shaders = e.list("shaders");
         if (!shaders.empty()) s.shader = shaders[std::min(p.shader, shaders.size() - 1)];
+        // Frame (0x481c30): frame = start + _ftol((now − spawn) · rate); n frames; loop mode 0: frame mod n once
+        // past the end; mode 1 with loop times > 0: mod n until (times + 1)·n, then the last frame (and times 0);
+        // mode 1 with times ≤ 0: held on the last frame. Atlas rectangle (renderer 0x1003fa60): c = byte 0xf,
+        // r = byte 0xe; u0 = (frame % c)/c, v0 = (frame / c)/r, u1 = u0 + 1/c, v1 = v0 + 1/r; one frame: 0, 0, 1, 1.
+        if (!s.shader.empty()) {
+            const auto [rows, cols] = atlasOf(s.shader);
+            const int n = rows * cols;
+            if (n != 1 && rows > 0 && cols > 0) {
+                FxParticle& mp = p;
+                int frame = int(t * p.seqRate) + p.seqStart;
+                if (p.seqLoopMode == 0) {
+                    if (frame >= n) frame %= n;
+                } else if (p.seqLoopMode == 1) {
+                    if (mp.seqLoopTimes > 0) {
+                        if (frame >= n) {
+                            if (frame < (mp.seqLoopTimes + 1) * n) frame %= n;
+                            else {
+                                frame = n - 1;
+                                mp.seqLoopTimes = 0;
+                            }
+                        }
+                    } else if (frame >= n) {
+                        frame = n - 1;
+                    }
+                }
+                s.uv[0] = float(frame % cols) / float(cols);
+                s.uv[1] = float(frame / cols) / float(rows);
+                s.uv[2] = s.uv[0] + 1.0f / float(cols);
+                s.uv[3] = s.uv[1] + 1.0f / float(rows);
+            }
+        }
         if (flags & 0x1000) {
             // Alpha byte (0x481a40): the clamped alpha · 255 truncated (_ftol) with useAlpha (0x80), else 255.
             const int alphaByte = flags & 0x80 ? int(s.rgba[3] * 255.0f) : 255;
