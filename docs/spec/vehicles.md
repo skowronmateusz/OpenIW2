@@ -167,6 +167,10 @@ support bullet and projectile weapons") and `tag_barrel`. It fires from `tag_fla
 `tag_flash`, `tag_flash_11` / `tag_flash_2`, `tag_flash_22`, alternating each shot); bullets reach 8192 units. It
 also jolts the body backwards (0x50dcf0) and stores the weapon's fire time.
 
+Aim bend (0x5144e7): with a driving player, a single barrel and no pull-back (+0x19c = 0) the shot direction is
+the flash direction moved towards the player's aim point (+0x1bc) by at most 10° (0x591e8c, −10 at 0x59213c) in
+pitch and in yaw separately (AngleSubtract 0x423f50, roll 0).
+
 Here bullets fly along the body's axes turned by the turret angles (inferred: the original uses the flash tag's own
 axis, rotated by the client-side turret bone controllers).
 
@@ -309,7 +313,7 @@ command's delta angles are adjusted so the input keeps that view.
   0x5922e0 = 2) exceeds 4 (0x5922d8): z = 0, ±4 …, then x, y = ±4, ±8 … (step 4, 0x591e64) below that. Implemented in
   `World::vehicleTouch` / `tryPushEntity` (contact = a zero-length box trace against 0x800000 starting in the
   vehicle; the pushed player goes to the front end through the setorigin / setplayerangles channel). Open: script
-  movers and the touch callbacks, the entity list box, the ground entity reset, actor look yaws (0x504910). the aim bend of player shots, the
+  movers and the touch callbacks, the entity list box, the ground entity reset, actor look yaws (0x504910). the
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
 - The recoil jolt, turret spin/stop sounds, and turret bone rotation in tag positions.
 - Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
