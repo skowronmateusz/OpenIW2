@@ -815,21 +815,26 @@ void World::useVehicle(Entity& vehicle, Entity& user) {
     }
 }
 
-// World bounds of a vehicle for the use scan. The original uses the absbox of the vehicle's collmap brush
-// (0x50dc40); here the xmodel bounds turned by the angles stand in for it (inferred).
+// World bounds of a vehicle for the use scan: the absbox of the vehicle's collmap brush (0x50dc40) at its origin and
+// angles. TODO(spec): a vehicle without a collmap; the xmodel bounds stand in for it (inferred).
 bool World::vehicleUseBounds(Entity& e, Vec3& mins, Vec3& maxs) {
-    const Value model = e.obj->get("model");
-    if (!model.isString() || !skeleton(model.asString())) return false;
-    auto it = modelBounds_.find(model.asString());
-    if (it == modelBounds_.end()) return false;
+    std::pair<Vec3, Vec3> local;
+    const std::string brush = vehicleCollmap(e);
+    if (brush.empty() || !submodelBounds(brush, local.first, local.second)) {
+        const Value model = e.obj->get("model");
+        if (!model.isString() || !skeleton(model.asString())) return false;
+        auto mb = modelBounds_.find(model.asString());
+        if (mb == modelBounds_.end()) return false;
+        local = mb->second;
+    }
     const Vec3 origin = e.obj->get("origin").asVector();
     Vec3 fwd, right, up;
     anglesToAxis(e.obj->get("angles").asVector(), fwd, right, up);
     mins = {1e30f, 1e30f, 1e30f};
     maxs = {-1e30f, -1e30f, -1e30f};
     for (int c = 0; c < 8; ++c) {
-        const Vec3 l{(c & 1) ? it->second.second[0] : it->second.first[0], (c & 2) ? it->second.second[1] : it->second.first[1],
-                     (c & 4) ? it->second.second[2] : it->second.first[2]};
+        const Vec3 l{(c & 1) ? local.second[0] : local.first[0], (c & 2) ? local.second[1] : local.first[1],
+                     (c & 4) ? local.second[2] : local.first[2]};
         for (int i = 0; i < 3; ++i) {
             const float w = origin[size_t(i)] + fwd[size_t(i)] * l[0] - right[size_t(i)] * l[1] + up[size_t(i)] * l[2];
             mins[size_t(i)] = std::min(mins[size_t(i)], w);

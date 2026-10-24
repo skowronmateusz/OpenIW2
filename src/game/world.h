@@ -306,6 +306,7 @@ public:
 
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
+    std::string vehicleCollmap(Entity& vehicle);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
@@ -725,7 +726,8 @@ private:
     std::unique_ptr<CollisionWorld> collision_;
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
     std::map<std::string, std::vector<assets::XBoneBox>> boneBoxes_; // xmodel bone hit boxes, filled by skeleton()
-    std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;        // xmodel mins / maxs, filled by skeleton()
+    std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;
+    std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;
     PathGraph paths_;

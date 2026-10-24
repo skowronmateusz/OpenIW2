@@ -117,8 +117,8 @@ traces with the player's mask 0x281c011 and the player as pass entity (docs/spec
   whose contents match the mask (and that is not the pass entity or its owner) whose absolute bounds the sweep touches
   is traced with its clip model; a smaller fraction replaces the result and names the entity.
 - OpenIW2: `CollisionWorld::trace` clips against the entity clips the world sets each frame
-  (`src/game/entityclips.cpp`): `script_brushmodel` and `script_vehicle_collmap` entities with a `*N` model, at
-  their current origin and angles, contents = their brushes' and triangles' contents, skipped after `notsolid`
+  (`src/game/entityclips.cpp`): `script_brushmodel` entities with a `*N` model and script vehicles with the brush
+  model of their collmap (docs/spec/vehicles.md "Collmap"), at their current origin and angles, contents = their brushes' and triangles' contents, skipped after `notsolid`
   (inferred: the entity contents the original stores are not read). There is no pass entity yet (no caller is a
   brush model). `traceWorld` is the world-only trace.
 `src/game/pmove.cpp` implements walking, gravity, jumping, stepping (18 units) and sliding. Speed, gravity and

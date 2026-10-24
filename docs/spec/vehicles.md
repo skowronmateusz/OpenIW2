@@ -251,8 +251,17 @@ is used after `g_useholdtime` (default 0): entities whose absbox touches eye ± 
 forward + 1) / 2) × 144, sorted; +10000 when the eye → centre trace (mask 0x11) is blocked, sorted again; the first
 passing 0x512200 (player not in a vehicle and not linked, vehicle without owner, |+0x1b0| ≤ 1, health > 0,
 usable). The vehicle's usable flag starts as spawnflags & 1 (0x50dcd5). The scan is gated by a global 0x9bef24
-(treated as set). The vehicle absbox comes from its collmap brush (0x50dc40); OpenIW2 uses the xmodel bounds turned
-by the angles instead (inferred).
+(treated as set). The vehicle absbox comes from its collmap brush (0x50dc40), turned by the angles; a vehicle without
+one uses the xmodel bounds (inferred).
+
+### Collmap (0x50dc40, finder 0x50d270, collmap spawn 0x512fd0)
+
+After the level load (0x4d9c6f, every vehicle slot) and when a vehicle's model changes (0x511a6f, 0x511c5b) the
+vehicle takes the brush model of the in-use `script_vehicle_collmap` whose targetname equals the vehicle's model
+name (case-insensitive) and becomes solid with contents 0x800000 (0xa00000 with spawnflag 1); an empty brush model
+warns "Cannot use empty vehicle collmap for [%s]". The collmap entities themselves have no contents (eType 0xe,
+contents 0). The player (mask 0x281c011), bullets (0x280e831), rockets (0x280e891) and other vehicles (0x810211)
+collide with it.
 
 ### Player in a vehicle
 
