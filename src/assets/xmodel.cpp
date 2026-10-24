@@ -74,12 +74,18 @@ XModel parseXModel(std::span<const uint8_t> data) {
     // Collision surfaces: count, then per surface its triangles (48 bytes each), bounds, bone, contents, flags.
     const uint32_t collCount = r.get<uint32_t>();
     for (uint32_t c = 0; c < collCount; ++c) {
+        XCollSurf cs;
         const uint32_t triCount = r.get<uint32_t>();
-        for (uint32_t t = 0; t < triCount * 12; ++t) r.get<float>();
-        for (int k = 0; k < 6; ++k) r.get<float>();
-        r.get<int32_t>();
-        r.get<uint32_t>();
-        r.get<int32_t>();
+        cs.tris.resize(triCount);
+        for (XCollTri& t : cs.tris)
+            for (auto* plane : {&t.plane, &t.edge0, &t.edge1})
+                for (float& f : *plane) f = r.get<float>();
+        cs.mins = r.vec3();
+        cs.maxs = r.vec3();
+        cs.bone = r.get<int32_t>();
+        cs.contents = r.get<uint32_t>();
+        cs.surfaceFlags = r.get<int32_t>();
+        m.collSurfs.push_back(std::move(cs));
     }
     for (auto& lod : all) {
         if (lod.name.empty()) continue;

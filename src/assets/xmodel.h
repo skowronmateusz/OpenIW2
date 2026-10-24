@@ -22,12 +22,29 @@ struct XBoneBox {
     float radiusSquared = 0;       // |maxs − offset|²; 0 = no box
 };
 
+// Collision triangle as stored (12 floats): the plane (normal, dist) and two edge planes whose values at a point on
+// the triangle are its barycentric coordinates (traced by FUN_0047c210).
+struct XCollTri {
+    std::array<float, 4> plane{}, edge0{}, edge1{};
+};
+
+// Collision surface: triangles in the space of `bone`, their bounds, contents and surface flags (loaded struct
+// +0 tris, +4 count, +8 mins, +0x14 maxs, +0x20 bone, +0x24 contents, +0x28 surfaceFlags).
+struct XCollSurf {
+    std::vector<XCollTri> tris;
+    std::array<float, 3> mins{}, maxs{};
+    int32_t bone = 0;
+    uint32_t contents = 0;
+    int32_t surfaceFlags = 0;
+};
+
 struct XModel {
     uint8_t flags = 0;
     std::array<float, 3> mins{}, maxs{};
     std::vector<XModelLod> lods; // only non-empty LODs, in file order
     // One per bone of the skeleton (xmodelparts), after the LOD material lists.
     std::vector<XBoneBox> boneBoxes;
+    std::vector<XCollSurf> collSurfs;
 };
 
 // Parses the xmodel header and per-LOD material lists. Throws std::runtime_error on malformed input.

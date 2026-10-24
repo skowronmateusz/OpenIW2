@@ -363,6 +363,7 @@ public:
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);
     bool isAlive(const Entity& e) const;
+    bool takesDamage(const Entity& e) const;
     bool canSee(Entity& from, Entity& to);
     struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0; } stats;
     const PathGraph& paths() const { return paths_; }
@@ -729,6 +730,7 @@ private:
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
     std::map<std::string, std::vector<assets::XBoneBox>> boneBoxes_; // xmodel bone hit boxes, filled by skeleton()
     std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;
+    std::map<std::string, std::vector<assets::XCollSurf>> collSurfs_; // xmodel collision surfaces, filled by skeleton()
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;

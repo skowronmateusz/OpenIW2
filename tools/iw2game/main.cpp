@@ -449,6 +449,7 @@ int main(int argc, char** argv) {
         bool spawnAll = false;
         int traceActor = -1;
         bool playerShoots = false;
+        bool shootBarrels = false; // --shoot-barrels: from 1 s the player's bullet hits each explodable barrel from 60 units, twice a second
         bool drive = false;
         bool controls = false;
         int turretTest = -1; // --turret N: stand behind the N-th usable turret, F at 1 s, aim + fire 2–3 s, F at 4 s
@@ -464,6 +465,8 @@ int main(int argc, char** argv) {
                 traceActor = std::stoi(argv[++i]);
             } else if (a == "--move-stats") {
                 moveStats = true; // speed of actors moving along a path (anim mode 1, movemode walk/run)
+            } else if (a == "--shoot-barrels") {
+                shootBarrels = true;
             } else if (a == "--player-shoots") {
                 playerShoots = true; // the player fires at the nearest axis actor twice a second
             } else if (a == "--spawn-all") {
@@ -588,6 +591,20 @@ int main(int argc, char** argv) {
                                 e.weapon.c_str(), pweapon.stateNumber(), pweapon.name().c_str(), input.stance());
                 }
                 if (f == 170 || f == 190) std::printf("controls t=%.2f buttons %x stance %d\n", f * 0.05f, b, input.stance());
+            }
+            if (shootBarrels && f >= 20 && f % 10 == 0 && world.player()) {
+                for (const auto& e : world.entities()) {
+                    if (e->obj->removed || e->classname != "script_model" || e->obj->get("targetname").toString() != "explodable_barrel") continue;
+                    if (e->obj->get("model").toString().find("prop_barrel_benzin") == std::string::npos) continue;
+                    const auto o = e->obj->get("origin").asVector();
+                    const int before = world.stats.hits;
+                    static const float dirs[4][2] = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}}; // shoot from +x, +y, −x, −y until one hits
+                    for (const auto& d : dirs) {
+                        world.playerFire({o[0] + 60.0f * d[0], o[1] + 60.0f * d[1], o[2] + 30.0f}, {-d[0], -d[1], 0});
+                        if (world.stats.hits != before) break;
+                    }
+                    if (world.stats.hits == before) std::printf("barrel %d: shot missed at t=%.2f\n", e->number, f * 0.05f);
+                }
             }
             if (playerShoots && f % 10 == 0 && world.player()) {
                 const auto eye = iw2::script::Vec3{world.player()->obj->get("origin").asVector()[0], world.player()->obj->get("origin").asVector()[1],
@@ -728,6 +745,16 @@ int main(int argc, char** argv) {
             std::printf("move stats movemode %d: %d actor frames, mean %.1f u/s, max %.1f, stalled frames %d\n", mode,
                         st.frames, st.frames ? st.sum / st.frames : 0.0, st.max, st.stalls);
         if (playerShoots) std::cout << "player hits " << playerHits << "\n";
+        if (shootBarrels) {
+            int whole = 0, broken = 0;
+            for (const auto& e : world.entities()) {
+                if (e->obj->removed || e->classname != "script_model" || e->obj->get("targetname").toString() != "explodable_barrel") continue;
+                const std::string m = e->obj->get("model").toString();
+                if (m.find("prop_barrel_piece") != std::string::npos) ++broken;
+                else if (m.find("prop_barrel_benzin") != std::string::npos) ++whole;
+            }
+            std::cout << "barrels: " << broken << " exploded, " << whole << " whole\n";
+        }
         if (controls) {
             std::cout << "controls: weapon " << pweapon.name() << ", events";
             for (const auto& [k, n] : weaponEvents) std::cout << " " << k << "x" << n;

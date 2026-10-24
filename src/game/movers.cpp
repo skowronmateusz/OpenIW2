@@ -278,6 +278,12 @@ void World::registerMoverBuiltins() {
         if (e) e->obj->set("$notsolid", Value());
         return Value();
     });
+    // setcandamage (0x533eb0): the take-damage flag (ent+0x111) of a script_brushmodel, script_model or
+    // script_origin; other entities raise the mover error.
+    vm_.registerBuiltin("setcandamage", [mover](CallContext& c) {
+        mover(c).obj->set("$takedamage", Value(c.arg(0).truthy()));
+        return Value();
+    });
     vm_.registerBuiltin("notsolid", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (e && e->classname == "script_origin") throw std::runtime_error("notsolid called on a script_origin");
