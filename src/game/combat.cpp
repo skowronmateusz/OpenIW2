@@ -171,8 +171,12 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     target.obj->set("damagelocation", Value(location));
     // damageweapon is the attacker entity's weapon (pain/die callbacks 0x4ff3b0 / 0x4ff530: entity state weapon
     // index → weapon name). Without an attacker G_Damage (0x528050) credits the world entity, whose weapon is index 0,
-    // "none" (0x4dc210). TODO(spec): the weapon index a vehicle entity carries; vehicles leave the field unchanged.
-    if (!attacker || !attacker->vehicle) {
+    // "none" (0x4dc210). A vehicle's entity weapon is its vehicle file's turretWeapon (set at spawn, 0x50d8a3;
+    // index 0 "none" without one).
+    if (attacker && attacker->vehicle) {
+        const std::string tw = attacker->vehicle->info ? attacker->vehicle->info->turretWeapon : std::string();
+        target.obj->set("damageweapon", Value(tw.empty() ? std::string("none") : lowerStr(tw)));
+    } else {
         const Value w = attacker ? attacker->obj->get(attacker->isPlayer ? "$weapon" : "weapon") : Value();
         target.obj->set("damageweapon", w.isString() && !w.asString().empty() ? w : Value("none"));
     }
