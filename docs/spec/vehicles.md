@@ -295,7 +295,16 @@ command's delta angles are adjusted so the input keeps that view.
   Every think 0x510770: while +0x1dc > 0, es +0x64 / +0x6c = sin(+0x1e0°) · +0x1dc · +0x1d4 / +0x1d8, +0x1dc −=
   0.05, +0x1e0 += 36. Free physics (0x50de40) uses +0x1e4 / +0x1e8 instead of maxSpeed / accel while +0x1dc >
   0.5 (0x591e70). Open: the axis rows, and how the client draws es +0x64 / +0x6c (vehicle draw 0x4ac760, case 0xc
-  of 0x4acf30). The fireturret recoil calls 0x50dcf0(−flash forward, 1, 0, 0). `isturretready`, touch damage (0x50ff00), the aim bend of player shots, the
+  of 0x4acf30). The fireturret recoil calls 0x50dcf0(−flash forward, 1, 0, 0). `isturretready`, touch (read, not implemented): 0x50ff00 (every think, for a solid vehicle +0xa1) takes the
+  entities with contents 0x2006081 in the vehicle's absbox widened by its move and turn this frame (+0xb8 − +0xc4,
+  AngleSubtract of +0xd0… − +0xdc…), skips itself and its owner, keeps players (eType 1), actors (9) and script
+  movers (5) in exact contact (0x447830; a trigger-shaped entity via 0x4481c0), notifies "touch" both ways
+  (scr_const 0x1c7f0e2) and runs both touch callbacks; then for a player or a living actor 0x50fe40: unless the
+  entity is linked or neither move nor turn is ≥ 0.001², it is pushed (G_TryPushingEntity 0x52be60: moved and turned
+  with the vehicle; when stuck (0x52bd20) a grid search of offsets up to +0xb4 / 0x5922e0; a pushed client's ps origin
+  and delta yaw follow, an actor's look yaws); if it cannot be pushed and takes damage it gets 999999 damage with
+  means of death 9 — except an actor in the animscripted (7) or negotiation (9) state (0x4ff310). Open: 0x52bd20,
+  the constants 0x5922d8 / 0x5922e0 / 0x591e64, wiring the push into the front end's player state. the aim bend of player shots, the
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
 - The recoil jolt, turret spin/stop sounds, and turret bone rotation in tag positions.
 - Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
