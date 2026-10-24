@@ -72,3 +72,20 @@ the script built-ins (taken from the shipped scripts' calls).
 In this engine `FxSystem::sprites` rebuilds the list from its live particles and `iw2view` hands it to the world
 (`World::setFxSightBlockers`); `iw2game` runs no effects, so its list stays empty. TODO(spec): particles still in
 their spawn delay are left out (the original lists every element in its two element arrays, 0x5a39e0 / 0x5a39dc).
+
+## Bullet impacts (server 0x531340, client 0x4b81d0 / 0x4b82f0)
+
+- Bullet_Fire_Extended sends an impact event at the trace end when the trace hit something (fraction < 1) whose surface
+  has no surface flag 4, except an AI hitting a sentient of its own team. Surface type = surface flags >> 20 & 0x1f,
+  7 (flesh) for a sentient hit with type 0.
+- Hit on a client: event 0xbb (0xbc with `rifleBullet`, weapon +0x31c); the client plays the sound
+  `bullet_small_<surface>` / `bullet_large_<surface>` at the point.
+- Otherwise event 0xb8 / 0xb9 (`rifleBullet`) / 0xba (`armorPiercing` +0x320, 0x531310) with the trace normal (+4)
+  and the normalized bullet direction reflected off it, `d − 2(d·n)n` (+3, 0x59216c = −2). The client plays the sound
+  of `bullet_small` / `bullet_large` / `bullet_ap` for the surface (tables 0xf5b85c / 0xf5b8b8 / 0xf5b914 built by
+  0x4a27b0 as "%s_%s") and the impact table effects `<type>_normal` along the normal and `<type>_reflect` along the
+  reflection (FUN_00485220). Flesh with `cg_blood` (0x1040c58, bool, default 1): the table effects at most once per
+  330 ms (0x14a, last time 0xf7e8c0), otherwise `fx/impacts/flesh_hit_noblood.efx` (0xf5bcc4) along the normal only.
+- Then the tracer (0x4b8140, `cg_tracerChance`). The impact effects carry the bullet marks as Decal elements.
+- OpenIW2: `World::bulletImpact` (fx events + sounds); TODO(spec): dir-byte quantization, tracers, penetration
+  (surface flag 0x10), Decal elements.

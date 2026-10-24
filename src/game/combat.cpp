@@ -377,6 +377,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         }
         break;
     }
+    bulletImpact(shooter, def, start, end, tr, hit);
     if (hit && !takesDamage(*hit)) hit = nullptr;
     ++stats.shots;
     if (def) {
@@ -390,6 +391,61 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         damage(*hit, attacker, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
     }
     return hit;
+}
+
+// The impact event of Bullet_Fire_Extended (0x531340, 0x531556…0x531661): sent when the trace hit something
+// (fraction < 1, 0x591e20) and the surface has no surface flag 4, except when an AI hits a sentient of its own team.
+// Surface type = surface flags >> 20 & 0x1f, flesh (7) for a sentient hit with type 0. On a client (the player):
+// event 0xbb, 0xbc with rifleBullet (weapon +0x31c); the client (0x4b82f0) plays bullet_small_<surface> /
+// bullet_large_<surface> (sound tables 0xf5b85c / 0xf5b8b8, "%s_%s" by 0x4a27b0) at the point. Otherwise event 0xb8,
+// 0xb9 with rifleBullet, 0xba with armorPiercing (+0x320; 0x531310) with the trace normal (+4) and the bullet
+// direction reflected off it (+3, d − 2(d·n)n of the normalized direction); the client (0x4b81d0) plays the sound
+// of bullet_small / bullet_large / bullet_ap (0xf5b914), the impact table's <type>_normal effect along the normal
+// and <type>_reflect along the reflection (bullet_small 0/1, bullet_large 2/3, bullet_ap 6/7; FUN_00485220). On flesh
+// with cg_blood (0x1040c58, default 1) the table effects play at most once every 330 ms (0x14a, 0xf7e8c0), the
+// other hits play fx/impacts/flesh_hit_noblood.efx (0xf5bcc4) along the normal and no reflect effect.
+// TODO(spec): the dir-byte quantization (0x420c30), the tracer (0x4b8140, cg_tracerChance), bullet penetration
+// (surface flag 0x10, 0x531665), the hit entity of the event (0x531646).
+void World::bulletImpact(Entity& shooter, const std::map<std::string, std::string>* def, const Vec3& start,
+                         const Vec3& end, const TraceResult& tr, Entity* hit) {
+    if (!(tr.fraction < 1.0f) || (tr.surfaceFlags & 4)) return;
+    if (hit && isSentient(*hit) && shooter.isActor && hit->obj->get("team").toString() == shooter.obj->get("team").toString()) return;
+    int surface = int((tr.surfaceFlags >> 20) & 0x1f);
+    if (hit && isSentient(*hit) && surface == 0) surface = 7;
+    static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                                "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                                "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+    if (surface >= 23) return;
+    auto flag = [&](const char* key) {
+        if (!def) return false;
+        auto it = def->find(key);
+        return it != def->end() && std::atoi(it->second.c_str()) != 0;
+    };
+    const bool rifle = flag("riflebullet"), ap = flag("armorpiercing");
+    const Vec3 at = tr.endPos;
+    if (hit && hit->isPlayer) {
+        startSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
+        return;
+    }
+    const int type = ap ? 6 : rifle ? 2 : 0;
+    startSound(std::string(ap ? "bullet_ap_" : rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
+    const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+    Vec3 d = sub(end, start);
+    const float l = len(d);
+    if (l > 0) d = scale(d, 1.0f / l);
+    const Vec3 reflect = add(d, scale(n, -2.0f * dot(d, n)));
+    std::string normalFx = impactEffect(type, surface), reflectFx = impactEffect(type + 1, surface);
+    if (surface == 7) {
+        if (timeMs_ - lastBloodMs_ < 330) {
+            normalFx = "fx/impacts/flesh_hit_noblood.efx";
+            reflectFx.clear();
+        } else {
+            lastBloodMs_ = timeMs_;
+        }
+    }
+    if (!normalFx.empty()) fxEvents_.push_back({normalFx, at, n});
+    if (!reflectFx.empty()) fxEvents_.push_back({reflectFx, at, reflect});
+    ++stats.bulletImpacts;
 }
 
 int World::weaponDamage(const std::string& weaponName) {
