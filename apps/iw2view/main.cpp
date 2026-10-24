@@ -209,6 +209,7 @@ private:
 
 // r_polygonOffsetScale / r_polygonOffsetBias defaults (1.3 renderer dvars registered at 0x1000adaa / 0x1000adce).
 constexpr float kPolygonOffsetScale = -1.0f, kPolygonOffsetBias = -1.0f;
+constexpr SDL_GPUFrontFace kFrontFace = SDL_GPU_FRONTFACE_CLOCKWISE;
 
 struct GpuVertex {
     float pos[3];
@@ -228,6 +229,7 @@ struct Batch {
     int lightmap = -1; // -1 = none, -2 = per-vertex light from the light grid
     bool fullbright = false;
     int polygonOffset = 0; // mtlPolygonOffset level 0..2 (material state bits)
+    int cull = 0;          // mtlCullFace: 0 none, 1 back, 2 front
     uint32_t firstIndex = 0, indexCount = 0;
 };
 
@@ -242,6 +244,10 @@ struct MatInfo {
     // mtlPolygonOffset: bits 4–5 of the material's second state word (file offset 0x30; statemap variable table of
     // the 1.3 renderer at 0x1018fe20: mask 0x30 of loadBits[1], values "0" / "1" / "2" = 0 / 0x10 / 0x20).
     int polygonOffset = 0;
+    // mtlCullFace: bits 14–15 of state word 0 (file offset 0x2c; mask 0xc000, values None / Back / Front = 0x4000 /
+    // 0x8000 / 0xc000, 1.3 renderer table 0x1018fa10), set as D3DRS_CULLMODE through {0, NONE, CCW, CW} (0x10190704,
+    // 0x1003cb13). Here 0 none, 1 back (D3DCULL_CCW), 2 front (D3DCULL_CW).
+    int cull = 0;
 };
 
 // A model uploaded for dynamic (entity) drawing, in model space.
@@ -370,7 +376,11 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
     if (auto it = scene.matCache.find(name); it != scene.matCache.end()) return it->second;
     MatInfo mi{Pass::Opaque, 0};
     if (const auto md = vfs.read("materials/" + name)) {
-        if (md->size() > 0x30) mi.polygonOffset = ((*md)[0x30] >> 4) & 3;
+        if (md->size() > 0x30) {
+            mi.polygonOffset = ((*md)[0x30] >> 4) & 3;
+            const int cf = ((*md)[0x2d] >> 6) & 3; // bits 14–15 of the word at 0x2c
+            mi.cull = cf == 2 ? 1 : cf == 3 ? 2 : 0;
+        }
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
@@ -432,6 +442,8 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             b.pass = mi.pass;
             b.texture = mi.texture;
             b.lightmap = -3;
+            b.polygonOffset = mi.polygonOffset;
+            b.cull = mi.cull;
             b.firstIndex = uint32_t(indices.size());
             for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
             b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -510,6 +522,8 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.pass = mi.pass;
         b.texture = mi.texture;
         b.lightmap = -3;
+        b.polygonOffset = mi.polygonOffset;
+        b.cull = mi.cull;
         b.firstIndex = uint32_t(indices.size());
         for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -782,12 +796,12 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<std::tuple<int, int, int, int, int>, std::vector<uint32_t>> groups;
     for (const auto& s : bsp.soups()) {
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset}];
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -880,7 +894,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -894,6 +908,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.texture = std::get<1>(key);
         b.lightmap = std::get<2>(key);
         b.polygonOffset = std::get<3>(key);
+        b.cull = std::get<4>(key);
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -991,7 +1006,7 @@ struct Renderer {
     SDL_GPUBuffer* overlayIndices = nullptr;
     static constexpr uint32_t kMaxQuads = 8192;
     SDL_GPUGraphicsPipeline* pipelines[4] = {}; // Opaque, AlphaTest, Blend, Additive
-    SDL_GPUGraphicsPipeline* offsetPipelines[4][3] = {}; // the same with the slope-scaled depth bias of polygon offset 1, 2
+    SDL_GPUGraphicsPipeline* statePipelines[4][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
@@ -1069,14 +1084,20 @@ struct Renderer {
             // both dvars default −1 (0x1000adaa / 0x1000adce). Without slope-scale support the depth bias is
             // doubled instead (not used here). The slope part is the pipeline's slope factor; the constant part is
             // added to the clip depth in the vertex shader (eye.w), which is the D3D9 meaning of DEPTHBIAS.
-            for (int lvl = 1; lvl <= 2; ++lvl) {
-                pi.rasterizer_state.enable_depth_bias = true;
-                pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
-                offsetPipelines[p][lvl] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
-                if (!offsetPipelines[p][lvl]) sdlFail("SDL_CreateGPUGraphicsPipeline");
-            }
+            // Cull: D3D9 treats clockwise screen-space triangles as front faces; kFrontFace is the winding that
+            // matches it under this viewer's projection (checked on the rendered world, not a game rule).
+            for (int lvl = 0; lvl <= 2; ++lvl)
+                for (int c = 0; c < 3; ++c) {
+                    pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                    pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                    pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                    pi.rasterizer_state.front_face = kFrontFace;
+                    statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                    if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
+                }
             pi.rasterizer_state.enable_depth_bias = false;
             pi.rasterizer_state.depth_bias_slope_factor = 0;
+            pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         }
         {
             SDL_GPUShaderCreateInfo svs = vs;
@@ -1210,8 +1231,8 @@ struct Renderer {
 
         struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 0}, kIdentity};
         // Binds the pass pipeline for a batch's polygon offset level; w of eye carries the constant depth bias.
-        auto bindOffset = [&](Pass p, int level, VU u) {
-            SDL_BindGPUGraphicsPipeline(pass, level > 0 ? offsetPipelines[int(p)][level] : pipelines[int(p)]);
+        auto bindOffset = [&](Pass p, int level, int cull, VU u) {
+            SDL_BindGPUGraphicsPipeline(pass, statePipelines[int(p)][level][cull]);
             u.eye[3] = float(level) * kPolygonOffsetBias / 65536.0f;
             SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
         };
@@ -1232,7 +1253,7 @@ struct Renderer {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
                 if (b.pass != p) continue;
-                if (b.polygonOffset) bindOffset(p, b.polygonOffset, vu);
+                if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, vu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[3] = {
                     {scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}};
@@ -1245,7 +1266,7 @@ struct Renderer {
                     {0, 0, 0, 0}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
-                if (b.polygonOffset) bindOffset(p, 0, vu);
+                if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, vu);
             }
             // Entity models of this pass.
             for (const DrawItem& it : items) {
@@ -1273,16 +1294,16 @@ struct Renderer {
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility}};
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                    if (b.polygonOffset) {
+                    if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
-                        bindOffset(p, b.polygonOffset, mu);
+                        bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
-                    if (b.polygonOffset) {
+                    if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
-                        bindOffset(p, 0, mu);
+                        bindOffset(p, 0, 0, mu);
                     }
                 }
                 if (bound) {

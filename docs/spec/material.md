@@ -79,3 +79,11 @@ When the level changes: D3DRS_SLOPESCALEDEPTHBIAS (0xaf) = level · r_polygonOff
 level · r_polygonOffsetBias · 2⁻¹⁶ (0x1019be30); without slope-scale support only DEPTHBIAS, doubled. Dvars
 (0x1000adaa / 0x1000adce): r_polygonOffsetScale default −1 (−4..4), r_polygonOffsetBias default −1 (−16..16).
 iw2view: offset pipelines with the slope factor and the constant added to the clip depth in `vs_main`.
+
+## Face culling (1.3 DLL 0x1003cb13)
+
+mtlCullFace = bits 14–15 of state word 0 (file 0x2c, mask 0xc000; values None / Back / Front = 0x4000 / 0x8000 /
+0xc000, table 0x1018fa10); D3DRS_CULLMODE from {0, D3DCULL_NONE, D3DCULL_CCW, D3DCULL_CW} (0x10190704), i.e. Back
+culls counter-clockwise (back) faces with D3D's clockwise front faces. 371 of the shipped materials sampled use Back.
+iw2view: pipelines per pass × polygon offset × cull, front face clockwise (the opposite winding renders the toujane
+houses inside out). TODO(spec): the mark draw path (0x10024320) keeps no culling.
