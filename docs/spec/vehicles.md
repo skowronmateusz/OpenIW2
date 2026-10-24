@@ -262,8 +262,21 @@ command's delta angles are adjusted so the input keeps that view.
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
 - Turret projectiles (tank shells) from `fireturret`, the recoil jolt, turret spin/stop sounds, and turret bone
   rotation in tag positions.
-- The speed fraction (speed / engineSndSpeed, vehicle +0x1fc / +0x1f8), engine sounds and texture scrolling
-  (`g_vehicleTexScrollScale`).
+- Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
+  +0x26a after loading (0x5118b0, G_SoundAliasIndex 0x4d5860). Spawn (0x50dbb7): +0x1ec = 1 (engine on; script
+  `startenginesound` 0x513e80 sets 1, `stopenginesound` 0x513ee0 sets 0), fractions +0x1f8 / +0x1fc = 0, and an
+  ET_SOUND_BLEND helper (0x52f6f0 → G_Spawn, eType 6) for low/high idle (+0x1f0) and for low/high engine (+0x1f4)
+  when both names of the pair are set. Fractions: path think (0x511513) f = clamp(+0x1b0 / engineSndSpeed, 0, 1),
+  engine = f, idle = 1 − f; free physics (0x510fe6) DiffTrack (0x420a20, rate 4, 0.05 s) towards idle 1 / engine 0
+  when the driver's forwardmove (client +0x85dc) is 0, else idle 0 / engine 1. Every think (0x510be0): dead (health
+  < 1) or engine off → the helpers' aliases are 0; else helper es +0x8c / +0x8e = low / high alias, +0x94 = its
+  fraction. Turret state +0x18c = 2 with turretSpinSnd: the vehicle's loop sound (es +6); = 1 with turretStopSnd:
+  event 0xb3. cgame (0x4acf30 case 6 → 0x4ac8a0): with both aliases, the fraction interpolated between snapshots,
+  play blend 0x442900 → 0x4423d0 at the helper's origin: culled beyond lerp(distMax), an already playing loop of the
+  same pair only takes the volume lerp(volMin) (0x441f80), a new one a random volume in lerp(volMin…volMax) and
+  pitch in lerp(pitchMin…pitchMax) (0x442310); both aliases must use the same file (0x442650). Open: where the
+  helper entities get their origin (no vehicle code writes it; G_Spawn leaves it at 0), so playback is not wired.
+- Texture scrolling (`g_vehicleTexScrollScale`).
 - Animated wheel tags: the tag positions come from the entity's current animation pose (bind pose without one);
   the exact pose the original samples (0x4d7460) is not checked.
 - Exact frame order of the vehicle think relative to script threads.
