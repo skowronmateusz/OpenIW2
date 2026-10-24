@@ -294,7 +294,7 @@ command's delta angles are adjusted so the input keeps that view.
   maxBodyRoll (+0x7c); +0x1dc = 1, +0x1e0 = 0, +0x1e4 = speedFraction × |speed| (+0x1b0), +0x1e8 = deceleration.
   Every think 0x510770: while +0x1dc > 0, es +0x64 / +0x6c = sin(+0x1e0°) · +0x1dc · +0x1d4 / +0x1d8, +0x1dc −=
   0.05, +0x1e0 += 36. Free physics (0x50de40) uses +0x1e4 / +0x1e8 instead of maxSpeed / accel while +0x1dc >
-  0.5 (0x591e70). Open: the axis rows, and how the client draws es +0x64 / +0x6c (vehicle draw 0x4ac760, case 0xc
+  0 (double 0x591e70 = 0). Open: the axis rows, and how the client draws es +0x64 / +0x6c (vehicle draw 0x4ac760, case 0xc
   of 0x4acf30). The fireturret recoil calls 0x50dcf0(−flash forward, 1, 0, 0). `isturretready`, touch (read, not implemented): 0x50ff00 (every think, for a solid vehicle +0xa1) takes the
   entities with contents 0x2006081 in the vehicle's absbox widened by its move and turn this frame (+0xb8 − +0xc4,
   AngleSubtract of +0xd0… − +0xdc…), skips itself and its owner, keeps players (eType 1), actors (9) and script
@@ -303,8 +303,13 @@ command's delta angles are adjusted so the input keeps that view.
   entity is linked or neither move nor turn is ≥ 0.001², it is pushed (G_TryPushingEntity 0x52be60: moved and turned
   with the vehicle; when stuck (0x52bd20) a grid search of offsets up to +0xb4 / 0x5922e0; a pushed client's ps origin
   and delta yaw follow, an actor's look yaws); if it cannot be pushed and takes damage it gets 999999 damage with
-  means of death 9 — except an actor in the animscripted (7) or negotiation (9) state (0x4ff310). Open: 0x52bd20,
-  the constants 0x5922d8 / 0x5922e0 / 0x591e64, wiring the push into the front end's player state. the aim bend of player shots, the
+  means of death 9 — except an actor in the animscripted (7) or negotiation (9) state (0x4ff310). The stuck test 0x52bd20 traces the entity box
+  at the candidate with its clip mask (+0x12c: actors 0x2820011 from 0x4fc745, the player 0x281c011 from
+  0x4e90ec; 0x811 without one; a missile passes its owner, others themselves). Search when maxs.x / 2 (double
+  0x5922e0 = 2) exceeds 4 (0x5922d8): z = 0, ±4 …, then x, y = ±4, ±8 … (step 4, 0x591e64) below that. Implemented in
+  `World::vehicleTouch` / `tryPushEntity` (contact = a zero-length box trace against 0x800000 starting in the
+  vehicle; the pushed player goes to the front end through the setorigin / setplayerangles channel). Open: script
+  movers and the touch callbacks, the entity list box, the ground entity reset, actor look yaws (0x504910). the aim bend of player shots, the
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
 - The recoil jolt, turret spin/stop sounds, and turret bone rotation in tag positions.
 - Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
