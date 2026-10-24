@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cctype>
 #include <stdexcept>
 
@@ -726,7 +727,83 @@ void World::vehiclePlayerAim(Entity& e) {
 
 // Vehicle think (0x512b80), for every script_vehicle: the owner dies → it is let out; types other than artillery
 // move along their path or freely; a driven vehicle aims where the player looks; then the turret.
-// TODO(spec): touch damage (0x50ff00) and the remaining calls 0x510770 / 0x5107e0 / 0x510870 / 0x510be0.
+// TODO(spec): the remaining calls 0x510770 / 0x5107e0 / 0x510870 / 0x510be0.
+
+// G_TryPushingEntity (0x52be60): the entity is moved by the pusher's move and turned about the pusher's origin by its
+// turn; if that box position (entity clip mask, 0x811 without one; the entity passes) is blocked (0x52bd20) offsets
+// are searched: z 0, ±4, ±8 … and x, y ±4, ±8 … below maxs.x / 2 (only when that exceeds 4), the first free one is
+// taken; a pushed client's view yaw turns with the pusher. Returns false when no position is free.
+// TODO(spec): the ground entity reset, the actor look yaws (0x504910), the player's mins/maxs per stance.
+bool World::tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn) {
+    const Vec3 o = ent.obj->get("origin").asVector(), po = pusher.obj->get("origin").asVector();
+    const Vec3 moved{o[0] + move[0], o[1] + move[1], o[2] + move[2]};
+    const Axis r = anglesAxis(turn);
+    const Vec3 rel{moved[0] - po[0], moved[1] - po[1], moved[2] - po[2]};
+    const Vec3 base = axisApply(po, r, rel);
+    const Vec3 mins{-15, -15, 0}, maxs{15, 15, ent.isActor ? 72.0f : 70.0f};
+    const uint32_t mask = ent.isActor ? 0x2820011u : 0x281c011u; // r.clipmask: actor spawn 0x4fc745, player 0x4e90ec
+    auto blocked = [&](const Vec3& p) { return collision_->trace(p, p, mins, maxs, mask, ent.number).startSolid; };
+    auto commit = [&](const Vec3& p) {
+        ent.obj->set("origin", Value(p));
+        if (ent.isPlayer) {
+            playerTeleport_ = p;
+            Vec3 va = playerCmd_.viewAngles;
+            va[1] += turn[1];
+            playerViewAngles_ = va;
+        }
+        return true;
+    };
+    if (!blocked(base)) return commit(base);
+    const float half = maxs[0] / 2.0f;
+    if (half > 4.0f) {
+        for (float z = 0; z < half; z += 4.0f)
+            for (float zs = -z; zs <= z; zs += (z == 0 ? 1.0f : 2.0f * z))
+                for (float x = 4.0f; x < half; x += 4.0f)
+                    for (float xs = -x; xs <= x; xs += 2.0f * x)
+                        for (float y = 4.0f; y < half; y += 4.0f)
+                            for (float ys = -y; ys <= y; ys += 2.0f * y) {
+                                const Vec3 p{base[0] + xs, base[1] + ys, base[2] + zs};
+                                if (!blocked(p)) return commit(p);
+                            }
+    }
+    return !blocked(base);
+}
+
+// Touch (0x50ff00) of a solid vehicle after its move: players and living actors in contact with its collmap (a
+// zero-length box trace against contents 0x800000 that starts in the vehicle) are notified "touch" (and the vehicle
+// with them); then, unless linked or the vehicle neither moved nor turned (≥ 0.001 squared), they are pushed and
+// one that cannot be pushed is crushed (999999, MOD_CRUSH = 9) — not an actor in the animscripted or negotiation
+// state (0x4ff310). TODO(spec): script movers (eType 5) and the touch callbacks; the entity list box.
+void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles) {
+    if (vehicleCollmap(e).empty()) return;
+    const Vec3 o = e.obj->get("origin").asVector(), a = e.obj->get("angles").asVector();
+    const Vec3 move{o[0] - prevOrigin[0], o[1] - prevOrigin[1], o[2] - prevOrigin[2]};
+    const Vec3 turn{angleSubtract(a[0], prevAngles[0]), angleSubtract(a[1], prevAngles[1]), angleSubtract(a[2], prevAngles[2])};
+    const bool moving = move[0] * move[0] + move[1] * move[1] + move[2] * move[2] >= 0.001f ||
+                        turn[0] * turn[0] + turn[1] * turn[1] + turn[2] * turn[2] >= 0.001f;
+    syncEntityClips();
+    const int owner = e.vehicle ? e.vehicle->owner : -1;
+    for (size_t i = 0; i < entities_.size(); ++i) {
+        Entity& t = *entities_[i];
+        if (&t == &e || t.number == owner || t.obj->removed || !(t.isPlayer || t.isActor) || !isAlive(t)) continue;
+        const Vec3 to = t.obj->get("origin").asVector();
+        const Vec3 mins{-15, -15, 0}, maxs{15, 15, t.isActor ? 72.0f : 70.0f};
+        const TraceResult tr = collision_->trace(to, to, mins, maxs, 0x800000u, t.number);
+        if (!tr.startSolid || tr.entity != e.number) continue;
+        vm_.notify(e.obj, "touch", {Value(t.obj)});
+        vm_.notify(t.obj, "touch", {Value(e.obj)});
+        if (links_.count(t.number) || (t.isPlayer && playerLinked()) || !moving) continue;
+        if (t.isActor && (std::find(t.ai.predicted.begin(), t.ai.predicted.begin() + t.ai.predictedDepth + 1, int(AiScripted)) !=
+                              t.ai.predicted.begin() + t.ai.predictedDepth + 1 ||
+                          std::find(t.ai.predicted.begin(), t.ai.predicted.begin() + t.ai.predictedDepth + 1, int(AiNegotiation)) !=
+                              t.ai.predicted.begin() + t.ai.predictedDepth + 1))
+            continue;
+        if (tryPushEntity(t, e, move, turn)) continue;
+        if (std::getenv("IW2_ROCKET_DEBUG")) print("vehicle " + std::to_string(e.number) + " crushes " + std::to_string(t.number));
+        damage(t, &e, 999999, {0, 0, 0}, to, "MOD_CRUSH", "none");
+    }
+}
+
 void World::thinkVehicles() {
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
@@ -745,6 +822,7 @@ void World::thinkVehicles() {
         }
         // Path notifies run scripts at once; freevehicle there drops the vehicle state.
         if (!e.vehicle || e.obj->removed) continue;
+        vehicleTouch(e, prevOrigin, prevAngles);
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
         updateVehicleTurret(e);

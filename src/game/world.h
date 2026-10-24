@@ -307,6 +307,8 @@ public:
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
     std::string vehicleCollmap(Entity& vehicle);
+    bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
+    void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
