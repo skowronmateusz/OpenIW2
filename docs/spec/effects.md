@@ -88,4 +88,35 @@ their spawn delay are left out (the original lists every element in its two elem
   330 ms (0x14a, last time 0xf7e8c0), otherwise `fx/impacts/flesh_hit_noblood.efx` (0xf5bcc4) along the normal only.
 - Then the tracer (0x4b8140, `cg_tracerChance`). The impact effects carry the bullet marks as Decal elements.
 - OpenIW2: `World::bulletImpact` (fx events + sounds); TODO(spec): dir-byte quantization, tracers, penetration
-  (surface flag 0x10), Decal elements.
+  (surface flag 0x10).
+
+## Marks (Decal elements)
+
+- Element type names (0x48683e): `decal` = type 6. Spawn of one decal (0x48da90 → 0x485b60): position from 0x48c290
+  (not read), rotation random in the `rotation` range (+0x220, parser 0x488020), colour (0x4857d0: rgb at graph time 0
+  times a random scale, lerped to rgbRand with useRandomColors), alpha (0x4858c0, useRandomAlpha, clamped 0..1), size
+  (0x485a30, useRandomSize), material random from `shaders` ((seed >> 17)·count >> 15), then CG_ImpactMark (0x4ad430)
+  with the effect's axis as direction (EDX = the effect, 0x485bd9).
+- CG_ImpactMark (0x4ad430), only with `cg_marks` (0xf48b40, bool, default 1) and 0xf79778 clear:
+  a0 = dir normalized (0x421270), a1 = PerpendicularVector(a0) (0x421f70: basis vector of the smallest |component|
+  minus its projection, normalized) turned around a0 by the rotation (0x421550), a2 = a0 × a1; the square
+  o − r·a2 − r·a1, o + r·a2 − r·a1, o + r·(a1 + a2), o − r·a2 + r·a1 goes to the renderer's MarkFragments (refexport
+  0x617ab0 + 0xe8; 1.3 DLL FUN_10015df0) with at most 0x400 points and 0x180 fragments; each fragment
+  becomes one pool mark, its vertices coloured with the rgba bytes (0x4ad1b0, round(c·255) clamped).
+- MarkFragments: box = corners ± r·a0 (FUN_10015c70); world surfaces touching it (cells FUN_100157f0, AABB trees
+  FUN_10015640; skipped when the material byte +0xc has bit 4, set on skies, water and clip materials; deduplicated
+  FUN_100157c0); per surface with no 0x30 bits in material byte +0x30 (decal-sorted materials) each triangle
+  (i0, i1, i2) with n = (v0 − v1) × (v2 − v1), n·a0 ≥ 0 and |n|²/4 ≤ (n·a0)² is clipped (FUN_10015a80 →
+  FUN_100154b0: ±0.5 on-plane band, FUN_10015430 lerps position, lightmap uv, normal) by the four edge planes
+  ((c_i+1 − c_i) × a0 normalized, through c_i) and a0·p ≥ a0·c0 − r, −a0·p ≥ −a0·c0 − r. A fragment that does not
+  fit the remaining points is dropped; the walk stops at 0x180 fragments or when fewer than 3 points remain. UV:
+  s = (p − o)·a2·0.5/r + 0.5, t = (p − o)·a1·0.5/r + 0.5. The fragment keeps the surface's lightmap (surface ref +4,
+  set from the soup's lightmap in FUN_10002a00).
+- Pool (0x4ad2d0 / 0x4ad3a0): `cg_marksLimit` (0x1040c48, default 1024, 0..1024) entries of 0x288 bytes (≤ 9
+  vertices); a new mark takes a free entry, else the active mark with the smallest last-visible time (+8) is
+  reused. The draw (0x4ad710) culls each mark by its sphere (0x486e30), stamps visible ones with the time and hands
+  them to the renderer (refexport +0x68). Marks never fade.
+- OpenIW2: `src/game/marks.{h,cpp}`, `FxSystem::spawnDecals`, iw2view draws marks in the blend pass with the
+  surface lightmap (`iw2view … --shot x.png --shoot N`, `IW2_MARK_DEBUG=1`). TODO(spec): 0x48c290 spawn position,
+  frustumCull spawn flag, the per-mark cull, the renderer's mark draw (0x10024320, depth offset), 0xf79778, BSP walk
+  order (only matters at the limits).

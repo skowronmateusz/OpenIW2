@@ -22,6 +22,7 @@
 #include "game/playerweapon.h"
 #include "game/viewweapon.h"
 #include "game/fx.h"
+#include "game/marks.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
 #include "game/turrets.h"
@@ -252,6 +253,7 @@ struct Scene {
     std::vector<Batch> batches;
     SDL_GPUTexture* sky = nullptr;
     std::unique_ptr<game::CollisionWorld> collision;
+    game::MarkSystem marks;
     std::unique_ptr<assets::LightGrid> grid;
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
@@ -590,6 +592,67 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
     it->second.batches = batches;
     return &it->second;
 }
+// Impact marks (game/marks.h) into a per-frame model: one batch per (material, lightmap), drawn in the blend pass
+// with the lightmap of the surface each fragment came from (mark +0x20, the surface's lightmap, FUN_10002a00).
+// TODO(spec): the renderer's mark drawing (refexport slot 0x68, 0x10024320) and its depth offset are not read.
+const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs) {
+    const auto& marks = scene.marks.marks();
+    if (marks.empty()) return nullptr;
+    constexpr uint32_t kMaxVerts = 1024 * 9, kMaxIdx = 1024 * 7 * 3;
+    auto key = std::make_pair(-3, std::string("marks"));
+    auto it = scene.skinned.find(key);
+    if (it == scene.skinned.end()) {
+        GpuModel gm;
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = kMaxVerts * sizeof(GpuVertex);
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        SDL_GPUBufferCreateInfo ib{};
+        ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        ib.size = kMaxIdx * 4;
+        gm.indices = SDL_CreateGPUBuffer(dev, &ib);
+        it = scene.skinned.emplace(key, gm).first;
+    }
+    std::map<std::pair<std::string, int>, std::vector<const game::Mark*>> groups;
+    for (const auto& m : marks) groups[{m.material, m.lightmap}].push_back(&m);
+    std::vector<GpuVertex> verts;
+    std::vector<uint32_t> idx;
+    std::vector<Batch> batches;
+    for (const auto& [k, list] : groups) {
+        const MatInfo mi = sceneMaterial(scene, dev, up, vfs, k.first);
+        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        Batch b;
+        b.pass = mi.pass == Pass::Additive ? Pass::Additive : Pass::Blend;
+        b.texture = mi.texture;
+        b.lightmap = k.second < int(scene.lightmaps.size()) ? k.second : -3;
+        b.firstIndex = uint32_t(idx.size());
+        for (const game::Mark* m : list) {
+            if (verts.size() + m->vertices.size() > kMaxVerts) break;
+            const uint32_t base = uint32_t(verts.size());
+            for (const auto& mv : m->vertices) {
+                GpuVertex g{};
+                std::memcpy(g.pos, mv.position.data(), 12);
+                std::memcpy(g.normal, mv.normal.data(), 12);
+                std::memcpy(g.color, mv.rgba.data(), 4);
+                g.uv[0] = mv.uv[0];
+                g.uv[1] = mv.uv[1];
+                g.lmUv[0] = mv.lightmapUv[0];
+                g.lmUv[1] = mv.lightmapUv[1];
+                verts.push_back(g);
+            }
+            for (uint32_t t = 1; t + 1 < m->vertices.size(); ++t)
+                for (uint32_t v : {base, base + t, base + t + 1}) idx.push_back(v);
+        }
+        b.indexCount = uint32_t(idx.size()) - b.firstIndex;
+        if (b.indexCount) batches.push_back(b);
+    }
+    if (verts.empty() || idx.empty()) return nullptr;
+    up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+    up.buffer(it->second.indices, idx.data(), uint32_t(idx.size() * 4));
+    it->second.batches = batches;
+    return &it->second;
+}
+
 // Bone transforms by lower-case name, accumulated over a body and its attachments.
 using BoneMap = std::unordered_map<std::string, std::pair<std::array<float, 3>, assets::Quat>>;
 
@@ -661,6 +724,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     if (!data) throw std::runtime_error("map not found: " + path);
     const assets::D3dBsp bsp(*data);
     scene.collision = std::make_unique<game::CollisionWorld>(bsp);
+    scene.marks.setWorld(bsp, vfs);
     Uploader up(dev);
 
     // White fallback texture.
@@ -1166,14 +1230,15 @@ struct Renderer {
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         bound = true;
                     }
+                    const Lightmap& elm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                     SDL_GPUTextureSamplerBinding tex[3] = {
-                        {scene.textures[size_t(b.texture)], repeatSampler}, {scene.dummyLightmap.coeffs, clampSampler}, {scene.dummyLightmap.sun, clampSampler}};
+                        {scene.textures[size_t(b.texture)], repeatSampler}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                        {p == Pass::AlphaTest ? 1.0f : 0.0f, 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility}};
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
@@ -1315,6 +1380,8 @@ int main(int argc, char** argv) {
     float walkSeconds = 0;
     float simSeconds = 0;
     float fireSeconds = 0;
+    bool atExitMarks = false;
+    int shootMarks = 0; // --shoot N: with --shot, the player fires N bullets along the view (fanned 1° apart) before the shot
     bool audioOn = true;
     float shotViewHeight = 60;
     float shotLean = 0;
@@ -1341,6 +1408,7 @@ int main(int argc, char** argv) {
             else if (a == "--walk-seconds") walkSeconds = std::stof(next());
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
             else if (a == "--fire-seconds") fireSeconds = std::stof(next());
+            else if (a == "--shoot") shootMarks = std::stoi(next());
             else if (a == "--no-audio") audioOn = false;
             else if (a == "--god") godMode = true;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
@@ -1456,7 +1524,21 @@ int main(int argc, char** argv) {
             std::vector<DrawItem> items;
             if (!world) return items;
             Uploader up(dev);
-            for (const auto& ev : world->takeFxEvents()) fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
+            for (const auto& ev : world->takeFxEvents()) {
+                if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
+                fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
+            }
+            for (const auto& d : fxSystem.takeDecals(world->timeMs()))
+                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
+            if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
+                DrawItem it;
+                it.model = mm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+                scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
+            }
             const auto fxSprites = fxSystem.sprites(world->timeMs());
             world->setFxSightBlockers(fxSystem.sightBlockers());
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
@@ -2212,6 +2294,14 @@ int main(int argc, char** argv) {
                 std::cout << "script errors: " << world->vm().errors().size() << ", live threads: " << world->vm().liveThreadCount()
                           << ", hud elements: " << world->hudElems().size() << "\n";
             }
+            if (world && shootMarks > 0) {
+                for (int i = 0; i < shootMarks; ++i) {
+                    const float y = (cam.yaw + float(i % 5 - 2)) * float(M_PI) / 180.0f, pt = (cam.pitch + float(i / 5 - 2)) * float(M_PI) / 180.0f;
+                    world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {std::cos(pt) * std::cos(y), std::cos(pt) * std::sin(y), -std::sin(pt)});
+                }
+                std::cout << "shoot: " << world->stats.bulletImpacts << " impacts\n";
+                atExitMarks = true;
+            }
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
             syncWeapon();
             pweapon.update(1.0f, {});
@@ -2243,6 +2333,7 @@ int main(int argc, char** argv) {
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
+            if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
             SDL_DestroyGPUDevice(dev);
