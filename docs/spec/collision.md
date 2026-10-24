@@ -98,7 +98,7 @@ living actors and the player are entity clips with their spawn boxes and content
 (`fireBullet`, mask 0x280e831, priority map by `rifleBullet`) set `damagelocation`; an AI bullet that hits an actor
 of its own team continues from the hit point (Bullet_Fire_Extended, "Ignoring AI shooting teammate"); AI sight
 (0x54c760) and `sighttracepassed` / `bullettracepassed` use the sight trace. Not done: the player's stance-dependent
-box, corpses, xmodel collision surfaces (bit 4), bullet penetration, the cached brush of the sight trace. Pmove
+box, corpses, bullet penetration, the cached brush of the sight trace. Pmove
 traces with the player's mask 0x281c011 and the player as pass entity (docs/spec/pmove.md).
 
 ## Brush submodels and entities (implemented)
@@ -164,7 +164,7 @@ pass entity, and it is not the pass entity's owner; and when the swept trace tou
 +0xd0) up to the current fraction (`FUN_00419450`). A smaller fraction replaces the result and names the entity.
 For a point trace with `locational` set and a non-zero priority map, entities with a DObj and `ent+0xa2 & 2` are
 traced against their hit boxes instead (below); bit 4 means xmodel collision surfaces (`FUN_00474440` →
-`FUN_0047c210`; TODO in OpenIW2). With a zero priority map (`bullettrace`) every entity is a box.
+`FUN_0047c210`, below; tested in every locational trace, priority map or not). With a zero priority map (`bullettrace`) every entity is a box.
 
 ## Hit boxes (`FUN_00473d20`)
 
@@ -217,3 +217,37 @@ and `0.125·b/|d.xy|`. Other submodels: the leaf of the model. Entities (`FUN_00
 boxes). `sighttracepassed` (`FUN_004f2580`): mask 0x280d803 (0x801803 without characters), then
 `FUN_0048b090` below 0x592020 also blocks (TODO: not read). `bullettrace` (`FUN_004f2230`):
 G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero priority map.
+
+## Script model collision surfaces (`FUN_00474440`, `FUN_0047c210`)
+
+- `script_model` spawn (0x533480): contents 0x2080, `ent+0xa2 |= 4`, handler 0xd. `solid` / `notsolid`
+  (0x533f70 / 0x534050) set script models back to 0x2080 / 0 (brush models: 1 / 0; script_origin: error).
+- In `FUN_0044b840` a locational trace takes entities with bit 4 through `FUN_00474440` instead of their box: start
+  and end in entity space; every model of the DObj in turn, its bone matrices following the previous models' bones
+  (DObj +4 skeleton +0x30, 0x20 per bone: quaternion, then position).
+- xmodel collision surfaces as stored (`docs/spec/xmodel.md`): triangles of 12 floats (plane normal + distance, then two
+  edge planes giving barycentric coordinates), bounds, bone, contents, surface flags.
+- `FUN_0047c210`: for each surface with `contents & mask`, start / end into the bone's space (axes from the bone
+  quaternion, `FUN_00420270`); a surface-bounds cull (`FUN_004193d0` / `FUN_00419450`); per triangle `ds`, `de` = plane
+  distances of start / end; a hit needs `de < 0 < ds`, fraction `max(0, (ds − 0.125) / (ds − de))` (0x591f80) below
+  the current one, and at `p = s + (e − s)·ds / (ds − de)` `edge0(p)`, `edge1(p) ≥ −0.001`, `edge0(p) ≤ 1.001`,
+  `edge0(p) + edge1(p) ≤ 1.001` (0x5920c8 / 0x5920c4). The result keeps the plane normal (turned back out of the bone
+  space, then out of the entity space by the caller) and the surface's surface flags; partName = the bone's name.
+  The caller sets the entity number and contents = the entity's contents (ent+0xc0).
+- OpenIW2 (`traceCollSurfs`, `World::locationalTrace`): as above with the full entity angles. TODO(spec):
+  `FUN_004746b0`, the DObj bounds pre-test `FUN_00473800` (a sphere around the xmodel bounds instead), the
+  per-surface bounds cull, and the r.mins / r.maxs box script models get in traces that are not locational.
+
+## Damage of non-sentient entities (G_Damage 0x528050)
+
+- Only entities with the take-damage byte (ent+0x111) are damaged; `setcandamage` (0x533eb0) sets it on
+  script_brushmodel / script_model / script_origin (others: "entity %i is not a script_brushmodel, script_model, or
+  script_origin"). Radius damage (0x5289d0) picks its targets by the same byte.
+- Without a client: "damage" (const string 0x1c7f058) with amount, attacker, direction, point and the means-of-death
+  name (0x527fd0) when the amount is not 0; health (ent+0x13c) minus the amount, at least −999; below 1 "death"
+  (0x1c7f05c) with the attacker and the means-of-death name (table 0x5a95ac, MOD_UNKNOWN … MOD_EXPLOSIVE), then the
+  handler's die callback (0x5a5748 + handler·0x2c); handlers 0xc (brush model) and 0xd (script model) have no pain or
+  die callback, so they keep taking damage. Const strings (0x506543…): 0x1c7f058 damage, 0x1c7f05a damage_armor,
+  0x1c7f05c death.
+- Used by `maps/_load.gsc` explodable barrels (prop_barrel_benzin): every hit adds to self.damageTaken; burning
+  (barrel_ignite / barrel_fire) until level.barrelHealth, then barrelExp, the broken model and radiusdamage 250.

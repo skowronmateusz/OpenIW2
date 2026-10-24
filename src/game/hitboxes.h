@@ -21,6 +21,7 @@ extern const uint8_t kHitPriorityRifle[kHitLocationCount];
 struct HitBoxModel {
     const assets::XModelParts* parts = nullptr;
     const std::vector<assets::XBoneBox>* boxes = nullptr;
+    const std::vector<assets::XCollSurf>* collSurfs = nullptr;
     int attachBone = -1; // global bone index of the tag the model hangs on (DObj +0x3c), -1 for none
     bool hidden = false;
     std::vector<std::array<float, 3>> position; // per bone
@@ -38,5 +39,18 @@ struct HitBoxResult {
 // FUN_00473d20: start/end in entity space; `fraction` is the trace's current fraction, which a hit must beat.
 HitBoxResult traceHitBoxes(const std::vector<HitBoxModel>& models, const std::array<float, 3>& start,
                            const std::array<float, 3>& end, const uint8_t* priority, float fraction);
+
+struct CollSurfResult {
+    bool hit = false;
+    float fraction = 1.0f;
+    std::array<float, 3> normal{}; // entity space
+    int32_t surfaceFlags = 0;
+    int model = -1, bone = -1;
+};
+
+// FUN_00474440 → FUN_0047c210: start/end in entity space; the collision surfaces of every model whose contents
+// match `mask`; a hit must beat `fraction`.
+CollSurfResult traceCollSurfs(const std::vector<HitBoxModel>& models, const std::array<float, 3>& start,
+                              const std::array<float, 3>& end, uint32_t mask, float fraction);
 
 } // namespace iw2::game

@@ -40,6 +40,7 @@ const assets::XModelParts* World::skeleton(const std::string& model) {
             if (auto md = vfs_.read(model)) {
                 auto xm = assets::parseXModel(*md);
                 boneBoxes_[model] = std::move(xm.boneBoxes);
+                collSurfs_[model] = std::move(xm.collSurfs);
                 modelBounds_[model] = {xm.mins, xm.maxs};
                 if (auto pd = vfs_.read("xmodelparts/" + xm.lods.at(0).name)) parts = assets::parseXModelParts(*pd);
             }
@@ -73,6 +74,8 @@ std::vector<HitBoxModel> World::entityModels(Entity& e) {
         hm.parts = parts;
         auto bit = boneBoxes_.find(name);
         hm.boxes = bit == boneBoxes_.end() ? nullptr : &bit->second;
+        auto cit = collSurfs_.find(name);
+        hm.collSurfs = cit == collSurfs_.end() ? nullptr : &cit->second;
         hm.attachBone = attachBone;
         hm.position = p.position;
         hm.rotation = p.rotation;
@@ -141,10 +144,33 @@ bool World::isAlive(const Entity& e) const {
     return !e.obj->removed && !e.isSpawner && h.isNumber() && h.asInt() > 0 && (e.isActor || e.isPlayer);
 }
 
+// G_Damage (0x528050) acts only on entities that take damage (ent+0x111): living actors and the player here, and
+// script_brushmodel / script_model / script_origin entities after setcandamage(true) (0x533eb0).
+bool World::takesDamage(const Entity& e) const {
+    if (e.isActor || e.isPlayer) return isAlive(e);
+    return !e.obj->removed && !e.isSpawner && e.obj->get("$takedamage").truthy();
+}
+
 // Applies damage; notifies "damage" (amount, attacker, direction, point, type) and handles death.
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                    const std::string& location) {
-    if (!isAlive(target)) return;
+    if (!takesDamage(target)) return;
+    // Entities without a client or actor (0x528050 with ent+0xfc and ent+0x100 zero): "damage" (0x1c7f058: amount,
+    // attacker, direction, point, means of death; 0x527fd0) whenever the amount is not 0, health (ent+0x13c) minus the
+    // amount, kept above −1000 (0x528466); below 1 "death" (0x1c7f05c) with the attacker and the means-of-death name
+    // (0x5a95ac). Script models (handler 0xd) and brush models (0xc) have no pain or die callback (0x5a5744 /
+    // 0x5a5748), so they stay damageable. TODO(spec): the spawn health of these entities (OpenIW2 starts from the
+    // "health" key or 0), the team kill counter (0x82552c) for actor deaths.
+    if (!target.isActor && !target.isPlayer) {
+        if (amount == 0) return;
+        const Value hv = target.obj->get("health");
+        int health = (hv.isNumber() ? hv.asInt() : 0) - amount;
+        if (health < -999) health = -999;
+        target.obj->set("health", Value(int32_t(health)));
+        vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
+        if (health < 1) vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
+        return;
+    }
     // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage
     // (0x5282b3). TODO(spec): the knockback computed before that check still applies in the exe.
     if (target.obj->get("$godmode").truthy()) return;
@@ -187,8 +213,9 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     }
     if (target.isActor) {
         ++stats.kills;
-        // G_Damage notifies "death" (attacker), then the die callback (0x4ff530) sets the death state.
-        vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
+        // G_Damage notifies "death" (attacker, means-of-death name 0x5a95ac; 0x528474), then the die callback
+        // (0x4ff530) sets the death state.
+        vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
         actorDie(target, attacker);
     } else if (target.isPlayer) {
         vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
@@ -230,7 +257,56 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
     location = 0;
     const int passNum = pass ? pass->number : -1;
     TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, mask, passNum, priority != nullptr);
-    if (!priority || tr.fraction == 0) return tr;
+    if (tr.fraction == 0) return tr;
+    // Script models (ent+0xa2 & 4, set at spawn 0x533480; contents 0x2080, 0 after notsolid 0x534050) are traced
+    // against their xmodel collision surfaces in a locational trace whether or not there is a priority map
+    // (0x44b840 → FUN_00474440); the hit names the entity with its contents (ent+0xc0) and the surface's surface
+    // flags. TODO(spec): FUN_004746b0 (the DObj check), the DObj bounds pre-test (FUN_00473800; OpenIW2 culls with a
+    // sphere around the xmodel bounds), and the box (r.mins / r.maxs) used by traces that are not locational.
+    for (const auto& ep : entities_) {
+        Entity& e = *ep;
+        if (e.obj->removed || e.classname != "script_model" || e.number == passNum) continue;
+        if (!(mask & 0x2080u) || e.obj->get("$notsolid").truthy()) continue;
+        const Value mv = e.obj->get("model"), ov = e.obj->get("origin");
+        if (!mv.isString() || !ov.isVector()) continue;
+        if (!skeleton(mv.asString())) continue;
+        auto cs = collSurfs_.find(mv.asString());
+        if (cs == collSurfs_.end() || cs->second.empty()) continue;
+        const Vec3 o = ov.asVector();
+        auto bounds = modelBounds_.find(mv.asString());
+        if (bounds != modelBounds_.end()) {
+            float r2 = 0;
+            for (size_t i = 0; i < 3; ++i) {
+                const float m = std::max(std::fabs(bounds->second.first[i]), std::fabs(bounds->second.second[i]));
+                r2 += m * m;
+            }
+            // Closest approach of the segment (up to the current fraction) to the origin.
+            const Vec3 d = scale(sub(end, start), tr.fraction);
+            const float dd = dot(d, d);
+            const float t = dd > 0 ? std::clamp(dot(sub(o, start), d) / dd, 0.0f, 1.0f) : 0.0f;
+            const Vec3 c = sub(add(start, scale(d, t)), o);
+            if (dot(c, c) > r2) continue;
+        }
+        const Value a = e.obj->get("angles");
+        const Vec3 ang = a.isVector() ? a.asVector() : Vec3{0, 0, 0};
+        const assets::Quat er = assets::anglesQuat(ang[0], ang[1], ang[2]);
+        const assets::Quat inv = {-er.x, -er.y, -er.z, er.w};
+        const Vec3 ls = assets::rotate(inv, sub(start, o)), le = assets::rotate(inv, sub(end, o));
+        const CollSurfResult h = traceCollSurfs(entityModels(e), ls, le, mask, tr.fraction);
+        if (!h.hit || !(h.fraction < tr.fraction)) continue;
+        tr.fraction = h.fraction;
+        tr.normal = assets::rotate(er, h.normal);
+        tr.surfaceFlags = uint32_t(h.surfaceFlags);
+        tr.material = -1;
+        tr.contents = 0x2080u;
+        tr.entity = e.number;
+        tr.startSolid = tr.allSolid = false;
+        location = 0;
+    }
+    if (!priority) {
+        for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
+        return tr;
+    }
     const int passOwner = collision_->ownerOf(passNum);
     for (const EntityClip& c : collision_->entityClips()) {
         if (!c.hitBoxes || CollisionWorld::skipClip(c, mask, passNum, passOwner)) continue;
@@ -301,7 +377,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         }
         break;
     }
-    if (hit && !isAlive(*hit)) hit = nullptr;
+    if (hit && !takesDamage(*hit)) hit = nullptr;
     ++stats.shots;
     if (def) {
         // Weapon sound: fireSoundPlayer without position for the player, fireSound at the shooter otherwise.
@@ -480,7 +556,7 @@ void World::registerCombatBuiltins() {
         return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
     });
     for (const char* noop : {"exitprone", "enterprone", "orientmode", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
-                             "setcandamage", "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
+                             "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
     // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").

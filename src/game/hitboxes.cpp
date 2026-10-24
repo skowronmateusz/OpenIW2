@@ -211,4 +211,55 @@ HitBoxResult traceHitBoxes(const std::vector<HitBoxModel>& models, const V3& sta
     return res;
 }
 
+// FUN_00474440: every model of the DObj in turn (its bones follow the previous models' bones), FUN_0047c210 per model:
+// each collision surface whose contents match the mask, start and end taken into the space of the surface's bone
+// (the bone's axes from its quaternion, FUN_00420270), then each triangle: with ds / de the plane distances of start /
+// end, a crossing needs de < 0 < ds; its fraction (ds − 0.125) / (ds − de) (0x591f80), at least 0, must beat the
+// current one, and the crossing point p = s + (e − s)·ds / (ds − de) must have edge0(p) and edge1(p) in
+// [−0.001, 1.001] with edge0(p) + edge1(p) ≤ 1.001 (0x5920c8 / 0x5920c4). The hit keeps the triangle's plane normal
+// and the surface's surface flags; the normal is turned back out of the bone's space. TODO(spec): the per-surface
+// bounds cull (FUN_004193d0 / FUN_00419450) is left out, so triangles reaching outside their surface's bounds can
+// still be hit.
+CollSurfResult traceCollSurfs(const std::vector<HitBoxModel>& models, const V3& start, const V3& end, uint32_t mask,
+                              float fraction) {
+    CollSurfResult res;
+    res.fraction = fraction;
+    for (size_t mi = 0; mi < models.size(); ++mi) {
+        const HitBoxModel& m = models[mi];
+        if (!m.collSurfs || m.hidden) continue;
+        for (const assets::XCollSurf& cs : *m.collSurfs) {
+            if (!(cs.contents & mask)) continue;
+            if (cs.bone < 0 || size_t(cs.bone) >= m.position.size()) continue;
+            const assets::Quat& q = m.rotation[size_t(cs.bone)];
+            const assets::Quat inv{-q.x, -q.y, -q.z, q.w};
+            const V3& bp = m.position[size_t(cs.bone)];
+            const V3 ls = assets::rotate(inv, {start[0] - bp[0], start[1] - bp[1], start[2] - bp[2]});
+            const V3 le = assets::rotate(inv, {end[0] - bp[0], end[1] - bp[1], end[2] - bp[2]});
+            for (const assets::XCollTri& t : cs.tris) {
+                const float de = t.plane[0] * le[0] + t.plane[1] * le[1] + t.plane[2] * le[2] - t.plane[3];
+                if (!(de < 0)) continue;
+                const float ds = t.plane[0] * ls[0] + t.plane[1] * ls[1] + t.plane[2] * ls[2] - t.plane[3];
+                if (!(ds > 0)) continue;
+                const float denom = ds - de;
+                float f = (ds - 0.125f) / denom;
+                if (f < 0) f = 0;
+                if (!(f < res.fraction)) continue;
+                const float k = ds / denom;
+                const V3 p{(le[0] - ls[0]) * k + ls[0], (le[1] - ls[1]) * k + ls[1], (le[2] - ls[2]) * k + ls[2]};
+                const float u = p[0] * t.edge0[0] + p[1] * t.edge0[1] + p[2] * t.edge0[2] - t.edge0[3];
+                if (u < -0.001f || u > 1.001f) continue;
+                const float v = p[0] * t.edge1[0] + p[1] * t.edge1[1] + p[2] * t.edge1[2] - t.edge1[3];
+                if (v < -0.001f || u + v > 1.001f) continue;
+                res.hit = true;
+                res.fraction = f;
+                res.surfaceFlags = cs.surfaceFlags;
+                res.normal = assets::rotate(q, {t.plane[0], t.plane[1], t.plane[2]});
+                res.model = int(mi);
+                res.bone = cs.bone;
+            }
+        }
+    }
+    return res;
+}
+
 } // namespace iw2::game

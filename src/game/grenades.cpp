@@ -132,7 +132,7 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
     return tr.entity < 0 && len(sub(nv, v)) > 100.0f;
 }
 
-// Radius damage (0x5289d0): every damageable entity but `ignore` within `radius` of `origin` (distance to its origin;
+// Radius damage (0x5289d0): every entity that takes damage (ent+0x111) but `ignore` within `radius` of `origin` (distance to its origin;
 // brush models: to their bounds) that the explosion can reach (0x5285b0) takes inner + (outer − inner)·d/r, pushed
 // along (target − origin + (0, 0, 24)). Entities with a client (the player) are spared while the script radiusdamage
 // runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). TODO(spec): the bounds of brush models and the
@@ -143,7 +143,7 @@ void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, floa
     std::vector<Entity*> hit;
     for (const auto& ep : entities_) {
         Entity& t = *ep;
-        if (&t == ignore || t.obj->removed || !isAlive(t)) continue;
+        if (&t == ignore || !takesDamage(t)) continue;
         if (t.isPlayer && sparePlayerRadiusDamage_) continue;
         const float dist = len(sub(originOf(t.obj), origin));
         if (dist >= radius) continue;
