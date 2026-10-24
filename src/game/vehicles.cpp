@@ -1186,16 +1186,31 @@ void World::registerVehicleBuiltins() {
             Vec3 fwd, right, up;
             anglesToAxis(a, fwd, right, up);
             const std::string flashFx = weaponField(v.info->turretWeapon, "worldFlashEffect");
+            auto shotDir = [&](const Vec3& start) {
+                // Aim bend (0x5144e7): a player-driven single barrel shoots towards the player's aim point
+                // (+0x1bc), at most 10° (0x591e8c / 0x59213c) off the flash direction in pitch and in yaw.
+                // TODO(spec): the barrel pull-back +0x19c / +0x198 (always 0 here).
+                if (v.owner < 0 || v.info->quadBarrel) return fwd;
+                const Vec3 d{v.aimPoint[0] - start[0], v.aimPoint[1] - start[1], v.aimPoint[2] - start[2]};
+                if (d[0] == 0 && d[1] == 0 && d[2] == 0) return fwd;
+                const Vec3 fa = vectorToAngles(fwd), aa = vectorToAngles(d);
+                auto clamp10 = [](float x) { return x >= 10.0f ? 10.0f : x <= -10.0f ? -10.0f : x; };
+                const float p = angleSubtract(fa[0], clamp10(angleSubtract(fa[0], aa[0])));
+                const float y = angleSubtract(fa[1], clamp10(angleSubtract(fa[1], aa[1])));
+                const float rad = float(M_PI) / 180.0f;
+                return Vec3{std::cos(p * rad) * std::cos(y * rad), std::cos(p * rad) * std::sin(y * rad), -std::sin(p * rad)};
+            };
             const std::string fireSnd = weaponField(v.info->turretWeapon, "fireSound");
             for (int k = 0; k < count; ++k) {
                 bool ok = false;
                 const Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
                 if (!ok) throw std::runtime_error(std::string("No ") + flash[first + k] + " for [" + e->obj->get("model").toString() + "]");
+                const Vec3 dir = shotDir(start);
                 if (type == "bullet") {
-                    const Vec3 end{start[0] + fwd[0] * 8192.0f, start[1] + fwd[1] * 8192.0f, start[2] + fwd[2] * 8192.0f};
+                    const Vec3 end{start[0] + dir[0] * 8192.0f, start[1] + dir[1] * 8192.0f, start[2] + dir[2] * 8192.0f};
                     fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e);
                 } else {
-                    spawnRocket(*e, v.info->turretWeapon, start, fwd);
+                    spawnRocket(*e, v.info->turretWeapon, start, dir);
                 }
             }
             // The fire event's client side: the quad events show both tags of the pair, EV_FIRE_WEAPON tag_flash.
