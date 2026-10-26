@@ -278,7 +278,7 @@ bool World::badPlaceFlee(Entity& e) {
 
 // 0x503890 (plain planning): a path that already ends at the node is kept (a truncated one while more than a quarter
 // of it is left); standing at the node needs none; else a new path to it. True when the actor is there or has a path.
-bool World::fleePathToNode(Entity& e, int node) {
+bool World::fleePathToNode(Entity& e, int node, bool withPlanes) {
     const Vec3 no = originOf(nodes_[size_t(node)].obj), o = originOf(e.obj);
     auto same = [](const Vec3& a, const Vec3& b) {
         const float dz = b[2] - a[2];
@@ -291,7 +291,7 @@ bool World::fleePathToNode(Entity& e, int node) {
         if (keep && same(no, pathEnd(e))) return true;
         clearActorPath(e);
     }
-    return pathToNodeDirect(e, node) && actorHasPath(e);
+    return pathToNodeDirect(e, node, withPlanes) && actorHasPath(e);
 }
 
 // Badplace state think (0x524060): while the flag (+0x2128) holds: perception, then along a flee path (facing 4,

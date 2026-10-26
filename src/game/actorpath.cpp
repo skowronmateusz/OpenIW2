@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace iw2::game {
 
@@ -59,7 +60,96 @@ int teamOf(const Entity& e) {
     return s == "axis" ? 1 : s == "allies" ? 2 : s == "neutral" ? 3 : 0;
 }
 
+// 0x550f10's table: which team each team fights ({0, 2, 1, 0, 0}).
+bool isEnemyTeam(const Entity& me, const Entity& other) {
+    static constexpr int kEnemy[5] = {0, 2, 1, 0, 0};
+    return teamOf(other) == kEnemy[teamOf(me)];
+}
+
 } // namespace
+
+// 0x54b3b0 (slot choice 0x54b370): the fire of `source` near the actor marks the half plane beyond the line a–b. Only
+// an enemy team's fire counts (0x54b3c9…0x54b3f2: the source's team must be the enemy of the actor's). The slot is
+// the one the source already owns, else the oldest; it stores the time, the source and the plane. The plane is the
+// perpendicular of b − a through a — (a.y − b.y, b.x − a.x), n·p = c — flipped so the actor's own origin is on the
+// kept side (n·origin ≤ c). A same-team source (0x54b484: only reachable through the unidentified entity +0xfc
+// exception, TODO(spec)) marks the slot short-lived and drops the actor's path.
+void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) {
+    if (!isEnemyTeam(e, source)) return;
+    int slot = -1;
+    int64_t best = std::numeric_limits<int64_t>::max();
+    for (int i = 0; i < 4; ++i) {
+        if (e.dangerPlanes[size_t(i)].sourceEnt == source.number) {
+            slot = i;
+            break;
+        }
+        if (e.dangerPlanes[size_t(i)].timeMs < best) {
+            best = e.dangerPlanes[size_t(i)].timeMs;
+            slot = i;
+        }
+    }
+    DangerPlane& p = e.dangerPlanes[size_t(slot)];
+    p.timeMs = timeMs_;
+    p.sourceEnt = source.number;
+    float nx = a[1] - b[1], ny = b[0] - a[0];
+    float c = nx * a[0] + ny * a[1];
+    const Vec3 o = originOf(e.obj);
+    if (nx * o[0] + ny * o[1] > c) {
+        nx = -nx;
+        ny = -ny;
+        c = -c;
+    }
+    p.normal[0] = nx;
+    p.normal[1] = ny;
+    p.dist = c;
+    p.shortLived = teamOf(source) == teamOf(e);
+    if (p.shortLived) clearActorPath(e);
+}
+
+// 0x54b4d0 (each actor think, 0x4ff030): a short-lived plane expires after 300 ms, the others after the actor's
+// `suppressionwait` (field +0x20b0, ms; default 5000).
+void World::expireDangerPlanes(Entity& e) {
+    const Value w = e.obj->get("suppressionwait");
+    const int64_t wait = int64_t((w.isNumber() ? w.asFloat() : 5.0f) * 1000.0f);
+    for (DangerPlane& p : e.dangerPlanes) {
+        if (p.timeMs == 0) continue;
+        const int64_t since = timeMs_ - p.timeMs;
+        if (since >= (p.shortLived ? 300 : wait)) p = {};
+    }
+}
+
+// 0x54b5a0 (from the per-sentient release 0x4fe170, on the sentient's death/removal): the planes it added go.
+void World::removeDangerPlanesFrom(int sourceNumber) {
+    for (const auto& ep : entities_) {
+        Entity& a = *ep;
+        if (!a.isActor) continue;
+        for (DangerPlane& p : a.dangerPlanes)
+            if (p.sourceEnt == sourceNumber) p = {};
+    }
+}
+
+// 0x54b670: the active planes, in slot order.
+std::vector<PathPlane> World::dangerPlanesOf(const Entity& e) const {
+    std::vector<PathPlane> out;
+    for (const DangerPlane& p : e.dangerPlanes)
+        if (p.timeMs != 0) out.push_back({{p.normal[0], p.normal[1]}, p.dist});
+    return out;
+}
+
+// 0x54b610: whether a plane can be added without evicting a short-lived one (a free slot, or one not short-lived).
+bool World::hasFreeDangerPlane(const Entity& e) const {
+    for (const DangerPlane& p : e.dangerPlanes)
+        if (p.timeMs == 0 || !p.shortLived) return true;
+    return false;
+}
+
+// 0x542710: whether the node is on the excluded side of one of the planes (n·p > dist).
+bool World::nodeBeyondPlanes(int node, const std::vector<PathPlane>& planes) const {
+    const Vec3& p = paths_.position(size_t(node));
+    for (const PathPlane& pl : planes)
+        if (pl.dist < pl.normal[0] * p[0] + pl.normal[1] * p[1]) return true;
+    return false;
+}
 
 // 0x516950 / 0x516820: nodes within `radius` (2D) of `center` whose height difference is at most `height`, of a type
 // in `typeMask` (spawnflag 1 nodes only when bit 0 is set), at most `max`, with their 2D distance². TODO(spec): the
@@ -140,6 +230,14 @@ int World::sentientNode(Entity& e) {
     }
     e.nodeCached = true;
     return e.cachedNode;
+}
+
+// The sentient's node under danger planes (0x5150d0): the same query as 0x515040 around the origin (192 units,
+// lowered), but uncached and with the plane exclusion (nodes beyond a plane are only tried last, by the trace alone).
+int World::sentientNodePlanes(Entity& e, const std::vector<PathPlane>& planes) {
+    int first = -1;
+    const int node = queryNode(originOf(e.obj), 192.0f, true, 0xfffffffe, planes, &first);
+    return node; // a failed query is not cached or kept here (0x5150d0 returns the query's result directly)
 }
 
 // A* over the node graph (0x545840; 0x545ca0 with planes). Links blocked for the team by bad places are skipped (link
@@ -261,37 +359,45 @@ void World::buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3&
     }
 }
 
-// A path to a point (0x503650 core → 0x5424d0): from the sentient's node to the node query around the point (192
-// units, lowered); the node cache is reset first. TODO(spec): with danger planes (+0x2050, 0x54b670) the plane
-// variants 0x5150d0 / 0x542810 / 0x5428a0 are used; the planes are not modelled, so they are always empty here.
+// A path to a point (0x503650 core): from the sentient's node to the node query around the point (192 units,
+// lowered); the node cache is reset first. Without danger planes this is 0x5424d0 (plain 0x545840); with them
+// (0x54b670) the start comes from the uncached plane query 0x5150d0, the goal query keeps the planes (0x542810) and
+// 0x5428a0 requires both end nodes to be on the actor's side of every plane (0x542710) before the plane-limited
+// search 0x545ca0. TODO(spec): the planes only appear through the AI events (0x535770 → 0x54b3b0), not implemented.
 bool World::pathToPoint(Entity& e, const Vec3& target) {
     clearActorPath(e);
+    const std::vector<PathPlane> planes = dangerPlanesOf(e);
     e.nodeCached = false;
-    const int start = sentientNode(e);
+    const int start = planes.empty() ? sentientNode(e) : sentientNodePlanes(e, planes);
     if (start < 0) return false;
-    const int goal = queryNode(target, 192.0f, true, 0xfffffffe, {}, nullptr);
+    const int goal = queryNode(target, 192.0f, true, 0xfffffffe, planes, nullptr);
     if (goal < 0) return false;
+    if (!planes.empty() && (nodeBeyondPlanes(start, planes) || nodeBeyondPlanes(goal, planes))) return false;
     std::vector<int> chain;
-    if (!searchNodes(teamOf(e), start, goal, target, {}, chain)) return false;
+    if (!searchNodes(teamOf(e), start, goal, target, planes, chain)) return false;
     buildActorPath(e, chain, target);
     return true;
 }
 
-// A path to a node (0x503890 with plain planning): from the sentient's node to `node`, ending at its origin; a node
-// with spawnflag 1 is replaced by the node query around it (192 units, lowered).
-bool World::pathToNodeDirect(Entity& e, int node) {
+// A path to a node (0x503890; `withPlanes` its third argument): from the sentient's node (0x515040, or 0x5150d0 with
+// the planes) to `node`, ending at its origin; a node with spawnflag 1 is replaced by the node query around it (192
+// units, lowered, without planes — 0x517f90 is called with none there). With planes both end nodes must be on the
+// actor's side of every plane (0x5428a0 → 0x542710) and the search is 0x545ca0.
+bool World::pathToNodeDirect(Entity& e, int node, bool withPlanes) {
     clearActorPath(e);
+    const std::vector<PathPlane> planes = withPlanes ? dangerPlanesOf(e) : std::vector<PathPlane>{};
     e.nodeCached = false;
-    const int start = sentientNode(e);
+    const int start = planes.empty() ? sentientNode(e) : sentientNodePlanes(e, planes);
     if (start < 0) return false;
     int goal = node;
     if (nodes_[size_t(node)].spawnflags & 1) {
         goal = queryNode(originOf(nodes_[size_t(node)].obj), 192.0f, true, 0xfffffffe, {}, nullptr);
         if (goal < 0) return false;
     }
+    if (!planes.empty() && (nodeBeyondPlanes(start, planes) || nodeBeyondPlanes(goal, planes))) return false;
     const Vec3 target = originOf(nodes_[size_t(goal)].obj);
     std::vector<int> chain;
-    if (!searchNodes(teamOf(e), start, goal, target, {}, chain)) return false;
+    if (!searchNodes(teamOf(e), start, goal, target, planes, chain)) return false;
     buildActorPath(e, chain, target);
     return true;
 }

@@ -137,8 +137,8 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
 
 Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`; grenade state in `actorgrenade.cpp`
 (docs/spec/grenades.md), badplace state in `badplace.cpp` ("Bad places" below). TODO(spec): animscripted
-(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), the planner internals and the follower 0x551960 (see "Cover
-nodes"), facing modes, AI events (0x535770), touch and damaged handlers, followed/blocking actors (+0x2148, +0x728).
+(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), facing modes, AI events (0x535770 — also the danger-plane
+producers, see "Path planner"), touch and damaged handlers, followed/blocking actors (+0x2148, +0x728).
 
 ## Cover nodes (observed; Ghidra decompiles and the objdump listing)
 
@@ -208,11 +208,10 @@ reacquire), `flagenemyunattackable` (0x53cd90: ignore-until 0x7fffffff, substate
 types 18, 2, 3, 5, 10, 11, 12, 6, 7). `findbestcovernode` options are the constant strings set at 0x506e95…: 0x1c7f12a
 "prefer", 0x1c7f128 "ignore", 0x1c7f12c "better".
 
-Implemented in `src/game/actorcover.cpp`. TODO(spec): the planner proper (0x5424d0, 0x542810, 0x5428a0, 0x545840,
-path points of 0x1c bytes at actor +0x330, flags +0x6e8; OpenIW2 plans A* between the nodes nearest to both ends),
-the sentient node query 0x517f90, node take-over 0x518e80/0x518dc0, linked nodes, 0x515390, goal volumes,
-0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move check's continuation after a block,
-the trim state of the reacquire paths (+0x70c/+0x710), `ispathdirect`, actor +0x20b4 in the score, 0x548be0.
+Implemented in `src/game/actorcover.cpp`. TODO(spec): node take-over 0x518e80/0x518dc0, linked nodes, 0x515390, goal
+volumes, 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move check's continuation after a
+block, the trim state of the reacquire paths (+0x70c/+0x710), `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
+0x502960's offset goal (0x542340/0x545670, see "Path planner").
 
 ## Path planner (observed)
 
@@ -223,7 +222,23 @@ ones are traced last. Sentient node 0x515040: radius 192, cached (+0x38, flags +
 re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0 adds planes. Path points 0x541da0: goal first in the original (+0x330, 0x1c bytes: pos, dir, length, node), at most 32 (+0x6e8 |= 4),
 the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
 (goal-first layout, see "Path following"). TODO(spec): negotiation pairs (types 16/17),
-danger planes (+0x2050), 0x502960's offset goal (0x542340/0x545670).
+0x502960's offset goal (0x542340/0x545670).
+
+**Danger planes** (observed; Ghidra decompile and objdump call sites): actor
++0x2050 holds four 0x18-byte slots {time, source, nx, ny, dist, short-lived}. 0x54b3b0 (slot choice 0x54b370: the
+source's own slot, else the oldest) adds the half plane through the line a–b of enemy fire: n = (a.y − b.y, b.x − a.x),
+c = n·a, flipped so the actor's origin stays on the kept side (n·origin ≤ c); only a source of the enemy team adds one
+(the unidentified entity +0xfc exception, which also marks the slot short-lived and drops the actor's path, is
+TODO(spec)). 0x54b4d0 (each actor think) expires a short-lived slot after 300 ms, the rest after `suppressionwait`
+(+0x20b0); 0x54b5a0 (per-sentient release 0x4fe170) drops the slots of a released source; 0x54b610 reports a free or
+not short-lived slot (the grenade flee gate 0x51faa2); 0x54b670 collects the active planes. Planning with planes
+(0x503650 / 0x503890 third argument, 0x503a50): the start node comes from the uncached 0x5150d0, the goal query keeps
+the planes, 0x5428a0 requires both end nodes on the kept side (0x542710: n·p > dist fails) and searches 0x545ca0.
+Implemented in `src/game/actorpath.cpp` (`addDangerPlane`, `expireDangerPlanes`, `removeDangerPlanesFrom`,
+`dangerPlanesOf`, `hasFreeDangerPlane`, `sentientNodePlanes`; `pathToPoint` / `pathToNodeDirect` pick the plane
+variant; the grenade take-cover path passes planes, 0x51fa49). TODO(spec): nothing adds planes yet — the producers
+are the AI events (0x535770 broadcast → handlers 0x535d00 / 0x535f20 type 0x12 → 0x54b3b0, from bullet fire), and the
+flee fallback 0x5429e0 gated by 0x54b610 (0x51faa0…0x51fb05).
 
 ## Bad places (observed 0x524060 0x5199f0)
 

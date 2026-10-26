@@ -97,7 +97,8 @@ void World::grenadeStateFinish(Entity& e) {
 // usual path update runs and a path that ends safe is fled along; else the best safe cover node within 768 units
 // (0x54c110) is walked to and claimed (take cover); else a path away from the landing point to beyond the danger radius
 // (0x503ca0 → 0x545f30) (flee), or cowering when there is none.
-// TODO(spec): the danger planes (0x54b610) that allow a plane-limited path (0x5429e0 with planes).
+// TODO(spec): the flee fallback 0x5429e0 (a node-query path away, plane-limited) that runs when the plain flee leaves
+// no path and a danger plane slot is free (0x51faa0…0x51fb05).
 void World::grenadeReact(Entity& e, bool keepPath) {
     ActorAi& ai = e.ai;
     Entity& ge = *ai.grenade;
@@ -121,7 +122,7 @@ void World::grenadeReact(Entity& e, bool keepPath) {
         }
     } else {
         const int node = grenadeCoverNode(e, r);
-        if (node >= 0 && fleePathToNode(e, node)) {
+        if (node >= 0 && fleePathToNode(e, node, true)) { // 0x51fa49: 0x503890(…, 1) — with the danger planes
             e.obj->set("keepclaimednode", Value(int32_t(0)));
             e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
             claimNode(e, node);
