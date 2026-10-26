@@ -1862,8 +1862,15 @@ int main(int argc, char** argv) {
             return std::min(a, 1.0f);
         };
         auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
-                           const uint8_t rgba[4], float alignX, float alignY) {
+                           const uint8_t rgba[4], float alignX, float alignY, int style = 0) {
             // alignX/alignY: 0 = left/top, 0.5 = centre, 1 = right/bottom of the text box at (x, y).
+            // style: the menu item's textstyle (itemDef +0x290, parsed at exe 0x4d2370), which the exe passes unchanged
+            // as the last argument of the renderer's text command (0x4c3790 → refexport 0x1000c070, cmd 0x15 +0x1c).
+            // The renderer (0x100329a0) draws, for ITEM_TEXTSTYLE_SHADOWED (3) / ITEM_TEXTSTYLE_SHADOWEDMORE (6),
+            // each glyph first 1 / 2 screen pixels right and down (0x10032b3d) in black with the text colour's alpha
+            // (colour & 0xff000000, 0x100329d7; colour codes do not change it, 0x10032c51), then the glyph itself.
+            // It tests no other style.
+            const float shadow = style == 3 ? 1.0f : style == 6 ? 2.0f : 0.0f;
             const int tex = materialTexture(f.material);
             std::vector<std::string> lines(1);
             for (char c : text) {
@@ -1886,6 +1893,12 @@ int main(int argc, char** argv) {
                         q.y1 = q.y0 + float(g->height) * scale;
                         std::memcpy(q.rgba, rgba, 4);
                         q.texture = tex;
+                        if (shadow > 0) {
+                            Quad2D s = q;
+                            s.x0 += shadow, s.x1 += shadow, s.y0 += shadow, s.y1 += shadow;
+                            s.rgba[0] = s.rgba[1] = s.rgba[2] = 0;
+                            out.push_back(s);
+                        }
                         out.push_back(q);
                     }
                     pen += float(g->dx) * scale;
@@ -2039,7 +2052,7 @@ int main(int argc, char** argv) {
             // With text: x = rect.x − (icon width + text width)/2, text baseline rect.y + text height/2, icon right of
             // it at y = rect.y − h/2; without: icon at x = rect.x − icon width/2, y = rect.y. cg_cursorHints default
             // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). TODO(spec): the fade (cg_hintFadeTime, 0x4b0900), the
-            // weapon pickup text (0x4a99b0), HINT_HEALTH's key text, the text shadow.
+            // weapon pickup text (0x4a99b0), HINT_HEALTH's key text.
             if (world && cursorHintItem && !world->playerOnTurret()) {
                 const auto& uh = world->playerUseHint();
                 std::string icon;
@@ -2074,7 +2087,8 @@ int main(int argc, char** argv) {
                                 if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
                             const float textH = float(int(ts * 48.0f));
                             const float x0 = rx - (iw + tw) * 0.5f;
-                            hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f);
+                            hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f,
+                                    cursorHintItem->textStyle); // style: the item's (0x4a9d38)
                             ix = x0 + tw;
                             iy = ry - rh * 0.5f;
                         }
@@ -2119,7 +2133,8 @@ int main(int argc, char** argv) {
             // +moveup, 0x4cdbf0), then the hint_mantle icon right of it; both centred on the item rect's x. The rect is
             // the menu's "0 130 40 40" with HORIZONTAL_ALIGN_CENTER / VERTICAL_ALIGN_CENTER: (320, 370) virtual, 40×40.
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
-            // (that x + text width, rect.y − rect.h/2). TODO(spec): ITEM_TEXTSTYLE_SHADOWED, the dvars it also tests.
+            // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
+            // TODO(spec): the dvars it also tests.
             if (world && mantleHint && mantleHintItem) {
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
@@ -2139,7 +2154,8 @@ int main(int argc, char** argv) {
                     const float rx = 320.0f, ry = 370.0f, rw = 40.0f, rh = 40.0f;
                     const float x0 = rx - (tw + rw) * 0.5f;
                     const uint8_t white[4] = {255, 255, 255, 255};
-                    hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f);
+                    hudText(out, text, left43 + x0 * sc, (textH * 0.5f + ry) * sc, gs * sc, *f, white, 0.0f, 1.0f,
+                            mantleHintItem->textStyle); // style: the item's (0x4aa05b)
                     Quad2D q{left43 + (x0 + tw) * sc, (ry - rh * 0.5f) * sc, 0, 0};
                     q.x1 = q.x0 + rw * sc;
                     q.y1 = q.y0 + rh * sc;
@@ -2151,9 +2167,10 @@ int main(int argc, char** argv) {
             // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
             // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
             // it at spaces to the item width, centres each line on rect x + textalignx, line step text height + 5;
-            // the glyph scale is textscale × 48 / font pixel height (gfx refexport +0x128, 0x1000bfa0).
-            // TODO(spec): the shadow of ITEM_TEXTSTYLE_SHADOWED, and which
-            // ownerdraw arguments carry textalignx/textaligny (from the menu's "point to center around" comments).
+            // the glyph scale is textscale × 48 / font pixel height (gfx refexport +0x128, 0x1000bfa0). The item's
+            // textstyle reaches the text draw (menu 0x4cec99 → 0x4c4070 → 0x4aa690 → 0x4aa2a0 → 0x4cc6a0 → 0x4c3790),
+            // so ITEM_TEXTSTYLE_SHADOWED gets the renderer's shadow (see hudText). TODO(spec): which ownerdraw
+            // arguments carry textalignx/textaligny (from the menu's "point to center around" comments).
             if (world && deadQuoteItem && deadScreenMs && deadScreenMs < world->timeMs()) {
                 const auto qv = world->cvars.find("ui_deadquote");
                 // Font for textfont 0 (0x4c38e0): textscale × (screen height / 480) ≤ ui_smallFont (0.25) → $smallfont,
@@ -2203,7 +2220,7 @@ int main(int argc, char** argv) {
                     const float step = float(int(qi.textScale * 48.0f) + 5);
                     float y = qi.rect.y + qi.textAlignY;
                     for (const auto& l : lines) {
-                        hudText(out, l, left43 + (qi.rect.x + qi.textAlignX) * sc, y * sc, gs * sc, *f, rgba, 0.5f, 1.0f);
+                        hudText(out, l, left43 + (qi.rect.x + qi.textAlignX) * sc, y * sc, gs * sc, *f, rgba, 0.5f, 1.0f, qi.textStyle);
                         y += step;
                     }
                 }
@@ -2342,6 +2359,8 @@ int main(int argc, char** argv) {
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     world->frame();
+                    for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen too
+                        if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
                 }
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
