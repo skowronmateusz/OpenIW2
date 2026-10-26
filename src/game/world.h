@@ -152,6 +152,17 @@ struct ScriptedAnim {
     bool deathplant = false;  // +0x4d
 };
 
+// One danger plane slot (actor +0x2050, 4 × 0x18 bytes): fire of an enemy near the actor marks the half plane beyond
+// the firing line; the planners (0x5428a0 / 0x545ca0 / 0x517f90) stay on the actor's side of it. Added by 0x54b3b0
+// (slot choice 0x54b370), expired by 0x54b4d0, dropped when the source is released (0x54b5a0), collected by 0x54b670.
+struct DangerPlane {
+    int64_t timeMs = 0;    // +0x0: when it was added (0: the slot is free)
+    int sourceEnt = -1;    // +0x4: entity number of the sentient whose fire added it
+    float normal[2] = {0, 0}; // +0x8
+    float dist = 0;        // +0x10
+    bool shortLived = false; // +0x14: set for a same-team source (expires after 300 ms, and 0x54b610 keeps such slots)
+};
+
 struct Entity {
     ObjectPtr obj;
     int number = 0;
@@ -178,6 +189,7 @@ struct Entity {
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
+    std::array<DangerPlane, 4> dangerPlanes; // actor +0x2050 (src/game/actorpath.cpp)
     std::unique_ptr<GrenadeState> grenade; // grenade missile (src/game/grenades.cpp)
     std::unique_ptr<RocketState> rocket;   // rocket missile (src/game/rockets.cpp)
     int claimedNode = -1;                  // sentient +0x2c: claimed path node (script field "node")
@@ -528,13 +540,20 @@ private:
     bool claimedNodeGood(Entity& e, int node);
     float coverScore(Entity& e, int node);
     std::vector<int> findCoverNodes(Entity& e, int better, int ignore, int prefer, size_t max);
-    int sentientNode(Entity& e);
+    int sentientNode(Entity& e);          // 0x515040 (cached)
+    int sentientNodePlanes(Entity& e, const std::vector<PathPlane>& planes); // 0x5150d0 (uncached, with planes)
     bool keepClaimedNode(Entity& e);
     bool atClaimedNode(Entity& e);
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
     bool pathToPoint(Entity& e, const Vec3& target);
     // Path planner (src/game/actorpath.cpp)
+    void addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b); // 0x54b3b0 (slot 0x54b370)
+    void expireDangerPlanes(Entity& e);  // 0x54b4d0 (from the actor think 0x4ff030)
+    void removeDangerPlanesFrom(int sourceNumber); // 0x54b5a0 (sentient release 0x4fe170)
+    std::vector<PathPlane> dangerPlanesOf(const Entity& e) const; // 0x54b670
+    bool hasFreeDangerPlane(const Entity& e) const; // 0x54b610
+    bool nodeBeyondPlanes(int node, const std::vector<PathPlane>& planes) const; // 0x542710
     std::vector<std::pair<int, float>> nodesInRange(const Vec3& center, float radius, float height, size_t max,
                                                     uint32_t typeMask) const;
     int queryNode(const Vec3& pos, float radius, bool lowered, uint32_t typeMask, const std::vector<PathPlane>& planes,
@@ -563,7 +582,7 @@ private:
     bool holdsPosition(Entity& e);
     bool pathDetour(Entity& e, const Vec3& o, const Vec3& a, const Vec3& b, int k, const std::vector<int>& ents,
                     uint32_t mask, bool split);
-    bool pathToNodeDirect(Entity& e, int node);
+    bool pathToNodeDirect(Entity& e, int node, bool withPlanes = false); // 0x503890 (param 3: the plane variant)
     bool linkBlocked(size_t node, size_t link, int team) const;
     // Grenades (src/game/grenades.cpp, src/game/actorgrenade.cpp)
     float gravity();
@@ -626,7 +645,7 @@ private:
     void recheckBadPlaceActors();
     void runBadPlaces();
     bool badPlaceFlee(Entity& e);
-    bool fleePathToNode(Entity& e, int node);
+    bool fleePathToNode(Entity& e, int node, bool withPlanes = false);
     int badPlaceThink(Entity& e);
     void registerBadPlaceBuiltins();
     bool pathToNode(Entity& e, int node);

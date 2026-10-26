@@ -299,6 +299,7 @@ bool World::actorAnimScriptDone(Entity& e) {
 void World::actorThink(Entity& e) {
     ActorAi& ai = e.ai;
     if (ai.corpse) return;
+    expireDangerPlanes(e); // 0x4ff030 → 0x54b4d0: a short-lived plane goes after 300 ms, the rest after suppressionwait
     int r = 0;
     for (int guard = 0; guard < 16; ++guard) { // the original loops without a limit
         if (!ai.requests.empty()) aiApplyRequests(e);
@@ -376,6 +377,7 @@ int World::deathThink(Entity& e) {
     if (ai.substate == kSubDeath && timeMs_ - ai.baseStateMs > 799) {
         clearActorPath(e);
         releaseNode(e); // the sentient release (0x514d50) frees the claimed node (0x5191a0)
+        removeDangerPlanesFrom(e.number); // and the danger planes it added elsewhere (0x4fe170 → 0x54b5a0)
         ai.substate = kSubDeathDone;
     }
     if (e.animScript == "death" && actorAnimScriptDone(e)) {
