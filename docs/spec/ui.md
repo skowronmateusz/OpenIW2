@@ -17,6 +17,17 @@ Glyph: `uint16 letter, int8 x0, int8 y0, uint8 dx, uint8 width, uint8 height, ui
 code-page values. Languages with another code page have their own fonts: `fonts/polish/*` map the Windows-1250
 bytes of the Polish strings (for example `ś` 0x9C), while `fonts/*` would show `œ` for the same byte.
 
+## Menu text styles (`textstyle`)
+
+The item's `textstyle` (itemDef +0x290, keyword parsed at exe 0x4d2370; values 0–6 from ui/menudefinition.h) is
+passed unchanged as the last argument of the renderer's text command: the exe's text draw 0x4c3790 issues command
+0x15 through refexport 0x1000c070 (style byte at command +0x24, colour at +0x20). The 1.3 renderer (0x100329a0)
+tests only style 3 `ITEM_TEXTSTYLE_SHADOWED` and 6 `ITEM_TEXTSTYLE_SHADOWEDMORE` (0x10032b1f): each glyph is drawn
+twice — first 1 px (3) / 2 px (6) of the render target right and down (0x10032b3d) in black keeping only the text
+colour's alpha (`colour & 0xff000000`, 0x100329d7; `^digit` codes retint only the main copy, 0x10032c51), then the
+glyph in full colour (0x10032bae). Styles 1 (blink) and 2 (pulse) are handled before that in the exe's item paint
+(256 ms half gate 0x4cc59d–0x4cc5b7, sin colour fade 0x4cc574), not by the renderer; 4 and 5 have no code anywhere.
+
 ## Localized strings (`localizedstrings/<file>.str`)
 
 Text with `REFERENCE <name>` followed by `LANG_<LANGUAGE> "<text>"` lines. The script key `&"FILE_NAME"` is the

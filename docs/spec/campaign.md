@@ -97,7 +97,8 @@ fade value. TODO: compass face rotation (ownerdraw 84), back (85, FUN_004a90b0),
   80 200 480 20, centred): after `opendeadscreen`, alpha = elapsed cg time / `hud_deathQuoteFadeTime` (int, default
   1000, 0..100000), text = `ui_deadquote` without a leading `@`, localized. 0x4cc6a0 wraps at spaces to the rect
   width, centres each line, line step = text height + 5; glyph scale = textscale × 48 / font pixel height (1.3 gfx DLL
-  refexport +0x128, 0x1000bfa0). Font of textfont 0 (0x4c38e0): s = textscale × screen height / 480; s ≤ `ui_smallFont`
+  refexport +0x128, 0x1000bfa0). The item's `textstyle` 3 gives each glyph the renderer's 1 px black, alpha-only
+  shadow (see ui.md "Menu text styles"). Font of textfont 0 (0x4c38e0): s = textscale × screen height / 480; s ≤ `ui_smallFont`
   (0.25) → `$smallfont`, s ≥ `ui_extraBigFont` (0.55) → `$extrabigfont`, s < `ui_bigFont` (0.4) → `$font`, else
   `$bigfont` (aliases from the `assetGlobalDef` of ui/main.menu, parser 0x4d2fcb).
 - `loadgame_continue` (0x447190) loads `sv_lastSaveGame` ("Unable to find save." otherwise).
