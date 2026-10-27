@@ -815,7 +815,7 @@ int main(int argc, char** argv) {
                 for (const auto& ep : world.entities()) {
                     if (ep->obj->removed) continue;
                     if (ep->classname == "script_vehicle_corpse") ++corpses;
-                    else if (ep->vehicle) ++alive;
+                    else if (ep->vehicle) { ++alive; std::printf("  survivor #%d model %s targetname %s health %s player vehicle %d\n", ep->number, ep->obj->get("model").toString().c_str(), ep->obj->get("targetname").toString().c_str(), ep->obj->get("health").toString().c_str(), int(world.vm().level()->get("playervehicle").isObject() && world.vm().level()->get("playervehicle").asObject() == ep->obj)); }
                 }
                 std::printf("vehicles: %d corpses, %d still script_vehicle\n", corpses, alive);
             }
