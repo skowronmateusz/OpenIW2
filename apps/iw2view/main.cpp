@@ -1954,6 +1954,11 @@ int main(int argc, char** argv) {
             // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
             const int64_t fxNow = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
             const auto fxSprites = fxSystem.sprites(fxNow);
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (size_t i = 0; i < fxSprites.size(); i += std::max<size_t>(1, fxSprites.size() / 12))
+                    std::cerr << "fx sprite " << i << "/" << fxSprites.size() << " " << fxSprites[i].shader << " pos " << fxSprites[i].position[0] << ","
+                              << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
+                              << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
             world->setFxSightBlockers(fxSystem.sightBlockers());
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
@@ -3187,6 +3192,10 @@ int main(int argc, char** argv) {
                                       pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn());
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
+            // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
+            fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
+            fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
+            fxSystem.viewValid = true;
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
@@ -3199,7 +3208,7 @@ int main(int argc, char** argv) {
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             renderer.fog = fogState.consts(world ? world->timeMs() : 0);
-            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam), forcedBlur);
+            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
             return 0;
@@ -3756,6 +3765,10 @@ int main(int argc, char** argv) {
             }
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
+            // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
+            fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
+            fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
+            fxSystem.viewValid = true;
             auto items = gatherItems(cam);
             // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
             // binocular weapon states 0x11–0x16.
