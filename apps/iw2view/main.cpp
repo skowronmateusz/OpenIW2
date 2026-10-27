@@ -3223,9 +3223,11 @@ int main(int argc, char** argv) {
         };
         // Savegame list (FEEDER_SAVEGAMES 0x10): save/*.svg whose header is listable, newest first (0x4c44a0).
         // TODO(spec): the level name / time / health / difficulty columns come from header fields that are not decoded yet.
-        struct SaveRow { std::string name; ui::SaveSortKey key; };
+        struct SaveRow { std::string name; ui::SaveSortKey key; ui::SaveInfo info; };
         std::vector<SaveRow> saveRows;
         uint64_t saveRowsAt = 0;
+        auto saveLoc = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+        std::string saveDetail; // text of the selected savegame (UI_SAVEGAMEINFO / textsavegame; TODO(spec): drawing)
         auto refreshSaves = [&] {
             if (saveRowsAt && SDL_GetTicksNS() - saveRowsAt < 1000000000ull) return;
             saveRowsAt = SDL_GetTicksNS() | 1;
@@ -3239,7 +3241,7 @@ int main(int argc, char** argv) {
                 if (size_t(f.gcount()) != hdr.size() || !ui::saveHeaderListable(hdr)) continue;
                 SaveRow r;
                 r.name = de.path().stem().string();
-                if (!ui::saveSortKey(hdr, r.key)) continue;
+                if (!ui::saveSortKey(hdr, r.key) || !ui::saveHeaderInfo(hdr, r.info)) continue;
                 size_t at = saveRows.size();
                 for (size_t i = 0; i < saveRows.size(); ++i)
                     if (ui::saveListBefore(r.key, saveRows[i].key)) { at = i; break; }
@@ -3254,11 +3256,20 @@ int main(int argc, char** argv) {
         };
         menuEnv.feederText = [&](int feeder, int row, int col) {
             if (feeder == 0x18 && col == 0) return profiles.name(row);
-            if (feeder == 0x10 && col == 0 && row >= 0 && size_t(row) < saveRows.size()) return saveRows[size_t(row)].name;
+            // exe 0x4c5f60: column 0 = entry +4 (the file name), column 1 = entry +0x14 (the date text)
+            if (feeder == 0x10 && row >= 0 && size_t(row) < saveRows.size() && col <= 1) {
+                if (col == 0) return saveRows[size_t(row)].name;
+                return ui::saveDateText(saveRows[size_t(row)].info, [&](const std::string& k) { return saveLoc(k); });
+            }
             return std::string();
         };
         menuEnv.feederSelect = [&](int feeder, int row) {
             if (feeder == 0x18) uiCvars["ui_playerProfileSelected"] = profiles.name(row); // 0x4c6050
+            // 0x4c6050 for feeder 0x10: dvar ui_savegame = file name; the name and the detail text go to the UI state (0x59b724 +0x31e / +0x41e).
+            if (feeder == 0x10 && row >= 0 && size_t(row) < saveRows.size()) {
+                uiCvars["ui_savegame"] = saveRows[size_t(row)].name;
+                saveDetail = ui::saveDetailText(saveRows[size_t(row)].info, [&](const std::string& k) { return saveLoc(k); });
+            }
         };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
