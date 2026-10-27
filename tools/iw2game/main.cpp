@@ -34,6 +34,7 @@ int main(int argc, char** argv) {
     try {
         iw2::fs::Vfs vfs;
         vfs.mountDirectory(argv[1]);
+        if (const char* overlay = std::getenv("IW2_OVERLAY")) vfs.mountDirectory(overlay); // debug: loose test scripts override the game files
         iw2::game::World world(vfs, argv[2]);
         if (argc > 3 && std::string(argv[3]) == "--walk-test") {
             const auto t0 = std::chrono::steady_clock::now();
@@ -526,6 +527,9 @@ int main(int argc, char** argv) {
         bool pmoveInit = false;
         std::vector<std::pair<float, iw2::game::Vec3>> playerPath; // --player-at T x,y,z: player origin from time T (linear between)
         bool moveStats = false;
+        std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
+        size_t menuAnswered = 0;
+        std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--trace-actor" && i + 1 < argc) {
@@ -536,6 +540,13 @@ int main(int argc, char** argv) {
                 shootBarrels = true;
             } else if (a == "--player-shoots") {
                 playerShoots = true; // the player fires at the nearest axis actor twice a second
+            } else if (a == "--answer-menus" && i + 1 < argc) {
+                std::string list = argv[++i];
+                for (size_t p = 0; p <= list.size();) {
+                    const size_t q = std::min(list.find(',', p), list.size());
+                    menuAnswers.push_back(list.substr(p, q - p));
+                    p = q + 1;
+                }
             } else if (a == "--spawn-all") {
                 spawnAll = true;
             } else if (a == "--controls") {
@@ -544,6 +555,9 @@ int main(int argc, char** argv) {
                 turretTest = std::stoi(argv[++i]);
             } else if (a == "--drive") {
                 drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
+            } else if (a == "--level-notify" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                levelNotifies.push_back({t, argv[++i]});
             } else if (a == "--player-at" && i + 2 < argc) {
                 iw2::game::Vec3 p{};
                 const float t = std::stof(argv[++i]);
@@ -765,6 +779,13 @@ int main(int argc, char** argv) {
                 }
                 world.setPlayerCommand(cmd);
             }
+            for (auto it = levelNotifies.begin(); it != levelNotifies.end();)
+                if (f * 0.05f >= it->first) {
+                    world.vm().notify(world.vm().level(), it->second, {});
+                    it = levelNotifies.erase(it);
+                } else {
+                    ++it;
+                }
             if (!playerPath.empty() && world.player()) {
                 const float t = f * 0.05f;
                 size_t k = 0;
@@ -797,6 +818,16 @@ int main(int argc, char** argv) {
                     if (e->isActor && !e->obj->removed && e->path.count > 0 && e->ai.animMode == 1 && e->ai.movemode >= 2)
                         before[e.get()] = e->obj->get("origin").asVector();
             world.frame();
+            if (!menuAnswers.empty())
+                for (const auto& cmd : world.takeClientCommands())
+                    if (cmd.name == "popupopen") {
+                        const int idx = std::atoi(cmd.arg.c_str());
+                        std::cout << "menu opened: " << (size_t(idx) < world.menuNames().size() ? world.menuNames()[size_t(idx)] : "?") << "\n";
+                        if (menuAnswered < menuAnswers.size()) {
+                            std::cout << "menu response: " << menuAnswers[menuAnswered] << "\n";
+                            world.menuResponse(idx, menuAnswers[menuAnswered++]);
+                        }
+                    }
             for (const auto& [e, o0] : before) {
                 if (e->obj->removed) continue;
                 const auto o = e->obj->get("origin").asVector();

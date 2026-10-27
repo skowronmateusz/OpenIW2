@@ -126,6 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerAnimBuiltins();
     registerCombatBuiltins();
     registerSoundBuiltins();
+    registerMenuBuiltins();
     registerHudBuiltins();
     registerInventoryBuiltins();
     registerMoverBuiltins();
@@ -870,7 +871,7 @@ void World::registerBuiltins() {
     });
     // Load-time hints and profiling markers have no effect on the simulation.
     for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret", "precacheshellshock",
-                             "precacherumble", "precachestring", "precachevehicle", "precachemenu", "prof_begin", "prof_end"})
+                             "precacherumble", "precachestring", "precachevehicle", "prof_begin", "prof_end"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // setviewmodel(model): the player's first-person hands model (read by the front end).
     vm_.registerBuiltin("setviewmodel", [](CallContext& c) {
