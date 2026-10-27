@@ -20,6 +20,7 @@
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
+#include "game/shellshock.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
 #include "game/watersim.h"
@@ -3245,6 +3246,9 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
+        int shockLoop = 0, shockSeenStart = -1;
+        bool shockEndPlayed = true;
+        float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
@@ -3291,8 +3295,18 @@ int main(int argc, char** argv) {
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
-                        cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
-                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens * pitchScale, -89.0f, 89.0f);
+                        float dyaw = ev.motion.xrel * 0.15f * zoomSens, dpitch = ev.motion.yrel * 0.15f * zoomSens * pitchScale;
+                        // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
+                        if (world)
+                            if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
+                                const auto& ss = world->shellShock();
+                                const game::ShockMouse m = game::shockMouse(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                                dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
+                                if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
+                                if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
+                            }
+                        cam.yaw -= dyaw;
+                        cam.pitch = std::clamp(cam.pitch + dpitch, -89.0f, 89.0f);
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
@@ -3313,6 +3327,7 @@ int main(int argc, char** argv) {
             }
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
+            frameDt = std::min(dt, 0.1f);
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
             const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
@@ -3575,6 +3590,34 @@ int main(int argc, char** argv) {
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
                 }
+                float shockRatio = 0;
+                if (world)
+                    if (const game::ShockRecord* rec = world->shellShockRecord()) {
+                        const auto& ss = world->shellShock();
+                        shockRatio = game::shellShockRatio(int(ss.startMs + ss.durationMs - world->timeMs()), rec->viewKickFadeMs);
+                    }
+                // Shell shock sounds (0x4b1f90): the loop (blended to its silent twin over the last loopFade ms) and the end sound.
+                if (world) {
+                    const game::ShockRecord* rec = world->shellShockRecord();
+                    const auto& ss = world->shellShock();
+                    if (!rec || int(ss.startMs) != shockSeenStart) {
+                        if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        shockSeenStart = rec ? int(ss.startMs) : -1;
+                        shockEndPlayed = !rec;
+                    }
+                    if (rec && rec->sound) {
+                        const int el = int(world->timeMs() - ss.startMs);
+                        const float b = game::shockLoopBlend(*rec, el, ss.durationMs);
+                        const audio::Vec3 at{cam.pos.x, cam.pos.y, cam.pos.z};
+                        if (b >= 0 && !shockLoop) shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
+                        else if (b >= 0) mixer.setBlend(shockLoop, b, at);
+                        else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        if (!shockEndPlayed && el >= game::shockEndSoundMs(*rec, ss.durationMs)) {
+                            mixer.play("shellshock_end"); // TODO(spec): when the exe plays shellshock_end_abort instead
+                            shockEndPlayed = true;
+                        }
+                    }
+                } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -3582,7 +3625,7 @@ int main(int argc, char** argv) {
                     const std::string ret = pweapon.field("adsOverlayReticle");
                     vmMotion.sway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), cam.pitch, cam.yaw,
                                   pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
-                                  !ret.empty() && ret != "none");
+                                  !ret.empty() && ret != "none", shockRatio);
                 }
                 {
                     const std::string ret = pweapon.field("adsOverlayReticle");
@@ -3754,6 +3797,13 @@ int main(int argc, char** argv) {
             const Camera camBase = cam;
             cam.pitch += recoil.viewKick()[0]; // view kick spring (0x4ae327)
             cam.yaw += recoil.viewKick()[1];
+            if (world)
+                if (const game::ShockRecord* rec = world->shellShockRecord()) { // shell shock view kick (0x4b2380), render only
+                    const auto& ss = world->shellShock();
+                    const game::ShockKick k = game::shockViewKick(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                    cam.yaw += std::atan(k.x) * 57.29578f;
+                    cam.pitch -= std::atan(k.y) * 57.29578f;
+                }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
             if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll

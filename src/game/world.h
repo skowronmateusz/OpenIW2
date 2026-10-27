@@ -29,6 +29,8 @@
 
 namespace iw2::game {
 
+struct ShockRecord;
+
 using script::ObjectPtr;
 using script::Value;
 using script::Vec3;
@@ -298,6 +300,16 @@ public:
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
     // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
     void applyPlayerEvent(int ev, int parm);
+    // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
+    // name index (1-based, 0 = none), the start time and the duration; shellShockRecord() is the loaded record, null
+    // without an active shock. The shock is over once timeMs() >= startMs + durationMs.
+    struct ShellShockState {
+        int index = 0;
+        int64_t startMs = 0;
+        int durationMs = 0;
+    };
+    const ShellShockState& shellShock() const { return shellShock_; }
+    const ShockRecord* shellShockRecord() const;
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
@@ -471,6 +483,7 @@ private:
     int nearestNodeWithin(const Vec3& p, float radius) const;
     void registerCombatBuiltins();
     void registerSoundBuiltins();
+    void registerShellShockBuiltins();
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();
@@ -490,6 +503,9 @@ private:
     void objectiveMessage(int state, const std::string& text);
     std::array<Objective, 16> objectives_{};
     std::vector<ClientCommand> clientCommands_;
+    std::vector<std::string> shockNames_;                 // precacheshellshock names (index - 1)
+    std::vector<std::shared_ptr<const ShockRecord>> shockRecords_; // parallel to shockNames_
+    ShellShockState shellShock_;
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
