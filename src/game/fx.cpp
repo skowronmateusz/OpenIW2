@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 
 namespace iw2::game {
 namespace {
@@ -361,6 +362,17 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         }
         std::fprintf(stderr, "fx: %zu particles, %zu waiting (max %lld ms), max life %lld, pending runs %zu\n", particles_.size(), waiting,
                      (long long)maxWait, (long long)maxLife, pending_.size());
+        if (std::getenv("IW2_FX_HIST")) { // per element (type, name, first shader) particle counts, largest first
+            std::map<std::string, size_t> hist;
+            for (const FxParticle& p : particles_) {
+                const auto sh = p.element->list("shaders");
+                hist[p.element->type + " " + p.element->name + " " + (sh.empty() ? std::string("-") : sh[0])]++;
+            }
+            std::vector<std::pair<size_t, std::string>> v;
+            for (auto& [k, n] : hist) v.push_back({n, k});
+            std::sort(v.rbegin(), v.rend());
+            for (size_t i = 0; i < v.size() && i < 12; ++i) std::fprintf(stderr, "fx hist %6zu %s\n", v[i].first, v[i].second.c_str());
+        }
     }
     for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
