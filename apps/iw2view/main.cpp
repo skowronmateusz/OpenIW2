@@ -33,6 +33,9 @@
 #include "ui/menu.h"
 #include "ui/menurun.h"
 #include "ui/frontend.h"
+#include "ui/profile.h"
+#include <filesystem>
+#include <fstream>
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -1918,10 +1921,20 @@ int main(int argc, char** argv) {
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
+        // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
+        // and the profile name when none is chosen, here "default").
+        const std::filesystem::path playersDir = std::filesystem::path(args[0]).parent_path() / "players";
+        std::string profileName = "default";
+        if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
+        const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
+        bool profileDirty = false;
+        if (std::ifstream cf(profileCfg); cf)
+            uiCvars = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
-            for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
+            for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
             w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration) {
                 float dur = 0;
@@ -1952,7 +1965,7 @@ int main(int argc, char** argv) {
         }
         Scene scene = menuMode ? emptyScene(dev) : loadScene(dev, vfs, args[1], !world);
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
-        struct ScreenMessage { std::string text; uint64_t untilNs; };
+        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; uint64_t startNs = 0, endNs = 0; };
         std::vector<ScreenMessage> screenMessages;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -2336,6 +2349,7 @@ int main(int argc, char** argv) {
             return u == uiCvars.end() ? std::string() : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
+            if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
             uiCvars[n] = v;
             if (world) world->cvars[n] = v;
         };
@@ -2374,6 +2388,14 @@ int main(int argc, char** argv) {
                 // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
             }
         };
+        int menuLoopHandle = 0;
+        menuEnv.startLoop = [&](const std::string& alias) {
+            if (menuLoopHandle) mixer.stop(menuLoopHandle);
+            float d = 0;
+            menuLoopHandle = mixer.play(alias, std::nullopt, &d);
+            std::cout << "menu loop " << alias << (menuLoopHandle ? " started\n" : " not started\n");
+        };
+        menuEnv.stopLoop = [&] { if (menuLoopHandle) mixer.stop(menuLoopHandle); menuLoopHandle = 0; };
         menuEnv.exec = execText;
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
@@ -2563,6 +2585,22 @@ int main(int argc, char** argv) {
                         const auto at = label.find("&&1");
                         text = at == std::string::npos ? label + text : label.substr(0, at) + text + label.substr(at + 3);
                     }
+                    // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
+                    // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
+                    // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
+                    // TODO(spec): the "KEY_" prefix handling of 0x4c6a20 (key.str has UNBOUND / OR / TAB without it).
+                    for (size_t b; (b = text.find("[{")) != std::string::npos;) {
+                        const size_t e = text.find("}]", b);
+                        if (e == std::string::npos) break;
+                        const auto it = world->keyBindings.find(text.substr(b + 2, e - b - 2));
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string keys = name("UNBOUND");
+                        if (it != world->keyBindings.end() && !it->second.empty()) {
+                            keys = name(it->second[0]);
+                            if (it->second.size() > 1) keys += " " + name("OR") + " " + name(it->second[1]);
+                        }
+                        text = text.substr(0, b) + keys + text.substr(e + 2);
+                    }
                     if (text.empty()) continue;
                     const std::string fontName = o->get("font").toString();
                     const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
@@ -2571,7 +2609,7 @@ int main(int argc, char** argv) {
             }
             {
                 // Subtitles (cgame 0x4bf2e0): x 120, y 400, char height 12 on the 640x480 screen, wrapped at 80 characters.
-                // TODO(spec): font, colour and shadow (0x4068e0), the wrap algorithm (0x403fb0), cg_subtitles off.
+                // Anchor: 0x406c60 calls 0x4068e0 with horizontal and vertical code 1, i.e. x·scale + 0x793974 = the left edge of the 4:3 area (left43) in widescreen, as here. TODO(spec): colour, cg_subtitles off.
                 const uint64_t now = SDL_GetTicksNS();
                 std::erase_if(subtitles, [&](const Subtitle& st) { return st.untilNs < now; });
                 const uint8_t white[4] = {255, 255, 255, 255};
@@ -2611,25 +2649,80 @@ int main(int argc, char** argv) {
                 // with x 6, y 100, character height 12, horizontal code 1 (LEFT edge of the window, 0x440ff4[1]) and vertical
                 // code 1 (TOP of the window, 0x441014[1]), style 3: the rows of the window go bottom-up, the newest row's top
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
-                // TODO(spec): the fade-out of old rows (window fields +0x18/+0x1c, 0x406758), the exact message text for
+                // TODO(spec): the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
+                // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                struct WindowRow { std::string text; uint64_t startNs, endNs; };
+                auto windowRows = [&](bool bold, size_t width, size_t lines) {
+                    std::vector<WindowRow> rows;
+                    for (const auto& m : screenMessages) {
+                        if (m.bold != bold) continue;
+                        std::string raw = m.text.substr(0, m.text.find('\x1f'));
+                        const std::string* t = loc.find(raw);
+                        std::string text = t ? *t : raw;
+                        for (size_t at = m.text.find('\x1f'), n = 1; at != std::string::npos; ++n) {
+                            const size_t next = m.text.find('\x1f', at + 1);
+                            const std::string arg = m.text.substr(at + 1, next == std::string::npos ? next : next - at - 1);
+                            const std::string mark = "&&" + std::to_string(n);
+                            if (const size_t k = text.find(mark); k != std::string::npos) text.replace(k, mark.size(), arg);
+                            at = next;
+                        }
+                        std::string cur;
+                        std::istringstream words(text);
+                        for (std::string wd; words >> wd;) {
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back({cur, m.startNs, m.endNs}); cur.clear(); }
+                            cur += (cur.empty() ? "" : " ") + wd;
+                        }
+                        if (!cur.empty()) rows.push_back({cur, m.startNs, m.endNs});
+                    }
+                    if (rows.size() > lines) rows.erase(rows.begin(), rows.end() - std::ptrdiff_t(lines));
+                    return rows;
+                };
+                // Window row drawing (0x4065e0): each row has a start and an end time (row fields [8] and [4]). Fade: alpha ×
+                // age / fadeIn while age < window +0x1c (250 ms), else × remaining / fadeOut while remaining < +0x20 (500 ms)
+                // (0x406758 / 0x40677b); no row is drawn before its start or after its end. Scroll (first loop 0x406628): every
+                // row younger than +0x18 (250 ms) moves the whole window down by (1 − age / 250) × the row pitch, so the
+                // rows slide up when a new row is added.
+                auto drawWindow = [&](const std::vector<WindowRow>& rows, float x, float yBottom, float pitch, const assets::Font& f,
+                                      const uint8_t base[4], float alignX) {
+                    auto ms = [&](uint64_t a, uint64_t b) { return a >= b ? 0.0f : float(b - a) / 1.0e6f; };
+                    float shift = 0;
+                    for (const auto& r : rows) {
+                        const float age = r.startNs ? ms(r.startNs, now) : 1e9f;
+                        if (age < 250.0f) shift += (1.0f - age / 250.0f) * pitch;
+                    }
+                    float ry = yBottom - pitch + std::floor(shift + 0.5f);
+                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= pitch) {
+                        float a = 1.0f;
+                        if (it->startNs) {
+                            if (it->startNs > now || it->endNs <= now) continue;
+                            const float age = ms(it->startNs, now), left = ms(now, it->endNs);
+                            if (age < 250.0f) a = age / 250.0f;
+                            else if (left < 500.0f) a = left / 500.0f;
+                        }
+                        const uint8_t col[4] = {base[0], base[1], base[2], uint8_t(base[3] * a)};
+                        hudText(out, it->text, x, ry * sc, 12.0f / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
+                    }
+                };
                 const uint8_t green[4] = {0, 255, 0, 255};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    std::vector<std::string> rows; // oldest first
-                    for (const auto& m : screenMessages) {
-                        const std::string* t = loc.find(m.text);
-                        std::string cur;
-                        std::istringstream words(t ? *t : m.text);
-                        for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > 70) { rows.push_back(cur); cur.clear(); }
-                            cur += (cur.empty() ? "" : " ") + wd;
-                        }
-                        if (!cur.empty()) rows.push_back(cur);
+                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, green, 0);
+                }
+                // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
+                // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
+                // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
+                // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
+                // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
+                // Re-checked: 0x4bf210 passes only the horizontal code 7 and x 0; 0x440e60 code 7 gives (0x79397c + 0x793974) / 2
+                // + x·scale and 0x4062d0 draws the text from that point (0x617bf0), so each row STARTS at the centre of the box
+                // (no centring in 0x4062d0 / 0x4065e0 / 0x403b90).
+                {
+                    const float scale = 12.0f / 48.0f * float(h) / 480.0f;
+                    if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
+                        const uint8_t white[4] = {255, 255, 255, 255};
+                        drawWindow(windowRows(true, 60, 10), left43 + 320.0f * sc, 180.0f, 16.0f, *f, white, 0);
                     }
-                    float ry = 100.0f - 12.0f;
-                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 12.0f)
-                        hudText(out, *it, 6.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, green, 0, 0, 3);
                 }
             }
             // Scope overlay (0x4bcdd0 → 0x4bca90): the weapon's adsOverlayShader, white with the overlay alpha. Wider than
@@ -3220,7 +3313,8 @@ int main(int argc, char** argv) {
             if (world) {
                 std::array<game::Vec3, 3> rPrev{};
                 bool rHave = false, rInit = false;
-                std::vector<std::pair<std::string, int64_t>> shotMsgs; // obj_update / obj_complete with their world time
+                struct ShotMsg { std::string text; int64_t at; bool bold; };
+                std::vector<ShotMsg> shotMsgs; // game messages with their world time
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
                     if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
@@ -3278,11 +3372,15 @@ int main(int argc, char** argv) {
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
                             fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                         }
-                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete") shotMsgs.emplace_back(cmd.arg, world->timeMs());
+                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
+                        else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
                 }
-                // Messages still on screen (con_gamemessagetime 5 s) at the end of the simulation.
-                for (const auto& [text, at] : shotMsgs)
-                    if (world->timeMs() - at < 5000) screenMessages.push_back({text, SDL_GetTicksNS() + 600000000000ull});
+                // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
+                for (const auto& m : shotMsgs)
+                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(world->timeMs() - m.at) * 1000000ull;
+                        screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
+                // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
+                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
@@ -3498,16 +3596,24 @@ int main(int argc, char** argv) {
                     const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
                     // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
                     // the base 0.15 stands for the default.
+                    // The base 0.15 deg/count stands for the default sensitivity 5 (cvar sensitivity 1..30 from the options menu).
+                    const float lookSens = uiCvars.count("sensitivity") ? std::clamp(float(std::atof(uiCvars["sensitivity"].c_str())), 1.0f, 30.0f) / 5.0f : 1.0f;
                     float pitchScale = 1.0f;
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
-                        cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
-                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens * pitchScale, -89.0f, 89.0f);
+                        cam.yaw -= ev.motion.xrel * 0.15f * lookSens * zoomSens;
+                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale, -89.0f, 89.0f);
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
-                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
+                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) {
+                    if (world && frontStack.empty()) { // CL_KeyEvent 0x40c216: ESC in a running level -> UI_SetActiveMenu(2)
+                        menuEnv.setCvar("cl_paused", "1");
+                        menuMx = 320.0f, menuMy = 240.0f;
+                        frontStack.open("main");
+                    } else running = false;
+                }
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
                     godMode = !godMode;
@@ -3825,7 +3931,7 @@ int main(int argc, char** argv) {
                 }
                 mixer.fadeStep(dt * 1000.0f);
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
-                gameClock += std::min(dt, 0.25f) * slowmo;
+                if (menuEnv.getCvar("cl_paused") != "1") gameClock += std::min(dt, 0.25f) * slowmo; // cl_paused freezes the simulation
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
@@ -3893,8 +3999,10 @@ int main(int argc, char** argv) {
                     std::istringstream a(cmd.arg);
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
-                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull, false, SDL_GetTicksNS(), SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                    else if (cmd.name == "gmb")
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true, SDL_GetTicksNS(), SDL_GetTicksNS() + 8000000000ull}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
@@ -3961,6 +4069,37 @@ int main(int argc, char** argv) {
                     mixer.fade(1.0f, 0);
                 pendingLevel.reset();
             }
+            if (const char* keys = std::getenv("IW2_MENU_KEYS")) { // debug: scripted menu keys (up,down,enter,esc), one per 2 s
+                static std::string rest = keys;
+                static uint64_t nextKey = SDL_GetTicksNS() + 3000000000ull;
+                if (!rest.empty() && SDL_GetTicksNS() >= nextKey) {
+                    const size_t comma = rest.find(',');
+                    const std::string k = rest.substr(0, comma);
+                    rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    std::cout << "menu key " << k << "\n";
+                    if (k == "pause" && world && frontStack.empty()) {
+                        menuEnv.setCvar("cl_paused", "1");
+                        frontStack.open("main");
+                    } else if (k.rfind("set:", 0) == 0) { // set:name=value
+                        const size_t eq = k.find('=');
+                        menuEnv.setCvar(k.substr(4, eq - 4), k.substr(eq + 1));
+                    } else if (k == "wait") {
+                    } else
+                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
+                    if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
+                    std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
+                    nextKey = SDL_GetTicksNS() + 2000000000ull;
+                }
+            }
+            if (profileDirty) { // write the archived cvars (config.cfg) after a menu changed one
+                profileDirty = false;
+                std::error_code ec;
+                std::filesystem::create_directories(profileCfg.parent_path(), ec);
+                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars);
+            }
+            if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
+            if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();
                 if (wantCursor == SDL_GetWindowRelativeMouseMode(window)) SDL_SetWindowRelativeMouseMode(window, !wantCursor);

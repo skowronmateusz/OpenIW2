@@ -17,6 +17,9 @@ struct MenuEnv {
     std::function<void(const std::string& menu)> close;
     std::function<void(const std::string& alias)> play;
     // Front-end hooks (optional; set by MenuStack, src/ui/frontend.h). Names are the menu/item names of the commands.
+    std::function<void(const std::string& alias)> startLoop; // Menu_Open: the menu's soundLoop alias (0x4cb803..0x4cb835)
+    std::function<void()> stopLoop;
+    std::function<void()> closeAll;                                    // "ingameclose" (UI_SetActiveMenu(0): close all, unpause)
     std::function<void(const std::string& menu)> open;                 // "open"
     std::function<void(const std::string& item)> setFocus;             // "setfocus"
     std::function<void(const std::string& dvar)> setFocusByDvar;       // "setfocusbydvar"

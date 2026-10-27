@@ -45,6 +45,7 @@ private:
     MenuEnv& env_;
     std::vector<Menu*> stack_;
     const Item* focus_ = nullptr;
+    std::string loopAlias_; // soundLoop currently playing
     std::vector<std::pair<const Item*, bool>> shownOverrides_; // "show"/"hide" commands
 };
 
