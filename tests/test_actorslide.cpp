@@ -148,6 +148,38 @@ int main() {
         CHECK(b.origin[0] < 2.01f);
         CHECK(b.origin[2] < 1.0f);
     }
+    { // ground probe
+        auto floorAt = [](float zf, float nz) {
+            return [zf, nz](const float st[3], const float en[3]) {
+                SlideTrace t;
+                if (st[2] >= zf && en[2] < zf) {
+                    t.fraction = (st[2] - zf) / (st[2] - en[2]);
+                    t.normal[2] = nz;
+                    t.normal[0] = nz < 0.7f ? 0.9f : 0.0f;
+                    t.entity = 0x7fe;
+                }
+                return t;
+            };
+        };
+        ActorSlide a;
+        a.origin[2] = 0.1f;
+        groundProbe(a, floorAt(0.0f, 1.0f));
+        CHECK(a.groundPlane && a.groundEntValid && a.groundEnt == 0x7fe);
+        CHECK(a.origin[2] >= -0.001f && a.origin[2] <= 0.1f);
+        ActorSlide b;
+        b.origin[2] = 50;
+        groundProbe(b, floorAt(0.0f, 1.0f));
+        CHECK(!b.groundPlane && b.groundEnt == 0x7ff);
+        ActorSlide c;
+        c.origin[2] = 0.1f;
+        groundProbe(c, floorAt(0.0f, 0.5f));
+        CHECK(c.groundPlane && !c.groundEntValid && c.groundEnt == 0x7ff && c.hitEnt == 0x7fe);
+        ActorSlide d;
+        d.origin[2] = 0.1f;
+        d.velocity[2] = 50;
+        groundProbe(d, floorAt(0.0f, 1.0f));
+        CHECK(!d.groundPlane); // moving up away from the floor: dot > 10 -> no ground
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }

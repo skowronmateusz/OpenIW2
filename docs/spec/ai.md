@@ -517,3 +517,10 @@ saved state, returns 1). Then trace down from the new origin by (O0.z - up z) (0
 to the end point unless allsolid, return 1 when fraction >= 1.0; normal.z >= 0.3 clips the velocity (1.001) and clears the hit
 entity when max(O0.z, saved z) + 0.1 < origin z; otherwise the saved state is restored. Helper identities are in the previous
 section (0x4db7f0 trace wrapper, 0x47f390 lerp, 0x408ad0 max; 0x591e78 is the double 1.0). Tested with a step of height 10.
+
+### Actor ground probe (0x548290), ported
+
+`groundProbe` in `src/game/actorslide.cpp`: trace from origin+0.25 to origin-D (D = step height when vz<=0 and a ground entity exists, else 0.25).
+All-solid: touch-add the entity and retry without content bit 0x2000000 if set, then retrace from the origin; still all-solid -> ground entity = hit entity, groundPlane=0.
+Fraction 1 -> no ground. vz>0 and dot(normal, vel)>10 (0x591e8c) -> no ground. Normal z<0.7 -> groundPlane=1, no ground entity, hit record if none yet (normal.x stored in both slots, as at 0x548521/0x54852c).
+Walkable: z snaps to the trace end only if lower than the origin or mode==5; ground entity = trace entity, touch-add. Mode dispatch (0x5487c0 callees 0x548260/0x548200/0x548110/0x5480d0/0x5485a0/0x548650) is not yet ported: TODO(spec).

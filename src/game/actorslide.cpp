@@ -36,6 +36,13 @@ void recordHit(ActorSlide& pm, uint16_t ent, float nx, float ny) {
 }
 } // namespace
 
+void addTouch(ActorSlide& pm, uint16_t entity) {
+    if (entity == 0x7fe || pm.touchCount == 0x20) return;
+    for (int i = 0; i < pm.touchCount; ++i)
+        if (pm.touch[i] == entity) return;
+    pm.touch[pm.touchCount++] = entity;
+}
+
 void clipVelocity(const float in[3], const float n[3], float out[3], float overbounce) {
     if (!(n[2] < kMinNormalZ)) {
         const float xy = in[0] * in[0] + in[1] * in[1];
@@ -109,12 +116,7 @@ int slideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
         const float* n = tr.normal;
         const bool wallHit = n[2] < kMinNormalZ && pm.hitEnt == 0x7ff && (n[0] != 0.0f || n[1] != 0.0f);
         if (wallHit) recordHit(pm, tr.entity, n[0], n[1]);
-        if (tr.entity != 0x7fe && pm.touchCount != 0x20) {
-            bool found = false;
-            for (int i = 0; i < pm.touchCount; ++i)
-                if (pm.touch[i] == tr.entity) { found = true; break; }
-            if (!found) pm.touch[pm.touchCount++] = tr.entity;
-        }
+        addTouch(pm, tr.entity);
         timeLeft = timeLeft - tr.fraction * timeLeft;
         if (numPlanes >= 5) {
             vel[0] = vel[1] = vel[2] = 0.0f;
@@ -235,6 +237,75 @@ int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
     }
     pm = saved;
     return 1;
+}
+
+void groundProbe(ActorSlide& pm, const SlideTraceFn& trace) {
+    const float start[3] = {pm.origin[0], pm.origin[1], pm.origin[2] + 0.25f};
+    const float drop = (!(pm.velocity[2] <= 0.0f) || pm.groundEnt == 0x7ff) ? 0.25f : pm.stepHeight;
+    const float end[3] = {pm.origin[0], pm.origin[1], pm.origin[2] - drop};
+    auto store = [&](const SlideTrace& t) {
+        pm.groundTrace[0] = t.fraction;
+        pm.groundTrace[1] = t.normal[0];
+        pm.groundTrace[2] = t.normal[1];
+        pm.groundTrace[3] = t.normal[2];
+        pm.flag87 = t.allSolid;
+    };
+    SlideTrace r = trace(start, end);
+    store(r);
+    if (r.allSolid) {
+        if (r.surface & 0x2000000u) {
+            addTouch(pm, r.entity);
+            pm.mask &= ~0x2000000u;
+            r = trace(start, end);
+            store(r);
+        }
+        if (r.allSolid) {
+            const float o[3] = {pm.origin[0], pm.origin[1], pm.origin[2]};
+            r = trace(o, end);
+            store(r);
+            if (r.allSolid) {
+                pm.groundEnt = r.entity;
+                pm.groundPlane = false;
+                pm.groundEntValid = true;
+                return;
+            }
+        }
+    }
+    if (r.fraction == 1.0f) {
+        pm.groundEnt = 0x7ff;
+        pm.groundPlane = false;
+        pm.groundEntValid = false;
+        return;
+    }
+    if (pm.velocity[2] > 0.0f) {
+        const float d = r.normal[1] * pm.velocity[1] + r.normal[2] * pm.velocity[2] + r.normal[0] * pm.velocity[0];
+        if (d > 10.0f) { // 0x591e8c
+            pm.groundEnt = 0x7ff;
+            pm.groundPlane = false;
+            pm.groundEntValid = false;
+            return;
+        }
+    }
+    if (r.normal[2] < kMinNormalZ) {
+        pm.groundEnt = 0x7ff;
+        pm.groundPlane = true;
+        pm.groundEntValid = false;
+        if (pm.hitEnt == 0x7ff && (r.normal[0] != 0.0f || r.normal[1] != 0.0f)) {
+            pm.hitEnt = r.entity;
+            pm.hitPos[0] = pm.origin[0];
+            pm.hitPos[1] = pm.origin[1];
+            pm.hitNormal[0] = r.normal[0];
+            pm.hitNormal[1] = r.normal[0]; // the exe stores normal.x for both (0x548521 / 0x54852c)
+            pm.hitIsAllSolid = false;
+        }
+        return;
+    }
+    const float newZ = (end[2] - start[2]) * r.fraction + start[2];
+    if (newZ < pm.origin[2] || pm.mode == 5) pm.origin[2] = newZ;
+    pm.groundEnt = r.entity;
+    pm.groundPlane = true;
+    pm.groundEntValid = true;
+    addTouch(pm, r.entity);
 }
 
 } // namespace iw2::game
