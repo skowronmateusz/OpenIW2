@@ -61,6 +61,7 @@ struct PlayerState {
     int landSeq = 0;             // landings so far (PM_CrashLand 0x508fe0 reached the ground from the air)
     float landHeight = 0;        // the last landing's fall height
     int landDamage = 0;          // the last landing's fall damage 0..100 (applied to health by World::applyPlayerEvent)
+    bool movingBack = false;     // pm_flags 0x80: set by a backward command, cleared by forward (or sideways-only); raises the standing bob rate
     bool spawnSlide = false;     // pm_flags 0x400: set by ClientSpawn (0x4e925b) with pm_time 100; walk accel 1 and gravity on the ground
     bool landTimer = false;      // pm_flags 0x200: the landing slowdown, cleared with pm_time
     // The player-state event ring (ps+0x80 sequence, +0x84 events, +0x94 parameters; 4 slots, PM_AddEvent 0x507ba0 /

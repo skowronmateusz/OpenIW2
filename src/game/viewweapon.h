@@ -84,7 +84,7 @@ float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac,
 class ViewImpulses {
 public:
     // cgame's reset on a new level / respawn (0x4ba570): no landing yet.
-    void reset() { landTime_ = -1; landChange_ = 0; damageTime_ = 0; }
+    void reset() { landTime_ = -1; landChange_ = 0; damageTime_ = 0; stepTime_ = 0; stepChange_ = 0; }
     // A damage event (cgame 0x4ba2a0 on a new ps damageEvent): kick = clamp(count * cg_viewKickScale (0.6), 5, cg_viewKickMax
     // (90)); `fwd` and `left` are the view axes rows 0 and 1 (left = +y for yaw 0). A world hit (both bytes 255) kicks
     // the pitch back by the full amount. `timeMs` is the snapshot time (0x4ba53d).
@@ -97,6 +97,11 @@ public:
     // {pitch, roll} added to the view at `timeMs` (0x4ae371-0x4ae4a9): 100 ms in, 400 ms out; aiming scales it by
     // 1 - 0.5 * adsFrac (times 1 + 0.5 * adsFrac for a weapon with an ADS overlay reticle).
     std::array<float, 2> damageKick(int64_t timeMs, float adsFrac, bool reticle) const;
+    // The own client's step event 0x8f (cgame 0x4bac84): the view step change = the unfinished part of the previous one
+    // ((100 - elapsed) * change * 0.01 * 0.9 within 100 ms) + (parm - 0x80), clamped to -16..24, stamped `timeMs`.
+    void step(int parm, int64_t timeMs);
+    // Eye z subtracted at `timeMs` (0x4addb0): (100 - elapsed) * change * 0.01 within 100 ms of the step.
+    float stepOffset(int64_t timeMs);
     // Eye z is at least the origin z + 8 (0x4ae775-0x4ae799).
     static float minEyeZ(float originZ) { return originZ + 8.0f; }
     // The view dip of a landing: 0 up to fall height 12, else min(24, trunc(((h - 12) / 26 + 1) * 4)) (0x509107, 0x4bab9f).
@@ -104,7 +109,8 @@ public:
     static int dipFromDamage(int damage); // the cgame rebuilds h from the damage (0x4bab6e) with the fall damage dvars
 
 private:
-    int64_t landTime_ = -1, damageTime_ = 0;
+    int64_t landTime_ = -1, damageTime_ = 0, stepTime_ = 0;
+    float stepChange_ = 0;
     float landChange_ = 0, damagePitch_ = 0, damageRoll_ = 0;
 };
 
