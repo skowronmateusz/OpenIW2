@@ -2484,7 +2484,10 @@ int main(int argc, char** argv) {
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
                 else if (c == "disconnect" || c == "quit") { /* handled below */ if (c == "quit") std::exit(0); }
-                // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
+                // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
+                else if (c == "closemenu") menuEnv.close(a1);
+                // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
+                else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
             }
         };
         int menuLoopHandle = 0;
@@ -2499,7 +2502,7 @@ int main(int argc, char** argv) {
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
-        if (menuMode) {
+        { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
             scriptMenus.loadList("ui/menus.txt");
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
         }
@@ -2602,6 +2605,23 @@ int main(int argc, char** argv) {
                 }
                 ty += lineH;
             }
+        };
+        // Menu item text: localized string and font/scale (TODO(spec): the original's font choice by textscale, here the HUD's rule).
+        auto menuLocalized = [&](const std::string& raw) {
+            std::string key = raw;
+            if (!key.empty() && key[0] == '@') key.erase(0, 1);
+            const std::string* t = loc.find(key);
+            return t ? *t : key;
+        };
+        auto menuFont = [&](float ts) { return font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont"); };
+        menuEnv.textWidth = [&](const ui::Item& it) {
+            const assets::Font* f = menuFont(it.textScale);
+            if (!f) return 0.0f;
+            const float gs = it.textScale * 48.0f / float(f->pixelHeight);
+            float width = 0;
+            for (unsigned char ch : menuLocalized(it.text))
+                if (const auto* g = f->find(ch)) width += float(g->dx) * gs;
+            return width;
         };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
@@ -3415,19 +3435,32 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty()) continue;
-                        std::string key = it.text;
-                        if (key[0] == '@') key.erase(0, 1);
-                        const std::string* t = loc.find(key);
-                        const std::string text = t ? *t : key;
+                        if (it.text.empty() && it.type != 11 && it.type != 12) continue;
+                        const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
-                        const assets::Font* f = font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont");
+                        const assets::Font* f = menuFont(ts);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
                         const auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
                         hudText(front, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                        if (it.type == 11 || it.type == 12) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
+                            const std::string label = frontStack.valueLabel(it);
+                            if (!label.empty())
+                                hudText(front, menuLocalized(label), x0 + frontStack.valueTextX(menu, it) * xs,
+                                        (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                        }
                     }
+                    // Sliders: track ui/assets/slider2 (96x16) and thumb ui/assets/sliderbutt_1 (10x20), exe 0x4cdd20..0x4cded0.
+                    for (const auto& itp : menu.items) {
+                        const ui::Item& it = *itp;
+                        if (it.type != 10 || !it.hasRange || !frontStack.itemVisible(it)) continue;
+                        const float tx = frontStack.sliderTrackX(menu, it), ty = menu.rect.y + it.rect.y;
+                        const auto white = std::array<uint8_t, 4>{255, 255, 255, 255};
+                        quad(tx, ty, 96.0f, 16.0f, white, "ui/assets/slider2.tga");
+                        quad(tx + 6.0f + frontStack.sliderFraction(it) * 84.0f - 5.0f, ty - 2.0f, 10.0f, 20.0f, white, "ui/assets/sliderbutt_1");
+                    }
+                    (void)0;
                 }
                 {   // the cursor
                     Quad2D q{left43 + (menuMx - 8.0f) * sc, (menuMy - 8.0f) * sc, left43 + (menuMx + 8.0f) * sc, (menuMy + 8.0f) * sc};
@@ -3450,6 +3483,45 @@ int main(int argc, char** argv) {
         if (yaw) cam.yaw = *yaw;
         if (pitch) cam.pitch = *pitch;
 
+        if (!shot.empty() && (menuMode || std::getenv("IW2_SHOT_MENU"))) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
+            if (const char* sets = std::getenv("IW2_SHOT_SET")) {
+                std::string rest = sets;
+                while (!rest.empty()) {
+                    const size_t comma = rest.find(',');
+                    const std::string kv = rest.substr(0, comma);
+                    rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    if (const size_t eq = kv.find('='); eq != std::string::npos) menuEnv.setCvar(kv.substr(0, eq), kv.substr(eq + 1));
+                }
+            }
+            std::string rest = std::getenv("IW2_SHOT_MENU") ? std::getenv("IW2_SHOT_MENU") : "main";
+            while (!rest.empty()) {
+                const size_t comma = rest.find(',');
+                frontStack.open(rest.substr(0, comma));
+                rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+            }
+            menuMx = 320.0f, menuMy = 240.0f;
+            if (const char* keys = std::getenv("IW2_SHOT_KEYS")) { // debug: the IW2_MENU_KEYS tokens (open:, click:X/Y, up, down, enter, esc, left, right) run before the shot
+                std::string kr = keys;
+                while (!kr.empty()) {
+                    const size_t comma = kr.find(',');
+                    const std::string k = kr.substr(0, comma);
+                    kr = comma == std::string::npos ? std::string() : kr.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
+                    else if (k.rfind("click:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                        frontStack.click(menuMx, menuMy);
+                        frontStack.release();
+                    } else if (k.rfind("hover:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                    } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
+                }
+            }
+        }
         if (!shot.empty()) {
             if (walkSeconds > 0) {
                 // Drop the player at the camera position and walk forward, then take the shot from the eyes.
@@ -3724,6 +3796,12 @@ int main(int argc, char** argv) {
                             const auto v = toVirtual(ev.button.x, ev.button.y);
                             menuMx = v[0], menuMy = v[1];
                             frontStack.click(menuMx, menuMy);
+                        } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_RIGHT) {
+                            const auto v = toVirtual(ev.button.x, ev.button.y);
+                            menuMx = v[0], menuMy = v[1];
+                            frontStack.clickBack(menuMx, menuMy);
+                        } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
+                            frontStack.release();
                         }
                         continue;
                     }
@@ -3733,6 +3811,8 @@ int main(int argc, char** argv) {
                         if (sc2 == SDL_SCANCODE_ESCAPE) frontStack.key(K::Escape);
                         else if (sc2 == SDL_SCANCODE_UP) frontStack.key(K::Up);
                         else if (sc2 == SDL_SCANCODE_DOWN) frontStack.key(K::Down);
+                        else if (sc2 == SDL_SCANCODE_LEFT) frontStack.key(K::Left);
+                        else if (sc2 == SDL_SCANCODE_RIGHT) frontStack.key(K::Right);
                         else if (sc2 == SDL_SCANCODE_RETURN || sc2 == SDL_SCANCODE_KP_ENTER) frontStack.key(K::Enter);
                         continue;
                     }
@@ -4243,6 +4323,8 @@ int main(int argc, char** argv) {
                     mixer.fade(1.0f, 0);
                 pendingLevel.reset();
             }
+            if (const char* lim = std::getenv("IW2_EXIT_AFTER")) // debug: leave after N seconds (keeps test runs from lingering)
+                if (SDL_GetTicksNS() > uint64_t(std::atof(lim) * 1e9)) running = false;
             if (const char* keys = std::getenv("IW2_MENU_KEYS")) { // debug: scripted menu keys (up,down,enter,esc), one per 2 s
                 static std::string rest = keys;
                 static uint64_t nextKey = SDL_GetTicksNS() + 3000000000ull;
@@ -4258,9 +4340,19 @@ int main(int argc, char** argv) {
                     } else if (k.rfind("set:", 0) == 0) { // set:name=value
                         const size_t eq = k.find('=');
                         menuEnv.setCvar(k.substr(4, eq - 4), k.substr(eq + 1));
+                    } else if (k.rfind("open:", 0) == 0) {
+                        frontStack.open(k.substr(5));
+                    } else if (k.rfind("click:", 0) == 0) { // click:X/Y in virtual pixels (left press and release)
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                        frontStack.click(menuMx, menuMy);
+                        frontStack.release();
+                    } else if (k == "quit") {
+                        running = false;
                     } else if (k == "wait") {
                     } else
-                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
+                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
                     std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
                     nextKey = SDL_GetTicksNS() + 2000000000ull;

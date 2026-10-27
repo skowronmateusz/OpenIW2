@@ -97,8 +97,6 @@ void World::grenadeStateFinish(Entity& e) {
 // usual path update runs and a path that ends safe is fled along; else the best safe cover node within 768 units
 // (0x54c110) is walked to and claimed (take cover); else a path away from the landing point to beyond the danger radius
 // (0x503ca0 → 0x545f30) (flee), or cowering when there is none.
-// TODO(spec): the flee fallback 0x5429e0 (a node-query path away, plane-limited) that runs when the plain flee leaves
-// no path and a danger plane slot is free (0x51faa0…0x51fb05).
 void World::grenadeReact(Entity& e, bool keepPath) {
     ActorAi& ai = e.ai;
     Entity& ge = *ai.grenade;
@@ -130,8 +128,15 @@ void World::grenadeReact(Entity& e, bool keepPath) {
             return;
         }
     }
-    pathAwayFrom(e, g.landing, r);
+    // 0x51fa7b: 0x503ca0(…, planes = 1); with no path and a standing (not short-lived) danger plane (0x54b610) the plain
+    // search 0x5429e0 runs once more (0x51faa0…0x51fb05) before cowering.
+    pathAwayFrom(e, g.landing, r, true);
+    if (!actorHasPath(e) && hasFreeDangerPlane(e)) {
+        ++stats.grenadeFleeRetry;
+        pathAwayFrom(e, g.landing, r, false);
+    }
     ai.substate = actorHasPath(e) ? kFlee : kCower;
+    ++(ai.substate == kFlee ? stats.grenadeFlee : stats.grenadeCower);
 }
 
 // 0x5437f0 (simplified to the remaining path): a segment of it comes within √r2 of `p` (2D).
@@ -175,11 +180,16 @@ int World::grenadeCoverNode(Entity& e, float r) {
 // 0x503ca0 → 0x5429e0 / 0x542a60 / 0x545f30: from the sentient's node, a best-first search over the graph (team-blocked
 // links skipped) for the first node at least `dist` (2D) from `p`, preferring nodes far from it (h = dist − distance);
 // failing that, the farthest node seen. The path ends at that node.
-bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist) {
+bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes) {
     clearActorPath(e);
     e.nodeCached = false;
-    const int start = queryNode(originOf(e.obj), 192.0f, true, 0xfffffffe, {}, nullptr);
+    // 0x503ca0 with its planes flag: when the sentient has danger planes (0x54b670) the plane variant runs instead of
+    // 0x5429e0: the node query takes the planes (0x542b70), the start node must not be beyond one (0x542b30 via
+    // 0x542bf0) and the search (0x5461a0, the same best-first search) skips the neighbours beyond a plane.
+    const std::vector<PathPlane> planes = usePlanes ? dangerPlanesOf(e) : std::vector<PathPlane>{};
+    const int start = queryNode(originOf(e.obj), 192.0f, true, 0xfffffffe, planes, nullptr);
     if (start < 0) return false;
+    if (!planes.empty() && nodeBeyondPlanes(start, planes)) return false;
     const size_t n = nodes_.size();
     if (search_.size() != n) search_.assign(n, {});
     auto& s = search_;
@@ -208,6 +218,7 @@ bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist) {
         for (size_t li = 0; li < links.size(); ++li) {
             if (linkBlocked(size_t(cur), li, team)) continue;
             const int nb = links[li].target;
+            if (!planes.empty() && nodeBeyondPlanes(nb, planes)) continue;
             auto& sn = s[size_t(nb)];
             float g;
             if (sn.id == id) {

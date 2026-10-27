@@ -149,6 +149,7 @@ Entity& World::spawnEntity(const std::string& classname) {
     e->obj->set("angles", Value(Vec3{0, 0, 0}));
     // Native integer entity fields (table at 0x56f4a8: spawnflags, count, health, dmg, maxhealth) of a zeroed entity.
     for (const char* f : {"spawnflags", "count", "health", "dmg", "maxhealth"}) e->obj->set(f, Value(int32_t(0)));
+    if (classname == "script_vehicle") e->obj->set("$takedamage", Value(true)); // 0x50d8f4 (vehicle spawn, ent+0x111 = 1)
     byObject_[e->obj.get()] = e.get();
     entities_.push_back(std::move(e));
     return *entities_.back();
@@ -505,6 +506,7 @@ void World::thinkActors() {
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
         actorThink(e);
         if (!e.ai.corpse) actorFacing(e);
+        if (!e.ai.corpse) actorMoveNoise(e);
     }
     // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
     if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
@@ -928,6 +930,7 @@ void World::registerBuiltins() {
         if (c.arg(3).isVector()) e.obj->set("origin", c.arg(3));
         if (c.arg(4).isVector()) e.obj->set("angles", c.arg(4));
         e.obj->set("health", Value(int32_t(1000)));
+        e.obj->set("$takedamage", Value(true)); // 0x50d8f4: ent+0x111 = 1 in the vehicle spawn (0x50d820..0x50d900)
         return Value(e.obj);
     });
     // Load-time hints and profiling markers have no effect on the simulation.
@@ -953,6 +956,18 @@ void World::registerBuiltins() {
     });
     vm_.registerBuiltin("setmodel", [](CallContext& c) {
         c.self.asObject()->set("model", c.arg(0));
+        return Value();
+    });
+    // makefakeai (0x4f82a0): the entity must be a script_model (eType 5, else "makeFakeAI must be applied to a script_model",
+    // string 0x5853c4); it clears ent+0xa2 bits 1|2, sets the box mins (-15,-15,0) maxs (15,15,72) (0xa8..0xbc), ORs 0x8000
+    // into ent+0xc0 and relinks (0x44b2d0). Recorded as script fields; TODO(spec): what the exe's traces/damage do with the
+    // 0x8000 contents of a fake AI (bullets only hit script models through their xmodel surfaces here).
+    vm_.registerBuiltin("makefakeai", [](CallContext& c) {
+        const ObjectPtr o = c.self.asObject();
+        if (o->get("classname").toString() != "script_model") throw std::runtime_error("makeFakeAI must be applied to a script_model");
+        o->set("$fakeai_mins", Value(Vec3{-15, -15, 0}));
+        o->set("$fakeai_maxs", Value(Vec3{15, 15, 72}));
+        o->set("$fakeai", Value(true));
         return Value();
     });
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
