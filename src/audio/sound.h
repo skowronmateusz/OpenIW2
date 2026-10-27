@@ -47,6 +47,7 @@ public:
     void clear() { aliases_.clear(); }
     // One of the variants with this name (random), nullptr if unknown.
     const SoundAlias* pick(const std::string& name, std::mt19937& rng) const;
+    bool exists(const std::string& name) const;
     size_t size() const { return aliases_.size(); }
 
 private:

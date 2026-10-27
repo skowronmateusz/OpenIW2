@@ -149,6 +149,11 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
     }
 }
 
+bool SoundAliases::exists(const std::string& name) const {
+    auto it = aliases_.find(lower(name));
+    return it != aliases_.end() && !it->second.empty();
+}
+
 const SoundAlias* SoundAliases::pick(const std::string& name, std::mt19937& rng) const {
     auto it = aliases_.find(lower(name));
     if (it == aliases_.end() || it->second.empty()) return nullptr;

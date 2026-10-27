@@ -348,6 +348,33 @@ void FxSystem::runPending(int64_t nowMs) {
     }
 }
 
+namespace {
+// Cvar defaults (the 0x432020 registrations at 0x4a1c4f..).
+constexpr float kTracerChance = 0.4f, kTracerWidth = 0.8f, kTracerSpeed = 5000.0f, kTracerLength = 300.0f;
+constexpr float kTracerScale = 50.0f, kTracerScaleMinDist = 5000.0f, kTracerScaleDistRange = 25000.0f;
+// 0x4b7c50: clamp(b / a * c, 1, c); c when a <= 0.
+float tracerFactor(float a, float b, float c) {
+    if (a <= 0) return c;
+    const float v = b / a * c;
+    return v < 1.0f ? 1.0f : v <= c ? v : c;
+}
+} // namespace
+
+void FxSystem::addTracer(const FVec& from, const FVec& to, int64_t nowMs, int frameMs) {
+    if (!(frand() < kTracerChance)) return; // rand() < chance * 32768
+    FVec d{to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!(len > 0)) return;
+    Tracer t;
+    t.base = from;
+    t.dir = {d[0] / len, d[1] / len, d[2] / len};
+    t.length = len;
+    const int64_t jitter = frameMs > 0 ? int64_t(frand() * 32768.0f) % frameMs / 2 : 0;
+    t.startMs = nowMs - jitter;
+    t.endMs = t.startMs + int64_t(len / kTracerSpeed * 1000.0f);
+    tracers_.push_back(t);
+}
+
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     runPending(nowMs);
     std::erase_if(particles_, [&](const FxParticle& p) { return nowMs >= p.endMs; });
@@ -448,6 +475,41 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             sightBlockers_.push_back({pos, s.size * s.size, 1.0f - float(alphaByte) * (1.0f / 255.0f)});
         }
         out.push_back(s);
+    }
+    // Tracer entities (0x4c0d98): the head P = base + dir * speed * age (TR_LINEAR, 0x4fae80); the streak runs from P
+    // ahead to P + dir * min(remaining distance to the impact, cg_tracerlength); 0x4b7ca0 widens each end by distance.
+    std::erase_if(tracers_, [&](const Tracer& t) { return nowMs >= t.endMs; });
+    for (const Tracer& t : tracers_) {
+        if (nowMs < t.startMs) continue;
+        const float s = kTracerSpeed * float(nowMs - t.startMs) * 0.001f;
+        const float remaining = t.length - s;
+        const float l = remaining <= kTracerLength ? remaining : kTracerLength;
+        FxSprite b;
+        b.beam = true;
+        b.shader = "gfx/misc/tracer";
+        for (int i = 0; i < 3; ++i) {
+            b.beamA[i] = t.base[i] + t.dir[i] * s;
+            b.beamB[i] = b.beamA[i] + t.dir[i] * l;
+        }
+        b.widthA = b.widthB = kTracerWidth;
+        if (viewValid && kTracerScale != 1.0f) {
+            auto dist = [&](const FVec& p) {
+                const float x = p[0] - viewOrigin[0], y = p[1] - viewOrigin[1], z = p[2] - viewOrigin[2];
+                return std::sqrt(x * x + y * y + z * z) - (kTracerScaleMinDist != 0 ? kTracerScaleMinDist : 0.0f);
+            };
+            const float dA = dist(b.beamA), dB = dist(b.beamB);
+            if (dA > 0) b.widthA *= tracerFactor(kTracerScaleDistRange, dA, kTracerScale);
+            if (dB > 0) b.widthB *= tracerFactor(kTracerScaleDistRange, dB, kTracerScale);
+        }
+        const FVec d{b.beamB[0] - b.beamA[0], b.beamB[1] - b.beamA[1], b.beamB[2] - b.beamA[2]};
+        const float s0 = d[0] * viewRight[0] + d[1] * viewRight[1] + d[2] * viewRight[2];
+        const float s1 = d[0] * viewUp[0] + d[1] * viewUp[1] + d[2] * viewUp[2];
+        FVec p{viewRight[0] * s1 - viewUp[0] * s0, viewRight[1] * s1 - viewUp[1] * s0, viewRight[2] * s1 - viewUp[2] * s0};
+        const float pl = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        if (!(pl > 0)) continue;
+        b.beamPerp = {p[0] / pl, p[1] / pl, p[2] / pl};
+        b.rgba[0] = b.rgba[1] = b.rgba[2] = b.rgba[3] = 1.0f;
+        out.push_back(b);
     }
     return out;
 }

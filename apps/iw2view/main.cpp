@@ -528,7 +528,11 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             };
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+<<<<<<< HEAD
             } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is used as a UI background
+=======
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is a UI background
+>>>>>>> main
                 mi.texture = imageSlot(img);
                 // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
                 if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
@@ -734,8 +738,16 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
             const Vec3 r = right * s->size, u = upv * s->size;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
-            const Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
-            const float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
+            float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            if (s->beam) { // tracer quad (0x4b7d90): B + w, B - w, A - w, A + w with uv (1,1) (1,0) (0,0) (0,1)
+                const Vec3 a{s->beamA[0], s->beamA[1], s->beamA[2]}, bb{s->beamB[0], s->beamB[1], s->beamB[2]};
+                const Vec3 w{s->beamPerp[0], s->beamPerp[1], s->beamPerp[2]};
+                corners[0] = bb + w * s->widthB; corners[1] = bb + w * -s->widthB;
+                corners[2] = a + w * -s->widthA; corners[3] = a + w * s->widthA;
+                const float tuv[4][2] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
+                std::memcpy(uv, tuv, sizeof uv);
+            }
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
@@ -2117,6 +2129,7 @@ int main(int argc, char** argv) {
                 return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            w->soundExists = [&aliases](const std::string& n) { return aliases.exists(n); };
             w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
                 return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
             };
@@ -2178,7 +2191,7 @@ int main(int argc, char** argv) {
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
         // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
         // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
-        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; bool brassPending = false, brassValid = false; game::FVec brassPos{}; };
         auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
@@ -2249,6 +2262,10 @@ int main(int argc, char** argv) {
                 }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
+            for (const auto& te : world->takeTracerEvents())
+                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
+            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
+            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
                 scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
             if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
@@ -2525,6 +2542,27 @@ int main(int argc, char** argv) {
                         const auto& q = tf->second.first;
                         for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
                         if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        // CG_EjectWeaponBrass (0x4b7730) for the local client: shellEjectEffect bolted on the view weapon's tag_brass.
+                        const auto tb = gunBones.find("tag_brass");
+                        viewFlash->brassValid = tb != gunBones.end();
+                        if (viewFlash->brassValid) {
+                            const auto& m = base.transform;
+                            const auto& q = tb->second.first;
+                            for (int k = 0; k < 3; ++k) viewFlash->brassPos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        }
+                        if (viewFlash->brassPending && world) {
+                            viewFlash->brassPending = false;
+                            const std::string path = pweapon.field("shellEjectEffect");
+                            if (viewFlash->brassValid && !path.empty() && path != "none") {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->brassPos;
+                                    return vf->brassValid;
+                                });
+                                const auto& m = base.transform;
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
+                            }
+                        }
                         if (viewFlash->pending && world) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
@@ -3750,7 +3788,7 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
@@ -3834,7 +3872,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = viewFlash->brassPending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -3862,6 +3900,13 @@ int main(int argc, char** argv) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+            }
+            if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
+                // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.
+                const Vec3 from = cam.pos + cam.right() * 30.0f + Vec3{0, 0, -15.0f};
+                const Vec3 to = cam.pos + cam.forward() * 1500.0f;
+                for (int i = 0; i < std::atoi(tt); ++i)
+                    fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             if (viewFlash->pending && !(world && world->playerOnTurret())) {
@@ -4394,7 +4439,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
-                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
+                if (shots) viewFlash->pending = viewFlash->brassPending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) {
@@ -4500,7 +4545,7 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
                     }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
