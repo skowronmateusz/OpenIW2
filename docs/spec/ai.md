@@ -463,3 +463,21 @@ TODO(spec): the near-field look of that surface (texture detail) has not been co
   copied by the 0x500dc0 step), i.e. from the actor physics that World::moveActor does not model (it moves along the path
   lookahead without clipping). Wiring +0x318, gethitenttype and the +0x2148 follow link therefore needs the full actor
   physics port (0x547db0 slide move, 0x547540 clip velocity, 0x548290 ground probe) first. Not started, no guessing.
+
+### Actor slide move port (0x5475e0, 0x547540)
+
+`src/game/actorslide.{h,cpp}` ports the actor PM_SlideMove (0x5475e0) and its clip velocity (0x547540) from the asm, with the trace
+(G_LocationalTrace 0x44bf00: start = block origin, mins +0x4c, maxs +0x58, pass entity +0x3c, mask 0x1cbaca4) supplied by the
+caller. Matches Q3's algorithm with these exe specifics: gravity branch half-steps vz and clips on the ground plane (1.001);
+at most 4 bumps and 5 planes (5 planes: velocity zeroed, return 1); duplicate plane (dot > 0.99) nudges the velocity by
+the normal; interact threshold 0.1 (impact speed 0x1cbac88 keeps max(-into)); crease slide uses cross(j, i) for both
+directions; third plane test zeroes the velocity. Hit bookkeeping on the block: the first wall hit (normal.z < 0.7 and
+(nx != 0 or ny != 0)) stores the entity number (+0xf4), origin xy (+0xf8) and normal xy (+0x100); a frac 0 duplicate plane
+hit and the final clipped move (normal = clipVel - vel) record it the same way; all-solid start records it with byte +0x108 = 1
+and returns 1 (2 when bump == 0 and byte 0x1cbac87). Touched entity numbers (not world 0x7fe) go in a list of 0x20 at +0x74
+(count +0x70). ClipVelocity: normal.z >= 0.7 and vz² <= vx²+vy² gives (vx·nz, vy·nz, -(vx·nx + vy·ny)); otherwise the usual
+backoff (divide by the overbounce when moving away, multiply into the plane). Normalize (0x421270) leaves the destination
+untouched for a zero vector.
+Tested in tests/test_actorslide.cpp. Not wired into World::moveActor yet: the callers 0x547db0 (the step / ground wrapper),
+0x548290 (ground probe), 0x5485a0 / 0x548650 and the mode dispatch of 0x5487c0 are still TODO(spec); the +0x318 copy in the
+0x500dc0 step reads the block's +0xf4 after 0x5487c0.
