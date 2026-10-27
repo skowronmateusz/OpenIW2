@@ -33,6 +33,9 @@
 #include "ui/menu.h"
 #include "ui/menurun.h"
 #include "ui/frontend.h"
+#include "ui/profile.h"
+#include <filesystem>
+#include <fstream>
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -1918,6 +1921,16 @@ int main(int argc, char** argv) {
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
+        // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
+        // and the profile name when none is chosen, here "default").
+        const std::filesystem::path playersDir = std::filesystem::path(args[0]).parent_path() / "players";
+        std::string profileName = "default";
+        if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
+        const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
+        bool profileDirty = false;
+        if (std::ifstream cf(profileCfg); cf)
+            uiCvars = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
@@ -2336,6 +2349,7 @@ int main(int argc, char** argv) {
             return u == uiCvars.end() ? std::string() : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
+            if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
             uiCvars[n] = v;
             if (world) world->cvars[n] = v;
         };
@@ -2374,6 +2388,14 @@ int main(int argc, char** argv) {
                 // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
             }
         };
+        int menuLoopHandle = 0;
+        menuEnv.startLoop = [&](const std::string& alias) {
+            if (menuLoopHandle) mixer.stop(menuLoopHandle);
+            float d = 0;
+            menuLoopHandle = mixer.play(alias, std::nullopt, &d);
+            std::cout << "menu loop " << alias << (menuLoopHandle ? " started\n" : " not started\n");
+        };
+        menuEnv.stopLoop = [&] { if (menuLoopHandle) mixer.stop(menuLoopHandle); menuLoopHandle = 0; };
         menuEnv.exec = execText;
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
@@ -3551,16 +3573,24 @@ int main(int argc, char** argv) {
                     const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
                     // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
                     // the base 0.15 stands for the default.
+                    // The base 0.15 deg/count stands for the default sensitivity 5 (cvar sensitivity 1..30 from the options menu).
+                    const float lookSens = uiCvars.count("sensitivity") ? std::clamp(float(std::atof(uiCvars["sensitivity"].c_str())), 1.0f, 30.0f) / 5.0f : 1.0f;
                     float pitchScale = 1.0f;
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
-                        cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
-                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens * pitchScale, -89.0f, 89.0f);
+                        cam.yaw -= ev.motion.xrel * 0.15f * lookSens * zoomSens;
+                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale, -89.0f, 89.0f);
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
-                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
+                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) {
+                    if (world && frontStack.empty()) { // CL_KeyEvent 0x40c216: ESC in a running level -> UI_SetActiveMenu(2)
+                        menuEnv.setCvar("cl_paused", "1");
+                        menuMx = 320.0f, menuMy = 240.0f;
+                        frontStack.open("main");
+                    } else running = false;
+                }
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
                     godMode = !godMode;
@@ -3878,7 +3908,7 @@ int main(int argc, char** argv) {
                 }
                 mixer.fadeStep(dt * 1000.0f);
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
-                gameClock += std::min(dt, 0.25f) * slowmo;
+                if (menuEnv.getCvar("cl_paused") != "1") gameClock += std::min(dt, 0.25f) * slowmo; // cl_paused freezes the simulation
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
@@ -4016,6 +4046,37 @@ int main(int argc, char** argv) {
                     mixer.fade(1.0f, 0);
                 pendingLevel.reset();
             }
+            if (const char* keys = std::getenv("IW2_MENU_KEYS")) { // debug: scripted menu keys (up,down,enter,esc), one per 2 s
+                static std::string rest = keys;
+                static uint64_t nextKey = SDL_GetTicksNS() + 3000000000ull;
+                if (!rest.empty() && SDL_GetTicksNS() >= nextKey) {
+                    const size_t comma = rest.find(',');
+                    const std::string k = rest.substr(0, comma);
+                    rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    std::cout << "menu key " << k << "\n";
+                    if (k == "pause" && world && frontStack.empty()) {
+                        menuEnv.setCvar("cl_paused", "1");
+                        frontStack.open("main");
+                    } else if (k.rfind("set:", 0) == 0) { // set:name=value
+                        const size_t eq = k.find('=');
+                        menuEnv.setCvar(k.substr(4, eq - 4), k.substr(eq + 1));
+                    } else if (k == "wait") {
+                    } else
+                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
+                    if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
+                    std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
+                    nextKey = SDL_GetTicksNS() + 2000000000ull;
+                }
+            }
+            if (profileDirty) { // write the archived cvars (config.cfg) after a menu changed one
+                profileDirty = false;
+                std::error_code ec;
+                std::filesystem::create_directories(profileCfg.parent_path(), ec);
+                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars);
+            }
+            if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
+            if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();
                 if (wantCursor == SDL_GetWindowRelativeMouseMode(window)) SDL_SetWindowRelativeMouseMode(window, !wantCursor);
