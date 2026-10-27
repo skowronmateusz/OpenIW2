@@ -548,6 +548,9 @@ bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParam
     ps.pmTimeMs = 0;
     ps.jumping = true;
     ps.velocity[2] = std::sqrt(2.0f * mp.jumpHeight * mp.gravity);
+    // 0x541640: the jump event 0x46 + surface of the ground just left (none for surface 0). The ladder variant
+    // (pm_flags 0x20 gives 0x5b) has no ladder state here yet.
+    if (const int surf = surfaceTypeOf(pml.groundTrace.surfaceFlags)) addPlayerEvent(ps, 0x46 + surf);
     ps.aimSpread = std::min(ps.aimSpread + mp.jumpSpreadAdd, 255.0f); // jump_spreadAdd (0x54153a)
     return true;
 }
