@@ -401,6 +401,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
         break;
     }
 
+    if (timer_ > 0) return 0; // a reload round or the outro began in the switch above
     if (in.reload && startReload()) return 0;
     // Automatic reload (PM_Weapon 0x4de370, default of the state switch 0x4de429; states ready and rechamber, not while
     // firing): an empty clip with ammo in stock starts the reload (0x4dda60), except prone while moving (0x4de46e).

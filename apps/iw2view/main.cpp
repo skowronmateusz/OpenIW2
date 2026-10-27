@@ -2754,6 +2754,7 @@ int main(int argc, char** argv) {
                 const float f = pweapon.animTime() * float(an->frameRate);
                 frame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
             }
+            if (std::getenv("IW2_VM_TRACE")) std::cout << "vm anim " << pweapon.anim() << " frame " << frame << "/" << (an ? an->numFrames : -1) << " t " << pweapon.animTime() << " hands '" << pweapon.handModel() << "' gun '" << pweapon.gunModel() << "'\n";
             if (const char* forced = std::getenv("IW2_VM_ANIM")) { // debug: "anim,frame"
                 std::string spec = forced;
                 const auto comma = spec.find(',');
@@ -4548,8 +4549,42 @@ int main(int argc, char** argv) {
             if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = viewFlash->brassPending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
-            for (int i = 0; i < 100; ++i) {
-                pweapon.update(0.02f, shotIn);
+            // Debug: IW2_SHOT_SCRIPT=t:action,... (reload+/-, fire+/-, ads+/-, frag+/-, smoke+/-, melee+/-, weapon=name) runs
+            // IW2_SHOT_SECONDS (default 3) of weapon time before the shot and logs the weapon state each 0.25 s.
+            std::vector<std::pair<float, std::string>> shotScript;
+            if (const char* sc = std::getenv("IW2_SHOT_SCRIPT")) {
+                std::stringstream ss(sc);
+                for (std::string tok; std::getline(ss, tok, ',');)
+                    if (const auto c = tok.find(':'); c != std::string::npos) shotScript.push_back({std::stof(tok.substr(0, c)), tok.substr(c + 1)});
+            }
+            const int shotSteps = shotScript.empty() ? 100 : int(50.0f * (std::getenv("IW2_SHOT_SECONDS") ? std::stof(std::getenv("IW2_SHOT_SECONDS")) : 3.0f));
+            for (int i = 0; i < shotSteps; ++i) {
+                const float tNow = float(i) * 0.02f;
+                for (auto& [t, act] : shotScript) {
+                    if (t < 0 || tNow < t) continue;
+                    t = -1;
+                    if (act == "reload+" || act == "reload-") shotIn.reload = act == "reload+";
+                    else if (act == "fire+" || act == "fire-") shotIn.fire = act == "fire+";
+                    else if (act == "ads+" || act == "ads-") shotIn.ads = act == "ads+";
+                    else if (act == "frag+" || act == "frag-") shotIn.frag = act == "frag+";
+                    else if (act == "smoke+" || act == "smoke-") shotIn.smoke = act == "smoke+";
+                    else if (act == "melee+" || act == "melee-") shotIn.melee = act == "melee+";
+                    else if (act.rfind("weapon=", 0) == 0) shotIn.weapon = act.substr(7);
+                }
+                const int shotsFired = pweapon.update(0.02f, shotIn);
+                if (shotsFired > 0 && (shotScript.empty() || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
+                if (!shotScript.empty()) {
+                    for (const auto& e : pweapon.takeEvents()) {
+                        const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
+                        if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds();
+                        else if (e.kind == game::PlayerWeapon::Event::MeleeHit && world) world->playerMelee(eye, angles);
+                        else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0});
+                        std::cout << "shot-script t=" << tNow << " event " << int(e.kind) << " " << e.weapon << "\n";
+                    }
+                    if (i % 13 == 0)
+                        std::cout << "shot-script t=" << tNow << " weapon " << pweapon.name() << " state " << pweapon.stateNumber() << " anim " << pweapon.anim()
+                                  << " clip " << pweapon.clip() << " stock " << pweapon.stock() << " ads " << pweapon.adsFrac() << "\n";
+                }
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
                 aimBlend.update(pweapon.viewAiming(), 0.02f);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);

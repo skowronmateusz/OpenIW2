@@ -207,6 +207,11 @@ void weaponSounds() {
 }
 
 // Segmented reload (springfield-like values; PM_Weapon states 7, 5, 9: 0x4dda60, 0x4dd980, 0x4de0e0, 0x4de200).
+// The reload key held down (a real +reload is held for many frames).
+void held(PlayerWeapon& w, float seconds, bool) {
+    for (int i = 0; i < int(seconds * 100 + 0.5f); ++i) w.update(0.01f, {false, true});
+}
+
 void segmentedReload() {
     const Def a{{"clipsize", "5"}, {"startammo", "10"}, {"raisetime", "0"}, {"firetime", "0.1"}, {"segmentedreload", "1"},
                 {"nopartialreload", "1"}, {"reloadammoadd", "1"}, {"reloadstartadd", "1"}, {"reloadtime", "0.6"},
@@ -225,25 +230,25 @@ void segmentedReload() {
         CHECK(w.clip() == 2 && w.stock() == 5);
         w.takeSounds();
         w.takeEvents();
-        run(w, 0.02f, false, true);
+        w.update(0.01f, {false, true});
         {
             const auto ev = w.takeEvents();
             CHECK(ev.size() == 1 && ev[0].kind == PlayerWeapon::Event::ReloadBegin);
         }
         CHECK(w.takeSounds() == std::vector<std::string>{"start"});
-        run(w, 1.3f, false); // t = 1.32: the intro adds its round only at 1.4
+        held(w, 1.3f, false); // t = 1.32: the intro adds its round only at 1.4
         CHECK(w.clip() == 2);
-        run(w, 0.15f, false); // t = 1.47
+        held(w, 0.15f, false); // t = 1.47
         CHECK(w.clip() == 3 && w.stock() == 4);
-        run(w, 0.4f, false); // t = 1.87: the first loop round began at 1.8, adds after 0.2
+        held(w, 0.4f, false); // t = 1.87: the first loop round began at 1.8, adds after 0.2
         CHECK(w.clip() == 3);
         CHECK(w.takeSounds() == std::vector<std::string>{"loop"});
-        run(w, 0.2f, false); // t = 2.07
+        held(w, 0.2f, false); // t = 2.07
         CHECK(w.clip() == 4);
-        run(w, 1.0f, false); // second round done at 2.4 + 0.2, a full clip ends the loop, the outro (0.77 s) runs
+        held(w, 1.0f, false); // second round done at 2.4 + 0.2, a full clip ends the loop, the outro (0.77 s) runs
         CHECK(w.clip() == 5 && w.stock() == 2);
         CHECK((w.takeSounds() == std::vector<std::string>{"loop", "end"}));
-        run(w, 0.8f, false);
+        held(w, 0.8f, false);
         CHECK(w.update(0.01f, {true, false}) == 1); // ready again
     }
     {
