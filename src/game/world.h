@@ -366,6 +366,8 @@ public:
     // living ally actor whose `drawoncompass` field (actor +0x2120) is set is listed with its origin and yaw.
     struct CompassMarker { Vec3 pos{}; float yaw = 0; };
     std::vector<CompassMarker> compassFriendlies() const;
+    // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
+    std::vector<CompassMarker> compassVehicles() const;
     bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
     void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }

@@ -507,6 +507,20 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
     return out;
 }
 
+std::vector<World::CompassMarker> World::compassVehicles() const {
+    std::vector<CompassMarker> out;
+    for (const auto& e : entities_) {
+        if (e->obj->removed || !e->vehicle || !e->vehicle->onCompass) continue;
+        const Value org = e->obj->get("origin"), ang = e->obj->get("angles");
+        if (!org.isVector()) continue;
+        CompassMarker m;
+        m.pos = org.asVector();
+        if (ang.isVector()) m.yaw = ang.asVector()[1];
+        out.push_back(m);
+    }
+    return out;
+}
+
 // 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
 // eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
@@ -536,6 +550,21 @@ void World::updateCrosshairTarget() {
     }
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
     if (std::getenv("IW2_CROSSHAIR_DEBUG")) std::fprintf(stderr, "crosshair eye %g %g %g yaw %g ent %d\n", eye[0], eye[1], eye[2], playerCmd_.viewAngles[1], tr.entity);
+    // A vehicle (entity type 0xc, 0x5353ce): inside g_friendlyNameDist (15000) it becomes the name target (0x535455) and the
+    // HUD lines are its look-at strings (+0x194 / +0x196, 0x534b61): nothing when it has none. TODO(spec): 0x535471.. the
+    // enemy crosshair flag from the vehicle team (+0x178) when the player is in a vehicle (pm_flags 0x20000).
+    if (hit && hit->vehicle && hit->classname == "script_vehicle") {
+        const Value org = hit->obj->get("origin");
+        if (org.isVector() && !hit->vehicle->lookAtText.empty()) {
+            const Vec3 o = org.asVector();
+            const float dx = o[0] - eye[0], dy = o[1] - eye[1], dz = o[2] - eye[2];
+            if (dx * dx + dy * dy + dz * dz < 15000.0f * 15000.0f) {
+                crosshairName_ = hit->vehicle->lookAtText;
+                crosshairWeaponLine_ = hit->vehicle->lookAtText2;
+            }
+        }
+        return;
+    }
     if (!hit || !hit->isActor || !isAlive(*hit)) return;
     const Vec3 d = sub(hit->obj->get("origin").asVector(), eye);
     const float dist2 = dot(d, d);
