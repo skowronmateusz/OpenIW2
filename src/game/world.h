@@ -97,6 +97,7 @@ struct ActorAi {
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
+    int64_t painEventMs = 0;                  // next pain AI event (the 0x5485a0 accumulator, throttled here)
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
@@ -190,6 +191,7 @@ struct Entity {
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
     std::array<DangerPlane, 4> dangerPlanes; // actor +0x2050 (src/game/actorpath.cpp)
+    struct Entity* lastAttacker = nullptr; // sentient +0x28 (G_Damage 0x5284dd; AI events 5/6 reveal it, pain clears it)
     std::unique_ptr<GrenadeState> grenade; // grenade missile (src/game/grenades.cpp)
     std::unique_ptr<RocketState> rocket;   // rocket missile (src/game/rockets.cpp)
     int claimedNode = -1;                  // sentient +0x2c: claimed path node (script field "node")
@@ -547,6 +549,13 @@ private:
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
     bool pathToPoint(Entity& e, const Vec3& target);
+    // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
+    void actorLearns(Entity& target, Entity& about); // 0x500c50
+    bool actorKnowsRecently(const Entity& target, const Entity& about, int64_t ms) const; // 0x54ddc0
+    void aiEventDispatch(Entity& source, Entity& target, int type); // 0x535d70
+    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true); // 0x535770
+    void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2 = 0,
+                     bool forced = true); // 0x535860 + 0x535f20
     // Path planner (src/game/actorpath.cpp)
     void addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b); // 0x54b3b0 (slot 0x54b370)
     void expireDangerPlanes(Entity& e);  // 0x54b4d0 (from the actor think 0x4ff030)

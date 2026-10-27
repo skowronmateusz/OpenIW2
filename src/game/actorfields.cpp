@@ -40,6 +40,11 @@ void applyActorFieldDefaults(script::Object& a) {
     a.set("dontavoidplayer", Value(int32_t(0)));
     a.set("grenadeammo", Value(int32_t(0)));
     a.set("allowdeath", Value(int32_t(0)));
+
+    // desiredangle (+0x124) is also 0.0 from the zeroed allocation (no field-default write in FUN_004fdde0);
+    // the movement frame refreshes it (FUN_00504ca0, world.cpp moveActor). animscripts read it
+    // (animscripts/stop.gsc:555 ProneStill), so it must exist as a float before the first move.
+    a.set("desiredangle", Value(0.0f));
 }
 
 } // namespace iw2::game

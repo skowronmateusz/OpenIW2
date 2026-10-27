@@ -189,6 +189,9 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
             damageFromWorld_ = true;
         }
     }
+    // G_Damage (0x5284d3): the target's sentient remembers its attacker (sentient +0x28); the AI events 5/6
+    // reveal it to the actors around.
+    if (attacker) target.lastAttacker = attacker;
     const int health = target.obj->get("health").asInt() - amount;
     target.obj->set("health", Value(int32_t(health)));
     target.obj->set("damagetaken", Value(int32_t(amount)));
@@ -377,6 +380,13 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         }
         break;
     }
+    // 0x531443…0x531489: the shot is told to the AI around — a "bullet fired" point event at the muzzle (type 10,
+    // 2048²) and the suppression line muzzle → impact (type 16, 128², 0x535860 → 0x54b3b0 adds a danger plane) —
+    // both with the broadcast gate forced, when the shooter is a sentient.
+    if (attacker && (attacker->isActor || attacker->isPlayer)) {
+        aiEventPoint(*attacker, 10, start);
+        aiEventLine(*attacker, 16, start, tr.endPos);
+    }
     bulletImpact(shooter, def, start, end, tr, hit);
     if (hit && !takesDamage(*hit)) hit = nullptr;
     ++stats.shots;
@@ -520,6 +530,9 @@ void World::registerCombatBuiltins() {
             target = add(target, {off(rng_), off(rng_), off(rng_) * 0.5f});
         }
         const Vec3 dir = sub(target, start);
+        // 0x550a70: firing with a current enemy is an AI event (type 4) at the actor's origin: the actors around
+        // learn the shooter's enemy from the shooter's own knowledge (0x535ba0).
+        if (enemy) aiEventPoint(*a, 4, start);
         const Value wpn = a->obj->get("weapon");
         fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
         vm_.notify(a->obj, "weapon_fired");

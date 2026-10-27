@@ -330,6 +330,12 @@ void World::actorThink(Entity& e) {
 // TODO(spec): the states' damaged handlers (0x5498c0 node release, turret 0x54af30) are not modelled.
 void World::actorPain(Entity& e, Entity* attacker) {
     if (attacker && isSentient(*attacker)) e.sentientInfo[attacker->obj.get()].lastAttackedMs = timeMs_;
+    // 0x5485a0: pain from a valid attacker is an AI event (type 2) at the victim, at most every 500 ms
+    // (the exe accumulates the pain time; the +0x48 add and the damage class gate are TODO(spec)).
+    if (attacker && (attacker->isActor || attacker->isPlayer) && timeMs_ >= e.ai.painEventMs) {
+        e.ai.painEventMs = timeMs_ + 500;
+        aiEventPoint(*attacker, 2, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
+    }
     if (aiPushState(e, AiPain)) killActorAnimScript(e);
 }
 
@@ -360,7 +366,12 @@ int World::painThink(Entity& e) {
         return 1;
     }
     vm_.notify(e.obj, "pain");
-    // TODO(spec): the pending pain event is broadcast to nearby AI 500 ms after the pain started (0x535770).
+    // 0x54d340: 500 ms into the pain, with an attacker on the sentient (+0x28), the pain event (type 5) reveals
+    // the attacker to the actors around; the attacker is then forgotten.
+    if (e.lastAttacker && timeMs_ - ai.painStartMs > 499) {
+        aiEventPoint(e, 5, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
+        e.lastAttacker = nullptr;
+    }
     actorPerceive(e);
     ai.facing = 1;
     setActorAnimScript(e, "pain", 0, 4);
@@ -375,6 +386,8 @@ int World::deathThink(Entity& e) {
     // TODO(spec): 0x548a10 also broadcasts the death event (0x535770), drops the grenade and releases the sentient
     // (0x514d50); only the path is cleared here.
     if (ai.substate == kSubDeath && timeMs_ - ai.baseStateMs > 799) {
+        // 0x548a10: the death event (type 6) makes the actors around learn the killer (sentient +0x28).
+        aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
         clearActorPath(e);
         releaseNode(e); // the sentient release (0x514d50) frees the claimed node (0x5191a0)
         removeDangerPlanesFrom(e.number); // and the danger planes it added elsewhere (0x4fe170 → 0x54b5a0)

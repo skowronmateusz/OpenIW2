@@ -137,8 +137,28 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
 
 Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`; grenade state in `actorgrenade.cpp`
 (docs/spec/grenades.md), badplace state in `badplace.cpp` ("Bad places" below). TODO(spec): animscripted
-(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), facing modes, AI events (0x535770 — also the danger-plane
-producers, see "Path planner"), touch and damaged handlers, followed/blocking actors (+0x2148, +0x728).
+(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), facing modes ("Facing and desiredangle" below),
+touch and damaged handlers, followed/blocking actors (+0x2148, +0x728). The AI events (0x535770) are implemented
+("AI events" below).
+
+## Facing and desiredangle (observed)
+
+The facing mode is actor +0x104 (int): the state code writes it (0x548c70 combat-no-path → 6 at a covering
+claimed 0x8000 node when the enemy was not seen for 5 s inside the goal, else 3; reacquirestep 0x548f10 → 3
+with substate 0x66). Each actor movement frame FUN_00504160 switches on the anim mode (+0x218) and either
+moves along the path or turns toward a 2D direction: FUN_00423900 turns a direction into a yaw (· 57.2957764 =
+180/π, so degrees), FUN_00423f50 is AngleNormalize180 (180/360/−180 constants at 0x591e1c/0x591f08/0x591f0c),
+and FUN_00504aa0 applies the turn, maintaining the two angle pairs (+0x108/+0x110 and +0x118/+0x120, selected
+by +0x114) and driving the entity angles. Then FUN_00504ca0 — the only store to actor +0x124 in the
+executable (0x504cb7/0x504cc5; also 0x532356, but that one is dospawn's entity spawnflags `&= ~1`) — sets
+`desiredangle` to the active pair's target: degrees, the units of `angles[1]` (animscripts/stop.gsc:555
+ProneStill turns while `AngleClamp(desiredangle − angles[1])` is > 5). Reacquirestep side-steps around
+desiredangle + 90° (constant 0x5920bc).
+
+Implemented in `src/game/world.cpp` (`moveActor` writes `desiredangle` from the look direction while
+path-moving) and `src/game/actorfields.cpp` (0.0 from the zeroed allocation, so scripts always read a float).
+TODO(spec): the anim-mode switch cases, the turn-pair update rates, the facing-mode → target mapping, and the
+override angle + expiry (+0x120/+0x159/+0x15c/+0x160).
 
 ## Cover nodes (observed; Ghidra decompiles and the objdump listing)
 
@@ -228,17 +248,36 @@ the goal position as an extra point when it differs (2D) from the goal node. Imp
 +0x2050 holds four 0x18-byte slots {time, source, nx, ny, dist, short-lived}. 0x54b3b0 (slot choice 0x54b370: the
 source's own slot, else the oldest) adds the half plane through the line a–b of enemy fire: n = (a.y − b.y, b.x − a.x),
 c = n·a, flipped so the actor's origin stays on the kept side (n·origin ≤ c); only a source of the enemy team adds one
-(the unidentified entity +0xfc exception, which also marks the slot short-lived and drops the actor's path, is
-TODO(spec)). 0x54b4d0 (each actor think) expires a short-lived slot after 300 ms, the rest after `suppressionwait`
+(entity +0xfc is the player's client pointer — the team gate is skipped for player fire, which marks the slot
+short-lived and drops the actor's path; confirmed by 0x53145c's G_Damage client-or-actor pair). 0x54b4d0 (each actor
+think) expires a short-lived slot after 300 ms, the rest after `suppressionwait`
 (+0x20b0); 0x54b5a0 (per-sentient release 0x4fe170) drops the slots of a released source; 0x54b610 reports a free or
 not short-lived slot (the grenade flee gate 0x51faa2); 0x54b670 collects the active planes. Planning with planes
 (0x503650 / 0x503890 third argument, 0x503a50): the start node comes from the uncached 0x5150d0, the goal query keeps
 the planes, 0x5428a0 requires both end nodes on the kept side (0x542710: n·p > dist fails) and searches 0x545ca0.
 Implemented in `src/game/actorpath.cpp` (`addDangerPlane`, `expireDangerPlanes`, `removeDangerPlanesFrom`,
 `dangerPlanesOf`, `hasFreeDangerPlane`, `sentientNodePlanes`; `pathToPoint` / `pathToNodeDirect` pick the plane
-variant; the grenade take-cover path passes planes, 0x51fa49). TODO(spec): nothing adds planes yet — the producers
-are the AI events (0x535770 broadcast → handlers 0x535d00 / 0x535f20 type 0x12 → 0x54b3b0, from bullet fire), and the
-flee fallback 0x5429e0 gated by 0x54b610 (0x51faa0…0x51fb05).
+variant; the grenade take-cover path passes planes, 0x51fa49). The producers are live — the AI events below (type
+16). TODO(spec): the flee fallback 0x5429e0 gated by 0x54b610 (0x51faa0…0x51fb05).
+
+## AI events (observed; call sites in the spec below)
+
+0x535770 broadcasts a point event of `type` at `pos` to every live actor within the type's radius² (table 0x57031c,
+stride 8: 3 → 256², 4/6/13 → 1024², 10 → 2048², 11 → 4096², 16 → 128², 20 → 256², else 512²); 0x535860 the line
+variant along a–b (closest point, behind `a` does not count) with its handler 0x535f20; the per-actor dispatch is
+0x535d70. Unless the broadcast is forced (producers pass 1 or 1 | 1 << team), the source must be a sentient of a team
+with an enemy (axis ↔ allies). Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
+turret only if < 3 s); 4 weapon fired (0x550a70 → 0x535ba0) — the player gives a plain position update, an actor
+passes on its own knowledge of its enemy (copied per-sentient when the target's is staler); 5 pain 500 ms in
+(0x54d340) — the attacker (sentient +0x28, set by G_Damage 0x5284dd) is revealed and then forgotten; 6 death
+(0x548a10) — the killer is learned; 10 bullet fired (0x531443, 2048²); the suppression line 0x531489 type 16
+(0x535860 → 0x535f20) marks the attacker (+0x1780 = now), teaches the source's position and adds a danger plane
+(0x54b3b0). Types 7/12/13 print "not yet handled" in the exe, 11 does nothing, 8/9 (grenade ping) go through
+`grenadePing` instead of this dispatch. Knowledge is kept per sentient (0x500c50 learns position + own position then,
+0x54ddc0 "known within ms"). Implemented in `src/game/actorevents.cpp`; producers wired in `combat.cpp` (G_Damage,
+Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain throttle 500 ms, pain reveal, death).
+TODO(spec): the pain accumulator's +0x48 add and damage-class gate, the turret entity +0x10c field of the
+pain/death handler, the player pain events 2/3 of the client fire path (0x4e786b / 0x4e787b).
 
 ## Bad places (observed 0x524060 0x5199f0)
 
