@@ -168,6 +168,12 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
             a.distMax = num(get("dist_max"), 0);
             a.channel = lower(get("channel"));
             a.loop = lower(get("loop")) == "looping";
+            // masterslave (0x4290a0): "master" or a slave percentage 0..1 (out of range is a load error in the exe).
+            if (const std::string ms = lower(get("masterslave")); ms == "master") a.master = true;
+            else if (!ms.empty()) {
+                const float pct = num(ms, -1);
+                if (pct >= 0 && pct <= 1) a.slavePct = pct;
+            }
             a.secondary = lower(get("secondaryaliasname"));
             a.subtitle = get("subtitle");
             // vol_mod group (0x428bf0, applied by the post-parse check 0x429783): vol_min / vol_max are multiplied by the group
@@ -231,6 +237,8 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     v.distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 5.0f; // dist_max 0 -> 5 * dist_min (0x429701)
     v.loop = a->loop;
     v.chan = channelIndex(a->channel);
+    v.master = a->master;
+    v.slavePct = a->slavePct;
     int handle;
     {
         std::lock_guard lock(mutex_);
@@ -356,12 +364,21 @@ void Mixer::fadeStep(float ms) {
 void Mixer::mix(float* out, int frames) {
     std::fill(out, out + size_t(frames) * 2, 0.0f);
     std::lock_guard lock(mutex_);
+    // Duck state (0x443bb0): rises while any master voice plays, falls otherwise, over snd_slaveFadeTime; 0 ms switches at once.
+    {
+        bool masterPlaying = false;
+        for (const Voice& v : voices_) masterPlaying = masterPlaying || v.master;
+        if (slaveFadeMs <= 0) duck_ = masterPlaying ? 1.0f : 0.0f;
+        else duck_ = std::clamp(duck_ + (masterPlaying ? 1.0f : -1.0f) * float(frames) * 1000.0f / (float(rate_) * float(slaveFadeMs)), 0.0f, 1.0f);
+    }
     for (Voice& v : voices_) {
         float gl, gr;
         gains(v, gl, gr);
         const float cs = v.chan >= 0 ? channelScale[v.chan] : 1.0f;
-        gl *= masterVolume * fadeVolume * cs;
-        gr *= masterVolume * fadeVolume * cs;
+        // Slaves are ducked to slavePct while masters play: volume x (1 - duck x (1 - pct)) (0x4a0cf0).
+        const float sl = (duck_ > 0 && !v.master && v.slavePct >= 0) ? 1.0f - duck_ * (1.0f - v.slavePct) : 1.0f;
+        gl *= masterVolume * fadeVolume * cs * sl;
+        gr *= masterVolume * fadeVolume * cs * sl;
         const float baseL = gl, baseR = gr;
         const Wav& w = *v.wav;
         const size_t n = w.frames();
