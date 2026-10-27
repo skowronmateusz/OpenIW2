@@ -42,6 +42,25 @@ void bindings() {
     CHECK(in.forwardMove() == 0);
 }
 
+void rebinding() {
+    ClientInput in;
+    in.loadConfig(kCfg);
+    in.rebind("+gostand", "X"); // slot 1 free: second key
+    CHECK((in.keysFor("+gostand") == std::vector<std::string>{"SPACE", "X"}));
+    in.rebind("+gostand", "Y"); // both taken: replaced by the new key alone
+    CHECK((in.keysFor("+gostand") == std::vector<std::string>{"Y"}));
+    in.rebind("+forward", "Y"); // a key leaves its previous command
+    CHECK(in.keysFor("+gostand").empty());
+    CHECK((in.keysFor("+forward") == std::vector<std::string>{"W", "Y"}));
+    in.rebind("+forward", ""); // Del clears
+    CHECK(in.keysFor("+forward").empty());
+    ClientInput again; // the saved text round-trips, slot order included
+    in.rebind("+frag", "Z");
+    again.loadConfig(in.formatBindings());
+    CHECK((again.keysFor("+frag") == std::vector<std::string>{"G", "Z"}));
+    CHECK(again.bindings().size() == in.bindings().size());
+}
+
 void stance() {
     ClientInput in;
     in.loadConfig(kCfg);
@@ -90,6 +109,7 @@ int main() {
     bindings();
     stance();
     adsAndWeapons();
+    rebinding();
     if (failures) return 1;
     std::cout << "clientinput tests passed\n";
     return 0;

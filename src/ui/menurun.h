@@ -29,6 +29,10 @@ struct MenuEnv {
     std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle
     std::function<void(const std::string& name, const Command& args)> uiScript; // "uiScript" other than update
     // Width in 640x480 virtual pixels of the item's localized text at its font/scale (slider track position, widget value text).
+    std::function<void(const std::string& command, const std::string& key)> bindKey; // BIND capture result; key "" = clear (Del)
+    // DVARENUM items (exe 0x4cd720): the value strings of the enum dvar named by `dvarEnumList`; unset = "not an enum dvar".
+    std::function<std::vector<std::string>(const std::string& enumDvar)> enumValues;
+    std::function<int()> language; // language id of the ui_language list (0 english, 1 french, 2 german, ... 7 polish); unset = 0
     std::function<float(const Item&)> textWidth;
 };
 
@@ -37,6 +41,9 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env);
 
 // UI start-up cvars: ui_mousePitch = (m_pitch < 0), exe 0x4c30db.
 void initUiCvars(MenuEnv& env);
+// Default of a dvar the exe registers at start (empty when unknown). mis_none, mis_01..mis_10: int, default 0, range 0..20, flags
+// 0x1001 (archive), registered at 0x4d02b4..0x4d0540. TODO(spec): the other registered UI dvars (cg_drawCrosshair, ...).
+std::string registeredDefault(const std::string& name);
 
 // The clickable item under (x, y) in the 640x480 virtual screen (visible button items), or nullptr.
 const Item* itemAt(const Menu& menu, float x, float y);

@@ -55,6 +55,7 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
     const std::string model = weaponField(weaponName, "projectileModel");
     if (!model.empty()) e.obj->set("model", Value(model));
     rockets_.push_back(&e);
+    ++stats.rockets;
     return e;
 }
 

@@ -29,6 +29,8 @@
 
 namespace iw2::game {
 
+struct ShockRecord;
+
 using script::ObjectPtr;
 using script::Value;
 using script::Vec3;
@@ -303,6 +305,24 @@ public:
     // max health). The aim spread scale also grows by count (ps+0x5b0).
     struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
+    // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
+    void applyPlayerEvent(int ev, int parm);
+    // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
+    // name index (1-based, 0 = none), the start time and the duration; shellShockRecord() is the loaded record, null
+    // without an active shock. The shock is over once timeMs() >= startMs + durationMs.
+    struct ShellShockState {
+        int index = 0;
+        int64_t startMs = 0;
+        int durationMs = 0;
+    };
+    const ShellShockState& shellShock() const { return shellShock_; }
+    const ShockRecord* shellShockRecord() const;
+    // earthquake (0x4f4330) sends event 0xc7 (scale in event param, duration ms, origin, radius) to the clients: kept as a log for the
+    // front end (TODO(spec): the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
+    struct Earthquake { float scale; int durationMs; Vec3 origin; float radius; int64_t startMs; };
+    const std::vector<Earthquake>& earthquakes() const { return earthquakes_; }
+    struct ViewKick { int count = 0; Vec3 dir{}; };
+    const ViewKick& playerViewKick() const { return viewKick_; }
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
@@ -354,9 +374,8 @@ public:
 
     // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
     // returns a handle (0 = nothing played); stopSound(handle).
-    // soundexists: whether an alias resolves (0x4ef380 -> 0x428320), set by the front end; without one every alias exists.
-    std::function<bool(const std::string&)> soundExists = [](const std::string&) { return true; };
     std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
+    std::function<bool(const std::string&)> soundExists = [](const std::string&) { return true; }; // soundexists (0x4ef380 -> 0x428320)
     std::function<void(int)> stopSound = [](int) {};
     // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
     std::function<int(const std::string&, const std::string&, float, const Vec3&)> playBlendSound =
@@ -376,7 +395,15 @@ public:
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
+    // Debug (iw2game --item-test): a weapon item at the player's origin and the player's stock / clip of a weapon.
+    void debugSpawnItem(const std::string& weapon);
+    void debugSetClip(const std::string& weapon, int rounds);
+    std::pair<int, int> debugAmmo(const std::string& weapon);
     void debugDamage(Entity& e, int amount);
+    // Test hooks (iw2game IW2_TOUCH_TEST / IW2_ROCKET_TEST): the vehicle touch callback with the vehicle placed 100 units
+    // behind `t` moving at 400 units/s towards it; a vehicle rocket fired from 300 units away at `t`.
+    void debugVehicleTouch(Entity& v, Entity& t);
+    void debugVehicleRocket(Entity& v, Entity& t);
     bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
     void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
@@ -391,6 +418,10 @@ public:
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
         return std::nullopt;
     }
+    // cinematic(name [, timeout]) (0x4f4220) only records the movie (client state 0x1c60ff4, up to 63 characters); it is played when
+    // the level change falls due (0x4d9f90 runs `cinematic <name> 0`, whose end continues the level load, 0x49db20 -> 0x4d9f00).
+    // The front end takes it with takeCinematic() right before it loads the next map.
+    std::string takeCinematic() { return std::exchange(cinematic_, {}); }
     const std::string& mapName() const { return mapName_; }
     // Real (wall-clock) time in ms for the timers the original runs on timeGetTime (the death screen's
     // g_deathDelay). Hosts that never set it (iw2game) run them on world time.
@@ -402,6 +433,11 @@ public:
     bool entityTagPosition(int number, const std::string& tag, Vec3& out);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     std::vector<FxEvent> fxEvents_;
+    // Bullet tracers requested by impact events (0x4b8140): muzzle point and impact point; the host applies the
+    // cg_tracerchance roll and draws them (FxSystem::addTracer).
+    struct TracerEvent { Vec3 from, to; };
+    std::vector<TracerEvent> takeTracerEvents() { return std::exchange(tracerEvents_, {}); }
+    std::vector<TracerEvent> tracerEvents_;
     // Sight-blocking particles of the effect runtime, rebuilt by the host after each effects update (0x48b000).
     void setFxSightBlockers(std::vector<FxSightBlocker> b) { fxSightBlockers_ = std::move(b); }
     // Visibility (0..1) through sight-blocking effects between two points (0x48b090).
@@ -434,7 +470,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -488,6 +524,7 @@ private:
     int nearestNodeWithin(const Vec3& p, float radius) const;
     void registerCombatBuiltins();
     void registerSoundBuiltins();
+    void registerShellShockBuiltins();
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();
@@ -507,8 +544,13 @@ private:
     void objectiveMessage(int state, const std::string& text);
     std::array<Objective, 16> objectives_{};
     std::vector<ClientCommand> clientCommands_;
+    std::vector<std::string> shockNames_;                 // precacheshellshock names (index - 1)
+    std::vector<std::shared_ptr<const ShockRecord>> shockRecords_; // parallel to shockNames_
+    ShellShockState shellShock_;
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
+    std::string cinematic_; // pending cinematic name (video/<name>.roq)
+    int exitMs_ = 0;        // level change / cinematic exit time (0x1c60fec)
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
     void openDeathScreen();
     void runDeathScreen();
@@ -522,6 +564,10 @@ private:
     std::map<int, MoverState> movers_;
     std::map<int, Link> links_;
     std::map<int, Inventory> inventories_;
+    bool autoPickup_ = true;          // setautopickup (client +0x86ac == 0)
+    void touchItems();                // G_TouchTriggers for weapon items (0x4e7320 -> Touch_Item 0x521a90)
+    bool touchWeaponItem(Entity& item); // Pickup_Weapon (0x521170) by touch; true when the item was used up
+    int weaponRoom(Inventory& inv, const std::string& weapon); // 0x4dcc00
     uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);
@@ -713,7 +759,7 @@ private:
     void grenadeReact(Entity& e, bool keepPath);
     bool pathNearPoint(Entity& e, const Vec3& p, float r2);
     int grenadeCoverNode(Entity& e, float r);
-    bool pathAwayFrom(Entity& e, const Vec3& p, float dist);
+    bool pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes = false);
     bool grenadeAcquire(Entity& e);
     bool grenadeGiveUp(Entity& e);
     int grenadeAcquireThink(Entity& e);
@@ -732,6 +778,8 @@ private:
     bool fleePathToNode(Entity& e, int node, bool withPlanes = false);
     int badPlaceThink(Entity& e);
     void registerBadPlaceBuiltins();
+    void connectEntityPaths(Entity& e);
+    void disconnectEntityPaths(Entity& e);
     bool pathToNode(Entity& e, int node);
     bool pathToGoal(Entity& e);
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
@@ -785,6 +833,8 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
+    std::vector<Earthquake> earthquakes_;
+    ViewKick viewKick_;
     uint32_t crosshairFlags_ = 0;
     std::string crosshairName_, crosshairWeaponLine_;
     void updateCrosshairTarget();
@@ -826,6 +876,7 @@ private:
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;
+    float cullDist_ = 0;                  // setculldist (configstring 8), unused
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
     std::vector<FxSightBlocker> fxSightBlockers_;
@@ -841,6 +892,9 @@ private:
     std::map<std::string, std::vector<assets::XBoneBox>> boneBoxes_; // xmodel bone hit boxes, filled by skeleton()
     std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;
     std::map<std::string, std::vector<assets::XCollSurf>> collSurfs_; // xmodel collision surfaces, filled by skeleton()
+    ObjectPtr worldEntityObj_; // the world entity (g_entities[2046] = 0x1c13b08), the attacker of damage without one
+    void vehicleTouchDamage(Entity& vehicle, Entity& other); // 0x512d40 (src/game/vehicles.cpp)
+    Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
     int perceptionTick_ = 0;
@@ -851,6 +905,8 @@ private:
     std::vector<NodeSearch> search_;                          // per-node A* state (+0x5c … +0x70)
     int searchId_ = 0;                                        // 0x1c61044
     std::vector<std::vector<std::array<uint8_t, 4>>> linkBlock_; // per link and team: bad places blocking it (+8)
+    std::vector<std::vector<uint8_t>> linkOff_;                  // per link: disconnectpaths count (link +6; disabled links leave the enabled range, 0x519560)
+    std::map<int, std::vector<std::pair<int, int>>> pathRecs_;   // per entity number: links it disabled (records 0x1c8da40)
     std::array<BadPlace, 32> badPlaces_{};
     std::vector<Entity*> grenades_;
     std::vector<Entity*> rockets_;

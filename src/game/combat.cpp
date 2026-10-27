@@ -3,6 +3,7 @@
 
 #include "game/world.h"
 #include "game/bulletdamage.h"
+#include "game/vehicles.h"
 
 #include <algorithm>
 #include <cctype>
@@ -153,6 +154,19 @@ bool World::takesDamage(const Entity& e) const {
 }
 
 // Applies damage; notifies "damage" (amount, attacker, direction, point, type) and handles death.
+// G_Damage (0x5280b8, 0x5280c9) replaces a null inflictor / attacker by the world entity 0x1c13b08 (g_entities[2046]);
+// the script callbacks receive that entity (radiusdamage and dodamage pass none), so reading attacker.origin works.
+// TODO(spec): the world entity's other fields (zero here, origin 0,0,0).
+Value World::attackerValue(Entity* attacker) {
+    if (attacker) return Value(attacker->obj);
+    if (!worldEntityObj_) {
+        worldEntityObj_ = vm_.newObject("worldspawn");
+        worldEntityObj_->set("origin", Value(Vec3{0, 0, 0}));
+        worldEntityObj_->set("angles", Value(Vec3{0, 0, 0}));
+    }
+    return Value(worldEntityObj_);
+}
+
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                    const std::string& location) {
     if (!takesDamage(target)) return;
@@ -168,8 +182,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         int health = (hv.isNumber() ? hv.asInt() : 0) - amount;
         if (health < -999) health = -999;
         target.obj->set("health", Value(int32_t(health)));
-        vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
-        if (health < 1) vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
+        vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
+        if (health < 1) vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
         return;
     }
     // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
@@ -215,7 +229,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         const Value w = attacker ? attacker->obj->get(attacker->isPlayer ? "$weapon" : "weapon") : Value();
         target.obj->set("damageweapon", w.isString() && !w.asString().empty() ? w : Value("none"));
     }
-    vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
+    vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
     if (health > 0) {
         if (target.isActor) actorPain(target, attacker); // pain callback 0x4ff3b0
         return;
@@ -224,10 +238,10 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         ++stats.kills;
         // G_Damage notifies "death" (attacker, means-of-death name 0x5a95ac; 0x528474), then the die callback
         // (0x4ff530) sets the death state.
-        vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
+        vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
         actorDie(target, attacker);
     } else if (target.isPlayer) {
-        vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
+        vm_.notify(target.obj, "death", {attackerValue(attacker)});
         print("player killed at " + std::to_string(timeMs_) + " ms by " +
               (attacker ? attacker->classname + " " + attacker->obj->get("targetname").toString() : std::string("world")) + " (" + mod + ")");
         // player_die (0x527d80) sets the client's respawn time to level time + 1700 ms (0x527e85); the client think
@@ -461,6 +475,17 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     };
     const bool rifle = flag("riflebullet"), ap = flag("armorpiercing");
     const Vec3 at = tr.endPos;
+    if (!shooter.isPlayer) {
+        // 0x4b8140 / 0x4b8040: not for eType 1 (players); the start is the weapon's tag_flash (0x4abb20), else the
+        // entity origin raised by 60 (stand; 40 crouched and 11 prone by eFlags 0x4 / 0x8, not tracked here).
+        // TODO(spec): the tracer gate for eType 0xc, the stance heights.
+        Vec3 from{};
+        if (!entityTagPosition(shooter.number, "tag_flash", from)) {
+            from = shooter.obj->get("origin").isVector() ? shooter.obj->get("origin").asVector() : Vec3{0, 0, 0};
+            from[2] += 60.0f;
+        }
+        tracerEvents_.push_back({from, at});
+    }
     if (hit && hit->isPlayer) {
         startSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
         return;
@@ -619,6 +644,12 @@ void World::registerCombatBuiltins() {
         if (wpn.isString()) {
             const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
             if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir, a->number, "tag_flash"});
+            // The same handler ejects the brass (CG_EjectWeaponBrass 0x4b7730, cg_brass 0xf48cfc default 1): the weapon's
+            // shellEjectEffect (+0x160; lastShotEjectEffect +0x164 for event 0xa0) played bolted (0x4853f0) on the
+            // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). TODO(spec): which of 0x9e / 0xa0
+            // this shot is, so lastShotEjectEffect is never chosen here.
+            const std::string brass = weaponField(wpn.asString(), "shellEjectEffect");
+            if (!brass.empty() && brass != "none" && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();
@@ -715,6 +746,106 @@ void World::registerCombatBuiltins() {
         const float radius = r.isNumber() ? r.asFloat() : 64.0f;
         const Vec3 d = sub(c.arg(0).asVector(), g.asVector());
         return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
+    });
+    // Player-only builtins (0x590ab8 "entity %i is not a player" otherwise).
+    auto playerSelf = [this](CallContext& c) -> Entity& {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
+        return *e;
+    };
+    // allowstand/crouch/prone/leanleft/leanright (0x538c90 …): a zero argument sets the pm_flags bit that disables the
+    // stance (0x400000 stand, 0x800000 crouch, 0x1000000 prone, 0x2000000 lean left, 0x4000000 lean right), non-zero
+    // clears it. The lean bits gate updateLean (0x50ae13); TODO(spec): the stance bits force a stance change
+    // (events 0x8c..0x8e, 0x509eea / 0x50a2f3) in the front end's pmove.
+    const std::pair<const char*, uint32_t> allows[] = {{"allowstand", 0x400000u}, {"allowcrouch", 0x800000u}, {"allowprone", 0x1000000u},
+                                                      {"allowleanleft", 0x2000000u}, {"allowleanright", 0x4000000u}};
+    for (const auto& [name, bit] : allows)
+        vm_.registerBuiltin(name, [this, playerSelf, bit](CallContext& c) {
+            playerSelf(c);
+            if (c.arg(0).isNumber() && c.arg(0).asInt() != 0) pmFlags_ &= ~bit;
+            else pmFlags_ |= bit;
+            return Value();
+        });
+    // isfiring (0x539aa0) weapon state 3, 4, 10, 11; ismeleeing (0x539c10) 10, 11; isthrowinggrenade (0x539b60) 12..16.
+    vm_.registerBuiltin("isfiring", [this, playerSelf](CallContext& c) {
+        playerSelf(c);
+        const int s = playerCmd_.weaponState;
+        return Value(s == 3 || s == 4 || s == 10 || s == 11);
+    });
+    vm_.registerBuiltin("ismeleeing", [this, playerSelf](CallContext& c) {
+        playerSelf(c);
+        const int s = playerCmd_.weaponState;
+        return Value(s == 10 || s == 11);
+    });
+    vm_.registerBuiltin("isthrowinggrenade", [this, playerSelf](CallContext& c) {
+        playerSelf(c);
+        const int s = playerCmd_.weaponState;
+        return Value(s >= 12 && s <= 16);
+    });
+    // issavesuccessful (0x4f3d80): true unless the save-failed byte (+0xd of the save state) is set; savegame is a stub.
+    vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(true); });
+    // setfriendlychain (0x4eeb10): the entity must be a player ("Entity must be a player", 0x5872e0); the node goes into the
+    // client's chain slot. TODO(spec): the "not a friendly chain node" test (node +0x34 < 1) and the chain's consumers.
+    vm_.registerBuiltin("setfriendlychain", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("Entity must be a player");
+        e->obj->set("$friendlychain", c.arg(0));
+        return Value();
+    });
+    // bulletspread (start, end, degrees) (0x4ee760 → 0x531210): the point 8192 units along end-start with a random
+    // offset in the disc of radius tan(spread)*8192 (angle uniform, radius uniform = rand/32768; the exe's own LCG
+    // 0x5a56f4, seed TODO(spec)). The disc axes come from 0x4217f0 (any rotation about the direction is equivalent).
+    vm_.registerBuiltin("bulletspread", [](CallContext& c) {
+        const Vec3 s = c.arg(0).asVector(), t = c.arg(1).asVector();
+        const float deg = c.arg(2).asFloat();
+        Vec3 f = sub(t, s);
+        const float l = len(f);
+        if (l > 0) f = scale(f, 1.0f / l);
+        Vec3 right{f[1], -f[0], 0};
+        if (len(right) < 1e-4f) right = {1, 0, 0};
+        else right = scale(right, 1.0f / len(right));
+        const Vec3 up{f[1] * right[2] - f[2] * right[1], f[2] * right[0] - f[0] * right[2], f[0] * right[1] - f[1] * right[0]};
+        static uint32_t seed = 0;
+        const uint32_t r1 = (seed = seed * 0x343fdu + 0x269ec3u) >> 17;
+        const uint32_t r2 = (seed = seed * 0x343fdu + 0x269ec3u) >> 17;
+        const float ang = float(r1) * 0.010986328125f * 0.01745329238474369f, rad = float(r2) * 3.0517578125e-05f;
+        const float k = std::tan(deg * 0.01745329238474369f) * 8192.0f * rad;
+        Vec3 out = add(s, scale(f, 8192.0f));
+        out = add(out, add(scale(right, k * std::cos(ang)), scale(up, k * std::sin(ang))));
+        return Value(out);
+    });
+    // isturretready (0x5148e0): only on a player-controlled vehicle ("Must be called on a player controlled vehicle", vehicle
+    // +0x174 bit 0); true when the fire timer (+0x184) is <= 0.
+    vm_.registerBuiltin("isturretready", [this](CallContext& c) {
+        VehicleState& v = vehicleState(c.self);
+        if (v.owner < 0) throw std::runtime_error("Must be called on a player controlled vehicle");
+        return Value(v.fireTimerMs <= 0);
+    });
+    // dontinterpolate (0x4edf90): toggles bit 2 (the teleport bit) of the client's eFlags (+0x7c) or the entity's (+0x128) so the
+    // renderer skips interpolation for one snapshot. No interpolation state here, so nothing to do.
+    vm_.registerBuiltin("dontinterpolate", [](CallContext&) { return Value(); });
+    // earthquake(scale, duration, origin, radius) (0x4f4330): scale, duration and radius must be > 0; event 0xc7 goes to the clients.
+    vm_.registerBuiltin("earthquake", [this](CallContext& c) {
+        const float scale = c.arg(0).asFloat(), dur = c.arg(1).asFloat(), radius = c.arg(3).asFloat();
+        if (scale <= 0) throw std::runtime_error("Scale must be greater than 0");
+        const int ms = int(dur * 1000.0f);
+        if (ms <= 0) throw std::runtime_error("duration must be greater than 0");
+        if (radius <= 0) throw std::runtime_error("Radius must be greater than 0");
+        earthquakes_.push_back({scale, ms, c.arg(2).asVector(), radius, timeMs_});
+        return Value();
+    });
+    // viewkick(damage percent, origin) (0x4f7a40): client +0x8658 = (percent * maxhealth + 50) / 100 (error "viewkick: damage %g < 0"),
+    // +0x865c = player origin - origin. TODO(spec): the consumer of these fields.
+    vm_.registerBuiltin("viewkick", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("not a player");
+        const int pct = c.arg(0).asInt();
+        if (pct < 0) throw std::runtime_error("viewkick: damage " + std::to_string(pct) + " < 0");
+        const Value mh = e->obj->get("maxhealth");
+        const int maxHealth = mh.isNumber() ? mh.asInt() : 100;
+        viewKick_.count = (pct * maxHealth + 50) / 100;
+        viewKick_.dir = sub(e->obj->get("origin").asVector(), c.arg(1).asVector());
+        return Value();
     });
     for (const char* noop : {"exitprone", "enterprone", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})

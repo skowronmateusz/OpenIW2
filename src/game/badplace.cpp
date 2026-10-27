@@ -319,7 +319,58 @@ int World::badPlaceThink(Entity& e) {
     return 1;
 }
 
+// connectpaths (0x4eff40 -> 0x5197a0): gives back the links this entity disabled (each link has a count, 0x519620 decrements it;
+// at zero the link rejoins the enabled range).
+void World::connectEntityPaths(Entity& e) {
+    auto it = pathRecs_.find(e.number);
+    if (it == pathRecs_.end()) return;
+    for (const auto& [node, link] : it->second)
+        if (node < int(linkOff_.size()) && link < int(linkOff_[size_t(node)].size()) && linkOff_[size_t(node)][size_t(link)] > 0)
+            --linkOff_[size_t(node)][size_t(link)];
+    pathRecs_.erase(it);
+}
+
+// disconnectpaths (0x4efe80 -> 0x519860): reconnects first, then every link whose segment, swept by the box
+// (-15,-15,18)..(15,15,72) (0x56fe00), touches the entity's model (mask 0x2820011) is disabled for all teams (0x5196b0 -> 0x519560).
+// TODO(spec): the DYNAMICPATH spawnflag check (errors "script_brushmodel must have DYNAMICPATH set to disconnect paths" and
+// "entity of type '%s' cannot disconnect paths"), the exact contact test 0x44c5b0 (here a model trace), the enabled-range
+// reordering of the node's links (only affects ties in the search).
+void World::disconnectEntityPaths(Entity& e) {
+    connectEntityPaths(e);
+    const Value m = e.obj->get("model");
+    if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') return;
+    const int model = std::atoi(m.asString().c_str() + 1);
+    const Value ov = e.obj->get("origin"), av = e.obj->get("angles");
+    const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+    const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+    if (linkOff_.size() != paths_.size()) {
+        linkOff_.assign(paths_.size(), {});
+        for (size_t i = 0; i < paths_.size(); ++i) linkOff_[i].assign(paths_.links(i).size(), 0);
+    }
+    auto& recs = pathRecs_[e.number];
+    const Vec3 mins{-15, -15, 18}, maxs{15, 15, 72};
+    for (size_t i = 0; i < paths_.size(); ++i) {
+        const auto& links = paths_.links(i);
+        for (size_t li = 0; li < links.size(); ++li) {
+            const TraceResult tr = collision_->traceModel(model, o, a, paths_.position(i), paths_.position(size_t(links[li].target)), mins, maxs,
+                                                          0x2820011u);
+            if (tr.fraction < 1.0f || tr.startSolid) {
+                if (linkOff_[i][li] < 255) ++linkOff_[i][li];
+                recs.push_back({int(i), int(li)});
+            }
+        }
+    }
+}
+
 void World::registerBadPlaceBuiltins() {
+    vm_.registerBuiltin("connectpaths", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) connectEntityPaths(*e);
+        return Value();
+    });
+    vm_.registerBuiltin("disconnectpaths", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) disconnectEntityPaths(*e);
+        return Value();
+    });
     // badplace_delete(name) (0x4f5800 → 0x5235c0).
     vm_.registerBuiltin("badplace_delete", [this](CallContext& c) {
         if (c.argc() != 1) throw std::runtime_error("Incorrect number of parameters");

@@ -405,6 +405,7 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "accel") info->accel = f * kMphToIps;
                 else if (k == "rotrate") info->rotRate = f;
                 else if (k == "rotaccel") info->rotAccel = f;
+                else if (k == "collisiondamage") info->collisionDamage = f;
                 else if (k == "collisionspeed") info->collisionSpeed = f * kMphToIps;
                 else if (k == "enginesndspeed") info->engineSndSpeed = f * kMphToIps;
                 else if (k == "suspensiontravel") info->suspensionTravel = f;
@@ -515,7 +516,7 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
 // World position of a model tag on the vehicle (0x4d75b0): the tag's model-space position through the entity's
 // axes, with the turret bone controls of the server controller 0x5127a0 (DObj controls through 0x4746e0): bone info+0x210
 // (tag_turret) gets angles (0, es+0x74 = turret yaw, 0), bone info+0x214 (tag_barrel) gets (es+0x70 = turret pitch, 0, 0).
-// TODO(spec): the body-jolt control on bone info+0x20c (angles es+0x64, 0, es+0x6c); that the three info slots are
+// The body bone info+0x20c gets angles (es+0x64, 0, es+0x6c) (checked in 0x5127a0); that the three info slots are
 // tag_body / tag_turret / tag_barrel follows the init order 0x5071b4..0x5071e3 and the cgame use (0x4ac354).
 // turnedForward (optional): the world direction the body's forward axis takes through the controls of this tag
 // (rotation of the controlled tag times the inverse of its bind rotation, rotated into the world).
@@ -693,8 +694,9 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     DriveCommand cmd;
     if (v.owner >= 0 && player_ && v.owner == player_->number) {
         pmFlags_ |= 0x40000;
-        // TODO(spec): the client state bit ps+0xc 0x8000 that also blocks the command is not tracked.
-        if (!(pmFlags_ & 0x80000)) {
+        // ps+0xc 0x8000 (freezecontrols, client +0x8630 via ClientThink 0x4e7bc0) also zeroes the command.
+        // TODO(spec): the second source, client +0x8698.
+        if (!(pmFlags_ & 0x80000) && !controlsFrozen_) {
             cmd.forward = playerCmd_.forward;
             cmd.right = playerCmd_.right;
             cmd.jump = (playerCmd_.buttons & 0x400) ? 127 : 0;
@@ -744,8 +746,8 @@ void World::vehiclePlayerAim(Entity& e) {
     Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
     if (!owner || owner != player_ || (pmFlags_ & 0x80000)) return;
     if (v.fireTimerMs < 1) {
-        // TODO(spec): ps+0xc bit 0x8000 also blocks firing; it is not tracked.
-        if (playerCmd_.buttons & 1) vm_.notify(e.obj, "turret_fire");
+        // ps+0xc bit 0x8000 (freezecontrols) also blocks firing. TODO(spec): the second source, client +0x8698.
+        if ((playerCmd_.buttons & 1) && !controlsFrozen_) vm_.notify(e.obj, "turret_fire");
     } else {
         v.fireTimerMs -= 50;
     }
@@ -772,7 +774,9 @@ void World::vehiclePlayerAim(Entity& e) {
 
 // Vehicle think (0x512b80), for every script_vehicle: the owner dies → it is let out; types other than artillery
 // move along their path or freely; a driven vehicle aims where the player looks; then the turret.
-// TODO(spec): the remaining calls 0x510770 / 0x5107e0 / 0x510870 / 0x510be0.
+// The think calls: 0x510770 body jolt step, 0x510870 tread scroll and 0x510be0 sounds are implemented; 0x5107e0 stores the
+// steering angle ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45) (0 without steerWheels), which only the
+// cgame wheel code (0x4ac6b0 -> 0x17c) reads. TODO(spec): the cgame per-wheel suspension traces (0x4ac2b0).
 
 // G_TryPushingEntity (0x52be60): the entity is moved by the pusher's move and turned about the pusher's origin by its
 // turn; if that box position (entity clip mask, 0x811 without one; the entity passes) is blocked (0x52bd20) offsets
@@ -814,6 +818,36 @@ bool World::tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const V
     return !blocked(base);
 }
 
+// The vehicle's touch callback (0x512d40, handler table 0x5a573c entry 9 / 10), run for every contact after the notifies: the
+// other entity must be a player / actor / mover, take damage and not be linked (+0x1c8 = 0), and the vehicle file's
+// collisionDamage (info +0x80) positive. The vehicle's velocity direction (0x421270, length >= 0.001) against the
+// 2D direction to the other entity: dot < 0.8 does nothing; a prone player (pm_flags 1) takes 999999; otherwise
+// (dot - 0.8) * min(1, |forward speed| / collisionSpeed) * 5 * collisionDamage, truncated, as damage (MOD_CRUSH 9,
+// inflictor and attacker the vehicle, direction the velocity direction, point the other's origin) when positive.
+// TODO(spec): script movers (eType 5, 999999 at once), the actor touch callback 0x4ff2f0.
+void World::vehicleTouchDamage(Entity& e, Entity& t) {
+    if (!e.vehicle || !e.vehicle->info || e.vehicle->info->collisionDamage <= 0.0f) return;
+    if (links_.count(t.number) || (t.isPlayer && playerLinked())) return; // +0x1c8 (taken as the link, as in the push 0x50fe40)
+    const Vec3 v = e.vehicle->velocity;
+    const float vl = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (vl < 0.001f) return;
+    const Vec3 dir{v[0] / vl, v[1] / vl, v[2] / vl};
+    const Vec3 to = t.obj->get("origin").asVector(), from = e.obj->get("origin").asVector();
+    float dx = to[0] - from[0], dy = to[1] - from[1];
+    const float dl = std::sqrt(dx * dx + dy * dy);
+    if (dl != 0.0f) { dx /= dl; dy /= dl; }
+    const float dot = dir[0] * dx + dir[1] * dy;
+    if (dot < 0.8f) return;
+    if (t.isPlayer && playerCmd_.stance == 2) {
+        damage(t, &e, 999999, dir, to, "MOD_CRUSH", "none");
+        return;
+    }
+    float f = e.vehicle->info->collisionSpeed != 0.0f ? e.vehicle->forwardSpeed / e.vehicle->info->collisionSpeed : 0.0f;
+    if (!(f <= 1.0f)) f = 1.0f;
+    const int amount = int((dot - 0.8f) * f * 5.0f * e.vehicle->info->collisionDamage);
+    if (amount > 0) damage(t, &e, amount, dir, to, "MOD_CRUSH", "none");
+}
+
 // Touch (0x50ff00) of a solid vehicle after its move: players and living actors in contact with its collmap (a
 // zero-length box trace against contents 0x800000 that starts in the vehicle) are notified "touch" (and the vehicle
 // with them); then, unless linked or the vehicle neither moved nor turned (≥ 0.001 squared), they are pushed and
@@ -837,6 +871,7 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
         if (!tr.startSolid || tr.entity != e.number) continue;
         vm_.notify(e.obj, "touch", {Value(t.obj)});
         vm_.notify(t.obj, "touch", {Value(e.obj)});
+        vehicleTouchDamage(e, t);
         if (links_.count(t.number) || (t.isPlayer && playerLinked()) || !moving) continue;
         if (t.isActor && (std::find(t.ai.predicted.begin(), t.ai.predicted.begin() + t.ai.predictedDepth + 1, int(AiScripted)) !=
                               t.ai.predicted.begin() + t.ai.predictedDepth + 1 ||
@@ -852,7 +887,7 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
 // Path vehicles (0x511513): f = clamp(|speed| / engineSndSpeed); engine = f, idle = 1 - f.
 // Every think (0x510be0): a dead vehicle or one with the engine off silences both pairs; otherwise the loops follow
 // the fractions. The original culls by the listener distance (0x44247b) and keeps the pitch chosen at the loop start.
-// TODO(spec): the turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3).
+// The turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3) follow in the sound update below.
 // 0x50dcf0: direction (world) against the body's forward / right axes, 2D-normalized (0x421160), scaled by the
 // intensity (clamped 0..1) and info maxBodyPitch (+0x78) / maxBodyRoll (+0x7c); amplitude 1, phase 0.
 // +0x1e4 / +0x1e8 (speed fraction x |speed|, deceleration) replace maxSpeed / accel in the free physics while it runs (0x50de40).
@@ -955,7 +990,9 @@ void World::thinkVehicles() {
 // A player starts using a vehicle (VEH_LinkPlayer 0x511610): the player is placed at tag_player with the vehicle's
 // pitch and yaw (roll 0) and linked to that tag; both entities record each other.
 // pm_flags become 0x60000 (in a vehicle, view turns with it; 0x80000 cleared).
-// TODO(spec): the second tag the original prefers for the angles (vehicle +0x214).
+// VEH_LinkPlayer reads the tag_player transform (info+0x200) and, when the barrel tag (info+0x214) exists, a second
+// transform that supplies the orientation instead (0x51169c..0x5116bb picks the second buffer). The angles are taken from
+// that barrel tag's turned forward; the exact matrix-to-angles step (0x424b70) is approximated by vectoangles.
 void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     VehicleState& v = *vehicle.vehicle;
     if (player.usingVehicle >= 0) throw std::runtime_error("VEH_LinkPlayer: Player is already using a vehicle");
@@ -965,7 +1002,15 @@ void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     if (!found) throw std::runtime_error("VEH_LinkPlayer: Trying to use vehicle without a bone [tag_player]");
     const Vec3 a = vehicle.obj->get("angles").asVector();
     player.obj->set("origin", Value(pos));
-    player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
+    Vec3 ang{a[0], a[1], 0.0f};
+    bool barrelFound = false;
+    Vec3 barrelFwd{};
+    vehicleTagPosition(vehicle, "tag_barrel", barrelFound, &barrelFwd);
+    if (barrelFound) {
+        const Vec3 t = vectorToAngles(barrelFwd);
+        ang = Vec3{t[0], t[1], 0.0f};
+    }
+    player.obj->set("angles", Value(ang));
     Link l;
     l.parent = vehicle.number;
     l.tag = "tag_player";
@@ -1140,7 +1185,8 @@ void World::registerVehicleBuiltins() {
     });
     // useby(user) (0x4ef020): notifies "trigger" with the user, then runs the entity type's use function
     // (table 0x5a5740). For vehicles (0x512f00) a player gets in, or out when already using a vehicle.
-    // TODO(spec): the use functions of turrets (0x529280) and entity type 8 (0x529450).
+    // The use function 0x529280 (handlers 6 / 7) is trigger_hurt's on/off toggle (its touch 0x5291d0 calls G_Damage with
+    // MOD_TRIGGER_HURT). TODO(spec): the use function 0x529450 of entity type 8.
     vm_.registerBuiltin("useby", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         Entity* user = entityOf(c.arg(0));
@@ -1150,6 +1196,8 @@ void World::registerVehicleBuiltins() {
             useVehicle(*e, *user);
         } else {
             vm_.notify(e->obj, "trigger", {Value(user->obj)});
+            // trigger_hurt (handlers 6 / 7, use function 0x529280) toggles between off (6) and on (7).
+            if (e->classname == "trigger_hurt") e->obj->set("$hurtOff", Value(!e->obj->get("$hurtOff").truthy()));
         }
         return Value();
     });
@@ -1322,7 +1370,7 @@ void World::registerVehicleBuiltins() {
     // G_FireRocket 0x527810). Then the fire event: EV_FIRE_WEAPON (0x9e), quad barrels EV_FIRE_QUADBARREL_1 / _2
     // (0xb0 / 0xb1, by the barrel pair); the client (0x4b7800 per flash tag: tag_flash, tag_flash_11, tag_flash_2,
     // tag_flash_22 for the quad events) plays the weapon's fireSound and, for an entity that is not the local
-    // client, its worldFlashEffect at the flash tag. TODO(spec): the effect bolted to the tag, the shell eject
+    // client, its worldFlashEffect bolted on the flash tag (0x4853f0 via 0x4b6660). TODO(spec): the shell eject
     // (0x4b7730), the recoil jolt (0x50dcf0), the aim bend towards a driving player's aim point and the barrel
     // pull-back (+0x19c / +0x198).
     vm_.registerBuiltin("fireturret", [this, requireTurret](CallContext& c) {
@@ -1383,7 +1431,7 @@ void World::registerVehicleBuiltins() {
                 const Vec3 at = vehicleTagPosition(*e, flash[first + k], ok);
                 if (!ok) continue;
                 if (!fireSnd.empty()) startSound(fireSnd, &at);
-                if (!flashFx.empty()) fxEvents_.push_back({flashFx, at, fwd});
+                if (!flashFx.empty()) fxEvents_.push_back({flashFx, at, fwd, e->number, flash[first + k]});
             }
         }
         if (v.info->quadBarrel) v.altBarrel = !v.altBarrel;

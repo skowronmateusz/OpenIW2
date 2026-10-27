@@ -17,9 +17,13 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "game/screenfade.h"
+#include "video/roq.h"
+#include "game/compassspring.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
+#include "game/shellshock.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
 #include "game/watersim.h"
@@ -112,13 +116,13 @@ struct Camera {
     }
     Vec3 right() const { return normalize(cross(forward(), {0, 0, 1})); }
 
-    Mat4 viewProj(float aspect) const {
+    Mat4 viewProj(float aspect, float zNear = 4.0f) const {
         const Vec3 f = forward(), r0 = right(), u0 = cross(r0, f);
         const float cr = std::cos(roll * float(M_PI) / 180), sr = std::sin(roll * float(M_PI) / 180);
         const Vec3 r = r0 * cr + u0 * -sr, u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
-        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = 4.0f, fa = 40000.0f;
+        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = zNear, fa = 40000.0f;
         const float t = 1.0f / std::tan(fovY / 2);
         const Mat4 proj = {t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, fa / (n - fa), -1, 0, 0, n * fa / (n - fa), 0};
         return mul(proj, view);
@@ -288,6 +292,10 @@ struct Batch {
     int cull = 0;          // mtlCullFace: 0 none, 1 back, 2 front
     uint32_t firstIndex = 0, indexCount = 0;
     bool scroll = false; // see MatInfo::scroll
+    // *_spec techniques (lmap_s: lib/phong.hlsl): indices into Scene::textures of the normalMap / specularMap, -1 = none.
+    int normalTex = -1, specTex = -1;
+    uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
+    int detail = -1; // Scene::details index
 };
 
 struct Lightmap {
@@ -307,6 +315,9 @@ struct MatInfo {
     int cull = 0;
     // For Pass::Water `texture` indexes Scene::waters.
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
+    uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState
+    int detail = -1; // Scene::details index (technique set *_detail)
+    int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
 };
 
@@ -329,7 +340,12 @@ struct GpuModel {
 struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUBuffer* tbn = nullptr;           // world vertices' tangent + binormal (6 floats each), parallel to `vertices`
+    SDL_GPUTexture* lmWeightTex = nullptr;  // "$lightmapweights" (32 x 32 RGBA8): (alpha, green) of the normal map -> 4 lightmap coefficient weights
+    SDL_GPUTexture* specularity = nullptr;  // "$specularity" lookup (32 x 256 L8): U = specular power, V = N.H
     std::vector<SDL_GPUTexture*> textures; // [0] = white
+    struct Detail { int tex; uint8_t state; float scale[2]; }; // material detailMap + detailScale.xy (lib/shade.hlsl USE_DETAIL)
+    std::vector<Detail> details;
     std::vector<Lightmap> lightmaps;
     Lightmap dummyLightmap;
     std::vector<Batch> batches;
@@ -501,20 +517,42 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             }
             mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             const std::string& img = m.colorImage();
-            if (mi.pass == Pass::Sky) {
-                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
-                auto it = scene.imageIndex.find(img);
+            auto imageSlot = [&](const std::string& image) {
+                auto it = scene.imageIndex.find(image);
                 if (it == scene.imageIndex.end()) {
-                    SDL_GPUTexture* t = loadImage(dev, up, vfs, img);
+                    SDL_GPUTexture* t = nullptr;
+                    if (image == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
+                        const uint8_t black[4] = {0, 0, 0, 255};
+                        t = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1);
+                        up.texture(t, 0, 0, 1, 1, black, 4);
+                    } else t = loadImage(dev, up, vfs, image);
                     int idx = 0;
                     if (t) {
                         idx = int(scene.textures.size());
                         scene.textures.push_back(t);
                     }
-                    it = scene.imageIndex.emplace(img, idx).first;
+                    it = scene.imageIndex.emplace(image, idx).first;
                 }
-                mi.texture = it->second;
+                return it->second;
+            };
+            if (mi.pass == Pass::Sky) {
+                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is a UI background
+                mi.texture = imageSlot(img);
+                // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
+                if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
+                    for (const auto& t : m.textures) {
+                        if (t.imageName.empty() || t.imageName[0] == '$') continue;
+                        if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap") { mi.normalTex = imageSlot(t.imageName); mi.normalState = t.samplerState; }
+                        if (t.semantic == assets::TextureSemantic::Specular && t.samplerName == "specularMap") { mi.specTex = imageSlot(t.imageName); mi.specState = t.samplerState; }
+                        if (t.samplerName == "detailMap") {
+                            Scene::Detail dt{imageSlot(t.imageName), t.samplerState, {1.0f, 1.0f}};
+                            for (const auto& c : m.constants)
+                                if (c.name == "detailScale") dt.scale[0] = c.value[0], dt.scale[1] = c.value[1];
+                            mi.detail = int(scene.details.size());
+                            scene.details.push_back(dt);
+                        }
+                    }
             }
         } catch (const std::exception& e) {
             std::cerr << "warning: material " << name << ": " << e.what() << "\n";
@@ -712,8 +750,16 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
             const Vec3 r = right * s->size, u = upv * s->size;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
-            const Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
-            const float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
+            float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            if (s->beam) { // tracer quad (0x4b7d90): B + w, B - w, A - w, A + w with uv (1,1) (1,0) (0,0) (0,1)
+                const Vec3 a{s->beamA[0], s->beamA[1], s->beamA[2]}, bb{s->beamB[0], s->beamB[1], s->beamB[2]};
+                const Vec3 w{s->beamPerp[0], s->beamPerp[1], s->beamPerp[2]};
+                corners[0] = bb + w * s->widthB; corners[1] = bb + w * -s->widthB;
+                corners[2] = a + w * -s->widthA; corners[3] = a + w * s->widthA;
+                const float tuv[4][2] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
+                std::memcpy(uv, tuv, sizeof uv);
+            }
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
@@ -868,6 +914,9 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
     auto tex = [&](SDL_GPUTexture* t) { if (t) SDL_ReleaseGPUTexture(dev, t); };
     buf(scene.vertices);
     buf(scene.indices);
+    buf(scene.tbn);
+    tex(scene.specularity);
+    tex(scene.lmWeightTex);
     for (size_t i = 1; i < scene.textures.size(); ++i) tex(scene.textures[i]); // [0] is the shared white texture
     for (auto& lm : scene.lightmaps) { tex(lm.coeffs); tex(lm.sun); }
     tex(scene.sky);
@@ -875,6 +924,80 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
         if (m) { buf(m->vertices); buf(m->indices); }
     for (auto& [key, m] : scene.skinned) { buf(m.vertices); buf(m.indices); }
     scene = Scene{};
+}
+
+// "$specularity" (gfx DLL 0x1000fd60 -> generator 0x10029710, shift argument 0): 32 columns x 256 rows of L8, stored at
+// y * 32 + x. Column x has t = clamp(x / 30, 0, 1) and exponent P = ln 0.1 / ln cos((180 - 175 t) / 4 degrees), i.e. cos^P
+// reaches 0.1 at that angle (column 31: P = 30). Row y is N.H = y / 255 and the byte is round(255 * (y / 255)^P).
+// U = specularMap.a (the power), V = N.H, sampled with linear filtering and clamped (sampler state 0x32 at 0x10038e0a).
+// r_specularColorScale (gfx DLL dvar 0x101ce638, default 1, range 0.01..100): lightSpecular0 = lightColor0 * scale. IW2_SPEC_SCALE sets it.
+float specColorScaleDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_SPEC_SCALE");
+        return e ? std::clamp(float(std::atof(e)), 0.01f, 100.0f) : 1.0f;
+    }();
+    return v;
+}
+
+// r_cosinePowerMapShift (dvar 0x101ce680, default 0, range -1..1): 0x10034000 passes it as arg 1 of 0x1000d3a0 -> 0x10029710, which adds it
+// to x / 30 before the 0..1 clamp (FILD x; FMUL 1/30; FADD shift at 0x10029741). IW2_COS_SHIFT sets it.
+float cosinePowerShiftDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_COS_SHIFT");
+        return e ? std::clamp(float(std::atof(e)), -1.0f, 1.0f) : 0.0f;
+    }();
+    return v;
+}
+
+// "$lightmapweights" (gfx 0x1000ff10 -> basis 0x1000fdf0): 32 x 32 A8R8G8B8. Texel (row i, column j) holds the weights of the direction
+// v = (2(j+.5)/32 - 1, 2(i+.5)/32 - 1, sqrt(1 - x^2 - y^2)) (outside the unit disc: x, y normalised, z = 0); w0 = clamp(1 - acos(z) / acos(1/sqrt 3)),
+// azimuth a = atan2(y, x) * 3 / 2pi - 0.75 wrapped into [0, 3): a < 1: w1 = 1 - a, w2 = a; a < 2: w2 = 2 - a, w3 = a - 1; else w1 = a - 2, w3 = 3 - a;
+// w1..w3 are scaled by 1 - w0. Bytes are B,G,R,A = w0,w1,w2,w3, so the sampled rgba is (w2, w1, w0, w3) and a flat normal gives (0, 0, 1, 0).
+// Rounded as the DLL does: byte = (int)(w * 255 + 2^-30) (0x1019be00).
+std::vector<uint8_t> lightmapWeightsTable() {
+    std::vector<uint8_t> t(32 * 32 * 4);
+    for (int i = 0; i < 32; ++i)
+        for (int j = 0; j < 32; ++j) {
+            float x = (float(j) + 0.5f) / 32.0f * 2.0f - 1.0f, y = (float(i) + 0.5f) / 32.0f * 2.0f - 1.0f;
+            float z2 = 1.0f - (x * x + y * y);
+            if (!(z2 > 0.0f)) {
+                const float len = std::sqrt(x * x + y * y);
+                if (len != 0.0f) { x /= len; y /= len; }
+                z2 = 0.0f;
+            }
+            const float z = std::sqrt(z2);
+            float a = std::atan2(y, x) * 0.47746482f - 0.75f;
+            if (a < 0.0f) a += 3.0f;
+            else if (a > 3.0f) a -= 3.0f;
+            float w[4];
+            if (a < 1.0f) { w[3] = 0; w[1] = 1.0f - a; w[2] = a; }
+            else if (a < 2.0f) { a -= 1.0f; w[1] = 0; w[2] = 1.0f - a; w[3] = a; }
+            else { a -= 2.0f; w[2] = 0; w[1] = a; w[3] = 1.0f - a; }
+            w[0] = std::clamp(1.0f - std::acos(z) * 1.0467734f, 0.0f, 1.0f);
+            for (int k = 1; k < 4; ++k) w[k] *= 1.0f - w[0];
+            uint8_t* px = &t[(size_t(i) * 32 + size_t(j)) * 4];
+            px[0] = uint8_t(int(w[2] * 255.0f + 9.313225746154785e-10f)); // R = w2
+            px[1] = uint8_t(int(w[1] * 255.0f + 9.313225746154785e-10f)); // G = w1
+            px[2] = uint8_t(int(w[0] * 255.0f + 9.313225746154785e-10f)); // B = w0
+            px[3] = uint8_t(int(w[3] * 255.0f + 9.313225746154785e-10f)); // A = w3
+        }
+    return t;
+}
+
+std::vector<uint8_t> specularityTable(float shift) {
+    std::vector<uint8_t> t(32 * 256);
+    for (int x = 0; x < 32; ++x) {
+        double P = 30.0;
+        if (x != 31) {
+            const double u = std::clamp(double(float(x) * 0.033333335f + shift), 0.0, 1.0);
+            P = std::log(0.1) / std::log(std::cos((180.0 - 175.0 * u) * 0.004363323251406352));
+        }
+        for (int y = 0; y < 256; ++y) {
+            const float v = float(std::pow(double(float(y) * 0.003921569f), P) * 255.0);
+            t[size_t(y) * 32 + size_t(x)] = uint8_t(std::lrint(double(v) + 9.313225746154785e-10)); // + 2^-30 (0x1019be00)
+        }
+    }
+    return t;
 }
 
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
@@ -933,12 +1056,16 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<std::tuple<int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
     for (const auto& s : bsp.soups()) {
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull}];
+        // Specular only on lightmapped soups with both maps present (lmap_s); IW2_NO_SPEC disables it.
+        static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
+        const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
+                          (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, spec ? mi.detail : -1}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1032,7 +1159,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1047,6 +1174,11 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.lightmap = std::get<2>(key);
         b.polygonOffset = std::get<3>(key);
         b.cull = std::get<4>(key);
+        b.normalTex = std::get<5>(key);
+        b.specTex = std::get<6>(key);
+        b.normalState = uint8_t(std::get<7>(key));
+        b.specState = uint8_t(std::get<8>(key));
+        b.detail = std::get<9>(key);
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -1064,6 +1196,26 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     if (!scene.vertices || !scene.indices) sdlFail("SDL_CreateGPUBuffer");
     up.buffer(scene.vertices, verts.data(), vb.size);
     up.buffer(scene.indices, indices.data(), ib.size);
+    {
+        // Tangent frame of the BSP vertices (lib/normalmap.hlsl Normal_VertexSetup); static-model vertices appended after them have none.
+        std::vector<float> tbn(verts.size() * 6, 0.0f);
+        for (size_t i = 0; i < bsp.vertices().size(); ++i) {
+            std::memcpy(&tbn[i * 6], bsp.vertices()[i].tangent.data(), 12);
+            std::memcpy(&tbn[i * 6 + 3], bsp.vertices()[i].binormal.data(), 12);
+        }
+        SDL_GPUBufferCreateInfo tb{};
+        tb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        tb.size = uint32_t(tbn.size() * sizeof(float));
+        scene.tbn = SDL_CreateGPUBuffer(dev, &tb);
+        if (!scene.tbn) sdlFail("SDL_CreateGPUBuffer");
+        up.buffer(scene.tbn, tbn.data(), tb.size);
+        const auto lut = specularityTable(cosinePowerShiftDvar());
+        scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
+        up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
+        const auto wl = lightmapWeightsTable();
+        scene.lmWeightTex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 32, 32, 1);
+        up.texture(scene.lmWeightTex, 0, 0, 32, 32, wl.data(), uint32_t(wl.size()));
+    }
     up.flush();
 
     // Sun and spawn point from the entity string.
@@ -1131,7 +1283,7 @@ struct FragmentUniforms {
     float params[4];
     float ambient[4];
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
-    float fogParams[4]; // x: 1 = on, y: scale, z: shift
+    float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
     float fogColor[4];
 };
 
@@ -1142,6 +1294,13 @@ struct DrawItem {
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
     float scrollV = 0.0f; // vehicle tread scroll
+    // Viewport depth range maximum (the minimum is 0): the renderer draws groups with the 0x8 class in 0 .. 0.2 and the 0x10
+    // class in 0 .. 0.5 of the depth buffer (D3D SetViewport MinZ/MaxZ via 0x1003ec50, called at 0x1002fafc..0x1002fc85;
+    // class = group flags & 0x18, table at 0x1002fcd8), so the view weapon never goes through walls.
+    float depthMax = 1.0f;
+    // Near plane of the depth-hack projection: the dvar r_znear_depthhack (default 0.1, registered at 0x1000ad62 / 0x10192e24)
+    // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
+    float zNear = 4.0f;
 };
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -1177,11 +1336,33 @@ struct Renderer {
     static constexpr uint32_t kMaxQuads = 8192;
     SDL_GPUGraphicsPipeline* pipelines[5] = {}; // Opaque, AlphaTest, Blend, Additive, Multiply
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
+    SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
     SDL_GPUSampler* waterMapSampler = nullptr;
+    SDL_GPUDevice* samplerDev = nullptr;
+    SDL_GPUSampler* matSamplers[128] = {};
+    // Per-material sampler state (MaterialTexture::samplerState; SetSamplerState in gfx 0x1003dd00..0x1003e1b1): bits 0-1 min/mag filter
+    // (1 point, 2 linear, 0/3 default = linear here), bits 2-3 mip filter (1 point, 2 linear, 0/3 default = linear), bit 4/5 = clamp U/V (clear = wrap).
+    SDL_GPUSampler* matSampler(uint8_t state) {
+        state &= 0x7f;
+        if (!matSamplers[state]) {
+            SDL_GPUSamplerCreateInfo si{};
+            const int mm = state & 3, mip = (state >> 2) & 3;
+            si.min_filter = si.mag_filter = mm == 1 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+            si.mipmap_mode = mip == 1 ? SDL_GPU_SAMPLERMIPMAPMODE_NEAREST : SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+            si.address_mode_u = state & 0x10 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.address_mode_v = state & 0x20 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.address_mode_w = state & 0x40 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.enable_anisotropy = mm != 1;
+            si.max_anisotropy = 8;
+            si.max_lod = 1000;
+            matSamplers[state] = SDL_CreateGPUSampler(samplerDev, &si);
+        }
+        return matSamplers[state];
+    }
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
@@ -1198,7 +1379,7 @@ struct Renderer {
     bool fullbright = false;
     game::FogConsts fog; // set by the caller each frame (client fog state)
     void applyFog(FragmentUniforms& fu) const {
-        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift;
+        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift, fu.fogParams[3] = fog.exponential ? fog.exponent : 0.0f;
         std::memcpy(fu.fogColor, fog.color, sizeof fog.color);
     }
 
@@ -1233,6 +1414,18 @@ struct Renderer {
             {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, light)},
         };
 
+        SDL_GPUVertexBufferDescription vbd2[2] = {vbd, {1, 24, SDL_GPU_VERTEXINPUTRATE_VERTEX, 0}};
+        SDL_GPUVertexAttribute attrs8[8] = {attrs[0], attrs[1], attrs[2], attrs[3], attrs[4], attrs[5],
+                                            {6, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0},
+                                            {7, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12}};
+        SDL_GPUShaderCreateInfo svsi = vs;
+        svsi.entrypoint = "vs_spec";
+        SDL_GPUShaderCreateInfo sfsi = fs;
+        sfsi.entrypoint = "fs_spec";
+        sfsi.num_samplers = 8;
+        SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
+        SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
+        if (!specVsh || !specFsh) sdlFail("spec shaders");
         for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
             ct.format = colorFormat;
@@ -1280,10 +1473,35 @@ struct Renderer {
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
                 }
+            if (p < 3) { // lmap_s (specular) variants: tangent frame in vertex buffer 1, six samplers
+                pi.vertex_shader = specVsh;
+                pi.fragment_shader = specFsh;
+                pi.vertex_input_state.vertex_buffer_descriptions = vbd2;
+                pi.vertex_input_state.num_vertex_buffers = 2;
+                pi.vertex_input_state.vertex_attributes = attrs8;
+                pi.vertex_input_state.num_vertex_attributes = 8;
+                for (int lvl = 0; lvl <= 2; ++lvl)
+                    for (int c = 0; c < 3; ++c) {
+                        pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                        pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                        pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                        pi.rasterizer_state.front_face = kFrontFace;
+                        specPipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                        if (!specPipelines[p][lvl][c]) sdlFail("spec pipeline");
+                    }
+                pi.vertex_shader = vsh;
+                pi.fragment_shader = fsh;
+                pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                pi.vertex_input_state.num_vertex_buffers = 1;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
+            }
             pi.rasterizer_state.enable_depth_bias = false;
             pi.rasterizer_state.depth_bias_slope_factor = 0;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         }
+        SDL_ReleaseGPUShader(dev, specVsh);
+        SDL_ReleaseGPUShader(dev, specFsh);
         {
             SDL_GPUShaderCreateInfo svs = vs;
             svs.entrypoint = "vs_sky";
@@ -1374,6 +1592,7 @@ struct Renderer {
         si.enable_anisotropy = true;
         si.max_anisotropy = 8;
         si.max_lod = 1000;
+        samplerDev = dev;
         repeatSampler = SDL_CreateGPUSampler(dev, &si);
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         si.enable_anisotropy = false;
@@ -1569,7 +1788,7 @@ struct Renderer {
             }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
-                if (b.pass != p) continue;
+                if (b.pass != p || b.specTex >= 0) continue;
                 if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, vu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[3] = {
@@ -1586,9 +1805,51 @@ struct Renderer {
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                 if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, vu);
             }
+            // lmap_s world batches (lib/phong.hlsl specular): tangent frame from vertex buffer 1.
+            if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
+                bool any = false;
+                for (const Batch& b : scene.batches) {
+                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
+                    if (!any) {
+                        SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
+                        SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
+                        any = true;
+                    }
+                    SDL_BindGPUGraphicsPipeline(pass, specPipelines[int(p)][b.polygonOffset][b.cull]);
+                    const float specColorScale = specColorScaleDvar();
+                    struct SVU { VU base; float sun[4]; } svu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
+                    svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                    SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
+                    const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
+                    SDL_GPUTextureSamplerBinding tex[8] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
+                                                           {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], matSampler(b.normalState)},
+                                                           {scene.textures[size_t(b.specTex)], matSampler(b.specState)}, {scene.specularity, clampSampler}, {scene.lmWeightTex, clampSampler},
+                                                           {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
+                                                            matSampler(b.detail >= 0 ? scene.details[size_t(b.detail)].state : uint8_t(0))}};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 8);
+                    FragmentUniforms fu = {
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
+                        {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                        {b.detail >= 0 ? scene.details[size_t(b.detail)].scale[0] : 0.0f, b.detail >= 0 ? scene.details[size_t(b.detail)].scale[1] : 0.0f, b.detail >= 0 ? 1.0f : 0.0f, 0.0f},
+                        {p == Pass::AlphaTest ? 1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {0, 0, 0, 0}};
+                    applyFog(fu);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                }
+                if (any) { // restore the single-stream state for the model draws that follow
+                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                    SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
+                    SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                }
+            }
             // Entity models of this pass.
             for (const DrawItem& it : items) {
                 bool bound = false;
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                    SDL_SetGPUViewport(pass, &vpDepth);
+                }
                 for (const Batch& b : it.model->batches) {
                     if (b.pass != p) continue;
                     if (!bound) {
@@ -1598,6 +1859,7 @@ struct Renderer {
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         bound = true;
                     }
@@ -1617,14 +1879,20 @@ struct Renderer {
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         bindOffset(p, 0, 0, mu);
                     }
+                }
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                    SDL_SetGPUViewport(pass, &vpFull);
                 }
                 if (bound) {
                     // Restore world buffers for the next pass's world batches.
@@ -1829,6 +2097,7 @@ int main(int argc, char** argv) {
     float forcedBlur = 0; // --blur N: force the composed blur radius (debug)
     int shootMarks = 0; // --shoot N: with --shot, the player fires N bullets along the view (fanned 1° apart) before the shot
     bool audioOn = true;
+    bool skipIntro = false; // --no-intro: no start-up movies in the front end
     bool menuMode = false; // --menu: start in the front end (main menu) without a level
     float shotViewHeight = 60;
     float shotLean = 0;
@@ -1883,6 +2152,7 @@ int main(int argc, char** argv) {
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--menu") menuMode = true;
+            else if (a == "--no-intro") skipIntro = true;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
@@ -1939,7 +2209,8 @@ int main(int argc, char** argv) {
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -1948,8 +2219,11 @@ int main(int argc, char** argv) {
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
         bool profileDirty = false;
-        if (std::ifstream cf(profileCfg); cf)
-            uiCvars = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        if (std::ifstream cf(profileCfg); cf) {
+            const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
+            uiCvars = ui::parseConfig(cfgText);
+            if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
+        }
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
@@ -1965,11 +2239,8 @@ int main(int argc, char** argv) {
                     subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS() + uint64_t(std::max(dur, 3.0f) * 1e9f)});
                 return handle;
             };
-            w->soundExists = [&aliases](const std::string& n) {
-                std::mt19937 r(0);
-                return aliases.pick(n, r) != nullptr;
-            };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            w->soundExists = [&aliases](const std::string& n) { return aliases.exists(n); };
             w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
                 return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
             };
@@ -1996,6 +2267,7 @@ int main(int argc, char** argv) {
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
+        game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         game::FogState fogState; // "fog" server command (client 0x4a5770)
         game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
@@ -2028,10 +2300,19 @@ int main(int argc, char** argv) {
             return it->second;
         };
         fxSystem.loader = efx;
+        // usePhysics Emitters (shell casings) trace the world (0x486f70). TODO(spec): the contents mask (the original passes 1).
+        fxSystem.trace = [&world](const game::FVec& a, const game::FVec& b, float& frac, game::FVec& n) {
+            if (!world) return false;
+            const game::TraceResult tr = world->collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, game::Contents::Solid);
+            if (tr.startSolid || tr.allSolid || tr.fraction >= 1.0f) return false;
+            frac = tr.fraction;
+            n = tr.normal;
+            return true;
+        };
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
         // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
         // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
-        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; bool brassPending = false, brassValid = false; game::FVec brassPos{}; };
         auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
@@ -2102,6 +2383,10 @@ int main(int argc, char** argv) {
                 }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
+            for (const auto& te : world->takeTracerEvents())
+                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
+            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
+            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
                 scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
             if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
@@ -2123,6 +2408,17 @@ int main(int argc, char** argv) {
                               << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
                               << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
             world->setFxSightBlockers(fxSystem.sightBlockers());
+            // Emitter models (shell casings, 0x48d7d0): static xmodels at the particle position and angles.
+            for (const auto& fm : fxSystem.models()) {
+                const GpuModel* gm = sceneModel(scene, dev, vfs, fm.model);
+                if (!gm) continue;
+                DrawItem it;
+                it.model = gm;
+                it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
                 it.model = fxm;
@@ -2260,6 +2556,7 @@ int main(int argc, char** argv) {
         std::string aimBlendWeapon;
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
+        int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -2324,6 +2621,7 @@ int main(int argc, char** argv) {
                 }
             }
             DrawItem base;
+            if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
             auto rt = vmMotion.rot();
@@ -2378,6 +2676,27 @@ int main(int argc, char** argv) {
                         const auto& q = tf->second.first;
                         for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
                         if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        // CG_EjectWeaponBrass (0x4b7730) for the local client: shellEjectEffect bolted on the view weapon's tag_brass.
+                        const auto tb = gunBones.find("tag_brass");
+                        viewFlash->brassValid = tb != gunBones.end();
+                        if (viewFlash->brassValid) {
+                            const auto& m = base.transform;
+                            const auto& q = tb->second.first;
+                            for (int k = 0; k < 3; ++k) viewFlash->brassPos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        }
+                        if (viewFlash->brassPending && world) {
+                            viewFlash->brassPending = false;
+                            const std::string path = pweapon.field("shellEjectEffect");
+                            if (viewFlash->brassValid && !path.empty() && path != "none") {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->brassPos;
+                                    return vf->brassValid;
+                                });
+                                const auto& m = base.transform;
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
+                            }
+                        }
                         if (viewFlash->pending && world) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
@@ -2447,7 +2766,7 @@ int main(int argc, char** argv) {
                 if (it != world->cvars.end()) return it->second;
             }
             const auto u = uiCvars.find(n);
-            return u == uiCvars.end() ? std::string() : u->second;
+            return u == uiCvars.end() ? ui::registeredDefault(n) : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
             if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
@@ -2486,7 +2805,10 @@ int main(int argc, char** argv) {
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
                 else if (c == "disconnect" || c == "quit") { /* handled below */ if (c == "quit") std::exit(0); }
-                // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
+                // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
+                else if (c == "closemenu") menuEnv.close(a1);
+                // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
+                else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
             }
         };
         int menuLoopHandle = 0;
@@ -2498,10 +2820,15 @@ int main(int argc, char** argv) {
         };
         menuEnv.stopLoop = [&] { if (menuLoopHandle) mixer.stop(menuLoopHandle); menuLoopHandle = 0; };
         menuEnv.exec = execText;
+        // uiScript dispatcher (0x4c5b9b..): "Quit" (string 0x580e60) runs the console command "quit" (0x41b0a0 with 0x571858).
+        // TODO(spec): the other uiScripts (loadControls, openMenuOnDvar, loadMissionDifficultyOffset, Loadgame, profiles ...).
+        menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
+            if (name == "quit") execText("quit");
+        };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
-        if (menuMode) {
+        { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
             scriptMenus.loadList("ui/menus.txt");
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
         }
@@ -2612,9 +2939,56 @@ int main(int argc, char** argv) {
             const std::string* t = loc.find(key);
             return t ? *t : key;
         };
-        auto menuFont = [&](float ts) { return font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont"); };
+        // Menu text font (exe 0x4c38e0, handles loaded at 0x4c3487..0x4c34fe): the item's textfont 2 (UI_FONT_BIG) = $bigfont, 3 (SMALL) =
+        // $smallfont, 5 (CONSOLE) = $consolefont; 4 (BOLD) and 0/1 choose by scale = textscale * (screen height / 480) (0x793944)
+        // against ui_smallFont (0.25), ui_bigFont (0.4) and ui_extraBigFont (0.55): <= small $smallfont; generic: < big $font,
+        // < extraBig $bigfont, else $extrabigfont; BOLD: < extraBig $font, else $boldfont.
+        float menuScreenH = 480.0f; // set by the HUD builder each frame
+        auto menuFont = [&](float ts, int textFont) {
+            if (textFont == 2) return font("bigFont");
+            if (textFont == 3) return font("smallFont");
+            if (textFont == 5) return font("consoleFont");
+            const float s = ts * menuScreenH / 480.0f;
+            if (s <= 0.25f) return font("smallFont");
+            if (textFont == 4) return font(s < 0.55f ? "normalFont" : "boldFont");
+            return font(s >= 0.55f ? "extraBigFont" : s < 0.4f ? "normalFont" : "bigFont");
+        };
+        menuEnv.bindKey = [&](const std::string& command, const std::string& key) {
+            input.rebind(command, key);
+            profileDirty = true;
+            if (world) { // getkeybinding follows the new bindings
+                world->keyBindings.clear();
+                for (const auto& [k, c] : input.bindings()) world->keyBindings[c].push_back(k);
+            }
+        };
+        // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
+        // TODO(spec): the macOS display modes as r_mode entries.
+        // dvarEnumList domains (exe 0x4cd720: the domain string of the named enum dvar; the D3D adapter modes behind r_mode and
+        // r_displayRefresh are registered by the renderer DLL). TODO(spec): here the primary display's SDL fullscreen modes are listed:
+        // r_mode = distinct "WxH" sizes, r_displayRefresh = distinct "N Hz" rates.
+        menuEnv.enumValues = [](const std::string& dvar) {
+            std::vector<std::string> out;
+            const bool mode = dvar == "r_mode", rate = dvar == "r_displayRefresh";
+            if (!mode && !rate) return out;
+            int n = 0;
+            SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n);
+            for (int i = 0; modes && i < n; ++i) {
+                char buf[64];
+                if (mode) std::snprintf(buf, sizeof buf, "%dx%d", modes[i]->w, modes[i]->h);
+                else std::snprintf(buf, sizeof buf, "%d Hz", int(modes[i]->refresh_rate + 0.5f));
+                if (std::find(out.begin(), out.end(), buf) == out.end()) out.push_back(buf);
+            }
+            SDL_free(modes);
+            return out;
+        };
+        menuEnv.language = [&] { // ids of the ui_language list in options_game.menu
+            static const char* const names[] = {"english", "french", "german", "italian", "spanish", "british", "russian", "polish", "korean", "taiwanese", "japanese", "chinese", "thai"};
+            for (int i = 0; i < 13; ++i)
+                if (language == names[i]) return i;
+            return 0;
+        };
         menuEnv.textWidth = [&](const ui::Item& it) {
-            const assets::Font* f = menuFont(it.textScale);
+            const assets::Font* f = menuFont(it.textScale, it.textFont);
             if (!f) return 0.0f;
             const float gs = it.textScale * 48.0f / float(f->pixelHeight);
             float width = 0;
@@ -2623,6 +2997,7 @@ int main(int argc, char** argv) {
             return width;
         };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
+            menuScreenH = float(h);
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
             const float sc = float(h) / 480.0f;               // virtual pixel to screen pixel
             const float left43 = (float(w) - 640.0f * sc) * 0.5f; // left edge of the 4:3 area
@@ -3192,7 +3567,7 @@ int main(int argc, char** argv) {
                 const int64_t rem = ticksMs - el;
                 return rem >= 700 ? 1.0f : float(rem) / 700.0f;
             };
-            const float ammoAlpha = fadeAlpha(hudFade.ammo, 2.0f, 2000);
+            const float ammoAlpha = fadeAlpha(hudFade.ammo, 3.0f, 3000) /* hud_fade_ammodisplay default 3.0 (0x4a728a) */;
             const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
@@ -3293,9 +3668,45 @@ int main(int argc, char** argv) {
                     out.push_back(q);
                 }
             }
+            // Stance (menu "stance", ownerdraw 20, 0x4a81e0): alpha = fade of hud_fade_stance (default 1.7 s, 0x10438e4, ticks = dvar * 1000,
+            // touch 0xf79a44); nothing while the alpha is 0, nor in a vehicle (pm_flags 0x20000 without 0x80000). The stance change
+            // time (0xf796c8) is set to now when it lies in the future or the stance (pm_flags & 3) differs from the stored one
+            // (0xf796c4). Icon: bit 0 stance_prone, else bit 1 stance_crouch, else stance_stand; then, for 1000 ms after the change,
+            // the stance_flash overlay with the cg_hudStanceFlash colour (default white) and alpha (changeTime + 1000 - now) * 0.001 * 0.8
+            // (0x591e30, 0x591f94) capped by the fade alpha. Rect: menu 90 -70 LEFT / BOTTOM + item 60x60.
+            // TODO(spec): the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
+            // the bool dvar 0x1040c4c checked in the fade.
+            if (const ui::Menu* sm = hudMenus.find("stance"); sm && world) {
+                const int64_t now = world->timeMs();
+                const uint32_t st = world->playerPmFlags() & 3u;
+                if (hudFade.stanceChange > now || hudFade.stanceState != st) hudFade.stanceChange = now;
+                hudFade.stanceState = st;
+                const float sa = fadeAlpha(hudFade.stance, 1.7f, 1700);
+                const bool stanceInVeh = (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
+                if (sa > 0.0f && !stanceInVeh)
+                    for (const auto& itp : sm->items) {
+                        if (itp->ownerDraw != 20) continue;
+                        const auto& r = itp->rect;
+                        Quad2D q{(sm->rect.x + r.x) * sc, float(h) + (sm->rect.y + r.y) * sc, 0, 0};
+                        q.x1 = q.x0 + r.w * sc;
+                        q.y1 = q.y0 + r.h * sc;
+                        for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        q.rgba[3] = uint8_t(std::clamp(sa, 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture((st & 1u) ? "stance_prone" : (st & 2u) ? "stance_crouch" : "stance_stand");
+                        out.push_back(q);
+                        if (hudFade.stanceChange + 1000 > now) {
+                            const float fa = std::min(sa, float(hudFade.stanceChange + 1000 - now) * 0.001f * 0.8f);
+                            Quad2D f = q;
+                            for (int k = 0; k < 3; ++k) f.rgba[k] = 255; // cg_hudStanceFlash default (1 1 1 1); TODO(spec): dvar override
+                            f.rgba[3] = uint8_t(std::clamp(fa, 0.0f, 1.0f) * 255.0f);
+                            f.texture = materialTexture("stance_flash");
+                            out.push_back(f);
+                        }
+                    }
+            }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
             // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
             // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
             // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
@@ -3353,7 +3764,7 @@ int main(int argc, char** argv) {
                         Quad2D q{bx, by, bx + qw, by + qh};
                         std::memcpy(q.rgba, col, 4);
                         q.texture = materialTexture(it.background);
-                        if (it.ownerDraw == 84) q.rotDeg = wrap360(cyaw - north);
+                        if (it.ownerDraw == 84) q.rotDeg = compassSpring.update(int(world->timeMs()), wrap360(cyaw - north)); // 0x4b09a0
                         out.push_back(q);
                         continue;
                     }
@@ -3434,16 +3845,48 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty() && it.type != 11 && it.type != 12) continue;
+                        if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
                         const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
-                        const assets::Font* f = menuFont(ts);
+                        const assets::Font* f = menuFont(ts, it.textFont);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
-                        const auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        if (it.type == 14 && &it == frontStack.focus()) {
+                            // BIND (exe 0x4cdee0): capturing = (0.8, 0, 0, 0.8); focused = focus colour pulsing with
+                            // (sin(ms / 75) + 1) * 0.5 against focus * 0.8 (0x4c6e50). TODO(spec): argument order of the blend.
+                            if (&it == frontStack.captureItem()) c = col8(std::array<float, 4>{0.8f, 0.0f, 0.0f, 0.8f});
+                            else {
+                                const float t = (std::sin(float(SDL_GetTicks() / 75)) + 1.0f) * 0.5f;
+                                for (int i = 0; i < 3; ++i) c[size_t(i)] = uint8_t(float(c[size_t(i)]) * (1.0f - 0.2f * t));
+                            }
+                        }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
-                        hudText(front, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
-                        if (it.type == 11 || it.type == 12) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
+                        if (it.autoWrapped) {
+                            // exe 0x4ccc70: autowrapped text is split only at CR (0xd) and each line is drawn by textalign; the next line
+                            // starts one line height + 5 lower. TODO(spec): exact line step (the exe adds 5 to the result of 0x4c3790).
+                            float ly = iy + it.textAlignY;
+                            size_t pos = 0;
+                            while (true) {
+                                const size_t e = text.find('\r', pos);
+                                hudText(out, text.substr(pos, e == std::string::npos ? e : e - pos), x0 + (ix + it.textAlignX) * xs, ly * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                                if (e == std::string::npos) break;
+                                pos = e + 1;
+                                ly += ts * 48.0f + 5.0f;
+                            }
+                        } else
+                        hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                        if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
+                            auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                            const auto keys = input.keysFor(it.dvar);
+                            std::string label = name("UNBOUND");
+                            if (!keys.empty()) {
+                                label = name(keys[0]);
+                                if (keys.size() > 1) label += " " + name("OR") + " " + name(keys[1]);
+                            }
+                            hudText(front, label, x0 + frontStack.valueTextX(menu, it) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                        }
+                        if (it.type == 11 || it.type == 12 || it.type == 13 || it.type == 17) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
                             const std::string label = frontStack.valueLabel(it);
                             if (!label.empty())
                                 hudText(front, menuLocalized(label), x0 + frontStack.valueTextX(menu, it) * xs,
@@ -3474,6 +3917,14 @@ int main(int argc, char** argv) {
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
             out.insert(out.end(), front.begin(), front.end());
+            // The fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
+            screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+            if (screenFade.alpha() > 0) {
+                Quad2D q{0, 0, float(w), float(h)};
+                q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
+                q.rgba[3] = uint8_t(std::min(screenFade.alpha(), 1.0f) * 255.0f + 0.5f);
+                out.push_back(q);
+            }
             (void)c;
             return out;
         };
@@ -3482,7 +3933,7 @@ int main(int argc, char** argv) {
         if (yaw) cam.yaw = *yaw;
         if (pitch) cam.pitch = *pitch;
 
-        if (!shot.empty() && menuMode) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
+        if (!shot.empty() && (menuMode || std::getenv("IW2_SHOT_MENU"))) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
             if (const char* sets = std::getenv("IW2_SHOT_SET")) {
                 std::string rest = sets;
                 while (!rest.empty()) {
@@ -3499,6 +3950,29 @@ int main(int argc, char** argv) {
                 rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
             }
             menuMx = 320.0f, menuMy = 240.0f;
+            if (const char* keys = std::getenv("IW2_SHOT_KEYS")) { // debug: the IW2_MENU_KEYS tokens (open:, click:X/Y, up, down, enter, esc, left, right) run before the shot
+                std::string kr = keys;
+                while (!kr.empty()) {
+                    const size_t comma = kr.find(',');
+                    const std::string k = kr.substr(0, comma);
+                    kr = comma == std::string::npos ? std::string() : kr.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
+                    else if (k.rfind("click:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                        frontStack.click(menuMx, menuMy);
+                        frontStack.release();
+                    } else if (k.rfind("hover:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                    } else if (k.rfind("bindkey:", 0) == 0) {
+                        frontStack.captureKey(k.substr(8));
+                    } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
+                }
+            }
         }
         if (!shot.empty()) {
             if (walkSeconds > 0) {
@@ -3574,7 +4048,8 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
@@ -3586,7 +4061,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
@@ -3658,7 +4133,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = viewFlash->brassPending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -3686,6 +4161,13 @@ int main(int argc, char** argv) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+            }
+            if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
+                // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.
+                const Vec3 from = cam.pos + cam.right() * 30.0f + Vec3{0, 0, -15.0f};
+                const Vec3 to = cam.pos + cam.forward() * 1500.0f;
+                for (int i = 0; i < std::atoi(tt); ++i)
+                    fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             if (viewFlash->pending && !(world && world->playerOnTurret())) {
@@ -3745,6 +4227,151 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
+        // Cinematic playback (docs/spec/video.md), modelled on CL_PlayCinematic_f (0x49e690) and the per-frame run (0x49dcc0): modal; the
+        // movie fills the 640x480 area (letterbox: y 105, height 270, 0x49e722); the clock is wall time with frozen hitches (a frame delta
+        // over 100 ms moves the start time, 0x49dd91), the shown frame is elapsed * fps / 1000 and late frames are decoded and dropped;
+        // audio is queued when its frame is decoded. Any key or mouse button skips it when skippable (`cinematic` sets the skippable
+        // byte 0x59a0d0, `unskippablecinematic` clears it). `loop` restarts it at the end (the command's flag '2', 0x49ded8).
+        // Returns false when the window was closed.
+        auto playCinematic = [&](const std::string& rawName, bool skippable, bool letterbox, bool loop) {
+            std::string name = rawName;
+            for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            const auto data = vfs.read("video/" + name + ".roq");
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return true; }
+            std::unique_ptr<video::RoqDecoder> dec;
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return true; }
+            std::cout << "cinematic " << name << (skippable ? "" : " (unskippable)") << (letterbox ? " letterbox" : "") << (loop ? " loop" : "") << "\n";
+            const bool stats = std::getenv("IW2_CINEMATIC_STATS") != nullptr;
+            Scene movieScene = emptyScene(dev);
+            SDL_GPUTexture* tex = nullptr;
+            int tw = 0, th = 0;
+            SDL_AudioStream* snd = nullptr;
+            if (audioOn) {
+                const SDL_AudioSpec spec{SDL_AUDIO_S16, 2, video::RoqDecoder::kAudioRate};
+                snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+                if (snd) SDL_ResumeAudioStreamDevice(snd);
+            }
+            // The mixer's own stream must not talk over the movie.
+            if (audioStream) SDL_PauseAudioStreamDevice(audioStream);
+            const uint64_t t0 = SDL_GetTicksNS();
+            uint64_t lastNs = t0, startShiftNs = 0;
+            bool more = true, skipped = false;
+            int64_t shown = -1, dropped = 0, audioPut = 0;
+            double syncSum = 0, syncMax = 0, syncMin = 1e9;
+            int64_t syncN = 0;
+            while (more && !skipped && running) {
+                SDL_Event e;
+                while (SDL_PollEvent(&e)) {
+                    if (e.type == SDL_EVENT_QUIT) running = false;
+                    else if (skippable && (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)) skipped = true;
+                }
+                const uint64_t nowNs = SDL_GetTicksNS();
+                if (const char* lim = std::getenv("IW2_EXIT_AFTER"))
+                    if (nowNs > uint64_t(std::atof(lim) * 1e9)) { running = false; break; } // debug: leave after N seconds, movie included
+                if (nowNs - lastNs > 100000000ull) startShiftNs += nowNs - lastNs; // a hitch over 100 ms freezes the movie clock (0x49dd91)
+                lastNs = nowNs;
+                const double elapsed = double(nowNs - t0 - startShiftNs) * 1e-9;
+                const int64_t due = int64_t(elapsed * dec->fps()) + 1; // frames that should have been shown
+                bool fresh = false;
+                while (more && dec->frameIndex() < due) {
+                    const bool hadFrame = dec->frameIndex() > 0;
+                    more = dec->nextFrame();
+                    if (!more) break;
+                    fresh = true;
+                    if (hadFrame && dec->frameIndex() < due) ++dropped;
+                    auto pcm = dec->takeAudio();
+                    if (snd && !pcm.empty()) {
+                        if (dec->audioChannels() == 1) {
+                            std::vector<int16_t> st(pcm.size() * 2);
+                            for (size_t i = 0; i < pcm.size(); ++i) st[i * 2] = st[i * 2 + 1] = pcm[i];
+                            pcm = std::move(st);
+                        }
+                        SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                        audioPut += int64_t(pcm.size() / 2);
+                    }
+                }
+                if (!more && loop && !skipped) { // restart (0x49d490)
+                    dec = std::make_unique<video::RoqDecoder>(*data);
+                    more = true;
+                    continue;
+                }
+                if (dec->width() == 0) break;
+                if (!tex || tw != dec->width() || th != dec->height()) {
+                    if (tex) SDL_ReleaseGPUTexture(dev, tex);
+                    tw = dec->width(), th = dec->height();
+                    tex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, uint32_t(tw), uint32_t(th), 1);
+                    movieScene.textures.resize(1);
+                    movieScene.textures.push_back(tex);
+                    fresh = true;
+                }
+                if (fresh) {
+                    Uploader up(dev, false);
+                    up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                    shown = dec->frameIndex();
+                }
+                if (stats && snd && audioPut > 0) {
+                    // Sync measurement: the picture time (shown frame / fps) against the audio actually played by the device stream
+                    // (samples put minus samples still queued), both in seconds since the start.
+                    const double played = double(audioPut - SDL_GetAudioStreamQueued(snd) / 4) / video::RoqDecoder::kAudioRate;
+                    const double picture = double(std::max<int64_t>(shown, 0)) / dec->fps();
+                    if (elapsed > 1.0) { // the first second includes the device start-up
+                        const double d = picture - played; // > 0: the picture is ahead of the sound
+                        syncSum += d, syncMax = std::max(syncMax, d), syncMin = std::min(syncMin, d), ++syncN;
+                    }
+                }
+                SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+                SDL_GPUTexture* swap = nullptr;
+                uint32_t w = 0, h = 0;
+                if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
+                    const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
+                    const float y0 = letterbox ? 105.0f : 0.0f, y1 = letterbox ? 105.0f + 270.0f : 480.0f;
+                    Quad2D q{left, y0 * sc, left + 640.0f * sc, y1 * sc};
+                    q.texture = 1;
+                    renderer.fog = {};
+                    std::vector<Quad2D> quads;
+                    if (letterbox) { // black bars outside the picture
+                        Quad2D bar{0, 0, float(w), float(h)};
+                        bar.rgba[0] = bar.rgba[1] = bar.rgba[2] = 0;
+                        quads.push_back(bar);
+                    }
+                    quads.push_back(q);
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
+                }
+                SDL_SubmitGPUCommandBuffer(cmd);
+            }
+            if (stats) {
+                const double wall = double(SDL_GetTicksNS() - t0) * 1e-9;
+                std::cout << "cinematic stats: " << name << " " << tw << "x" << th << " " << dec->fps() << " fps; wall " << wall << " s, last frame "
+                          << shown << " (" << double(shown) / dec->fps() << " s), dropped " << dropped << ", audio " << double(audioPut) / video::RoqDecoder::kAudioRate
+                          << " s queued"
+                          << (syncN ? "; picture minus audio played (after 1 s) mean " + std::to_string(syncSum / double(syncN) * 1000.0) + " ms, min " + std::to_string(syncMin * 1000.0) + ", max " + std::to_string(syncMax * 1000.0) + " ms over " + std::to_string(syncN) + " draws" : std::string())
+                          << (skipped ? "; skipped" : "") << "\n";
+            }
+            if (snd) SDL_DestroyAudioStream(snd);
+            if (audioStream) SDL_ResumeAudioStreamDevice(audioStream);
+            SDL_WaitForGPUIdle(dev);
+            releaseScene(dev, movieScene);
+            return running;
+        };
+        int shockLoop = 0, shockSeenStart = -1;
+        bool shockEndPlayed = true;
+        float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
+        // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
+        auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) { // debug: play video/<name>.roq (e.g. "iw_logo" or "legal!" for unskippable) first
+            std::string n = mv;
+            const bool unskippable = !n.empty() && n.back() == '!';
+            if (unskippable) n.pop_back();
+            playCinematic(n, !unskippable, std::getenv("IW2_CINEMATIC_LETTERBOX") != nullptr, std::getenv("IW2_CINEMATIC_LOOP") != nullptr);
+        }
+        // Start-up movie chain of the front end (Com_Init 0x42dee0, 0x42e7d5): `unskippablecinematic legal`, then, while com_introPlayed is
+        // 0, `cinematic atvi; set nextmap "cinematic IW_logo; set nextmap cinematic cod_intro"`. A movie that is missing or ends runs
+        // nextmap; a skip stops the current movie only. TODO(spec): nothing in the exe sets com_introPlayed, it is only read.
+        if (menuMode && running && !std::getenv("IW2_SKIP_INTRO") && !skipIntro) {
+            playCinematic("legal", false, false, false);
+            for (const char* m : {"atvi", "IW_logo", "cod_intro"})
+                if (running && !playCinematic(m, true, false, false)) break;
+        }
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -3767,6 +4394,13 @@ int main(int argc, char** argv) {
                         const auto v = toVirtual(ev.motion.x, ev.motion.y);
                         menuMx = v[0], menuMy = v[1];
                         frontStack.mouseMove(menuMx, menuMy);
+                        continue;
+                    }
+                    if (frontStack.capturing()) { // a BIND item waits for a key (exe 0x4ce100)
+                        if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) frontStack.captureKey(keyName(ev.key.scancode));
+                        else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+                            frontStack.captureKey(ev.button.button == SDL_BUTTON_RIGHT ? "MOUSE2" : ev.button.button == SDL_BUTTON_MIDDLE ? "MOUSE3" : "MOUSE" + std::to_string(int(ev.button.button)));
+                        else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) frontStack.captureKey(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN");
                         continue;
                     }
                     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP) {
@@ -3819,8 +4453,18 @@ int main(int argc, char** argv) {
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
-                        cam.yaw -= ev.motion.xrel * 0.15f * lookSens * zoomSens;
-                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale, -89.0f, 89.0f);
+                        float dyaw = ev.motion.xrel * 0.15f * lookSens * zoomSens, dpitch = ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale;
+                        // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
+                        if (world)
+                            if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
+                                const auto& ss = world->shellShock();
+                                const game::ShockMouse m = game::shockMouse(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                                dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
+                                if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
+                                if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
+                            }
+                        cam.yaw -= dyaw;
+                        cam.pitch = std::clamp(cam.pitch + dpitch, -89.0f, 89.0f);
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
@@ -3847,6 +4491,7 @@ int main(int argc, char** argv) {
             }
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
+            frameDt = std::min(dt, 0.1f);
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
             const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
@@ -3946,8 +4591,9 @@ int main(int argc, char** argv) {
                 in.jump = (buttons & game::Button::Jump) != 0;
                 in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
                             : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
-                in.leanLeft = (buttons & game::Button::LeanLeft) != 0;
-                in.leanRight = (buttons & game::Button::LeanRight) != 0;
+                // allowleanleft/right(false) set pm_flags 0x2000000/0x4000000, which cancel the lean (0x50ae13).
+                in.leanLeft = (buttons & game::Button::LeanLeft) != 0 && !(world->playerPmFlags() & 0x2000000u);
+                in.leanRight = (buttons & game::Button::LeanRight) != 0 && !(world->playerPmFlags() & 0x4000000u);
                 in.yaw = cam.yaw;
                 in.dead = playerDead;
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
@@ -3980,6 +4626,12 @@ int main(int argc, char** argv) {
                     rec.after = ps;
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
+                }
+                // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
+                if (world) {
+                    if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
+                    for (; lastEventSeq < ps.eventSeq; ++lastEventSeq)
+                        world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
                 }
                 // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
                 if (!fellOut && (world || scene.collision)) {
@@ -4070,6 +4722,7 @@ int main(int argc, char** argv) {
                 }
                 wi.weapon = weaponSelect;
                 wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
+                wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
@@ -4077,22 +4730,33 @@ int main(int argc, char** argv) {
                 aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
                 {
-                    // HUD fade touches. Weapon change (0x4b76e8 / 0x4b839a): ammo display + weapon change time. Per frame 0x4be5f0:
-                    // the compass is touched when the view angles or buttons (except 0x2b00) changed, the player moves, an
-                    // offhand button (0x30000) is down, or 0x4be520 fired: attack (0x1), or reload / use-reload (0x30) under
-                    // conditions, with pm_flags & 0x300 clear, which also touches the ammo display (0x4be556).
-                    // TODO(spec): the 0x4be520 conditions for 0x30 (0xf708f4 bit 4, ps+0x580 bit 2), 0x4be440, pm_flags 0x300.
+                    // HUD fade touches. 0x4a6130(n) touches one HUD menu's fade time (menu flag +0xe8 |= 4): 0 Health (0xf79a3c),
+                    // 1 weaponinfo (0xf79a40) + offhand, 2 Compass (0xf79a38), 3 stance (0xf79a44), 4 offhandinfo (0xf79a48),
+                    // 5 objectiveinfo (0xf79200); the console command menu_show_notify <n> (0x4a70ff) calls it with n.
+                    // Weapon change (0x4b76e8 / 0x4b839a): touch(4) + ammo display + weapon change time. Per frame 0x4be5f0:
+                    //  - 0x4be520: attack (0x1), or reload / use-reload (0x30) while not mantling (pm_flags 4, 0xf708f4) and with
+                    //    eFlags & 0x300 clear, touches offhand and weaponinfo (0x4be556) and touches the compass;
+                    //  - 0x4be440: a change of the buttons 0x2300 touches stance and the compass, held ones touch stance only;
+                    //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
+                    //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
+                    // TODO(spec): the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
                     const int64_t nowMs = world ? world->timeMs() : 0;
                     if (pweapon.name() != hudFade.weapon) {
-                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = nowMs;
+                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
                         hudFade.weapon = pweapon.name();
                     }
-                    const bool fireTouch = (buttons & game::Button::Attack) != 0;
+                    const bool turretBits = world && world->playerOnTurret(); // 0xf70964 & 0x300
+                    const bool fireTouch = !turretBits && ((buttons & game::Button::Attack) != 0 || ((buttons & 0x30u) != 0 && !ps.mantling));
                     const bool viewMoved = cam.pitch != hudFade.pitch || cam.yaw != hudFade.yaw;
                     hudFade.pitch = cam.pitch, hudFade.yaw = cam.yaw;
-                    if (fireTouch) hudFade.ammo = nowMs;
-                    if (fireTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
-                        ((buttons ^ hudFade.buttons) & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
+                    if (fireTouch) hudFade.ammo = hudFade.offhand = nowMs;
+                    const uint32_t changed = buttons ^ hudFade.buttons;
+                    bool stanceTouch = false;
+                    if ((changed & 0x2300u) != 0) hudFade.stance = nowMs, stanceTouch = true;
+                    else if ((buttons & 0x2300u) != 0) hudFade.stance = nowMs;
+                    if ((buttons & 0x30000u) != 0) hudFade.offhand = nowMs;
+                    if (fireTouch || stanceTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
+                        (changed & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
                         hudFade.compass = nowMs;
                     hudFade.buttons = buttons;
                 }
@@ -4104,6 +4768,34 @@ int main(int argc, char** argv) {
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
                 }
+                float shockRatio = 0;
+                if (world)
+                    if (const game::ShockRecord* rec = world->shellShockRecord()) {
+                        const auto& ss = world->shellShock();
+                        shockRatio = game::shellShockRatio(int(ss.startMs + ss.durationMs - world->timeMs()), rec->viewKickFadeMs);
+                    }
+                // Shell shock sounds (0x4b1f90): the loop (blended to its silent twin over the last loopFade ms) and the end sound.
+                if (world) {
+                    const game::ShockRecord* rec = world->shellShockRecord();
+                    const auto& ss = world->shellShock();
+                    if (!rec || int(ss.startMs) != shockSeenStart) {
+                        if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        shockSeenStart = rec ? int(ss.startMs) : -1;
+                        shockEndPlayed = !rec;
+                    }
+                    if (rec && rec->sound) {
+                        const int el = int(world->timeMs() - ss.startMs);
+                        const float b = game::shockLoopBlend(*rec, el, ss.durationMs);
+                        const audio::Vec3 at{cam.pos.x, cam.pos.y, cam.pos.z};
+                        if (b >= 0 && !shockLoop) shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
+                        else if (b >= 0) mixer.setBlend(shockLoop, b, at);
+                        else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        if (!shockEndPlayed && el >= game::shockEndSoundMs(*rec, ss.durationMs)) {
+                            mixer.play("shellshock_end"); // TODO(spec): when the exe plays shellshock_end_abort instead
+                            shockEndPlayed = true;
+                        }
+                    }
+                } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -4111,7 +4803,7 @@ int main(int argc, char** argv) {
                     const std::string ret = pweapon.field("adsOverlayReticle");
                     vmMotion.sway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), cam.pitch, cam.yaw,
                                   pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
-                                  !ret.empty() && ret != "none");
+                                  !ret.empty() && ret != "none", shockRatio);
                 }
                 {
                     const std::string ret = pweapon.field("adsOverlayReticle");
@@ -4135,7 +4827,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
-                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
+                if (shots) viewFlash->pending = viewFlash->brassPending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) {
@@ -4159,6 +4851,7 @@ int main(int argc, char** argv) {
                     lerpPrev.clear();
                     lastDamageEvent = 0;
                     lastLandSeq = 0;
+                    lastEventSeq = 0;
                     viewImp.reset(); // 0x4ba570
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
@@ -4241,7 +4934,14 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
+                    }
+                    else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
+                        float alpha = 0;
+                        int startMs = 0, durMs = 0;
+                        a >> alpha >> startMs >> durMs;
+                        screenFade.command(alpha, startMs, durMs, world->timeMs());
                     }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
@@ -4261,7 +4961,12 @@ int main(int argc, char** argv) {
                     currentMap = pendingLevel->first;
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
+                    screenFade.clear(); // the new level starts unfaded
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
+                    if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
+                        const std::string movie = world->takeCinematic();
+                        if (!movie.empty()) playScripted(movie);
+                    }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();
                     releaseScene(dev, scene);
@@ -4319,6 +5024,8 @@ int main(int argc, char** argv) {
                     } else if (k == "quit") {
                         running = false;
                     } else if (k == "wait") {
+                    } else if (k.rfind("bindkey:", 0) == 0) {
+                        frontStack.captureKey(k.substr(8));
                     } else
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
@@ -4330,7 +5037,7 @@ int main(int argc, char** argv) {
                 profileDirty = false;
                 std::error_code ec;
                 std::filesystem::create_directories(profileCfg.parent_path(), ec);
-                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars);
+                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars) << input.formatBindings();
             }
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
@@ -4341,6 +5048,13 @@ int main(int argc, char** argv) {
             const Camera camBase = cam;
             cam.pitch += recoil.viewKick()[0]; // view kick spring (0x4ae327)
             cam.yaw += recoil.viewKick()[1];
+            if (world)
+                if (const game::ShockRecord* rec = world->shellShockRecord()) { // shell shock view kick (0x4b2380), render only
+                    const auto& ss = world->shellShock();
+                    const game::ShockKick k = game::shockViewKick(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                    cam.yaw += std::atan(k.x) * 57.29578f;
+                    cam.pitch -= std::atan(k.y) * 57.29578f;
+                }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
             if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll

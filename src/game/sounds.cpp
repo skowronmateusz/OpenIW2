@@ -34,6 +34,36 @@ void World::registerSoundBuiltins() {
     // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): sends "fog <near> <far> 1 <r> <g> <b> <time*1000>" to the client
     // (format "%g %g %g %g %g %g %.0f" 0x585bd4). TODO(spec): the original raises script errors for near < 0, far <= near,
     // colour components outside 0..1 and time < 0 (0x4f53f0); setexpfog (0x4f5630, no SP script uses it) is not implemented.
+    // setexpfog(density, r, g, b, time) (0x4f5630 -> the same 0x4f53f0): sends "fog 0 1 <density> <r> <g> <b> <time*1000>";
+    // the client takes a third value < 1 as the exponential density (R_SetFog arg7).
+    // TODO(spec): the renderer's exponential fog (iw2view ignores such a command).
+    vm_.registerBuiltin("setexpfog", [this](CallContext& c) {
+        if (c.args.size() < 5) return Value();
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", 0.0, 1.0, double(c.arg(0).asFloat()), double(c.arg(1).asFloat()),
+                      double(c.arg(2).asFloat()), double(c.arg(3).asFloat()), double(c.arg(4).asFloat() * 1000.0f));
+        clientCommands_.push_back({"fog", buf});
+        return Value();
+    });
+    // setculldist(distance) (0x4f5700): configstring 8 = "%g" (the renderer's far cull distance). TODO(spec): not applied.
+    vm_.registerBuiltin("setculldist", [this](CallContext& c) {
+        cullDist_ = c.arg(0).asFloat();
+        return Value();
+    });
+    // soundexists(alias) (0x4ef380 -> 0x428320): is there a sound alias of that name (hash lookup, case-insensitive).
+    vm_.registerBuiltin("soundexists", [this](CallContext& c) { return Value(soundExists(c.arg(0).toString())); });
+    // setshadowhint(name) (0x4ef700): sets entity state bits 0x2000..0xe000 (shadow hint, render only). TODO(spec): not applied.
+    vm_.registerBuiltin("setshadowhint", [](CallContext&) { return Value(); });
+    // saveGame(name, description, image) (0x4f3a30): writes a save game. Not modelled (no save system).
+    vm_.registerBuiltin("savegame", [](CallContext&) { return Value(); });
+    // savegamenocommit (0x4f3bd0) returns the save id (int, < 0 on failure; _autosave.gsc tryAutoSave); commitsave (0x4f3db0) and
+    // issaverecentlyloaded (0x4f3da0, a byte set by a load) have no save system behind them.
+    vm_.registerBuiltin("savegamenocommit", [](CallContext&) { return Value(1); });
+    vm_.registerBuiltin("commitsave", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("issaverecentlyloaded", [](CallContext&) { return Value(false); });
+    // playrumble (0x4f8bf0) and stoprumble (0x4f8c10) are bare `ret`s in the original.
+    vm_.registerBuiltin("stoprumble", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("playrumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("setcullfog", [this](CallContext& c) {
         if (c.args.size() < 6) return Value();
         char buf[160];

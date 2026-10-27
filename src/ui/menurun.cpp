@@ -38,6 +38,30 @@ void uiScriptUpdate(const std::string& name, MenuEnv& env) {
 
 } // namespace
 
+std::string registeredDefault(const std::string& n) {
+    static const char* const names[] = {"mis_none", "mis_01", "mis_02", "mis_03", "mis_04", "mis_05", "mis_06", "mis_07", "mis_08", "mis_09", "mis_10"};
+    for (const char* k : names)
+        if (n == k) return "0";
+    // Dvars the exe registers at startup with a default (register calls 0x431f60 bool / 0x432020 float; arguments name, default,
+    // [min, max], flags): the client block at 0x40e270..0x40e620, snd_volume at 0x4449d6, monkeytoy at 0x4037ba.
+    static const std::pair<const char*, const char*> defaults[] = {
+        {"cg_drawCrosshair", "1"},  // 0x40e400
+        {"cg_subtitles", "1"},      // 0x40e418
+        {"cg_blood", "1"},          // 0x40e5f9
+        {"monkeytoy", "1"},         // 0x4037ba
+        {"cl_freelook", "1"},       // 0x40e2e0
+        {"cl_mouseAccel", "0"},     // 0x40e2c3 (float 0..100)
+        {"cl_showmouserate", "0"},  // 0x40e2f9
+        {"r_inGameVideo", "1"},     // 0x40e311
+        {"sensitivity", "5"},       // 0x40e2a3 (float 0.01..100)
+        {"m_pitch", "0.022"},       // 0x40e337 (float -1..1)
+        {"snd_volume", "1"},        // 0x4449d6 (float 0..1)
+    };
+    for (const auto& [k, v] : defaults)
+        if (lowerStr(n) == lowerStr(k)) return v;
+    return {};
+}
+
 void initUiCvars(MenuEnv& env) {
     // 0x4c30db: ui_mousePitch = m_pitch < 0 (a missing cvar counts as not inverted).
     const std::string p = env.getCvar("m_pitch");
@@ -60,11 +84,12 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         else if (name == "setfocus" && cmd.size() > 1) { if (env.setFocus) env.setFocus(cmd[1]); }
         else if (name == "setfocusbydvar" && cmd.size() > 1) { if (env.setFocusByDvar) env.setFocusByDvar(cmd[1]); }
         else if ((name == "savegameshow" || name == "savegamehide") && cmd.size() > 1) {
-            // Inferred from the menus (main onOpen: savegameshow resume; savegamehide newgame): resume only with a saved game.
+            // exe 0x4c8fb0/0x4c8fd0 -> 0x4c8f20: valid = the file named by dvar sv_lastSaveGame opens with header word 0x99 (0x4e06e0);
+            // the item is shown iff valid == (1 for savegameshow, 0 for savegamehide), hidden otherwise.
             const bool has = env.savegameExists && env.savegameExists();
             if (env.showItem) env.showItem(cmd[1], name == "savegameshow" ? has : !has);
-        } else if (name == "restarthide" && cmd.size() > 1) {
-            if (env.showItem && env.restartAvailable && !env.restartAvailable()) env.showItem(cmd[1], false);
+        } else if (name == "restarthide") {
+            // The exe has no "restarthide" menu command or string (CoD2SP_s.exe): the line is not a known menu command and does nothing here.
         }
         else if ((name == "show" || name == "hide") && cmd.size() > 1) { if (env.showItem) env.showItem(cmd[1], name == "show"); }
         else if ((name == "execnow" || name == "exec") && cmd.size() > 1) execConsole(cmd[1], env);

@@ -126,6 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerAnimBuiltins();
     registerCombatBuiltins();
     registerSoundBuiltins();
+    registerShellShockBuiltins();
     registerMenuBuiltins();
     registerHudBuiltins();
     registerInventoryBuiltins();
@@ -224,6 +225,12 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             fill(e.obj);
             if (cls == "info_player_start") starts.push_back(e.obj);
+            if (cls == "trigger_hurt") { // spawn 0x5292a0: dmg 0 becomes 5; spawnflags 1 (start off) selects handler 6, else 7
+                const Value dv = e.obj->get("dmg");
+                if (!dv.isNumber() || dv.asInt() == 0) e.obj->set("dmg", Value(int32_t(5)));
+                const Value sf = e.obj->get("spawnflags");
+                if (sf.isNumber() && (sf.asInt() & 1)) e.obj->set("$hurtOff", Value(true));
+            }
         } else if (startsWith(cls, "weapon_") && weapon(cls.substr(7))) {
             // weapon_<name> with a known weapon is an item entity (0x4f96d0 → item spawn 0x522c70).
             // TODO(spec): item spawn details (model from the weapon, drop to floor, pickup).
@@ -436,6 +443,7 @@ void World::frame(bool advanceTime) {
         });
     }
     runTriggers();
+    touchItems();
     for (size_t i = 0; i < pendingNotifies_.size();) {
         if (pendingNotifies_[i].atMs <= timeMs_) {
             const auto p = pendingNotifies_[i];
@@ -728,6 +736,23 @@ void World::runTriggers() {
             continue;
         if (e->obj->get("$disabled").truthy()) continue;
         const Value sf = e->obj->get("spawnflags");
+        // trigger_hurt (spawn 0x5292a0) sets its contents to 0x405c0008 itself, so spawnflags 8 does not exclude it.
+        if (e->classname == "trigger_hurt") {
+            if (e->obj->get("$hurtOff").truthy() || !triggerContact(*e, pmin, pmax)) continue;
+            // Touch function 0x5291d0: the next hit is due at ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms);
+            // G_Damage(other, self, self, no direction, no point, dmg, flags (spawnflags 8) << 2, MOD_TRIGGER_HURT); then
+            // spawnflags 0x20 switches it off (handler 6). Spawnflags 2 skips actors (the player is not one).
+            // TODO(spec): the damage flag 0x20 (spawnflags 8) is not modelled by damage(); actors do not touch triggers here.
+            const int flags = sf.isNumber() ? sf.asInt() : 0;
+            const Value nt = e->obj->get("$hurtNext");
+            if (nt.isNumber() && nt.asInt() > timeMs_) continue;
+            e->obj->set("$hurtNext", Value(int32_t(timeMs_ + ((flags & 0x10) ? 1000 : 50))));
+            vm_.notify(e->obj, "trigger", {Value(player_->obj)}); // the touch record 0x528cb0
+            const Value dv = e->obj->get("dmg");
+            damage(*player_, e.get(), dv.isNumber() ? dv.asInt() : 5, Vec3{0, 0, 0}, Vec3{0, 0, 0}, "MOD_TRIGGER_HURT");
+            if (flags & 0x20) e->obj->set("$hurtOff", Value(true));
+            continue;
+        }
         if (sf.isNumber() && (sf.asInt() & 8)) continue;
         if (triggerContact(*e, pmin, pmax)) fired.push_back(e.get());
     }
@@ -936,12 +961,14 @@ void World::registerBuiltins() {
         e.obj->set("vehicletype", c.arg(2));
         if (c.arg(3).isVector()) e.obj->set("origin", c.arg(3));
         if (c.arg(4).isVector()) e.obj->set("angles", c.arg(4));
-        e.obj->set("health", Value(int32_t(1000)));
+        // No health is written by spawnvehicle (0x4ecf50), the vehicle spawn 0x511af0 / 0x50d820 or G_Spawn: the entity starts with health 0
+        // (zeroed), the scripts of path vehicles set self.health themselves (_crusader.gsc etc.). Engine sounds treat health < 1 as dead (0x510be0).
+        e.obj->set("health", Value(int32_t(0)));
         e.obj->set("$takedamage", Value(true)); // 0x50d8f4: ent+0x111 = 1 in the vehicle spawn (0x50d820..0x50d900)
         return Value(e.obj);
     });
     // Load-time hints and profiling markers have no effect on the simulation.
-    for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret", "precacheshellshock",
+    for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret",
                              "precacherumble", "precachestring", "precachevehicle", "prof_begin", "prof_end"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // setviewmodel(model): the player's first-person hands model (read by the front end).
@@ -985,9 +1012,6 @@ void World::registerBuiltins() {
         if (!e || !e->isPlayer) throw std::runtime_error("GetStance is only defined for players.");
         return Value(std::string(playerCmd_.stance == 2 ? "prone" : playerCmd_.stance == 1 ? "crouch" : "stand"));
     });
-    // issavesuccessful (0x4f3d80): an int, 1 when the byte at [0x1114184]+0xd is 0 (the "last save failed" flag). We write no
-    // saves (savegame is not implemented), so the flag is never set. TODO(spec): the writer of that byte.
-    vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(int32_t(1)); });
     // meleebuttonpressed (0x5388d0): player-only; (client+0x8640 | client+0x8634) & 4 -> int 1/0. 0x8640 is taken as the
     // current usercmd buttons and 0x8634 as the previous frame's (TODO(spec): confirm the pair); the bit is the melee button (4).
     vm_.registerBuiltin("meleebuttonpressed", [this](CallContext& c) {
@@ -1012,29 +1036,6 @@ void World::registerBuiltins() {
         if (!e || !e->isActor) throw std::runtime_error("pushplayer: entity is not an actor");
         e->obj->set("$nopush", Value(int32_t(c.args.empty() || !c.arg(0).truthy() ? 1 : 0)));
         return Value();
-    });
-    // savegame / savegamenocommit / commitsave (0x4f3a30 / 0x4f3bd0 / 0x4f3db0): the port writes no save games. These are
-    // stand-ins, NOT the original behaviour: savegamenocommit returns a non-negative save id (the script treats < 0 as a failed
-    // save), savegame and commitsave do nothing. TODO(spec): the save file format and the id.
-    vm_.registerBuiltin("savegamenocommit", [](CallContext&) { return Value(int32_t(1)); });
-    vm_.registerBuiltin("savegame", [](CallContext&) { return Value(); });
-    vm_.registerBuiltin("commitsave", [](CallContext&) { return Value(); });
-    // soundexists (0x4ef380): int 1 when the alias name resolves in the sound alias table (0x428320), else 0.
-    vm_.registerBuiltin("soundexists", [this](CallContext& c) {
-        return Value(int32_t(soundExists(c.arg(0).isString() ? c.arg(0).asString() : std::string()) ? 1 : 0));
-    });
-    // issaverecentlyloaded (0x4f3da0): the byte at 0x1b15ac0 (set when a save was just loaded). The port loads no saves: 0.
-    vm_.registerBuiltin("issaverecentlyloaded", [](CallContext&) { return Value(int32_t(0)); });
-    // teleport (0x53dfb0): actor-only (error 0x591798); moves the actor to arg 0 (origin), optionally turning it to arg 1
-    // (angles), clears its velocity and returns 1. SIMPLIFIED: the original checks (0x532100) the actor box at the new origin
-    // when it moved more than a threshold (0x591f98) and returns 0 with a console message when blocked; that check, the
-    // movement-state resets (actor +0x724 etc.) and the link update (0x515040) are TODO(spec).
-    vm_.registerBuiltin("teleport", [this](CallContext& c) {
-        Entity* e = entityOf(c.self);
-        if (!e || !e->isActor) throw std::runtime_error("teleport: entity is not an actor");
-        e->obj->set("origin", c.arg(0));
-        if (c.argc() > 1 && c.arg(1).isVector()) e->obj->set("angles", c.arg(1));
-        return Value(int32_t(1));
     });
     // playerads (0x538a60): player-only (error 0x590ab8 otherwise); returns the float at client +0xb8 (the aim fraction, 0..1).
     vm_.registerBuiltin("playerads", [this](CallContext& c) {
@@ -1177,6 +1178,12 @@ namespace iw2::game {
 bool World::entityTagPosition(int number, const std::string& tag, Vec3& out) {
     Entity* e = entityByNumber(number);
     if (!e) return false;
+    if (e->vehicle) { // the vehicle's bone controls (jolt, turret yaw, barrel pitch) move the flash tags
+        bool found = false;
+        const Vec3 p = vehicleTagPosition(*e, tag.c_str(), found);
+        if (found) out = p;
+        return found;
+    }
     const auto bones = entityBones(*e);
     const auto it = bones.find(tag);
     if (it == bones.end()) return false;
