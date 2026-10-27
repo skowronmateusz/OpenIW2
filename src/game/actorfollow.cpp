@@ -351,7 +351,7 @@ int World::stepActorPath(Entity& e, bool wide, bool run) {
                 s.vel[0] = other->velocity[0];
                 s.vel[1] = other->velocity[1];
             }
-            // TODO(spec): following (+0x2148) needs the other actor's +0x318 entity to be a sentient (not modelled).
+            // TODO(spec): following (+0x2148): the exe sets the bumped actor's +0x2148 at 0x501c8b; the lifecycle is not ported (docs/spec/ai.md "Actor trace box, followed actor").
         }
         const bool still = s.vel[1] * s.vel[1] + s.vel[0] * s.vel[0] < 1.0f;
         const bool selfBlocked = ai.blocker == &e;

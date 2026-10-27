@@ -584,7 +584,7 @@ void World::moveActor(Entity& e, float dt) {
         // the exe: init 0x500cd0 gives mask 0x2820011 (+0x68), pass entity = the gentity number (+0x3c), ground entity 0x7fe,
         // step 50 ms, gravity zero until 0x501de0 copies the g_gravity dvar (0x1b15ee8, default 800) into +0x44 every frame;
         // the path step 0x504160 sets the mode word +0x40 to 1 (0x5041c7 / 0x504258) before 0x505230 fills the delta.
-        // TODO(spec): the trace box is r.mins/r.maxs (+0xa8/+0xb4); the fixed -15..15 x 0..70 box is used.
+        // The trace box is the actor r.mins/r.maxs (+0xa8/+0xb4), written once at spawn (0x4fc709..0x4fc731: -15,-15,0 .. 15,15,72) and by no other actor code.
         ActorSlide pm;
         for (int a = 0; a < 3; ++a) {
             pm.origin[a] = before[a];
@@ -598,7 +598,7 @@ void World::moveActor(Entity& e, float dt) {
         pm.groundEnt = uint16_t(e.ai.groundEnt);
         for (int a = 0; a < 3; ++a) pm.velocity[a] = e.velocity[a];
         const SlideTraceFn fn = [&](const float s[3], const float en[3]) {
-            const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 70}, pm.mask, e.number);
+            const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 72}, pm.mask, e.number);
             SlideTrace t;
             t.fraction = tr.fraction;
             for (int a = 0; a < 3; ++a) t.normal[a] = tr.normal[a];
