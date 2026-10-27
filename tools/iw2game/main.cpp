@@ -539,6 +539,7 @@ int main(int argc, char** argv) {
         int seconds = 10;
         bool spawnAll = false;
         int traceActor = -1;
+        std::string throwClass;
         bool playerShoots = false;
         bool shootBarrels = false; // --shoot-barrels: from 1 s the player's bullet hits each explodable barrel from 60 units, twice a second
         bool drive = false;
@@ -589,6 +590,9 @@ int main(int argc, char** argv) {
                 }
             } else if (a == "--spawn-all") {
                 spawnAll = true;
+            } else if (a == "--player-throw" && i + 1 < argc) {
+                throwClass = argv[++i]; // frag | smoke: +frag / +smoke held 1 s .. 2 s through PM_Weapon (implies --controls)
+                controls = true;
             } else if (a == "--controls") {
                 controls = true; // default.cfg keys through the client commands and PM_Weapon: 1, SHIFT, G, C, SPACE
             } else if (a == "--turret" && i + 1 < argc) {
@@ -710,7 +714,11 @@ int main(int argc, char** argv) {
                     {20, {"1", true}},     {21, {"1", false}},    {60, {"SHIFT", true}}, {62, {"SHIFT", false}},
                     {100, {"G", true}},    {120, {"G", false}},   {160, {"C", true}},    {161, {"C", false}},
                     {180, {"SPACE", true}}, {181, {"SPACE", false}}};
-                if (auto k = keys.find(f); k != keys.end()) input.key(k->second.first, k->second.second);
+                if (!throwClass.empty()) {
+                    const char* key = throwClass == "smoke" ? "4" : "G";
+                    if (f == 20) input.key(key, true);
+                    if (f == 40) input.key(key, false);
+                } else if (auto k = keys.find(f); k != keys.end()) input.key(k->second.first, k->second.second);
                 const uint32_t b = input.buttons(false);
                 const auto w = world.player()->obj->get("$weapon");
                 if (weaponSelect.empty() || (w.isString() && w.asString() != pweapon.name() && pweapon.equipped() && f % 20 == 0))
@@ -740,8 +748,17 @@ int main(int argc, char** argv) {
                     ++weaponEvents[int(e.kind)];
                     if (e.kind == iw2::game::PlayerWeapon::Event::MeleeHit) world.playerMelee(eye, {0, 0, 0});
                     if (e.kind == iw2::game::PlayerWeapon::Event::OffhandThrow) world.playerThrowGrenade(e.weapon, eye, {-20, 0, 0}, {0, 0, 0});
+                    if (e.kind == iw2::game::PlayerWeapon::Event::OffhandExplode) world.playerGrenadeInHand(eye);
                     std::printf("controls t=%.2f event %d %s (state %d, weapon %s, stance %d)\n", f * 0.05f, int(e.kind),
                                 e.weapon.c_str(), pweapon.stateNumber(), pweapon.name().c_str(), input.stance());
+                }
+                if (!throwClass.empty()) {
+                    static int seenG = 0, seenX = 0;
+                    if (world.stats.grenades != seenG || world.stats.grenadeExplosions != seenX) {
+                        seenG = world.stats.grenades;
+                        seenX = world.stats.grenadeExplosions;
+                        std::printf("throw t=%.2f grenades thrown %d exploded %d\n", f * 0.05f, seenG, seenX);
+                    }
                 }
                 if (f == 170 || f == 190) std::printf("controls t=%.2f buttons %x stance %d\n", f * 0.05f, b, input.stance());
             }

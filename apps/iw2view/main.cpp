@@ -5174,7 +5174,8 @@ int main(int argc, char** argv) {
                 }
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
-                    if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
+                    if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)

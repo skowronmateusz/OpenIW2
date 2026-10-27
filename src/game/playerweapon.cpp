@@ -133,8 +133,9 @@ void PlayerWeapon::startDrop(const std::string& next) {
     const bool alt = !next.empty() && next == fieldValue("altWeapon");
     enter(State::Dropping, alt ? "altDropAnim" : "dropAnim", time(alt ? "altDropTime" : "dropTime", 0));
     // 0x4ddb40: event 0x9c (altSwitchSound) when the new weapon is the altWeapon, else 0x9b (putawaySound).
-    // TODO(spec): the putaway event is conditional on a client flag (+0x340 == 0 -> 1), assumed to hold for the player.
-    playFirst({alt ? "altSwitchSound" : "putawaySound"});
+    // The putaway event 0x9b is sent only when clipOnly (+0x340, field table 0x5a86fc) is 0 or the clip is not empty (0x4ddbd9).
+    if (alt) playFirst({"altSwitchSound"});
+    else if (std::atoi(fieldValue("clipOnly").c_str()) == 0 || clip_ != 0) playFirst({"putawaySound"});
 }
 
 // The drop finished (PM_Weapon state 2): the command's weapon becomes the player's; the raise takes altRaiseTime
@@ -371,9 +372,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
             else endReload();
             break;
         }
-        const int take = std::min(clipSize - clip_, stock_);
-        clip_ += take;
-        stock_ -= take;
+        if (addPending_) applyReloadAdd();
         needsRechamber_ = false;
         enter(State::Ready, nullptr, 0);
         break;
@@ -413,7 +412,8 @@ int PlayerWeapon::update(float dt, const Input& in) {
                 // No ammo (0x4deb70): a non-grenade weapon sends event 0x92 (the cgame plays player_out_of_ammo, 0x4baec1) and
                 // the next action waits 500 ms (0x4dec37).
                 if (fieldValue("weaponType") != "grenade") {
-                    sounds_.push_back("player_out_of_ammo");
+                    // The cgame plays the click only when clipOnly (+0x340) is 0 (0x4baec1).
+                    if (std::atoi(fieldValue("clipOnly").c_str()) == 0) sounds_.push_back("player_out_of_ammo");
                     timer_ = 0.5f;
                 }
             }
@@ -450,6 +450,7 @@ bool PlayerWeapon::segmented() const { return std::atoi(fieldValue("segmentedRel
 bool PlayerWeapon::startReload() {
     if (!canLoadMore()) return false;
     reloadInterrupted_ = false;
+    events_.push_back({Event::ReloadBegin, name_});
     if (segmented() && time("reloadStartTime", 0) != 0) {
         const float t = time("reloadStartTime", 0);
         enter(State::ReloadStart, "reloadStartAnim", t);
@@ -468,7 +469,6 @@ void PlayerWeapon::beginRound() {
     const bool empty = clip_ == 0;
     const float t = time(empty && fieldValue("weaponType") == "bullet" ? "reloadEmptyTime" : "reloadTime", 2.0f);
     enter(State::Reloading, empty ? "reloadEmptyAnim" : "reloadAnim", t);
-    if (!segmented()) return; // the plain reload adds its rounds when the round ends
     float d = t;
     const float a = time("reloadAddTime", 0);
     if (a != 0 && a < d) d = a;
