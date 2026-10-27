@@ -461,6 +461,17 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     };
     const bool rifle = flag("riflebullet"), ap = flag("armorpiercing");
     const Vec3 at = tr.endPos;
+    if (!shooter.isPlayer) {
+        // 0x4b8140 / 0x4b8040: not for eType 1 (players); the start is the weapon's tag_flash (0x4abb20), else the
+        // entity origin raised by 60 (stand; 40 crouched and 11 prone by eFlags 0x4 / 0x8, not tracked here).
+        // TODO(spec): the tracer gate for eType 0xc, the stance heights.
+        Vec3 from{};
+        if (!entityTagPosition(shooter.number, "tag_flash", from)) {
+            from = shooter.obj->get("origin").isVector() ? shooter.obj->get("origin").asVector() : Vec3{0, 0, 0};
+            from[2] += 60.0f;
+        }
+        tracerEvents_.push_back({from, at});
+    }
     if (hit && hit->isPlayer) {
         startSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
         return;

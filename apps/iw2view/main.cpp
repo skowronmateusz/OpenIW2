@@ -712,8 +712,16 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
             const Vec3 r = right * s->size, u = upv * s->size;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
-            const Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
-            const float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
+            float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            if (s->beam) { // tracer quad (0x4b7d90): B + w, B - w, A - w, A + w with uv (1,1) (1,0) (0,0) (0,1)
+                const Vec3 a{s->beamA[0], s->beamA[1], s->beamA[2]}, bb{s->beamB[0], s->beamB[1], s->beamB[2]};
+                const Vec3 w{s->beamPerp[0], s->beamPerp[1], s->beamPerp[2]};
+                corners[0] = bb + w * s->widthB; corners[1] = bb + w * -s->widthB;
+                corners[2] = a + w * -s->widthA; corners[3] = a + w * s->widthA;
+                const float tuv[4][2] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
+                std::memcpy(uv, tuv, sizeof uv);
+            }
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
@@ -2098,6 +2106,10 @@ int main(int argc, char** argv) {
                 }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
+            for (const auto& te : world->takeTracerEvents())
+                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
+            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
+            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
                 scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
             if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
@@ -3682,6 +3694,13 @@ int main(int argc, char** argv) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+            }
+            if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
+                // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.
+                const Vec3 from = cam.pos + cam.right() * 30.0f + Vec3{0, 0, -15.0f};
+                const Vec3 to = cam.pos + cam.forward() * 1500.0f;
+                for (int i = 0; i < std::atoi(tt); ++i)
+                    fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             if (viewFlash->pending && !(world && world->playerOnTurret())) {
