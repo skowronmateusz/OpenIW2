@@ -4369,6 +4369,7 @@ int main(int argc, char** argv) {
                 bool rHave = false, rInit = false;
                 struct ShotMsg { std::string text; int64_t at; bool bold; };
                 std::vector<ShotMsg> shotMsgs; // game messages with their world time
+                bool killedVehicles = false;
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
                     if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
@@ -4388,6 +4389,12 @@ int main(int argc, char** argv) {
                     if (std::getenv("IW2_FIRE_VEHICLES") && f >= int(simSeconds * 20) - 3)
                         for (const auto& ve : world->entities())
                             if (ve->vehicle && !ve->obj->removed) world->vm().notify(ve->obj, "turret_fire", {});
+                    if (const char* kv = std::getenv("IW2_KILL_VEHICLES"); kv && !killedVehicles && float(f) / 20.0f >= float(std::atof(kv))) {
+                        // Debug: IW2_KILL_VEHICLES=<s> deals 100000 damage (an explosion without attacker) to every vehicle at sim time s.
+                        killedVehicles = true;
+                        for (const auto& ve : world->entities())
+                            if (ve->vehicle && !ve->obj->removed) world->debugDamage(*ve, 100000);
+                    }
                     if (const char* ft = std::getenv("IW2_FIRE_TURRETS"); ft && f >= int(simSeconds * 20) - 3) {
                         // Debug: IW2_FIRE_TURRETS=N fires every turret entity in the last 3 frames and puts the camera 150 units
                         // beside and 60 above the Nth one (muzzle flashes in the shot).
