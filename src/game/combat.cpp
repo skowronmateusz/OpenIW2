@@ -608,6 +608,14 @@ void World::registerCombatBuiltins() {
         if (enemy) aiEventPoint(*a, 4, start);
         const Value wpn = a->obj->get("weapon");
         fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
+        // The shot adds EV_FIRE_WEAPON (0x9e, 0xa0 without a bullet: 0x550c46 / 0x550c1b) to the actor; the client handler
+        // 0x4b7800 plays, for an entity that is not the local client, the weapon's worldFlashEffect (0xf48e48) via
+        // 0x4b6660 at the entity's tag_flash (0x4b78de). TODO(spec): the effect is bolted to the tag (follows it); the
+        // effect axes come from the tag, here the shot direction.
+        if (wpn.isString()) {
+            const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
+            if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir});
+        }
         vm_.notify(a->obj, "weapon_fired");
         return Value();
     });
