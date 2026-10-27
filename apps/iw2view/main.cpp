@@ -17,6 +17,7 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "video/roq.h"
 #include "game/compassspring.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
@@ -3767,6 +3768,79 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
+        // Cinematic playback (docs/spec/video.md): modal, the way the original's `cinematic <name> 0` (0x4d9f90) is: the movie
+        // fills the 4:3 screen area, any key or mouse button skips it (skippable byte 0x59a0d0), and the level load goes on after it.
+        auto playCinematic = [&](const std::string& name) {
+            const auto data = vfs.read("video/" + name + ".roq");
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return; }
+            std::unique_ptr<video::RoqDecoder> dec;
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return; }
+            std::cout << "cinematic " << name << "\n";
+            Scene movieScene = emptyScene(dev);
+            SDL_GPUTexture* tex = nullptr;
+            int tw = 0, th = 0;
+            SDL_AudioStream* snd = nullptr;
+            if (audioOn) {
+                const SDL_AudioSpec spec{SDL_AUDIO_S16, 2, video::RoqDecoder::kAudioRate};
+                snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+                if (snd) SDL_ResumeAudioStreamDevice(snd);
+            }
+            const uint64_t t0 = SDL_GetTicksNS();
+            bool more = true, skipped = false;
+            while (more && !skipped && running) {
+                SDL_Event e;
+                while (SDL_PollEvent(&e)) {
+                    if (e.type == SDL_EVENT_QUIT) running = false;
+                    else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) skipped = true;
+                }
+                const int64_t due = int64_t(double(SDL_GetTicksNS() - t0) * 1e-9 * dec->fps()) + 1; // frames that should have been shown
+                bool fresh = false;
+                while (more && dec->frameIndex() < due) {
+                    more = dec->nextFrame();
+                    if (!more) break;
+                    fresh = true;
+                    auto pcm = dec->takeAudio();
+                    if (snd && !pcm.empty()) {
+                        if (dec->audioChannels() == 1) {
+                            std::vector<int16_t> st(pcm.size() * 2);
+                            for (size_t i = 0; i < pcm.size(); ++i) st[i * 2] = st[i * 2 + 1] = pcm[i];
+                            pcm = std::move(st);
+                        }
+                        SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                    }
+                }
+                if (dec->width() == 0) break;
+                if (!tex || tw != dec->width() || th != dec->height()) {
+                    if (tex) SDL_ReleaseGPUTexture(dev, tex);
+                    tw = dec->width(), th = dec->height();
+                    tex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, uint32_t(tw), uint32_t(th), 1);
+                    movieScene.textures.resize(1);
+                    movieScene.textures.push_back(tex);
+                    fresh = true;
+                }
+                if (fresh) {
+                    Uploader up(dev, false);
+                    up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                }
+                SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+                SDL_GPUTexture* swap = nullptr;
+                uint32_t w = 0, h = 0;
+                if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
+                    const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
+                    Quad2D q{left, 0, left + 640.0f * sc, 480.0f * sc};
+                    q.texture = 1;
+                    renderer.fog = {};
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, std::vector<Quad2D>{q}, 0.0f);
+                }
+                SDL_SubmitGPUCommandBuffer(cmd);
+            }
+            if (snd) SDL_DestroyAudioStream(snd);
+            SDL_WaitForGPUIdle(dev);
+            releaseScene(dev, movieScene);
+            // Held keys and buttons that skipped the movie must not reach the game (their release does).
+            SDL_PumpEvents();
+        };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -4294,6 +4368,10 @@ int main(int argc, char** argv) {
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
+                    if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
+                        const std::string movie = world->takeCinematic();
+                        if (!movie.empty()) playCinematic(movie);
+                    }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();
                     releaseScene(dev, scene);
