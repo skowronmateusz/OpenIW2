@@ -4264,8 +4264,22 @@ int main(int argc, char** argv) {
                         screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
+                // Debug: IW2_SHOT_HINT=<state> shows an invalid-command hint state 300 ms into its blink cycle.
+                if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), world->timeMs() - 300);
+                // Debug: IW2_SHOT_HEALTH=<hp or fraction of maxhealth when <= 1>[,<trail fraction>[,<pulse phase ms>]] sets the player health, the red trail of the health bar
+                // (the fraction it just fell from) and how far into its pulse period the health background is.
+                if (const char* hs = std::getenv("IW2_SHOT_HEALTH"); hs && world->player()) {
+                    float v[3] = {100, -1, 0};
+                    std::sscanf(hs, "%f,%f,%f", &v[0], &v[1], &v[2]);
+                    if (v[0] <= 1.0f) { // a fraction of the player's maxhealth
+                        const auto mv = world->player()->obj->get("maxhealth");
+                        v[0] *= mv.isNumber() ? float(mv.asInt()) : 100.0f;
+                    }
+                    world->player()->obj->set("health", script::Value(int32_t(v[0])));
+                    if (v[1] >= 0) hudFade.healthTrail = v[1];
+                    hudFade.healthPulse = world->timeMs() - int64_t(v[2]);
+                }
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), world->timeMs() - 300); // debug: invalid-command hint state
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
