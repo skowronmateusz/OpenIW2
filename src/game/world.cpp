@@ -301,7 +301,9 @@ Entity* World::spawnActor(Entity& spawner) {
     a.ai.baseStateMs = timeMs_;
     aiStart(a, a.ai.stack[0]);
     vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
-    if (count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
+    // A map-start actor (placed entity) is replaced by its actor; real spawners (flag 1) stay findable (0x5325ca-0x5325d8 only
+    // decrement the count; demolition tank() calls dospawn on getentarray("wounded_drag")[0] and then [1]).
+    if (placed && count.isInt() && count.asInt() - 1 <= 0) spawner.obj->removed = true;
     return &a;
 }
 
