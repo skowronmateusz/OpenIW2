@@ -922,12 +922,22 @@ float specColorScaleDvar() {
     return v;
 }
 
-std::vector<uint8_t> specularityTable() {
+// r_cosinePowerMapShift (dvar 0x101ce680, default 0, range -1..1): 0x10034000 passes it as arg 1 of 0x1000d3a0 -> 0x10029710, which adds it
+// to x / 30 before the 0..1 clamp (FILD x; FMUL 1/30; FADD shift at 0x10029741). IW2_COS_SHIFT sets it.
+float cosinePowerShiftDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_COS_SHIFT");
+        return e ? std::clamp(float(std::atof(e)), -1.0f, 1.0f) : 0.0f;
+    }();
+    return v;
+}
+
+std::vector<uint8_t> specularityTable(float shift) {
     std::vector<uint8_t> t(32 * 256);
     for (int x = 0; x < 32; ++x) {
         double P = 30.0;
         if (x != 31) {
-            const double u = std::clamp(double(float(x) * 0.033333335f), 0.0, 1.0);
+            const double u = std::clamp(double(float(x) * 0.033333335f + shift), 0.0, 1.0);
             P = std::log(0.1) / std::log(std::cos((180.0 - 175.0 * u) * 0.004363323251406352));
         }
         for (int y = 0; y < 256; ++y) {
@@ -1144,7 +1154,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         scene.tbn = SDL_CreateGPUBuffer(dev, &tb);
         if (!scene.tbn) sdlFail("SDL_CreateGPUBuffer");
         up.buffer(scene.tbn, tbn.data(), tb.size);
-        const auto lut = specularityTable();
+        const auto lut = specularityTable(cosinePowerShiftDvar());
         scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
         up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
     }
