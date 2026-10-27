@@ -694,8 +694,9 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     DriveCommand cmd;
     if (v.owner >= 0 && player_ && v.owner == player_->number) {
         pmFlags_ |= 0x40000;
-        // TODO(spec): the client state bit ps+0xc 0x8000 that also blocks the command is not tracked.
-        if (!(pmFlags_ & 0x80000)) {
+        // ps+0xc 0x8000 (freezecontrols, client +0x8630 via ClientThink 0x4e7bc0) also zeroes the command.
+        // TODO(spec): the second source, client +0x8698.
+        if (!(pmFlags_ & 0x80000) && !controlsFrozen_) {
             cmd.forward = playerCmd_.forward;
             cmd.right = playerCmd_.right;
             cmd.jump = (playerCmd_.buttons & 0x400) ? 127 : 0;
@@ -745,8 +746,8 @@ void World::vehiclePlayerAim(Entity& e) {
     Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
     if (!owner || owner != player_ || (pmFlags_ & 0x80000)) return;
     if (v.fireTimerMs < 1) {
-        // TODO(spec): ps+0xc bit 0x8000 also blocks firing; it is not tracked.
-        if (playerCmd_.buttons & 1) vm_.notify(e.obj, "turret_fire");
+        // ps+0xc bit 0x8000 (freezecontrols) also blocks firing. TODO(spec): the second source, client +0x8698.
+        if ((playerCmd_.buttons & 1) && !controlsFrozen_) vm_.notify(e.obj, "turret_fire");
     } else {
         v.fireTimerMs -= 50;
     }
@@ -773,7 +774,9 @@ void World::vehiclePlayerAim(Entity& e) {
 
 // Vehicle think (0x512b80), for every script_vehicle: the owner dies → it is let out; types other than artillery
 // move along their path or freely; a driven vehicle aims where the player looks; then the turret.
-// TODO(spec): the remaining calls 0x510770 / 0x5107e0 / 0x510870 / 0x510be0.
+// The think calls: 0x510770 body jolt step, 0x510870 tread scroll and 0x510be0 sounds are implemented; 0x5107e0 stores the
+// steering angle ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45) (0 without steerWheels), which only the
+// cgame wheel code (0x4ac6b0 -> 0x17c) reads. TODO(spec): the cgame per-wheel suspension traces (0x4ac2b0).
 
 // G_TryPushingEntity (0x52be60): the entity is moved by the pusher's move and turned about the pusher's origin by its
 // turn; if that box position (entity clip mask, 0x811 without one; the entity passes) is blocked (0x52bd20) offsets
@@ -884,7 +887,7 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
 // Path vehicles (0x511513): f = clamp(|speed| / engineSndSpeed); engine = f, idle = 1 - f.
 // Every think (0x510be0): a dead vehicle or one with the engine off silences both pairs; otherwise the loops follow
 // the fractions. The original culls by the listener distance (0x44247b) and keeps the pitch chosen at the loop start.
-// TODO(spec): the turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3).
+// The turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3) follow in the sound update below.
 // 0x50dcf0: direction (world) against the body's forward / right axes, 2D-normalized (0x421160), scaled by the
 // intensity (clamped 0..1) and info maxBodyPitch (+0x78) / maxBodyRoll (+0x7c); amplitude 1, phase 0.
 // +0x1e4 / +0x1e8 (speed fraction x |speed|, deceleration) replace maxSpeed / accel in the free physics while it runs (0x50de40).

@@ -390,3 +390,10 @@ Use function 0x529280 (handler table 0x5a573c +4, entries 6 and 7) toggles ent+0
 ## Player link angles (checked)
 
 VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0x214 (the barrel tag) is valid, a second transform is read and used for the orientation. Approximated with the barrel tag's turned forward (the 0x424b70 conversion is not decoded).
+
+## Think calls, frozen controls, wheels (checked)
+
+- ps+0xc 0x8000 is the freezecontrols flag (client +0x8630). The driven vehicle's command and the fire button are blocked by it (implemented); the second source +0x8698 is TODO(spec).
+- 0x5107e0 sets ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45), 0 when the vehicle info has no steerWheels. 0x510770 (jolt step) and 0x510870 (tread scroll) were already implemented.
+- Turret spin and stop sounds, engine pitch: already implemented in updateVehicleEngineSound (0x510be0).
+- Wheels: the cgame function 0x4ac2b0 (with 0x4ac6b0 interpolating ent+0x64/0x6c/0x70/0x74/0x94/0x60 into 0x16c..0x180) runs a per-wheel loop over the six wheel tags (names at 0x5a4cb4..0x5a4ccc), traces each wheel position down (mask 0x211) and sets a bone control that moves the wheel to the ground; the first two wheels also get the steering angle. Visual only and the control layout (0x4746e0 with translation) is not implemented: TODO(spec).
