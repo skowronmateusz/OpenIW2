@@ -172,6 +172,11 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         if (health < 1) vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
         return;
     }
+    // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
+    // table +0x5b0, else the default table 0x1c91328) and truncated; a result <= 0 leaves G_Damage (0x52857f) before any
+    // state changes, so no "damage" notify and no pain (a radius-damage edge of 0 gave animscripts/pain.gsc:101 a
+    // divide by zero in health / damageTaken). TODO(spec): the multiplier tables (taken as 1.0 here).
+    if (amount <= 0) return;
     // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage
     // (0x5282b3). TODO(spec): the knockback computed before that check still applies in the exe.
     if (target.obj->get("$godmode").truthy()) return;
