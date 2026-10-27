@@ -416,6 +416,8 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "turretvertspanup") info->turretVertSpanUp = f;
                 else if (k == "turretvertspandown") info->turretVertSpanDown = f;
                 else if (k == "turretrotrate") info->turretRotRate = f;
+                else if (k == "turretspinsnd") info->turretSpinSnd = v;
+                else if (k == "turretstopsnd") info->turretStopSnd = v;
                 else if (k == "lowidlesnd") info->lowIdleSnd = v;
                 else if (k == "highidlesnd") info->highIdleSnd = v;
                 else if (k == "lowenginesnd") info->lowEngineSnd = v;
@@ -595,12 +597,16 @@ void World::updateVehicleTurret(Entity& e) {
         const Vec3 local{dot(dir, fwd), -dot(dir, right), dot(dir, up)};
         want = vectorToAngles(local);
     }
+    const float oldPitch = v.turretPitch, oldYaw = v.turretYaw;
     const float dPitch = angleDelta(want[0], v.turretPitch), dYaw = angleDelta(want[1], v.turretYaw);
     v.turretPitch = turnAngle(want[0], v.turretPitch, v.info->turretRotRate, kFrameTime);
     v.turretYaw = turnAngle(want[1], v.turretYaw, v.info->turretRotRate, kFrameTime);
     v.turretPitch = std::clamp(v.turretPitch, -v.info->turretVertSpanUp, v.info->turretVertSpanDown);
     v.turretYaw = std::clamp(v.turretYaw, -v.info->turretHorizSpanRight, v.info->turretHorizSpanLeft);
     e.obj->set("$turretangles", Value(Vec3{v.turretPitch, v.turretYaw, 0}));
+    // +0x18c (0x510664..0x51068c): 2 while turning, then 2 -> 1 -> 0. TODO(spec): the exact "turning" test (0x510620..0x51065f
+    // compares the per-axis values 0x14/0x18/0x20/0x24(esp) with 0x591ed0 and 0); here: an angle changed this think.
+    if (v.turretPitch != oldPitch || v.turretYaw != oldYaw) v.turretMoved = true;
     if (std::fabs(dPitch) < 1.0f && std::fabs(dYaw) < 1.0f) {
         vm_.notify(e.obj, "turret_on_target");
         if (target) {
@@ -881,6 +887,14 @@ void World::updateVehicleEngineSound(Entity& e) {
         } else if (!handle) handle = playBlendSound(lo, hi, f, origin);
         else setBlendSound(handle, f, origin);
     };
+    // Turret sounds (0x510be0): state 2 loops turretSpinSnd (es+6), state 1 plays turretStopSnd once (event 0xb3).
+    if (v.turretSnd == 2 && alive && !v.info->turretSpinSnd.empty()) {
+        if (!v.spinHandle) v.spinHandle = playSound(v.info->turretSpinSnd, &origin, nullptr);
+    } else if (v.spinHandle) {
+        stopSound(v.spinHandle);
+        v.spinHandle = 0;
+    }
+    if (v.turretSnd == 1 && alive && !v.info->turretStopSnd.empty()) playSound(v.info->turretStopSnd, &origin, nullptr);
     pair(v.idleHandle, v.info->lowIdleSnd, v.info->highIdleSnd, v.idleFrac);
     pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac);
 }
@@ -911,7 +925,11 @@ void World::thinkVehicles() {
         vehicleTouch(e, prevOrigin, prevAngles);
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
+        v.turretMoved = false;
         updateVehicleTurret(e);
+        if (v.turretMoved) v.turretSnd = 2;
+        else if (v.turretSnd == 2) v.turretSnd = 1;
+        else if (v.turretSnd == 1) v.turretSnd = 0;
         if (e.vehicle) vehicleJoltStep(v.joltAmp, v.joltPhase, v.joltDirF, v.joltDirR, v.joltPitch, v.joltRoll); // 0x510770
         // +0x1b0 is the path speed in path mode (0x5110a0: stepFrac +0x1ac += +0x1b0 / pointSpeed) and |forward speed| in free physics.
         // 0x510870 (after the turret/aim calls, before 0x510be0): tread texture scroll accumulator.
@@ -1232,6 +1250,7 @@ void World::registerVehicleBuiltins() {
         VehicleState& fv = vehicleState(c.self);
         if (fv.idleHandle) stopSound(fv.idleHandle);
         if (fv.engHandle) stopSound(fv.engHandle);
+        if (fv.spinHandle) stopSound(fv.spinHandle);
         Entity* e = entityOf(c.self);
         e->vehicle.reset();
         e->classname = "script_vehicle_corpse";

@@ -54,6 +54,7 @@ struct VehicleInfo {
     float texScrollScale = 0;
     std::string turretWeapon;
     // lowIdleSnd / highIdleSnd / lowEngineSnd / highEngineSnd (info slots +0x260..+0x266), turretSpinSnd / turretStopSnd.
+    std::string turretSpinSnd, turretStopSnd;
     std::string lowIdleSnd, highIdleSnd, lowEngineSnd, highEngineSnd;
 };
 
@@ -96,6 +97,9 @@ struct VehicleState {
     // amplitude (+0x1dc), phase in degrees (+0x1e0); joltPitch / joltRoll are the entity fields +0x64 / +0x6c that the
     // controller 0x5127a0 applies to tag_body as angles (pitch, 0, roll).
     float joltDirF = 0, joltDirR = 0, joltAmp = 0, joltPhase = 0, joltPitch = 0, joltRoll = 0;
+    int turretSnd = 0;         // +0x18c: 2 turning, 1 just stopped (one stop sound), 0 idle
+    int spinHandle = 0;
+    bool turretMoved = false;
     bool engineOn = true;
     float idleFrac = 0, engFrac = 0;
     int idleHandle = 0, engHandle = 0;
