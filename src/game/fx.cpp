@@ -200,7 +200,12 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             if (!(*bolt)(t)) continue;
         }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter";
-        if (!known) continue; // TODO(spec): other element types
+        if (!known) { // TODO(spec): other element types
+            static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
+            if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
+                std::fprintf(stderr, "fx skip element type %s name %s\n", e.type.c_str(), e.name.c_str());
+            continue;
+        }
         // 0x4853f0: count = trunc(random(count) + 0.5) (default 1), the element is skipped when 0.
         const int count = int(range(e.numbers("count"), 1) + 0.5f);
         for (int i = 0; i < count; ++i) {

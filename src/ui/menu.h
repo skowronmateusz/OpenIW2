@@ -61,6 +61,8 @@ struct Item : Window {
     float dvarDef = 0, dvarMin = 0, dvarMax = 1;
     // MULTI: `dvarFloatList { "label" value ... }` (labels are @LOCALIZE keys).
     std::vector<std::pair<std::string, float>> floatList;
+    // MULTI: `dvarStrList { "label", "value", ... }` (the dvar holds the value string; exe 0x4ca370 compares with 0x43f6d0, no match = index 0).
+    std::vector<std::pair<std::string, std::string>> strList;
     std::string enumList; // `dvarEnumList "dvar"` (values come from the engine; TODO(spec))
     Script action, mouseEnter, mouseExit, onFocus, leaveFocus, accept;
     std::vector<std::pair<std::string, Script>> execKeys; // execKey "k" / execKeyInt n

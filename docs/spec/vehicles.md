@@ -344,7 +344,11 @@ command's delta angles are adjusted so the input keeps that view.
   (zero box 0x56ce9c, mask 0x7ff, entity from +0xf4) returns 0.
 - Fire (0x51474d): with +0x19c set the shot start is moved back along the shot direction: start = start - dir * (+0x198)
   (0x514757..0x5147a7: -(+0x198) * dir + origin).
-- Open: the endpoints of the 0x44c1b0 test and the two tag names; therefore not implemented (shotDir/start unchanged).
+- Resolved: +0x214 is tag_barrel (0x1c7f170, the third of the turret tag constants), +0x218 is tag_flash (first of the four flash tags
+  tag_flash, tag_flash_11, tag_flash_2, tag_flash_22 initialised at 0x512004..0x512049). 0x44c1b0 (zero box 0x56ce9c, pass entity the
+  vehicle, mask = ent+0x12c = 0x810211 from 0x50d900) sights between those two tag origins (the sight trace 0x418d10); +0x19c = blocked.
+  Implemented: `vehiclePlayerAim` sets `sightBlocked`; the fire code moves the start back by |tag_flash - tag_barrel| along the final
+  shot direction (0x90(%esp) after the aim bend 0x514698..0x5146e0).
 - joltbody (above) and the fireturret recoil jolt are implemented (`World::vehicleJolt`, `vehicleJoltStep`); the heading
   "Not implemented" in this file is stale for them.
 
@@ -380,8 +384,23 @@ direction with the 2D direction vehicle -> other < 0.8 (0x591f94) does nothing; 
 - Staged tests (`IW2_TOUCH_TEST`, `IW2_ROCKET_TEST`, `IW2_TEST_ACTOR`): libya, an actor 100 units in front of a crusader moving at 400 units/s takes 199
   damage (health 100 -> -99; formula (dot - 0.8) * 1 * 5 * 200); a turret rocket fired at an actor hits it (MOD_PROJECTILE direct damage) and kills it.
   Splash on a second entity next to the impact is not staged.
-- Still open here: barrel pull-back endpoints (0x44c1b0 line and the two tags), eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
+- Still open here: eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
   and the sound entities' pitch (see the TODO(spec) markers above).
+
+## Touch scan 0x50ff00 and actor touch (partly decoded)
+- 0x50ff00 queries the entity box (0x419ea0, up to 0x800 entries, contents mask 0x2006081) around the rotated vehicle box and takes entities of eType 1, 9 or 5 (eType 5 is the script_model type, see makefakeai 0x4f82a0), skipping the vehicle itself; for a linked pair (+0xc equal) a separate path runs. Each candidate's box (a corpse-style +0x114 box through 0x4481c0, else +0xc4 / +0xd0 mins / maxs plus origin) is tested against the vehicle (0x447830); a hit sends "touch" both ways and runs both touch callbacks (other's with (other, vehicle, 1), then the vehicle's). OpenIW2 only scans players and actors; script_models enter only when they have the contents bits of that mask, which no OpenIW2 code sets, so eType 5 contact (999999, MOD_CRUSH, in 0x512d40) stays TODO(spec).
+- 0x500c50 (actor touch states 1 / 2) writes a 0x44-byte contact record (level time, both origins, a pointer-like field at +0x38) into the actor's history array at +0x1774; no reader decoded, so nothing is implemented. 0x549900 not decoded.
+
+## Walkthrough results (headless)
+Maps run with `iw2game <main> <map> 45..120` and `IW2_FIRE_VEHICLES=15 IW2_KILL_VEHICLES=30`: toujane_ride, libya, elalamein, matmata, eldaba, rhine, decoytown, newvillers, toujane, bergstein, trainyard, tankhunt, crossroads, breakout, moscow, downtown_assault. Script runtime errors from vehicle code: 0. Observed:
+- Fire: crusaders and flak88s send rockets (libya 14, elalamein 16, eldaba 7, rhine 3), halftracks and trucks bullets; bullet hits register.
+- Kill: libya 13 of 14 and rhine 11 of 11 vehicles become corpses; toujane_ride, trainyard 100 %. Survivors are vehicles whose script holds an enormous health value (bergstein panzerw 1e7, toujane secondtank 1e8) and flakGun / decoytown `vehiclespawnmodel` spawners: scripted, not engine behaviour.
+- Riding (libya --ride, tank commander seat): linked at tag_player, the view weapon fires, no errors.
+- "no treads setup for vehicle type: ..." is a script print (`_treadfx.gsc`), not an engine string (absent from the exe).
+- Errors seen only after the forced kill (`eldaba flaks_fire`: "Vehicle must have health to control the turret", "entity N is not a script_vehicle"; toujane `anim_single` on a dead AI) are the scripts running on killed entities, the same checks as the exe's.
+- elalamein --spawn-all: `setbattlechatter` on undefined follows "no free actors" (actor limit), a spawn-all artifact.
+- Unimplemented built-ins seen in AI code, not vehicles: checkprone (up to x99), predictanim / predictoriginandangles / gethitenttype / beginprediction / endprediction (matmata).
+- Unproven / not checked visually: death and explosion effects are script-driven (`playfx`, `radiusdamage`); the engine only does freevehicle (0x511c80). Riders and attached guns are script `linkto` / animscripted; no engine-side passenger code exists in the vehicle files, so nothing further is provable from the exe.
 
 ## Handler 6 / 7 is trigger_hurt (checked)
 
@@ -396,4 +415,4 @@ VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0
 - ps+0xc 0x8000 is the freezecontrols flag (client +0x8630). The driven vehicle's command and the fire button are blocked by it (implemented); the second source +0x8698 is TODO(spec).
 - 0x5107e0 sets ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45), 0 when the vehicle info has no steerWheels. 0x510770 (jolt step) and 0x510870 (tread scroll) were already implemented.
 - Turret spin and stop sounds, engine pitch: already implemented in updateVehicleEngineSound (0x510be0).
-- Wheels: the cgame function 0x4ac2b0 (with 0x4ac6b0 interpolating ent+0x64/0x6c/0x70/0x74/0x94/0x60 into 0x16c..0x180) runs a per-wheel loop over the six wheel tags (names at 0x5a4cb4..0x5a4ccc), traces each wheel position down (mask 0x211) and sets a bone control that moves the wheel to the ground; the first two wheels also get the steering angle. Visual only and the control layout (0x4746e0 with translation) is not implemented: TODO(spec).
+- Wheels (cgame 0x4ac2b0, checked): bone control entries (0x4746e0) are {quat, translation, 0}; the translation (default zero vector 0x56ce9c) is added to the bone's local offset. The interpolated fields 0x16c..0x180 = es+0x64 (body pitch), +0x74 (turret yaw), +0x6c (roll), +0x70 (barrel pitch), +0x94 (steer), +0x60 * 0.001 (suspension travel; the server think 0x512cd8 stores (int)(info+0x88 * 1000)). Per wheel tag (front_left, front_right, back_left, back_right, middle_left, middle_right; P = tag bind position): axes from AngleVectors(angles) = forward, left (= -right), up; w = forward*Px + left*Py + up*Pz + origin; point trace (mask 0x211, entity skipped) from w + up*40 (0x591f78) to w - up*travel; d = max((travel + 40) * fraction, 40 - travel); hit = start - up*d; control translation = M * (hit - origin) - P (0x423480, rows forward / left / up), i.e. up*(40 - d): -travel without a hit, at most +travel. The first two wheels also get rotation angles (0, steer, 0) when steer is not 0; the others keep identity. travel 0 means no motion. Implemented as `vehicleWheelControls` (viewer draw path) with `assets::BoneControl`; steerAngle is stored by the think (needs the info key steerWheels). TODO(spec): the previous-yaw source of 0x5107e0 is the frame start yaw here; the wheel offsets use the server-frame pose (no cgame interpolation of the trace).

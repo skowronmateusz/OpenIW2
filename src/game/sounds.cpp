@@ -31,6 +31,17 @@ void World::registerSoundBuiltins() {
         clientCommands_.push_back({"scr_blur", std::to_string(int(time * 1000.0f)) + " " + std::to_string(amount) + " 0 1"});
         return Value();
     });
+    // setreverb(priority, roomtype, drylevel, wetlevel, fadetime) (0x539380) and deactivatereverb(priority, fadetime) (0x539560):
+    // player-only (error 0x590ab8 for another entity); the original formats the arguments (string 0x59098c; defaults dry 0.5,
+    // wet 1.0, fade 0) and sends them to the client as a server command (0x44a3b0). They only drive the client's reverb
+    // effect, which the port has no counterpart for, so the call is accepted and ignored.
+    // TODO(spec): the command string and the client-side reverb.
+    for (const char* name : {"setreverb", "deactivatereverb"})
+        vm_.registerBuiltin(name, [this, name](CallContext& c) {
+            Entity* e = entityOf(c.self);
+            if (!e || !e->isPlayer) throw std::runtime_error(std::string(name) + ": entity is not a player");
+            return Value();
+        });
     // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): sends "fog <near> <far> 1 <r> <g> <b> <time*1000>" to the client
     // (format "%g %g %g %g %g %g %.0f" 0x585bd4). TODO(spec): the original raises script errors for near < 0, far <= near,
     // colour components outside 0..1 and time < 0 (0x4f53f0); setexpfog (0x4f5630, no SP script uses it) is not implemented.

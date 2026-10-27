@@ -165,6 +165,16 @@ float MenuStack::valueTextX(const Menu& m, const Item& it) const {
     return it.text.empty() ? x : x + (env_.textWidth ? env_.textWidth(it) : 0.0f) + 8.0f;
 }
 
+// Index of the dvar's string in the item's dvarStrList (exe 0x4ca370: case-insensitive compare 0x43f6d0, no match = 0).
+size_t MenuStack::strIndex(const Item& it) const {
+    std::string cur = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
+    auto low = [](std::string x) { for (auto& c : x) c = char(std::tolower(static_cast<unsigned char>(c))); return x; };
+    cur = low(cur);
+    for (size_t i = 0; i < it.strList.size(); ++i)
+        if (low(it.strList[i].second) == cur) return i;
+    return 0;
+}
+
 std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
     if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
@@ -190,6 +200,7 @@ std::string MenuStack::valueLabel(const Item& it) const {
         const int i = int(cvarValue(it)); // TODO(spec): the index clamp of 0x4ca510
         return i >= 0 && size_t(i) < names.size() ? names[size_t(i)] : std::string();
     }
+    if (it.type == 12 && !it.strList.empty()) return it.strList[strIndex(it)].first;
     if (it.type == 12 && !it.floatList.empty()) {
         const float v = cvarValue(it);
         for (const auto& e : it.floatList)
@@ -212,6 +223,12 @@ void MenuStack::dragTo(float x) {
 bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer) {
     if (it.type == 11) { // exe 0x4ca270: dvar = (dvar == 0), written as "%i"
         if (env_.setCvar) env_.setCvar(it.dvar, cvarValue(it) == 0.0f ? "1" : "0");
+        return true;
+    }
+    if (it.type == 12 && !it.strList.empty()) { // string list: same stepping, the dvar gets the value string
+        const int n = int(it.strList.size());
+        const int next = ((int(strIndex(it)) + step) % n + n) % n;
+        if (env_.setCvar) env_.setCvar(it.dvar, it.strList[size_t(next)].second);
         return true;
     }
     if (it.type == 12 && !it.floatList.empty()) { // exe 0x4ca640 / 0x4ca5e0: next/previous list value, wrapping

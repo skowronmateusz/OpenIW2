@@ -192,7 +192,75 @@ void weaponSounds() {
     CHECK(e.takeSounds() == std::vector<std::string>{"player_out_of_ammo"});
 }
 
+// Segmented reload (springfield-like values; PM_Weapon states 7, 5, 9: 0x4dda60, 0x4dd980, 0x4de0e0, 0x4de200).
+void segmentedReload() {
+    const Def a{{"clipsize", "5"}, {"startammo", "10"}, {"raisetime", "0"}, {"firetime", "0.1"}, {"segmentedreload", "1"},
+                {"nopartialreload", "1"}, {"reloadammoadd", "1"}, {"reloadstartadd", "1"}, {"reloadtime", "0.6"},
+                {"reloademptytime", "0.6"}, {"reloadaddtime", "0.2"}, {"reloadstarttime", "1.8"}, {"reloadstartaddtime", "1.4"},
+                {"reloadendtime", "0.77"}, {"weapontype", "bullet"}, {"reloadstartsound", "start"}, {"reloadsound", "loop"},
+                {"reloadendsound", "end"}};
+    auto fireDown = [](PlayerWeapon& w, int clip) {
+        for (int i = 0; i < 2000 && w.clip() > clip; ++i) w.update(0.01f, {true, false});
+        for (int i = 0; i < 50; ++i) w.update(0.01f, {false, false});
+    };
+    {
+        PlayerWeapon w;
+        w.equip("a", a);
+        run(w, 0.1f, false);
+        fireDown(w, 2);
+        CHECK(w.clip() == 2 && w.stock() == 5);
+        w.takeSounds();
+        run(w, 0.02f, false, true);
+        CHECK(w.takeSounds() == std::vector<std::string>{"start"});
+        run(w, 1.3f, false); // t = 1.32: the intro adds its round only at 1.4
+        CHECK(w.clip() == 2);
+        run(w, 0.15f, false); // t = 1.47
+        CHECK(w.clip() == 3 && w.stock() == 4);
+        run(w, 0.4f, false); // t = 1.87: the first loop round began at 1.8, adds after 0.2
+        CHECK(w.clip() == 3);
+        CHECK(w.takeSounds() == std::vector<std::string>{"loop"});
+        run(w, 0.2f, false); // t = 2.07
+        CHECK(w.clip() == 4);
+        run(w, 1.0f, false); // second round done at 2.4 + 0.2, a full clip ends the loop, the outro (0.77 s) runs
+        CHECK(w.clip() == 5 && w.stock() == 2);
+        CHECK((w.takeSounds() == std::vector<std::string>{"loop", "end"}));
+        run(w, 0.8f, false);
+        CHECK(w.update(0.01f, {true, false}) == 1); // ready again
+    }
+    {
+        // A fresh attack press during the loop ends the reload after the running round (the clip is not empty).
+        PlayerWeapon w;
+        w.equip("a", a);
+        run(w, 0.1f, false);
+        fireDown(w, 1);
+        run(w, 0.02f, false, true);
+        run(w, 1.9f, false); // inside the first loop round (1.8 .. 2.4)
+        w.update(0.01f, {true, false});
+        w.update(0.01f, {false, false});
+        run(w, 0.7f, false); // the round ends, then the outro
+        const int c = w.clip();
+        CHECK(c == 3 && w.stock() == 3);
+        run(w, 1.0f, false);
+        CHECK(w.clip() == 3);
+    }
+    {
+        // noPartialReload with reloadAmmoAdd: a clip too full for a whole add does not reload by command.
+        Def b = a;
+        b["reloadammoadd"] = "5";
+        b["clipsize"] = "10";
+        b["startammo"] = "20";
+        PlayerWeapon w;
+        w.equip("b", b);
+        run(w, 0.1f, false);
+        fireDown(w, 8);
+        w.takeSounds();
+        run(w, 0.02f, false, true);
+        CHECK(w.takeSounds().empty() && w.clip() == 8);
+    }
+}
+
 int main() {
+    segmentedReload();
     weaponSounds();
     boltAction();
     automatic();

@@ -56,6 +56,12 @@ std::string registeredDefault(const std::string& n) {
         {"sensitivity", "5"},       // 0x40e2a3 (float 0.01..100)
         {"m_pitch", "0.022"},       // 0x40e337 (float -1..1)
         {"snd_volume", "1"},        // 0x4449d6 (float 0..1)
+        // Renderer DLL (gfx_d3d_x86_s.dll) registrations, 0x1000abb6..0x1000bafc: int/bool defaults pushed before the name; enum defaults are
+        // an index into the domain table (r_textureMode: nearest, linear, bilinear, trilinear, anisotropic -> 2; r_rendererPreference:
+        // none, dx9, dx7 -> 0; r_aspectRatio: auto, standard, wide 16:10, wide 16:9 -> 0).
+        {"r_picmip", "0"}, {"r_picmip_bump", "0"}, {"r_picmip_spec", "0"}, {"r_picmip_manual", "0"},
+        {"r_texturemode", "bilinear"}, {"r_aspectratio", "auto"}, {"r_rendererpreference", "none"},
+        {"r_swapinterval", "0"}, {"r_aasamples", "1"}, {"r_dlightlimit", "4"}, {"r_gamma", "1"},
     };
     for (const auto& [k, v] : defaults)
         if (lowerStr(n) == lowerStr(k)) return v;
