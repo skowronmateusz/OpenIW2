@@ -75,6 +75,22 @@ void initUiCvars(MenuEnv& env) {
     env.setCvar("ui_mousePitch", !p.empty() && std::atof(p.c_str()) < 0.0 ? "1" : "0");
 }
 
+// uiScript openMenuOnDvar / openMenuOnDvarNot / closeMenuOnDvar / closeMenuOnDvarNot <dvar> <value> <menu>
+// (exe 0x4c52d0 parses the three arguments, 0x4c53a0 opens, 0x4c5430 closes): the dvar string is compared with the value
+// (case-insensitive, 0x43f6d0); the "Not" variants act when they differ. TODO(spec): the exe prints an error when the dvar is unknown.
+static bool menuOnDvar(const std::string& cmd, const std::string& dvar, const std::string& value, const std::string& menu, MenuEnv& env) {
+    const bool open = cmd == "openmenuondvar" || cmd == "openmenuondvarnot";
+    const bool close = cmd == "closemenuondvar" || cmd == "closemenuondvarnot";
+    if (!open && !close) return false;
+    const bool wantEqual = cmd == "openmenuondvar" || cmd == "closemenuondvar";
+    const bool equal = lowerStr(env.getCvar ? env.getCvar(dvar) : std::string()) == lowerStr(value);
+    if (equal == wantEqual) {
+        if (open && env.open) env.open(menu);
+        if (close && env.close) env.close(menu);
+    }
+    return true;
+}
+
 void runScript(const Script& script, const std::string& menuName, MenuEnv& env) {
     for (const Command& cmd : script) {
         if (cmd.empty()) continue;
@@ -100,6 +116,7 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         }
         else if ((name == "show" || name == "hide") && cmd.size() > 1) { if (env.showItem) env.showItem(cmd[1], name == "show"); }
         else if ((name == "execnow" || name == "exec") && cmd.size() > 1) execConsole(cmd[1], env);
+        else if (name == "uiscript" && cmd.size() > 4 && menuOnDvar(lowerStr(cmd[1]), cmd[2], cmd[3], cmd[4], env)) {}
         else if (name == "uiscript" && cmd.size() > 2 && lowerStr(cmd[1]) == "update") uiScriptUpdate(cmd[2], env);
         else if (name == "uiscript" && cmd.size() > 1) { if (env.uiScript) env.uiScript(lowerStr(cmd[1]), Command(cmd.begin() + 2, cmd.end())); }
         else if (name == "scriptmenuresponse" && cmd.size() > 1) { if (env.scriptMenuResponse) env.scriptMenuResponse(menuName, cmd[1]); }

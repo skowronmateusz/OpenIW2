@@ -58,7 +58,7 @@ bool MenuStack::open(const std::string& name) {
     runItem(*m, m->onOpen);
     if (!focus_) {
         const auto sel = selectable(*m);
-        if (!sel.empty()) focus_ = sel.front();
+        if (!sel.empty()) setFocusItem(sel.front());
     }
     return true;
 }
@@ -83,7 +83,7 @@ void MenuStack::close(const std::string& name) {
     if (wasTop) focus_ = nullptr;
     if (!stack_.empty() && !focus_) {
         const auto sel = selectable(*stack_.back());
-        if (!sel.empty()) focus_ = sel.front();
+        if (!sel.empty()) setFocusItem(sel.front());
     }
 }
 
@@ -111,7 +111,7 @@ bool MenuStack::itemVisible(const Item& it) const {
 std::vector<const Item*> MenuStack::selectable(const Menu& m) const {
     std::vector<const Item*> out;
     for (const auto& it : m.items)
-        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 13 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
+        if ((it->type == 1 || it->type == 4 || it->type == 6 || it->type == 16 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 13 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
     return out;
 }
 
@@ -125,7 +125,11 @@ const Item* MenuStack::hover(float x, float y) const {
     return nullptr;
 }
 
-void MenuStack::setFocusItem(const Item* it) { focus_ = it; }
+void MenuStack::setFocusItem(const Item* it) {
+    focus_ = it;
+    if (it && isEditType(it->type)) startEdit(it);
+    else editing_ = false;
+}
 
 void MenuStack::runItem(const Menu& m, const Script& s) { runScript(s, m.name, env_); }
 
@@ -134,11 +138,21 @@ void MenuStack::mouseMove(float x, float y) {
         dragTo(x);
         return;
     }
+    if (listDrag_.item) { // thumb drag (0x4cb100): startPos from the pointer
+        listDrag_.mouseY = y;
+        const Item& li = *listDrag_.item;
+        const int maxScroll = listMaxScroll(li);
+        const float range = li.rect.h - 32.0f - 2.0f - 16.0f;
+        if (range > 0)
+            lists_[&li].startPos = std::clamp(int((y - (listDrag_.menu->rect.y + li.rect.y + 17.0f) - 8.0f) * float(maxScroll) / range), 0, maxScroll);
+        return;
+    }
     const Item* it = hover(x, y);
     if (it && it != focus_) {
         setFocusItem(it);
         if (env_.play) env_.play("mouse_over"); // alias name of the menu hover sound
     }
+    if (it && it->type == 6 && top()) listHover(*top(), *it, x, y);
 }
 
 float MenuStack::cvarValue(const Item& it) const {
@@ -276,9 +290,37 @@ bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, 
 bool MenuStack::click(float x, float y) {
     const Item* it = hover(x, y);
     if (!it) return false;
-    setFocusItem(it);
+    if (focus_ != it) setFocusItem(it);
+    const Menu* m = top();
+    if (m && it->type == 6) { // list: scrollbar zones or a row (sounds come from the item's own scripts)
+        const int zone = listZone(*m, *it, x, y);
+        if (zone) {
+            listMouse(*m, *it, zone, y);
+            if (zone == 0x400) listDrag_ = {it, m, y};
+            else if (zone & 0x300) repeat_ = {it, m, zone, now_ + 500, 500, now_};
+        } else {
+            listHover(*m, *it, x, y);
+            ListState& st = lists_[it];
+            const ListLayout lay = listLayout(*it);
+            const int count = env_.feederCount ? env_.feederCount(it->feeder) : 0;
+            // 0x4c9c60, mouse key without a scrollbar zone: a second click within 300 ms on the selected, visible row runs doubleclick.
+            if (now_ < st.lastClick && !it->doubleClick.empty() && st.cursor == st.hover && st.hover < lay.endPos && st.hover >= st.startPos)
+                runItem(*m, it->doubleClick);
+            st.lastClick = now_ + 300;
+            if (st.cursor != st.hover) {
+                if (st.cursor < 0) st.cursor = st.hover;
+                if (st.hover < count) st.cursor = st.hover;
+                if (env_.feederSelect && st.cursor >= 0 && st.cursor < count) env_.feederSelect(it->feeder, st.cursor);
+            }
+        }
+        return true;
+    }
+    if (m && isEditType(it->type)) { // Menu_HandleKey mouse1 (0x4cbf6e..0x4cbfc9): a text-like item starts editing
+        startEdit(it);
+        return true;
+    }
     if (env_.play) env_.play("mouse_click");
-    if (const Menu* m = top()) {
+    if (m) {
         if (it->type == 1) runItem(*m, it->action);
         else activate(*m, *it, 1, x, true);
     }
@@ -311,6 +353,11 @@ void MenuStack::key(Key k) {
     Menu* m = top();
     if (!m) return;
     if (capture_) return;
+    if (editing_ && editItem_ && focus_ == editItem_ && editKey(*m, k)) return;
+    if (focus_ && focus_->type == 6 && listKey(*m, *focus_, k)) return;
+    if (k == Key::Backspace || k == Key::Delete || k == Key::Home || k == Key::End || k == Key::Insert || k == Key::PageUp ||
+        k == Key::PageDown || k == Key::WheelUp || k == Key::WheelDown)
+        return;
     if (k == Key::Escape) {
         runItem(*m, m->onEsc); // TODO(spec): menus without onESC (main) simply ignore ESC
         return;
@@ -331,9 +378,242 @@ void MenuStack::key(Key k) {
         return;
     }
     size_t i = 0;
-    if (at != sel.end()) i = k == Key::Down ? size_t(at - sel.begin() + 1) % sel.size() : (size_t(at - sel.begin()) + sel.size() - 1) % sel.size();
+    if (at != sel.end()) i = k == Key::Down || k == Key::Tab ? size_t(at - sel.begin() + 1) % sel.size() : (size_t(at - sel.begin()) + sel.size() - 1) % sel.size();
     setFocusItem(sel[i]);
     if (env_.play) env_.play("mouse_over");
+}
+
+} // namespace iw2::ui
+
+namespace iw2::ui {
+
+void MenuStack::release() {
+    dragItem_ = nullptr;
+    listDrag_ = {};
+    repeat_ = {};
+}
+
+// Scrollbar button auto-repeat (0x4cb100): the first repeat 500 ms after the press, then every `interval`, which starts at 500 and
+// drops by 40 every 150 ms while it is above 20.
+void MenuStack::tick(int nowMs) {
+    now_ = nowMs;
+    if (!repeat_.item) return;
+    while (repeat_.interval > 20 && now_ - repeat_.lastDrop >= 150) {
+        repeat_.interval -= 40;
+        repeat_.lastDrop += 150;
+    }
+    if (now_ >= repeat_.nextFire) {
+        listMouse(*repeat_.menu, *repeat_.item, repeat_.zone, 0);
+        repeat_.nextFire = now_ + repeat_.interval;
+    }
+}
+
+MenuStack::ListState MenuStack::listState(const Item& it) const {
+    const auto f = lists_.find(&it);
+    return f == lists_.end() ? ListState{} : f->second;
+}
+
+int MenuStack::listVisible(const Item& it) const { return it.elementHeight > 0 ? int(it.rect.h / it.elementHeight) : 0; }
+
+int MenuStack::listMaxScroll(const Item& it) const {
+    const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
+    return std::max(0, count - listVisible(it) + 1);
+}
+
+// 0x4ce280: rows from startPos while the remaining height (h - 2, minus elementHeight per row) allows; the row that leaves less
+// than one element height is the last one drawn (it sets the padding); a list that runs out of rows leaves endPos one past the last.
+MenuStack::ListLayout MenuStack::listLayout(const Item& it) const {
+    ListLayout l;
+    const ListState st = listState(it);
+    l.first = l.endPos = st.startPos;
+    if (it.elementHeight <= 0) return l;
+    const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
+    float size = it.rect.h - 2.0f;
+    for (int r = st.startPos; r < count; ++r) {
+        ++l.rows;
+        size -= it.elementHeight;
+        if (size < it.elementHeight) {
+            l.drawPadding = int(it.elementHeight - size);
+            break;
+        }
+        ++l.endPos;
+    }
+    return l;
+}
+
+float MenuStack::listThumbY(const Menu& m, const Item& it) const {
+    const float y = m.rect.y + it.rect.y;
+    // TODO(spec): the clamp bounds of the dragged thumb (0x4c9480); here the track between the arrows.
+    if (listDrag_.item == &it) return std::clamp(listDrag_.mouseY - 8.0f, y + 17.0f, y + it.rect.h - 17.0f);
+    const int maxScroll = listMaxScroll(it);
+    const float step = maxScroll > 0 ? (it.rect.h - 32.0f - 2.0f - 16.0f) / float(maxScroll) : 0.0f;
+    return float(int(float(listState(it).startPos) * step + y + 17.0f)); // 0x4c93a0
+}
+
+int MenuStack::listZone(const Menu& m, const Item& it, float px, float py) const {
+    const float ax = m.rect.x + it.rect.x + it.rect.w - 16.0f, y = m.rect.y + it.rect.y, h = it.rect.h;
+    if (px < ax || px >= ax + 16.0f) return 0;
+    const float thumb = listThumbY(m, it);
+    if (py >= y && py < y + 16.0f) return 0x100;
+    if (py >= y + h - 16.0f && py < y + h) return 0x200;
+    if (py >= thumb && py < thumb + 16.0f) return 0x400;
+    if (py >= y + 16.0f && py < thumb) return 0x800;
+    if (py >= thumb + 16.0f && py < y + h - 16.0f) return 0x1000;
+    return 0;
+}
+
+// 0x4c9880: pointer in the row area {x, y, w - 16, h - drawPadding} (no scrollbar zone): hover row = (y - 2 - top) / elementHeight +
+// startPos, at most endPos.
+void MenuStack::listHover(const Menu& m, const Item& it, float px, float py) {
+    if (listZone(m, it, px, py) || it.elementHeight <= 0) return;
+    const float x = m.rect.x + it.rect.x, y = m.rect.y + it.rect.y;
+    const ListLayout lay = listLayout(it);
+    if (px < x || px >= x + it.rect.w - 16.0f || py < y || py >= y + it.rect.h - float(lay.drawPadding)) return;
+    ListState& st = lists_[&it];
+    st.hover = std::min(int((py - 2.0f - y) / it.elementHeight) + st.startPos, lay.endPos);
+}
+
+// Scrollbar buttons of a mouse press (0x4c9c60 with the zone flags set).
+void MenuStack::listMouse(const Menu&, const Item& it, int zone, float) {
+    ListState& st = lists_[&it];
+    const int vis = listVisible(it), maxScroll = listMaxScroll(it);
+    if (zone & 0x100) st.startPos = std::max(0, st.startPos - 1);
+    else if (zone & 0x200) st.startPos = std::min(maxScroll, st.startPos + 1);
+    else if (zone & 0x800) st.startPos = std::max(0, st.startPos - vis);
+    else if (zone & 0x1000) st.startPos = std::min(maxScroll, st.startPos + vis);
+}
+
+void MenuStack::listClampVisible(const Item& it, ListState& st) const {
+    const int vis = listVisible(it);
+    st.startPos = std::min(st.startPos, st.cursor);
+    if (vis > 0 && st.cursor >= st.startPos + vis) st.startPos = st.cursor - vis + 1;
+}
+
+// Vertical listbox keys (0x4c9c60): up/down (and the wheel) move the selection, Home/End/PageUp/PageDown jump; the selection stays
+// visible and the feeder is told. TODO(spec): the exact scroll of End/PageUp/PageDown.
+bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
+    ListState& st = lists_[&it];
+    const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
+    const int vis = listVisible(it);
+    int cur = st.cursor;
+    switch (k) {
+    case Key::Up:
+    case Key::WheelUp: --cur; break;
+    case Key::Down:
+    case Key::WheelDown: ++cur; break;
+    case Key::PageUp: cur -= vis; break;
+    case Key::PageDown: cur += vis; break;
+    case Key::Home: cur = 0; st.startPos = 0; break;
+    case Key::End: cur = count - 1; break;
+    default: return false;
+    }
+    st.cursor = std::clamp(cur, 0, std::max(count - 1, 0));
+    listClampVisible(it, st);
+    if (env_.feederSelect && count > 0) env_.feederSelect(it.feeder, st.cursor);
+    return true;
+}
+
+// Menu_SetFeederSelection (0x4cf5b0) on the open menu: every list of that feeder gets the selection; row 0 resets the scroll,
+// a row above the first shown one scrolls up to it.
+void MenuStack::setFeederSelection(int feeder, int row) {
+    Menu* m = top();
+    if (!m) return;
+    for (const auto& itp : m->items) {
+        if (itp->type != 6 || itp->feeder != feeder) continue;
+        ListState& st = lists_[itp.get()];
+        st.cursor = row;
+        if (env_.feederSelect) env_.feederSelect(feeder, row);
+        if (row == 0) st.hover = st.startPos = 0;
+        else if (row < st.startPos) st.startPos = row;
+    }
+}
+
+void MenuStack::startEdit(const Item* it) {
+    editing_ = true;
+    editItem_ = it;
+    editCursor_ = 0;
+    editOffset_ = 0;
+    overstrike_ = true;
+}
+
+void MenuStack::editStore(const Item& it, const std::string& v) {
+    if (env_.setCvar) env_.setCvar(it.dvar, v);
+    // TODO(spec): the paint window (0x4cc170); here the window follows the cursor.
+    if (it.maxPaintChars > 0) {
+        if (editCursor_ < editOffset_) editOffset_ = editCursor_;
+        if (editCursor_ >= editOffset_ + it.maxPaintChars) editOffset_ = editCursor_ - it.maxPaintChars + 1;
+    }
+}
+
+void MenuStack::moveFocus(const Menu& m, int dir) {
+    const auto sel = selectable(m);
+    if (sel.empty()) return;
+    const auto at = std::find(sel.begin(), sel.end(), focus_);
+    size_t i = 0;
+    if (at != sel.end()) i = dir > 0 ? size_t(at - sel.begin() + 1) % sel.size() : (size_t(at - sel.begin()) + sel.size() - 1) % sel.size();
+    setFocusItem(sel[i]);
+    if (env_.play) env_.play("mouse_over");
+}
+
+// Text field keys (0x4ca820). Enter runs the item's `accept` script and ends editing, Escape ends editing and still reaches the
+// menu's onESC (returns false); Tab/Down and Up move the focus (0x4cb560 / 0x4cb480).
+bool MenuStack::editKey(const Menu& m, Key k) {
+    const Item& it = *editItem_;
+    std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
+    const int len = int(s.size());
+    editCursor_ = std::clamp(editCursor_, 0, len);
+    switch (k) {
+    case Key::Escape: editing_ = false; return false;
+    case Key::Enter: editing_ = false; runItem(m, it.accept); return true;
+    case Key::Left: if (editCursor_ > 0) --editCursor_; break;
+    case Key::Right: if (editCursor_ < len) ++editCursor_; break;
+    case Key::Home: editCursor_ = 0; editOffset_ = 0; break;
+    case Key::End: editCursor_ = len; break;
+    case Key::Insert: overstrike_ = !overstrike_; return true;
+    case Key::Backspace: // TODO(spec): the "^N" colour code pairs are treated as one unit by the exe; here plain characters
+        if (editCursor_ > 0) {
+            s.erase(size_t(editCursor_ - 1), 1);
+            --editCursor_;
+            editStore(it, s);
+        }
+        return true;
+    case Key::Delete:
+        if (editCursor_ < len) {
+            s.erase(size_t(editCursor_), 1);
+            editStore(it, s);
+        }
+        return true;
+    case Key::Down:
+    case Key::Tab: moveFocus(m, 1); return true;
+    case Key::Up: moveFocus(m, -1); return true;
+    default: return false;
+    }
+    editStore(it, s);
+    return true;
+}
+
+// Printable characters (0x4ca820, flag 0x400 events): VALIDFILEFIELD only takes [A-Za-z0-9_-] (0x43f670); an insert needs room
+// (maxChars, 0 = none, at most 0xff), overstrike replaces the character under the cursor.
+void MenuStack::textInput(const std::string& text) {
+    if (!editItem()) return;
+    const Item& it = *editItem_;
+    for (unsigned char c : text) {
+        if (c < 0x20 || c > 0x7e) continue; // TODO(spec): characters above 0x7f
+        if (it.type == 16 && !(std::isalnum(c) || c == '_' || c == '-')) continue;
+        std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
+        const int len = int(s.size());
+        editCursor_ = std::clamp(editCursor_, 0, len);
+        if (!overstrike_) {
+            if (len >= 0xff || (it.maxChars > 0 && len >= it.maxChars)) continue;
+            s.insert(size_t(editCursor_), 1, char(c));
+        } else {
+            if (it.maxChars > 0 && editCursor_ >= it.maxChars) continue;
+            if (editCursor_ < len) s[size_t(editCursor_)] = char(c);
+            else s.push_back(char(c));
+        }
+        ++editCursor_;
+        editStore(it, s);
+    }
 }
 
 } // namespace iw2::ui

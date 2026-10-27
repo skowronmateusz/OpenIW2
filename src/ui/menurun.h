@@ -34,6 +34,11 @@ struct MenuEnv {
     std::function<std::vector<std::string>(const std::string& enumDvar)> enumValues;
     std::function<int()> language; // language id of the ui_language list (0 english, 1 french, 2 german, ... 7 polish); unset = 0
     std::function<float(const Item&)> textWidth;
+    // LISTBOX feeders (exe 0x4c5f60 text, 0x4c6050 selection, count globals such as 0x11071b0): row count of a feeder, the text
+    // of a (row, column) cell, and the notification that a row was selected. Unset = empty list.
+    std::function<int(int feeder)> feederCount;
+    std::function<std::string(int feeder, int row, int column)> feederText;
+    std::function<void(int feeder, int row)> feederSelect;
 };
 
 // Runs the commands of `script` for a menu named `menuName` (the target of its scriptMenuResponse commands).
