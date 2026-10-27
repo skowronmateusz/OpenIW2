@@ -20,6 +20,7 @@
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
+#include "game/screen_blur.h"
 #include "game/viewweapon.h"
 #include "game/fx.h"
 #include "game/marks.h"
@@ -1036,14 +1037,22 @@ struct Renderer {
     SDL_GPUSampler* clampSampler = nullptr;
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
+    // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
+    SDL_GPUTextureFormat colorFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
+    SDL_GPUTexture* sceneTex = nullptr;
+    SDL_GPUTexture* halfTex = nullptr;
+    SDL_GPUTexture* quarterTex = nullptr;
+    SDL_GPUBuffer* blurVerts = nullptr;
+    uint32_t blurW = 0, blurH = 0;
     float lmScale = 1.0f;
     // Weights for a flat normal map from the $lightmapweights rule (docs/spec/material.md): all weight on
     // stored byte 0, which a B8G8R8A8 texture returns in .b.
     float lmWeights[4] = {0.0f, 0.0f, 1.0f, 0.0f};
     bool fullbright = false;
 
-    void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat) {
+    void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_) {
         dev = device;
+        colorFormat = colorFormat_;
         SDL_GPUShaderCreateInfo vs{};
         vs.code = reinterpret_cast<const Uint8*>(kShaderSource);
         vs.code_size = sizeof(kShaderSource) - 1;
@@ -1172,6 +1181,36 @@ struct Renderer {
         clampSampler = SDL_CreateGPUSampler(dev, &si);
     }
 
+    void ensureBlurTargets(uint32_t w, uint32_t h) {
+        if (sceneTex && blurW == w && blurH == h) return;
+        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex})
+            if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
+        auto make = [&](uint32_t tw, uint32_t th) {
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = colorFormat;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = std::max(tw, 1u);
+            info.height = std::max(th, 1u);
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            SDL_GPUTexture* t = SDL_CreateGPUTexture(dev, &info);
+            if (!t) sdlFail("blur texture");
+            return t;
+        };
+        sceneTex = make(w, h);
+        halfTex = make(w / 2, h / 2);
+        quarterTex = make(w / 4, h / 4); // $blurred_screen: (screenW>>2, screenH>>2) clamped >= 1 (gfx 0x100235b5)
+        if (!blurVerts) {
+            SDL_GPUBufferCreateInfo vb{};
+            vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+            vb.size = uint32_t(8 * sizeof(GpuVertex));
+            blurVerts = SDL_CreateGPUBuffer(dev, &vb);
+        }
+        blurW = w;
+        blurH = h;
+    }
+
     void ensureDepth(uint32_t w, uint32_t h) {
         if (depth && depthW == w && depthH == h) return;
         if (depth) SDL_ReleaseGPUTexture(dev, depth);
@@ -1190,8 +1229,29 @@ struct Renderer {
     }
 
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
-              const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}) {
+              const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
         ensureDepth(w, h);
+        // Blur post effect: only when the composed radius is > 0 (gate in gfx 0x10030ed0); the scene goes to an offscreen
+        // texture, then composite pass: scene, blurred quarter copy with alpha min(R / F, 1), then the HUD (not blurred).
+        const bool post = game::blurAlpha(blur) > 0.0f;
+        if (post) {
+            ensureBlurTargets(w, h);
+            GpuVertex bv[8]{};
+            for (int q = 0; q < 2; ++q)
+                for (int k = 0; k < 4; ++k) {
+                    GpuVertex& g = bv[q * 4 + k];
+                    const float xs[4] = {-1, 1, 1, -1}, ys[4] = {1, 1, -1, -1}, us[4] = {0, 1, 1, 0}, vs[4] = {0, 0, 1, 1};
+                    g.pos[0] = xs[k];
+                    g.pos[1] = ys[k];
+                    g.normal[2] = 1;
+                    std::memset(g.color, 255, 3);
+                    g.color[3] = q == 0 ? 255 : uint8_t(std::lround(game::blurAlpha(blur) * 255.0f));
+                    g.uv[0] = us[k];
+                    g.uv[1] = vs[k];
+                }
+            Uploader up(dev);
+            up.buffer(blurVerts, bv, sizeof(bv));
+        }
         // HUD quads go to their own buffers before the render pass (alpha-blended, no lighting, at the near plane).
         const size_t nq = std::min<size_t>(overlay.size(), kMaxQuads);
         if (nq) {
@@ -1249,7 +1309,7 @@ struct Renderer {
             up.buffer(overlayVerts, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
         }
         SDL_GPUColorTargetInfo color{};
-        color.texture = target;
+        color.texture = post ? sceneTex : target;
         color.clear_color = {0.55f, 0.65f, 0.78f, 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
         color.store_op = SDL_GPU_STOREOP_STORE;
@@ -1347,7 +1407,70 @@ struct Renderer {
                 }
             }
         }
-        if (nq) {
+        if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
+        SDL_EndGPURenderPass(pass);
+        if (post) {
+            // Bilinear downsample chain w -> w/2 -> w/4. TODO(spec): the filter kernel of $blurred_screen is unknown.
+            auto blit = [&](SDL_GPUTexture* src, uint32_t sw, uint32_t sh, SDL_GPUTexture* dst, uint32_t dw, uint32_t dh) {
+                SDL_GPUBlitInfo bi{};
+                bi.source.texture = src;
+                bi.source.w = sw;
+                bi.source.h = sh;
+                bi.destination.texture = dst;
+                bi.destination.w = std::max(dw, 1u);
+                bi.destination.h = std::max(dh, 1u);
+                bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                bi.filter = SDL_GPU_FILTER_LINEAR;
+                SDL_BlitGPUTexture(cmd, &bi);
+            };
+            blit(sceneTex, w, h, halfTex, w / 2, h / 2);
+            blit(halfTex, std::max(w / 2, 1u), std::max(h / 2, 1u), quarterTex, w / 4, h / 4);
+            SDL_GPUColorTargetInfo c2{};
+            c2.texture = target;
+            c2.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            c2.store_op = SDL_GPU_STOREOP_STORE;
+            SDL_GPUDepthStencilTargetInfo d2 = ds;
+            SDL_GPURenderPass* p2 = SDL_BeginGPURenderPass(cmd, &c2, 1, &d2);
+            SDL_BindGPUGraphicsPipeline(p2, pipelines[int(Pass::Blend)]);
+            struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
+            SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
+            SDL_GPUBufferBinding bvb{blurVerts, 0};
+            SDL_BindGPUVertexBuffers(p2, 0, &bvb, 1);
+            SDL_GPUBufferBinding bib{overlayIndices ? overlayIndices : nullptr, 0};
+            if (!bib.buffer) bib.buffer = ensureOverlayIndices();
+            SDL_BindGPUIndexBuffer(p2, &bib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            FragmentUniforms fu = {{0, 0, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 1, 1}, {0, 0, 0, 0}};
+            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
+            for (int q = 0; q < 2; ++q) {
+                SDL_GPUTextureSamplerBinding tex[3] = {{srcs[q], clampSampler},
+                                                       {scene.dummyLightmap.coeffs, clampSampler},
+                                                       {scene.dummyLightmap.sun, clampSampler}};
+                SDL_BindGPUFragmentSamplers(p2, 0, tex, 3);
+                SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, q * 4, 0);
+            }
+            if (nq) drawOverlay(p2, cmd, scene, overlay, nq);
+            SDL_EndGPURenderPass(p2);
+        }
+    }
+
+    SDL_GPUBuffer* ensureOverlayIndices() {
+        if (!overlayIndices) {
+            SDL_GPUBufferCreateInfo ib{};
+            ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+            ib.size = kMaxQuads * 6 * 4;
+            overlayIndices = SDL_CreateGPUBuffer(dev, &ib);
+            std::vector<uint32_t> idx;
+            for (uint32_t q = 0; q < kMaxQuads; ++q)
+                for (uint32_t k : {0u, 1u, 2u, 0u, 2u, 3u}) idx.push_back(q * 4 + k);
+            Uploader up(dev);
+            up.buffer(overlayIndices, idx.data(), uint32_t(idx.size() * 4));
+        }
+        return overlayIndices;
+    }
+
+    void drawOverlay(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<Quad2D>& overlay, size_t nq) {
+        {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(Pass::Blend)]);
             struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
             SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
@@ -1370,12 +1493,11 @@ struct Renderer {
                 i = j;
             }
         }
-        SDL_EndGPURenderPass(pass);
     }
 };
 
 void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h, const std::string& out,
-                const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay = {}) {
+                const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -1392,7 +1514,7 @@ void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camer
     if (!target || !tb) sdlFail("screenshot resources");
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
-    r.draw(cmd, target, w, h, scene, cam, items, overlay);
+    r.draw(cmd, target, w, h, scene, cam, items, overlay, blur);
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region{};
     region.texture = target;
@@ -1477,6 +1599,7 @@ int main(int argc, char** argv) {
     float simSeconds = 0;
     float fireSeconds = 0;
     bool atExitMarks = false;
+    float forcedBlur = 0; // --blur N: force the composed blur radius (debug)
     int shootMarks = 0; // --shoot N: with --shot, the player fires N bullets along the view (fanned 1° apart) before the shot
     bool audioOn = true;
     float shotViewHeight = 60;
@@ -1504,6 +1627,7 @@ int main(int argc, char** argv) {
             else if (a == "--walk-seconds") walkSeconds = std::stof(next());
             else if (a == "--sim-seconds") simSeconds = std::stof(next());
             else if (a == "--fire-seconds") fireSeconds = std::stof(next());
+            else if (a == "--blur") forcedBlur = std::stof(next());
             else if (a == "--shoot") shootMarks = std::stoi(next());
             else if (a == "--no-audio") audioOn = false;
             else if (a == "--god") godMode = true;
@@ -1600,6 +1724,7 @@ int main(int argc, char** argv) {
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
+        game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
         // Effects started by scripts (playfx & co.), simulated by FxSystem and drawn as sprites.
         game::FxSystem fxSystem;
@@ -2634,7 +2759,7 @@ int main(int argc, char** argv) {
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
-            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam));
+            screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam), forcedBlur);
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
             return 0;
@@ -3044,13 +3169,22 @@ int main(int argc, char** argv) {
                         a >> vol >> ms;
                         mixer.fade(vol, ms);
                     }
-                    // TODO(spec): scr_blur <ms> <radius> <realtime> <priority> / clear_blur (0x4beb80, 0x4bebf0) set the
-                    // full-screen blur radius the renderer applies (0xf79658 → refdef 0xf79188); OpenIW2 has no blur pass.
+                    else if (cmd.name == "clear_blur")
+                        screenBlur.clear();
+                    else if (cmd.name == "scr_blur") { // scr_blur <ms> <radius> <realtime> <priority> (0x4beb80)
+                        int ms = 0, rt = 0, prio = 0;
+                        float radius = 0;
+                        a >> ms >> radius >> rt >> prio;
+                        const int64_t now = rt ? int64_t(SDL_GetTicks()) : world->timeMs();
+                        // TODO(spec): the original's real-time base is "ms since first use" (0x1cbaec4); SDL ticks differ only by an offset.
+                        screenBlur.command(ms, radius, rt != 0, prio, std::max<int64_t>(now, 1), screenBlur.composed());
+                    }
                 }
                 if (auto change = world->dueLevelChange()) {
                     // Level change or restart: rebuild the world and the scene for the next map.
                     currentMap = change->map;
                     std::cout << (change->failed ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
+                    screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     const script::ObjectPtr carried = world->vm().game();
                     world.reset();
                     releaseScene(dev, scene);
@@ -3095,7 +3229,11 @@ int main(int argc, char** argv) {
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
             if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap)
-                renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam));
+            {
+                screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+                const float blur = std::max(screenBlur.composed(), forcedBlur);
+                renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
+            }
             SDL_SubmitGPUCommandBuffer(cmd);
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
             cam.yaw = camBase.yaw;
