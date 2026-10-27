@@ -936,6 +936,29 @@ int main(int argc, char** argv) {
                     }
                 } else if (sceneA) combatSceneAt = -1;
             }
+            if (const char* ts = std::getenv("IW2_TRAVERSE_SCENE")) { // IW2_TRAVERSE_SCENE=<s>[,<pair index>]: an actor crosses a negotiation pair
+                static iw2::game::Entity* tActor = nullptr;
+                static int tBegin = -1, tEnd = -1;
+                static bool tDone = false;
+                const float tAt = float(std::atof(ts));
+                if (!tDone && f * 0.05f >= tAt) {
+                    tDone = true;
+                    const char* comma = std::strchr(ts, ',');
+                    const int which = comma ? std::atoi(comma + 1) : 0;
+                    for (const auto& ep : world.entities())
+                        if (!tActor && ep->isActor && !ep->obj->removed && ep->obj->get("health").asInt() > 0 && ep->ai.stack[size_t(ep->ai.depth)] != 7) tActor = ep.get();
+                    if (tActor) tBegin = world.debugTraversalSetup(*tActor, which, tEnd);
+                    if (tBegin < 0) { std::printf("[trav] no pair/actor\n"); tActor = nullptr; }
+                    else std::printf("[trav] actor #%d from begin %d (%s) end %d, goal %s, begin at %s end at %s\n", tActor->number, tBegin, world.nodes()[size_t(tBegin)].obj->get("animscript").toString().c_str(), tEnd, tActor->obj->get("$goalpos").toString().c_str(), world.nodes()[size_t(tBegin)].obj->get("origin").toString().c_str(), world.nodes()[size_t(tEnd)].obj->get("origin").toString().c_str());
+                }
+                static iw2::script::Value tGoal;
+                if (tActor && !tGoal.isDefined()) tGoal = tActor->obj->get("$goalpos");
+                if (tActor && f * 0.05f < tAt + 40.0f) { tActor->obj->set("$goalpos", tGoal); tActor->obj->set("enemy", iw2::script::Value()); } // the map scripts would send it elsewhere or into combat
+                if (tActor && f % (std::getenv("IW2_TRAVERSE_EVERY") ? std::atoi(std::getenv("IW2_TRAVERSE_EVERY")) : 10) == 0 && f * 0.05f < tAt + 40.0f) {
+                    const auto ao = tActor->obj->get("origin").asVector(), eo = world.nodes()[size_t(tEnd)].obj->get("origin").asVector();
+                    std::printf("[trav %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f distEnd %.0f\n", f * 0.05f, tActor->ai.stack[size_t(tActor->ai.depth)], tActor->ai.substate, tActor->obj->get("$goalpos").toString().c_str(), tActor->animScript.c_str(), tActor->path.count, tActor->path.traversal, tActor->path.flags, (long long)tActor->ai.stopSoonMs, ao[0], ao[1], ao[2], std::sqrt((ao[0] - eo[0]) * (ao[0] - eo[0]) + (ao[1] - eo[1]) * (ao[1] - eo[1])));
+                }
+            }
             if (touchTestAt >= 0 && f * 0.05f >= touchTestAt) { // IW2_TOUCH_TEST=<s> / IW2_ROCKET_TEST=<s>
                 const bool rocket = touchTestIsRocket;
                 touchTestAt = -1;

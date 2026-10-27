@@ -188,9 +188,12 @@ bool World::aiStart(Entity& e, int state) {
     case AiBadplace: // 0x524030: the flag keeps whether a flee target was found
         e.ai.badPlace = badPlaceFlee(e);
         return true;
+    case AiNegotiation: // 0x54b720: needs a path with a traversal point; facing mode 1 (+0x104), traversemode nogravity (+0x210 = 2)
+        if (e.path.count <= 0 || e.path.traversal <= 0) return false;
+        e.ai.facing = 1;
+        e.ai.traverseMode = 2;
+        return true;
     default:
-        // TODO(spec): negotiation (0x54b720) needs traversals, which are not implemented; its start fails, so the
-        // actor stays exposed.
         return false;
     }
 }
@@ -255,6 +258,7 @@ int World::aiThink(Entity& e, int state) {
     case AiScripted: return scriptedThink(e); // 0x54b0a0
     case AiBadplace: return badPlaceThink(e); // 0x524060
     case AiGrenade: return grenadeStateThink(e); // 0x520c30
+    case AiNegotiation: return negotiationThink(e); // 0x54b760
     default:
         aiSetState(e, AiExposed);
         return 1;
@@ -450,6 +454,48 @@ int World::customThink(Entity& e) {
         actorPerceive(e);
         return 0;
     }
+    aiPopState(e);
+    return 1;
+}
+
+// Negotiation think (0x54b760): the anim mode follows traversemode (1 -> 4, 3 -> 5, else 6; +0x21c overrides) and the begin
+// node's animscript (animscripts/traverse/<key>, copied by the trigger, 0x543760) runs with movemode stop; +0x220 is set.
+// While the script thread lives the actor only perceives (0x54b86c: the same 0x54d0a0 / 0x54e230 round as animcustom). When
+// it ended the sentient node becomes the end node (+0x38, cache flags +0x3c = 1 / +0x3d = 0), the path is planned again
+// (0x5037e0) and the state pops. The translation of the anim delta (0x504160 modes 4-6 -> velocity +0x250, consumed by the
+// actor physics, which is not decoded) is approximated: TODO(spec) the delta rotation 0x4758f0 and the physics; here the
+// delta is added in the actor's yaw frame (mode 4 without z; 5 and 6 with z).
+int World::negotiationThink(Entity& e) {
+    ActorAi& ai = e.ai;
+    const int mode = ai.traverseMode == 1 ? 4 : ai.traverseMode == 3 ? 5 : 6;
+    setActorAnimScript(e, "traverse/" + ai.negotiationScript, 0, mode);
+    ai.animDeltaGoalWeights = true;
+    if (!actorAnimScriptDone(e)) {
+        if (e.anim) {
+            const AnimDelta d = e.anim->delta(true);
+            const Value av = e.obj->get("angles");
+            const float yaw = (av.isVector() ? av.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
+            const float c = std::cos(yaw), s = std::sin(yaw);
+            Value ov = e.obj->get("origin");
+            Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+            o[0] += d.trans[0] * c - d.trans[1] * s;
+            o[1] += d.trans[0] * s + d.trans[1] * c;
+            if (mode != 4) o[2] += d.trans[2];
+            e.obj->set("origin", Value(o));
+        }
+        actorPerceive(e);
+        return 0;
+    }
+    ActorPath& p = e.path;
+    if (p.count > 0 && p.traversal > 0) {
+        const int endNode = p.pts[size_t(p.traversal - 1)].node;
+        if (endNode >= 0) {
+            e.cachedNode = endNode;
+            e.nodeCached = true;
+            e.nodeUnreachable = false;
+        }
+    }
+    replanFromSentient(e);
     aiPopState(e);
     return 1;
 }
@@ -819,6 +865,18 @@ void World::registerActorStateBuiltins() {
         }
         return Value();
     });
+    // getnegotiationstartnode / getnegotiationendnode (0x5405b0 / 0x540650): with a path (+0x6b0 > 0) and a traversal point
+    // (+0x6b6 > 0) the node of path entry [traversal] (the begin node) / [traversal - 1] (the end node); else nothing.
+    for (const bool begin : {true, false}) {
+        vm_.registerBuiltin(begin ? "getnegotiationstartnode" : "getnegotiationendnode", [this, begin](CallContext& c) -> Value {
+            Entity* e = entityOf(c.self);
+            if (!e || !e->isActor) throw std::runtime_error("getnegotiation node on a non-actor");
+            const ActorPath& p = e->path;
+            if (p.count <= 0 || p.traversal <= 0) return Value();
+            const int node = p.pts[size_t(begin ? p.traversal : p.traversal - 1)].node;
+            return node >= 0 ? Value(nodes_[size_t(node)].obj) : Value();
+        });
+    }
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {

@@ -620,7 +620,15 @@ void World::moveActor(Entity& e, float dt) {
     }
     e.obj->set("origin", Value(o));
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
-    // 0x503ec0 (TODO(spec): the negotiation branch, +0x244 / +0x23c and flag 0x40).
+    // 0x503ec0: the negotiation branch (stop soon unset, on the ground, flag 0x40, a traversal point): within the squared
+    // distance |velocity|^2 * 0.005 + 1e-6 (2D) of the begin point the negotiation state is pushed.
+    if (e.ai.stopSoonMs == 0) {
+        if (!(tr.fraction < 1.0f && !tr.startSolid) || !(p.flags & 0x40)) return; // 0x503ee..0x503ef5: not on the ground or no flag 0x40
+        if (p.traversal > 0) {
+            negotiationTrigger(e, o, true);
+            return;
+        }
+    }
     const PathPoint& end = p.pts[size_t(p.traversal)];
     const float ex = end.pos[0] - o[0], ey = end.pos[1] - o[1];
     if (e.ai.stopSoonMs == 0) {
@@ -634,6 +642,21 @@ void World::moveActor(Entity& e, float dt) {
         p.count = p.planned = 0;
         e.ai.detourMs = 0;
     }
+}
+
+bool World::negotiationTrigger(Entity& e, const Vec3& o, bool grounded) {
+    ActorPath& p = e.path;
+    if (!grounded) return false;
+    const PathPoint& b = p.pts[size_t(p.traversal)];
+    const float dx = b.pos[0] - o[0], dy = b.pos[1] - o[1];
+    const float v2 = e.velocity[0] * e.velocity[0] + e.velocity[1] * e.velocity[1] + e.velocity[2] * e.velocity[2];
+    if (dx * dx + dy * dy > v2 * 0.005f + 0.000001f) return false;
+    if (!aiPushState(e, AiNegotiation)) return false;
+    if (b.node >= 0) {
+        const Value k = nodes_[size_t(b.node)].obj->get("animscript");
+        e.ai.negotiationScript = k.isString() ? k.asString() : std::string(); // 0x543760
+    }
+    return true;
 }
 
 void World::useAnimTree(Entity& e, const std::string& tree) {
@@ -987,6 +1010,7 @@ void World::registerBuiltins() {
     });
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
     vm_.registerBuiltin("setgoalnode", [](CallContext& c) {
+        if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal
         auto o = c.self.asObject();
         if (c.arg(0).isObject()) {
             o->set("$goalpos", c.arg(0).asObject()->get("origin"));
@@ -996,13 +1020,14 @@ void World::registerBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("setgoalpos", [](CallContext& c) {
+        if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal
         c.self.asObject()->set("$goalpos", c.arg(0));
         c.self.asObject()->set("$goalent", Value());
         c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });
-    vm_.registerBuiltin("setgoalentity", [](CallContext& c) { c.self.asObject()->set("$goalent", c.arg(0)); return Value(); });
-    vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalentity", [](CallContext& c) { if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); c.self.asObject()->set("$goalent", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
     vm_.registerBuiltin("spawn", [this](CallContext& c) {
         Entity& e = spawnEntity(c.arg(0).toString());
         if (c.arg(1).isDefined()) e.obj->set("origin", c.arg(1));
