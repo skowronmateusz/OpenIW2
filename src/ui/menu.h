@@ -55,7 +55,7 @@ struct Item : Window {
     std::string dvar;
     std::string dvarTest;
     std::vector<std::string> showDvar, hideDvar, enableDvar, disableDvar;
-    std::string focusDvar;
+    std::vector<std::string> focusDvar; // dvarTest values that give the item the initial focus
     Script action, mouseEnter, mouseExit, onFocus, leaveFocus, accept;
     std::vector<std::pair<std::string, Script>> execKeys; // execKey "k" / execKeyInt n
 };

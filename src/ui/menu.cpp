@@ -299,7 +299,7 @@ private:
             else if (k == "autowrapped") it.autoWrapped = true;
             else if (k == "dvar" && !a.empty()) it.dvar = a[0];
             else if (k == "dvartest" && !a.empty()) it.dvarTest = a[0];
-            else if (k == "focusdvar" && !a.empty()) it.focusDvar = a[0];
+            else if (k == "focusdvar") it.focusDvar = strings(blk);
             else if (k == "showdvar") it.showDvar = strings(blk);
             else if (k == "hidedvar") it.hideDvar = strings(blk);
             else if (k == "enabledvar") it.enableDvar = strings(blk);

@@ -16,6 +16,15 @@ struct MenuEnv {
     std::function<void(const std::string& menu, const std::string& response)> scriptMenuResponse;
     std::function<void(const std::string& menu)> close;
     std::function<void(const std::string& alias)> play;
+    // Front-end hooks (optional; set by MenuStack, src/ui/frontend.h). Names are the menu/item names of the commands.
+    std::function<void(const std::string& menu)> open;                 // "open"
+    std::function<void(const std::string& item)> setFocus;             // "setfocus"
+    std::function<void(const std::string& dvar)> setFocusByDvar;       // "setfocusbydvar"
+    std::function<void(const std::string& item, bool show)> showItem;   // "show" / "hide"
+    std::function<bool()> savegameExists;  // "savegameshow/savegamehide": TODO(spec) exact exe semantics; unset = no save
+    std::function<bool()> restartAvailable; // "restarthide": unset = available
+    std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle
+    std::function<void(const std::string& name, const Command& args)> uiScript; // "uiScript" other than update
 };
 
 // Runs the commands of `script` for a menu named `menuName` (the target of its scriptMenuResponse commands).

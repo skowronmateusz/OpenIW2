@@ -360,7 +360,9 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
 // `damageAmount` is the fallback when the weapon (weaponName, else the shooter's own) has no definition.
 Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
-                          const std::string& weaponName) {
+                          const std::string& weaponName, int depth) {
+    // More than 12 passes: the exe prints an error and fires nothing (0x531343 / 0x531356).
+    if (depth > 12) return nullptr;
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
     const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
     const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
@@ -396,6 +398,21 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         aiEventLine(*attacker, 16, start, tr.endPos);
     }
     bulletImpact(shooter, def, start, end, tr, hit);
+    // Penetration (0x531665): a hit on contents 0x10 goes on from just behind the hit point towards the same end with the
+    // next depth and applies no damage here: start = hit + dir · t, t = 0.25 / cosθ (cosθ = −dir·normal) when cosθ >= 0.125,
+    // else 0 (0x5316be…0x531729). The impact event above is still sent.
+    if (tr.fraction < 1.0f && (tr.contents & 0x10u) && !tr.startSolid) {
+        Vec3 d = sub(end, start);
+        const float dl = len(d);
+        if (dl > 0) {
+            d = scale(d, 1.0f / dl);
+            const float cosT = -(d[0] * tr.normal[0] + d[1] * tr.normal[1] + d[2] * tr.normal[2]);
+            const float t = cosT >= 0.125f ? 0.25f / cosT : 0.0f;
+            ++stats.bulletPenetrations;
+            return fireBullet(shooter, add(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}, scale(d, t)), end, damageAmount, attacker,
+                              weaponName, depth + 1);
+        }
+    }
     if (hit && !takesDamage(*hit)) hit = nullptr;
     ++stats.shots;
     if (def) {
@@ -551,25 +568,39 @@ void World::registerCombatBuiltins() {
         else if (enemy) target = add(enemy->obj->get("origin").asVector(), {0, 0, 40});
         else return Value();
         // Hit or miss (0x550a70 → 0x54fde0): the shot hits when graph(distance) · accuracy · accMod (clamped to 0..1)
-        // beats a random number; otherwise 0x550390 aims it beside the target. TODO(spec): the miss direction
-        // (0x550390: offsets along the sight line's perpendicular axes by random terms and globals 0x5a5be8 / 0x5a5bf0 /
-        // 0x5a9928, scales 8 and 44) is not decoded, so a flat offset stands in. The shot itself has spread 0 (0x550bee
-        // passes 0 to 0x5312b0).
-        const Value accV = a->obj->get("accuracy");
-        const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
-        const Value wnv = a->obj->get("weapon");
-        const AccuracyGraph* graph = enemy && wnv.isString() ? accuracyGraph(wnv.asString(), enemy->isPlayer) : nullptr;
-        float accuracy;
-        if (graph) {
-            const Vec3 ao = a->obj->get("origin").asVector(), eo = enemy->obj->get("origin").asVector();
-            accuracy = aiHitChance(*graph, len(sub(eo, ao)), actorAcc, accMod);
-        } else {
-            accuracy = std::clamp(actorAcc * accMod, 0.0f, 1.0f); // no graph: previous model
-        }
-        std::uniform_real_distribution<float> u(0.0f, 1.0f);
-        if (!(accuracy > u(rng_))) {
-            std::uniform_real_distribution<float> off(-40.0f, 40.0f);
-            target = add(target, {off(rng_), off(rng_), off(rng_) * 0.5f});
+        // beats a random number; then 0x54ff90 aims at a random point of the target's body box, else 0x550390 beside it
+        // A shoot() with an explicit position fires straight at it (0x550af6). The shot
+        // has spread 0 (0x550bee passes 0 to 0x5312b0). TODO(spec): the actor target point (exe: actor +0x174 from
+        // 0x500910; here the origin + 40), the shooter's up axis (ctx +0xf8, world up here).
+        if (!c.arg(1).isVector()) {
+            const Value accV = a->obj->get("accuracy");
+            const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
+            const Value wnv = a->obj->get("weapon");
+            const AccuracyGraph* graph = wnv.isString() ? accuracyGraph(wnv.asString(), enemy->isPlayer) : nullptr;
+            float accuracy;
+            if (graph) {
+                const Vec3 ao = a->obj->get("origin").asVector(), eo = enemy->obj->get("origin").asVector();
+                accuracy = aiHitChance(*graph, len(sub(eo, ao)), actorAcc, accMod);
+            } else {
+                accuracy = std::clamp(actorAcc * accMod, 0.0f, 1.0f); // no graph: previous model
+            }
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            const bool hitRoll = accuracy > u(rng_);
+            if (static const bool dbg = std::getenv("IW2_ACC_DEBUG") != nullptr; dbg)
+                print("ACC " + a->obj->get("weapon").toString() + " " + (enemy->isPlayer ? "player" : "ai") + " dist " +
+                      std::to_string(int(len(sub(enemy->obj->get("origin").asVector(), a->obj->get("origin").asVector())))) + " chance " +
+                      std::to_string(accuracy) + (hitRoll ? " hit" : " miss"));
+            Vec3 T = target;
+            if (enemy->isPlayer) T = eyePosition(*enemy); // the player's eye (0x4e8b70)
+            Vec3 v = sub(T, start);
+            const float vl = len(v);
+            if (vl > 0) v = scale(v, 1.0f / vl);
+            const Vec3f up{0, 0, 1};
+            const Vec3f cs = aiSideAxis({v[0], v[1], v[2]}, up);
+            const Vec3f Tf{T[0], T[1], T[2]};
+            const Vec3f p = hitRoll ? aiHitPoint(Tf, cs, up, enemy->isPlayer, accuracy, u(rng_), u(rng_))
+                                    : aiMissPoint(Tf, {v[0], v[1], v[2]}, cs, up, enemy->isPlayer, u(rng_), u(rng_), u(rng_));
+            target = {p.x, p.y, p.z};
         }
         const Vec3 dir = sub(target, start);
         // 0x550a70: firing with a current enemy is an AI event (type 4) at the actor's origin: the actors around
@@ -577,6 +608,14 @@ void World::registerCombatBuiltins() {
         if (enemy) aiEventPoint(*a, 4, start);
         const Value wpn = a->obj->get("weapon");
         fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
+        // The shot adds EV_FIRE_WEAPON (0x9e, 0xa0 without a bullet: 0x550c46 / 0x550c1b) to the actor; the client handler
+        // 0x4b7800 plays, for an entity that is not the local client, the weapon's worldFlashEffect (0xf48e48) via
+        // 0x4b6660 at the entity's tag_flash (0x4b78de). TODO(spec): the effect is bolted to the tag (follows it); the
+        // effect axes come from the tag, here the shot direction.
+        if (wpn.isString()) {
+            const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
+            if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir});
+        }
         vm_.notify(a->obj, "weapon_fired");
         return Value();
     });
@@ -673,7 +712,7 @@ void World::registerCombatBuiltins() {
         const Vec3 d = sub(c.arg(0).asVector(), g.asVector());
         return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
     });
-    for (const char* noop : {"exitprone", "enterprone", "orientmode", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
+    for (const char* noop : {"exitprone", "enterprone", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",

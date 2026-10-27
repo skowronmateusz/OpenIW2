@@ -91,6 +91,8 @@ struct ActorAi {
     int64_t perceptionFrameMs = -1;           // +0x24
     int64_t painStartMs = 0;                  // +0xa4
     int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
+    int orient = 0;                           // +0x114 orientmode override (0 = none, else a facing mode 1..6)
+    float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
     bool animDeltaGoalWeights = false;        // +0x220 anim deltas weigh by goal weights (TODO(spec): the states that set it)
@@ -419,7 +421,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -454,7 +456,7 @@ private:
                 const std::string& location = "none");
     // attacker: the entity credited with the damage (nullptr = the world).
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
-                      const std::string& weaponName = std::string());
+                      const std::string& weaponName = std::string(), int depth = 0);
     int weaponDamage(const std::string& weaponName);
     // Accuracy graph of a weapon for the target kind (weapon fields aiVsPlayerAccuracyGraph / aiVsAiAccuracyGraph); null without one.
     const AccuracyGraph* accuracyGraph(const std::string& weaponName, bool targetClient);

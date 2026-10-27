@@ -14,6 +14,7 @@
 namespace iw2::game {
 
 using FVec = std::array<float, 3>;
+using FxAxes = std::array<FVec, 3>; // forward, right, up (rows of the 3x3 axis of the game)
 
 struct FxParticle {
     const assets::EfxElement* element = nullptr;
@@ -69,6 +70,12 @@ public:
     std::vector<FxDecal> takeDecals(int64_t nowMs);
     // Spawns every element of an effect at `origin` facing `forward`.
     void play(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FVec& forward, int64_t nowMs);
+    void playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FxAxes& axes, int64_t nowMs);
+    // The viewer for the per-element spawnRange / cullrange gate (0x485300): origin and tan(fovX / 2) / tan(40 deg)
+    // (view struct +0x14 / +0xf4, 0x486e00). While viewValid is false the gate passes. Set by the host each frame.
+    FVec viewOrigin{};
+    float viewScale = 1.0f;
+    bool viewValid = false;
     // Drops finished particles and returns the visible ones at nowMs.
     std::vector<FxSprite> sprites(int64_t nowMs);
     size_t count() const { return particles_.size(); }
@@ -79,8 +86,11 @@ private:
     uint32_t seed_ = 0x13579bdf;
     float frand();
     float range(const std::vector<float>& v, float fallback);
-    void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, const FVec& f, const FVec& r, const FVec& up,
-                     int64_t nowMs);
+    void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);
+    void spawnParticle(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);
+    FVec spawnPoint(const assets::EfxElement& e, const FVec& origin, FxAxes& ax);
+    bool inRange(const assets::EfxElement& e, const FVec& origin) const;
+    float elementDelay(const assets::EfxElement& e, int i, int n);
     std::vector<std::shared_ptr<const assets::EfxEffect>> keep_;
     std::vector<FxParticle> particles_;
     std::pair<int, int> atlasOf(const std::string& material);
@@ -88,7 +98,8 @@ private:
     // FxRunner children waiting for their spawn time (0x48dac0 → 0x4853f0): they inherit the parent's axes.
     struct PendingRun {
         std::string path;
-        FVec origin{}, forward{};
+        FVec origin{};
+        FxAxes axes{};
         int64_t startMs = 0;
     };
     std::vector<PendingRun> pending_;

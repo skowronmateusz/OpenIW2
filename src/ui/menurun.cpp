@@ -22,6 +22,8 @@ void execConsole(const std::string& text, MenuEnv& env) {
     if (lowerStr(cmd) == "toggle" && !arg.empty()) {
         const std::string v = env.getCvar(arg);
         env.setCvar(arg, v.empty() || std::atof(v.c_str()) == 0.0 ? "1" : "0");
+    } else if (env.exec) {
+        env.exec(text);
     }
 }
 
@@ -46,11 +48,24 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
     for (const Command& cmd : script) {
         if (cmd.empty()) continue;
         const std::string name = lowerStr(cmd[0]);
-        if (name == "play" && cmd.size() > 1) env.play(cmd[1]);
+        if (name == "play" && cmd.size() > 1) { if (env.play) env.play(cmd[1]); }
+        else if (name == "open" && cmd.size() > 1) { if (env.open) env.open(cmd[1]); }
+        else if (name == "setfocus" && cmd.size() > 1) { if (env.setFocus) env.setFocus(cmd[1]); }
+        else if (name == "setfocusbydvar" && cmd.size() > 1) { if (env.setFocusByDvar) env.setFocusByDvar(cmd[1]); }
+        else if ((name == "savegameshow" || name == "savegamehide") && cmd.size() > 1) {
+            // Inferred from the menus (main onOpen: savegameshow resume; savegamehide newgame): resume only with a saved game.
+            const bool has = env.savegameExists && env.savegameExists();
+            if (env.showItem) env.showItem(cmd[1], name == "savegameshow" ? has : !has);
+        } else if (name == "restarthide" && cmd.size() > 1) {
+            if (env.showItem && env.restartAvailable && !env.restartAvailable()) env.showItem(cmd[1], false);
+        }
+        else if ((name == "show" || name == "hide") && cmd.size() > 1) { if (env.showItem) env.showItem(cmd[1], name == "show"); }
         else if ((name == "execnow" || name == "exec") && cmd.size() > 1) execConsole(cmd[1], env);
         else if (name == "uiscript" && cmd.size() > 2 && lowerStr(cmd[1]) == "update") uiScriptUpdate(cmd[2], env);
-        else if (name == "scriptmenuresponse" && cmd.size() > 1) env.scriptMenuResponse(menuName, cmd[1]);
-        else if (name == "close" && cmd.size() > 1) env.close(cmd[1]);
+        else if (name == "uiscript" && cmd.size() > 1) { if (env.uiScript) env.uiScript(lowerStr(cmd[1]), Command(cmd.begin() + 2, cmd.end())); }
+        else if (name == "scriptmenuresponse" && cmd.size() > 1) { if (env.scriptMenuResponse) env.scriptMenuResponse(menuName, cmd[1]); }
+        else if (name == "close" && cmd.size() > 1) { if (env.close) env.close(cmd[1]); }
+        else if (name == "setdvar" && cmd.size() > 2) env.setCvar(cmd[1], cmd[2]);
         // Other commands (open, setcvar, transition, ...) are not used by the script menus; TODO(spec).
     }
 }
