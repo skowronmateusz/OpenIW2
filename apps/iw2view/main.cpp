@@ -2804,7 +2804,20 @@ int main(int argc, char** argv) {
             const std::string* t = loc.find(key);
             return t ? *t : key;
         };
-        auto menuFont = [&](float ts) { return font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont"); };
+        // Menu text font (exe 0x4c38e0, handles loaded at 0x4c3487..0x4c34fe): the item's textfont 2 (UI_FONT_BIG) = $bigfont, 3 (SMALL) =
+        // $smallfont, 5 (CONSOLE) = $consolefont; 4 (BOLD) and 0/1 choose by scale = textscale * (screen height / 480) (0x793944)
+        // against ui_smallFont (0.25), ui_bigFont (0.4) and ui_extraBigFont (0.55): <= small $smallfont; generic: < big $font,
+        // < extraBig $bigfont, else $extrabigfont; BOLD: < extraBig $font, else $boldfont.
+        float menuScreenH = 480.0f; // set by the HUD builder each frame
+        auto menuFont = [&](float ts, int textFont) {
+            if (textFont == 2) return font("bigFont");
+            if (textFont == 3) return font("smallFont");
+            if (textFont == 5) return font("consoleFont");
+            const float s = ts * menuScreenH / 480.0f;
+            if (s <= 0.25f) return font("smallFont");
+            if (textFont == 4) return font(s < 0.55f ? "normalFont" : "boldFont");
+            return font(s >= 0.55f ? "extraBigFont" : s < 0.4f ? "normalFont" : "bigFont");
+        };
         menuEnv.bindKey = [&](const std::string& command, const std::string& key) {
             input.rebind(command, key);
             profileDirty = true;
@@ -2823,7 +2836,7 @@ int main(int argc, char** argv) {
             return 0;
         };
         menuEnv.textWidth = [&](const ui::Item& it) {
-            const assets::Font* f = menuFont(it.textScale);
+            const assets::Font* f = menuFont(it.textScale, it.textFont);
             if (!f) return 0.0f;
             const float gs = it.textScale * 48.0f / float(f->pixelHeight);
             float width = 0;
@@ -2832,6 +2845,7 @@ int main(int argc, char** argv) {
             return width;
         };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
+            menuScreenH = float(h);
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
             const float sc = float(h) / 480.0f;               // virtual pixel to screen pixel
             const float left43 = (float(w) - 640.0f * sc) * 0.5f; // left edge of the 4:3 area
@@ -3646,7 +3660,7 @@ int main(int argc, char** argv) {
                         if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
                         const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
-                        const assets::Font* f = menuFont(ts);
+                        const assets::Font* f = menuFont(ts, it.textFont);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
                         auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
