@@ -1911,9 +1911,12 @@ int main(int argc, char** argv) {
         // Menu "weaponinfo" (hud.menu:184): the ammo counter backdrop `ammocounterback` (ownerdraw CG_PLAYER_AMMO_BACKDROP 6), rect
         // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
         const ui::Item* ammoBackItem = nullptr;
+        const ui::Item* ammoTextItem = nullptr; // item "ammotex" (ownerdraw CG_PLAYER_AMMO_VALUE 5), rect -85 -15 70 40
         if (const ui::Menu* m = hudMenus.find("weaponinfo"))
-            for (const auto& it : m->items)
+            for (const auto& it : m->items) {
                 if (it->name == "ammocounterback") ammoBackItem = it.get();
+                else if (it->name == "ammotex") ammoTextItem = it.get();
+            }
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
             for (const auto& it : m->items)
@@ -2415,22 +2418,48 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // Ammo counter, bottom right of the 4:3 area. The ammo ownerdraws (0x4a7818 …) special-case only vehicles
-            // (pm_flags 0x20000), not turrets, so the hand weapon's ammo stays on a turret.
+            // Ammo counter. Menu "weaponinfo" has rect 0 0 0 0 HORIZONTAL_ALIGN_RIGHT VERTICAL_ALIGN_BOTTOM and its items
+            // give no alignment of their own, so they inherit RIGHT/BOTTOM: the negative rects are offsets from the
+            // viewable right/bottom edge (exe 0x440e60: RIGHT = x*sx + 0x79397c, the right edge of the window, set up
+            // by 0x440a40 from the real resolution; BOTTOM likewise), i.e. NOT from the 4:3 box on a wide screen.
+            // The ammo ownerdraws (0x4a7818 …) special-case only vehicles (pm_flags 0x20000), not turrets, so the hand
+            // weapon's ammo stays on a turret. Text rule (handler 0x4a7930, both clip and stock valid): clip "%2i"
+            // left at rect.x, stock "%3i" right-aligned at rect.x + rect.w, "|" centred in the rect minus 5 (0x591ef0);
+            // baseline at rect.y (4c3790 gets the item rect y unchanged). TODO(spec): low-ammo red (0.89 0.18 0.01,
+            // 0x4a76b0: stock < clip size * 0x592020), the hud fade alpha (0x4a7600), the firemode icon (ownerdraw 83).
             if (pweapon.equipped()) {
+                const float rightEdge = float(w), bottomEdge = float(h); // RIGHT / BOTTOM alignment, safe area 0
                 if (ammoBackItem && !ammoBackItem->background.empty()) {
                     const auto& r = ammoBackItem->rect;
-                    Quad2D q{left43 + (640.0f + r.x) * sc, (480.0f + r.y) * sc, 0, 0};
+                    Quad2D q{rightEdge + r.x * sc, bottomEdge + r.y * sc, 0, 0};
                     q.x1 = q.x0 + r.w * sc;
                     q.y1 = q.y0 + r.h * sc;
                     for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(ammoBackItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
                     q.texture = materialTexture(ammoBackItem->background);
                     out.push_back(q);
                 }
-                if (const assets::Font* f = font("bigfont")) {
-                    const uint8_t white[4] = {255, 255, 255, 230};
-                    hudText(out, std::to_string(pweapon.clip()) + " | " + std::to_string(pweapon.stock()), left43 + 620 * sc, 460 * sc,
-                            1.0f * sc, *f, white, 1.0f, 1.0f);
+                if (ammoTextItem) {
+                    const auto& r = ammoTextItem->rect;
+                    const float ts = ammoTextItem->textScale;
+                    const float fs = ts * float(h) / 480.0f; // font choice as for the cursor hint (same item defaults)
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                        uint8_t col[4];
+                        for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(ammoTextItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        auto fmt = [](const char* pat, int v) { char b[16]; std::snprintf(b, sizeof b, pat, std::min(v, 999)); return std::string(b); };
+                        auto width = [&](const std::string& t) {
+                            float tw = 0;
+                            for (unsigned char ch : t)
+                                if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                            return tw;
+                        };
+                        const float x0 = rightEdge + r.x * sc, y0 = bottomEdge + r.y * sc, w0 = r.w * sc;
+                        const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", pweapon.stock());
+                        const int st = ammoTextItem->textStyle;
+                        hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
+                        hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col, 0.0f, 1.0f, st);
+                        hudText(out, stock, x0 + w0, y0, gs, *f, col, 1.0f, 1.0f, st);
+                    }
                 }
             }
             if (const char* key = std::getenv("IW2_HUD_TEXT")) { // debug: show a localized string
