@@ -42,6 +42,23 @@ std::string registeredDefault(const std::string& n) {
     static const char* const names[] = {"mis_none", "mis_01", "mis_02", "mis_03", "mis_04", "mis_05", "mis_06", "mis_07", "mis_08", "mis_09", "mis_10"};
     for (const char* k : names)
         if (n == k) return "0";
+    // Dvars the exe registers at startup with a default (register calls 0x431f60 bool / 0x432020 float; arguments name, default,
+    // [min, max], flags): the client block at 0x40e270..0x40e620, snd_volume at 0x4449d6, monkeytoy at 0x4037ba.
+    static const std::pair<const char*, const char*> defaults[] = {
+        {"cg_drawCrosshair", "1"},  // 0x40e400
+        {"cg_subtitles", "1"},      // 0x40e418
+        {"cg_blood", "1"},          // 0x40e5f9
+        {"monkeytoy", "1"},         // 0x4037ba
+        {"cl_freelook", "1"},       // 0x40e2e0
+        {"cl_mouseAccel", "0"},     // 0x40e2c3 (float 0..100)
+        {"cl_showmouserate", "0"},  // 0x40e2f9
+        {"r_inGameVideo", "1"},     // 0x40e311
+        {"sensitivity", "5"},       // 0x40e2a3 (float 0.01..100)
+        {"m_pitch", "0.022"},       // 0x40e337 (float -1..1)
+        {"snd_volume", "1"},        // 0x4449d6 (float 0..1)
+    };
+    for (const auto& [k, v] : defaults)
+        if (lowerStr(n) == lowerStr(k)) return v;
     return {};
 }
 

@@ -2816,6 +2816,12 @@ int main(int argc, char** argv) {
         // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
         // TODO(spec): the macOS display modes as r_mode entries.
         menuEnv.enumValues = [](const std::string&) { return std::vector<std::string>{}; };
+        menuEnv.language = [&] { // ids of the ui_language list in options_game.menu
+            static const char* const names[] = {"english", "french", "german", "italian", "spanish", "british", "russian", "polish", "korean", "taiwanese", "japanese", "chinese", "thai"};
+            for (int i = 0; i < 13; ++i)
+                if (language == names[i]) return i;
+            return 0;
+        };
         menuEnv.textWidth = [&](const ui::Item& it) {
             const assets::Font* f = menuFont(it.textScale);
             if (!f) return 0.0f;

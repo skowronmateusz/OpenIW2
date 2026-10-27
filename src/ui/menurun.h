@@ -32,6 +32,7 @@ struct MenuEnv {
     std::function<void(const std::string& command, const std::string& key)> bindKey; // BIND capture result; key "" = clear (Del)
     // DVARENUM items (exe 0x4cd720): the value strings of the enum dvar named by `dvarEnumList`; unset = "not an enum dvar".
     std::function<std::vector<std::string>(const std::string& enumDvar)> enumValues;
+    std::function<int()> language; // language id of the ui_language list (0 english, 1 french, 2 german, ... 7 polish); unset = 0
     std::function<float(const Item&)> textWidth;
 };
 
