@@ -1089,6 +1089,12 @@ namespace iw2::game {
 bool World::entityTagPosition(int number, const std::string& tag, Vec3& out) {
     Entity* e = entityByNumber(number);
     if (!e) return false;
+    if (e->vehicle) { // the vehicle's bone controls (jolt, turret yaw, barrel pitch) move the flash tags
+        bool found = false;
+        const Vec3 p = vehicleTagPosition(*e, tag.c_str(), found);
+        if (found) out = p;
+        return found;
+    }
     const auto bones = entityBones(*e);
     const auto it = bones.find(tag);
     if (it == bones.end()) return false;
