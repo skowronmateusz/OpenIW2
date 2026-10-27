@@ -1290,6 +1290,7 @@ struct FragmentUniforms {
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
     float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
     float fogColor[4];
+    float probe[6][4]; // light-grid coefficients R0,R1,G0,G1,B0,B1 (lightprobe.hlsl lightGridColors); used when sunDirection.w == 1
 };
 
 // An entity model to draw this frame.
@@ -1298,6 +1299,8 @@ struct DrawItem {
     Mat4 transform{};
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
+    bool hasProbe = false;
+    float probe[6][4] = {}; // light-grid coefficients for per-pixel ProbeLighting(N)
     float scrollV = 0.0f; // vehicle tread scroll
     // Viewport depth range maximum (the minimum is 0): the renderer draws groups with the 0x8 class in 0 .. 0.2 and the 0x10
     // class in 0 .. 0.5 of the depth buffer (D3D SetViewport MinZ/MaxZ via 0x1003ec50, called at 0x1002fafc..0x1002fc85;
@@ -1307,6 +1310,14 @@ struct DrawItem {
     // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
     float zNear = 4.0f;
 };
+
+// Packs the light-grid coefficients as the lightprobe.hlsl lightGridColors{R,G,B}{0,1} constants (corner order 0..3, 4..7).
+static void storeProbe(DrawItem& it, const assets::LightGridCoeffs& c) {
+    it.hasProbe = !std::getenv("IW2_NO_PROBE");
+    for (int ch = 0; ch < 3; ++ch)
+        for (int h = 0; h < 2; ++h)
+            for (int k = 0; k < 4; ++k) it.probe[ch * 2 + h][k] = c[size_t(ch)][size_t(h * 4 + k)];
+}
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
@@ -1376,6 +1387,14 @@ struct Renderer {
     SDL_GPUTexture* halfTex = nullptr;
     SDL_GPUTexture* quarterTex = nullptr;
     SDL_GPUBuffer* blurVerts = nullptr;
+    // Glow / bloom post chain (materials/shaders/glow_*.hlsl, filter_symmetric_N): quarter-resolution $glow_0 / $glow_1.
+    SDL_GPUTexture* glowSetupTex = nullptr;
+    SDL_GPUTexture* glowTmpTex = nullptr;
+    SDL_GPUTexture* glowTex[2] = {nullptr, nullptr};
+    SDL_GPUGraphicsPipeline* copyPipe = nullptr;
+    SDL_GPUGraphicsPipeline* glowSetupPipe = nullptr;
+    SDL_GPUGraphicsPipeline* glowBlurPipe = nullptr;
+    SDL_GPUGraphicsPipeline* glowApplyPipe = nullptr;
     uint32_t blurW = 0, blurH = 0;
     float lmScale = 1.0f;
     // Weights for a flat normal map from the $lightmapweights rule (docs/spec/material.md): all weight on
@@ -1534,10 +1553,59 @@ struct Renderer {
             pi.target_info.num_color_targets = 1;
             pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
             pi.target_info.has_depth_stencil_target = true;
+            ct.blend_state.enable_color_write_mask = true;
+            ct.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B; // alpha stays 0 for sky (scene alpha = non-sky mask for glow_setup)
             skyPipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
             if (!skyPipeline) sdlFail("sky pipeline");
             SDL_ReleaseGPUShader(dev, sv);
             SDL_ReleaseGPUShader(dev, sf);
+        }
+        {
+            SDL_GPUShaderCreateInfo gv = vs;
+            gv.entrypoint = "vs_fs";
+            gv.num_uniform_buffers = 0;
+            SDL_GPUShader* gvs = SDL_CreateGPUShader(dev, &gv);
+            auto mk = [&](const char* entry, uint32_t samplers, uint32_t ubs, bool blend, bool depthTarget) {
+                SDL_GPUShaderCreateInfo gf = fs;
+                gf.entrypoint = entry;
+                gf.num_samplers = samplers;
+                gf.num_uniform_buffers = ubs;
+                SDL_GPUShader* gfs = SDL_CreateGPUShader(dev, &gf);
+                if (!gvs || !gfs) sdlFail("glow shaders");
+                SDL_GPUColorTargetDescription ct{};
+                ct.format = colorFormat;
+                if (blend) { // premultiplied over: rgb + dst * (1 - a)
+                    ct.blend_state.enable_blend = true;
+                    ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+                    ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+                    ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                    ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                    ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+                    ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                }
+                SDL_GPUGraphicsPipelineCreateInfo pi{};
+                pi.vertex_shader = gvs;
+                pi.fragment_shader = gfs;
+                pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+                pi.depth_stencil_state.enable_depth_test = false;
+                pi.depth_stencil_state.enable_depth_write = false;
+                pi.target_info.color_target_descriptions = &ct;
+                pi.target_info.num_color_targets = 1;
+                if (depthTarget) {
+                    pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                    pi.target_info.has_depth_stencil_target = true;
+                }
+                SDL_GPUGraphicsPipeline* gp = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!gp) sdlFail("glow pipeline");
+                SDL_ReleaseGPUShader(dev, gfs);
+                return gp;
+            };
+            copyPipe = mk("fs_copy", 1, 0, false, true);
+            glowSetupPipe = mk("fs_glow_setup", 1, 1, false, false);
+            glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false);
+            glowApplyPipe = mk("fs_glow_apply", 2, 1, true, true);
+            SDL_ReleaseGPUShader(dev, gvs);
         }
         {
             SDL_GPUShaderCreateInfo wvs = vs;
@@ -1609,7 +1677,7 @@ struct Renderer {
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
         if (sceneTex && blurW == w && blurH == h) return;
-        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex})
+        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1]})
             if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         auto make = [&](uint32_t tw, uint32_t th) {
             SDL_GPUTextureCreateInfo info{};
@@ -1626,6 +1694,10 @@ struct Renderer {
         };
         sceneTex = make(w, h);
         halfTex = make(w / 2, h / 2);
+        glowSetupTex = make(w / 4, h / 4);
+        glowTmpTex = make(w / 4, h / 4);
+        glowTex[0] = make(w / 4, h / 4); // TODO(spec): $glow_0 / $glow_1 resolution (quarter assumed)
+        glowTex[1] = make(w / 4, h / 4);
         quarterTex = make(w / 4, h / 4); // $blurred_screen: (screenW>>2, screenH>>2) clamped >= 1 (gfx 0x100235b5)
         if (!blurVerts) {
             SDL_GPUBufferCreateInfo vb{};
@@ -1659,7 +1731,11 @@ struct Renderer {
         ensureDepth(w, h);
         // Blur post effect: only when the composed radius is > 0 (gate in gfx 0x10030ed0); the scene goes to an offscreen
         // texture, then composite pass: scene, blurred quarter copy with alpha min(R / F, 1), then the HUD (not blurred).
-        const bool post = game::blurAlpha(blur, float(w)) > 0.0f;
+        const float blurA = game::blurAlpha(blur, float(w));
+        // r_glow (default 1, gfx 0x1000b7b8); IW2_NO_GLOW=1 disables the chain.
+        static const bool noGlow = std::getenv("IW2_NO_GLOW") != nullptr;
+        const bool glowOn = !noGlow;
+        const bool post = blurA > 0.0f || glowOn;
         if (post) {
             ensureBlurTargets(w, h);
             GpuVertex bv[8]{};
@@ -1736,7 +1812,7 @@ struct Renderer {
         }
         SDL_GPUColorTargetInfo color{};
         color.texture = post ? sceneTex : target;
-        color.clear_color = {0.55f, 0.65f, 0.78f, 1.0f};
+        color.clear_color = {0.55f, 0.65f, 0.78f, post ? 0.0f : 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
         color.store_op = SDL_GPU_STOREOP_STORE;
         SDL_GPUDepthStencilTargetInfo ds{};
@@ -1886,12 +1962,13 @@ struct Renderer {
                         {scene.textures[size_t(b.texture)], repeatSampler}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                     FragmentUniforms fu = {
-                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
+                    std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
                     detailUniforms(fu, b.detail);
                     if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -1937,14 +2014,66 @@ struct Renderer {
                 bi.filter = SDL_GPU_FILTER_LINEAR;
                 SDL_BlitGPUTexture(cmd, &bi);
             };
-            blit(sceneTex, w, h, halfTex, w / 2, h / 2);
-            blit(halfTex, std::max(w / 2, 1u), std::max(h / 2, 1u), quarterTex, w / 4, h / 4);
+            if (blurA > 0.0f) {
+                blit(sceneTex, w, h, halfTex, w / 2, h / 2);
+                blit(halfTex, std::max(w / 2, 1u), std::max(h / 2, 1u), quarterTex, w / 4, h / 4);
+            }
+            // Glow chain. Dvar defaults from gfx 0x1000b7b8..0x1000b8c3 (name, default, min, max): radius0 5, radius1 12, skyBleed0 0.5,
+            // skyBleed1 0, bloomIntensity0 1, bloomIntensity1 1, cutoff 0.9, desaturation 0.75. Two layers (0x10030a10): layer i is
+            // used when its bloom intensity > 0 (or sky bleed > 0 with the glow flag); radii are sorted ascending.
+            // TODO(spec): pass order, filter kernel, $glow_N resolution, glowSetup CUTOFF_RESCALE (1 / (1 - cutoff) assumed).
+            const float glowRadius[2] = {5.0f, 12.0f}, glowBloom[2] = {1.0f, 1.0f}, glowSky[2] = {0.5f, 0.0f};
+            const float glowCutoff = 0.9f, glowDesat = 0.75f;
+            const uint32_t gw = std::max(w / 4, 1u), gh = std::max(h / 4, 1u);
+            if (glowOn) {
+                auto fullscreen = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, SDL_GPUTexture* src, const float (&gu)[16]) {
+                    SDL_GPUColorTargetInfo gc{};
+                    gc.texture = dst;
+                    gc.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                    gc.store_op = SDL_GPU_STOREOP_STORE;
+                    SDL_GPURenderPass* gp = SDL_BeginGPURenderPass(cmd, &gc, 1, nullptr);
+                    SDL_BindGPUGraphicsPipeline(gp, pipe);
+                    SDL_GPUTextureSamplerBinding gb{src, clampSampler};
+                    SDL_BindGPUFragmentSamplers(gp, 0, &gb, 1);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, gu, sizeof(gu));
+                    SDL_DrawGPUPrimitives(gp, 3, 1, 0, 0);
+                    SDL_EndGPURenderPass(gp);
+                };
+                const float setupU[16] = {1.0f / float(gw), 1.0f / float(gh), 0, 0, glowCutoff, 1.0f / (1.0f - glowCutoff), glowDesat, 0};
+                fullscreen(glowSetupPipe, glowSetupTex, sceneTex, setupU);
+                for (int l = 0; l < 2; ++l) {
+                    const float hU[16] = {1.0f / float(gw), 0, glowRadius[l], 0};
+                    const float vU[16] = {0, 1.0f / float(gh), glowRadius[l], 0};
+                    fullscreen(glowBlurPipe, glowTmpTex, glowSetupTex, hU);
+                    fullscreen(glowBlurPipe, glowTex[l], glowTmpTex, vU);
+                }
+            }
             SDL_GPUColorTargetInfo c2{};
             c2.texture = target;
             c2.load_op = SDL_GPU_LOADOP_DONT_CARE;
             c2.store_op = SDL_GPU_STOREOP_STORE;
             SDL_GPUDepthStencilTargetInfo d2 = ds;
             SDL_GPURenderPass* p2 = SDL_BeginGPURenderPass(cmd, &c2, 1, &d2);
+            SDL_BindGPUGraphicsPipeline(p2, copyPipe);
+            {
+                SDL_GPUTextureSamplerBinding cb{sceneTex, clampSampler};
+                SDL_BindGPUFragmentSamplers(p2, 0, &cb, 1);
+                SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
+            }
+            if (glowOn && scene.sky) { // TODO(spec): maps without a sky cube get no glow (texturecube binding required)
+                SDL_BindGPUGraphicsPipeline(p2, glowApplyPipe);
+                // glow_apply_sky_bleed.hlsl: skyCoords = nearPlaneOrg + (u - 0.5) * nearPlaneDx + (v - 0.5) * nearPlaneDy.
+                const Vec3 f = cam.forward(), r = cam.right(), up = cross(r, f);
+                const float ty = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f, tx = ty * float(w) / float(h);
+                const Vec3 dx = r * (2.0f * tx), dy = up * (-2.0f * ty);
+                for (int l = 0; l < 2; ++l) {
+                    const float gu[16] = {glowBloom[l], glowSky[l], 0, 0, f.x, f.y, f.z, 0, dx.x, dx.y, dx.z, 0, dy.x, dy.y, dy.z, 0};
+                    SDL_GPUTextureSamplerBinding ab[2] = {{glowTex[l], clampSampler}, {scene.sky, clampSampler}};
+                    SDL_BindGPUFragmentSamplers(p2, 0, ab, 2);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, gu, sizeof(gu));
+                    SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
+                }
+            }
             SDL_BindGPUGraphicsPipeline(p2, pipelines[int(Pass::Blend)]);
             struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
             SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
@@ -1956,7 +2085,7 @@ struct Renderer {
             FragmentUniforms fu = {{0, 0, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 1, 1}, {0, 0, 0, 0}};
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
             SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
-            for (int q = 0; q < 2; ++q) {
+            for (int q = 1; q < (blurA > 0.0f ? 2 : 1); ++q) { // q = 0 (the scene) was copied above
                 SDL_GPUTextureSamplerBinding tex[4] = {{srcs[q], clampSampler},
                                                        {scene.dummyLightmap.coeffs, clampSampler},
                                                        {scene.dummyLightmap.sun, clampSampler},
@@ -2476,6 +2605,7 @@ int main(int argc, char** argv) {
                     const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
                     base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                     base.sunVisibility = sun;
+                    storeProbe(base, c);
                 }
                 if (e->vehicle && e->vehicle->info) {
                     // Vehicle turret (cgame 0x4ac2b0 bone controls on tag_turret / tag_barrel; es+0x70 pitch, es+0x74 yaw, lerped).
@@ -2671,6 +2801,7 @@ int main(int argc, char** argv) {
                 const auto l = assets::LightGrid::evaluate(lc, {0, 0, 1});
                 base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                 base.sunVisibility = sun;
+                storeProbe(base, lc);
             }
             Uploader up(dev, false);
             BoneMap bones;
