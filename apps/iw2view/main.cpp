@@ -1952,7 +1952,7 @@ int main(int argc, char** argv) {
         }
         Scene scene = menuMode ? emptyScene(dev) : loadScene(dev, vfs, args[1], !world);
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
-        struct ScreenMessage { std::string text; uint64_t untilNs; };
+        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; };
         std::vector<ScreenMessage> screenMessages;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -2563,6 +2563,22 @@ int main(int argc, char** argv) {
                         const auto at = label.find("&&1");
                         text = at == std::string::npos ? label + text : label.substr(0, at) + text + label.substr(at + 3);
                     }
+                    // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
+                    // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
+                    // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
+                    // TODO(spec): the "KEY_" prefix handling of 0x4c6a20 (key.str has UNBOUND / OR / TAB without it).
+                    for (size_t b; (b = text.find("[{")) != std::string::npos;) {
+                        const size_t e = text.find("}]", b);
+                        if (e == std::string::npos) break;
+                        const auto it = world->keyBindings.find(text.substr(b + 2, e - b - 2));
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string keys = name("UNBOUND");
+                        if (it != world->keyBindings.end() && !it->second.empty()) {
+                            keys = name(it->second[0]);
+                            if (it->second.size() > 1) keys += " " + name("OR") + " " + name(it->second[1]);
+                        }
+                        text = text.substr(0, b) + keys + text.substr(e + 2);
+                    }
                     if (text.empty()) continue;
                     const std::string fontName = o->get("font").toString();
                     const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
@@ -2613,23 +2629,56 @@ int main(int argc, char** argv) {
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
                 // TODO(spec): the fade-out of old rows (window fields +0x18/+0x1c, 0x406758), the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
-                const uint8_t green[4] = {0, 255, 0, 255};
-                const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
-                if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    std::vector<std::string> rows; // oldest first
+                // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                auto windowRows = [&](bool bold, size_t width, size_t lines) {
+                    std::vector<std::string> rows;
                     for (const auto& m : screenMessages) {
-                        const std::string* t = loc.find(m.text);
+                        if (m.bold != bold) continue;
+                        std::string raw = m.text.substr(0, m.text.find('\x1f'));
+                        const std::string* t = loc.find(raw);
+                        std::string text = t ? *t : raw;
+                        for (size_t at = m.text.find('\x1f'), n = 1; at != std::string::npos; ++n) {
+                            const size_t next = m.text.find('\x1f', at + 1);
+                            const std::string arg = m.text.substr(at + 1, next == std::string::npos ? next : next - at - 1);
+                            const std::string mark = "&&" + std::to_string(n);
+                            if (const size_t k = text.find(mark); k != std::string::npos) text.replace(k, mark.size(), arg);
+                            at = next;
+                        }
                         std::string cur;
-                        std::istringstream words(t ? *t : m.text);
+                        std::istringstream words(text);
                         for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > 70) { rows.push_back(cur); cur.clear(); }
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back(cur); cur.clear(); }
                             cur += (cur.empty() ? "" : " ") + wd;
                         }
                         if (!cur.empty()) rows.push_back(cur);
                     }
+                    if (rows.size() > lines) rows.erase(rows.begin(), rows.end() - std::ptrdiff_t(lines));
+                    return rows;
+                };
+                const uint8_t green[4] = {0, 255, 0, 255};
+                const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
+                if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
+                    const std::vector<std::string> rows = windowRows(false, 70, 9);
                     float ry = 100.0f - 12.0f;
                     for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 12.0f)
                         hudText(out, *it, 6.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, green, 0, 0, 3);
+                }
+                // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
+                // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
+                // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
+                // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
+                // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
+                // TODO(spec): the drawing starts at the centre point (no centring of the text was found in 0x4062d0 /
+                // 0x4065e0 / 0x403b90); here rows are centred on it because a start at the screen centre looks wrong.
+                {
+                    const float scale = 12.0f / 48.0f * float(h) / 480.0f;
+                    if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
+                        const std::vector<std::string> rows = windowRows(true, 60, 10);
+                        const uint8_t white[4] = {255, 255, 255, 255};
+                        float ry = 180.0f - 16.0f;
+                        for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 16.0f)
+                            hudText(out, *it, left43 + 320.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, white, 0.5f, 0, 3);
+                    }
                 }
             }
             // Scope overlay (0x4bcdd0 → 0x4bca90): the weapon's adsOverlayShader, white with the overlay alpha. Wider than
@@ -3218,9 +3267,10 @@ int main(int argc, char** argv) {
                 std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
             }
             if (world) {
-                std::vector<std::pair<std::string, int64_t>> shotMsgs; // obj_update / obj_complete with their world time
                 std::array<game::Vec3, 3> rPrev{};
                 bool rHave = false, rInit = false;
+                struct ShotMsg { std::string text; int64_t at; bool bold; };
+                std::vector<ShotMsg> shotMsgs; // game messages with their world time
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
                     if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
@@ -3278,11 +3328,14 @@ int main(int argc, char** argv) {
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
                             fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                         }
-                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete") shotMsgs.emplace_back(cmd.arg, world->timeMs());
+                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
+                        else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
                 }
-                // Messages still on screen (con_gamemessagetime 5 s) at the end of the simulation.
-                for (const auto& [text, at] : shotMsgs)
-                    if (world->timeMs() - at < 5000) screenMessages.push_back({text, SDL_GetTicksNS() + 600000000000ull});
+                // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
+                for (const auto& m : shotMsgs)
+                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) screenMessages.push_back({m.text, SDL_GetTicksNS() + 600000000000ull, m.bold});
+                // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
+                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
@@ -3893,8 +3946,10 @@ int main(int argc, char** argv) {
                     std::istringstream a(cmd.arg);
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
-                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete")
+                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                    else if (cmd.name == "gmb")
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
