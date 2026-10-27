@@ -967,6 +967,30 @@ void World::registerBuiltins() {
         o->set("$fakeai", Value(true));
         return Value();
     });
+    // getstance (0x4ee330): only for a client entity ("GetStance is only defined for players.", 0x587544); the string by
+    // ps pm_flags (client+0xc): bit 1 -> prone, bit 2 -> crouch, else stand (the three strings are runtime script strings, so
+    // which text sits at 0x1c7f0b0 / 0x1c7f056 / 0x1c7f0da is inferred from pm_flags 1 = prone, 2 = crouch, world.h).
+    vm_.registerBuiltin("getstance", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("GetStance is only defined for players.");
+        return Value(std::string(playerCmd_.stance == 2 ? "prone" : playerCmd_.stance == 1 ? "crouch" : "stand"));
+    });
+    // isfiring / isthrowinggrenade / ismeleeing (0x539aa0 / 0x539b60 / 0x539c10): player-only (error 0x590ab8 for a non-client);
+    // an int from the weapon state ps+0xb4: firing 3, 4, 10, 11; throwing a grenade 12..16 (0xc..0x10); meleeing 10, 11.
+    // The value of playerCmd_.weaponState is the front end's copy of ps+0xb4 (world.h).
+    auto weaponStateQuery = [this](const char* name, int lo, int hi, std::initializer_list<int> extra) {
+        vm_.registerBuiltin(name, [this, lo, hi, extra, name](CallContext& c) {
+            Entity* e = entityOf(c.self);
+            if (!e || !e->isPlayer) throw std::runtime_error(std::string(name) + ": entity is not a player");
+            const int ws = playerCmd_.weaponState;
+            bool r = lo <= hi && ws >= lo && ws <= hi;
+            for (int x : extra) r = r || ws == x;
+            return Value(int32_t(r ? 1 : 0));
+        });
+    };
+    weaponStateQuery("isfiring", 1, 0, {3, 4, 10, 11});
+    weaponStateQuery("isthrowinggrenade", 12, 16, {});
+    weaponStateQuery("ismeleeing", 1, 0, {10, 11});
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
     vm_.registerBuiltin("getorigin", [](CallContext& c) { return c.self.asObject()->get("origin"); });
