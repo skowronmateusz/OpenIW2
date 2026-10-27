@@ -416,6 +416,8 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "turretvertspanup") info->turretVertSpanUp = f;
                 else if (k == "turretvertspandown") info->turretVertSpanDown = f;
                 else if (k == "turretrotrate") info->turretRotRate = f;
+                else if (k == "turretspinsnd") info->turretSpinSnd = v;
+                else if (k == "turretstopsnd") info->turretStopSnd = v;
                 else if (k == "lowidlesnd") info->lowIdleSnd = v;
                 else if (k == "highidlesnd") info->highIdleSnd = v;
                 else if (k == "lowenginesnd") info->lowEngineSnd = v;
@@ -529,7 +531,8 @@ Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* tu
         std::vector<std::pair<int, assets::Quat>> ctl;
         for (size_t b = 0; b < parts->bones.size(); ++b) {
             const std::string n = lowerCopy(parts->bones[b].name);
-            if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, e.vehicle->turretYaw, 0)});
+            if (n == "tag_body") ctl.push_back({int(b), assets::anglesQuat(e.vehicle->joltPitch, 0, e.vehicle->joltRoll)});
+            else if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, e.vehicle->turretYaw, 0)});
             else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat(e.vehicle->turretPitch, 0, 0)});
         }
         pose = assets::applyControls(*parts, pose, ctl);
@@ -594,12 +597,16 @@ void World::updateVehicleTurret(Entity& e) {
         const Vec3 local{dot(dir, fwd), -dot(dir, right), dot(dir, up)};
         want = vectorToAngles(local);
     }
+    const float oldPitch = v.turretPitch, oldYaw = v.turretYaw;
     const float dPitch = angleDelta(want[0], v.turretPitch), dYaw = angleDelta(want[1], v.turretYaw);
     v.turretPitch = turnAngle(want[0], v.turretPitch, v.info->turretRotRate, kFrameTime);
     v.turretYaw = turnAngle(want[1], v.turretYaw, v.info->turretRotRate, kFrameTime);
     v.turretPitch = std::clamp(v.turretPitch, -v.info->turretVertSpanUp, v.info->turretVertSpanDown);
     v.turretYaw = std::clamp(v.turretYaw, -v.info->turretHorizSpanRight, v.info->turretHorizSpanLeft);
     e.obj->set("$turretangles", Value(Vec3{v.turretPitch, v.turretYaw, 0}));
+    // +0x18c (0x510664..0x51068c): 2 while turning, then 2 -> 1 -> 0. TODO(spec): the exact "turning" test (0x510620..0x51065f
+    // compares the per-axis values 0x14/0x18/0x20/0x24(esp) with 0x591ed0 and 0); here: an angle changed this think.
+    if (v.turretPitch != oldPitch || v.turretYaw != oldYaw) v.turretMoved = true;
     if (std::fabs(dPitch) < 1.0f && std::fabs(dYaw) < 1.0f) {
         vm_.notify(e.obj, "turret_on_target");
         if (target) {
@@ -844,6 +851,24 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
 // Every think (0x510be0): a dead vehicle or one with the engine off silences both pairs; otherwise the loops follow
 // the fractions. The original culls by the listener distance (0x44247b) and keeps the pitch chosen at the loop start.
 // TODO(spec): the turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3).
+// 0x50dcf0: direction (world) against the body's forward / right axes, 2D-normalized (0x421160), scaled by the
+// intensity (clamped 0..1) and info maxBodyPitch (+0x78) / maxBodyRoll (+0x7c); amplitude 1, phase 0.
+// TODO(spec): +0x1e4 / +0x1e8 (speed fraction x |speed|, deceleration) used by the free physics while the jolt runs.
+void World::vehicleJolt(Entity& e, const Vec3& dir, float intensity) {
+    VehicleState& v = *e.vehicle;
+    if (!v.info) return;
+    Vec3 f, r, u;
+    anglesToAxis(e.obj->get("angles").asVector(), f, r, u);
+    float a = dot(dir, f), b = dot(dir, r);
+    const float len = std::sqrt(a * a + b * b);
+    if (len > 0.0f) a /= len, b /= len;
+    const float s = intensity > 0.0f ? std::min(intensity, 1.0f) : 0.0f;
+    v.joltDirF = a * s * v.info->maxBodyPitch;
+    v.joltDirR = b * s * v.info->maxBodyRoll;
+    v.joltAmp = 1.0f;
+    v.joltPhase = 0.0f;
+}
+
 void World::updateVehicleEngineSound(Entity& e) {
     VehicleState& v = *e.vehicle;
     if (!v.info) return;
@@ -862,6 +887,14 @@ void World::updateVehicleEngineSound(Entity& e) {
         } else if (!handle) handle = playBlendSound(lo, hi, f, origin);
         else setBlendSound(handle, f, origin);
     };
+    // Turret sounds (0x510be0): state 2 loops turretSpinSnd (es+6), state 1 plays turretStopSnd once (event 0xb3).
+    if (v.turretSnd == 2 && alive && !v.info->turretSpinSnd.empty()) {
+        if (!v.spinHandle) v.spinHandle = playSound(v.info->turretSpinSnd, &origin, nullptr);
+    } else if (v.spinHandle) {
+        stopSound(v.spinHandle);
+        v.spinHandle = 0;
+    }
+    if (v.turretSnd == 1 && alive && !v.info->turretStopSnd.empty()) playSound(v.info->turretStopSnd, &origin, nullptr);
     pair(v.idleHandle, v.info->lowIdleSnd, v.info->highIdleSnd, v.idleFrac);
     pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac);
 }
@@ -892,12 +925,18 @@ void World::thinkVehicles() {
         vehicleTouch(e, prevOrigin, prevAngles);
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
+        v.turretMoved = false;
         updateVehicleTurret(e);
+        if (v.turretMoved) v.turretSnd = 2;
+        else if (v.turretSnd == 2) v.turretSnd = 1;
+        else if (v.turretSnd == 1) v.turretSnd = 0;
+        if (e.vehicle) vehicleJoltStep(v.joltAmp, v.joltPhase, v.joltDirF, v.joltDirR, v.joltPitch, v.joltRoll); // 0x510770
+        // +0x1b0 is the path speed in path mode (0x5110a0: stepFrac +0x1ac += +0x1b0 / pointSpeed) and |forward speed| in free physics.
         // 0x510870 (after the turret/aim calls, before 0x510be0): tread texture scroll accumulator.
         if (v.info) {
             const auto dv = cvars.find("g_vehicleTexScrollScale");
             const float dvar = dv == cvars.end() ? 0.0f : float(std::atof(dv->second.c_str()));
-            v.texScroll = vehicleTexScrollStep(v.info->texScroll, v.texScroll, v.forwardSpeed, dvar, v.info->texScrollScale);
+            v.texScroll = vehicleTexScrollStep(v.info->texScroll, v.texScroll, v.started ? v.speed : v.forwardSpeed, dvar, v.info->texScrollScale);
         }
         updateVehicleEngineSound(e);
         // The driver rides at tag_player (linked in VEH_LinkPlayer).
@@ -1157,6 +1196,20 @@ void World::registerVehicleBuiltins() {
         if (v.waitSpeed < 0.0f) throw std::runtime_error("Cannot have a negative wait speed on a vehicle");
         return Value();
     });
+    // joltbody(point, intensity [, speedFraction, deceleration]) (0x5136e0): dir = origin - point, normalized.
+    vm_.registerBuiltin("joltbody", [this](CallContext& c) {
+        VehicleState& v = vehicleState(c.self);
+        (void)v;
+        Entity* e = entityOf(c.self);
+        const Vec3 o = e->obj->get("origin").asVector(), p = c.arg(0).asVector();
+        Vec3 d = sub(o, p);
+        normalize(d);
+        if (c.argc() > 2 && (c.arg(2).asFloat() < 0.0f || c.arg(2).asFloat() > 1.0f))
+            throw std::runtime_error("Speed fraction must be between 0 and 1");
+        if (c.argc() > 3 && c.arg(3).asFloat() < 0.0f) throw std::runtime_error("Deceleration can't be negative");
+        vehicleJolt(*e, d, c.arg(1).asFloat());
+        return Value();
+    });
     vm_.registerBuiltin("startenginesound", [this](CallContext& c) {
         vehicleState(c.self).engineOn = true; // 0x513e80: +0x1ec = 1
         return Value();
@@ -1197,6 +1250,7 @@ void World::registerVehicleBuiltins() {
         VehicleState& fv = vehicleState(c.self);
         if (fv.idleHandle) stopSound(fv.idleHandle);
         if (fv.engHandle) stopSound(fv.engHandle);
+        if (fv.spinHandle) stopSound(fv.spinHandle);
         Entity* e = entityOf(c.self);
         e->vehicle.reset();
         e->classname = "script_vehicle_corpse";
@@ -1286,6 +1340,7 @@ void World::registerVehicleBuiltins() {
                 const float rad = float(M_PI) / 180.0f;
                 return Vec3{std::cos(p * rad) * std::cos(y * rad), std::cos(p * rad) * std::sin(y * rad), -std::sin(p * rad)};
             };
+            vehicleJolt(*e, {-fwd[0], -fwd[1], -fwd[2]}, 1.0f); // 0x5148a3: 0x50dcf0(-flash forward, 1, 0, 0)
             const std::string fireSnd = weaponField(v.info->turretWeapon, "fireSound");
             for (int k = 0; k < count; ++k) {
                 bool ok = false;

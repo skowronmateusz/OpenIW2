@@ -1,5 +1,6 @@
 // Script vehicles driven along info_vehicle_node paths (docs/spec/vehicles.md).
 #pragma once
+#include <cmath>
 
 #include "script/value.h"
 
@@ -53,6 +54,7 @@ struct VehicleInfo {
     float texScrollScale = 0;
     std::string turretWeapon;
     // lowIdleSnd / highIdleSnd / lowEngineSnd / highEngineSnd (info slots +0x260..+0x266), turretSpinSnd / turretStopSnd.
+    std::string turretSpinSnd, turretStopSnd;
     std::string lowIdleSnd, highIdleSnd, lowEngineSnd, highEngineSnd;
 };
 
@@ -91,11 +93,30 @@ struct VehicleState {
     int texScroll = 0;
     // Engine sound (0x50dbb7, 0x510be0): engineOn (+0x1ec) is set at spawn when both aliases of a pair exist and by
     // startenginesound / stopenginesound (0x513e80 / 0x513ee0); idleFrac / engFrac (+0x1f8 / +0x1fc); live voices.
+    // Body jolt (joltbody / fireturret recoil 0x50dcf0, step 0x510770): direction factors (+0x1d4 forward, +0x1d8 right),
+    // amplitude (+0x1dc), phase in degrees (+0x1e0); joltPitch / joltRoll are the entity fields +0x64 / +0x6c that the
+    // controller 0x5127a0 applies to tag_body as angles (pitch, 0, roll).
+    float joltDirF = 0, joltDirR = 0, joltAmp = 0, joltPhase = 0, joltPitch = 0, joltRoll = 0;
+    int turretSnd = 0;         // +0x18c: 2 turning, 1 just stopped (one stop sound), 0 idle
+    int spinHandle = 0;
+    bool turretMoved = false;
     bool engineOn = true;
     float idleFrac = 0, engFrac = 0;
     int idleHandle = 0, engHandle = 0;
     int owner = -1;            // entity number of the player using it (entity +0xf4, 0x7ff = none)
 };
+
+// 0x510770: while amp > 0, es+0x64 / +0x6c = sin(phase deg) * amp * dirF / dirR, then amp -= 0.05, phase += 36.
+// Returns false when the jolt is idle (the entity fields keep their last values).
+inline bool vehicleJoltStep(float& amp, float& phase, float dirF, float dirR, float& pitch, float& roll) {
+    if (!(amp > 0.0f)) return false;
+    const float s = std::sin(phase * 0.01745329238474369f) * amp;
+    pitch = s * dirF;
+    roll = s * dirR;
+    amp -= 0.05f;
+    phase += 36.0f;
+    return true;
+}
 
 // One think of 0x510870: flag 0 -> -1; else acc += (int)(speed * (1/176) * (dvar > 0 ? dvar : scale) * 0.05 * 1000).
 // speed is vehicle +0x1b0 (|forward speed|, inches per second). dvar = g_vehicleTexScrollScale (default 0).

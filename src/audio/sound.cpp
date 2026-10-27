@@ -219,6 +219,12 @@ int Mixer::playBlend(const std::string& low, const std::string& high, float f, c
     v.distMax = dmax;
     v.loop = true;
     std::lock_guard lock(mutex_);
+    {
+        // Culled when the listener is farther than lerp(distMax) (0x44247b); a running loop is not culled again.
+        const float dx = origin[0] - listener_[0], dy = origin[1] - listener_[1], dz = origin[2] - listener_[2];
+        const float dm = lo->distMax + ((hi->distMax > 0 ? hi->distMax : v.distMax) - lo->distMax) * f;
+        if (dm > 0 && dx * dx + dy * dy + dz * dz > dm * dm) return 0;
+    }
     v.handle = nextHandle_++;
     const int h = v.handle;
     voices_.push_back(std::move(v));
