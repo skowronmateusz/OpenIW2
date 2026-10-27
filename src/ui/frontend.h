@@ -29,18 +29,35 @@ public:
     void mouseMove(float x, float y);
     // Clicks at (x, y): runs the action of the hit item; returns true if an item was hit.
     bool click(float x, float y);
-    enum class Key { Up, Down, Enter, Escape };
+    // Ends a slider drag (mouse button released).
+    void release() { dragItem_ = nullptr; }
+    // Right mouse button on a MULTI item selects the previous value (exe 0x4ca5e0 key 0xc9).
+    bool clickBack(float x, float y);
+    enum class Key { Up, Down, Enter, Escape, Left, Right };
     // Keyboard navigation: up/down move the focus between selectable items, enter runs its action, escape the top menu's onESC.
     void key(Key k);
 
     const Item* focus() const { return focus_; }
     const Item* hover(float x, float y) const; // hit test of the top menu (TODO(spec): item vs menu alignment)
+    // Widget geometry (exe 0x4c9520/0x4cafb0): x of the slider track start in virtual pixels.
+    float sliderTrackX(const Menu& m, const Item& it) const;
+    // Slider fraction 0..1 of the item's dvar (the dvarfloat default when the dvar is unset).
+    float sliderFraction(const Item& it) const;
+    // x of the value text of YESNO/MULTI items (exe 0x4cd3a0/0x4cd570): after the item text + 8, or at the text origin.
+    float valueTextX(const Menu& m, const Item& it) const;
+    // The value text key of YESNO ("EXE_YES"/"EXE_NO") and MULTI (the list label of the current value) items.
+    std::string valueLabel(const Item& it) const;
     // Items that can take focus in a menu, in file order.
     std::vector<const Item*> selectable(const Menu& m) const;
 
 private:
     void setFocusItem(const Item* it);
     void runItem(const Menu& m, const Script& s);
+    bool activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer);
+    void dragTo(float x);
+    float cvarValue(const Item& it) const;
+    const Item* dragItem_ = nullptr;
+    const Menu* dragMenu_ = nullptr;
     MenuLibrary& lib_;
     MenuEnv& env_;
     std::vector<Menu*> stack_;

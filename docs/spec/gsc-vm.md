@@ -55,3 +55,23 @@ function.
 
 `src/script/vm.cpp`: the compiler turns the syntax tree into stack bytecode per function; the interpreter runs
 threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> compile`).
+
+## Notify queueing, `wait 0`, frame lists (exe evidence)
+- `notify` does not run the waiters. VM_Notify (0x46ca60, from Scr_NotifyNum 0x46d0f0) moves each woken thread to the end of the
+  list of the current frame counter (0x9bef20, via 0x46c570 -> 0x46c130). Only VM_RunList (0x46d560) calls the interpreter
+  (0x4690c0); it runs the list head and re-reads the head until the list is empty. Scr_RunFrame (0x46f5c0) = run the current list
+  (0x46de90), the frame-end threads (0x467150), then `incl 0x9bef20`. `thread f()` runs f at once. Ours: `VM::notify` queues,
+  `VM::drainReady` runs the queue FIFO after the timed threads of `runFrame`.
+- `wait s` (0x46a1fc..0x46a2e9): frames = (int)(s*20 + 0.5), a non-zero s that rounds to 0 becomes 1, the thread is filed under
+  counter + frames. `wait 0` therefore resumes in the SAME frame's list (after what is already queued). Ours: `wait 0` queues the
+  thread like a notify wake-up.
+- Consequence for init: threads woken or left in `wait 0` by main() run in the first frame list; `wait 0.05` threads are in the
+  next one. World::start drains the queue and runs one game frame at time 0 (matmata: the start trigger_multiple fires and spawns
+  the jeep before ridein's `wait 0.05` calls getent("jeep")). TODO(spec): the exe's start-up frames (number, time step) are not
+  read; only the order is evidenced.
+- TODO(spec): where the frame-end threads (0x467150) run what they notify; the order of engine-side notifies (triggers, anim
+  notetracks) relative to Scr_RunFrame (we notify before `runFrame`, so they run after that frame's timed threads).
+- Spawn (`dospawn` 0x4edff0 arg3=0, `stalingradspawn` 0x4ee120 arg3=1, core 0x532200): dospawn refuses a spawnpoint whose box
+  (origin + (-15,-15,0)..(15,15,70)) holds a living body (0x4e8500, contents 0x200c000), "couldn't spawn from %s because spawnpoint
+  would telefrag"; both fail with "no free actors" when all 32 actor slots (0x4fc8d0) are in use (corpses free their slot).
+  TODO(spec): the player's contents/box height, the spawner flag-2 retry (0x4fcaf0).

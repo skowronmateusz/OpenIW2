@@ -335,12 +335,6 @@ void World::actorThink(Entity& e) {
 // TODO(spec): the states' damaged handlers (0x5498c0 node release, turret 0x54af30) are not modelled.
 void World::actorPain(Entity& e, Entity* attacker) {
     if (attacker && isSentient(*attacker)) e.sentientInfo[attacker->obj.get()].lastAttackedMs = timeMs_;
-    // 0x5485a0: pain from a valid attacker is an AI event (type 2) at the victim, at most every 500 ms
-    // (the exe accumulates the pain time; the +0x48 add and the damage class gate are TODO(spec)).
-    if (attacker && (attacker->isActor || attacker->isPlayer) && timeMs_ >= e.ai.painEventMs) {
-        e.ai.painEventMs = timeMs_ + 500;
-        aiEventPoint(*attacker, 2, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
-    }
     if (aiPushState(e, AiPain)) killActorAnimScript(e);
 }
 
@@ -644,7 +638,7 @@ void World::actorFacing(Entity& e) {
     // TODO(spec): the path branch (0x505a22: +0x6ec time gate, 0x5432f0 position when not seen for > 500 ms); while a path
     // is followed moveActor writes the yaw.
     bool enemyTargeted = false;
-    if (ai.orient != 1 && m == 3) {
+    if (ai.orient != 1 && m >= 3 && m <= 5) {
         Entity* enemy = entityOf(e.obj->get("enemy"));
         if (enemy) {
             if (e.path.count > 0) return;
@@ -672,7 +666,7 @@ void World::actorFacing(Entity& e) {
         const PathNode& n = nodes_[size_t(e.claimedNode)];
         if (!(n.spawnflags & 0x8000)) return;
         const Vec3 o = vecField(e.obj, "origin");
-        if (m == 3) {
+        if (m >= 3 && m <= 5) {
             const Vec3 np = vecField(n.obj, "origin");
             const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
             if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
@@ -699,6 +693,14 @@ void World::registerActorStateBuiltins() {
     // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and
     // clears the override. TODO(spec): "face current" takes desiredangle (+0x124), which only follows the turn target here
     // when this turn code ran, so the current yaw is used; 0x504aa0 (animation yaw delta into the pairs) is not modelled.
+    vm_.registerBuiltin("melee", [this](CallContext& c) {
+        Entity* a = entityOf(c.self);
+        if (!a || !a->obj || !isAlive(*a)) return Value();
+        if (a->ai.meleeFrameMs == timeMs_) return Value(); // 0x550c7a: once per frame
+        a->ai.meleeFrameMs = timeMs_;
+        aiMelee(*a);
+        return Value();
+    });
     vm_.registerBuiltin("orientmode", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("orientmode on a non-actor");
@@ -748,6 +750,38 @@ void World::registerActorStateBuiltins() {
         }
         return Value();
     });
+}
+
+// 0x5485a0 (every movement frame, 0x4ff1b3, while actor +0x25c is set; not a pain handler): the movement struct
+// actor +0x224 keeps a kind (+0x40, set by FUN_00504160 from the anim mode +0x218: modes 1, 3 -> 1; 2, 4 -> 2; 5 -> 3;
+// 6 -> 4; 7 -> 5; mode 0 leaves it) and a step (+0x48, 50, 0x500cff). While the kind is 1, 2 or 5 (and the ground entity
+// +0x18 is not 0x7ff, i.e. the actor stands on something) every frame adds the step to the carried sum (+0x1c, zeroed
+// otherwise); at 500 an AI event 2 is sent at the actor (0x535770, origin = the struct's position, enemy-team receivers)
+// and the sum keeps its remainder.
+void World::actorMoveNoise(Entity& e) {
+    ActorAi& ai = e.ai;
+    const int m = ai.animMode;
+    const bool kind125 = m == 1 || m == 2 || m == 3 || m == 4 || m == 7;
+    const int old = ai.moveNoiseMs;
+    ai.moveNoiseMs = 0;
+    if (!ai.alive || !kind125) return;
+    // The ground entity (+0x18, 0x548290): a trace of the entity box (r.mins/r.maxs) with mask 0x2820011 (actor +0x28c)
+    // from the origin 0.25 down (0x591fe0; the step height 10/18 instead when rising on a ground entity, not modelled
+    // as the vertical velocity +0x14 is 0 here); a miss leaves 0x7ff (airborne) and the accumulator zeroed.
+    {
+        const Value ov = e.obj->get("origin");
+        const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+        const TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 0.25f}, {-15, -15, 0}, {15, 15, 72}, 0x2820011u, e.number);
+        static const bool dbg = std::getenv("IW2_GROUND_DEBUG") != nullptr;
+        if (dbg) ++(tr.fraction < 1.0f || tr.startSolid ? stats.groundHit : stats.groundMiss);
+        if (!(tr.fraction < 1.0f || tr.startSolid)) return;
+    }
+    ai.moveNoiseMs = old + 50;
+    if (ai.moveNoiseMs < 500) return;
+    const Value o = e.obj->get("origin");
+    ++stats.actorNoise;
+    aiEventPoint(e, 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
+    ai.moveNoiseMs %= 500;
 }
 
 } // namespace iw2::game

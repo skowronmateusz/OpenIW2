@@ -126,7 +126,13 @@ public:
     void runFrame(int64_t nowMs);
     int64_t time() const { return nowMs_; }
 
+    // Wakes the threads waiting for `event` on `object`. They are queued, not run: the exe's VM_Notify (0x46ca60)
+    // only moves each woken thread to the end of the current frame's run list (0x46c130), which Scr_RunFrame
+    // (0x46f5c0 -> 0x46de90 -> 0x46d560) runs, re-reading its head until it is empty. So they run after the notifying
+    // thread yields, at the next runFrame()/drainReady(); `thread f()` still runs f at once.
     void notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args = {});
+    // Runs the queued woken threads (and those woken while running them) until none is left.
+    void drainReady();
 
     ObjectPtr level() const { return level_; }
     ObjectPtr game() const { return game_; }
@@ -182,6 +188,8 @@ private:
     uint64_t nextObjectId_ = 1;
     int64_t nowMs_ = 0;
     int runDepth_ = 0;
+    std::deque<Thread*> ready_; // woken by notify, not yet run
+    bool draining_ = false;
     ObjectPtr level_, game_, anim_;
     std::vector<std::string> errors_;
 };

@@ -51,6 +51,11 @@ else()
 endif()
 target_compile_options(iw2_audio PRIVATE -Wall -Wextra -Wpedantic)
 
+add_library(iw2_video
+  src/video/roq.cpp)
+target_include_directories(iw2_video PUBLIC src)
+target_compile_options(iw2_video PRIVATE -Wall -Wextra -Wpedantic)
+
 add_library(iw2_script
   src/script/parser.cpp
   src/script/value.cpp
@@ -97,6 +102,9 @@ target_link_libraries(iw2fs PRIVATE iw2_fs)
 add_executable(iw2asset tools/iw2asset/main.cpp)
 target_link_libraries(iw2asset PRIVATE iw2_fs iw2_assets iw2_audio)
 
+add_executable(iw2roq tools/iw2roq/main.cpp)
+target_link_libraries(iw2roq PRIVATE iw2_fs iw2_assets iw2_video)
+
 enable_testing()
 add_executable(test_vfs tests/test_vfs.cpp)
 target_link_libraries(test_vfs PRIVATE iw2_fs)
@@ -113,7 +121,7 @@ add_test(NAME d3dbsp COMMAND test_d3dbsp)
 find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp)
-  target_link_libraries(iw2view PRIVATE iw2_game iw2_audio iw2_ui SDL3::SDL3)
+  target_link_libraries(iw2view PRIVATE iw2_game iw2_audio iw2_ui iw2_video SDL3::SDL3)
   target_compile_options(iw2view PRIVATE -Wall -Wextra)
 else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")
@@ -214,3 +222,11 @@ add_test(NAME frontend COMMAND test_frontend)
 add_executable(test_profile tests/test_profile.cpp)
 target_link_libraries(test_profile PRIVATE iw2_ui)
 add_test(NAME profile COMMAND test_profile)
+
+add_executable(test_compassspring tests/test_compassspring.cpp)
+target_link_libraries(test_compassspring PRIVATE iw2_game)
+add_test(NAME compassspring COMMAND test_compassspring)
+
+add_executable(test_roq tests/test_roq.cpp)
+target_link_libraries(test_roq PRIVATE iw2_video)
+add_test(NAME roq COMMAND test_roq)

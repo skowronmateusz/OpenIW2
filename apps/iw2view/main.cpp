@@ -17,6 +17,8 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "video/roq.h"
+#include "game/compassspring.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
@@ -509,7 +511,12 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             auto imageSlot = [&](const std::string& image) {
                 auto it = scene.imageIndex.find(image);
                 if (it == scene.imageIndex.end()) {
-                    SDL_GPUTexture* t = loadImage(dev, up, vfs, image);
+                    SDL_GPUTexture* t = nullptr;
+                    if (image == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
+                        const uint8_t black[4] = {0, 0, 0, 255};
+                        t = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1);
+                        up.texture(t, 0, 0, 1, 1, black, 4);
+                    } else t = loadImage(dev, up, vfs, image);
                     int idx = 0;
                     if (t) {
                         idx = int(scene.textures.size());
@@ -521,7 +528,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             };
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is used as a UI background
                 mi.texture = imageSlot(img);
                 // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
                 if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
@@ -2072,7 +2079,8 @@ int main(int argc, char** argv) {
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -2576,7 +2584,7 @@ int main(int argc, char** argv) {
                 if (it != world->cvars.end()) return it->second;
             }
             const auto u = uiCvars.find(n);
-            return u == uiCvars.end() ? std::string() : u->second;
+            return u == uiCvars.end() ? ui::registeredDefault(n) : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
             if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
@@ -2615,7 +2623,10 @@ int main(int argc, char** argv) {
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
                 else if (c == "disconnect" || c == "quit") { /* handled below */ if (c == "quit") std::exit(0); }
-                // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
+                // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
+                else if (c == "closemenu") menuEnv.close(a1);
+                // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
+                else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
             }
         };
         int menuLoopHandle = 0;
@@ -2627,10 +2638,15 @@ int main(int argc, char** argv) {
         };
         menuEnv.stopLoop = [&] { if (menuLoopHandle) mixer.stop(menuLoopHandle); menuLoopHandle = 0; };
         menuEnv.exec = execText;
+        // uiScript dispatcher (0x4c5b9b..): "Quit" (string 0x580e60) runs the console command "quit" (0x41b0a0 with 0x571858).
+        // TODO(spec): the other uiScripts (loadControls, openMenuOnDvar, loadMissionDifficultyOffset, Loadgame, profiles ...).
+        menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
+            if (name == "quit") execText("quit");
+        };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
-        if (menuMode) {
+        { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
             scriptMenus.loadList("ui/menus.txt");
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
         }
@@ -2658,12 +2674,14 @@ int main(int argc, char** argv) {
         // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
         const ui::Item* ammoBackItem = nullptr;
         const ui::Item* fireModeItem = nullptr; // item "weaponfiremode" (ownerdraw 83), rect -115 -35 20 20
+        const ui::Item* weapNameItem = nullptr; // item "weapname" (ownerdraw 81), rect -385 -15 290 40
         const ui::Item* ammoTextItem = nullptr; // item "ammotex" (ownerdraw CG_PLAYER_AMMO_VALUE 5), rect -85 -15 70 40
         if (const ui::Menu* m = hudMenus.find("weaponinfo"))
             for (const auto& it : m->items) {
                 if (it->name == "ammocounterback") ammoBackItem = it.get();
                 else if (it->name == "ammotex") ammoTextItem = it.get();
                 else if (it->name == "weaponfiremode") fireModeItem = it.get();
+                else if (it->name == "weapname") weapNameItem = it.get();
             }
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
@@ -2731,6 +2749,23 @@ int main(int argc, char** argv) {
                 }
                 ty += lineH;
             }
+        };
+        // Menu item text: localized string and font/scale (TODO(spec): the original's font choice by textscale, here the HUD's rule).
+        auto menuLocalized = [&](const std::string& raw) {
+            std::string key = raw;
+            if (!key.empty() && key[0] == '@') key.erase(0, 1);
+            const std::string* t = loc.find(key);
+            return t ? *t : key;
+        };
+        auto menuFont = [&](float ts) { return font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont"); };
+        menuEnv.textWidth = [&](const ui::Item& it) {
+            const assets::Font* f = menuFont(it.textScale);
+            if (!f) return 0.0f;
+            const float gs = it.textScale * 48.0f / float(f->pixelHeight);
+            float width = 0;
+            for (unsigned char ch : menuLocalized(it.text))
+                if (const auto* g = f->find(ch)) width += float(g->dx) * gs;
+            return width;
         };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
@@ -3361,6 +3396,31 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Weapon name (ownerdraw 81, 0x4a7da0): not in a vehicle (pm_flags 0x20000); same fade as the firemode icon (hud_fade_ammodisplay,
+            // 1800 ms from the weapon change time 0xf796e4, 0x4a7600). Text = localized displayName (client weapon info +0xb4), plus
+            // " / " + localized modeName (+0xb8, def +0x70) when the weapon has a modeName ("%s / %s" 0x57fb54, else "%s" 0x56ca4c).
+            // Drawn at x = rect.x + rect.w - textWidth - 28 (0x592084), y = rect.y, item colour with the fade alpha, item text style,
+            // font by the HUD rule. TODO(spec): the weapon preselected while switching (0xf796e0) is not tracked; the current weapon is used.
+            if (weapNameItem && pweapon.equipped() && !inVeh) {
+                const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
+                const float ts = weapNameItem->textScale, fs = ts * float(h) / 480.0f;
+                if (a > 0.0f)
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string text = name(pweapon.field("displayName"));
+                        const std::string mode = pweapon.field("modeName");
+                        if (!mode.empty()) text += " / " + name(mode);
+                        const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const auto& r = weapNameItem->rect;
+                        uint8_t col[4];
+                        for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(weapNameItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        col[3] = uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f);
+                        hudText(out, text, float(w) + (r.x + r.w - 28.0f) * sc - tw, float(h) + r.y * sc, gs, *f, col, 0.0f, 1.0f, weapNameItem->textStyle);
+                    }
+            }
             // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
             // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
@@ -3380,9 +3440,18 @@ int main(int argc, char** argv) {
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), objective ring pulses (no ring start time is
-            // tracked), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
             // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
+            // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
+            // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
+            constexpr int ringNum = 10, ringTime = 10000;
+            auto ringElapsed = [&](const game::Objective& ob) -> int64_t {
+                if (!world || ob.state != 4 || ob.ringStartMs < 0 || ob.ringStartMs + ringTime <= world->timeMs()) return -1;
+                return world->timeMs() - ob.ringStartMs;
+            };
+            if (world)
+                for (const auto& ob : world->objectives())
+                    if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = world->timeMs();
             const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
                 const float csize = 1.0f; // cg_hudCompassSize
@@ -3429,7 +3498,7 @@ int main(int argc, char** argv) {
                         Quad2D q{bx, by, bx + qw, by + qh};
                         std::memcpy(q.rgba, col, 4);
                         q.texture = materialTexture(it.background);
-                        if (it.ownerDraw == 84) q.rotDeg = wrap360(cyaw - north);
+                        if (it.ownerDraw == 84) q.rotDeg = compassSpring.update(int(world->timeMs()), wrap360(cyaw - north)); // 0x4b09a0
                         out.push_back(q);
                         continue;
                     }
@@ -3455,6 +3524,25 @@ int main(int argc, char** argv) {
                             q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
                             q.texture = materialTexture(ob.icon.empty() ? std::string("objective") : ob.icon);
                             out.push_back(q);
+                            // Ring pulse (0x4a9748..0x4a9915): period = RingTime / NumRings; phase = (elapsed mod period) / period;
+                            // alpha = triangle(phase) clamped to the pointer alpha; size = phase * cg_hudObjectiveRingSize (64) *
+                            // compass size, halved once a full period has passed; material "objective_ring", or the icon when the
+                            // objective has one.
+                            if (const int64_t el = ringElapsed(ob); el >= 0) {
+                                const float period = float(ringTime) / float(ringNum);
+                                float rem = float(el);
+                                bool later = false;
+                                while (rem > period) { rem -= period; later = true; }
+                                const float ph = rem / period;
+                                const float tri = ph > 0.5f ? 1.0f - (ph - 0.5f) * 2.0f : ph * 2.0f;
+                                float rs = ph * 64.0f * (later ? 0.5f : 1.0f) * csize * sc;
+                                const float rx2 = ccx - rs * 0.5f - std::sin(a) * rad, ry2 = ccy - rs * 0.5f - std::cos(a) * rad;
+                                Quad2D rq{rx2, ry2, rx2 + rs, ry2 + rs};
+                                std::memcpy(rq.rgba, col, 4);
+                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, alpha * compassAlpha), 0.0f, 1.0f) * 255.0f);
+                                rq.texture = materialTexture(ob.icon.empty() ? std::string("objective_ring") : ob.icon);
+                                out.push_back(rq);
+                            }
                         }
                     }
                 }
@@ -3491,19 +3579,32 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty()) continue;
-                        std::string key = it.text;
-                        if (key[0] == '@') key.erase(0, 1);
-                        const std::string* t = loc.find(key);
-                        const std::string text = t ? *t : key;
+                        if (it.text.empty() && it.type != 11 && it.type != 12) continue;
+                        const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
-                        const assets::Font* f = font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont");
+                        const assets::Font* f = menuFont(ts);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
                         const auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
-                        hudText(front, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                        hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                        if (it.type == 11 || it.type == 12) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
+                            const std::string label = frontStack.valueLabel(it);
+                            if (!label.empty())
+                                hudText(front, menuLocalized(label), x0 + frontStack.valueTextX(menu, it) * xs,
+                                        (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                        }
                     }
+                    // Sliders: track ui/assets/slider2 (96x16) and thumb ui/assets/sliderbutt_1 (10x20), exe 0x4cdd20..0x4cded0.
+                    for (const auto& itp : menu.items) {
+                        const ui::Item& it = *itp;
+                        if (it.type != 10 || !it.hasRange || !frontStack.itemVisible(it)) continue;
+                        const float tx = frontStack.sliderTrackX(menu, it), ty = menu.rect.y + it.rect.y;
+                        const auto white = std::array<uint8_t, 4>{255, 255, 255, 255};
+                        quad(tx, ty, 96.0f, 16.0f, white, "ui/assets/slider2.tga");
+                        quad(tx + 6.0f + frontStack.sliderFraction(it) * 84.0f - 5.0f, ty - 2.0f, 10.0f, 20.0f, white, "ui/assets/sliderbutt_1");
+                    }
+                    (void)0;
                 }
                 {   // the cursor
                     Quad2D q{left43 + (menuMx - 8.0f) * sc, (menuMy - 8.0f) * sc, left43 + (menuMx + 8.0f) * sc, (menuMy + 8.0f) * sc};
@@ -3526,6 +3627,45 @@ int main(int argc, char** argv) {
         if (yaw) cam.yaw = *yaw;
         if (pitch) cam.pitch = *pitch;
 
+        if (!shot.empty() && (menuMode || std::getenv("IW2_SHOT_MENU"))) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
+            if (const char* sets = std::getenv("IW2_SHOT_SET")) {
+                std::string rest = sets;
+                while (!rest.empty()) {
+                    const size_t comma = rest.find(',');
+                    const std::string kv = rest.substr(0, comma);
+                    rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    if (const size_t eq = kv.find('='); eq != std::string::npos) menuEnv.setCvar(kv.substr(0, eq), kv.substr(eq + 1));
+                }
+            }
+            std::string rest = std::getenv("IW2_SHOT_MENU") ? std::getenv("IW2_SHOT_MENU") : "main";
+            while (!rest.empty()) {
+                const size_t comma = rest.find(',');
+                frontStack.open(rest.substr(0, comma));
+                rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+            }
+            menuMx = 320.0f, menuMy = 240.0f;
+            if (const char* keys = std::getenv("IW2_SHOT_KEYS")) { // debug: the IW2_MENU_KEYS tokens (open:, click:X/Y, up, down, enter, esc, left, right) run before the shot
+                std::string kr = keys;
+                while (!kr.empty()) {
+                    const size_t comma = kr.find(',');
+                    const std::string k = kr.substr(0, comma);
+                    kr = comma == std::string::npos ? std::string() : kr.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
+                    else if (k.rfind("click:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                        frontStack.click(menuMx, menuMy);
+                        frontStack.release();
+                    } else if (k.rfind("hover:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                    } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
+                }
+            }
+        }
         if (!shot.empty()) {
             if (walkSeconds > 0) {
                 // Drop the player at the camera position and walk forward, then take the shot from the eyes.
@@ -3771,6 +3911,79 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
+        // Cinematic playback (docs/spec/video.md): modal, the way the original's `cinematic <name> 0` (0x4d9f90) is: the movie
+        // fills the 4:3 screen area, any key or mouse button skips it (skippable byte 0x59a0d0), and the level load goes on after it.
+        auto playCinematic = [&](const std::string& name) {
+            const auto data = vfs.read("video/" + name + ".roq");
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return; }
+            std::unique_ptr<video::RoqDecoder> dec;
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return; }
+            std::cout << "cinematic " << name << "\n";
+            Scene movieScene = emptyScene(dev);
+            SDL_GPUTexture* tex = nullptr;
+            int tw = 0, th = 0;
+            SDL_AudioStream* snd = nullptr;
+            if (audioOn) {
+                const SDL_AudioSpec spec{SDL_AUDIO_S16, 2, video::RoqDecoder::kAudioRate};
+                snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+                if (snd) SDL_ResumeAudioStreamDevice(snd);
+            }
+            const uint64_t t0 = SDL_GetTicksNS();
+            bool more = true, skipped = false;
+            while (more && !skipped && running) {
+                SDL_Event e;
+                while (SDL_PollEvent(&e)) {
+                    if (e.type == SDL_EVENT_QUIT) running = false;
+                    else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) skipped = true;
+                }
+                const int64_t due = int64_t(double(SDL_GetTicksNS() - t0) * 1e-9 * dec->fps()) + 1; // frames that should have been shown
+                bool fresh = false;
+                while (more && dec->frameIndex() < due) {
+                    more = dec->nextFrame();
+                    if (!more) break;
+                    fresh = true;
+                    auto pcm = dec->takeAudio();
+                    if (snd && !pcm.empty()) {
+                        if (dec->audioChannels() == 1) {
+                            std::vector<int16_t> st(pcm.size() * 2);
+                            for (size_t i = 0; i < pcm.size(); ++i) st[i * 2] = st[i * 2 + 1] = pcm[i];
+                            pcm = std::move(st);
+                        }
+                        SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                    }
+                }
+                if (dec->width() == 0) break;
+                if (!tex || tw != dec->width() || th != dec->height()) {
+                    if (tex) SDL_ReleaseGPUTexture(dev, tex);
+                    tw = dec->width(), th = dec->height();
+                    tex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, uint32_t(tw), uint32_t(th), 1);
+                    movieScene.textures.resize(1);
+                    movieScene.textures.push_back(tex);
+                    fresh = true;
+                }
+                if (fresh) {
+                    Uploader up(dev, false);
+                    up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                }
+                SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+                SDL_GPUTexture* swap = nullptr;
+                uint32_t w = 0, h = 0;
+                if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
+                    const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
+                    Quad2D q{left, 0, left + 640.0f * sc, 480.0f * sc};
+                    q.texture = 1;
+                    renderer.fog = {};
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, std::vector<Quad2D>{q}, 0.0f);
+                }
+                SDL_SubmitGPUCommandBuffer(cmd);
+            }
+            if (snd) SDL_DestroyAudioStream(snd);
+            SDL_WaitForGPUIdle(dev);
+            releaseScene(dev, movieScene);
+            // Held keys and buttons that skipped the movie must not reach the game (their release does).
+            SDL_PumpEvents();
+        };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -3800,6 +4013,12 @@ int main(int argc, char** argv) {
                             const auto v = toVirtual(ev.button.x, ev.button.y);
                             menuMx = v[0], menuMy = v[1];
                             frontStack.click(menuMx, menuMy);
+                        } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_RIGHT) {
+                            const auto v = toVirtual(ev.button.x, ev.button.y);
+                            menuMx = v[0], menuMy = v[1];
+                            frontStack.clickBack(menuMx, menuMy);
+                        } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
+                            frontStack.release();
                         }
                         continue;
                     }
@@ -3809,6 +4028,8 @@ int main(int argc, char** argv) {
                         if (sc2 == SDL_SCANCODE_ESCAPE) frontStack.key(K::Escape);
                         else if (sc2 == SDL_SCANCODE_UP) frontStack.key(K::Up);
                         else if (sc2 == SDL_SCANCODE_DOWN) frontStack.key(K::Down);
+                        else if (sc2 == SDL_SCANCODE_LEFT) frontStack.key(K::Left);
+                        else if (sc2 == SDL_SCANCODE_RIGHT) frontStack.key(K::Right);
                         else if (sc2 == SDL_SCANCODE_RETURN || sc2 == SDL_SCANCODE_KP_ENTER) frontStack.key(K::Enter);
                         continue;
                     }
@@ -4094,22 +4315,33 @@ int main(int argc, char** argv) {
                 aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
                 {
-                    // HUD fade touches. Weapon change (0x4b76e8 / 0x4b839a): ammo display + weapon change time. Per frame 0x4be5f0:
-                    // the compass is touched when the view angles or buttons (except 0x2b00) changed, the player moves, an
-                    // offhand button (0x30000) is down, or 0x4be520 fired: attack (0x1), or reload / use-reload (0x30) under
-                    // conditions, with pm_flags & 0x300 clear, which also touches the ammo display (0x4be556).
-                    // TODO(spec): the 0x4be520 conditions for 0x30 (0xf708f4 bit 4, ps+0x580 bit 2), 0x4be440, pm_flags 0x300.
+                    // HUD fade touches. 0x4a6130(n) touches one HUD menu's fade time (menu flag +0xe8 |= 4): 0 Health (0xf79a3c),
+                    // 1 weaponinfo (0xf79a40) + offhand, 2 Compass (0xf79a38), 3 stance (0xf79a44), 4 offhandinfo (0xf79a48),
+                    // 5 objectiveinfo (0xf79200); the console command menu_show_notify <n> (0x4a70ff) calls it with n.
+                    // Weapon change (0x4b76e8 / 0x4b839a): touch(4) + ammo display + weapon change time. Per frame 0x4be5f0:
+                    //  - 0x4be520: attack (0x1), or reload / use-reload (0x30) while not mantling (pm_flags 4, 0xf708f4) and with
+                    //    eFlags & 0x300 clear, touches offhand and weaponinfo (0x4be556) and touches the compass;
+                    //  - 0x4be440: a change of the buttons 0x2300 touches stance and the compass, held ones touch stance only;
+                    //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
+                    //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
+                    // TODO(spec): the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
                     const int64_t nowMs = world ? world->timeMs() : 0;
                     if (pweapon.name() != hudFade.weapon) {
-                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = nowMs;
+                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
                         hudFade.weapon = pweapon.name();
                     }
-                    const bool fireTouch = (buttons & game::Button::Attack) != 0;
+                    const bool turretBits = world && world->playerOnTurret(); // 0xf70964 & 0x300
+                    const bool fireTouch = !turretBits && ((buttons & game::Button::Attack) != 0 || ((buttons & 0x30u) != 0 && !ps.mantling));
                     const bool viewMoved = cam.pitch != hudFade.pitch || cam.yaw != hudFade.yaw;
                     hudFade.pitch = cam.pitch, hudFade.yaw = cam.yaw;
-                    if (fireTouch) hudFade.ammo = nowMs;
-                    if (fireTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
-                        ((buttons ^ hudFade.buttons) & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
+                    if (fireTouch) hudFade.ammo = hudFade.offhand = nowMs;
+                    const uint32_t changed = buttons ^ hudFade.buttons;
+                    bool stanceTouch = false;
+                    if ((changed & 0x2300u) != 0) hudFade.stance = nowMs, stanceTouch = true;
+                    else if ((buttons & 0x2300u) != 0) hudFade.stance = nowMs;
+                    if ((buttons & 0x30000u) != 0) hudFade.offhand = nowMs;
+                    if (fireTouch || stanceTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
+                        (changed & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
                         hudFade.compass = nowMs;
                     hudFade.buttons = buttons;
                 }
@@ -4279,6 +4511,10 @@ int main(int argc, char** argv) {
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
+                    if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
+                        const std::string movie = world->takeCinematic();
+                        if (!movie.empty()) playCinematic(movie);
+                    }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();
                     releaseScene(dev, scene);
@@ -4308,6 +4544,8 @@ int main(int argc, char** argv) {
                     mixer.fade(1.0f, 0);
                 pendingLevel.reset();
             }
+            if (const char* lim = std::getenv("IW2_EXIT_AFTER")) // debug: leave after N seconds (keeps test runs from lingering)
+                if (SDL_GetTicksNS() > uint64_t(std::atof(lim) * 1e9)) running = false;
             if (const char* keys = std::getenv("IW2_MENU_KEYS")) { // debug: scripted menu keys (up,down,enter,esc), one per 2 s
                 static std::string rest = keys;
                 static uint64_t nextKey = SDL_GetTicksNS() + 3000000000ull;
@@ -4323,9 +4561,19 @@ int main(int argc, char** argv) {
                     } else if (k.rfind("set:", 0) == 0) { // set:name=value
                         const size_t eq = k.find('=');
                         menuEnv.setCvar(k.substr(4, eq - 4), k.substr(eq + 1));
+                    } else if (k.rfind("open:", 0) == 0) {
+                        frontStack.open(k.substr(5));
+                    } else if (k.rfind("click:", 0) == 0) { // click:X/Y in virtual pixels (left press and release)
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                        frontStack.click(menuMx, menuMy);
+                        frontStack.release();
+                    } else if (k == "quit") {
+                        running = false;
                     } else if (k == "wait") {
                     } else
-                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
+                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
                     std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
                     nextKey = SDL_GetTicksNS() + 2000000000ull;
