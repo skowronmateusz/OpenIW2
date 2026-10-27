@@ -618,8 +618,8 @@ void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerIn
     Vec wish = wishVelocity(fwd, right, f, r);
     const float wishSpeed = normalize(wish) * s;
     // Acceleration 9 standing, 12 crouched, 19 prone, 1 on slick ground (surface flag 2), x0.25 with pm_flags 0x200
-    // (0x5088d0, set by a damaging landing). TODO(spec): knockback (pm_flags 0x400) also gives 1.
-    const bool slick = (pml.groundTrace.surfaceFlags & 2) != 0;
+    // (0x5088d0, set by a damaging landing). pm_flags 0x400 (spawnSlide, ClientSpawn 0x4e925b) also gives 1 and applies gravity.
+    const bool slick = (pml.groundTrace.surfaceFlags & 2) != 0 || ps.spawnSlide; // 0x50889b: pm_flags 0x400 acts like slick ground
     float accel = slick ? 1.0f : ps.stance == Stance::Prone ? 19.0f : ps.stance == Stance::Crouch ? 12.0f : 9.0f;
     if (ps.landTimer) accel *= 0.25f;
     accelerate(ps, wish, wishSpeed, accel, pml.frametime, mp);
@@ -953,10 +953,10 @@ void clearLadder(PlayerState& ps) {
 // traced 8 units (walking) or 30 units along the facing, or along -vLadder when already climbing in the air; a hit on a
 // surface with flag 0x8 starts the climb (walking players must press forward), confirmed by a second trace against the
 // stored normal. ps+0xd0 is the view height target (0x28 crouch, 0xb prone, as in PM_Footsteps 0x50a88b).
-// TODO(spec): pm_flags 0x400 (read as part of the 0x600 mask in the pm_time test) has no setter ported (knockback).
+// pm_flags 0x400 is the spawn flag (spawnSlide).
 void checkLadder(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float fwdMove, const Vec& fwd) {
     if (pml.walking) ps.ladderLeft = false;
-    if (ps.pmTimeMs != 0 && !ps.onLadder && ps.landTimer) { clearLadder(ps); return; }
+    if (ps.pmTimeMs != 0 && !ps.onLadder && (ps.landTimer || ps.spawnSlide)) { clearLadder(ps); return; }
     const float dist = pml.walking ? 8.0f : 30.0f;
     Vec dir;
     if (ps.onLadder && !ps.onGround) dir = {-ps.vLadder[0], -ps.vLadder[1], -ps.vLadder[2]};
@@ -1126,6 +1126,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
             ps.pmTimeMs = 0;
             ps.jumping = false;
             ps.landTimer = false;
+            ps.spawnSlide = false;
         }
     }
 

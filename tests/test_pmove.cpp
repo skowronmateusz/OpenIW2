@@ -95,6 +95,16 @@ int main() {
             for (int i = 0; i < 20; ++i) playerMove(cw, fs, {}, 1.0f / 60.0f); // ~660 ms
             CHECK(fs.lastFoliageMs == 0);
         }
+        // ClientSpawn flag 0x400 lasts pm_time 100 ms.
+        {
+            PlayerState sp;
+            sp.origin = floor;
+            markSpawned(sp);
+            playerMove(cw, sp, {}, 1.0f / 60.0f);
+            CHECK(sp.spawnSlide);
+            for (int i = 0; i < 8; ++i) playerMove(cw, sp, {}, 1.0f / 60.0f);
+            CHECK(!sp.spawnSlide && sp.pmTimeMs == 0);
+        }
         // Ladder climb (PM_CheckLadderMove 0x50bd90 + 0x50c070): a sweep of horizontal traces finds a ladder surface (flag 0x8).
         {
             float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
