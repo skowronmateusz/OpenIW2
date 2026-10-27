@@ -153,6 +153,13 @@ void World::registerCampaignBuiltins() {
                         timeMs_ + int64_t(exitTime * 1000.0f)};
         return Value();
     };
+    // cinematic(name [, timeout seconds]) (0x4f4220): stores the name (63 characters) and, unless the dvar at 0x1c148c4 is set, the
+    // timeout; a negative timeout is a script error (0x586138). TODO(spec): the timeout's use (0x1c60fec) and the dvar 0x1c148c4.
+    vm_.registerBuiltin("cinematic", [this](CallContext& c) {
+        if (c.args.size() > 1 && c.arg(1).asFloat() < 0) throw std::runtime_error("cinematic: negative timeout");
+        cinematic_ = c.arg(0).toString().substr(0, 63);
+        return Value();
+    });
     vm_.registerBuiltin("changelevel", [change](CallContext& c) { return change(c, false); });
     vm_.registerBuiltin("missionsuccess", [change](CallContext& c) { return change(c, true); });
     // missionfailed() (0x4f4080): when a player entity is in use (0x4d7850 finds the classname 0x1c7f0ac at +0x118)

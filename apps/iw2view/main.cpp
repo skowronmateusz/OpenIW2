@@ -17,6 +17,8 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "video/roq.h"
+#include "game/compassspring.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
@@ -1944,7 +1946,8 @@ int main(int argc, char** argv) {
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -3304,7 +3307,7 @@ int main(int argc, char** argv) {
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
             // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
             // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
             // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
@@ -3362,7 +3365,7 @@ int main(int argc, char** argv) {
                         Quad2D q{bx, by, bx + qw, by + qh};
                         std::memcpy(q.rgba, col, 4);
                         q.texture = materialTexture(it.background);
-                        if (it.ownerDraw == 84) q.rotDeg = wrap360(cyaw - north);
+                        if (it.ownerDraw == 84) q.rotDeg = compassSpring.update(int(world->timeMs()), wrap360(cyaw - north)); // 0x4b09a0
                         out.push_back(q);
                         continue;
                     }
@@ -3775,6 +3778,79 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
+        // Cinematic playback (docs/spec/video.md): modal, the way the original's `cinematic <name> 0` (0x4d9f90) is: the movie
+        // fills the 4:3 screen area, any key or mouse button skips it (skippable byte 0x59a0d0), and the level load goes on after it.
+        auto playCinematic = [&](const std::string& name) {
+            const auto data = vfs.read("video/" + name + ".roq");
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return; }
+            std::unique_ptr<video::RoqDecoder> dec;
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return; }
+            std::cout << "cinematic " << name << "\n";
+            Scene movieScene = emptyScene(dev);
+            SDL_GPUTexture* tex = nullptr;
+            int tw = 0, th = 0;
+            SDL_AudioStream* snd = nullptr;
+            if (audioOn) {
+                const SDL_AudioSpec spec{SDL_AUDIO_S16, 2, video::RoqDecoder::kAudioRate};
+                snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+                if (snd) SDL_ResumeAudioStreamDevice(snd);
+            }
+            const uint64_t t0 = SDL_GetTicksNS();
+            bool more = true, skipped = false;
+            while (more && !skipped && running) {
+                SDL_Event e;
+                while (SDL_PollEvent(&e)) {
+                    if (e.type == SDL_EVENT_QUIT) running = false;
+                    else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) skipped = true;
+                }
+                const int64_t due = int64_t(double(SDL_GetTicksNS() - t0) * 1e-9 * dec->fps()) + 1; // frames that should have been shown
+                bool fresh = false;
+                while (more && dec->frameIndex() < due) {
+                    more = dec->nextFrame();
+                    if (!more) break;
+                    fresh = true;
+                    auto pcm = dec->takeAudio();
+                    if (snd && !pcm.empty()) {
+                        if (dec->audioChannels() == 1) {
+                            std::vector<int16_t> st(pcm.size() * 2);
+                            for (size_t i = 0; i < pcm.size(); ++i) st[i * 2] = st[i * 2 + 1] = pcm[i];
+                            pcm = std::move(st);
+                        }
+                        SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                    }
+                }
+                if (dec->width() == 0) break;
+                if (!tex || tw != dec->width() || th != dec->height()) {
+                    if (tex) SDL_ReleaseGPUTexture(dev, tex);
+                    tw = dec->width(), th = dec->height();
+                    tex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, uint32_t(tw), uint32_t(th), 1);
+                    movieScene.textures.resize(1);
+                    movieScene.textures.push_back(tex);
+                    fresh = true;
+                }
+                if (fresh) {
+                    Uploader up(dev, false);
+                    up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                }
+                SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+                SDL_GPUTexture* swap = nullptr;
+                uint32_t w = 0, h = 0;
+                if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
+                    const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
+                    Quad2D q{left, 0, left + 640.0f * sc, 480.0f * sc};
+                    q.texture = 1;
+                    renderer.fog = {};
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, std::vector<Quad2D>{q}, 0.0f);
+                }
+                SDL_SubmitGPUCommandBuffer(cmd);
+            }
+            if (snd) SDL_DestroyAudioStream(snd);
+            SDL_WaitForGPUIdle(dev);
+            releaseScene(dev, movieScene);
+            // Held keys and buttons that skipped the movie must not reach the game (their release does).
+            SDL_PumpEvents();
+        };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -4106,22 +4182,33 @@ int main(int argc, char** argv) {
                 aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
                 {
-                    // HUD fade touches. Weapon change (0x4b76e8 / 0x4b839a): ammo display + weapon change time. Per frame 0x4be5f0:
-                    // the compass is touched when the view angles or buttons (except 0x2b00) changed, the player moves, an
-                    // offhand button (0x30000) is down, or 0x4be520 fired: attack (0x1), or reload / use-reload (0x30) under
-                    // conditions, with pm_flags & 0x300 clear, which also touches the ammo display (0x4be556).
-                    // TODO(spec): the 0x4be520 conditions for 0x30 (0xf708f4 bit 4, ps+0x580 bit 2), 0x4be440, pm_flags 0x300.
+                    // HUD fade touches. 0x4a6130(n) touches one HUD menu's fade time (menu flag +0xe8 |= 4): 0 Health (0xf79a3c),
+                    // 1 weaponinfo (0xf79a40) + offhand, 2 Compass (0xf79a38), 3 stance (0xf79a44), 4 offhandinfo (0xf79a48),
+                    // 5 objectiveinfo (0xf79200); the console command menu_show_notify <n> (0x4a70ff) calls it with n.
+                    // Weapon change (0x4b76e8 / 0x4b839a): touch(4) + ammo display + weapon change time. Per frame 0x4be5f0:
+                    //  - 0x4be520: attack (0x1), or reload / use-reload (0x30) while not mantling (pm_flags 4, 0xf708f4) and with
+                    //    eFlags & 0x300 clear, touches offhand and weaponinfo (0x4be556) and touches the compass;
+                    //  - 0x4be440: a change of the buttons 0x2300 touches stance and the compass, held ones touch stance only;
+                    //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
+                    //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
+                    // TODO(spec): the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
                     const int64_t nowMs = world ? world->timeMs() : 0;
                     if (pweapon.name() != hudFade.weapon) {
-                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = nowMs;
+                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
                         hudFade.weapon = pweapon.name();
                     }
-                    const bool fireTouch = (buttons & game::Button::Attack) != 0;
+                    const bool turretBits = world && world->playerOnTurret(); // 0xf70964 & 0x300
+                    const bool fireTouch = !turretBits && ((buttons & game::Button::Attack) != 0 || ((buttons & 0x30u) != 0 && !ps.mantling));
                     const bool viewMoved = cam.pitch != hudFade.pitch || cam.yaw != hudFade.yaw;
                     hudFade.pitch = cam.pitch, hudFade.yaw = cam.yaw;
-                    if (fireTouch) hudFade.ammo = nowMs;
-                    if (fireTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
-                        ((buttons ^ hudFade.buttons) & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
+                    if (fireTouch) hudFade.ammo = hudFade.offhand = nowMs;
+                    const uint32_t changed = buttons ^ hudFade.buttons;
+                    bool stanceTouch = false;
+                    if ((changed & 0x2300u) != 0) hudFade.stance = nowMs, stanceTouch = true;
+                    else if ((buttons & 0x2300u) != 0) hudFade.stance = nowMs;
+                    if ((buttons & 0x30000u) != 0) hudFade.offhand = nowMs;
+                    if (fireTouch || stanceTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
+                        (changed & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
                         hudFade.compass = nowMs;
                     hudFade.buttons = buttons;
                 }
@@ -4291,6 +4378,10 @@ int main(int argc, char** argv) {
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
+                    if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
+                        const std::string movie = world->takeCinematic();
+                        if (!movie.empty()) playCinematic(movie);
+                    }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();
                     releaseScene(dev, scene);
