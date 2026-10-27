@@ -1996,9 +1996,34 @@ int main(int argc, char** argv) {
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
-        auto gatherItems = [&](const Camera&) {
+        auto gatherItems = [&](const Camera& viewCam) {
             std::vector<DrawItem> items;
             if (!world) return items;
+            // View frustum (Gribb-Hartmann planes of the view-projection; 32:9 aspect so any window is covered) used to skip
+            // the CPU skinning of animated entities that cannot be seen. The player's view model is never culled.
+            const Mat4 cullVp = viewCam.viewProj(3.6f);
+            std::array<std::array<float, 4>, 5> cullPlanes{};
+            {
+                auto row = [&](int i) { return std::array<float, 4>{cullVp[size_t(i)], cullVp[size_t(4 + i)], cullVp[size_t(8 + i)], cullVp[size_t(12 + i)]}; };
+                const auto r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+                for (int k = 0; k < 4; ++k) {
+                    cullPlanes[0][size_t(k)] = r3[size_t(k)] + r0[size_t(k)];
+                    cullPlanes[1][size_t(k)] = r3[size_t(k)] - r0[size_t(k)];
+                    cullPlanes[2][size_t(k)] = r3[size_t(k)] + r1[size_t(k)];
+                    cullPlanes[3][size_t(k)] = r3[size_t(k)] - r1[size_t(k)];
+                    cullPlanes[4][size_t(k)] = r2[size_t(k)]; // near (depth range 0..w)
+                }
+                for (auto& pl : cullPlanes) {
+                    const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
+                    for (float& v : pl) v /= len;
+                }
+            }
+            static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr; // debug: disable the culling above
+            auto sphereVisible = [&](float x, float y, float z, float radius) {
+                for (const auto& pl : cullPlanes)
+                    if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
+                return true;
+            };
             Uploader up(dev, false);
             for (const auto& ev : world->takeFxEvents()) {
                 if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
@@ -2090,6 +2115,7 @@ int main(int argc, char** argv) {
                 // skinned with the blended pose and carry their attachments.
                 if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
+                    if (!noCull && !sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f)) continue; // anim state already stepped
                     const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!body) continue;
                     assets::XPose pose;
