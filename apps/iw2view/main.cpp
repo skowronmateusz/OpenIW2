@@ -2587,7 +2587,7 @@ int main(int argc, char** argv) {
             }
             {
                 // Subtitles (cgame 0x4bf2e0): x 120, y 400, char height 12 on the 640x480 screen, wrapped at 80 characters.
-                // TODO(spec): font, colour and shadow (0x4068e0), the wrap algorithm (0x403fb0), cg_subtitles off.
+                // Anchor: 0x406c60 calls 0x4068e0 with horizontal and vertical code 1, i.e. x·scale + 0x793974 = the left edge of the 4:3 area (left43) in widescreen, as here. TODO(spec): colour, cg_subtitles off.
                 const uint64_t now = SDL_GetTicksNS();
                 std::erase_if(subtitles, [&](const Subtitle& st) { return st.untilNs < now; });
                 const uint8_t white[4] = {255, 255, 255, 255};
@@ -2685,7 +2685,7 @@ int main(int argc, char** argv) {
                 const uint8_t green[4] = {0, 255, 0, 255};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    drawWindow(windowRows(false, 70, 9), 6.0f * sc, 100.0f, 12.0f, *f, green, 0);
+                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, green, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
                 // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
