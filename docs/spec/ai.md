@@ -433,7 +433,7 @@ entity gives its origin (mode 1); no goal entity the setgoalpos / setgoalnode po
 entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight, 80). The cover search, `pathToGoal` and the in-goal test read it
 (`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (the goal volume test 0x447830 is TODO(spec)).
 
-Not done: the second caller of 0x505ed0 / 0x505f70 (0x54ad05), the toucher filter of 0x529140, the g_spawnai dvar.
+The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
 
 ## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype, checkprone)
 
