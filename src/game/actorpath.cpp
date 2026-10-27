@@ -139,10 +139,11 @@ std::vector<PathPlane> World::dangerPlanesOf(const Entity& e) const {
     return out;
 }
 
-// 0x54b610: whether a plane can be added without evicting a short-lived one (a free slot, or one not short-lived).
+// 0x54b610: whether a standing plane exists (a used slot, +0x0 != 0, whose +0x14 short-lived flag is clear). Read from
+// 0x54b617…0x54b62f (a free slot is skipped); the grenade flee retries without planes when it is true.
 bool World::hasFreeDangerPlane(const Entity& e) const {
     for (const DangerPlane& p : e.dangerPlanes)
-        if (p.timeMs == 0 || !p.shortLived) return true;
+        if (p.timeMs != 0 && !p.shortLived) return true;
     return false;
 }
 

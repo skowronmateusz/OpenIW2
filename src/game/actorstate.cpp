@@ -757,7 +757,7 @@ void World::registerActorStateBuiltins() {
 // 6 -> 4; 7 -> 5; mode 0 leaves it) and a step (+0x48, 50, 0x500cff). While the kind is 1, 2 or 5 (and the ground entity
 // +0x18 is not 0x7ff, i.e. the actor stands on something) every frame adds the step to the carried sum (+0x1c, zeroed
 // otherwise); at 500 an AI event 2 is sent at the actor (0x535770, origin = the struct's position, enemy-team receivers)
-// and the sum keeps its remainder. TODO(spec): the ground-entity gate is taken as always satisfied.
+// and the sum keeps its remainder.
 void World::actorMoveNoise(Entity& e) {
     ActorAi& ai = e.ai;
     const int m = ai.animMode;
@@ -765,6 +765,17 @@ void World::actorMoveNoise(Entity& e) {
     const int old = ai.moveNoiseMs;
     ai.moveNoiseMs = 0;
     if (!ai.alive || !kind125) return;
+    // The ground entity (+0x18, 0x548290): a trace of the entity box (r.mins/r.maxs) with mask 0x2820011 (actor +0x28c)
+    // from the origin 0.25 down (0x591fe0; the step height 10/18 instead when rising on a ground entity, not modelled
+    // as the vertical velocity +0x14 is 0 here); a miss leaves 0x7ff (airborne) and the accumulator zeroed.
+    {
+        const Value ov = e.obj->get("origin");
+        const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+        const TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 0.25f}, {-15, -15, 0}, {15, 15, 72}, 0x2820011u, e.number);
+        static const bool dbg = std::getenv("IW2_GROUND_DEBUG") != nullptr;
+        if (dbg) ++(tr.fraction < 1.0f || tr.startSolid ? stats.groundHit : stats.groundMiss);
+        if (!(tr.fraction < 1.0f || tr.startSolid)) return;
+    }
     ai.moveNoiseMs = old + 50;
     if (ai.moveNoiseMs < 500) return;
     const Value o = e.obj->get("origin");
