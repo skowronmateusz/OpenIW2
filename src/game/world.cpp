@@ -579,6 +579,7 @@ void World::moveActor(Entity& e, float dt) {
         // direction, like the angles write above.
         e.obj->set("desiredangle", Value(yaw));
     }
+    bool grounded = false;
     if (actorSlideEnabled()) {
         // The actor slide move (actorslide.cpp, exe 0x5487c0 and callees) instead of the ground snap below. Block set-up from
         // the exe: init 0x500cd0 gives mask 0x2820011 (+0x68), pass entity = the gentity number (+0x3c), ground entity 0x7fe,
@@ -612,18 +613,20 @@ void World::moveActor(Entity& e, float dt) {
         moveBlock(pm, fn);
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         e.ai.groundEnt = pm.groundEnt;
+        grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground
         linkBumpedActor(e, pm.hitEnt);
     } else {
         // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
         const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
-        if (!tr.startSolid && tr.fraction < 1.0f) o[2] = tr.endPos[2];
+        grounded = !tr.startSolid && tr.fraction < 1.0f;
+        if (grounded) o[2] = tr.endPos[2];
     }
     e.obj->set("origin", Value(o));
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     // 0x503ec0: the negotiation branch (stop soon unset, on the ground, flag 0x40, a traversal point): within the squared
     // distance |velocity|^2 * 0.005 + 1e-6 (2D) of the begin point the negotiation state is pushed.
     if (e.ai.stopSoonMs == 0) {
-        if (!(tr.fraction < 1.0f && !tr.startSolid) || !(p.flags & 0x40)) return; // 0x503ee..0x503ef5: not on the ground or no flag 0x40
+        if (!grounded || !(p.flags & 0x40)) return; // 0x503ee..0x503ef5: not on the ground or no flag 0x40
         if (p.traversal > 0) {
             negotiationTrigger(e, o, true);
             return;

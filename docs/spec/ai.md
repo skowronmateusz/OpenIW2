@@ -585,3 +585,5 @@ Ported (src/game/actorfollow.cpp `updateFollowed`, `linkBumpedActor`):
 - Scene check: across matmata/elalamein/toujane spawn-all the link never fires (0/0), since the default trace mask has no body bit and actors rarely bump each other without combat.
 
 TODO(spec): the retarget to the player (0x4fec50, 0x447830, 0x504610, 0x519050), the scans 0x501380 and 0x504630 (0x5025f0/0x502660), the follower trail (0x500d80 + 0x544ca0 + 0x505520/0x504f60, path walk skipped at 0x5041a3), the 0x504160 branch not running 0x505230 (0x504228), and the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x5013b0, 0x53ade0, 0x501e06 are not decoded/ported.
+
+Status: stepActorPath returns early for a followed actor (as the exe skips the path walk, 0x5041a3), so with the link enabled but no trail the follower freezes; the bump link is therefore gated behind IW2_ACTOR_FOLLOW=1 until 0x500d80/0x544ca0/0x505520 are ported.

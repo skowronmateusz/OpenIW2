@@ -1,3 +1,4 @@
+#include <cstdlib>
 // Path following (docs/spec/ai.md "Path following"): the follower step 0x551960 — other sentients in the way
 // (0x551100 / 0x551490), waiting for them, following their wait (0x504720) or detouring around them (0x5451b0) — and
 // the move checks it uses (0x543c30 / 0x543d30 / 0x5440e0).
@@ -191,6 +192,10 @@ void World::updateFollowed(Entity& e) {
 void World::linkBumpedActor(Entity& e, int hit) {
     e.ai.bumpedEnt = hit;
     if (hit >= 0x7fe) return;
+    // Gated: a followed actor skips the path walk (stepActorPath) and the exe moves it along the follower trail
+    // (0x500d80 / 0x544ca0 / 0x505520 / 0x504f60), which is not ported; linking would freeze it. Opt in with IW2_ACTOR_FOLLOW=1.
+    static const bool enabled = [] { const char* v = std::getenv("IW2_ACTOR_FOLLOW"); return v && v[0] == '1'; }();
+    if (!enabled) return;
     Entity* o = entityByNumber(hit);
     if (o && o->isActor && o != &e && !o->ai.followed) o->ai.followed = &e, ++stats.followLinks;
 }
