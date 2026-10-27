@@ -1287,6 +1287,26 @@ Scene emptyScene(SDL_GPUDevice* dev) {
 // ---------------------------------------------------------------------------------------------
 // Renderer
 
+// r_dlightLimit (default 4): of the submitted lights the DLL keeps the ones with the smallest distSq / radius^2 to the view
+// origin (quick-select with comparator 0x100150a0 in 0x10015180, called from 0x10015210); order inside the kept set is not defined.
+static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::FxLight>& in, const Vec3& eye, size_t limit = 4) {
+    static const bool off = std::getenv("IW2_NO_DLIGHT") != nullptr;
+    std::vector<std::array<float, 7>> out;
+    if (off) return out;
+    std::vector<std::pair<float, const game::FxLight*>> v;
+    for (const auto& l : in) {
+        if (!(l.radius > 0.0f)) continue; // AddLightToScene drops radius <= 0 (0x1019bd04)
+        const float dx = eye.x - l.origin[0], dy = eye.y - l.origin[1], dz = eye.z - l.origin[2];
+        v.push_back({(dx * dx + dy * dy + dz * dz) / (l.radius * l.radius), &l});
+    }
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (size_t i = 0; i < v.size() && i < limit; ++i) {
+        const auto& l = *v[i].second;
+        out.push_back({l.origin[0], l.origin[1], l.origin[2], l.radius, l.rgb[0], l.rgb[1], l.rgb[2]});
+    }
+    return out;
+}
+
 struct FragmentUniforms {
     float sunDirection[4];
     float sunColor[4];
@@ -1360,6 +1380,9 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
+    SDL_GPUGraphicsPipeline* dlightPipelines[3][3] = {}; // l_point: [polygon offset][cull]
+    struct DLight { float pos[3]; float radius; float rgb[3]; };
+    std::vector<DLight> dlights; // lights of this frame (already limited to r_dlightLimit)
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
@@ -1453,6 +1476,11 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
+        SDL_GPUShaderCreateInfo dfsi = fs;
+        dfsi.entrypoint = "fs_dlight";
+        dfsi.num_samplers = 1;
+        SDL_GPUShader* dlightFsh = SDL_CreateGPUShader(dev, &dfsi);
+        if (!dlightFsh) sdlFail("dlight shader");
         SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
         SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
         if (!specVsh || !specFsh) sdlFail("spec shaders");
@@ -1503,6 +1531,22 @@ struct Renderer {
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
                 }
+            if (p == 3) { // l_point (stateMap additive_nofog): ONE / ONE, depth test only
+                pi.fragment_shader = dlightFsh;
+                for (int lvl = 0; lvl <= 2; ++lvl)
+                    for (int c = 0; c < 3; ++c) {
+                        pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                        pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                        pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                        pi.rasterizer_state.front_face = kFrontFace;
+                        dlightPipelines[lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                        if (!dlightPipelines[lvl][c]) sdlFail("dlight pipeline");
+                    }
+                pi.fragment_shader = fsh;
+                pi.rasterizer_state.enable_depth_bias = false;
+                pi.rasterizer_state.depth_bias_slope_factor = 0;
+                pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            }
             if (p < 3) { // lmap_s (specular) variants: tangent frame in vertex buffer 1, six samplers
                 pi.vertex_shader = specVsh;
                 pi.fragment_shader = specFsh;
@@ -1863,6 +1907,34 @@ struct Renderer {
                 if (b.pass == Pass::Sky) SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         }
         for (Pass p : {Pass::Opaque, Pass::AlphaTest, Pass::Blend, Pass::Additive, Pass::Multiply}) {
+            if (p == Pass::Blend && !dlights.empty()) {
+                // l_point passes: every lit opaque / alpha-tested world batch once per light (the DLL collects the touched surfaces per
+                // light, 0x10014fe0; here the shader's radius falloff is the cull, TODO(spec): per-surface bounds).
+                static const float ramp[16] = {255, 255, 244, 223, 202, 181, 159, 138, 117, 96, 74, 53, 32, 11, 0, 0}; // images/falloff_linear.iwi
+                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                for (const DLight& dl : dlights)
+                    for (Pass dp : {Pass::Opaque, Pass::AlphaTest})
+                        for (const Batch& b : scene.batches) {
+                            if (b.pass != dp || b.lightmap == -3) continue;
+                            SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
+                            VU du = vu;
+                            du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                            SDL_PushGPUVertexUniformData(cmd, 0, &du, sizeof(du));
+                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                            SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
+                            struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
+                            std::memcpy(fu.light, dl.pos, 12);
+                            fu.light[3] = dl.radius;
+                            std::memcpy(fu.color, dl.rgb, 12);
+                            fu.params[0] = dp == Pass::AlphaTest ? 1.0f : 0.0f;
+                            fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
+                            for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
+                            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                        }
+                SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+            }
             if (p == Pass::Blend) {
             // Water (water_l_sun.tech): after the opaque passes, before the blended ones. Polygon offset not applied (TODO(spec)).
             for (const Batch& b : scene.batches) {
@@ -4667,6 +4739,7 @@ int main(int argc, char** argv) {
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             renderer.fog = fogState.consts(world ? world->timeMs() : 0);
+            renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
@@ -5645,6 +5718,7 @@ int main(int argc, char** argv) {
             if (gotSwap && swap)
             {
                 renderer.fog = fogState.consts(world ? world->timeMs() : 0);
+                renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
                 const uint64_t profB = SDL_GetTicksNS();
