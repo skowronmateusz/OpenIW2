@@ -54,14 +54,16 @@ float num(const std::string& s, float fallback) {
     return end == s.c_str() ? fallback : v;
 }
 
-// loadspec (0x428f40): lower-cased; a leading '!' makes the whole list exclusive. The level matches when its name
-// occurs as a word (preceded by the start or a character below '"', followed by one below '!', so "!libya" lists
-// libya). Plain list: allowed when listed; '!' list: allowed when not listed. An empty spec allows every level.
-// TODO(spec): the "menu" level special case and the compare against the first argument when nothing matched.
+// loadspec (0x428f40, callers pass the mode tag "all_sp" 0x56cb6c): lower-cased; a leading '!' makes the whole list exclusive.
+// The level matches when its name occurs as a word (preceded by the start or a character below '"', followed by one below
+// '!', so "!libya" lists libya). With flag = (exclusive ? level == "menu" : 1): a match returns flag; no match returns
+// !flag for the "menu" level, otherwise flag when the whole spec equals the mode tag (so a row marked "all_sp" loads in
+// every single-player level) and !flag when it does not. An empty spec allows every level.
 bool loadspecAllows(const std::string& spec, const std::string& level) {
     const std::string s = lower(spec);
     if (s.empty()) return true;
     const bool exclusive = s[0] == '!';
+    const bool flag = exclusive ? level == "menu" : true;
     bool listed = false;
     for (size_t at = s.find(level); !level.empty() && at != std::string::npos; at = s.find(level, at + 1)) {
         const bool startOk = at == 0 || static_cast<unsigned char>(s[at - 1]) < '"';
@@ -72,7 +74,9 @@ bool loadspecAllows(const std::string& spec, const std::string& level) {
             break;
         }
     }
-    return exclusive ? !listed : listed;
+    if (listed) return flag;
+    if (level == "menu") return !flag;
+    return s == "all_sp" ? flag : !flag;
 }
 
 } // namespace
