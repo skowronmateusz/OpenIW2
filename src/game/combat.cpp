@@ -355,7 +355,9 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
 // `damageAmount` is the fallback when the weapon (weaponName, else the shooter's own) has no definition.
 Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
-                          const std::string& weaponName) {
+                          const std::string& weaponName, int depth) {
+    // More than 12 passes: the exe prints an error and fires nothing (0x531343 / 0x531356).
+    if (depth > 12) return nullptr;
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
     const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
     const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
@@ -391,6 +393,21 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         aiEventLine(*attacker, 16, start, tr.endPos);
     }
     bulletImpact(shooter, def, start, end, tr, hit);
+    // Penetration (0x531665): a hit on contents 0x10 goes on from just behind the hit point towards the same end with the
+    // next depth and applies no damage here: start = hit + dir · t, t = 0.25 / cosθ (cosθ = −dir·normal) when cosθ >= 0.125,
+    // else 0 (0x5316be…0x531729). The impact event above is still sent.
+    if (tr.fraction < 1.0f && (tr.contents & 0x10u) && !tr.startSolid) {
+        Vec3 d = sub(end, start);
+        const float dl = len(d);
+        if (dl > 0) {
+            d = scale(d, 1.0f / dl);
+            const float cosT = -(d[0] * tr.normal[0] + d[1] * tr.normal[1] + d[2] * tr.normal[2]);
+            const float t = cosT >= 0.125f ? 0.25f / cosT : 0.0f;
+            ++stats.bulletPenetrations;
+            return fireBullet(shooter, add(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}, scale(d, t)), end, damageAmount, attacker,
+                              weaponName, depth + 1);
+        }
+    }
     if (hit && !takesDamage(*hit)) hit = nullptr;
     ++stats.shots;
     if (def) {
@@ -564,6 +581,10 @@ void World::registerCombatBuiltins() {
             }
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
             const bool hitRoll = accuracy > u(rng_);
+            if (static const bool dbg = std::getenv("IW2_ACC_DEBUG") != nullptr; dbg)
+                print("ACC " + a->obj->get("weapon").toString() + " " + (enemy->isPlayer ? "player" : "ai") + " dist " +
+                      std::to_string(int(len(sub(enemy->obj->get("origin").asVector(), a->obj->get("origin").asVector())))) + " chance " +
+                      std::to_string(accuracy) + (hitRoll ? " hit" : " miss"));
             Vec3 T = target;
             if (enemy->isPlayer) T = eyePosition(*enemy); // the player's eye (0x4e8b70)
             Vec3 v = sub(T, start);

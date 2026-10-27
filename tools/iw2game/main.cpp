@@ -860,7 +860,7 @@ int main(int argc, char** argv) {
                 if (e->isActor) (world.isAlive(*e) ? alive : dead)++;
             std::cout << "actors alive " << alive << ", dead " << dead << "; player health " << world.player()->obj->get("health").toString() << "\n";
             std::cout << "shots " << world.stats.shots << ", hits " << world.stats.hits << ", kills " << world.stats.kills << "; grenades "
-                      << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << "\n";
+                      << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << ", penetrations " << world.stats.bulletPenetrations << "\n";
             std::cout << "actor animscripts:";
             for (const auto& [k, v] : states) std::cout << " " << k << "=" << v;
             std::cout << "\n";
