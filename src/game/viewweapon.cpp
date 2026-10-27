@@ -187,6 +187,36 @@ std::array<float, 2> ViewImpulses::damageKick(int64_t timeMs, float adsFrac, boo
     return {damagePitch_ * f, damageRoll_ * f};
 }
 
+void AimBlend::set(W& s, float goal, float blend) {
+    if (s.w == 0) s.w = goal * 0.001f;
+    if (goal < s.w) s.left = (s.w - goal) / s.w * blend;
+    else s.left = (goal - s.w) / goal * blend;
+    s.goal = goal;
+}
+
+void AimBlend::clear(W& s, float blend) {
+    if (s.goal != 0 || blend < s.left) s.left = blend;
+    s.goal = 0;
+}
+
+void AimBlend::step(W& s, float dt) {
+    if (s.left <= dt) {
+        s.w = s.goal;
+        s.left = 0;
+    } else {
+        s.w += (s.goal - s.w) / s.left * dt;
+        if (s.w < 1e-6f) s.w = s.goal * 0.001f;
+        s.left -= dt;
+    }
+}
+
+void AimBlend::update(bool aiming, float dt) {
+    set(aiming ? up_ : down_, 1.0f, 0.5f);
+    clear(aiming ? down_ : up_, 0.5f);
+    step(up_, dt);
+    step(down_, dt);
+}
+
 namespace {
 // DiffTrack (0x420a20): moves cur towards target by (target − cur) · rate · dt unless that overshoots or the gap is
 // below 0.001; then target.

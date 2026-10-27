@@ -108,4 +108,24 @@ private:
     float landChange_ = 0, damagePitch_ = 0, damageRoll_ = 0;
 };
 
+
+// The view model's two aim layers (adsUpAnim at time = aim fraction, adsDownAnim at time = 1 - aim fraction) are both in
+// the anim tree; every frame 0x4b28e0 calls 0x4b25e0, which sets the wanted one's goal weight to 1 over 0.5 s (0x478f10) and
+// clears the other over 0.5 s, so the layers cross-fade linearly instead of switching. Weights below follow the same
+// goal-weight rules as AnimState::setWeight / clearNode.
+class AimBlend {
+public:
+    void reset() { *this = AimBlend(); } // a new weapon's tree starts at weight 0 (TODO(spec): 0x4b2c90 reset timing)
+    void update(bool aiming, float dt);
+    float up() const { return up_.w; }
+    float down() const { return down_.w; }
+
+private:
+    struct W { float w = 0, goal = 0, left = 0; };
+    static void set(W& s, float goal, float blend);
+    static void clear(W& s, float blend);
+    static void step(W& s, float dt);
+    W up_, down_;
+};
+
 } // namespace iw2::game

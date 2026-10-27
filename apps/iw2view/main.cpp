@@ -2055,6 +2055,8 @@ int main(int argc, char** argv) {
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
+        game::AimBlend aimBlend; // the view model aim layers' cross-fade (0x4b25e0)
+        std::string aimBlendWeapon;
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
@@ -2105,19 +2107,21 @@ int main(int argc, char** argv) {
                     frame = comma == std::string::npos ? 0.0f : std::stof(spec.substr(comma + 1));
                 }
             }
-            // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload…) and
-            // one aiming animation, both with weight 1. adsUpAnim plays at time = aim fraction while zooming in,
-            // adsDownAnim at time = 1 − aim fraction otherwise; both are children of the root, so the engine's calc
+            // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload...) with
+            // weight 1 and both aim animations: adsUpAnim at time = aim fraction, adsDownAnim at time = 1 - aim fraction,
+            // their weights cross-fading over 0.5 s (game::AimBlend); all are children of the root, so the engine's calc
             // adds them and divides by the weight sum (docs/spec/xanim.md, "Blending").
             std::vector<assets::PoseLayer> layers;
             if (an) layers.push_back({an, frame, 1.0f});
-            {
-                const bool up = pweapon.adsZoomingIn() && pweapon.adsFrac() > 0;
-                const float t = up ? pweapon.adsFrac() : 1.0f - pweapon.adsFrac();
-                if (const assets::XAnim* ads = viewAnim(vfs, pweapon.field(up ? "adsUpAnim" : "adsDownAnim")))
-                    layers.push_back({ads, t * float(std::max(0, ads->numFrames - 1)), 1.0f});
+            if (!std::getenv("IW2_VM_NOADS")) {
+                for (const bool up : {true, false}) {
+                    const float wgt = up ? aimBlend.up() : aimBlend.down();
+                    if (wgt <= 0) continue;
+                    const float t = up ? pweapon.adsFrac() : 1.0f - pweapon.adsFrac();
+                    if (const assets::XAnim* ads = viewAnim(vfs, pweapon.field(up ? "adsUpAnim" : "adsDownAnim")))
+                        layers.push_back({ads, t * float(std::max(0, ads->numFrames - 1)), wgt});
+                }
             }
-            if (std::getenv("IW2_VM_NOADS") && layers.size() > 1) layers.pop_back();
             DrawItem base;
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
@@ -2902,6 +2906,8 @@ int main(int argc, char** argv) {
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
                 pweapon.update(0.02f, shotIn);
+                if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
+                aimBlend.update(pweapon.viewAiming(), 0.02f);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
             }
             if (shotIn.frag) std::cout << "shot weapon state " << pweapon.stateNumber() << " anim " << pweapon.anim() << " t " << pweapon.animTime() << "\n";
@@ -3222,6 +3228,8 @@ int main(int argc, char** argv) {
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
+                if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
+                aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};

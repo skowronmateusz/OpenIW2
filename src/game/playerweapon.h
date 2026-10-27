@@ -80,6 +80,9 @@ public:
     // Aim fraction 0..1 and whether it is rising (docs/spec/weapons.md, 0x4dd0d0).
     float adsFrac() const { return adsFrac_; }
     bool adsZoomingIn() const { return zoomingIn_; }
+    // Which aim layer the view model wants (0x4b2918-0x4b2969): the aim flag (pm_flags 0x40), not while reloading with
+    // more than adsReloadTransTime left (state 5, 0x4b292d-0x4b293a), never during the offhand states (flag 0x10).
+    bool viewAiming() const;
     // Fields of the weapon the client shows: the offhand's while flag 0x10 is set (ps+0xac), else the player
     // state's weapon (ps+0xb0), as cgame selects it (e.g. 0x4b6420, 0x4bc8a0). This feeds the view model's aim
     // animations, so a grenade throw is not blended with the hand weapon's adsDownAnim.
@@ -134,6 +137,7 @@ private:
     std::vector<std::string> sounds_;
     std::vector<Event> events_;
     float adsFrac_ = 0;
+    bool adsHeld_ = false; // the last update's aim command
     bool zoomingIn_ = true;
 };
 

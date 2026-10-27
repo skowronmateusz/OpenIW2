@@ -53,6 +53,14 @@ int main() {
     CHECK(shellShockRatio(0, 1000) == 0 && shellShockRatio(-5, 1000) == 0);
     CHECK(shellShockRatio(2000, 1000) == 1.0f && near(shellShockRatio(500, 1000), 0.5f));
     CHECK(near(shellShockRatio(250, 1000), 0.15625f)); // r*r*(3 - 2r) at r = .25
+    // Aim layers cross-fade linearly over 0.5 s (0x4b25e0 / 0x478f10).
+    AimBlend ab;
+    for (int i = 0; i < 40; ++i) ab.update(false, 0.0125f);
+    CHECK(near(ab.down(), 1.0f) && ab.up() == 0);
+    for (int i = 0; i < 20; ++i) ab.update(true, 0.0125f); // 0.25 s
+    CHECK(std::fabs(ab.up() - 0.5f) < 0.02f && std::fabs(ab.down() - 0.5f) < 0.02f);
+    for (int i = 0; i < 20; ++i) ab.update(true, 0.0125f);
+    CHECK(near(ab.up(), 1.0f) && ab.down() == 0);
     if (failures == 0) std::cout << "viewimpulses tests passed\n";
     return failures ? 1 : 0;
 }
