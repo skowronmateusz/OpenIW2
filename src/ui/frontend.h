@@ -4,6 +4,7 @@
 
 #include "ui/menurun.h"
 
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,12 +31,47 @@ public:
     // Clicks at (x, y): runs the action of the hit item; returns true if an item was hit.
     bool click(float x, float y);
     // Ends a slider drag (mouse button released).
-    void release() { dragItem_ = nullptr; }
+    void release();
     // Right mouse button on a MULTI item selects the previous value (exe 0x4ca5e0 key 0xc9).
     bool clickBack(float x, float y);
-    enum class Key { Up, Down, Enter, Escape, Left, Right };
+    enum class Key { Up, Down, Enter, Escape, Left, Right, Backspace, Delete, Home, End, Insert, PageUp, PageDown, Tab, WheelUp, WheelDown };
     // Keyboard navigation: up/down move the focus between selectable items, enter runs its action, escape the top menu's onESC.
     void key(Key k);
+
+    // Time base in milliseconds: double-click timing and the scrollbar button auto-repeat. Call once per frame.
+    void tick(int nowMs);
+
+    // ---- LISTBOX items (type 6; exe paint 0x4ce280, keys 0x4c9c60, hover 0x4c9880, mouse press 0x4cb100) ----
+    // Per-item state. `cursor` is the selected row (item +0x2dc), startPos/endPos/hover/drawPadding the listbox def fields.
+    struct ListState {
+        int startPos = 0;
+        int cursor = 0;
+        int hover = 0;
+        int lastClick = 0; // click time + 300 ms
+    };
+    // Geometry of one paint (exe 0x4ce280): the rows drawn from `first`, `endPos` as the exe leaves it, the partial-row padding.
+    struct ListLayout {
+        int first = 0, rows = 0, endPos = 0, drawPadding = 0;
+    };
+    ListState listState(const Item& it) const;
+    ListLayout listLayout(const Item& it) const;
+    int listVisible(const Item& it) const;   // ftol(h / elementHeight)
+    int listMaxScroll(const Item& it) const; // 0x4c9320
+    // Top of the scrollbar thumb in virtual pixels (0x4c93a0 / 0x4c9480: follows the pointer while dragged).
+    float listThumbY(const Menu& m, const Item& it) const;
+    // Scrollbar column zone under the point (0x4c9630): 0x100 up, 0x200 down, 0x400 thumb, 0x800 page up, 0x1000 page down, 0 none.
+    int listZone(const Menu& m, const Item& it, float x, float y) const;
+    // Menu_SetFeederSelection (0x4cf5b0): the list items of `feeder` get the row as selection (row 0 also resets the scroll).
+    void setFeederSelection(int feeder, int row);
+
+    // ---- EDITFIELD / VALIDFILEFIELD items (types 4, 16; exe paint 0x4cd0e0, keys 0x4ca820) ----
+    // Editing starts when such an item takes the focus (0x4ca7b0): cursor 0, paint offset 0, overstrike on.
+    const Item* editItem() const { return editing_ && focus_ == editItem_ ? editItem_ : nullptr; }
+    int editCursor() const { return editCursor_; }
+    int editOffset() const { return editOffset_; }
+    bool editOverstrike() const { return overstrike_; }
+    // Characters typed (ASCII 0x20..0x7e), applied to the editing item.
+    void textInput(const std::string& text);
 
     // BIND items (type 14, exe 0x4ce100): Enter or a click starts the capture; the next key (captureKey) is bound to
     // the item's command. Escape cancels, Del clears, the grave key is ignored.
@@ -63,6 +99,33 @@ private:
     bool activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer);
     void dragTo(float x);
     float cvarValue(const Item& it) const;
+    bool listKey(const Menu& m, const Item& it, Key k);
+    void listMouse(const Menu& m, const Item& it, int zone, float y);
+    void listHover(const Menu& m, const Item& it, float x, float y);
+    void listClampVisible(const Item& it, ListState& st) const;
+    bool editKey(const Menu& m, Key k);
+    void startEdit(const Item* it);
+    void editStore(const Item& it, const std::string& v);
+    void moveFocus(const Menu& m, int dir);
+    static bool isEditType(int type) { return type == 4 || type == 16; }
+    struct ListDrag {
+        const Item* item = nullptr;
+        const Menu* menu = nullptr;
+        float mouseY = 0;
+    };
+    struct Repeat {
+        const Item* item = nullptr;
+        const Menu* menu = nullptr;
+        int zone = 0, nextFire = 0, interval = 500, lastDrop = 0;
+    };
+    std::map<const Item*, ListState> lists_;
+    ListDrag listDrag_;
+    Repeat repeat_;
+    int now_ = 0;
+    bool editing_ = false;
+    const Item* editItem_ = nullptr;
+    int editCursor_ = 0, editOffset_ = 0;
+    bool overstrike_ = true;
     const Item* capture_ = nullptr;
     const Item* dragItem_ = nullptr;
     const Menu* dragMenu_ = nullptr;

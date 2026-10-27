@@ -92,3 +92,29 @@ Implementation: `World` (src/game/menus.cpp), `ui::runScript` (src/ui/menurun.cp
 `openmenunomouse` cursor state, the console commands other than `toggle`, the error text for a menu that was not precached.
 Headless check: `iw2game <main> <map> --answer-menus try_invert,accept_normal` answers the menus that open; `IW2_OVERLAY=<dir>`
 mounts loose test scripts over the game files.
+
+## LISTBOX (type 6) and EDITFIELD / VALIDFILEFIELD (types 4, 16)
+
+Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.cpp`. Exe addresses: paint 0x4ce280, keys 0x4c9c60, hover
+0x4c9880, mouse 0x4cb100, selection 0x4cf5b0 (`Menu_SetFeederSelection`), feeder text 0x4c5f60, feeder select 0x4c6050.
+
+- Menu item keys: `elementwidth`, `elementheight`, `elementtype`, `feeder`, `doubleclick`, `columns n pos width maxChars ...`, `maxchars`, `maxpaintchars`.
+- Geometry: scrollbar column at `x + w - 17`, 16 wide: up arrow (y+1), track (y+16, h-31), down arrow (y+h-16), thumb 16x16 at
+  `min(thumbY, y+h-17)`; images `ui/assets/scrollbar_arrow_up_a`, `scrollbar`, `scrollbar_arrow_dwn_a`, `scrollbar_thumb` (materials end in `.tga`).
+  Rows start at `y+1`, `ftol(h/eh)` fit; text x = `x + 1 + col.pos + 4`, baseline = row top + `eh`, cut to `col.maxChars`; the selected row is a
+  quad (x+3, rowTop+2, w-20, eh) in `outlinecolor`.
+- Scroll: `maxScroll = max(0, count - ftol(h/eh) + 1)`, `thumbY = ftol(startPos*(h-50)/maxScroll + y + 17)`. Zones of the scrollbar column: 0x100 up,
+  0x200 down, 0x400 thumb, 0x800 page up, 0x1000 page down; arrows auto-repeat (500 ms, then faster); the thumb drags.
+- Mouse: hover row `ftol((mouseY-2-y)/eh) + startPos`; a second click on the selected row within 300 ms runs `doubleclick`. Keys: Up/Down/wheel, Home/End,
+  PgUp/PgDn; each change calls the feeder selection.
+- Edit fields: editing starts on focus or click (cursor 0, overstrike on); cursor glyph `_` (overstrike) or `|`; VALIDFILEFIELD takes `[A-Za-z0-9_-]`; every
+  change writes the dvar; Enter runs `accept`; Tab/Up/Down move the focus.
+- Feeders: 0x18 player profiles (`ProfileList`, `players/<name>/` directories, uiScripts addPlayerProfiles, sortPlayerProfiles, selectActivePlayerProfile,
+  createPlayerProfile, deletePlayerProfile, loadPlayerProfile; dvars `ui_playerProfileCount/Selected/NameNew/AlreadyChosen`, `com_playerProfile`),
+  0x10 savegames (`save/*.svg`, newest first). `Menu_SetFeederSelection` visits every open menu from the top of the stack down (0x4c4c42..0x4c4c7f),
+  so a popup on top does not hide the list.
+- TODO(spec): image columns, the edit field paint window 0x4cc170 and `^N` colour codes, thumb drag clamp, End/PgUp/PgDn scroll amounts, savegame
+  header fields (level, time, health, difficulty), selection semantics 0x4c6050 for savegames, horizontal listbox, 64-profile cap on the add loop, the
+  restart of sound/video on profile load.
+- No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
+  out of scope.

@@ -328,6 +328,18 @@ private:
             else if (k == "onfocus") it.onFocus = parseScript(blk);
             else if (k == "leavefocus") it.leaveFocus = parseScript(blk);
             else if (k == "accept") it.accept = parseScript(blk);
+            else if (k == "elementwidth") it.elementWidth = num(a, 0);
+            else if (k == "elementheight") it.elementHeight = num(a, 0);
+            else if (k == "elementtype") it.elementType = int(num(a, 0));
+            else if (k == "feeder") it.feeder = int(num(a, 0));
+            else if (k == "doubleclick") it.doubleClick = parseScript(blk);
+            else if (k == "maxchars") it.maxChars = int(num(a, 0));
+            else if (k == "maxpaintchars") it.maxPaintChars = int(num(a, 0));
+            else if (k == "columns") {
+                const int n = int(num(a, 0));
+                for (int c = 0; c < n && size_t(1 + c * 3 + 2) < a.size(); ++c)
+                    it.columns.push_back({int(num(a, 1 + c * 3)), int(num(a, 2 + c * 3)), int(num(a, 3 + c * 3))});
+            }
             else if ((k == "execkey" || k == "execkeyint") && !args.empty()) it.execKeys.emplace_back(args[0], parseScript(blk));
         }
     }

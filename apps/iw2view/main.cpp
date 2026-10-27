@@ -38,6 +38,8 @@
 #include "ui/menurun.h"
 #include "ui/frontend.h"
 #include "ui/profile.h"
+#include "ui/profilelist.h"
+#include "ui/savegame.h"
 #include <filesystem>
 #include <fstream>
 #include "util/png.h"
@@ -2499,8 +2501,9 @@ int main(int argc, char** argv) {
         const std::filesystem::path playersDir = std::filesystem::path(args[0]).parent_path() / "players";
         std::string profileName = "default";
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
-        const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
+        std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
         bool profileDirty = false;
+        ui::ProfileList profiles(playersDir); // FEEDER_PLAYER_PROFILES (src/ui/profilelist.h)
         if (std::ifstream cf(profileCfg); cf) {
             const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
             uiCvars = ui::parseConfig(cfgText);
@@ -3143,12 +3146,129 @@ int main(int argc, char** argv) {
         menuEnv.exec = execText;
         // uiScript dispatcher (0x4c5b9b..): "Quit" (string 0x580e60) runs the console command "quit" (0x41b0a0 with 0x571858).
         // TODO(spec): the other uiScripts (loadControls, openMenuOnDvar, loadMissionDifficultyOffset, Loadgame, profiles ...).
+        ui::MenuStack* frontPtr = nullptr; // set once frontStack exists (the scripts select list rows through it)
+        auto saveProfileCfg = [&] {
+            if (!profileDirty) return;
+            profileDirty = false;
+            std::error_code ec;
+            std::filesystem::create_directories(profileCfg.parent_path(), ec);
+            if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars) << input.formatBindings();
+        };
+        auto profileCountChanged = [&] { uiCvars["ui_playerProfileCount"] = std::to_string(profiles.count()); };
+        auto selectProfileRow = [&](int row) { // Menu_SetFeederSelection(0x18, row); an empty list clears the selection
+            if (row < 0 || row >= profiles.count()) { uiCvars["ui_playerProfileSelected"] = ""; return; }
+            if (frontPtr) frontPtr->setFeederSelection(0x18, row);
+            else uiCvars["ui_playerProfileSelected"] = profiles.name(row);
+        };
+        uiCvars["com_playerProfile"] = profileName;
         menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
             if (name == "quit") execText("quit");
+            // Profile scripts (exe 0x4c4b80 addPlayerProfiles, 0x4c5a06 sortPlayerProfiles, 0x4c4a70 selectActive, 0x4c4d20 create,
+            // 0x4c4e50 delete); details in src/ui/profilelist.h.
+            else if (name == "addplayerprofiles") { profiles.refresh(); profileCountChanged(); selectProfileRow(0); }
+            else if (name == "sortplayerprofiles") { profiles.toggleSort(); selectProfileRow(0); }
+            else if (name == "selectactiveplayerprofile") selectProfileRow(std::max(0, profiles.rowOf(menuEnv.getCvar("com_playerProfile"))));
+            else if (name == "createplayerprofile") {
+                const std::string nm = menuEnv.getCvar("ui_playerProfileNameNew");
+                int row = 0;
+                if (nm.empty()) return;
+                const auto r = profiles.create(nm, row);
+                uiCvars["ui_playerProfileNameNew"] = "";
+                if (r == ui::ProfileList::Create::TooMany) menuEnv.open("profile_create_too_many_popmenu");
+                else if (r == ui::ProfileList::Create::Exists) menuEnv.open("profile_exists_popmenu");
+                else if (r == ui::ProfileList::Create::Failed) menuEnv.open("profile_create_fail_popmenu");
+                else if (r == ui::ProfileList::Create::Ok) { profileCountChanged(); selectProfileRow(row); }
+            } else if (name == "deleteplayerprofile") {
+                const std::string sel = menuEnv.getCvar("ui_playerProfileSelected");
+                int row = 0;
+                if (!profiles.remove(sel, row)) menuEnv.open("profile_delete_fail_popmenu");
+                profileCountChanged();
+                if (!profiles.exists(sel) && menuEnv.getCvar("com_playerProfile") == sel) uiCvars["com_playerProfile"] = "";
+                selectProfileRow(row);
+            } else if (name == "loadplayerprofile") {
+                // Activate the selected profile: remember it in players/active.txt, read its config.cfg (cvars + bindings).
+                // TODO(spec): the exe restarts the sound/video subsystems (snd_restart) and runs the profile's config via exec.
+                const std::string sel = menuEnv.getCvar("ui_playerProfileSelected");
+                if (sel.empty()) return;
+                saveProfileCfg();
+                profileName = sel;
+                profileCfg = playersDir / profileName / "config.cfg";
+                std::error_code ec;
+                std::filesystem::create_directories(playersDir, ec);
+                if (std::ofstream af(playersDir / "active.txt"); af) af << profileName << "\n";
+                std::map<std::string, std::string> fresh;
+                if (std::ifstream cf(profileCfg); cf) {
+                    const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
+                    fresh = ui::parseConfig(cfgText);
+                    if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText);
+                }
+                for (const char* keep : {"ui_playerProfileCount", "ui_playerProfileSelected", "ui_playerProfileNameNew", "ui_playerProfileAlreadyChosen"})
+                    fresh[keep] = uiCvars[keep];
+                fresh["com_playerProfile"] = profileName;
+                uiCvars = fresh;
+            }
+        };
+        // Savegame list (FEEDER_SAVEGAMES 0x10): save/*.svg whose header is listable, newest first (0x4c44a0).
+        // TODO(spec): the level name / time / health / difficulty columns come from header fields that are not decoded yet.
+        struct SaveRow { std::string name; ui::SaveSortKey key; };
+        std::vector<SaveRow> saveRows;
+        uint64_t saveRowsAt = 0;
+        auto refreshSaves = [&] {
+            if (saveRowsAt && SDL_GetTicksNS() - saveRowsAt < 1000000000ull) return;
+            saveRowsAt = SDL_GetTicksNS() | 1;
+            saveRows.clear();
+            std::error_code ec;
+            for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(args[0]) / "save", ec)) {
+                if (de.path().extension() != ".svg") continue;
+                std::ifstream f(de.path(), std::ios::binary);
+                std::vector<uint8_t> hdr(ui::kSaveHeaderSize);
+                f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
+                if (size_t(f.gcount()) != hdr.size() || !ui::saveHeaderListable(hdr)) continue;
+                SaveRow r;
+                r.name = de.path().stem().string();
+                if (!ui::saveSortKey(hdr, r.key)) continue;
+                size_t at = saveRows.size();
+                for (size_t i = 0; i < saveRows.size(); ++i)
+                    if (ui::saveListBefore(r.key, saveRows[i].key)) { at = i; break; }
+                saveRows.insert(saveRows.begin() + std::ptrdiff_t(at), r);
+                if (saveRows.size() >= ui::kSaveListMax) break;
+            }
+        };
+        menuEnv.feederCount = [&](int feeder) {
+            if (feeder == 0x18) return profiles.count();
+            if (feeder == 0x10) { refreshSaves(); return int(saveRows.size()); }
+            return 0;
+        };
+        menuEnv.feederText = [&](int feeder, int row, int col) {
+            if (feeder == 0x18 && col == 0) return profiles.name(row);
+            if (feeder == 0x10 && col == 0 && row >= 0 && size_t(row) < saveRows.size()) return saveRows[size_t(row)].name;
+            return std::string();
+        };
+        menuEnv.feederSelect = [&](int feeder, int row) {
+            if (feeder == 0x18) uiCvars["ui_playerProfileSelected"] = profiles.name(row); // 0x4c6050
         };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
+        frontPtr = &frontStack;
+        // Extra debug tokens shared by IW2_MENU_KEYS / IW2_SHOT_KEYS (docs/debug-flags.md): text:abc, bs, del, home, end, ins, pgup, pgdn,
+        // tab, wheelup, wheeldown, dbl:X/Y, ms:N (advance the UI clock), uiscript:name.
+        auto menuExtraToken = [&](const std::string& k) {
+            using K = ui::MenuStack::Key;
+            static const std::map<std::string, K> keys = {{"bs", K::Backspace}, {"del", K::Delete}, {"home", K::Home}, {"end", K::End}, {"ins", K::Insert},
+                {"pgup", K::PageUp}, {"pgdn", K::PageDown}, {"tab", K::Tab}, {"wheelup", K::WheelUp}, {"wheeldown", K::WheelDown}};
+            if (const auto it = keys.find(k); it != keys.end()) { frontStack.key(it->second); return true; }
+            if (k.rfind("text:", 0) == 0) { frontStack.textInput(k.substr(5)); return true; }
+            if (k.rfind("dbl:", 0) == 0) {
+                const size_t sl = k.find('/');
+                menuMx = float(std::atof(k.substr(4, sl - 4).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                frontStack.mouseMove(menuMx, menuMy);
+                for (int i = 0; i < 2; ++i) { frontStack.tick(int(SDL_GetTicks())); frontStack.click(menuMx, menuMy); frontStack.release(); }
+                return true;
+            }
+            if (k.rfind("uiscript:", 0) == 0) { std::string n = k.substr(9); for (auto& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch))); menuEnv.uiScript(n, ui::Command{}); return true; }
+            return false;
+        };
         { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
             scriptMenus.loadList("ui/menus.txt");
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
@@ -4357,7 +4477,37 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
+                        if (it.type == 6) { // LISTBOX paint, exe 0x4ce280 (vertical, text columns)
+                            const assets::Font* lf = menuFont(it.textScale, it.textFont);
+                            const auto white = std::array<uint8_t, 4>{255, 255, 255, 255};
+                            const float xa = ix + it.rect.w - 17.0f;
+                            quad(xa, iy + 1.0f, 16.0f, 16.0f, white, "ui/assets/scrollbar_arrow_up_a.tga");
+                            quad(xa, iy + 16.0f, 16.0f, it.rect.h - 31.0f, white, "ui/assets/scrollbar.tga");
+                            quad(xa, iy + it.rect.h - 16.0f, 16.0f, 16.0f, white, "ui/assets/scrollbar_arrow_dwn_a.tga");
+                            quad(xa, std::min(frontStack.listThumbY(menu, it), iy + it.rect.h - 17.0f), 16.0f, 16.0f, white, "ui/assets/scrollbar_thumb.tga");
+                            const auto lay = frontStack.listLayout(it);
+                            const int cursor = frontStack.listState(it).cursor;
+                            const int total = menuEnv.feederCount ? menuEnv.feederCount(it.feeder) : 0;
+                            for (int r = 0; r < lay.rows && lay.first + r < total; ++r) {
+                                const float rowTop = iy + 1.0f + float(r) * it.elementHeight;
+                                if (lay.first + r == cursor)
+                                    quad(ix + 3.0f, rowTop + 2.0f, it.rect.w - 16.0f - 4.0f, it.elementHeight, col8(it.outlineColor), "white");
+                                if (!lf) continue;
+                                const float lgs = it.textScale * 48.0f / float(lf->pixelHeight);
+                                auto lc = col8(it.foreColor);
+                                const size_t ncol = std::max<size_t>(1, it.columns.size());
+                                for (size_t ci = 0; ci < ncol; ++ci) {
+                                    std::string cell = menuEnv.feederText(it.feeder, lay.first + r, int(ci));
+                                    const int maxc = it.columns.empty() ? 0 : it.columns[ci].maxChars;
+                                    if (maxc > 0 && cell.size() > size_t(maxc)) cell.resize(size_t(maxc));
+                                    const float cx = ix + 1.0f + (it.columns.empty() ? 0.0f : it.columns[ci].pos) + 4.0f;
+                                    if (!cell.empty())
+                                        hudText(out, cell, x0 + cx * xs, (rowTop + it.elementHeight) * sc, lgs * sc, *lf, lc.data(), 0.0f, 1.0f, it.textStyle);
+                                }
+                            }
+                            continue;
+                        }
+                        if (it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
                         const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts, it.textFont);
@@ -4388,6 +4538,24 @@ int main(int argc, char** argv) {
                             }
                         } else
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                        if (it.type == 4 || it.type == 16) { // edit field value (exe 0x4cd0e0); TODO(spec): paint window 0x4cc170 / colour codes
+                            const std::string val = menuEnv.getCvar(it.dvar);
+                            const int off = frontStack.editItem() == &it ? frontStack.editOffset() : 0;
+                            std::string shown = off < int(val.size()) ? val.substr(size_t(off)) : std::string();
+                            if (it.maxPaintChars > 0 && shown.size() > size_t(it.maxPaintChars)) shown.resize(size_t(it.maxPaintChars));
+                            const float vx = frontStack.valueTextX(menu, it);
+                            auto widthOf = [&](const std::string& str) {
+                                float wd = 0;
+                                for (unsigned char ch : str) if (const auto* g = f->find(ch)) wd += float(g->dx) * gs;
+                                return wd;
+                            };
+                            hudText(front, shown, x0 + vx * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                            if (frontStack.editItem() == &it) { // cursor glyph: '_' overstrike, '|' insert (drawn over the character)
+                                const int rel = std::clamp(frontStack.editCursor() - off, 0, int(shown.size()));
+                                hudText(front, frontStack.editOverstrike() ? "_" : "|", x0 + (vx + widthOf(shown.substr(0, size_t(rel)))) * xs,
+                                        (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                            }
+                        }
                         if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
                             auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
                             const auto keys = input.keysFor(it.dvar);
@@ -4469,7 +4637,8 @@ int main(int argc, char** argv) {
                     const std::string k = kr.substr(0, comma);
                     kr = comma == std::string::npos ? std::string() : kr.substr(comma + 1);
                     using K = ui::MenuStack::Key;
-                    if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
+                    if (menuExtraToken(k)) {}
+                    else if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
                     else if (k.rfind("click:", 0) == 0) {
                         const size_t sl = k.find('/');
                         menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
@@ -5041,9 +5210,29 @@ int main(int argc, char** argv) {
                         else if (sc2 == SDL_SCANCODE_LEFT) frontStack.key(K::Left);
                         else if (sc2 == SDL_SCANCODE_RIGHT) frontStack.key(K::Right);
                         else if (sc2 == SDL_SCANCODE_RETURN || sc2 == SDL_SCANCODE_KP_ENTER) frontStack.key(K::Enter);
+                        else if (sc2 == SDL_SCANCODE_BACKSPACE) frontStack.key(K::Backspace);
+                        else if (sc2 == SDL_SCANCODE_DELETE) frontStack.key(K::Delete);
+                        else if (sc2 == SDL_SCANCODE_HOME) frontStack.key(K::Home);
+                        else if (sc2 == SDL_SCANCODE_END) frontStack.key(K::End);
+                        else if (sc2 == SDL_SCANCODE_INSERT) frontStack.key(K::Insert);
+                        else if (sc2 == SDL_SCANCODE_PAGEUP) frontStack.key(K::PageUp);
+                        else if (sc2 == SDL_SCANCODE_PAGEDOWN) frontStack.key(K::PageDown);
+                        else if (sc2 == SDL_SCANCODE_TAB) frontStack.key(K::Tab);
                         continue;
                     }
-                    if (ev.type == SDL_EVENT_KEY_DOWN) continue;
+                    if (ev.type == SDL_EVENT_KEY_DOWN) {
+                        using K = ui::MenuStack::Key; // key repeat: only the editing / list keys repeat
+                        const auto sc2 = ev.key.scancode;
+                        if (sc2 == SDL_SCANCODE_UP) frontStack.key(K::Up);
+                        else if (sc2 == SDL_SCANCODE_DOWN) frontStack.key(K::Down);
+                        else if (sc2 == SDL_SCANCODE_BACKSPACE) frontStack.key(K::Backspace);
+                        else if (sc2 == SDL_SCANCODE_DELETE) frontStack.key(K::Delete);
+                        else if (sc2 == SDL_SCANCODE_LEFT) frontStack.key(K::Left);
+                        else if (sc2 == SDL_SCANCODE_RIGHT) frontStack.key(K::Right);
+                        continue;
+                    }
+                    if (ev.type == SDL_EVENT_TEXT_INPUT) { frontStack.textInput(ev.text.text); continue; }
+                    if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) { frontStack.key(ev.wheel.y > 0 ? ui::MenuStack::Key::WheelUp : ui::MenuStack::Key::WheelDown); continue; }
                 }
                 if (ev.type == SDL_EVENT_QUIT) running = false;
                 else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat)
@@ -5680,7 +5869,8 @@ int main(int argc, char** argv) {
                     rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
                     using K = ui::MenuStack::Key;
                     std::cout << "menu key " << k << "\n";
-                    if (k == "pause" && world && frontStack.empty()) {
+                    if (menuExtraToken(k)) {
+                    } else if (k == "pause" && world && frontStack.empty()) {
                         menuEnv.setCvar("cl_paused", "1");
                         frontStack.open("main");
                     } else if (k.rfind("set:", 0) == 0) { // set:name=value
@@ -5719,12 +5909,8 @@ int main(int argc, char** argv) {
                     if (u != it->second) { u = it->second; profileDirty = true; }
                 }
             }
-            if (profileDirty) { // write the archived cvars (config.cfg) after a menu changed one
-                profileDirty = false;
-                std::error_code ec;
-                std::filesystem::create_directories(profileCfg.parent_path(), ec);
-                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars) << input.formatBindings();
-            }
+            if (profileDirty) saveProfileCfg(); // write the archived cvars (config.cfg) after a menu changed one
+            frontStack.tick(int(SDL_GetTicks()));
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f) * 0.75f;
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             {   // The cursor is shown while menus are open (relative mouse look otherwise).

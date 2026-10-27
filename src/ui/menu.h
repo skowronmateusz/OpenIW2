@@ -65,6 +65,15 @@ struct Item : Window {
     std::vector<std::pair<std::string, std::string>> strList;
     std::string enumList; // `dvarEnumList "dvar"` (values come from the engine; TODO(spec))
     Script action, mouseEnter, mouseExit, onFocus, leaveFocus, accept;
+    // LISTBOX (type 6, exe listbox def at item+0x2ec): `elementwidth/elementheight/elementtype/feeder/columns/doubleclick`.
+    float elementWidth = 0, elementHeight = 0;
+    int elementType = 0; // LISTBOX_TEXT 0, LISTBOX_IMAGE 1
+    int feeder = 0;      // FEEDER_*
+    struct Column { int pos = 0, width = 0, maxChars = 0; };
+    std::vector<Column> columns; // `columns n  pos width maxChars ...`
+    Script doubleClick;
+    // EDITFIELD family (types 4, 9, 16, 17): `maxchars n`, `maxPaintChars n` (0 = unlimited / default).
+    int maxChars = 0, maxPaintChars = 0;
     std::vector<std::pair<std::string, Script>> execKeys; // execKey "k" / execKeyInt n
 };
 
