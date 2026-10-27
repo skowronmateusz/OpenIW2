@@ -385,6 +385,10 @@ public:
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
         return std::nullopt;
     }
+    // cinematic(name [, timeout]) (0x4f4220) only records the movie (client state 0x1c60ff4, up to 63 characters); it is played when
+    // the level change falls due (0x4d9f90 runs `cinematic <name> 0`, whose end continues the level load, 0x49db20 -> 0x4d9f00).
+    // The front end takes it with takeCinematic() right before it loads the next map.
+    std::string takeCinematic() { return std::exchange(cinematic_, {}); }
     const std::string& mapName() const { return mapName_; }
     // Real (wall-clock) time in ms for the timers the original runs on timeGetTime (the death screen's
     // g_deathDelay). Hosts that never set it (iw2game) run them on world time.
@@ -503,6 +507,7 @@ private:
     std::vector<ClientCommand> clientCommands_;
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
+    std::string cinematic_; // pending cinematic name (video/<name>.roq)
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
     void openDeathScreen();
     void runDeathScreen();
