@@ -744,6 +744,32 @@ void World::runItems() {
             e.obj->set("origin", Value(at));
             e.obj->set("$trbase", Value());
             e.obj->set("$itemsettled", Value(true));
+            // 0x522ea0 (called from 0x523387 for every resting item that is not type 0xb): the item's forward vector
+            // (its pitch and yaw) is projected onto the plane of the hit normal, (n × f) × n, and the angles become its
+            // vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
+            // trajectory is cleared and currentAngles (+0xe8..) set. TODO(spec): the slide branch 0x5231b2-0x52327b
+            // (taken when the trace fraction is < 0.01 and the normal z < 0.5, 0x4db7f0 clip + 0x47f390), the 50 ms
+            // ease (TR 3, 0x52327f; the server origin is already the hit point and the view lerps 50 ms), the owner
+            // as the trace's passEnt (item+0xf4).
+            {
+                const Value av = e.obj->get("angles");
+                const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+                const float rad = 0.01745329238474369f;
+                const Vec3 f{std::cos(a[0] * rad) * std::cos(a[1] * rad), std::cos(a[0] * rad) * std::sin(a[1] * rad), -std::sin(a[0] * rad)};
+                const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+                const Vec3 t{n[1] * f[2] - n[2] * f[1], n[2] * f[0] - n[0] * f[2], n[0] * f[1] - n[1] * f[0]};
+                const Vec3 g{t[1] * n[2] - t[2] * n[1], t[2] * n[0] - t[0] * n[2], t[0] * n[1] - t[1] * n[0]};
+                float pitch = 90.0f, yaw = 0.0f;
+                if (g[0] == 0.0f && g[1] == 0.0f) {
+                    pitch = g[2] > 0.0f ? 270.0f : 90.0f; // vectoangles of a vertical vector
+                } else {
+                    yaw = std::atan2(g[1], g[0]) / rad;
+                    if (yaw < 0) yaw += 360.0f;
+                    pitch = -std::atan2(g[2], std::sqrt(g[0] * g[0] + g[1] * g[1])) / rad;
+                    if (pitch < 0) pitch += 360.0f;
+                }
+                e.obj->set("angles", Value(Vec3{pitch, yaw, 90.0f}));
+            }
         } else {
             e.obj->set("origin", Value(next));
         }

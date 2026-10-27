@@ -125,6 +125,98 @@ std::array<float, 4> viewBob(int bobCycle, float xySpeed, int vht, float adsFrac
     return r;
 }
 
+void ViewImpulses::damage(int yawByte, int pitchByte, int count, const V3& fwd, const V3& left, int64_t timeMs) {
+    float kick = float(count) * 0.6f; // cg_viewKickScale
+    if (kick < 5.0f) kick = 5.0f;
+    if (kick > 90.0f) kick = 90.0f; // cg_viewKickMax
+    if (yawByte == 0xff && pitchByte == 0xff) {
+        damagePitch_ = -kick;
+        damageRoll_ = 0;
+    } else {
+        // v = -AngleVectors(pitch byte * 360/255, yaw byte * 360/255) (0x4ba32d-0x4ba41b).
+        const float rad = 0.01745329238474369f;
+        const float a40 = float(yawByte) / 255.0f * 360.0f * rad, a44 = float(pitchByte) / 255.0f * 360.0f * rad;
+        const V3 v{-std::cos(a44) * std::cos(a40), -std::cos(a44) * std::sin(a40), std::sin(a44)};
+        damageRoll_ = (left[0] * v[0] + left[1] * v[1] + left[2] * v[2]) * kick;
+        damagePitch_ = -(fwd[0] * v[0] + fwd[1] * v[1] + fwd[2] * v[2]) * kick;
+    }
+    damageTime_ = timeMs;
+}
+
+int ViewImpulses::landDip(float h) {
+    if (!(h > 12.0f)) return 0;
+    return std::min(24, int(((h - 12.0f) * 0.03846153989434242f + 1.0f) * 4.0f));
+}
+
+int ViewImpulses::dipFromDamage(int damage) {
+    constexpr float kMinH = 200.0f, kMaxH = 350.0f; // bg_fallDamageMinHeight / MaxHeight
+    return landDip((kMaxH - kMinH) * float(damage) * 0.01f + kMinH);
+}
+
+void ViewImpulses::land(float fallHeight, int fallDamage, int64_t timeMs) {
+    const int dip = fallDamage > 0 ? dipFromDamage(fallDamage) : landDip(fallHeight);
+    if (dip <= 0) return;
+    landChange_ = -float(dip);
+    landTime_ = timeMs;
+}
+
+float ViewImpulses::landOffset(int64_t timeMs) {
+    const float t = float(timeMs - landTime_);
+    if (t < 0) landTime_ = timeMs - 450; // 0x4ae6e0
+    if (t < 150.0f) return landChange_ * (t / 150.0f);
+    if (t < 450.0f) return landChange_ * (1.0f - (t - 150.0f) / 300.0f);
+    return 0;
+}
+
+std::array<float, 2> ViewImpulses::damageKick(int64_t timeMs, float adsFrac, bool reticle) const {
+    if (damageTime_ == 0) return {0, 0};
+    const float a = adsFrac * 0.5f;
+    float b = 1.0f - a;
+    if (adsFrac != 0 && reticle) b *= 1.0f + a;
+    const float dt = float(timeMs - damageTime_);
+    float f;
+    if (dt < 100.0f) {
+        const float x = dt / 100.0f;
+        f = x * (2.0f - std::fabs(x));
+    } else {
+        const float x = (dt - 100.0f) / 400.0f;
+        if (1.0f - x <= 0) return {0, 0};
+        f = 1.0f - x * (2.0f - std::fabs(x));
+    }
+    f *= b;
+    return {damagePitch_ * f, damageRoll_ * f};
+}
+
+void AimBlend::set(W& s, float goal, float blend) {
+    if (s.w == 0) s.w = goal * 0.001f;
+    if (goal < s.w) s.left = (s.w - goal) / s.w * blend;
+    else s.left = (goal - s.w) / goal * blend;
+    s.goal = goal;
+}
+
+void AimBlend::clear(W& s, float blend) {
+    if (s.goal != 0 || blend < s.left) s.left = blend;
+    s.goal = 0;
+}
+
+void AimBlend::step(W& s, float dt) {
+    if (s.left <= dt) {
+        s.w = s.goal;
+        s.left = 0;
+    } else {
+        s.w += (s.goal - s.w) / s.left * dt;
+        if (s.w < 1e-6f) s.w = s.goal * 0.001f;
+        s.left -= dt;
+    }
+}
+
+void AimBlend::update(bool aiming, float dt) {
+    set(aiming ? up_ : down_, 1.0f, 0.5f);
+    clear(aiming ? down_ : up_, 0.5f);
+    step(up_, dt);
+    step(down_, dt);
+}
+
 namespace {
 // DiffTrack (0x420a20): moves cur towards target by (target − cur) · rate · dt unless that overshoots or the gap is
 // below 0.001; then target.
@@ -142,7 +234,15 @@ float diffTrackAngle(float target, float cur, float rate, float dt) {
 float angleDelta(float a, float b) { return std::remainder(a - b, 360.0f); } // 0x423f50
 } // namespace
 
-void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle) {
+float shellShockRatio(int remainingMs, int fadeMs) {
+    if (remainingMs <= 0) return 0;
+    float r = 1.0f;
+    if (remainingMs < fadeMs) r = float(remainingMs) / float(fadeMs);
+    return r * (3.0f - r * 2.0f) * r; // 0x4b4e73-0x4b4e87
+}
+
+void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle,
+                            float shock) {
     const bool adsWeapon = w("aimDownSight") != 0;
     // Idle sway (0x4b51a0): amount / speed hipIdle* (aiming weapons lerp to adsIdle* by the aim fraction; without
     // hipIdleAmount: 80 and 1), × the stance factor (idleProneFactor / idleCrouchFactor) the smoothed factor
@@ -175,13 +275,16 @@ void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewY
     // View-lag sway (0x4b4dc0): the view angle change since the last frame, scaled to 60 fps and clamped to
     // swayMaxAngle, drives side/up offsets (swayHoriz/VertScale) and pitch/yaw (swayPitch/YawScale) tracked at
     // swayLerpSpeed; aiming weapons lerp to the ads* values, none while a reticle weapon aims. 0x4b61d0 subtracts the
-    // side from the right offset and adds the up; 0x4b6420 subtracts pitch and yaw. TODO(spec): the shell-shock
-    // scale (swayShellShockScale), taken as 1.
+    // side from the right offset and adds the up; 0x4b6420 subtracts pitch and yaw. The four scales are multiplied by
+    // (swayShellShockScale - 1) * shock + 1 (0x4b4e95, 0x4b4fc8-0x4b5004). TODO(spec): shell shock itself (the shellshock
+    // script builtin, ps+0x5bc/0x5c0/0x5c4) is not implemented, so iw2view passes 0.
     if (ms > 0 && !(adsFrac > 0 && reticle && adsWeapon)) {
         auto lerpF = [&](const char* hip, const char* ads) { return adsWeapon ? w(hip) + (w(ads) - w(hip)) * adsFrac : w(hip); };
         const float maxAng = lerpF("swayMaxAngle", "adsSwayMaxAngle"), rate = lerpF("swayLerpSpeed", "adsSwayLerpSpeed");
-        const float pitchS = lerpF("swayPitchScale", "adsSwayPitchScale"), yawS = lerpF("swayYawScale", "adsSwayYawScale");
-        const float horizS = lerpF("swayHorizScale", "adsSwayHorizScale"), vertS = lerpF("swayVertScale", "adsSwayVertScale");
+        const float shockScale0 = (w("swayShellShockScale") - 1.0f) * shock + 1.0f;
+        const float pitchS = lerpF("swayPitchScale", "adsSwayPitchScale") * shockScale0, yawS = lerpF("swayYawScale", "adsSwayYawScale") * shockScale0;
+        const float shockScale = (w("swayShellShockScale") - 1.0f) * shock + 1.0f;
+        const float horizS = lerpF("swayHorizScale", "adsSwayHorizScale") * shockScale, vertS = lerpF("swayVertScale", "adsSwayVertScale") * shockScale;
         const float dt = float(ms) * 0.001f;
         if (!havePrev_) { prevPitch_ = viewPitch; prevYaw_ = viewYaw; havePrev_ = true; }
         const float k = 1.0f / (dt * 60.0f);

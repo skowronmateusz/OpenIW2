@@ -139,9 +139,16 @@ void PlayerWeapon::meleeHit() {
     state_ = State::MeleeEnd;
 }
 
+bool PlayerWeapon::viewAiming() const {
+    if (inOffhand()) return false;
+    if (state_ == State::Reloading && timer_ - time("adsReloadTransTime", 0) > 0) return false;
+    return adsHeld_;
+}
+
 int PlayerWeapon::update(float dt, const Input& in) {
     if (name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster))) return 0;
     if (name_.empty() && holstered_ && state_ == State::Ready) startDrop(in.weapon); // no weapon: raise at once
+    adsHeld_ = in.ads;
     // Aiming (0x4dd0d0): only weapons with aimDownSight; not while reloading, nor while rechambering unless
     // rechamberWhileAds. The fraction moves by ms / adsTransInTime (or adsTransOutTime) and is clamped to 0..1.
     {

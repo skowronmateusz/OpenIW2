@@ -2078,6 +2078,10 @@ int main(int argc, char** argv) {
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
+        game::AimBlend aimBlend; // the view model aim layers' cross-fade (0x4b25e0)
+        std::string aimBlendWeapon;
+        game::ViewImpulses viewImp; // damage kick, landing dip
+        int lastLandSeq = 0;
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -2126,19 +2130,21 @@ int main(int argc, char** argv) {
                     frame = comma == std::string::npos ? 0.0f : std::stof(spec.substr(comma + 1));
                 }
             }
-            // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload…) and
-            // one aiming animation, both with weight 1. adsUpAnim plays at time = aim fraction while zooming in,
-            // adsDownAnim at time = 1 − aim fraction otherwise; both are children of the root, so the engine's calc
+            // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload...) with
+            // weight 1 and both aim animations: adsUpAnim at time = aim fraction, adsDownAnim at time = 1 - aim fraction,
+            // their weights cross-fading over 0.5 s (game::AimBlend); all are children of the root, so the engine's calc
             // adds them and divides by the weight sum (docs/spec/xanim.md, "Blending").
             std::vector<assets::PoseLayer> layers;
             if (an) layers.push_back({an, frame, 1.0f});
-            {
-                const bool up = pweapon.adsZoomingIn() && pweapon.adsFrac() > 0;
-                const float t = up ? pweapon.adsFrac() : 1.0f - pweapon.adsFrac();
-                if (const assets::XAnim* ads = viewAnim(vfs, pweapon.field(up ? "adsUpAnim" : "adsDownAnim")))
-                    layers.push_back({ads, t * float(std::max(0, ads->numFrames - 1)), 1.0f});
+            if (!std::getenv("IW2_VM_NOADS")) {
+                for (const bool up : {true, false}) {
+                    const float wgt = up ? aimBlend.up() : aimBlend.down();
+                    if (wgt <= 0) continue;
+                    const float t = up ? pweapon.adsFrac() : 1.0f - pweapon.adsFrac();
+                    if (const assets::XAnim* ads = viewAnim(vfs, pweapon.field(up ? "adsUpAnim" : "adsDownAnim")))
+                        layers.push_back({ads, t * float(std::max(0, ads->numFrames - 1)), wgt});
+                }
             }
-            if (std::getenv("IW2_VM_NOADS") && layers.size() > 1) layers.pop_back();
             DrawItem base;
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
@@ -3133,6 +3139,8 @@ int main(int argc, char** argv) {
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
                 pweapon.update(0.02f, shotIn);
+                if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
+                aimBlend.update(pweapon.viewAiming(), 0.02f);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
             }
             if (shotIn.frag) std::cout << "shot weapon state " << pweapon.stateNumber() << " anim " << pweapon.anim() << " t " << pweapon.animTime() << "\n";
@@ -3442,10 +3450,18 @@ int main(int argc, char** argv) {
                     bobAngles = {vb[2], vb[3]};
                     const Vec3 rgt = cam.right();
                     cam.pos = cam.pos + Vec3{0, 0, vb[0]} + rgt * vb[1];
+                    if (world) {
+                        if (ps.landSeq != lastLandSeq) { // a landing (cgame 0x4bab6e / 0x4bab15: the own client's fall event)
+                            lastLandSeq = ps.landSeq;
+                            viewImp.land(ps.landHeight, ps.landDamage, world->timeMs());
+                        }
+                        cam.pos.z += viewImp.landOffset(world->timeMs()); // 0x4ae6c7
+                    }
                 }
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
+                if (!playerDead) cam.pos.z = std::max(cam.pos.z, game::ViewImpulses::minEyeZ(ps.origin[2])); // 0x4ae775
             } else {
                 const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
                 Vec3 move;
@@ -3487,6 +3503,8 @@ int main(int argc, char** argv) {
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
+                if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
+                aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
                 {
                     // HUD fade touches. Weapon change (0x4b76e8 / 0x4b839a): ammo display + weapon change time. Per frame 0x4be5f0:
@@ -3566,6 +3584,8 @@ int main(int argc, char** argv) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
                     lastDamageEvent = 0;
+                    lastLandSeq = 0;
+                    viewImp.reset(); // 0x4ba570
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                         if (o.isVector())
@@ -3595,6 +3615,10 @@ int main(int argc, char** argv) {
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
+                    if (df.count != 0) { // 0x4ba1c3: only with a damage count
+                        const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
+                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, world->timeMs());
+                    }
                     if (!(df.pitch == 0xff && df.yaw == 0xff)) {
                         size_t slot = 0;
                         for (size_t k = 1; k < damageIcons.size(); ++k)
@@ -3690,6 +3714,12 @@ int main(int argc, char** argv) {
             cam.yaw += recoil.viewKick()[1];
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
+            if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll
+                const std::string ret = pweapon.field("adsOverlayReticle");
+                const auto dk = viewImp.damageKick(world->timeMs(), pweapon.adsFrac(), !ret.empty() && ret != "none");
+                cam.pitch += dk[0];
+                cam.roll += dk[1];
+            }
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
             auto items = gatherItems(cam);
@@ -3714,6 +3744,7 @@ int main(int argc, char** argv) {
             SDL_SubmitGPUCommandBuffer(cmd);
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
             cam.yaw = camBase.yaw;
+            cam.roll = camBase.roll;
         }
         if (audioStream) SDL_DestroyAudioStream(audioStream);
         SDL_ReleaseWindowFromGPUDevice(dev, window);
