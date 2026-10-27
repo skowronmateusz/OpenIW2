@@ -922,12 +922,22 @@ float specColorScaleDvar() {
     return v;
 }
 
-std::vector<uint8_t> specularityTable() {
+// r_cosinePowerMapShift (dvar 0x101ce680, default 0, range -1..1): 0x10034000 passes it as arg 1 of 0x1000d3a0 -> 0x10029710, which adds it
+// to x / 30 before the 0..1 clamp (FILD x; FMUL 1/30; FADD shift at 0x10029741). IW2_COS_SHIFT sets it.
+float cosinePowerShiftDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_COS_SHIFT");
+        return e ? std::clamp(float(std::atof(e)), -1.0f, 1.0f) : 0.0f;
+    }();
+    return v;
+}
+
+std::vector<uint8_t> specularityTable(float shift) {
     std::vector<uint8_t> t(32 * 256);
     for (int x = 0; x < 32; ++x) {
         double P = 30.0;
         if (x != 31) {
-            const double u = std::clamp(double(float(x) * 0.033333335f), 0.0, 1.0);
+            const double u = std::clamp(double(float(x) * 0.033333335f + shift), 0.0, 1.0);
             P = std::log(0.1) / std::log(std::cos((180.0 - 175.0 * u) * 0.004363323251406352));
         }
         for (int y = 0; y < 256; ++y) {
@@ -1144,7 +1154,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         scene.tbn = SDL_CreateGPUBuffer(dev, &tb);
         if (!scene.tbn) sdlFail("SDL_CreateGPUBuffer");
         up.buffer(scene.tbn, tbn.data(), tb.size);
-        const auto lut = specularityTable();
+        const auto lut = specularityTable(cosinePowerShiftDvar());
         scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
         up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
     }
@@ -1215,7 +1225,7 @@ struct FragmentUniforms {
     float params[4];
     float ambient[4];
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
-    float fogParams[4]; // x: 1 = on, y: scale, z: shift
+    float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
     float fogColor[4];
 };
 
@@ -1283,7 +1293,7 @@ struct Renderer {
     bool fullbright = false;
     game::FogConsts fog; // set by the caller each frame (client fog state)
     void applyFog(FragmentUniforms& fu) const {
-        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift;
+        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift, fu.fogParams[3] = fog.exponential ? fog.exponent : 0.0f;
         std::memcpy(fu.fogColor, fog.color, sizeof fog.color);
     }
 
@@ -3819,7 +3829,8 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
+                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
@@ -4583,7 +4594,8 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
+                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                     }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
