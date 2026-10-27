@@ -384,6 +384,10 @@ public:
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
+    // Debug (iw2game --item-test): a weapon item at the player's origin and the player's stock / clip of a weapon.
+    void debugSpawnItem(const std::string& weapon);
+    void debugSetClip(const std::string& weapon, int rounds);
+    std::pair<int, int> debugAmmo(const std::string& weapon);
     void debugDamage(Entity& e, int amount);
     bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
     void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
@@ -534,6 +538,10 @@ private:
     std::map<int, MoverState> movers_;
     std::map<int, Link> links_;
     std::map<int, Inventory> inventories_;
+    bool autoPickup_ = true;          // setautopickup (client +0x86ac == 0)
+    void touchItems();                // G_TouchTriggers for weapon items (0x4e7320 -> Touch_Item 0x521a90)
+    bool touchWeaponItem(Entity& item); // Pickup_Weapon (0x521170) by touch; true when the item was used up
+    int weaponRoom(Inventory& inv, const std::string& weapon); // 0x4dcc00
     uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);

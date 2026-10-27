@@ -507,6 +507,18 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
     return out;
 }
 
+void World::debugSpawnItem(const std::string& weapon) {
+    Entity& e = spawnEntity("weapon_" + weapon);
+    e.obj->set("origin", player_->obj->get("origin"));
+}
+
+void World::debugSetClip(const std::string& w, int rounds) { inventory(*player_).clip[weaponField(w, "clipName")] = rounds; }
+
+std::pair<int, int> World::debugAmmo(const std::string& w) {
+    Inventory& inv = inventory(*player_);
+    return {inv.ammo[weaponField(w, "ammoName")], inv.clip[weaponField(w, "clipName")]};
+}
+
 void World::debugDamage(Entity& e, int amount) { damage(e, player_, amount, {0, 0, 1}, e.obj->get("origin").asVector(), "MOD_EXPLOSIVE"); }
 
 std::vector<World::CompassMarker> World::compassVehicles() const {

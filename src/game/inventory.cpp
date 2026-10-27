@@ -149,6 +149,10 @@ void World::registerInventoryBuiltins() {
         if (p.obj->get("$weapon").toString().empty() && inv.offhand != w) p.obj->set("$weapon", Value(w));
         return Value();
     });
+    vm_.registerBuiltin("setautopickup", [this](CallContext& c) {
+        autoPickup_ = c.arg(0).truthy();
+        return Value();
+    });
     vm_.registerBuiltin("takeweapon", [this, player, known](CallContext& c) {
         Inventory& inv = inventory(player(c));
         const std::string w = known(c.arg(0));

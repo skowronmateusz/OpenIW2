@@ -437,6 +437,7 @@ void World::frame(bool advanceTime) {
         });
     }
     runTriggers();
+    touchItems();
     for (size_t i = 0; i < pendingNotifies_.size();) {
         if (pendingNotifies_[i].atMs <= timeMs_) {
             const auto p = pendingNotifies_[i];
