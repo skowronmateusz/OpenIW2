@@ -3,6 +3,7 @@
 // entity is a friendly sentient (0x505ed0 → 0x506250).
 #include "game/world.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 
@@ -138,6 +139,89 @@ void World::followFriendlyChain(Entity& e) {
         }
     }
     if (e.chainNode >= 0 && e.claimedNode < 0 && nodeUsable(e, e.chainNode)) claimNode(e, e.chainNode);
+}
+
+namespace {
+float num(const ObjectPtr& o, const char* key, float def) {
+    const Value v = o->get(key);
+    return v.isNumber() ? v.asFloat() : def;
+}
+} // namespace
+
+// 0x505f70: the working goal. Pathing to the enemy: the enemy's last known position (mode 3), radius pathenemyfightdist
+// (at least 4), height 512 when that exceeds 80 (else 80). Otherwise the goal entity, if any: a friendly sentient with
+// followmin <= followmax gives mode 2 (the actor's own origin without a chain node; else the chain node's origin, whose
+// non-zero radius sets radius = max(radius, 4) and height = max(goalheight, 80), a zero one leaves both as they were);
+// any other goal entity gives its origin (mode 1) and no entity the position of setgoalpos / setgoalnode (mode 0); those
+// take radius max(goalradius, 4) and height max(goalheight, 80). TODO(spec): the other caller 0x54ad05.
+void World::updateWorkingGoal(Entity& e) {
+    Entity::WorkGoal& g = e.workGoal;
+    auto tail = [&] {
+        g.radius = std::max(num(e.obj, "goalradius", 0.0f), 4.0f);
+        g.height = std::max(num(e.obj, "goalheight", 0.0f), 80.0f);
+    };
+    if (e.ai.pathToEnemy) {
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (!enemy) return;
+        g.set = true;
+        g.pos = e.sentientInfo[enemy->obj.get()].lastKnownPos;
+        g.mode = 3;
+        const float d = num(e.obj, "pathenemyfightdist", 0.0f);
+        g.radius = std::max(d, 4.0f);
+        g.height = std::max(d > 80.0f ? 512.0f : 80.0f, 80.0f);
+        return;
+    }
+    Entity* G = entityOf(e.obj->get("$goalent"));
+    if (!G) {
+        const Value gp = e.obj->get("$goalpos");
+        if (!gp.isVector()) return;
+        g.set = true;
+        g.pos = gp.asVector();
+        g.mode = 0;
+        tail();
+        return;
+    }
+    const Value minV = e.obj->get("followmin"), maxV = e.obj->get("followmax");
+    const bool friendlyLeader = isSentient(*G) && !enemyTeams(e, *G) &&
+                                !((minV.isNumber() ? minV.asInt() : 0) > (maxV.isNumber() ? maxV.asInt() : 0));
+    if (!friendlyLeader) {
+        g.set = true;
+        g.pos = originOf(G->obj);
+        g.mode = 1;
+        tail();
+        return;
+    }
+    g.mode = 2;
+    if (e.chainNode < 0) {
+        g.set = true;
+        g.pos = originOf(e.obj);
+        return;
+    }
+    const PathNode& n = nodes_[size_t(e.chainNode)];
+    const bool first = !g.set;
+    g.set = true;
+    g.pos = originOf(n.obj);
+    const float nr = num(n.obj, "radius", 0.0f);
+    if (nr != 0.0f || first) { // TODO(spec): the radius and height with a zero-radius node stay as the last update left them
+        g.radius = std::max(nr, 4.0f);
+        g.height = std::max(num(e.obj, "goalheight", 0.0f), 80.0f);
+    }
+}
+
+// The goal the movement code reads (actor +0x748 / +0x754 / +0x758); the script's goal until the first update.
+bool World::actorGoal(Entity& e, Vec3& pos, float& radius, float& height) {
+    if (e.workGoal.set) {
+        pos = e.workGoal.pos;
+        radius = e.workGoal.radius;
+        height = e.workGoal.height;
+        return true;
+    }
+    const Value gv = e.obj->get("$goalpos");
+    if (!gv.isVector()) return false;
+    pos = gv.asVector();
+    radius = num(e.obj, "goalradius", 0.0f);
+    height = num(e.obj, "goalheight", 0.0f);
+    return true;
 }
 
 } // namespace iw2::game

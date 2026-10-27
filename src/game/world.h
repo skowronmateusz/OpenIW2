@@ -218,6 +218,15 @@ struct Entity {
     int friendlyChain = -1;
     int64_t friendlyChainMs = -1;
     int chainNode = -1;
+    // The working goal (actor +0x748 pos, +0x754 radius, +0x758 height, +0x760 mode), computed by 0x505f70 each path update
+    // (src/game/friendlychainworld.cpp). Until then (and for goals the script set without a path update) the script
+    // fields $goalpos / goalradius / goalheight stand in. Modes: 0 fixed, 1 entity, 2 friendly leader, 3 enemy.
+    struct WorkGoal {
+        bool set = false;
+        Vec3 pos{};
+        float radius = 0, height = 0;
+        int mode = 0;
+    } workGoal;
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
     std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
@@ -713,6 +722,8 @@ private:
     void setFriendlyChain(Entity& sentient, int node);
     void touchFriendlyChain(Entity& trigger, Entity& other);
     void followFriendlyChain(Entity& e);
+    void updateWorkingGoal(Entity& e);                                  // 0x505f70
+    bool actorGoal(Entity& e, Vec3& pos, float& radius, float& height); // the goal the movement code reads
     bool coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& script);
     bool nodeFacesEnemy(Entity& e, int node);
     bool claimedNodeGood(Entity& e, int node);

@@ -328,9 +328,9 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
         (!coverScriptAt(e, better, true, script) || !script.empty()) &&
         inActorGoal(e, vecField(nodes_[size_t(better)].obj, "origin")))
         minScore = coverScore(e, better) + 1.25e-5f;
-    const Value gv = e.obj->get("$goalpos");
-    const Vec3 goal = gv.isVector() ? gv.asVector() : vecField(e.obj, "origin");
-    const float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
+    Vec3 goal = vecField(e.obj, "origin");
+    float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
+    actorGoal(e, goal, r, h);
     std::vector<std::pair<int, float>> list;
     // TODO(spec): the original walks a node tree (0x516820), so which 256 nodes are taken when more qualify differs.
     for (size_t i = 0; i < nodes_.size() && list.size() < 256; ++i) {
@@ -418,8 +418,9 @@ bool World::pathToGoal(Entity& e) {
         if (inActorGoal(e, pathEnd(e))) return true;
         clearActorPath(e);
     }
-    const Value gv = e.obj->get("$goalpos");
-    const bool ok = gv.isVector() && pathToPoint(e, gv.asVector());
+    Vec3 gp{};
+    float gr = 0, gh = 0;
+    const bool ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
     if (!ok) {
         clearActorPath(e);
         e.ai.planTimeMs = timeMs_ + 500;
@@ -442,7 +443,6 @@ void World::updateActorPath(Entity& e) {
         return;
     }
     followFriendlyChain(e); // 0x505ed0
-    // TODO(spec): 0x505f70 (the working goal: the chain node / goal entity / the enemy while pathing to it).
     // 0x503080: fighting = an enemy known within 5 s, or (without a path) one whose node the claimed node sees.
     bool fighting = false;
     if (Entity* enemy = entityOf(e.obj->get("enemy"))) {
@@ -450,6 +450,7 @@ void World::updateActorPath(Entity& e) {
         fighting = it != e.sentientInfo.end() && it->second.lastKnownMs != 0 && timeMs_ - it->second.lastKnownMs < 5000;
     }
     if (!fighting) ai.pathToEnemy = false;
+    updateWorkingGoal(e); // 0x505f70
     int node = -1;
     const int claimed = e.claimedNode;
     const bool claimedInGoal = claimed >= 0 && inActorGoal(e, vecField(nodes_[size_t(claimed)].obj, "origin"));
