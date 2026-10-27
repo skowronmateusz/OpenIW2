@@ -816,13 +816,31 @@ void World::registerCombatBuiltins() {
         a.ai.potentialThreatDir[1] = std::sin(r);
         return Value();
     });
-    // traversemode (0x53f360): actor +0x210 = 1 / 2 / 3 for the three accepted names (script strings 0x1c7f080, 0x1c7f0a4,
-    // 0x1c7f0a2, presumably gravity / noclip / nogravity), anything else errors (0x591464). TODO(spec): the mode's effect.
+    // traversemode (0x53f360): actor +0x210 = 1 "gravity" (script string 0x1c7f080), 2 "nogravity" (0x1c7f0a4), 3 "noclip"
+    // (0x1c7f0a2); anything else errors (0x591464). TODO(spec): the mode's effect (negotiation is not implemented).
     vm_.registerBuiltin("traversemode", [actorSelf](CallContext& c) {
         Entity& a = actorSelf(c);
         const std::string m = c.arg(0).toString();
-        if (m != "gravity" && m != "noclip" && m != "nogravity") throw std::runtime_error("traversemode: unknown mode " + m);
-        a.obj->set("$traversemode", Value(m));
+        if (m == "gravity") a.ai.traverseMode = 1;
+        else if (m == "nogravity") a.ai.traverseMode = 2;
+        else if (m == "noclip") a.ai.traverseMode = 3;
+        else throw std::runtime_error("traversemode: illegal mode " + m);
+        return Value();
+    });
+    // animmode (0x53f410): actor +0x21c (the anim mode override, read by setActorAnimScript): "nophysics" 8 and sets gentity
+    // flag 0x1000 (+0x128), every other name clears that flag first: "gravity" 4, "nogravity" 6, "angle deltas" 3,
+    // "zonly_physics" 7, "none" 0; otherwise the error "illegal call to animmode()".
+    vm_.registerBuiltin("animmode", [actorSelf](CallContext& c) {
+        Entity& a = actorSelf(c);
+        const std::string m = c.arg(0).toString();
+        a.ai.noPhysicsFlag = m == "nophysics";
+        if (m == "nophysics") a.ai.animModeOverride = 8;
+        else if (m == "gravity") a.ai.animModeOverride = 4;
+        else if (m == "nogravity") a.ai.animModeOverride = 6;
+        else if (m == "angle deltas") a.ai.animModeOverride = 3;
+        else if (m == "zonly_physics") a.ai.animModeOverride = 7;
+        else if (m == "none") a.ai.animModeOverride = 0;
+        else throw std::runtime_error("illegal call to animmode()");
         return Value();
     });
     // setcontents (0x4efd70): entity +0xc0 = the argument (the old value is returned), then the entity is relinked.
@@ -848,15 +866,19 @@ void World::registerCombatBuiltins() {
     // drywet levels / fade time defaults 0.5 / 1.0 / 0. Sound-system state. TODO(spec): the reverb mixing is not modelled.
     vm_.registerBuiltin("setreverb", [playerSelf](CallContext& c) {
         playerSelf(c);
+        const std::string p = c.arg(0).toString();
+        if (p != "snd_enveffectsprio_level" && p != "snd_enveffectsprio_shellshock")
+            throw std::runtime_error("priority must be 'snd_enveffectsprio_level' or 'snd_enveffectsprio_shellshock'");
         return Value();
     });
     // setsoundblend (0x4f7d10): entity of type 6 (script_origin) with two sound aliases and a blend 0..1 (error when outside);
-    // stores aliases at +0x8c / +0x8e and the blend at +0x94, then relinks. TODO(spec): the audio crossfade, error text.
+    // stores aliases at +0x8c / +0x8e and the blend at +0x94, then relinks (errors "Lerp must be between 0.0f and 1.0f" and
+    // "Entity is not a sound_blend"). TODO(spec): the audio crossfade and the entity type check.
     vm_.registerBuiltin("setsoundblend", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("setsoundblend: not an entity");
         const float b = c.arg(2).asFloat();
-        if (!(b >= 0.0f && b <= 1.0f)) throw std::runtime_error("setsoundblend: blend must be between 0 and 1");
+        if (!(b >= 0.0f && b <= 1.0f)) throw std::runtime_error("Lerp must be between 0.0f and 1.0f");
         e->obj->set("$soundblend", Value(b));
         return Value();
     });
@@ -941,7 +963,7 @@ void World::registerCombatBuiltins() {
         viewKick_.dir = sub(e->obj->get("origin").asVector(), c.arg(1).asVector());
         return Value();
     });
-    for (const char* noop : {"exitprone", "enterprone", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
+    for (const char* noop : {"exitprone", "enterprone", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
@@ -1032,7 +1054,15 @@ void World::registerCombatBuiltins() {
         }
         return Value(item.obj);
     });
-    vm_.registerBuiltin("issuppressed", [](CallContext&) { return Value(false); });
+    // issuppressed (0x53e6a0): actor only; true when one of the 4 danger plane slots (actor +0x2050, stride 0x18) is in use
+    // (+0x0 time != 0) and not short-lived (+0x14 == 0), i.e. a hostile suppression line is currently held.
+    vm_.registerBuiltin("issuppressed", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("not an actor");
+        for (const DangerPlane& p : e->dangerPlanes)
+            if (p.timeMs != 0 && !p.shortLived) return Value(true);
+        return Value(false);
+    });
     vm_.registerBuiltin("getclosestenemysqdist", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         Entity* en = a ? entityOf(a->obj->get("enemy")) : nullptr;

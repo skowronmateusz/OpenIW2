@@ -122,6 +122,8 @@ struct ActorAi {
     bool noPush = false;                      // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
     bool potentialThreat = false;             // +0x20b4: setpotentialthreat; +0x20b8 cos, +0x20bc sin of the angle (TODO(spec): consumer)
     float potentialThreatDir[2] = {0, 0};
+    int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (TODO(spec): consumer)
+    bool noPhysicsFlag = false;               // gentity flag 0x1000 (+0x128): animmode("nophysics") sets it, every other mode clears it
 };
 
 // A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
