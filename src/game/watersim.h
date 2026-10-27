@@ -22,9 +22,13 @@ public:
     explicit WaterSim(const WaterParams& p);
     // Fills size * size BGRA bytes for the given time in seconds (refdef floatTime).
     void update(float timeSeconds, std::vector<uint8_t>& bgra);
+    // dx9 path (r_rendererInUse != dx7): L8 height map = min(|h| / (M*N), 1) * 255 (0x1002cbd0) with a full mip chain of 2x2 box
+    // averages (sum of four >> 2, 0x1000de90) from 0x1002cc70. levels[0] is size x size.
+    void updateL8(float timeSeconds, std::vector<std::vector<uint8_t>>& levels);
     int size() const { return p_.size; }
 
 private:
+    std::vector<float> heightMagnitude(float t); // h(k,t) + FFT + |h|
     WaterParams p_;
     std::vector<std::complex<float>> h0_;
     std::vector<float> omega_;

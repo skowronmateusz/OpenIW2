@@ -301,16 +301,21 @@ struct Scene {
     Camera start;
 };
 
+// L8 height map with mips (the r_rendererInUse = dx9 path 0x1002cbd0 + 0x1002cc70, format D3DFMT_L8).
+void uploadWaterMap(Uploader& up, WaterMat& w, float seconds) {
+    std::vector<std::vector<uint8_t>> levels;
+    w.sim->updateL8(seconds, levels);
+    uint32_t dim = uint32_t(w.sim->size());
+    for (size_t l = 0; l < levels.size(); ++l, dim = std::max(1u, dim / 2))
+        up.texture(w.normalMap, uint32_t(l), 0, dim, dim, levels[l].data(), uint32_t(levels[l].size()));
+}
+
 // Regenerates every water normal map for the given time in seconds (1002cd30: once per frame, r_drawWater on).
 void updateWaterMaps(Scene& scene, SDL_GPUDevice* dev, float seconds) {
     if (scene.waters.empty()) return;
     Uploader up(dev);
-    std::vector<uint8_t> px;
-    for (auto& w : scene.waters) {
-        if (!w.sim || !w.normalMap) continue;
-        w.sim->update(seconds, px);
-        up.texture(w.normalMap, 0, 0, uint32_t(w.sim->size()), uint32_t(w.sim->size()), px.data(), uint32_t(px.size()));
-    }
+    for (auto& w : scene.waters)
+        if (w.sim && w.normalMap) uploadWaterMap(up, w, seconds);
 }
 
 Pass classify(const std::string& techset) {
@@ -427,10 +432,10 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                         wp.lx = t.water.lx, wp.ly = t.water.ly, wp.amplitude = t.water.amplitude, wp.v = t.water.v;
                         wp.windX = t.water.windX, wp.windY = t.water.windY;
                         wm.sim = std::make_shared<game::WaterSim>(wp);
-                        wm.normalMap = createTexture(dev, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, uint32_t(wp.size), uint32_t(wp.size), 1);
-                        std::vector<uint8_t> px;
-                        wm.sim->update(0.0f, px);
-                        up.texture(wm.normalMap, 0, 0, uint32_t(wp.size), uint32_t(wp.size), px.data(), uint32_t(px.size()));
+                        uint32_t lv = 1;
+                        for (int d = wp.size; d > 1; d /= 2) ++lv;
+                        wm.normalMap = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, uint32_t(wp.size), uint32_t(wp.size), lv);
+                        uploadWaterMap(up, wm, 0.0f);
                     }
                 for (const auto& c : m.constants)
                     if (c.name == "waterColor") wm.color[0] = c.value[0], wm.color[1] = c.value[1], wm.color[2] = c.value[2];
@@ -1339,7 +1344,7 @@ struct Renderer {
         ensureDepth(w, h);
         // Blur post effect: only when the composed radius is > 0 (gate in gfx 0x10030ed0); the scene goes to an offscreen
         // texture, then composite pass: scene, blurred quarter copy with alpha min(R / F, 1), then the HUD (not blurred).
-        const bool post = game::blurAlpha(blur) > 0.0f;
+        const bool post = game::blurAlpha(blur, float(w)) > 0.0f;
         if (post) {
             ensureBlurTargets(w, h);
             GpuVertex bv[8]{};
@@ -1351,7 +1356,7 @@ struct Renderer {
                     g.pos[1] = ys[k];
                     g.normal[2] = 1;
                     std::memset(g.color, 255, 3);
-                    g.color[3] = q == 0 ? 255 : uint8_t(std::lround(game::blurAlpha(blur) * 255.0f));
+                    g.color[3] = q == 0 ? 255 : uint8_t(std::lround(game::blurAlpha(blur, float(w)) * 255.0f));
                     g.uv[0] = us[k];
                     g.uv[1] = vs[k];
                 }

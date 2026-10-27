@@ -25,6 +25,6 @@ int main() {
     check(std::abs(b.cur - 3.0f) < 1e-4f, "realtime lerp from 5 to 1 at t=.5");
     b.clear();
     check(b.cur == 0 && b.target == 0 && b.priority == 0, "clear");
-    check(blurAlpha(0) == 0 && std::abs(blurAlpha(1.5f) - 0.5f) < 1e-6f && blurAlpha(32) == 1.0f, "alpha");
+    check(blurAlpha(0, 640) == 0 && std::abs(blurAlpha(1.5f, 640) - 0.5f) < 1e-6f && blurAlpha(32, 640) == 1.0f && std::abs(blurAlpha(3.75f, 1600) - 0.5f) < 1e-6f, "alpha");
     return fails;
 }

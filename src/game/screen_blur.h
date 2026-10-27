@@ -7,9 +7,11 @@
 
 namespace iw2::game {
 
-// F of the alpha ramp alpha = min(R / F, 1) (gfx dll 0x10030b50 calls the import 0x101d4c4c(3.0f)).
-// TODO(spec): F = 3.0 is an assumption; the import is exe-supplied and unresolved.
-constexpr float kBlurFullRadius = 3.0f;
+// F of the alpha ramp alpha = min(R / F, 1): gfx dll 0x10030b50 calls import 0x101d4c4c(3.0f) = exe 0x440cd0 (ri slot 157 filled at
+// 0x40d9bd..), which returns 3.0 * [0x793950]; 0x793950 = scale * (1 / 640) stored at 0x440c2a in the viewport setup 0x440b70
+// (called with the window size 0x617e1c / 0x617e20 at 0x4a333f), i.e. the horizontal 640-virtual-pixel scale.
+// TODO(spec): the exact argument of 0x440c20 (assumed the window width, scale = width / 640).
+inline float blurFullRadius(float widthPx) { return 3.0f * widthPx / 640.0f; }
 
 struct ScreenBlur {
     int64_t start = 0, end = 0; // 0x4beb80: start = now, end = now + ms (start == 0: no lerp running)
@@ -48,8 +50,8 @@ struct ScreenBlur {
 };
 
 // Renderer side: R = sqrt(r_blur^2 + radius^2) with r_blur = 0; the blurred copy is blended with alpha min(R / F, 1).
-inline float blurAlpha(float radius) {
-    return radius <= 0 ? 0.0f : std::min(radius / kBlurFullRadius, 1.0f);
+inline float blurAlpha(float radius, float widthPx) {
+    return radius <= 0 ? 0.0f : std::min(radius / blurFullRadius(widthPx), 1.0f);
 }
 
 } // namespace iw2::game
