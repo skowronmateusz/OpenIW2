@@ -184,6 +184,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         target.obj->set("health", Value(int32_t(health)));
         vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
         if (health < 1) vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
+        if (target.classname == "trigger_damage") triggerDamageHit(target, attacker, amount, mod); // entity type 8 pain / die
         return;
     }
     // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
@@ -411,6 +412,8 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         aiEventPoint(*attacker, 10, start);
         aiEventLine(*attacker, 16, start, tr.endPos);
     }
+    // 0x5314ac: the trigger_damage brushes the shot crosses (start -> impact) are hit with the weapon's damage.
+    triggerDamageSegment(attacker ? attacker : &shooter, start, tr.endPos, damageAmount, rifle ? 2 : 1);
     bulletImpact(shooter, def, start, end, tr, hit);
     // Penetration (0x531665): a hit on contents 0x10 goes on from just behind the hit point towards the same end with the
     // next depth and applies no damage here: start = hit + dir · t, t = 0.25 / cosθ (cosθ = −dir·normal) when cosθ >= 0.125,
