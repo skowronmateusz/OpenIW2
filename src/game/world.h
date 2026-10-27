@@ -723,6 +723,8 @@ private:
     bool fleePathToNode(Entity& e, int node, bool withPlanes = false);
     int badPlaceThink(Entity& e);
     void registerBadPlaceBuiltins();
+    void connectEntityPaths(Entity& e);
+    void disconnectEntityPaths(Entity& e);
     bool pathToNode(Entity& e, int node);
     bool pathToGoal(Entity& e);
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
@@ -842,6 +844,8 @@ private:
     std::vector<NodeSearch> search_;                          // per-node A* state (+0x5c … +0x70)
     int searchId_ = 0;                                        // 0x1c61044
     std::vector<std::vector<std::array<uint8_t, 4>>> linkBlock_; // per link and team: bad places blocking it (+8)
+    std::vector<std::vector<uint8_t>> linkOff_;                  // per link: disconnectpaths count (link +6; disabled links leave the enabled range, 0x519560)
+    std::map<int, std::vector<std::pair<int, int>>> pathRecs_;   // per entity number: links it disabled (records 0x1c8da40)
     std::array<BadPlace, 32> badPlaces_{};
     std::vector<Entity*> grenades_;
     std::vector<Entity*> rockets_;
