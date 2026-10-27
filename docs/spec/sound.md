@@ -79,6 +79,24 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   are priority names (0x506f61..0x506fbc) accepted by `snd_setEnvironmentEffects` (0x444be9) and the script `setreverb`.
 - `masterslave` column: `master` sets alias flag 0x2, a number in 0..1 sets slave flag 0x4 with that percentage (+0x134,
   error text "SlavePercentage"). 3141 rows are masters (dialogue); 0.7 / 0.5 slaves are ducked while a master plays, fading
-  over `snd_slaveFadeTime` ms. TODO(spec): the runtime ducking (the engine plays slaves at full volume).
-- TODO(spec): 3D attenuation curve (.vfcurve, `volumefalloffcurve` column), occlusion, reverb mixing, `speakermap`, per-channel
-  voice priority; `lfe percentage`. Not decoded this round.
+  over `snd_slaveFadeTime` ms (see Round 3).
+- TODO(spec): occlusion, reverb mixing, `speakermap`, per-channel voice priority; `lfe percentage`.
+
+## Round 3: ducking, falloff curves
+
+- Duck state (0x793cfc, updated by 0x443bb0 with the elapsed ms): rises by dt / `snd_slaveFadeTime` while any master voice plays,
+  falls by the same rate otherwise, clamped 0..1; with `snd_slaveFadeTime` 0 it jumps to 1 or 0. A voice of an alias with
+  slave flag 0x4 that is not itself a master is scaled by `1 - duck * (1 - slavePct)` (0x4a0cf0 and the start path 0x4a0ef0).
+  Implemented in `Mixer::mix`.
+- Distance gain (0x441590, called from 0x49f0b4, 0x49f7da and the blend voices at 0x4a0e8b): `t = dist - dist_min`; `t <= 0` gives 1;
+  `dist_min == dist_max` gives 0; `t /= dist_max - dist_min`; `t >= 1` gives 0; otherwise the alias curve is evaluated at t
+  (0x420b40: first knot i >= 1 with `t <= x[i]`, linear interpolation between knot i-1 and i). The result multiplies the voice volume.
+  Implemented as `Mixer::falloff`.
+- `soundaliases/<name>.vfcurve` (parser 0x42a9f0 / 0x42a6e0, 15 curves max): `SNDCURVE`, knot count 2..8, then `x y` pairs, x in 0..1.
+  The first knot is forced to (0,1) and the last to (1,0) (the exe prints a warning). The alias `volumefalloffcurve` column names the
+  file; an empty column keeps the default curve (0,1)-(1,0) installed at 0x428d22 (alias +0x130, runtime +0x40). Blend voices
+  use the curve of the low alias (0x4a0e85).
+- TODO(spec): the pan law (0x49f0b4 keeps constant-power panning from the earlier guess), `snd_setEnvironmentEffects` /
+  `snd_deactivateEnvironmentEffects` handlers (0x441260 / 0x4413d0), `setreverb` (0x539380): reverb mixing and occlusion are not
+  decoded; no shipped script calls `setreverb` or `setsoundblend`.
+- `playloopsound` / `stoploopsound` store the handle in the entity as before; the exe-side loop entity bookkeeping was not re-verified.

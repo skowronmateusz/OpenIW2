@@ -133,6 +133,29 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
             if ((ls >> name >> vol) && name.rfind("//", 0) != 0) groups[lower(name)] = vol;
         }
     }
+    // soundaliases/<name>.vfcurve (parser 0x42a9f0 / 0x42a6e0): "SNDCURVE", a knot count (2..8) and that many "x y" pairs with x in
+    // 0..1. The first knot must be (0,1) and the last (1,0); otherwise the exe warns and overwrites the endpoints.
+    std::map<std::string, std::vector<std::array<float, 2>>> curves;
+    for (const std::string& path : vfs.list("soundaliases/")) {
+        if (path.size() < 8 || lower(path.substr(path.size() - 8)) != ".vfcurve") continue;
+        const auto data = vfs.read(path);
+        if (!data) continue;
+        std::istringstream in(std::string(data->begin(), data->end()));
+        std::string magic;
+        int n = 0;
+        if (!(in >> magic >> n) || magic != "SNDCURVE" || n < 2 || n > 8) continue;
+        std::vector<std::array<float, 2>> k;
+        float x, y;
+        while (int(k.size()) < n && (in >> x >> y)) {
+            if (x < 0 || x > 1) { k.clear(); break; }
+            k.push_back({x, y});
+        }
+        if (int(k.size()) != n) continue;
+        k.front() = {0, 1};
+        k.back() = {1, 0};
+        std::string name = path.substr(path.find_last_of('/') + 1);
+        curves[lower(name.substr(0, name.size() - 8))] = std::move(k);
+    }
     for (const std::string& path : vfs.list("soundaliases/")) {
         if (path.size() < 4 || lower(path.substr(path.size() - 4)) != ".csv") continue;
         const auto data = vfs.read(path);
@@ -173,6 +196,9 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
             else if (!ms.empty()) {
                 const float pct = num(ms, -1);
                 if (pct >= 0 && pct <= 1) a.slavePct = pct;
+            }
+            if (const std::string c = lower(get("volumefalloffcurve")); !c.empty()) {
+                if (const auto it = curves.find(c); it != curves.end()) a.curve = it->second;
             }
             a.secondary = lower(get("secondaryaliasname"));
             a.subtitle = get("subtitle");
@@ -235,6 +261,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     if (a->channel != "local") v.origin = origin;
     v.distMin = a->distMin;
     v.distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 5.0f; // dist_max 0 -> 5 * dist_min (0x429701)
+    v.curve = a->curve;
     v.loop = a->loop;
     v.chan = channelIndex(a->channel);
     v.master = a->master;
@@ -269,6 +296,7 @@ int Mixer::playBlend(const std::string& low, const std::string& high, float f, c
     v.distMin = lo->distMin + (hi->distMin - lo->distMin) * f;
     const float dmax = hi->distMax > hi->distMin ? hi->distMax : hi->distMin * 5.0f; // 0x429701
     v.distMax = dmax;
+    v.curve = lo->curve; // 0x4a0e85: the curve of the alias weighted by (1 - f)
     v.loop = true;
     v.chan = channelIndex(lo->channel);
     std::lock_guard lock(mutex_);
@@ -326,15 +354,27 @@ int Mixer::active() const {
     return int(voices_.size());
 }
 
-// Linear fall-off between dist_min and dist_max (inferred; the .vfcurve files are not used yet) and
-// constant-power panning by the direction's side component.
+// Distance gain (0x441590): 1 up to dist_min, 0 from dist_max (also when dist_min == dist_max), in between the alias'
+// .vfcurve evaluated at t = (dist - dist_min) / (dist_max - dist_min) (0x420b40: linear between the knots around t).
+float Mixer::falloff(const Voice& v, float dist) {
+    float t = dist - v.distMin;
+    if (t <= 0) return 1;
+    if (v.distMin == v.distMax) return 0;
+    t /= v.distMax - v.distMin;
+    if (!(t < 1)) return 0;
+    const auto& k = v.curve;
+    for (size_t i = 1; i < k.size(); i++)
+        if (t <= k[i][0]) return k[i - 1][1] + (t - k[i - 1][0]) / (k[i][0] - k[i - 1][0]) * (k[i][1] - k[i - 1][1]);
+    return -1; // the exe returns -1 when no knot matches
+}
+
+// Constant-power panning by the direction's side component (the exe's pan law is not decoded, 0x49f0b4 TODO(spec)).
 void Mixer::gains(const Voice& v, float& left, float& right) const {
     left = right = v.volume;
     if (!v.origin) return;
     const Vec3 d{(*v.origin)[0] - listener_[0], (*v.origin)[1] - listener_[1], (*v.origin)[2] - listener_[2]};
     const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    float att = 1;
-    if (dist > v.distMin) att = std::max(0.0f, 1.0f - (dist - v.distMin) / std::max(1.0f, v.distMax - v.distMin));
+    const float att = std::max(0.0f, falloff(v, dist));
     float side = 0;
     if (dist > 1) side = (d[0] * right_[0] + d[1] * right_[1] + d[2] * right_[2]) / dist;
     const float angle = (side + 1) * 0.25f * float(M_PI); // 0 = left, pi/2 = right

@@ -36,6 +36,9 @@ struct SoundAlias {
     bool loop = false;
     bool master = false;       // masterslave column "master" (alias flag 0x2)
     float slavePct = -1;       // masterslave column number 0..1 (alias flag 0x4, +0x30); -1 = not a slave
+    // volumefalloffcurve (soundaliases/<name>.vfcurve, alias +0x40): knots (x = normalised distance 0..1, y = gain); an empty
+    // column keeps the built-in default curve (0,1)-(1,0) (0x428d22).
+    std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
     std::string secondary;     // secondaryaliasname
     std::string subtitle;      // `subtitle` column: localised caption key (e.g. SUBTITLE_MOSCOW_RS1_PICKUPRIFLE), original case
 };
@@ -109,9 +112,11 @@ private:
         float slavePct = -1;
         int chan = -1; // index into kChannels (the alias `channel` column), -1 = unknown
         float volLow = 0, volHigh = 0;
+        std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
     };
     std::shared_ptr<const Wav> load(const std::string& file);
     void gains(const Voice& v, float& left, float& right) const;
+    static float falloff(const Voice& v, float dist);
 
     const fs::Vfs& vfs_;
     const SoundAliases& aliases_;
