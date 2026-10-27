@@ -1001,7 +1001,12 @@ void World::registerBuiltins() {
         c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });
-    vm_.registerBuiltin("setgoalentity", [](CallContext& c) { c.self.asObject()->set("$goalent", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalentity", [this](CallContext& c) {
+        static const bool log = std::getenv("IW2_CHAIN_LOG") != nullptr; // debug: the script site of every setgoalentity
+        if (log) print("setgoalentity at " + std::to_string(timeMs_) + " ms from " + c.vm.describeThread(c.thread.id));
+        c.self.asObject()->set("$goalent", c.arg(0));
+        return Value();
+    });
     vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
     vm_.registerBuiltin("spawn", [this](CallContext& c) {
         Entity& e = spawnEntity(c.arg(0).toString());

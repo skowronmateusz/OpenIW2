@@ -572,6 +572,7 @@ int main(int argc, char** argv) {
         std::vector<std::pair<float, iw2::game::Vec3>> playerMelees;  // --player-melee T x,y,z: one melee blow looking at the point
         std::vector<std::pair<float, float>> playerAds;               // --player-ads T frac: the aim fraction from T
         std::vector<std::pair<float, std::string>> playerWeapons;     // --player-weapon T name: the player's current weapon from T
+        bool godMode = false; // --god: the player takes no damage
         std::vector<std::pair<float, std::array<float, 2>>> playerUses; // --player-use T yaw,pitch: press the use key once at T looking that way (headless test)
         struct LevelCall { float t; std::string file, func; };
         std::vector<LevelCall> levelCalls; // --level-call T file.gsc function: starts a thread on level at T seconds (headless test)
@@ -586,6 +587,8 @@ int main(int argc, char** argv) {
                 shootBarrels = true;
             } else if (a == "--player-shoots") {
                 playerShoots = true; // the player fires at the nearest axis actor twice a second
+            } else if (a == "--god") {
+                godMode = true;
             } else if (a == "--answer-menus" && i + 1 < argc) {
                 std::string list = argv[++i];
                 for (size_t p = 0; p <= list.size();) {
@@ -703,6 +706,7 @@ int main(int argc, char** argv) {
         }
         iw2::game::Vec3 playerLookAngles{};
         for (int f = 0; f < seconds * 20; ++f) {
+            if (godMode && world.player()) world.player()->obj->set("$godmode", iw2::script::Value(1)); // --god: FL_GODMODE
             // IW2_HEALTH_LOG=1: the player's health and the low-health overlay hud element's alpha every 0.5 s.
             if (std::getenv("IW2_HEALTH_LOG") && world.player() && f % 10 == 0) {
                 float overlayAlpha = -1;
@@ -1228,6 +1232,15 @@ int main(int argc, char** argv) {
                                 tg.isString() ? tg.asString().c_str() : "-", mn[0] + ov[0],
                                 mn[1] + ov[1], mn[2] + ov[2], mx[0] + ov[0], mx[1] + ov[1], mx[2] + ov[2]);
                 }
+            }
+        }
+        if (const char* team = std::getenv("IW2_ACTOR_DUMP")) { // debug: every living actor of the team (or "all") with origin and script_noteworthy
+            for (const auto& e : world.entities()) {
+                if (!e->isActor || e->obj->removed) continue;
+                const auto t = e->obj->get("team");
+                if (std::string(team) != "all" && !(t.isString() && t.asString() == team)) continue;
+                const auto o = e->obj->get("origin"), nw = e->obj->get("script_noteworthy");
+                std::printf("actor #%d %s %s %s health %s\n", e->number, e->classname.c_str(), o.toString().c_str(), nw.isString() ? nw.asString().c_str() : "-", e->obj->get("health").toString().c_str());
             }
         }
         if (const char* pre = std::getenv("IW2_THREADS_PREFIX")) { // debug: every live thread whose wait site starts with the prefix
