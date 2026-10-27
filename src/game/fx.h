@@ -63,6 +63,8 @@ public:
     // Atlas size of a material: {byte 0xe, byte 0xf} of materials/<name> (frame count = their product, refexport
     // 0x617ae8 → 1.3 DLL 0x10017580); {1, 1} when unknown. Set by the host.
     std::function<std::pair<int, int>(const std::string&)> atlas;
+    // Loads an effect by its path ("fx/....efx"); set by the host. Used by FxRunner elements.
+    std::function<std::shared_ptr<const assets::EfxEffect>(const std::string&)> loader;
     // Decals whose spawn time has come.
     std::vector<FxDecal> takeDecals(int64_t nowMs);
     // Spawns every element of an effect at `origin` facing `forward`.
@@ -83,6 +85,14 @@ private:
     std::vector<FxParticle> particles_;
     std::pair<int, int> atlasOf(const std::string& material);
     std::vector<FxDecal> decals_;
+    // FxRunner children waiting for their spawn time (0x48dac0 → 0x4853f0): they inherit the parent's axes.
+    struct PendingRun {
+        std::string path;
+        FVec origin{}, forward{};
+        int64_t startMs = 0;
+    };
+    std::vector<PendingRun> pending_;
+    void runPending(int64_t nowMs);
     std::vector<FxSightBlocker> sightBlockers_;
 };
 

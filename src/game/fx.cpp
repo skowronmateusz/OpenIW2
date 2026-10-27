@@ -61,6 +61,31 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
             spawnDecals(e, flags, origin, f, r, up, nowMs);
             continue;
         }
+        if (e.type == "FxRunner") {
+            // 0x48dac0: one `playfx` name at random, played at the element's position with the parent's axes (0x4853f0).
+            // Count = trunc(random(count) + 0.5), default 1 (loader 0x487160); with the evenDistribution spawn flag the
+            // delay is i · |max − min| / count, otherwise random in the range (0x4853f0 loop 0x485566..0x485686); a delay
+            // below 1 ms spawns at once. TODO(spec): the spawn shapes (radius / height, 0x48c290), cullrange, and the
+            // exact normalisation of the effect name.
+            const auto names = e.list("playfx");
+            if (names.empty()) continue;
+            const int n = std::max(1, int(range(e.numbers("count"), 1) + 0.5f));
+            const auto delay = e.numbers("delay");
+            const auto sf = e.list("spawnFlags");
+            const bool even = std::find(sf.begin(), sf.end(), "evenDistribution") != sf.end();
+            for (int i = 0; i < n; ++i) {
+                std::string name = names[std::min(names.size() - 1, size_t(frand() * float(names.size())))];
+                while (!name.empty() && name[0] == '/') name.erase(0, 1);
+                if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
+                float d = 0;
+                if (!delay.empty()) {
+                    const float lo = delay[0], hi = delay.size() > 1 ? delay[1] : delay[0];
+                    d = even ? float(i) * std::fabs(hi - lo) / float(n) : range(delay, 0);
+                }
+                pending_.push_back({name, origin, f, nowMs + int64_t(d)});
+            }
+            continue;
+        }
         if (e.type != "Particle" && e.type != "OrientedParticle") continue; // TODO(spec): other element types
         const int count = std::max(1, int(std::lround(range(e.numbers("count"), 1))));
         const auto org = e.numbers("origin");
@@ -168,7 +193,19 @@ std::vector<FxDecal> FxSystem::takeDecals(int64_t nowMs) {
     return due;
 }
 
+void FxSystem::runPending(int64_t nowMs) {
+    if (pending_.empty() || !loader) return;
+    std::vector<PendingRun> due;
+    std::erase_if(pending_, [&](const PendingRun& p) {
+        if (p.startMs > nowMs) return false;
+        due.push_back(p);
+        return true;
+    });
+    for (const PendingRun& p : due) play(loader(p.path), p.origin, p.forward, nowMs);
+}
+
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
+    runPending(nowMs);
     std::erase_if(particles_, [&](const FxParticle& p) { return nowMs >= p.endMs; });
     std::vector<FxSprite> out;
     sightBlockers_.clear();

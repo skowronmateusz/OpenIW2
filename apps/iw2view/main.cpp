@@ -1588,6 +1588,7 @@ int main(int argc, char** argv) {
             }
             return it->second;
         };
+        fxSystem.loader = efx;
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
 
         // Entity models currently visible in the game world.
