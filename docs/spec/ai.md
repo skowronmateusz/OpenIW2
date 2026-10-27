@@ -396,3 +396,27 @@ run-length coded: a byte `b < 0x80` means `b` zero bytes then one literal byte, 
 bytes. `toujane`: 2,571 nodes, 21,583 links; the lump is consumed exactly.
 
 OpenIW2 moves actors along the planner's path ("Path planner") at the root-motion speed of their animations.
+
+## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype, checkprone)
+
+Sweep with `iw2game <main> <map> 40 --spawn-all` over all 28 SP maps: the only built-in still reported as unimplemented is
+`checkprone` (x4 libya, x36 matmata, up to x99 elsewhere). The matmata prediction calls are not reported any more, but there
+is no implementation of them in src (the matmata paths that call them are not reached in the sweep time). All are actor
+methods (entity from the self object, the "entity" check at 0x468ed0 error path).
+
+- `gethitenttype` 0x5400c0 (0 args, returns string): reads the actor's bumped entity number at gentity +0x318
+  (init 0x7ff = none at 0x500d1d; written by the actor move code at 0x501330 and 0x501c6f). 0x7ff gives "none"; else if the
+  hit entity's contents word (+0x128) has bit 0x400 set it gives "obstacle"; otherwise "world". Not implemented: the repo
+  does not track the bumped entity (see world.cpp note on 0x500d80 and actorfollow.cpp TODO(spec) for +0x2148).
+  TODO(spec): wire +0x318 from the actor move trace, then this is a 10-line builtin.
+- `checkprone` 0x5406f0 (actor method; args: vector origin (0x46ea90), float (arg1, 0x46e6d0), int (arg2, 0x46e4a0)): calls
+  0x4fb530(entnum, &origin, 15.0, 48.0, float, 0, 0, int, 1, 0, 1, 1, 66.0) and returns its bool as an int. 0x4fb530 is a
+  capsule/box clearance test: boxes of half extents -6,-6,-6 .. 6,6,6 around points offset from the origin, traced through
+  the actor's clip function (table 0x5a9190, indexed by a byte argument), with an extra step-height pass (constants
+  0x56fcc8, 0x591e1c, 0x591e20, 0x591ed0, 0x591f30, 0x591f40, 0x5921a0). Not decoded fully (about 400 instructions of x87
+  trace math with several early-outs). TODO(spec): decode 0x4fb530 before implementing; not guessed.
+- `beginprediction` 0x53f960 / `endprediction` 0x53fb80: snapshot / restore the actor state (the +0x218.. anim-mode words,
+  the 0x43-dword AI struct, velocity/origin/angles) plus an animation-state snapshot (0x4796c0 / 0x478db0 / 0x478e10); nested
+  through counter 0x1c6104c and a per-depth table at 0x1c7e52c. `predictoriginandangles` 0x53ff50 and `predictanim` 0x540020
+  (tail-jumps to 0x5045c0) run an animation step inside such a snapshot and return the resulting origin/angles. They need a
+  C++ copy of ActorAi plus the animation-step internals (animscripted domain), so they are not implemented.
