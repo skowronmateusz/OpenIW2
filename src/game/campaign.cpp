@@ -47,10 +47,15 @@ void World::registerCampaignBuiltins() {
             throw std::runtime_error("index " + std::to_string(i) + " is an illegal objective index. Valid indexes are 0 to 15");
         return i;
     };
-    vm_.registerBuiltin("objective_add", [this, index](CallContext& c) {
+    // Ring pulse start (parse 0x4c0a42 / 0x4c0b8c): cg time when the state becomes 4 (current) or the "ring" value changes.
+    auto setState = [this](Objective& o, int st) {
+        if (st == 4 && o.state != 4) o.ringStartMs = timeMs_;
+        o.state = st;
+    };
+    vm_.registerBuiltin("objective_add", [this, index, setState](CallContext& c) {
         if (c.args.size() < 2) throw std::runtime_error("objective_add needs at least 2 parameters");
         Objective& o = objectives_[size_t(index(c.arg(0)))];
-        o.state = stateIndex(c.arg(1));
+        setState(o, stateIndex(c.arg(1)));
         if (c.args.size() > 2) o.text = textOf(c.arg(2));
         if (c.args.size() > 3 && c.arg(3).isVector()) o.positions[0] = c.arg(3).asVector();
         if (c.args.size() > 4) o.icon = c.arg(4).toString();
@@ -58,54 +63,55 @@ void World::registerCampaignBuiltins() {
         objectiveMessage(o.state, c.args.size() > 2 ? o.text : std::string("GAME_OBJECTIVESUPDATED"));
         return Value();
     });
-    vm_.registerBuiltin("objective_state", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_state", [this, index, setState](CallContext& c) {
         Objective& o = objectives_[size_t(index(c.arg(0)))];
-        o.state = stateIndex(c.arg(1));
+        setState(o, stateIndex(c.arg(1)));
         objectiveMessage(o.state, "GAME_OBJECTIVESUPDATED");
         return Value();
     });
     // TODO(spec): objective_string's message (FUN_004f18c0) is not decompiled; the text is stored only.
-    auto setString = [this, index](CallContext& c) {
+    auto setString = [this, index, setState](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))].text = textOf(c.arg(1));
         return Value();
     };
     vm_.registerBuiltin("objective_string", setString);
     vm_.registerBuiltin("objective_string_nomessage", setString);
-    vm_.registerBuiltin("objective_icon", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_icon", [this, index, setState](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))].icon = c.arg(1).toString();
         return Value();
     });
-    vm_.registerBuiltin("objective_position", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_position", [this, index, setState](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))].positions[0] = c.arg(1).asVector();
         return Value();
     });
-    vm_.registerBuiltin("objective_additionalposition", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_additionalposition", [this, index, setState](CallContext& c) {
         const int n = c.arg(1).asInt();
         if (n < 0 || n > 7) throw std::runtime_error("objective_additionalposition: position index must be 0 to 7");
         objectives_[size_t(index(c.arg(0)))].positions[size_t(n)] = c.arg(2).asVector();
         return Value();
     });
-    vm_.registerBuiltin("objective_current", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_current", [this, index, setState](CallContext& c) {
         std::vector<int> listed;
         for (const auto& a : c.args) listed.push_back(index(a));
         for (int i = 0; i < 16; ++i) {
             const bool in = std::find(listed.begin(), listed.end(), i) != listed.end();
-            if (in) objectives_[size_t(i)].state = 4;
-            else if (objectives_[size_t(i)].state == 4) objectives_[size_t(i)].state = 1;
+            if (in) setState(objectives_[size_t(i)], 4);
+            else if (objectives_[size_t(i)].state == 4) setState(objectives_[size_t(i)], 1);
         }
         objectiveMessage(4, "GAME_OBJECTIVESUPDATED");
         return Value();
     });
-    vm_.registerBuiltin("objective_additionalcurrent", [this, index](CallContext& c) {
-        for (const auto& a : c.args) objectives_[size_t(index(a))].state = 4;
+    vm_.registerBuiltin("objective_additionalcurrent", [this, index, setState](CallContext& c) {
+        for (const auto& a : c.args) setState(objectives_[size_t(index(a))], 4);
         return Value();
     });
-    vm_.registerBuiltin("objective_ring", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_ring", [this, index, setState](CallContext& c) {
         Objective& o = objectives_[size_t(index(c.arg(0)))];
         o.ring = !o.ring;
+        o.ringStartMs = timeMs_; // the "ring" configstring value changed (0x4c0b8c)
         return Value();
     });
-    vm_.registerBuiltin("objective_delete", [this, index](CallContext& c) {
+    vm_.registerBuiltin("objective_delete", [this, index, setState](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))] = Objective{};
         return Value();
     });
@@ -121,6 +127,22 @@ void World::registerCampaignBuiltins() {
         arr->set(ArrayKey{true, 0, "count"}, Value(int32_t(std::min<size_t>(keys.size(), 2))));
         return Value(arr);
     });
+    // iprintln / iprintlnbold (0x4ebc50 / 0x4ebc60 → 0x4ebc00): the arguments are formatted (0x4eb9b0) and sent to the
+    // client as the command `gm "<text>"` / `gmb "<text>"` (format 0x587bd8 = `%s "%s"`); the client shows them in the game
+    // message window (type 1) or the bold message window (type 2) (0x4a6bff / 0x4a6c3f). The text here is the first
+    // argument (a localized reference stays a key), the further arguments follow after \x1f for the "&&N" substitution.
+    // TODO(spec): the exact formatting of 0x4eb9b0 (number and localized-string arguments).
+    auto printMessage = [this](const char* command) {
+        return [this, command](CallContext& c) {
+            std::string text = c.args.empty() ? std::string() : textOf(c.arg(0));
+            for (size_t i = 1; i < c.args.size(); ++i) text += "\x1f" + c.arg(i).toString();
+            clientCommands_.push_back({command, text});
+            if (std::string(command) == "gm") c.vm.print(c.args.empty() ? std::string() : c.arg(0).toString());
+            return Value();
+        };
+    };
+    vm_.registerBuiltin("iprintln", printMessage("gm"));
+    vm_.registerBuiltin("iprintlnbold", printMessage("gmb"));
     // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds ≥ 0.
     auto change = [this](CallContext& c, bool fromMissionSuccess) {
         if (!player_ || !isAlive(*player_)) return Value();

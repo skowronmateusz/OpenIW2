@@ -138,6 +138,11 @@ struct MoveParams {
     float moveThreshold = 10.0f;      // player_moveThreshhold (0x4fab25)
 };
 
+// PM_AddEvent (0x507ba0): event 0 is ignored; the ring keeps the last 4.
+inline void addPmEvent(PlayerState& ps, int ev) {
+    addPlayerEvent(ps, ev, 0);
+}
+
 // Advances the player by dt seconds (split into steps of at most 66 ms like the original).
 void playerMove(const CollisionWorld& world, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp = {});
 

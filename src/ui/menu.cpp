@@ -282,6 +282,11 @@ private:
             else if (k == "outlinecolor") w.outlineColor = color(a);
             else if (k == "background" && !a.empty()) w.background = a[0];
         }
+        // exe 0x4d1dd0: `origin x y` stores rectClient + origin into the live rect (w/h/align copied unchanged).
+        if (w.props.count("origin")) {
+            w.rect.x += w.originX;
+            w.rect.y += w.originY;
+        }
     }
 
     void decodeItem(Item& it) {
@@ -299,7 +304,17 @@ private:
             else if (k == "autowrapped") it.autoWrapped = true;
             else if (k == "dvar" && !a.empty()) it.dvar = a[0];
             else if (k == "dvartest" && !a.empty()) it.dvarTest = a[0];
-            else if (k == "focusdvar" && !a.empty()) it.focusDvar = a[0];
+            else if (k == "dvarfloat" && args.size() >= 4) {
+                it.dvar = args[0];
+                it.hasRange = true;
+                it.dvarDef = num(args, 1);
+                it.dvarMin = num(args, 2);
+                it.dvarMax = num(args, 3);
+            } else if (k == "dvarfloatlist") {
+                const auto v = strings(blk);
+                for (size_t i = 0; i + 1 < v.size(); i += 2) it.floatList.emplace_back(v[i], std::strtof(v[i + 1].c_str(), nullptr));
+            } else if (k == "dvarenumlist" && !a.empty()) it.enumList = a[0];
+            else if (k == "focusdvar") it.focusDvar = strings(blk);
             else if (k == "showdvar") it.showDvar = strings(blk);
             else if (k == "hidedvar") it.hideDvar = strings(blk);
             else if (k == "enabledvar") it.enableDvar = strings(blk);

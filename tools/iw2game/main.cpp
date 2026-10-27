@@ -284,6 +284,7 @@ int main(int argc, char** argv) {
                         iw2::game::playerMove(cw, ps, in, fdt, mp);
                         if (live && f % 3 == 0) {
                             world.setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, in.yaw, 0});
+                            world.playerPmEvents(ps.eventSeq, ps.events, ps.stance == iw2::game::Stance::Crouch);
                             world.frame();
                         }
                         const iw2::game::Vec c0{before.origin[0], before.origin[1], before.origin[2] + 15};
@@ -529,6 +530,7 @@ int main(int argc, char** argv) {
         bool moveStats = false;
         std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
         size_t menuAnswered = 0;
+        float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -779,6 +781,16 @@ int main(int argc, char** argv) {
                 }
                 world.setPlayerCommand(cmd);
             }
+            if (killVehiclesAt >= 0 && f * 0.05f >= killVehiclesAt) { // IW2_KILL_VEHICLES=<s>: 100000 damage to every vehicle
+                killVehiclesAt = -1;
+                int n = 0;
+                for (const auto& ep : world.entities())
+                    if (ep->vehicle && !ep->obj->removed) {
+                        world.debugDamage(*ep, 100000);
+                        ++n;
+                    }
+                std::printf("killed %d vehicles at %.1f s\n", n, f * 0.05f);
+            }
             for (auto it = levelNotifies.begin(); it != levelNotifies.end();)
                 if (f * 0.05f >= it->first) {
                     world.vm().notify(world.vm().level(), it->second, {});
@@ -809,8 +821,10 @@ int main(int argc, char** argv) {
                 mp.passEntity = world.player()->number;
                 iw2::game::PlayerInput in;
                 in.yaw = world.player()->obj->get("angles").asVector()[1];
+                if (std::getenv("IW2_PMOVE_FORWARD")) in.forward = 1; // walk ahead to make footstep noise
                 for (int k = 0; k < 3; ++k) iw2::game::playerMove(world.collision(), pmoveState, in, 1.0f / 60.0f, mp);
                 world.setPlayerOrigin({pmoveState.origin[0], pmoveState.origin[1], pmoveState.origin[2]}, world.player()->obj->get("angles").asVector());
+                world.playerPmEvents(pmoveState.eventSeq, pmoveState.events, pmoveState.stance == iw2::game::Stance::Crouch);
             }
             std::map<const iw2::game::Entity*, iw2::script::Vec3> before;
             if (moveStats)
@@ -891,7 +905,7 @@ int main(int argc, char** argv) {
                 if (e->isActor) (world.isAlive(*e) ? alive : dead)++;
             std::cout << "actors alive " << alive << ", dead " << dead << "; player health " << world.player()->obj->get("health").toString() << "\n";
             std::cout << "shots " << world.stats.shots << ", hits " << world.stats.hits << ", kills " << world.stats.kills << "; grenades "
-                      << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << "\n";
+                      << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << ", penetrations " << world.stats.bulletPenetrations << ", player noise events " << world.stats.playerNoise << ", actor noise events " << world.stats.actorNoise << "\n";
             std::cout << "actor animscripts:";
             for (const auto& [k, v] : states) std::cout << " " << k << "=" << v;
             std::cout << "\n";
@@ -919,6 +933,10 @@ int main(int argc, char** argv) {
                 std::cout << "corpses " << corpses << ", still holding a gun " << armed << ", weapon items " << items << "\n";
             }
             if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
+        }
+        if (const char* pre = std::getenv("IW2_THREADS_PREFIX")) { // debug: every live thread whose wait site starts with the prefix
+            for (const auto& d : world.vm().describeThreads())
+                if (d.rfind(pre, 0) == 0) std::cout << "thread " << d << "\n";
         }
         {
             std::map<std::string, int> waits;

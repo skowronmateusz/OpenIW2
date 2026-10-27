@@ -2,6 +2,7 @@
 // actor think, the exposed / pain / death / animcustom states and the engine's choice of animscript.
 #include "game/world.h"
 
+#include <cctype>
 #include <cmath>
 
 namespace iw2::game {
@@ -165,8 +166,12 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiTurret:
         return turretStateStart(e); // 0x549960
-    case AiDeath: // 0x548980. TODO(spec): the claimed node release (0x5191a0) and the head look-at hand-over
-                  // (0x514970, 0x4fd9e0) are not modelled.
+    case AiDeath: // 0x548980: +0x740 / +0x741 cleared and the claimed node released at once (0x548995..0x54899a).
+                  // TODO(spec): the head look-at hand-over (0x514970, 0x4fd9e0; 500 ms override-angle gate) and sentient +0x28 = 200
+                  // (0x548a02) are not modelled.
+        e.obj->set("keepclaimednode", Value(int32_t(0)));
+        e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+        if (e.claimedNode >= 0) releaseNode(e);
         e.ai.substate = kSubDeath;
         return true;
     case AiPain: // 0x54d2a0
@@ -330,12 +335,6 @@ void World::actorThink(Entity& e) {
 // TODO(spec): the states' damaged handlers (0x5498c0 node release, turret 0x54af30) are not modelled.
 void World::actorPain(Entity& e, Entity* attacker) {
     if (attacker && isSentient(*attacker)) e.sentientInfo[attacker->obj.get()].lastAttackedMs = timeMs_;
-    // 0x5485a0: pain from a valid attacker is an AI event (type 2) at the victim, at most every 500 ms
-    // (the exe accumulates the pain time; the +0x48 add and the damage class gate are TODO(spec)).
-    if (attacker && (attacker->isActor || attacker->isPlayer) && timeMs_ >= e.ai.painEventMs) {
-        e.ai.painEventMs = timeMs_ + 500;
-        aiEventPoint(*attacker, 2, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
-    }
     if (aiPushState(e, AiPain)) killActorAnimScript(e);
 }
 
@@ -406,6 +405,10 @@ int World::deathThink(Entity& e) {
 // animcustom think (0x54b240): the custom function runs as the animscript (anim mode override or 4); when it has
 // finished the state is popped.
 int World::customThink(Entity& e) {
+    // 0x54b240..0x54b26c: keepclaimednode (+0x740) / keepclaimednodeingoal (+0x741) cleared, claimed node released.
+    e.obj->set("keepclaimednode", Value(int32_t(0)));
+    e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+    if (e.claimedNode >= 0) releaseNode(e);
     clearActorPath(e);
     setActorAnimScript(e, "<custom>", 0, 4);
     if (!actorAnimScriptDone(e)) {
@@ -610,28 +613,74 @@ static Vec3 vecField(const ObjectPtr& o, const char* key) {
     return v.isVector() ? v.asVector() : Vec3{0, 0, 0};
 }
 
+static std::string lowerStr(std::string s) {
+    for (char& ch : s) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
+
+// Yaw of a direction vector (0x421b30, the same as vectortoangles: 0..360).
+static float yawOfVector(const Vec3& v) {
+    float yaw = v[0] != 0.0f ? std::atan2(v[1], v[0]) * 57.2957795f : (v[1] > 0 ? 90.0f : 270.0f);
+    if (yaw < 0) yaw += 360.0f;
+    return yaw;
+}
+
+static float quantYaw(float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; } // 0x591e68, 0x591f10
+
 void World::actorFacing(Entity& e) {
     const ActorAi& ai = e.ai;
-    if (e.path.count > 0 || e.claimedNode < 0) return;
-    const PathNode& n = nodes_[size_t(e.claimedNode)];
-    if (!(n.spawnflags & 0x8000)) return;
-    const Vec3 o = vecField(e.obj, "origin");
-    if (ai.facing == 3) {
-        if (entityOf(e.obj->get("enemy"))) return; // TODO(spec): 0x5059c2
-        const Vec3 np = vecField(n.obj, "origin");
-        const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
-        if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
-    } else if (ai.facing != 6) {
-        return;
+    const int m = ai.orient ? ai.orient : ai.facing; // 0x505d80: the orientmode override, else the facing mode
+    float target = 0;
+    // Mode 3 with an enemy (0x505960 -> 0x5059c2): the enemy's sight record decides. Visible now (record byte 0): turn
+    // towards the enemy's origin (0x505a80; ignored when the 2D distance² < 1.0, 0x591e20). Not visible: with no path and
+    // the enemy seen (record +8) less than 5000 ms ago the target is left alone (0x505a08); otherwise (never seen, or
+    // seen long ago) the node facing below runs (0x505a16 -> 0x505920).
+    // TODO(spec): the path branch (0x505a22: +0x6ec time gate, 0x5432f0 position when not seen for > 500 ms); while a path
+    // is followed moveActor writes the yaw.
+    bool enemyTargeted = false;
+    if (ai.orient != 1 && m >= 3 && m <= 5) {
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (enemy) {
+            if (e.path.count > 0) return;
+            const auto it = e.sentientInfo.find(enemy->obj.get());
+            if (it != e.sentientInfo.end() && it->second.visible) {
+                const Vec3 o = vecField(e.obj, "origin"), eo = vecField(enemy->obj, "origin");
+                const float dx = eo[0] - o[0], dy = eo[1] - o[1];
+                if (dx * dx + dy * dy < 1.0f) return;
+                target = quantYaw(yawOfVector({dx, dy, 0}));
+                enemyTargeted = true;
+            } else if (it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000) {
+                return;
+            }
+        }
     }
-    auto quant = [](float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; }; // 0x591e68, 0x591f10
-    const float target = quant(vecField(n.obj, "angles")[1]);
+    if (ai.orient == 1) {
+        // orientmode angle / current / direction / point (0x53f510): 0x504ca0 turns to the override target +0x120
+        // every frame (no selector runs for mode 1). While a path is followed moveActor writes the yaw instead.
+        if (e.path.count > 0) return;
+        target = ai.orientTarget;
+    } else if (enemyTargeted) {
+        // target set from the enemy (0x505a80 .. 0x505aec)
+    } else {
+        if (e.path.count > 0 || e.claimedNode < 0) return;
+        const PathNode& n = nodes_[size_t(e.claimedNode)];
+        if (!(n.spawnflags & 0x8000)) return;
+        const Vec3 o = vecField(e.obj, "origin");
+        if (m >= 3 && m <= 5) {
+            const Vec3 np = vecField(n.obj, "origin");
+            const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
+            if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
+        } else if (m != 6) {
+            return;
+        }
+        target = quantYaw(vecField(n.obj, "angles")[1]);
+    }
     const Vec3 a = vecField(e.obj, "angles");
     float d = target - a[1]; // FUN_00423f50 (AngleNormalize180)
     while (d > 180.0f) d -= 360.0f;
     while (d < -180.0f) d += 360.0f;
     d = std::max(-20.0f, std::min(20.0f, d)); // 0.4 * +-50 (0x592030 / 0x592034)
-    e.obj->set("angles", Value(Vec3{0, quant(a[1] + d), 0}));
+    e.obj->set("angles", Value(Vec3{0, quantYaw(a[1] + d), 0}));
     e.obj->set("desiredangle", Value(target)); // 0x504ca0
 }
 
@@ -639,6 +688,56 @@ void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
     registerBadPlaceBuiltins();
     registerGrenadeBuiltins();
+    // orientmode(mode[, angle | vector]) (0x53f510): sets the override facing +0x114 and, for the explicit modes, the
+    // override target +0x120 (16-bit quantised yaw). "face enemy" 3, "face enemy or motion" 4, "face goal" 6, "face
+    // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and
+    // clears the override. TODO(spec): "face current" takes desiredangle (+0x124), which only follows the turn target here
+    // when this turn code ran, so the current yaw is used; 0x504aa0 (animation yaw delta into the pairs) is not modelled.
+    vm_.registerBuiltin("melee", [this](CallContext& c) {
+        Entity* a = entityOf(c.self);
+        if (!a || !a->obj || !isAlive(*a)) return Value();
+        if (a->ai.meleeFrameMs == timeMs_) return Value(); // 0x550c7a: once per frame
+        a->ai.meleeFrameMs = timeMs_;
+        aiMelee(*a);
+        return Value();
+    });
+    vm_.registerBuiltin("orientmode", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("orientmode on a non-actor");
+        ActorAi& ai = e->ai;
+        const std::string mode = lowerStr(c.arg(0).toString());
+        if (mode == "face angle") {
+            ai.orient = 1;
+            ai.orientTarget = quantYaw(c.arg(1).asFloat());
+        } else if (mode == "face current") {
+            ai.orient = 1;
+            ai.orientTarget = quantYaw(vecField(e->obj, "angles")[1]);
+        } else if (mode == "face direction") {
+            const Vec3 v = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
+            if (v[0] == 0.0f && v[1] == 0.0f) throw std::runtime_error("cannot face (0, 0, *)");
+            ai.orient = 1;
+            ai.orientTarget = quantYaw(yawOfVector(v));
+        } else if (mode == "face enemy") {
+            ai.orient = 3;
+        } else if (mode == "face enemy or motion") {
+            ai.orient = 4;
+        } else if (mode == "face goal") {
+            ai.orient = 6;
+        } else if (mode == "face motion") {
+            ai.orient = 2;
+        } else if (mode == "face point") {
+            const Vec3 p = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
+            const Vec3 o = vecField(e->obj, "origin");
+            const Vec3 d{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
+            ai.orient = 1;
+            if (d[0] * d[0] + d[1] * d[1] >= 1.0f) ai.orientTarget = quantYaw(yawOfVector(d)); // 0x591e20 = 1.0
+        } else if (mode == "face default") {
+            ai.orient = 0; // the base pair keeps the override target; the base target is not modelled
+        } else {
+            throw std::runtime_error("orientMode must be 'face angle', 'face current', 'face direction', 'face enemy', 'face enemy or motion', 'face goal', 'face motion', 'face point', or 'face default'");
+        }
+        return Value();
+    });
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {
@@ -651,6 +750,27 @@ void World::registerActorStateBuiltins() {
         }
         return Value();
     });
+}
+
+// 0x5485a0 (every movement frame, 0x4ff1b3, while actor +0x25c is set; not a pain handler): the movement struct
+// actor +0x224 keeps a kind (+0x40, set by FUN_00504160 from the anim mode +0x218: modes 1, 3 -> 1; 2, 4 -> 2; 5 -> 3;
+// 6 -> 4; 7 -> 5; mode 0 leaves it) and a step (+0x48, 50, 0x500cff). While the kind is 1, 2 or 5 (and the ground entity
+// +0x18 is not 0x7ff, i.e. the actor stands on something) every frame adds the step to the carried sum (+0x1c, zeroed
+// otherwise); at 500 an AI event 2 is sent at the actor (0x535770, origin = the struct's position, enemy-team receivers)
+// and the sum keeps its remainder. TODO(spec): the ground-entity gate is taken as always satisfied.
+void World::actorMoveNoise(Entity& e) {
+    ActorAi& ai = e.ai;
+    const int m = ai.animMode;
+    const bool kind125 = m == 1 || m == 2 || m == 3 || m == 4 || m == 7;
+    const int old = ai.moveNoiseMs;
+    ai.moveNoiseMs = 0;
+    if (!ai.alive || !kind125) return;
+    ai.moveNoiseMs = old + 50;
+    if (ai.moveNoiseMs < 500) return;
+    const Value o = e.obj->get("origin");
+    ++stats.actorNoise;
+    aiEventPoint(e, 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
+    ai.moveNoiseMs %= 500;
 }
 
 } // namespace iw2::game

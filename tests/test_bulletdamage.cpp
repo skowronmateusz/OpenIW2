@@ -53,6 +53,26 @@ int main() {
     CHECK(std::fabs(iw2::game::aiHitChance(g, 0, 1.8f, 1.0f) - 1.0f) < 1e-6f); // 0.7148 * 1.8 > 1 -> 1
     CHECK(std::fabs(iw2::game::aiHitChance(g, 0, 0.5f, 1.0f) - 0.3574f) < 1e-5f);
     CHECK(!iw2::game::parseAccuracyGraph("nonsense", g));
+    {
+        using namespace iw2::game;
+        const Vec3f up{0, 0, 1};
+        const Vec3f c = aiSideAxis({1, 0, 0}, up);
+        CHECK(std::fabs(c.y + 1.0f) < 1e-6f && c.x == 0 && c.z == 0);
+        const Vec3f T{100, 0, 60};
+        // player hit: u1 = 0.5 -> no lateral; u2 = 0 -> +10 above the eye; u2 = 1 -> 34 below
+        auto h0 = aiHitPoint(T, c, up, true, 0.5f, 0.5f, 0.0f);
+        CHECK(std::fabs(h0.z - 70.0f) < 1e-4f && std::fabs(h0.y) < 1e-4f);
+        auto h1 = aiHitPoint(T, c, up, true, 0.5f, 1.0f, 1.0f);
+        CHECK(std::fabs(h1.z - 26.0f) < 1e-4f && std::fabs(h1.y + 8.0f) < 1e-4f);
+        // actor hit with accuracy 1: width 1.5, height -22 + 6
+        auto h2 = aiHitPoint(T, c, up, false, 1.0f, 1.0f, 1.0f);
+        CHECK(std::fabs(h2.y + 1.5f) < 1e-4f && std::fabs(h2.z - (60 - 22 + 6)) < 1e-4f);
+        // player miss: 16 short, 8..16 sideways
+        auto m0 = aiMissPoint(T, {1, 0, 0}, c, up, true, 1.0f, 0.0f, 0.0f);
+        CHECK(std::fabs(m0.x - 84.0f) < 1e-4f && std::fabs(m0.y + 8.0f) < 1e-4f && std::fabs(m0.z - 70.0f) < 1e-4f);
+        auto m1 = aiMissPoint(T, {1, 0, 0}, c, up, false, 0.0f, 0.5f, 0.5f);
+        CHECK(std::fabs(m1.y - std::sqrt(1350.0f)) < 1e-3f && std::fabs(m1.z - 60.0f) < 1e-4f);
+    }
     if (failures == 0) std::cout << "bulletdamage ok\n";
     return failures ? 1 : 0;
 }

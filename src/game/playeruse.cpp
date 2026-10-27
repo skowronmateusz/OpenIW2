@@ -507,6 +507,22 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
     return out;
 }
 
+void World::debugDamage(Entity& e, int amount) { damage(e, player_, amount, {0, 0, 1}, e.obj->get("origin").asVector(), "MOD_EXPLOSIVE"); }
+
+std::vector<World::CompassMarker> World::compassVehicles() const {
+    std::vector<CompassMarker> out;
+    for (const auto& e : entities_) {
+        if (e->obj->removed || !e->vehicle || !e->vehicle->onCompass) continue;
+        const Value org = e->obj->get("origin"), ang = e->obj->get("angles");
+        if (!org.isVector()) continue;
+        CompassMarker m;
+        m.pos = org.asVector();
+        if (ang.isVector()) m.yaw = ang.asVector()[1];
+        out.push_back(m);
+    }
+    return out;
+}
+
 // 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
 // eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
@@ -536,6 +552,31 @@ void World::updateCrosshairTarget() {
     }
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
     if (std::getenv("IW2_CROSSHAIR_DEBUG")) std::fprintf(stderr, "crosshair eye %g %g %g yaw %g ent %d\n", eye[0], eye[1], eye[2], playerCmd_.viewAngles[1], tr.entity);
+    // A vehicle (entity type 0xc, 0x5353ce): inside g_friendlyNameDist (15000) it becomes the name target (0x535455) and the
+    // HUD lines are its look-at strings (+0x194 / +0x196, 0x534b61): nothing when it has none. The enemy crosshair flag
+    // 0x200000 (0x535471..0x5354cb): the player is in a vehicle (pm_flags 0x20000), the distance is inside the current
+    // weapon's enemyCrosshairRange (weapon def +0x260) and the vehicle's team (+0x178, setvehicleteam) is the player's enemy
+    // team (0x4e7010).
+    if (hit && hit->vehicle && hit->classname == "script_vehicle") {
+        const Value org = hit->obj->get("origin");
+        if (org.isVector()) {
+            const Vec3 o = org.asVector();
+            const float dx = o[0] - eye[0], dy = o[1] - eye[1], dz = o[2] - eye[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < 15000.0f * 15000.0f && !hit->vehicle->lookAtText.empty()) {
+                crosshairName_ = hit->vehicle->lookAtText;
+                crosshairWeaponLine_ = hit->vehicle->lookAtText2;
+            }
+            if (pmFlags_ & 0x20000) {
+                const std::string wn = playerOnTurret() ? playerTurretWeapon() : lowerStr(player_->obj->get("$weapon").toString());
+                const std::string ts = player_->obj->get("team").isString() ? player_->obj->get("team").asString() : std::string();
+                const int pt = ts == "axis" ? 1 : 2;
+                const float range = weaponFloat(wn, "enemyCrosshairRange");
+                if (d2 < range * range && hit->vehicle->team == (pt == 1 ? 2 : 1)) crosshairFlags_ |= 0x200000u;
+            }
+        }
+        return;
+    }
     if (!hit || !hit->isActor || !isAlive(*hit)) return;
     const Vec3 d = sub(hit->obj->get("origin").asVector(), eye);
     const float dist2 = dot(d, d);

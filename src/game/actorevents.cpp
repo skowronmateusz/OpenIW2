@@ -36,6 +36,18 @@ bool aiEventSourceValid(const Entity& source, bool forced) {
     return s == "axis" || s == "allies";
 }
 
+// 0x535770 with EAX 0: the receivers are the actors of the source's enemy team (table {0, 2, 1, 0, 0}).
+bool aiEventEnemyTeams(const Entity& source, const Entity& actor) {
+    const Value t = source.obj->get("team"), u = actor.obj->get("team");
+    const std::string s = t.isString() ? t.asString() : std::string(), a = u.isString() ? u.asString() : std::string();
+    return (s == "axis" && a == "allies") || (s == "allies" && a == "axis");
+}
+
+bool aiEventSameTeam(const Entity& source, const Entity& actor) {
+    const Value t = source.obj->get("team"), u = actor.obj->get("team");
+    return t.isString() && u.isString() && t.asString() == u.asString();
+}
+
 } // namespace
 
 // 0x500c50: `target` learns `about`'s current position (last known time, position and where the target itself was
@@ -58,7 +70,7 @@ bool World::actorKnowsRecently(const Entity& target, const Entity& about, int64_
 // 12 (door open) and 13 (door kick) only print "not yet handled" in the exe; 11 does nothing; 8/9 (grenade ping) are
 // implemented as the per-actor loop of `grenadePing` (0x526c07 → 0x5200e0), not through this dispatch.
 // TODO(spec): the turret's entity +0x10c field of the pain/death handler (only the "is on a turret" part is
-// modelled), the player pain events 2/3 of the client fire path (0x4e786b / 0x4e787b).
+// modelled), the movement noise 0x5485a0 is ported (actorMoveNoise), the plane-limited grenade flee (0x542b70 -> 0x5461a0) is TODO(spec). Player events 2/3 are ported (playerPmEvents).
 void World::aiEventDispatch(Entity& source, Entity& target, int type) {
     switch (type) {
     case 2:
@@ -107,15 +119,40 @@ void World::aiEventDispatch(Entity& source, Entity& target, int type) {
     }
 }
 
+// The AI part of G_ClientEvents (0x4e7620–0x4e7890): events since the last call, at most the newest 4 (the loop starts
+// at max(old, sequence − 4)). The crouched player (pm_flags 2) makes no noise; the event goes to the actors of the
+// enemy team (0x4e780a: team table {0,2,1,0,0}, EAX of 0x535770) at the player's origin with the type's radius.
+// TODO(spec): the client flag test `+0x85c8 & 0x1000` (0x4e77b7) skips the event too; its meaning is not identified.
+// The jump events 0x46..0x5c are processed like the run steps but nothing in pmove adds them yet.
+void World::playerPmEvents(int eventSeq, const int (&events)[4], bool crouched) {
+    int from = playerEventSeq_;
+    playerEventSeq_ = eventSeq;
+    if (from < eventSeq - 4) from = eventSeq - 4;
+    Entity* p = player();
+    if (!p || crouched) return;
+    for (int i = from; i < eventSeq; ++i) {
+        const int ev = events[i & 3];
+        const bool run = (ev >= 1 && ev < 0x18) || (ev >= 0x46 && ev < 0x74);
+        const bool walk = ev >= 0x18 && ev < 0x2f;
+        if (!run && !walk) continue;
+        const Value o = p->obj->get("origin");
+        ++stats.playerNoise;
+        aiEventPoint(*p, walk ? 3 : 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
+    }
+}
+
 // 0x535770: an event of `type` at `pos`, radius² `radius2` (0: the type's default from the table 0x57031c), from
 // `source` to every actor within the radius. `forced` is the broadcast's EAX flag (bit 0 skips the team gate; the
 // producers pass 1, or 1 | 1 << team, except the weapon-fire line 0x526272 which passes 0).
-void World::aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2, bool forced) {
+void World::aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2, bool forced, AiHear hear) {
+    if (!forced && hear == AiHear::All) hear = AiHear::Enemy; // EAX 0: the table's enemy team
     if (!aiEventSourceValid(source, forced)) return;
     if (radius2 == 0.0f) radius2 = aiEventRadius2(type);
     for (const auto& ep : entities_) {
         Entity& a = *ep;
         if (!a.isActor || a.obj->removed || !a.ai.alive || a.ai.corpse) continue;
+        if (hear == AiHear::Enemy && !aiEventEnemyTeams(source, a)) continue;
+        if (hear == AiHear::Own && !aiEventSameTeam(source, a)) continue; // 1 << the source's team
         const Vec3 o = a.obj->get("origin").isVector() ? a.obj->get("origin").asVector() : Vec3{0, 0, 0};
         const float dx = o[0] - pos[0], dy = o[1] - pos[1], dz = o[2] - pos[2];
         if (dx * dx + dy * dy + dz * dz <= radius2) aiEventDispatch(source, a, type);
@@ -135,6 +172,7 @@ void World::aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, 
     for (const auto& ep : entities_) {
         Entity& t = *ep;
         if (!t.isActor || t.obj->removed || !t.ai.alive || t.ai.corpse) continue;
+        if (!forced && !aiEventEnemyTeams(source, t)) continue;
         const Vec3 o = t.obj->get("origin").isVector() ? t.obj->get("origin").asVector() : Vec3{0, 0, 0};
         const float along = (o[0] - a[0]) * d[0] + (o[1] - a[1]) * d[1] + (o[2] - a[2]) * d[2];
         if (along < 0.0f) continue; // behind the start: no event
