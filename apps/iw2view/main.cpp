@@ -17,6 +17,7 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
 #include "game/clientinput.h"
@@ -2000,6 +2001,7 @@ int main(int argc, char** argv) {
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
+        game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         game::FogState fogState; // "fog" server command (client 0x4a5770)
         game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
@@ -3486,6 +3488,14 @@ int main(int argc, char** argv) {
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
             out.insert(out.end(), front.begin(), front.end());
+            // The fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
+            screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+            if (screenFade.alpha() > 0) {
+                Quad2D q{0, 0, float(w), float(h)};
+                q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
+                q.rgba[3] = uint8_t(std::min(screenFade.alpha(), 1.0f) * 255.0f + 0.5f);
+                out.push_back(q);
+            }
             (void)c;
             return out;
         };
@@ -4359,6 +4369,12 @@ int main(int argc, char** argv) {
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
                         fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                     }
+                    else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
+                        float alpha = 0;
+                        int startMs = 0, durMs = 0;
+                        a >> alpha >> startMs >> durMs;
+                        screenFade.command(alpha, startMs, durMs, world->timeMs());
+                    }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
                     else if (cmd.name == "scr_blur") { // scr_blur <ms> <radius> <realtime> <priority> (0x4beb80)
@@ -4377,6 +4393,7 @@ int main(int argc, char** argv) {
                     currentMap = pendingLevel->first;
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
+                    screenFade.clear(); // the new level starts unfaded
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
                         const std::string movie = world->takeCinematic();
