@@ -2504,14 +2504,33 @@ int main(int argc, char** argv) {
             {
                 const uint64_t now = SDL_GetTicksNS();
                 std::erase_if(screenMessages, [&](const ScreenMessage& m) { return m.untilNs < now; });
-                float my = 100 * sc;
-                const uint8_t white[4] = {255, 255, 255, 255};
-                if (const assets::Font* f = font("normalfont"))
+                // Game messages (client commands obj_update / obj_complete, 0x4a6c7f): the string "^2%s" (0x57f6a0, ^2 = green
+                // (0,1,0,1) in the colour table at 0x56cd98) goes to the game-message window (type 1; 0x404830 → 0x403aa0
+                // → window base of 0x5cc2b0), shown for con_gamemessagetime 5 s (0x571118; 0x403890 case 1), wrapped at
+                // cg_gameMessageWidth 70 characters (0x4a2026). Drawn each frame by 0x4bf1c0 → 0x406b60 → 0x4068e0 → 0x4065e0
+                // with x 6, y 100, character height 12, horizontal code 1 (LEFT edge of the window, 0x440ff4[1]) and vertical
+                // code 1 (TOP of the window, 0x441014[1]), style 3: the rows of the window go bottom-up, the newest row's top
+                // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
+                // TODO(spec): the fade-out of old rows (window fields +0x18/+0x1c, 0x406758), the exact message text for
+                // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
+                const uint8_t green[4] = {0, 255, 0, 255};
+                const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
+                if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
+                    std::vector<std::string> rows; // oldest first
                     for (const auto& m : screenMessages) {
                         const std::string* t = loc.find(m.text);
-                        hudText(out, t ? *t : m.text, float(w) * 0.5f, my, 0.75f * sc, *f, white, 0.5f, 0);
-                        my += 18 * sc;
+                        std::string cur;
+                        std::istringstream words(t ? *t : m.text);
+                        for (std::string wd; words >> wd;) {
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > 70) { rows.push_back(cur); cur.clear(); }
+                            cur += (cur.empty() ? "" : " ") + wd;
+                        }
+                        if (!cur.empty()) rows.push_back(cur);
                     }
+                    float ry = 100.0f - 12.0f;
+                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 12.0f)
+                        hudText(out, *it, 6.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, green, 0, 0, 3);
+                }
             }
             // Scope overlay (0x4bcdd0 → 0x4bca90): the weapon's adsOverlayShader, white with the overlay alpha. Wider than
             // 320 or taller than 240 (adsOverlayWidth / Height, virtual units): one quad of that size centred on the
@@ -3083,6 +3102,7 @@ int main(int argc, char** argv) {
                 std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
             }
             if (world) {
+                std::vector<std::pair<std::string, int64_t>> shotMsgs; // obj_update / obj_complete with their world time
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     {
@@ -3101,7 +3121,11 @@ int main(int argc, char** argv) {
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
                             fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                         }
+                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete") shotMsgs.emplace_back(cmd.arg, world->timeMs());
                 }
+                // Messages still on screen (con_gamemessagetime 5 s) at the end of the simulation.
+                for (const auto& [text, at] : shotMsgs)
+                    if (world->timeMs() - at < 5000) screenMessages.push_back({text, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
@@ -3691,7 +3715,7 @@ int main(int argc, char** argv) {
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "obj_update" || cmd.name == "obj_complete")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 4000000000ull}); // display time inferred
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
