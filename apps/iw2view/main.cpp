@@ -2173,6 +2173,15 @@ int main(int argc, char** argv) {
             return it->second;
         };
         fxSystem.loader = efx;
+        // usePhysics Emitters (shell casings) trace the world (0x486f70). TODO(spec): the contents mask (the original passes 1).
+        fxSystem.trace = [&world](const game::FVec& a, const game::FVec& b, float& frac, game::FVec& n) {
+            if (!world) return false;
+            const game::TraceResult tr = world->collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, game::Contents::Solid);
+            if (tr.startSolid || tr.allSolid || tr.fraction >= 1.0f) return false;
+            frac = tr.fraction;
+            n = tr.normal;
+            return true;
+        };
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
         // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
         // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
@@ -2272,6 +2281,17 @@ int main(int argc, char** argv) {
                               << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
                               << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
             world->setFxSightBlockers(fxSystem.sightBlockers());
+            // Emitter models (shell casings, 0x48d7d0): static xmodels at the particle position and angles.
+            for (const auto& fm : fxSystem.models()) {
+                const GpuModel* gm = sceneModel(scene, dev, vfs, fm.model);
+                if (!gm) continue;
+                DrawItem it;
+                it.model = gm;
+                it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
                 it.model = fxm;

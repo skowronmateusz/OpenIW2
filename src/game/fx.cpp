@@ -15,6 +15,7 @@ namespace iw2::game {
 namespace {
 
 FVec add(const FVec& a, const FVec& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
+FVec sub(const FVec& a, const FVec& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
 FVec mul(const FVec& a, float s) { return {a[0] * s, a[1] * s, a[2] * s}; }
 
 const assets::EfxGraph* graph(const assets::EfxElement& e, const char* name) {
@@ -198,7 +199,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             FVec t{};
             if (!(*bolt)(t)) continue;
         }
-        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle";
+        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter";
         if (!known) continue; // TODO(spec): other element types
         // 0x4853f0: count = trunc(random(count) + 0.5) (default 1), the element is skipped when 0.
         const int count = int(range(e.numbers("count"), 1) + 0.5f);
@@ -285,7 +286,110 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
     }
+    if (e.type == "Emitter") {
+        // 0x48d7d0: start position from the spawn shape; the angles are the effect axes' angles plus a random draw in
+        // `angle` (z, y, x order), the spin rates a draw in `angleDelta` (z, y, x), then the model at random
+        // ((seed >> 17)·count >> 15; without models useModel is cleared). Both keys hold 3 values (fixed, min = max,
+        // 0x4879b0) or 6 (min x y z, max x y z). The bounce offset (+0xc4) starts at zero.
+        p.emitter = true;
+        p.pos = p.origin;
+        p.lastMs = startMs;
+        auto axisRange = [&](const std::vector<float>& v, int k) -> std::vector<float> {
+            if (v.size() >= 6) return {v[size_t(k)], v[size_t(k) + 3]};
+            if (v.size() >= 3) return {v[size_t(k)], v[size_t(k)]};
+            return {0.0f, 0.0f};
+        };
+        const auto angleKey = e.numbers("angle"), deltaKey = e.numbers("angledelta");
+        float a[3], r[3];
+        for (int k = 2; k >= 0; --k) a[k] = range(axisRange(angleKey, k), 0);
+        for (int k = 2; k >= 0; --k) r[k] = range(axisRange(deltaKey, k), 0);
+        // Angles of the axes (0x421b30; the roll sign convention is inferred). TODO(spec).
+        const FVec& f = ax[0];
+        const float pitch = std::asin(std::clamp(-f[2], -1.0f, 1.0f)) * 57.2957795f;
+        const float yaw = std::abs(f[2]) < 0.9999f ? std::atan2(f[1], f[0]) * 57.2957795f : 0.0f;
+        const float roll = std::atan2(-ax[1][2], ax[2][2]) * 57.2957795f;
+        p.ang = {pitch + a[0], yaw + a[1], roll + a[2]};
+        p.angRate = {r[0], r[1], r[2]};
+        const auto models = e.list("models");
+        if ((flags & 0x10) && !models.empty()) {
+            seed_ = seed_ * 0x343fd + 0x269ec3;
+            p.model = models[std::min(models.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * models.size()) >> 15))];
+        }
+    }
     particles_.push_back(p);
+}
+
+// Velocity of an Emitter at graph position u (0x481810): velocity channels (local axes, or world with
+// absoluteVel 0x200000 / 0x400000) + velocity2 channels + gravity · elapsed seconds on z (0x481220, elapsed =
+// trunc(life · u) ms) + the bounce offset (+0xc4).
+FVec FxSystem::velocityAt(const FxParticle& p, float u) const {
+    const assets::EfxElement& e = *p.element;
+    const uint32_t flags = e.flagBits();
+    auto comp = [&](const char* name, const char* rname, bool useRand, float rnd) {
+        const auto* g = graph(e, name);
+        if (!g) return 0.0f;
+        float v = g->sample(u, 0);
+        if (useRand)
+            if (const auto* rg = graph(e, rname)) v += (rg->sample(u, 0) - v) * rnd;
+        return v * g->scaleMin;
+    };
+    const bool rv = flags & 0x80000, rv2 = flags & 0x100000;
+    const FVec v1{comp("velocityx", "velocityxrand", rv, p.velRnd[0]), comp("velocityy", "velocityyrand", rv, p.velRnd[1]),
+                  comp("velocityz", "velocityzrand", rv, p.velRnd[2])};
+    const FVec v2{comp("velocity2x", "velocity2xrand", rv2, p.vel2Rnd[0]), comp("velocity2y", "velocity2yrand", rv2, p.vel2Rnd[1]),
+                  comp("velocity2z", "velocity2zrand", rv2, p.vel2Rnd[2])};
+    auto toWorld = [&](const FVec& v, bool absolute) {
+        return absolute ? v : add(add(mul(p.axis[0], v[0]), mul(p.axis[1], v[1])), mul(p.axis[2], v[2]));
+    };
+    FVec out = add(toWorld(v1, flags & 0x200000), toWorld(v2, flags & 0x400000));
+    const int64_t ms = int64_t(float(p.endMs - p.startMs) * u);
+    out[2] += p.gravity * float(ms) * 0.001f;
+    return add(out, p.bounceOff);
+}
+
+// One Emitter update to nowMs in steps of at most 25 ms (the original runs once per client frame with the frame time;
+// TODO(spec): our step size). 0x480bd0: unless at rest, pos += velocity(u) · dt; with usePhysics (0x20) the segment is
+// traced (0x486f70) and a hit bounces: the velocity at the hit time D is reflected as b · D (bounce, +0x100) about the
+// normal by adjusting the offset (0x480a70), or the particle comes to rest (flag 0x1000000, clears 0x20 / 0x800) when the
+// normal points up and the pre-bounce speed is below 4 (0x4809f0); the position becomes the hit point. Then (0x483630)
+// an unchanged position damps the spin rates by 0.7 and the angles advance by dt · 0.01 · rate (0x483e50).
+// TODO(spec): spawn flags 0x400 (die on touch) / 0x800 (impact effect), useBBox boxes, the trace contents mask.
+void FxSystem::stepEmitter(FxParticle& p, int64_t nowMs) {
+    const assets::EfxElement& e = *p.element;
+    const uint32_t flags = e.flagBits();
+    const float bounce = range(e.numbers("bounce"), 0.0f);
+    const float lifeS = float(p.endMs - p.startMs) * 0.001f;
+    while (p.lastMs < nowMs) {
+        const int64_t dtMs = std::min<int64_t>(25, nowMs - p.lastMs);
+        p.lastMs += dtMs;
+        const float dt = float(dtMs) * 0.001f;
+        const float curS = float(p.lastMs - p.startMs) * 0.001f;
+        const FVec old = p.pos;
+        if (!p.rest) {
+            const float u = std::min(1.0f, curS / lifeS);
+            const FVec d = velocityAt(p, u);
+            const FVec next = add(p.pos, mul(d, dt));
+            float frac = 1.0f;
+            FVec n{};
+            if ((flags & 0x20) && trace && trace(p.pos, next, frac, n) && frac < 1.0f) {
+                const float uHit = std::min(1.0f, (curS + frac * dt) / lifeS);
+                const float speed2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                const bool stop = n[2] > 0 ? speed2 < 16.0f : uHit == 0.0f;
+                if (stop) p.rest = true;
+                else {
+                    const FVec d2 = velocityAt(p, uHit);
+                    const FVec delta = sub(d2, p.bounceOff);
+                    const FVec r = mul(d2, bounce);
+                    const float k = (r[0] * n[0] + r[1] * n[1] + r[2] * n[2]) * -2.0f;
+                    p.bounceOff = add(sub(r, delta), mul(n, k));
+                }
+                p.pos = add(p.pos, mul(sub(next, p.pos), frac));
+            } else p.pos = next;
+        }
+        if (p.pos[0] == old[0] && p.pos[1] == old[1] && p.pos[2] == old[2])
+            for (float& x : p.angRate) x *= 0.7f;
+        for (int k = 0; k < 3; ++k) p.ang[size_t(k)] += float(dtMs) * 0.01f * p.angRate[size_t(k)];
+    }
 }
 
 // Decal spawn (0x485b60) at the graph start (time 0) of each channel: rotation random in the `rotation` range
@@ -401,9 +505,19 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             for (size_t i = 0; i < v.size() && i < 12; ++i) std::fprintf(stderr, "fx hist %6zu %s\n", v[i].first, v[i].second.c_str());
         }
     }
+    models_.clear();
     for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
+        if (p.emitter) {
+            stepEmitter(p, nowMs);
+            if (!p.model.empty()) {
+                const float u = std::min(1.0f, float(nowMs - p.startMs) / float(p.endMs - p.startMs));
+                // TODO(spec): the model draw path (size channel as uniform scale is inferred; rgb / alpha are not applied).
+                models_.push_back({p.model, p.pos, p.ang, channel(e, "size", "sizerand", e.flagBits() & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2]});
+            }
+            continue;
+        }
         const uint32_t flags = e.flagBits();
         const float life = float(p.endMs - p.startMs);
         const float t = float(nowMs - p.startMs);
