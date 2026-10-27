@@ -60,6 +60,10 @@ void PlayerWeapon::enter(State s, const char* animKey, float duration) {
         const bool fromEmpty = clip_ == 0 && fieldValue("weaponType") == "bullet";
         if (fromEmpty) playFirst({"reloadEmptySoundPlayer", "reloadSoundPlayer", "reloadEmptySound", "reloadSound"});
         else playFirst({"reloadSoundPlayer", "reloadEmptySoundPlayer", "reloadSound", "reloadEmptySound"});
+    } else if (s == State::ReloadStart) {
+        playFirst({"reloadStartSoundPlayer", "reloadStartSound"}); // event 0x98
+    } else if (s == State::ReloadEnd) {
+        playFirst({"reloadEndSoundPlayer", "reloadEndSound"}); // event 0x99
     } else if (s == State::Rechamber) {
         playFirst({"rechamberSoundPlayer", "rechamberSound"}); // event 0xa1
     }
@@ -106,6 +110,8 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
         stock_ = std::max(0, start - clip_);
     }
     needsRechamber_ = false;
+    addPending_ = false;
+    reloadInterrupted_ = false;
     triggerReleased_ = true;
     enter(State::Raising, "raiseAnim", time("raiseTime", 0.5f));
     playFirst({"raiseSound"}); // event 0x9a (0x4dde44), once per raise (the alt raise re-enters with its own anim)
@@ -117,6 +123,7 @@ void PlayerWeapon::startDrop(const std::string& next) {
     if (state_ == State::Dropping) return;
     next_ = next;
     delay_ = 0;
+    addPending_ = false;
     fuse_ = 0;
     if (name_.empty()) {
         state_ = State::Dropping;
@@ -164,7 +171,9 @@ void PlayerWeapon::meleeHit() {
 
 bool PlayerWeapon::viewAiming() const {
     if (inOffhand()) return false;
-    if (state_ == State::Reloading && timer_ - time("adsReloadTransTime", 0) > 0) return false;
+    if (state_ == State::Reloading && (segmented() || timer_ - time("adsReloadTransTime", 0) > 0)) return false;
+    if (state_ == State::ReloadStart) return false;
+    if (state_ == State::ReloadEnd && timer_ - time("adsReloadTransTime", 0) > 0) return false; // 0x4dd189
     return adsHeld_;
 }
 
@@ -172,11 +181,14 @@ int PlayerWeapon::update(float dt, const Input& in) {
     if (name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster))) return 0;
     if (name_.empty() && holstered_ && state_ == State::Ready) startDrop(in.weapon); // no weapon: raise at once
     adsHeld_ = in.ads;
+    const bool fireEdge = in.fire && !firePrev_; // the press against the old command (0x4de3d3)
+    firePrev_ = in.fire;
     // Aiming (0x4dd0d0): only weapons with aimDownSight; not while reloading, nor while rechambering unless
     // rechamberWhileAds. The fraction moves by ms / adsTransInTime (or adsTransOutTime) and is clamped to 0..1.
     {
         const bool can = time("aimDownSight", 0) != 0;
-        const bool want = can && in.ads && state_ != State::Reloading &&
+        const bool want = can && in.ads && state_ != State::Reloading && state_ != State::ReloadStart &&
+                          !(state_ == State::ReloadEnd && timer_ - time("adsReloadTransTime", 0) > 0) &&
                           !(state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0);
         if (!can) adsFrac_ = 0;
         else if (want) adsFrac_ += dt / std::max(0.001f, time("adsTransInTime", 0.3f));
@@ -195,6 +207,10 @@ int PlayerWeapon::update(float dt, const Input& in) {
         }
     }
     timer_ -= dt;
+    if (addPending_) { // the reload's ammo add (weaponDelay, 0x4dd8c0 / 0x4dd5b0)
+        addTimer_ -= dt;
+        if (addTimer_ <= 0) applyReloadAdd();
+    }
     // Weapon delay (0x4de720): reaching 0 lets this frame's state change happen at once.
     bool delayDone = false;
     if (delay_ > 0) {
@@ -240,11 +256,11 @@ int PlayerWeapon::update(float dt, const Input& in) {
     // Weapon change (0x4de880): not during the offhand states; while the weapon is busy (timer running) only a
     // rechamber or reload may be interrupted.
     if (in.holster && !inOffhand() && !name_.empty() && state_ != State::Dropping) {
-        const bool busy = timer_ > 0 && state_ != State::Rechamber && state_ != State::Reloading &&
+        const bool busy = timer_ > 0 && state_ != State::Rechamber && !inReloadStates() && state_ != State::ReloadEnd &&
                           (state_ == State::Firing || state_ == State::Melee || state_ == State::MeleeEnd || delay_ > 0);
         if (!busy) startDrop(std::string());
     } else if (!in.holster && !inOffhand() && !in.weapon.empty() && in.weapon != name_ && state_ != State::Dropping) {
-        const bool busy = timer_ > 0 && state_ != State::Rechamber && state_ != State::Reloading &&
+        const bool busy = timer_ > 0 && state_ != State::Rechamber && !inReloadStates() && state_ != State::ReloadEnd &&
                           (state_ == State::Firing || state_ == State::Melee || state_ == State::MeleeEnd || delay_ > 0);
         if (!busy && lookup && lookup(in.weapon)) startDrop(in.weapon);
     }
@@ -253,7 +269,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
     // aiming a weapon with an ADS overlay reticle; meleeDelay later the blow lands, meleeTime is the whole swing.
     if (!inOffhand() && !name_.empty()) {
         if (!in.melee) meleeLatch_ = false;
-        else if (!meleeLatch_ && time("meleeDamage", 0) != 0 && !delayDone && (delay_ <= 0 || state_ == State::Reloading)) {
+        else if (!meleeLatch_ && time("meleeDamage", 0) != 0 && !delayDone && (delay_ <= 0 || inReloadStates())) {
             meleeLatch_ = true;
             const std::string reticle = fieldValue("adsOverlayReticle");
             const bool canMelee = adsFrac_ <= 0 || reticle.empty() || reticle == "none";
@@ -341,17 +357,20 @@ int PlayerWeapon::update(float dt, const Input& in) {
     const int clipSize = std::max(1, std::atoi(fieldValue("clipSize").c_str()));
     int shots = 0;
     if (!in.fire) triggerReleased_ = true;
-
-    auto startReload = [&]() {
-        if (stock_ <= 0 || clip_ >= clipSize) return false;
-        const bool empty = clip_ == 0;
-        enter(State::Reloading, empty ? "reloadEmptyAnim" : "reloadAnim", time(empty ? "reloadEmptyTime" : "reloadTime", 2.0f));
-        return true;
-    };
+    // A fresh attack press during a segmented reload round turns state 7 into 8 and 5 into 6 (0x4de3d3): the reload
+    // then ends after the current round (once the clip is not empty).
+    if (segmented() && inReloadStates() && fireEdge) reloadInterrupted_ = true;
 
     if (timer_ > 0) return 0;
     switch (state_) {
     case State::Reloading: {
+        if (segmented()) { // 0x4de200: another round while rounds can still be loaded and no attack interrupted
+            if (addPending_) applyReloadAdd();
+            needsRechamber_ = false;
+            if (!reloadInterrupted_ && canLoadMore()) beginRound();
+            else endReload();
+            break;
+        }
         const int take = std::min(clipSize - clip_, stock_);
         clip_ += take;
         stock_ -= take;
@@ -359,6 +378,14 @@ int PlayerWeapon::update(float dt, const Input& in) {
         enter(State::Ready, nullptr, 0);
         break;
     }
+    case State::ReloadStart: // 0x4de0e0
+        if (addPending_) applyReloadAdd();
+        if (!(reloadInterrupted_ && clip_ != 0) && canLoadMore()) beginRound();
+        else endReload();
+        break;
+    case State::ReloadEnd:
+        enter(State::Ready, nullptr, 0);
+        break;
     case State::Firing:
         if (needsRechamber_ && clip_ > 0) {
             enter(State::Rechamber, "rechamberAnim", time("rechamberTime", 1.0f));
@@ -401,6 +428,77 @@ int PlayerWeapon::update(float dt, const Input& in) {
               time("fireTime", 0.1f));
     }
     return shots;
+}
+
+// 0x4ddf30: whether another round can be loaded. No rounds in stock or a full clip: no. With noPartialReload (+0x358)
+// and no reloadAmmoAdd only an empty clip reloads; with reloadAmmoAdd below the clip size the room must hold a whole add.
+bool PlayerWeapon::canLoadMore() const {
+    const int clipSize = std::max(1, std::atoi(fieldValue("clipSize").c_str()));
+    if (stock_ <= 0 || clip_ >= clipSize) return false;
+    if (std::atoi(fieldValue("noPartialReload").c_str()) != 0) {
+        const int add = std::atoi(fieldValue("reloadAmmoAdd").c_str());
+        if (add == 0) return clip_ == 0;
+        if (add < clipSize) return clipSize - clip_ >= add;
+    }
+    return true;
+}
+
+bool PlayerWeapon::segmented() const { return std::atoi(fieldValue("segmentedReload").c_str()) != 0; }
+
+// 0x4dda60: begin a reload (events 0x95 and then 0x96 / 0x97 / 0x98). A segmented weapon with a reloadStartTime first plays
+// the intro (state 7, reloadStartAnim, event 0x98); otherwise the round starts at once (0x4dd980).
+bool PlayerWeapon::startReload() {
+    if (!canLoadMore()) return false;
+    reloadInterrupted_ = false;
+    if (segmented() && time("reloadStartTime", 0) != 0) {
+        const float t = time("reloadStartTime", 0);
+        enter(State::ReloadStart, "reloadStartAnim", t);
+        const float a = time("reloadStartAddTime", 0);
+        addTimer_ = a == 0 ? 0.0f : std::min(a, t); // 0x4dd8c0 for states 7 / 8
+        addPending_ = a != 0;
+        return true;
+    }
+    beginRound();
+    return true;
+}
+
+// 0x4dd980 / 0x4dd8c0: one reload round of reloadTime (reloadEmptyTime from an empty clip). The rounds are added reloadAddTime
+// into it when that is non-zero and shorter, less the fire delay (or 1 ms when that is not shorter).
+void PlayerWeapon::beginRound() {
+    const bool empty = clip_ == 0;
+    const float t = time(empty && fieldValue("weaponType") == "bullet" ? "reloadEmptyTime" : "reloadTime", 2.0f);
+    enter(State::Reloading, empty ? "reloadEmptyAnim" : "reloadAnim", t);
+    if (!segmented()) return; // the plain reload adds its rounds when the round ends
+    float d = t;
+    const float a = time("reloadAddTime", 0);
+    if (a != 0 && a < d) d = a;
+    const float fd = time("fireDelay", 0);
+    d -= fd < d ? fd : 0.001f;
+    addTimer_ = std::max(0.0f, d);
+    addPending_ = true;
+}
+
+// 0x4dd5b0: the rounds a segmented reload step adds: the stock or the room, capped by reloadAmmoAdd (reloadStartAdd in the
+// intro; the intro adds nothing when that is 0).
+void PlayerWeapon::applyReloadAdd() {
+    addPending_ = false;
+    const int clipSize = std::max(1, std::atoi(fieldValue("clipSize").c_str()));
+    const bool intro = state_ == State::ReloadStart;
+    const int cap = std::atoi(fieldValue(intro ? "reloadStartAdd" : "reloadAmmoAdd").c_str());
+    if (intro && cap == 0) return;
+    int n = std::min(stock_, clipSize - clip_);
+    if (cap != 0 && cap < clipSize && n > cap) n = cap;
+    n = std::max(n, 0);
+    clip_ += n;
+    stock_ -= n;
+}
+
+// The end of a segmented reload: with a reloadEndTime the outro (state 9, reloadEndAnim, event 0x99), else ready.
+void PlayerWeapon::endReload() {
+    reloadInterrupted_ = false;
+    const float t = time("reloadEndTime", 0);
+    if (t != 0) enter(State::ReloadEnd, "reloadEndAnim", t);
+    else enter(State::Ready, nullptr, 0);
 }
 
 } // namespace iw2::game

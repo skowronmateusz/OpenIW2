@@ -101,7 +101,7 @@ public:
 
 private:
     enum class State {
-        Ready = 0, Raising = 1, Dropping = 2, Firing = 3, Rechamber = 4, Reloading = 5, Melee = 10, MeleeEnd = 11,
+        Ready = 0, Raising = 1, Dropping = 2, Firing = 3, Rechamber = 4, Reloading = 5, ReloadStart = 7, ReloadEnd = 9, Melee = 10, MeleeEnd = 11,
         OffhandInit = 12, OffhandPrepare = 13, OffhandHold = 14, OffhandThrow = 15, OffhandEnd = 16
     };
     std::string fieldValue(const char* key) const;
@@ -114,6 +114,14 @@ private:
     void startDrop(const std::string& next);
     void finishDrop();
     void meleeHit();
+    // Segmented (shotgun-style) reload, PM_Weapon 0x4dda60 / 0x4dd980 / 0x4dd5b0 / 0x4ddf30.
+    bool segmented() const;
+    bool canLoadMore() const;
+    bool startReload();
+    void beginRound();
+    void endReload();
+    void applyReloadAdd();
+    bool inReloadStates() const { return state_ == State::Reloading || state_ == State::ReloadStart; }
     bool inOffhand() const { return int(state_) >= 12 && int(state_) <= 16; }
 
     std::string name_;
@@ -127,6 +135,10 @@ private:
     int clip_ = 0, stock_ = 0;
     std::map<std::string, std::pair<int, int>> ammo_; // clip and stock of weapons put away
     bool triggerReleased_ = true;
+    bool firePrev_ = false;
+    bool reloadInterrupted_ = false; // states 6 / 8: a fresh attack press during a segmented reload (0x4de3d3)
+    float addTimer_ = 0;             // time until the reload adds its rounds (ps weaponDelay in 7/8 and 5/6)
+    bool addPending_ = false;
     bool needsRechamber_ = false;
     bool meleeLatch_ = false;      // ps+0xc 0x2000
     bool offhandActive_ = false;   // ps+0xc 0x10
