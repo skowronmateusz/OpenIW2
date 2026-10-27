@@ -323,6 +323,7 @@ void World::actorThink(Entity& e) {
     int r = 0;
     for (int guard = 0; guard < 16; ++guard) { // the original loops without a limit
         if (!ai.requests.empty()) aiApplyRequests(e);
+        updateFollowed(e); // 0x4fef20 -> 0x4fedc0
         r = aiThink(e, ai.stack[size_t(ai.depth)]);
         if (r != 1) break;
     }

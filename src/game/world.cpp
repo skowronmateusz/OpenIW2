@@ -612,7 +612,7 @@ void World::moveActor(Entity& e, float dt) {
         moveBlock(pm, fn);
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         e.ai.groundEnt = pm.groundEnt;
-        e.ai.bumpedEnt = pm.hitEnt;
+        linkBumpedActor(e, pm.hitEnt);
     } else {
         // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
         const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
