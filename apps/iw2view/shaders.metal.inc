@@ -100,12 +100,11 @@ vertex SkyOut vs_sky(VertexIn in [[stage_in]], constant VertexUniforms& u [[buff
 fragment float4 fs_sky(SkyOut in [[stage_in]], texturecube<float> sky [[texture(0)]], sampler s [[sampler(0)]]) {
     return float4(sky.sample(s, in.dir).rgb, 1.0);
 }
-// water_l_sun.tech / lib/water.hlsl with a flat normalMap (R = 0.5): the parallax error is 0 and the three-octave
-// turbulence cancels in the finite differences, so localNormal = (0, 0, 1) exactly.
-// TODO(spec): the FFT-generated normalMap (ripples) and the texcoord0 scale are not implemented.
+// water_l_sun.tech / lib/water.hlsl. normalMap = the FFT-generated map (src/game/watersim.cpp), only .r is read.
 struct WaterOut {
     float4 position [[position]];
     float4 color;
+    float2 uv;
     float3 eyeVector;
 };
 
@@ -113,14 +112,34 @@ vertex WaterOut vs_water(VertexIn in [[stage_in]], constant VertexUniforms& u [[
     WaterOut o;
     o.position = u.viewProj * (u.model * float4(in.position, 1.0));
     o.color = in.color;
+    o.uv = in.uv;
     o.eyeVector = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
     return o;
 }
 
+static float water_turbulance(texture2d<float> normalMap, sampler sm, float2 uv) {
+    float t = 0.0, scale = 1.0;
+    for (int i = 0; i < 3; ++i) { // lacunarity 3.7, scaleRate 0.6
+        t += normalMap.sample(sm, uv).r * scale;
+        uv *= 3.7;
+        scale *= 0.6;
+    }
+    return t;
+}
+
 fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u [[buffer(0)]],
-                         texturecube<float> cubicEnvMap [[texture(0)]], sampler s [[sampler(0)]]) {
+                         texturecube<float> cubicEnvMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]],
+                         sampler s [[sampler(0)]], sampler sm [[sampler(1)]]) {
     float3 eyeDir = normalize(in.eyeVector);
-    float3 n = float3(0.0, 0.0, 1.0);
+    float2 uv = in.uv;
+    float h = 0.5; // one parallax iteration
+    float error = h - normalMap.sample(sm, uv * 0.5).x;
+    h -= error;
+    uv = uv + error * eyeDir.xy * (1.5 / 64.0);
+    float h00 = water_turbulance(normalMap, sm, uv);
+    float h10 = water_turbulance(normalMap, sm, uv + float2(0.5 / 128.0, 0.0));
+    float h01 = water_turbulance(normalMap, sm, uv + float2(0.0, 0.5 / 128.0));
+    float3 n = normalize(float3(h10 - h00, h01 - h00, 1.0));
     float3 r = reflect(eyeDir, n);
     float specularDot = max(0.0, dot(r, u.sunDirection.xyz));
     r.z = abs(r.z);

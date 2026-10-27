@@ -13,11 +13,19 @@ namespace TextureSemantic {
 constexpr uint8_t Color = 2, Normal = 3, Specular = 4, Water = 5;
 }
 
+// Water description a semantic-5 texture entry points to (loader 0x1001bf30 builds the renderer's 0x44-byte struct from it:
+// width = height = u16 at +0, +4 = Lx, +8 = Ly, +0xc = A, +0x10 = V, +0x14 / +0x18 = wind x / y; g is the constant 800.0).
+struct WaterDesc {
+    int size = 0;
+    float lx = 0, ly = 0, amplitude = 0, v = 0, windX = 0, windY = 0;
+};
+
 struct MaterialTexture {
     std::string samplerName; // e.g. "colorMap"
     uint8_t samplerState = 0;
     uint8_t semantic = 0;
     std::string imageName;   // empty for water entries
+    WaterDesc water;         // semantic 5 only
 };
 
 struct MaterialConstant {

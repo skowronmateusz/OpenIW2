@@ -74,7 +74,7 @@ add_library(iw2_game
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
-  src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp)
+  src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
@@ -182,3 +182,7 @@ add_test(NAME pmove COMMAND test_pmove)
 add_executable(test_vehicledrive tests/test_vehicledrive.cpp)
 target_link_libraries(test_vehicledrive PRIVATE iw2_game)
 add_test(NAME vehicledrive COMMAND test_vehicledrive)
+
+add_executable(test_watersim tests/test_watersim.cpp)
+target_link_libraries(test_watersim PRIVATE iw2_game)
+add_test(NAME watersim COMMAND test_watersim)

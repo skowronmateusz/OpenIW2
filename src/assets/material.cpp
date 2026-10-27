@@ -51,7 +51,14 @@ Material parseMaterial(std::span<const uint8_t> d) {
         if (e + 6 > d.size()) throw std::runtime_error("material: truncated texture table");
         t.samplerState = d[e + 4];
         t.semantic = d[e + 5];
-        if (t.semantic != TextureSemantic::Water) t.imageName = str(d, u32(d, e + 8));
+        if (t.semantic != TextureSemantic::Water) {
+            t.imageName = str(d, u32(d, e + 8));
+        } else {
+            const size_t o = u32(d, e + 8);
+            if (o + 0x1c > d.size()) throw std::runtime_error("material: truncated water description");
+            auto f = [&](size_t k) { const uint32_t b = u32(d, o + k); float v; std::memcpy(&v, &b, 4); return v; };
+            t.water = {int(u16(d, o)), f(4), f(8), f(0xc), f(0x10), f(0x14), f(0x18)};
+        }
         m.textures.push_back(std::move(t));
     }
 
