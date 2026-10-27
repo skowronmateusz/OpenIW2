@@ -33,6 +33,9 @@
 #include "ui/menu.h"
 #include "ui/menurun.h"
 #include "ui/frontend.h"
+#include "ui/profile.h"
+#include <filesystem>
+#include <fstream>
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -1910,6 +1913,16 @@ int main(int argc, char** argv) {
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
+        // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
+        // and the profile name when none is chosen, here "default").
+        const std::filesystem::path playersDir = std::filesystem::path(args[0]).parent_path() / "players";
+        std::string profileName = "default";
+        if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
+        const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
+        bool profileDirty = false;
+        if (std::ifstream cf(profileCfg); cf)
+            uiCvars = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
@@ -2327,6 +2340,7 @@ int main(int argc, char** argv) {
             return u == uiCvars.end() ? std::string() : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
+            if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
             uiCvars[n] = v;
             if (world) world->cvars[n] = v;
         };
@@ -3444,12 +3458,14 @@ int main(int argc, char** argv) {
                     const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
                     // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
                     // the base 0.15 stands for the default.
+                    // The base 0.15 deg/count stands for the default sensitivity 5 (cvar sensitivity 1..30 from the options menu).
+                    const float lookSens = uiCvars.count("sensitivity") ? std::clamp(float(std::atof(uiCvars["sensitivity"].c_str())), 1.0f, 30.0f) / 5.0f : 1.0f;
                     float pitchScale = 1.0f;
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
-                        cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
-                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens * pitchScale, -89.0f, 89.0f);
+                        cam.yaw -= ev.motion.xrel * 0.15f * lookSens * zoomSens;
+                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale, -89.0f, 89.0f);
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
@@ -3925,6 +3941,9 @@ int main(int argc, char** argv) {
                     if (k == "pause" && world && frontStack.empty()) {
                         menuEnv.setCvar("cl_paused", "1");
                         frontStack.open("main");
+                    } else if (k.rfind("set:", 0) == 0) { // set:name=value
+                        const size_t eq = k.find('=');
+                        menuEnv.setCvar(k.substr(4, eq - 4), k.substr(eq + 1));
                     } else if (k == "wait") {
                     } else
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
@@ -3933,6 +3952,13 @@ int main(int argc, char** argv) {
                     nextKey = SDL_GetTicksNS() + 2000000000ull;
                 }
             }
+            if (profileDirty) { // write the archived cvars (config.cfg) after a menu changed one
+                profileDirty = false;
+                std::error_code ec;
+                std::filesystem::create_directories(profileCfg.parent_path(), ec);
+                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars);
+            }
+            if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();
