@@ -44,7 +44,7 @@ struct VehiclePathPos {
 struct VehicleInfo {
     std::string name;
     int type = 0; // 0 "4 wheel", 1 "tank", 2 "plane", 3 "boat", 4 "artillery"
-    float maxSpeed = 0, accel = 0, collisionSpeed = 0, engineSndSpeed = 0;
+    float maxSpeed = 0, accel = 0, collisionSpeed = 0, engineSndSpeed = 0, collisionDamage = 0; // collisionDamage: info +0x80
     float rotRate = 0, rotAccel = 0; // degrees per second (and per second²), not scaled at load
     float suspensionTravel = 0, maxBodyPitch = 0, maxBodyRoll = 0;
     float turretHorizSpanLeft = 0, turretHorizSpanRight = 0, turretVertSpanUp = 0, turretVertSpanDown = 0, turretRotRate = 0;

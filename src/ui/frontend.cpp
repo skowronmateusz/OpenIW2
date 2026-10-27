@@ -111,7 +111,7 @@ bool MenuStack::itemVisible(const Item& it) const {
 std::vector<const Item*> MenuStack::selectable(const Menu& m) const {
     std::vector<const Item*> out;
     for (const auto& it : m.items)
-        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
+        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 13 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
     return out;
 }
 
@@ -167,6 +167,25 @@ float MenuStack::valueTextX(const Menu& m, const Item& it) const {
 
 std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
+    if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
+        // TODO(spec): the dvar type test (float only) and the decimal comma of some languages (0x42f410); here a numeric
+        // dvar (or the unset default) is formatted, other strings are shown as they are.
+        const std::string raw = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
+        char* end = nullptr;
+        double v = std::strtod(raw.c_str(), &end);
+        if (raw.empty()) v = double(cvarValue(it));
+        else if (end == raw.c_str() || *end) return raw;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "%.2f", v);
+        return buf;
+    }
+    if (it.type == 13) { // exe 0x4cd720: the domain string of the enum dvar at the item's current index
+        if (it.enumList.empty()) return "<dvarEnumList not set>";
+        if (!env_.enumValues) return "<not an enum dvar>";
+        const auto names = env_.enumValues(it.enumList);
+        const int i = int(cvarValue(it)); // TODO(spec): the index clamp of 0x4ca510
+        return i >= 0 && size_t(i) < names.size() ? names[size_t(i)] : std::string();
+    }
     if (it.type == 12 && !it.floatList.empty()) {
         const float v = cvarValue(it);
         for (const auto& e : it.floatList)
@@ -206,6 +225,17 @@ bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, 
         if (env_.setCvar) env_.setCvar(it.dvar, buf);
         return true;
     }
+    if (it.type == 13) { // exe 0x4ca6f0: next/previous domain entry (0x4ca5e0), dvar set as "%i"
+        const int n = env_.enumValues && !it.enumList.empty() ? int(env_.enumValues(it.enumList).size()) : 0;
+        if (n == 0) return false;
+        const int next = ((int(cvarValue(it)) + step) % n + n) % n;
+        if (env_.setCvar) env_.setCvar(it.dvar, std::to_string(next));
+        return true;
+    }
+    if (it.type == 14) { // exe 0x4ce100: Enter / mouse1 on a BIND item starts the capture
+        capture_ = &it;
+        return true;
+    }
     if (it.type == 10 && it.hasRange) {
         if (pointer) { // exe 0x4cb323: a mouse key sets the value from the pointer; dragging starts on the thumb (0x4cb100)
             dragItem_ = &it;
@@ -243,9 +273,23 @@ bool MenuStack::clickBack(float x, float y) {
     return true;
 }
 
+void MenuStack::captureKey(const std::string& name) {
+    if (!capture_) return;
+    // exe 0x4ce156: flag 0x400 keys and the console key (0x60) are swallowed; Escape (0x1b) ends the capture; Del (0x7f)
+    // clears the command's keys (0x4ce1ea); any other key is bound (0x4ce215..0x4ce257).
+    if (name == "GRAVE" || name == "`") return;
+    if (name == "ESCAPE") {
+        capture_ = nullptr;
+        return;
+    }
+    if (env_.bindKey) env_.bindKey(capture_->dvar, name == "DEL" ? std::string() : name);
+    capture_ = nullptr;
+}
+
 void MenuStack::key(Key k) {
     Menu* m = top();
     if (!m) return;
+    if (capture_) return;
     if (k == Key::Escape) {
         runItem(*m, m->onEsc); // TODO(spec): menus without onESC (main) simply ignore ESC
         return;

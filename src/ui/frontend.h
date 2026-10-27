@@ -37,6 +37,12 @@ public:
     // Keyboard navigation: up/down move the focus between selectable items, enter runs its action, escape the top menu's onESC.
     void key(Key k);
 
+    // BIND items (type 14, exe 0x4ce100): Enter or a click starts the capture; the next key (captureKey) is bound to
+    // the item's command. Escape cancels, Del clears, the grave key is ignored.
+    bool capturing() const { return capture_ != nullptr; }
+    const Item* captureItem() const { return capture_; }
+    void captureKey(const std::string& keyName);
+
     const Item* focus() const { return focus_; }
     const Item* hover(float x, float y) const; // hit test of the top menu (TODO(spec): item vs menu alignment)
     // Widget geometry (exe 0x4c9520/0x4cafb0): x of the slider track start in virtual pixels.
@@ -56,6 +62,7 @@ private:
     bool activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer);
     void dragTo(float x);
     float cvarValue(const Item& it) const;
+    const Item* capture_ = nullptr;
     const Item* dragItem_ = nullptr;
     const Menu* dragMenu_ = nullptr;
     MenuLibrary& lib_;

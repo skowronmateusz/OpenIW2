@@ -291,6 +291,8 @@ struct Batch {
     int cull = 0;          // mtlCullFace: 0 none, 1 back, 2 front
     uint32_t firstIndex = 0, indexCount = 0;
     bool scroll = false; // see MatInfo::scroll
+    // *_spec techniques (lmap_s: lib/phong.hlsl): indices into Scene::textures of the normalMap / specularMap, -1 = none.
+    int normalTex = -1, specTex = -1;
 };
 
 struct Lightmap {
@@ -310,6 +312,7 @@ struct MatInfo {
     int cull = 0;
     // For Pass::Water `texture` indexes Scene::waters.
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
+    int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
 };
 
@@ -332,6 +335,8 @@ struct GpuModel {
 struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUBuffer* tbn = nullptr;           // world vertices' tangent + binormal (6 floats each), parallel to `vertices`
+    SDL_GPUTexture* specularity = nullptr;  // "$specularity" lookup (32 x 256 L8): U = specular power, V = N.H
     std::vector<SDL_GPUTexture*> textures; // [0] = white
     std::vector<Lightmap> lightmaps;
     Lightmap dummyLightmap;
@@ -504,25 +509,35 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             }
             mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             const std::string& img = m.colorImage();
-            if (mi.pass == Pass::Sky) {
-                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is used as a UI background
-                auto it = scene.imageIndex.find(img);
+            auto imageSlot = [&](const std::string& image) {
+                auto it = scene.imageIndex.find(image);
                 if (it == scene.imageIndex.end()) {
                     SDL_GPUTexture* t = nullptr;
-                    if (img == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
+                    if (image == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
                         const uint8_t black[4] = {0, 0, 0, 255};
                         t = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1);
                         up.texture(t, 0, 0, 1, 1, black, 4);
-                    } else t = loadImage(dev, up, vfs, img);
+                    } else t = loadImage(dev, up, vfs, image);
                     int idx = 0;
                     if (t) {
                         idx = int(scene.textures.size());
                         scene.textures.push_back(t);
                     }
-                    it = scene.imageIndex.emplace(img, idx).first;
+                    it = scene.imageIndex.emplace(image, idx).first;
                 }
-                mi.texture = it->second;
+                return it->second;
+            };
+            if (mi.pass == Pass::Sky) {
+                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is a UI background
+                mi.texture = imageSlot(img);
+                // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
+                if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
+                    for (const auto& t : m.textures) {
+                        if (t.imageName.empty() || t.imageName[0] == '$') continue;
+                        if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap") mi.normalTex = imageSlot(t.imageName);
+                        if (t.semantic == assets::TextureSemantic::Specular && t.samplerName == "specularMap") mi.specTex = imageSlot(t.imageName);
+                    }
             }
         } catch (const std::exception& e) {
             std::cerr << "warning: material " << name << ": " << e.what() << "\n";
@@ -720,8 +735,16 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
             const Vec3 r = right * s->size, u = upv * s->size;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
-            const Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
-            const float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
+            float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
+            if (s->beam) { // tracer quad (0x4b7d90): B + w, B - w, A - w, A + w with uv (1,1) (1,0) (0,0) (0,1)
+                const Vec3 a{s->beamA[0], s->beamA[1], s->beamA[2]}, bb{s->beamB[0], s->beamB[1], s->beamB[2]};
+                const Vec3 w{s->beamPerp[0], s->beamPerp[1], s->beamPerp[2]};
+                corners[0] = bb + w * s->widthB; corners[1] = bb + w * -s->widthB;
+                corners[2] = a + w * -s->widthA; corners[3] = a + w * s->widthA;
+                const float tuv[4][2] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
+                std::memcpy(uv, tuv, sizeof uv);
+            }
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
@@ -876,6 +899,8 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
     auto tex = [&](SDL_GPUTexture* t) { if (t) SDL_ReleaseGPUTexture(dev, t); };
     buf(scene.vertices);
     buf(scene.indices);
+    buf(scene.tbn);
+    tex(scene.specularity);
     for (size_t i = 1; i < scene.textures.size(); ++i) tex(scene.textures[i]); // [0] is the shared white texture
     for (auto& lm : scene.lightmaps) { tex(lm.coeffs); tex(lm.sun); }
     tex(scene.sky);
@@ -883,6 +908,45 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
         if (m) { buf(m->vertices); buf(m->indices); }
     for (auto& [key, m] : scene.skinned) { buf(m.vertices); buf(m.indices); }
     scene = Scene{};
+}
+
+// "$specularity" (gfx DLL 0x1000fd60 -> generator 0x10029710, shift argument 0): 32 columns x 256 rows of L8, stored at
+// y * 32 + x. Column x has t = clamp(x / 30, 0, 1) and exponent P = ln 0.1 / ln cos((180 - 175 t) / 4 degrees), i.e. cos^P
+// reaches 0.1 at that angle (column 31: P = 30). Row y is N.H = y / 255 and the byte is round(255 * (y / 255)^P).
+// U = specularMap.a (the power), V = N.H, sampled with linear filtering and clamped (sampler state 0x32 at 0x10038e0a).
+// r_specularColorScale (gfx DLL dvar 0x101ce638, default 1, range 0.01..100): lightSpecular0 = lightColor0 * scale. IW2_SPEC_SCALE sets it.
+float specColorScaleDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_SPEC_SCALE");
+        return e ? std::clamp(float(std::atof(e)), 0.01f, 100.0f) : 1.0f;
+    }();
+    return v;
+}
+
+// r_cosinePowerMapShift (dvar 0x101ce680, default 0, range -1..1): 0x10034000 passes it as arg 1 of 0x1000d3a0 -> 0x10029710, which adds it
+// to x / 30 before the 0..1 clamp (FILD x; FMUL 1/30; FADD shift at 0x10029741). IW2_COS_SHIFT sets it.
+float cosinePowerShiftDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_COS_SHIFT");
+        return e ? std::clamp(float(std::atof(e)), -1.0f, 1.0f) : 0.0f;
+    }();
+    return v;
+}
+
+std::vector<uint8_t> specularityTable(float shift) {
+    std::vector<uint8_t> t(32 * 256);
+    for (int x = 0; x < 32; ++x) {
+        double P = 30.0;
+        if (x != 31) {
+            const double u = std::clamp(double(float(x) * 0.033333335f + shift), 0.0, 1.0);
+            P = std::log(0.1) / std::log(std::cos((180.0 - 175.0 * u) * 0.004363323251406352));
+        }
+        for (int y = 0; y < 256; ++y) {
+            const float v = float(std::pow(double(float(y) * 0.003921569f), P) * 255.0);
+            t[size_t(y) * 32 + size_t(x)] = uint8_t(std::lrint(double(v) + 9.313225746154785e-10)); // + 2^-30 (0x1019be00)
+        }
+    }
+    return t;
 }
 
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
@@ -941,12 +1005,16 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<std::tuple<int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
     for (const auto& s : bsp.soups()) {
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull}];
+        // Specular only on lightmapped soups with both maps present (lmap_s); IW2_NO_SPEC disables it.
+        static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
+        const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
+                          (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1040,7 +1108,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1055,6 +1123,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.lightmap = std::get<2>(key);
         b.polygonOffset = std::get<3>(key);
         b.cull = std::get<4>(key);
+        b.normalTex = std::get<5>(key);
+        b.specTex = std::get<6>(key);
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -1072,6 +1142,23 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     if (!scene.vertices || !scene.indices) sdlFail("SDL_CreateGPUBuffer");
     up.buffer(scene.vertices, verts.data(), vb.size);
     up.buffer(scene.indices, indices.data(), ib.size);
+    {
+        // Tangent frame of the BSP vertices (lib/normalmap.hlsl Normal_VertexSetup); static-model vertices appended after them have none.
+        std::vector<float> tbn(verts.size() * 6, 0.0f);
+        for (size_t i = 0; i < bsp.vertices().size(); ++i) {
+            std::memcpy(&tbn[i * 6], bsp.vertices()[i].tangent.data(), 12);
+            std::memcpy(&tbn[i * 6 + 3], bsp.vertices()[i].binormal.data(), 12);
+        }
+        SDL_GPUBufferCreateInfo tb{};
+        tb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        tb.size = uint32_t(tbn.size() * sizeof(float));
+        scene.tbn = SDL_CreateGPUBuffer(dev, &tb);
+        if (!scene.tbn) sdlFail("SDL_CreateGPUBuffer");
+        up.buffer(scene.tbn, tbn.data(), tb.size);
+        const auto lut = specularityTable(cosinePowerShiftDvar());
+        scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
+        up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
+    }
     up.flush();
 
     // Sun and spawn point from the entity string.
@@ -1139,7 +1226,7 @@ struct FragmentUniforms {
     float params[4];
     float ambient[4];
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
-    float fogParams[4]; // x: 1 = on, y: scale, z: shift
+    float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
     float fogColor[4];
 };
 
@@ -1185,6 +1272,7 @@ struct Renderer {
     static constexpr uint32_t kMaxQuads = 8192;
     SDL_GPUGraphicsPipeline* pipelines[5] = {}; // Opaque, AlphaTest, Blend, Additive, Multiply
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
+    SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
@@ -1206,7 +1294,7 @@ struct Renderer {
     bool fullbright = false;
     game::FogConsts fog; // set by the caller each frame (client fog state)
     void applyFog(FragmentUniforms& fu) const {
-        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift;
+        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift, fu.fogParams[3] = fog.exponential ? fog.exponent : 0.0f;
         std::memcpy(fu.fogColor, fog.color, sizeof fog.color);
     }
 
@@ -1241,6 +1329,18 @@ struct Renderer {
             {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, light)},
         };
 
+        SDL_GPUVertexBufferDescription vbd2[2] = {vbd, {1, 24, SDL_GPU_VERTEXINPUTRATE_VERTEX, 0}};
+        SDL_GPUVertexAttribute attrs8[8] = {attrs[0], attrs[1], attrs[2], attrs[3], attrs[4], attrs[5],
+                                            {6, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0},
+                                            {7, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12}};
+        SDL_GPUShaderCreateInfo svsi = vs;
+        svsi.entrypoint = "vs_spec";
+        SDL_GPUShaderCreateInfo sfsi = fs;
+        sfsi.entrypoint = "fs_spec";
+        sfsi.num_samplers = 6;
+        SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
+        SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
+        if (!specVsh || !specFsh) sdlFail("spec shaders");
         for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
             ct.format = colorFormat;
@@ -1288,10 +1388,35 @@ struct Renderer {
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
                 }
+            if (p < 3) { // lmap_s (specular) variants: tangent frame in vertex buffer 1, six samplers
+                pi.vertex_shader = specVsh;
+                pi.fragment_shader = specFsh;
+                pi.vertex_input_state.vertex_buffer_descriptions = vbd2;
+                pi.vertex_input_state.num_vertex_buffers = 2;
+                pi.vertex_input_state.vertex_attributes = attrs8;
+                pi.vertex_input_state.num_vertex_attributes = 8;
+                for (int lvl = 0; lvl <= 2; ++lvl)
+                    for (int c = 0; c < 3; ++c) {
+                        pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                        pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                        pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                        pi.rasterizer_state.front_face = kFrontFace;
+                        specPipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                        if (!specPipelines[p][lvl][c]) sdlFail("spec pipeline");
+                    }
+                pi.vertex_shader = vsh;
+                pi.fragment_shader = fsh;
+                pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                pi.vertex_input_state.num_vertex_buffers = 1;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
+            }
             pi.rasterizer_state.enable_depth_bias = false;
             pi.rasterizer_state.depth_bias_slope_factor = 0;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         }
+        SDL_ReleaseGPUShader(dev, specVsh);
+        SDL_ReleaseGPUShader(dev, specFsh);
         {
             SDL_GPUShaderCreateInfo svs = vs;
             svs.entrypoint = "vs_sky";
@@ -1577,7 +1702,7 @@ struct Renderer {
             }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
-                if (b.pass != p) continue;
+                if (b.pass != p || b.specTex >= 0) continue;
                 if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, vu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[3] = {
@@ -1593,6 +1718,42 @@ struct Renderer {
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                 if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, vu);
+            }
+            // lmap_s world batches (lib/phong.hlsl specular): tangent frame from vertex buffer 1.
+            if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
+                bool any = false;
+                for (const Batch& b : scene.batches) {
+                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity) continue;
+                    if (!any) {
+                        SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
+                        SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
+                        any = true;
+                    }
+                    SDL_BindGPUGraphicsPipeline(pass, specPipelines[int(p)][b.polygonOffset][b.cull]);
+                    const float specColorScale = specColorScaleDvar();
+                    struct SVU { VU base; float sun[4]; } svu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
+                    svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                    SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
+                    const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
+                    SDL_GPUTextureSamplerBinding tex[6] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
+                                                           {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], repeatSampler},
+                                                           {scene.textures[size_t(b.specTex)], repeatSampler}, {scene.specularity, clampSampler}};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 6);
+                    FragmentUniforms fu = {
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
+                        {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                        {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
+                        {p == Pass::AlphaTest ? 1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {0, 0, 0, 0}};
+                    applyFog(fu);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                }
+                if (any) { // restore the single-stream state for the model draws that follow
+                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                    SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
+                    SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                }
             }
             // Entity models of this pass.
             for (const DrawItem& it : items) {
@@ -1959,8 +2120,11 @@ int main(int argc, char** argv) {
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
         bool profileDirty = false;
-        if (std::ifstream cf(profileCfg); cf)
-            uiCvars = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        if (std::ifstream cf(profileCfg); cf) {
+            const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
+            uiCvars = ui::parseConfig(cfgText);
+            if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
+        }
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
@@ -1977,6 +2141,7 @@ int main(int argc, char** argv) {
                 return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            w->soundExists = [&aliases](const std::string& n) { return aliases.exists(n); };
             w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
                 return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
             };
@@ -2039,7 +2204,7 @@ int main(int argc, char** argv) {
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
         // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
         // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
-        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; bool brassPending = false, brassValid = false; game::FVec brassPos{}; };
         auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
@@ -2110,6 +2275,10 @@ int main(int argc, char** argv) {
                 }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
+            for (const auto& te : world->takeTracerEvents())
+                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
+            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
+            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
                 scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
             if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
@@ -2386,6 +2555,27 @@ int main(int argc, char** argv) {
                         const auto& q = tf->second.first;
                         for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
                         if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        // CG_EjectWeaponBrass (0x4b7730) for the local client: shellEjectEffect bolted on the view weapon's tag_brass.
+                        const auto tb = gunBones.find("tag_brass");
+                        viewFlash->brassValid = tb != gunBones.end();
+                        if (viewFlash->brassValid) {
+                            const auto& m = base.transform;
+                            const auto& q = tb->second.first;
+                            for (int k = 0; k < 3; ++k) viewFlash->brassPos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        }
+                        if (viewFlash->brassPending && world) {
+                            viewFlash->brassPending = false;
+                            const std::string path = pweapon.field("shellEjectEffect");
+                            if (viewFlash->brassValid && !path.empty() && path != "none") {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->brassPos;
+                                    return vf->brassValid;
+                                });
+                                const auto& m = base.transform;
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
+                            }
+                        }
                         if (viewFlash->pending && world) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
@@ -2629,6 +2819,17 @@ int main(int argc, char** argv) {
             return t ? *t : key;
         };
         auto menuFont = [&](float ts) { return font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont"); };
+        menuEnv.bindKey = [&](const std::string& command, const std::string& key) {
+            input.rebind(command, key);
+            profileDirty = true;
+            if (world) { // getkeybinding follows the new bindings
+                world->keyBindings.clear();
+                for (const auto& [k, c] : input.bindings()) world->keyBindings[c].push_back(k);
+            }
+        };
+        // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
+        // TODO(spec): the macOS display modes as r_mode entries.
+        menuEnv.enumValues = [](const std::string&) { return std::vector<std::string>{}; };
         menuEnv.textWidth = [&](const ui::Item& it) {
             const assets::Font* f = menuFont(it.textScale);
             if (!f) return 0.0f;
@@ -3450,16 +3651,35 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty() && it.type != 11 && it.type != 12) continue;
+                        if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
                         const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
-                        const auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        if (it.type == 14 && &it == frontStack.focus()) {
+                            // BIND (exe 0x4cdee0): capturing = (0.8, 0, 0, 0.8); focused = focus colour pulsing with
+                            // (sin(ms / 75) + 1) * 0.5 against focus * 0.8 (0x4c6e50). TODO(spec): argument order of the blend.
+                            if (&it == frontStack.captureItem()) c = col8(std::array<float, 4>{0.8f, 0.0f, 0.0f, 0.8f});
+                            else {
+                                const float t = (std::sin(float(SDL_GetTicks() / 75)) + 1.0f) * 0.5f;
+                                for (int i = 0; i < 3; ++i) c[size_t(i)] = uint8_t(float(c[size_t(i)]) * (1.0f - 0.2f * t));
+                            }
+                        }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
-                        if (it.type == 11 || it.type == 12) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
+                        if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
+                            auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                            const auto keys = input.keysFor(it.dvar);
+                            std::string label = name("UNBOUND");
+                            if (!keys.empty()) {
+                                label = name(keys[0]);
+                                if (keys.size() > 1) label += " " + name("OR") + " " + name(keys[1]);
+                            }
+                            hudText(front, label, x0 + frontStack.valueTextX(menu, it) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                        }
+                        if (it.type == 11 || it.type == 12 || it.type == 13 || it.type == 17) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
                             const std::string label = frontStack.valueLabel(it);
                             if (!label.empty())
                                 hudText(front, menuLocalized(label), x0 + frontStack.valueTextX(menu, it) * xs,
@@ -3541,6 +3761,8 @@ int main(int argc, char** argv) {
                         const size_t sl = k.find('/');
                         menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
                         frontStack.mouseMove(menuMx, menuMy);
+                    } else if (k.rfind("bindkey:", 0) == 0) {
+                        frontStack.captureKey(k.substr(8));
                     } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                 }
             }
@@ -3619,7 +3841,8 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
@@ -3703,7 +3926,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = viewFlash->brassPending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -3731,6 +3954,13 @@ int main(int argc, char** argv) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+            }
+            if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
+                // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.
+                const Vec3 from = cam.pos + cam.right() * 30.0f + Vec3{0, 0, -15.0f};
+                const Vec3 to = cam.pos + cam.forward() * 1500.0f;
+                for (int i = 0; i < std::atoi(tt); ++i)
+                    fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             if (viewFlash->pending && !(world && world->playerOnTurret())) {
@@ -3954,6 +4184,13 @@ int main(int argc, char** argv) {
                         const auto v = toVirtual(ev.motion.x, ev.motion.y);
                         menuMx = v[0], menuMy = v[1];
                         frontStack.mouseMove(menuMx, menuMy);
+                        continue;
+                    }
+                    if (frontStack.capturing()) { // a BIND item waits for a key (exe 0x4ce100)
+                        if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) frontStack.captureKey(keyName(ev.key.scancode));
+                        else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+                            frontStack.captureKey(ev.button.button == SDL_BUTTON_RIGHT ? "MOUSE2" : ev.button.button == SDL_BUTTON_MIDDLE ? "MOUSE3" : "MOUSE" + std::to_string(int(ev.button.button)));
+                        else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) frontStack.captureKey(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN");
                         continue;
                     }
                     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP) {
@@ -4332,7 +4569,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
-                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
+                if (shots) viewFlash->pending = viewFlash->brassPending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) {
@@ -4438,7 +4675,8 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                     }
                     else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
                         float alpha = 0;
@@ -4527,6 +4765,8 @@ int main(int argc, char** argv) {
                     } else if (k == "quit") {
                         running = false;
                     } else if (k == "wait") {
+                    } else if (k.rfind("bindkey:", 0) == 0) {
+                        frontStack.captureKey(k.substr(8));
                     } else
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
@@ -4538,7 +4778,7 @@ int main(int argc, char** argv) {
                 profileDirty = false;
                 std::error_code ec;
                 std::filesystem::create_directories(profileCfg.parent_path(), ec);
-                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars);
+                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars) << input.formatBindings();
             }
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause

@@ -29,6 +29,9 @@ struct MenuEnv {
     std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle
     std::function<void(const std::string& name, const Command& args)> uiScript; // "uiScript" other than update
     // Width in 640x480 virtual pixels of the item's localized text at its font/scale (slider track position, widget value text).
+    std::function<void(const std::string& command, const std::string& key)> bindKey; // BIND capture result; key "" = clear (Del)
+    // DVARENUM items (exe 0x4cd720): the value strings of the enum dvar named by `dvarEnumList`; unset = "not an enum dvar".
+    std::function<std::vector<std::string>(const std::string& enumDvar)> enumValues;
     std::function<float(const Item&)> textWidth;
 };
 

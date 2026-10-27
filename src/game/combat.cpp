@@ -153,6 +153,19 @@ bool World::takesDamage(const Entity& e) const {
 }
 
 // Applies damage; notifies "damage" (amount, attacker, direction, point, type) and handles death.
+// G_Damage (0x5280b8, 0x5280c9) replaces a null inflictor / attacker by the world entity 0x1c13b08 (g_entities[2046]);
+// the script callbacks receive that entity (radiusdamage and dodamage pass none), so reading attacker.origin works.
+// TODO(spec): the world entity's other fields (zero here, origin 0,0,0).
+Value World::attackerValue(Entity* attacker) {
+    if (attacker) return Value(attacker->obj);
+    if (!worldEntityObj_) {
+        worldEntityObj_ = vm_.newObject("worldspawn");
+        worldEntityObj_->set("origin", Value(Vec3{0, 0, 0}));
+        worldEntityObj_->set("angles", Value(Vec3{0, 0, 0}));
+    }
+    return Value(worldEntityObj_);
+}
+
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                    const std::string& location) {
     if (!takesDamage(target)) return;
@@ -168,8 +181,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         int health = (hv.isNumber() ? hv.asInt() : 0) - amount;
         if (health < -999) health = -999;
         target.obj->set("health", Value(int32_t(health)));
-        vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
-        if (health < 1) vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
+        vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
+        if (health < 1) vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
         return;
     }
     // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
@@ -215,7 +228,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         const Value w = attacker ? attacker->obj->get(attacker->isPlayer ? "$weapon" : "weapon") : Value();
         target.obj->set("damageweapon", w.isString() && !w.asString().empty() ? w : Value("none"));
     }
-    vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attacker ? Value(attacker->obj) : Value(), Value(dir), Value(point), Value(mod)});
+    vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
     if (health > 0) {
         if (target.isActor) actorPain(target, attacker); // pain callback 0x4ff3b0
         return;
@@ -224,10 +237,10 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         ++stats.kills;
         // G_Damage notifies "death" (attacker, means-of-death name 0x5a95ac; 0x528474), then the die callback
         // (0x4ff530) sets the death state.
-        vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value(), Value(mod)});
+        vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
         actorDie(target, attacker);
     } else if (target.isPlayer) {
-        vm_.notify(target.obj, "death", {attacker ? Value(attacker->obj) : Value()});
+        vm_.notify(target.obj, "death", {attackerValue(attacker)});
         print("player killed at " + std::to_string(timeMs_) + " ms by " +
               (attacker ? attacker->classname + " " + attacker->obj->get("targetname").toString() : std::string("world")) + " (" + mod + ")");
         // player_die (0x527d80) sets the client's respawn time to level time + 1700 ms (0x527e85); the client think
@@ -461,6 +474,17 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     };
     const bool rifle = flag("riflebullet"), ap = flag("armorpiercing");
     const Vec3 at = tr.endPos;
+    if (!shooter.isPlayer) {
+        // 0x4b8140 / 0x4b8040: not for eType 1 (players); the start is the weapon's tag_flash (0x4abb20), else the
+        // entity origin raised by 60 (stand; 40 crouched and 11 prone by eFlags 0x4 / 0x8, not tracked here).
+        // TODO(spec): the tracer gate for eType 0xc, the stance heights.
+        Vec3 from{};
+        if (!entityTagPosition(shooter.number, "tag_flash", from)) {
+            from = shooter.obj->get("origin").isVector() ? shooter.obj->get("origin").asVector() : Vec3{0, 0, 0};
+            from[2] += 60.0f;
+        }
+        tracerEvents_.push_back({from, at});
+    }
     if (hit && hit->isPlayer) {
         startSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
         return;
@@ -619,6 +643,12 @@ void World::registerCombatBuiltins() {
         if (wpn.isString()) {
             const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
             if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir, a->number, "tag_flash"});
+            // The same handler ejects the brass (CG_EjectWeaponBrass 0x4b7730, cg_brass 0xf48cfc default 1): the weapon's
+            // shellEjectEffect (+0x160; lastShotEjectEffect +0x164 for event 0xa0) played bolted (0x4853f0) on the
+            // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). TODO(spec): which of 0x9e / 0xa0
+            // this shot is, so lastShotEjectEffect is never chosen here.
+            const std::string brass = weaponField(wpn.asString(), "shellEjectEffect");
+            if (!brass.empty() && brass != "none" && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();

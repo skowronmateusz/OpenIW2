@@ -347,3 +347,38 @@ command's delta angles are adjusted so the input keeps that view.
 - Open: the endpoints of the 0x44c1b0 test and the two tag names; therefore not implemented (shotDir/start unchanged).
 - joltbody (above) and the fireturret recoil jolt are implemented (`World::vehicleJolt`, `vehicleJoltStep`); the heading
   "Not implemented" in this file is stale for them.
+
+## Damage attacker, death and corpse (checked)
+- G_Damage (0x5280b8 / 0x5280c9) replaces a null inflictor / attacker by the world entity 0x1c13b08 (g_entities[2046], 0x1b15f00 + 2046 * 0x1fc);
+  `radiusdamage` (0x4f3e70) passes 0x1c13b08 as the attacker of 0x5289d0. The "damage" / "death" callbacks therefore get an entity, never
+  undefined (`_tank.gsc friendlyfire_shield` reads attacker.origin). TODO(spec): the world entity's other fields (origin zero here).
+- freevehicle (0x511c80..0x511d83) has no rider handling: health 0, think sounds silenced (0x510be0), the two sound entities (+0x1f0 / +0x1f4)
+  freed, eType 0xb, contents 0, take-damage and +0x112 cleared, vehicle data detached. Riders on death are script behaviour only
+  (_tankai.gsc endon("death") on the tank). Running level (libya, IW2_KILL_VEHICLES): 13 of 14 vehicles become script_vehicle_corpse.
+- Vehicle weapons end to end (libya, IW2_FIRE_VEHICLES): "turret_fire" makes _tank.gsc shoot() call fireturret: 14 rockets, 0 errors.
+- Touch callbacks and script movers (eType 5) in 0x50ff00 remain TODO(spec).
+
+## Vehicle touch callback 0x512d40 (implemented: `World::vehicleTouchDamage`)
+Handler table 0x5a573c (stride 0x2c, index ent+0x116): touch at +0, handlers 9 / 10 (vehicles) 0x512d40, 1 / 2 (actors) 0x4ff2f0, 5 0x529140, 7 0x5291d0, 4 0x528e50; the corpse (11) has none.
+0x50ff00 runs the other's callback with (other, vehicle, 1) then the vehicle's (vehicle, other, 1). 0x512d40: other eType 1 / 9 / 5 with take-damage and +0x1c8 = 0,
+info collisionDamage (+0x80) > 0, vehicle velocity (+0x100) length >= 0.001; eType 5 takes 999999 (MOD 9) at once; others: dot of the velocity
+direction with the 2D direction vehicle -> other < 0.8 (0x591f94) does nothing; a client with pm_flags 1 (prone) takes 999999; else
+(dot - 0.8) * min(1, |forward speed (+0x1b0)| / collisionSpeed (+0x84)) * 5 (0x592358) * collisionDamage, ftol, damage when > 0
+(0x528050, inflictor and attacker the vehicle, dir the velocity direction, point the other's origin, MOD 9 = MOD_CRUSH). Open: script movers
+(eType 5) have no counterpart here, actor callback 0x4ff2f0, the 0x9bef24 gate of the "touch" notifies.
+
+## Spawn health, touch gate, actor touch (checked)
+- Vehicle health: `spawnvehicle` (0x4ecf50), the vehicle spawn (0x511af0 / 0x50d820..0x50d900) and G_Spawn write no health (no store to ent+0x13c; the only
+  writes in 0x50d..0x513 are freevehicle's); the exe has no "script_startinghealth" string, only the generic key "health" (0x18407f). Scripts set
+  self.health (`_crusader.gsc`, `_armoredcar.gsc`, `_cars.gsc`... from script_startinghealth). `spawnvehicle` therefore leaves health 0 (OpenIW2 used 1000
+  before); 0x510be0 then treats the vehicle as dead for its engine sounds.
+- 0x9bef24 (gate of the "touch" notifies in 0x50ff00 and of the use scan) is the script VM's "level scripts running" global (written in the VM init,
+  read throughout 0x46xxxx): set for the whole level, so the notifies are unconditional here.
+- Actor touch callback 0x4ff2f0 (handlers 1 / 2) dispatches on the actor's current AI state through the state tables at 0x56f734 (stride 0x1c, entry 0:
+  most states 0x549900 -- the player-contact reset, states 1 / 2 call 0x500c50 -- states 3..8 also 0x549900). TODO(spec): decode 0x500c50 / 0x549900
+  (AI domain).
+- Staged tests (`IW2_TOUCH_TEST`, `IW2_ROCKET_TEST`, `IW2_TEST_ACTOR`): libya, an actor 100 units in front of a crusader moving at 400 units/s takes 199
+  damage (health 100 -> -99; formula (dot - 0.8) * 1 * 5 * 200); a turret rocket fired at an actor hits it (MOD_PROJECTILE direct damage) and kills it.
+  Splash on a second entity next to the impact is not staged.
+- Still open here: barrel pull-back endpoints (0x44c1b0 line and the two tags), eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
+  and the sound entities' pitch (see the TODO(spec) markers above).
