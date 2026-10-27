@@ -86,6 +86,8 @@ enum AiState { AiNone, AiExposed, AiTurret, AiGrenade, AiBadplace, AiDeath, AiPa
 struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
     int depth = 0;
+    int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); IW2_ACTOR_SLIDE only
+    int groundEnt = 0x7ff;                    // block +0x18 (ground entity of the actor slide move)
     int64_t baseStateMs = 0;                  // +0x20 time the bottom state was last set
     struct Request { int type, state; };      // 1 replace, 2 push, 3 pop
     std::vector<Request> requests;            // +0x30, count +0x88
