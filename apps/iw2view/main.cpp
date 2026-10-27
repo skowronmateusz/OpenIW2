@@ -1723,8 +1723,8 @@ int main(int argc, char** argv) {
                     if (!tm) continue;
                     float tp = e->turret->pitch, ty = e->turret->yaw;
                     if (auto pt = prevTurret.find(e->number); pt != prevTurret.end()) { // CG_CalcEntityLerpPositions-style smoothing
-                        tp = pt->second.first + angleDelta(tp, pt->second.first) * -1.0f * lerpFrac;
-                        ty = pt->second.second + angleDelta(ty, pt->second.second) * -1.0f * lerpFrac;
+                        tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
+                        ty = pt->second.second + angleDelta(ty, pt->second.second) * lerpFrac;
                     }
                     if (world->playerOnTurret() && e->turret->owner == world->player()->obj) {
                         tp = angleDelta(view.pitch, av[0]);
