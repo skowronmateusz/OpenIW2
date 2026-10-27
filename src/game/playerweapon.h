@@ -37,6 +37,7 @@ public:
             OffhandThrow,    // 0xa6: the game spawns the grenade (0x531d60)
             OffhandExplode,  // 200: a cooked grenade went off in the hand
             NoOffhand,       // 0x94 + 0xc9 / 0xca: no grenade of that class with ammo
+            NoAmmo,          // 0x92: fired an empty non-grenade weapon (the cgame shows the WEAPON_NO_AMMO hint)
             WeaponRaised,    // the player state's weapon changed (end of the drop)
         } kind;
         std::string weapon;

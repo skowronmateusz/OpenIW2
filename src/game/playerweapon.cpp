@@ -414,6 +414,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
                 // the next action waits 500 ms (0x4dec37).
                 if (fieldValue("weaponType") != "grenade") {
                     sounds_.push_back("player_out_of_ammo");
+                    events_.push_back({Event::NoAmmo, std::string()});
                     timer_ = 0.5f;
                 }
             }
