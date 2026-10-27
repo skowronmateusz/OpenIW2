@@ -413,6 +413,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
                 // No ammo (0x4deb70): a non-grenade weapon sends event 0x92 (the cgame plays player_out_of_ammo, 0x4baec1) and
                 // the next action waits 500 ms (0x4dec37).
                 if (fieldValue("weaponType") != "grenade") {
+                    events_.push_back({Event::OutOfAmmo, name_});
                     // The cgame plays the click only when clipOnly (+0x340) is 0 (0x4baec1).
                     if (std::atoi(fieldValue("clipOnly").c_str()) == 0) sounds_.push_back("player_out_of_ammo");
                     timer_ = 0.5f;

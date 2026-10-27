@@ -5210,6 +5210,10 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind == game::PlayerWeapon::Event::OutOfAmmo && world->player()) { // event 0x92 (0x4baec1 -> 0x4b7090)
+                        const std::string next = world->outOfAmmoSwitch(world->inventory(*world->player()), e.weapon);
+                        if (!next.empty()) weaponSelect = next;
+                    }
                     else if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);

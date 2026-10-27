@@ -190,6 +190,11 @@ void weaponSounds() {
     CHECK(e.takeSounds().empty());
     run(e, 0.2f, true);
     CHECK(e.takeSounds() == std::vector<std::string>{"player_out_of_ammo"});
+    {
+        int n = 0; // event 0x92 per dry fire (the cgame's auto switch, 0x4b7090)
+        for (const auto& ev : e.takeEvents()) n += ev.kind == PlayerWeapon::Event::OutOfAmmo && ev.weapon == "b";
+        CHECK(n == 2);
+    }
     // clipOnly: no click on an empty clip, and no putaway sound with an empty clip (0x4ddbd9, 0x4baec1).
     PlayerWeapon::Def c = a;
     c["cliponly"] = "1";

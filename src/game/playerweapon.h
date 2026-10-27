@@ -38,6 +38,7 @@ public:
             OffhandExplode,  // 200: a cooked grenade went off in the hand
             NoOffhand,       // 0x94 + 0xc9 / 0xca: no grenade of that class with ammo
             ReloadBegin,     // 0x95 (0x4dda60): the cgame clears the toggled aim (0x4bafbc, flag 0x621530 = toggleads 0x409260)
+            OutOfAmmo,       // 0x92 (0x4baec1): the cgame auto-switches weapon (0x4b7090)
             WeaponRaised,    // the player state's weapon changed (end of the drop)
         } kind;
         std::string weapon;
