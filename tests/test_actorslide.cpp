@@ -101,6 +101,53 @@ int main() {
         });
         CHECK(r == 2);
     }
+    // Step slide: a step of height 10 at x >= 2 is climbed with stepHeight 18; with stepHeight 4 the wall blocks.
+    {
+        auto solid = [](float x, float, float z) { return z < 0.0f || (x >= 2.0f && z < 10.0f); };
+        auto stepTrace = [&](const float* s, const float* e) {
+            SlideTrace t;
+            const int N = 4000;
+            float px = s[0], py = s[1], pz = s[2];
+            if (solid(px, py, pz)) {
+                t.fraction = 0;
+                t.startSolid = true;
+                return t;
+            }
+            for (int i = 1; i <= N; ++i) {
+                const float f = float(i) / N;
+                const float x = s[0] + (e[0] - s[0]) * f, y = s[1] + (e[1] - s[1]) * f, z = s[2] + (e[2] - s[2]) * f;
+                if (solid(x, y, z)) {
+                    t.fraction = float(i - 1) / N;
+                    // face: the axis that changed solidity
+                    if (solid(px, py, z) && !solid(x, py, pz)) { /* z entered */ }
+                    if (!solid(px, py, pz) && solid(px, py, z) && !solid(x, py, pz)) {
+                        t.normal[2] = 1;
+                    } else {
+                        t.normal[0] = -1;
+                    }
+                    t.entity = 0x7fe;
+                    return t;
+                }
+                px = x; py = y; pz = z;
+            }
+            return t;
+        };
+        ActorSlide a;
+        a.dt = 0.1f;
+        a.velocity[0] = 100;
+        a.stepHeight = 18;
+        const int r = stepSlideMove(a, false, stepTrace);
+        CHECK(r == 1);
+        CHECK(a.origin[0] > 2.5f);
+        CHECK(a.origin[2] > 9.5f && a.origin[2] < 10.5f);
+        ActorSlide b;
+        b.dt = 0.1f;
+        b.velocity[0] = 100;
+        b.stepHeight = 4;
+        stepSlideMove(b, false, stepTrace);
+        CHECK(b.origin[0] < 2.01f);
+        CHECK(b.origin[2] < 1.0f);
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }

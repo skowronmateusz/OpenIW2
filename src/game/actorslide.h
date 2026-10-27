@@ -13,6 +13,7 @@ struct SlideTrace {
     float fraction = 1.0f;
     float normal[3] = {0, 0, 0};
     uint16_t entity = 0x7ff; // trace +0x1c: 0x7fe world, 0x7ff none
+    bool startSolid = false; // trace +0x22
     bool allSolid = false;   // trace +0x23
 };
 using SlideTraceFn = std::function<SlideTrace(const float start[3], const float end[3])>;
@@ -26,6 +27,8 @@ struct ActorSlide {
     float groundNormal[3] = {0, 0, 1}; // 0x1cbac68
     float impactSpeed = 0;         // 0x1cbac88 (max of -into)
     bool flag87 = false;           // 0x1cbac87
+    bool groundEntValid = false;   // 0x1cbac5c (set with the ground plane by the ground probe)
+    float stepHeight = 18.0f;      // 0x1cbaca8: 10, or 18 when the block byte +0x64 is 0 (0x548888)
     // Hit bookkeeping of the block: the first wall hit.
     uint16_t hitEnt = 0x7ff; // +0xf4
     float hitPos[2] = {0, 0};    // +0xf8
@@ -42,5 +45,9 @@ void clipVelocity(const float in[3], const float normal[3], float out[3], float 
 // 0x5475e0. Returns 0 when the move was not blocked, 1 when it bumped (or got stuck), 2 for an all-solid start on the
 // first iteration with flag87 set.
 int slideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace);
+
+// 0x547db0 (the actor StepSlideMove): slide move; when it bumped, retry from a step height up and keep whichever works.
+// Returns 1 normally, 0 when the move is stuck (all-solid slide, or the step-up start is solid at fraction 0).
+int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace);
 
 } // namespace iw2::game

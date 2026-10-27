@@ -194,4 +194,47 @@ int slideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
     return finish();
 }
 
+int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
+    const float o0[3] = {pm.origin[0], pm.origin[1], pm.origin[2]};
+    const float v0[3] = {pm.velocity[0], pm.velocity[1], pm.velocity[2]};
+    const int r = slideMove(pm, gravity, trace);
+    if (r == 0) return 1;
+    if (r == 2) return 0;
+    const float s = pm.stepHeight;
+    if (!(pm.velocity[2] <= 0.0f) && !pm.groundEntValid) {
+        const float down[3] = {o0[0], o0[1], o0[2] - s};
+        const SlideTrace d = trace(o0, down);
+        if (d.fraction == 1.0f) return 1;
+        if (d.normal[2] < kMinNormalZ) return 1;
+    }
+    const float up[3] = {o0[0], o0[1], o0[2] + s};
+    const SlideTrace u = trace(o0, up);
+    if (u.startSolid) return u.fraction == 0.0f ? 0 : 1;
+    const ActorSlide saved = pm;
+    pm.hitEnt = 0x7ff;
+    pm.groundPlane = false;
+    const float upZ = (up[2] - o0[2]) * u.fraction + o0[2];
+    pm.origin[0] = o0[0] + 0.0f * u.fraction; // the exe multiplies the fraction by 0.0 for x and y (0x591e00)
+    pm.origin[1] = o0[1] + 0.0f * u.fraction;
+    pm.origin[2] = upZ;
+    for (int a = 0; a < 3; ++a) pm.velocity[a] = v0[a];
+    if (slideMove(pm, gravity, trace) == 2) {
+        pm = saved;
+        return 1;
+    }
+    const float e2[3] = {pm.origin[0], pm.origin[1], (o0[2] - upZ) + pm.origin[2]};
+    const SlideTrace d2 = trace(pm.origin, e2);
+    if (!d2.allSolid)
+        for (int a = 0; a < 3; ++a) pm.origin[a] = (e2[a] - pm.origin[a]) * d2.fraction + pm.origin[a];
+    if (!(d2.fraction < 1.0f)) return 1;
+    if (d2.normal[2] >= 0.3f) {
+        clipVelocity(pm.velocity, d2.normal, pm.velocity, kOverclip);
+        const float hi = o0[2] - saved.origin[2] >= 0.0f ? o0[2] : saved.origin[2]; // 0x408ad0: max
+        if (hi + 0.1f < pm.origin[2]) pm.hitEnt = 0x7ff;
+        return 1;
+    }
+    pm = saved;
+    return 1;
+}
+
 } // namespace iw2::game

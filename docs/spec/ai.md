@@ -504,3 +504,16 @@ stack offsets of the two scratch trace results inside 0x547db0 (0x44 / 0x60 / 0x
 mapped to trace_t fields yet, so the wrapper is not ported: TODO(spec). The ground probe 0x548290, 0x5485a0, 0x548650
 and the 0x5487c0 mode dispatch are also still undecoded in detail, and World::moveActor, +0x318, gethitenttype and the
 follow link stay as documented above.
+
+### Actor step slide port (0x547db0), stack offsets mapped
+
+Both scratch trace results sit at esp0 + 0x44 (fraction +0x0, normal +0x4, entity word +0x1c, startsolid +0x22, allsolid +0x23, the
+same trace_t as in 0x5475e0); saved origin O0 at +0x10, saved velocity V0 at +0x34. Flow (src/game/actorslide.cpp, stepSlideMove):
+slide move; result 0 returns 1, result 2 returns 0. When the post-slide vz > 0 and the ground-entity flag 0x1cbac5c is clear, a
+down trace from O0 by the step height (0x1cbaca8) with fraction 1.0 or normal.z < 0.7 returns 1. Then an up trace from O0 to
+O0 + step: startsolid returns 0 when fraction 0 else 1. Save the block and scratch (the whole ActorSlide), hit entity := 0x7ff,
+ground plane flag := 0, origin = (O0.x, O0.y, lerp z at the up fraction), velocity := V0, slide move again (2 restores the
+saved state, returns 1). Then trace down from the new origin by (O0.z - up z) (0x4db7f0 from the block origin), snap the origin
+to the end point unless allsolid, return 1 when fraction >= 1.0; normal.z >= 0.3 clips the velocity (1.001) and clears the hit
+entity when max(O0.z, saved z) + 0.1 < origin z; otherwise the saved state is restored. Helper identities are in the previous
+section (0x4db7f0 trace wrapper, 0x47f390 lerp, 0x408ad0 max; 0x591e78 is the double 1.0). Tested with a step of height 10.
