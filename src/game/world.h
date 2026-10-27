@@ -299,6 +299,10 @@ public:
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
+    // The crosshair name target (ps+0x8678, 0x535070) of the last update as the two HUD lines 0x534aa0 sends as configstrings
+    // 0xb (name) and 0xc (weapon display name) for an actor; empty when there is no target or it has no name.
+    const std::string& crosshairNameLine() const { return crosshairName_; }
+    const std::string& crosshairWeaponLine() const { return crosshairWeaponLine_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // Per rendered frame on a turret: the pitch/yaw the turret takes toward `view`
@@ -356,6 +360,12 @@ public:
     const std::array<Objective, 16>& objectives() const { return objectives_; }
     // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
     float northYaw() const { return float(std::atof(northYaw_.c_str())); }
+    // Compass friendlies (ownerdraw 87, server 0x4db2ee..0x4db37b): with drawcompassfriendlies (0x4f4450, flag 0x1c61050) on, every
+    // living ally actor whose `drawoncompass` field (actor +0x2120) is set is listed with its origin and yaw.
+    struct CompassMarker { Vec3 pos{}; float yaw = 0; };
+    std::vector<CompassMarker> compassFriendlies() const;
+    bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
+    void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
     // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
     std::optional<LevelChange> dueLevelChange() const {
@@ -737,6 +747,7 @@ private:
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
     uint32_t crosshairFlags_ = 0;
+    std::string crosshairName_, crosshairWeaponLine_;
     void updateCrosshairTarget();
     int damageBlood_ = 0;                // client +0x8658
     Vec3 damageFrom_{};                  // +0x865c
@@ -776,6 +787,7 @@ private:
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;
     std::string northYaw_ = "0";
+    bool drawCompassFriendlies_ = false;
     std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;

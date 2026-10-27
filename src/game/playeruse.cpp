@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 // The player's use key and what it uses (docs/spec/controls.md "Use"): the use scan (0x534490) and the pick of the
 // usable entity (0x534d40), the press (0x5343d0 → 0x5342b0 → 0x5341a0), and turrets used by the player (use
 // 0x51db50, think 0x51b5c0, release 0x51b3d0).
@@ -487,6 +489,24 @@ void World::pickUpWeaponItem(Entity& item) {
 
 namespace iw2::game {
 
+std::vector<World::CompassMarker> World::compassFriendlies() const {
+    std::vector<CompassMarker> out;
+    if (!drawCompassFriendlies_) return out;
+    for (const auto& e : entities_) {
+        if (e->obj->removed || e->obj->kind != "actor" || !isAlive(*e)) continue;
+        const Value team = e->obj->get("team");
+        if (!team.isString() || team.asString() != "allies") continue;
+        if (!e->obj->get("drawoncompass").truthy()) continue;
+        const Value org = e->obj->get("origin"), ang = e->obj->get("angles");
+        if (!org.isVector()) continue;
+        CompassMarker m;
+        m.pos = org.asVector();
+        if (ang.isVector()) m.yaw = ang.asVector()[1];
+        out.push_back(m);
+    }
+    return out;
+}
+
 // 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
 // eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
@@ -494,6 +514,8 @@ namespace iw2::game {
 // (turrets/vehicles, +0x1b4), the trace surface-flag 0x10 exception.
 void World::updateCrosshairTarget() {
     crosshairFlags_ = 0;
+    crosshairName_.clear();
+    crosshairWeaponLine_.clear();
     if (!player_ || !isAlive(*player_)) return;
     const Vec3 eye = playerEye(), f = viewForward(playerCmd_.viewAngles);
     int loc = 0;
@@ -513,6 +535,7 @@ void World::updateCrosshairTarget() {
         tr = locationalTrace(eye, end, 0x280e801u, player_, nullptr, loc);
     }
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+    if (std::getenv("IW2_CROSSHAIR_DEBUG")) std::fprintf(stderr, "crosshair eye %g %g %g yaw %g ent %d\n", eye[0], eye[1], eye[2], playerCmd_.viewAngles[1], tr.entity);
     if (!hit || !hit->isActor || !isAlive(*hit)) return;
     const Vec3 d = sub(hit->obj->get("origin").asVector(), eye);
     const float dist2 = dot(d, d);
@@ -523,11 +546,29 @@ void World::updateCrosshairTarget() {
     };
     const int pt = team(player_->obj->get("team")) ? team(player_->obj->get("team")) : 2;
     const int enemy = pt == 1 ? 2 : pt == 2 ? 1 : 0; // 0x4e7010
+    bool target = false; // ps+0x8678 is set when still empty (every branch of 0x535070 sets it only once per frame)
     if (team(hit->obj->get("team")) == enemy) {
         const float range = weaponFloat(w, "enemyCrosshairRange");
-        if (dist2 < range * range) crosshairFlags_ |= 0x200000u;
-    } else if (dist2 < 128.0f * 128.0f) {
-        crosshairFlags_ |= 0x100000u;
+        if (dist2 < range * range) {
+            crosshairFlags_ |= 0x200000u;
+            target = true; // 0x535386..0x5353b9
+        }
+    } else {
+        constexpr float nameDist = 15000.0f; // g_friendlyNameDist default (0x4d8a1a), 0x5352e3 / 0x535455
+        if (dist2 < nameDist * nameDist) target = true;
+        if (dist2 < 128.0f * 128.0f) crosshairFlags_ |= 0x100000u;
+    }
+    // 0x534aa0: configstring 0xb = "\x15" + the actor's name (+0xd0, script `.name`), 0xc = the display name of its weapon
+    // (+0xd2, `.weapon`; weapon def +8). Nothing for an unnamed actor.
+    if (std::getenv("IW2_CROSSHAIR_DEBUG")) std::fprintf(stderr, "crosshair hit %s target %d name '%s'\n", hit->classname.c_str(), int(target), hit->obj->get("name").isString() ? hit->obj->get("name").asString().c_str() : "?");
+    if (target) {
+        const Value n = hit->obj->get("name");
+        if (n.isString() && !n.asString().empty()) {
+            crosshairName_ = n.asString();
+            const Value wv = hit->obj->get("weapon");
+            if (wv.isString() && !wv.asString().empty() && wv.asString() != "none")
+                crosshairWeaponLine_ = weaponField(lowerStr(wv.asString()), "displayName");
+        }
     }
 }
 
