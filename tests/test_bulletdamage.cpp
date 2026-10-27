@@ -2,6 +2,7 @@
 
 #include "game/bulletdamage.h"
 
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <string>
@@ -42,6 +43,16 @@ int main() {
     const Def eq{{"damage", "90"}, {"mindamage", "10"}, {"maxdamagerange", "500"}, {"mindamagerange", "500"}};
     CHECK(bulletDamageAtDistance(eq, false, 100) == 90);
     CHECK(bulletDamageAtDistance(eq, false, 600) == 10);
+    // accuracy graph (g43 aivsplayer.accu)
+    iw2::game::AccuracyGraph g;
+    CHECK(iw2::game::parseAccuracyGraph("WEAPONACCUFILE\n\n6\n0.0000 0.7148\n0.1481 0.6615\n0.2379 0.4027\n0.2994 0.1003\n0.3750 0.0000\n1.0000 0.0000\n", g));
+    CHECK(g.points.size() == 6);
+    CHECK(std::fabs(iw2::game::evalAccuracyGraph(g, 0) - 0.7148f) < 1e-5f);
+    CHECK(std::fabs(iw2::game::evalAccuracyGraph(g, 0.1481f / 0.00025f) - 0.6615f) < 1e-4f);
+    CHECK(iw2::game::evalAccuracyGraph(g, 5000) == 0.0f); // x clamped to 1
+    CHECK(std::fabs(iw2::game::aiHitChance(g, 0, 1.8f, 1.0f) - 1.0f) < 1e-6f); // 0.7148 * 1.8 > 1 -> 1
+    CHECK(std::fabs(iw2::game::aiHitChance(g, 0, 0.5f, 1.0f) - 0.3574f) < 1e-5f);
+    CHECK(!iw2::game::parseAccuracyGraph("nonsense", g));
     if (failures == 0) std::cout << "bulletdamage ok\n";
     return failures ? 1 : 0;
 }

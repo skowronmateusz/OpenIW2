@@ -1,6 +1,7 @@
 // Game world: map entities, path nodes, the player, and the script VM that drives them.
 #pragma once
 
+#include "game/bulletdamage.h"
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
 #include "game/animtree.h"
@@ -436,6 +437,9 @@ private:
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
                       const std::string& weaponName = std::string());
     int weaponDamage(const std::string& weaponName);
+    // Accuracy graph of a weapon for the target kind (weapon fields aiVsPlayerAccuracyGraph / aiVsAiAccuracyGraph); null without one.
+    const AccuracyGraph* accuracyGraph(const std::string& weaponName, bool targetClient);
+    std::map<std::string, std::optional<AccuracyGraph>> accuracyGraphs_;
     void updatePerception(Entity& e);
     // Perception helpers (src/game/perception.cpp)
     bool isSentient(const Entity& e) const;
