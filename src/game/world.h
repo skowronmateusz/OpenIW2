@@ -429,7 +429,8 @@ private:
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                 const std::string& location = "none");
     // attacker: the entity credited with the damage (nullptr = the world).
-    Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker);
+    Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
+                      const std::string& weaponName = std::string());
     int weaponDamage(const std::string& weaponName);
     void updatePerception(Entity& e);
     // Perception helpers (src/game/perception.cpp)

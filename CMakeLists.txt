@@ -69,7 +69,7 @@ add_library(iw2_game
   src/game/animtree.cpp
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
-  src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp
+  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
@@ -139,6 +139,9 @@ add_test(NAME vm COMMAND test_vm)
 add_executable(test_playerweapon tests/test_playerweapon.cpp)
 target_link_libraries(test_playerweapon PRIVATE iw2_game)
 add_test(NAME playerweapon COMMAND test_playerweapon)
+add_executable(test_bulletdamage tests/test_bulletdamage.cpp)
+target_link_libraries(test_bulletdamage PRIVATE iw2_game)
+add_test(NAME bulletdamage COMMAND test_bulletdamage)
 add_executable(test_idledefer tests/test_idledefer.cpp)
 target_link_libraries(test_idledefer PRIVATE iw2_game)
 add_test(NAME idledefer COMMAND test_idledefer)

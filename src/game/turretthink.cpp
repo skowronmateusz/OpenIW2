@@ -279,7 +279,7 @@ void World::shootTurret(Entity& t) {
     const Vec3 sd = forwardOf({a[0] + rand11() * spread * 180.0f / float(M_PI), a[1] + rand11() * spread * 180.0f / float(M_PI), 0});
     // The damage attacker is the turret's user, or the world without one (0x51ada0 → 0x5312b0).
     Entity* user = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
-    fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user);
+    fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user, ts.weapon);
     // EV_FIRE_WEAPON_MG42 (0xaf, sent at 0x51afc1) → cgame 0x4b7800: for an entity that is not the local client
     // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
     // (empty for the MG42s) plays too. TODO(spec): the effect is bolted to the tag (follows it), the shell eject

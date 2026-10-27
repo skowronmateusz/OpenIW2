@@ -1269,7 +1269,7 @@ void World::registerVehicleBuiltins() {
                 const Vec3 dir = shotDir(start);
                 if (type == "bullet") {
                     const Vec3 end{start[0] + dir[0] * 8192.0f, start[1] + dir[1] * 8192.0f, start[2] + dir[2] * 8192.0f};
-                    fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e);
+                    fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e, v.info->turretWeapon);
                 } else {
                     spawnRocket(*e, v.info->turretWeapon, start, dir);
                 }
