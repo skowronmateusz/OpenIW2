@@ -276,6 +276,7 @@ public:
         int weaponState = 0;
         int grenadeFuseMs = 0;
         float lean = 0.0f;     // leanf
+        float adsFrac = 0.0f;  // the aim fraction (client +0xb8), read by playerads
     };
     void setPlayerCommand(const PlayerCommand& c) { playerCmd_ = c; }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.

@@ -985,6 +985,12 @@ void World::registerBuiltins() {
         if (!e || !e->isPlayer) throw std::runtime_error("GetStance is only defined for players.");
         return Value(std::string(playerCmd_.stance == 2 ? "prone" : playerCmd_.stance == 1 ? "crouch" : "stand"));
     });
+    // playerads (0x538a60): player-only (error 0x590ab8 otherwise); returns the float at client +0xb8 (the aim fraction, 0..1).
+    vm_.registerBuiltin("playerads", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("playerads: entity is not a player");
+        return Value(playerCmd_.adsFrac);
+    });
     // isfiring / isthrowinggrenade / ismeleeing (0x539aa0 / 0x539b60 / 0x539c10): player-only (error 0x590ab8 for a non-client);
     // an int from the weapon state ps+0xb4: firing 3, 4, 10, 11; throwing a grenade 12..16 (0xc..0x10); meleeing 10, 11.
     // The value of playerCmd_.weaponState is the front end's copy of ps+0xb4 (world.h).

@@ -532,6 +532,10 @@ int main(int argc, char** argv) {
         std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
         size_t menuAnswered = 0;
         float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
+        std::vector<std::pair<float, std::array<float, 2>>> playerLooks, playerFires; // --player-look / --player-fire T yaw,pitch
+        std::vector<std::pair<float, iw2::game::Vec3>> playerFireAts; // --player-fire-at T x,y,z: one bullet from the eye at the point
+        std::vector<std::pair<float, float>> playerAds;               // --player-ads T frac: the aim fraction from T
+        std::vector<std::pair<float, std::string>> playerWeapons;     // --player-weapon T name: the player's current weapon from T
         std::vector<std::pair<float, std::array<float, 2>>> playerUses; // --player-use T yaw,pitch: press the use key once at T looking that way (headless test)
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
@@ -562,6 +566,22 @@ int main(int argc, char** argv) {
             } else if (a == "--level-notify" && i + 2 < argc) {
                 const float t = std::stof(argv[++i]);
                 levelNotifies.push_back({t, argv[++i]});
+            } else if ((a == "--player-look" || a == "--player-fire") && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                std::array<float, 2> ang{};
+                std::sscanf(argv[++i], "%f,%f", &ang[0], &ang[1]);
+                (a == "--player-look" ? playerLooks : playerFires).push_back({t, ang});
+            } else if (a == "--player-fire-at" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                iw2::game::Vec3 p{};
+                std::sscanf(argv[++i], "%f,%f,%f", &p[0], &p[1], &p[2]);
+                playerFireAts.push_back({t, p});
+            } else if (a == "--player-ads" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                playerAds.push_back({t, std::stof(argv[++i])});
+            } else if (a == "--player-weapon" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                playerWeapons.push_back({t, argv[++i]});
             } else if (a == "--player-use" && i + 2 < argc) {
                 const float t = std::stof(argv[++i]);
                 std::array<float, 2> ang{};
@@ -630,6 +650,7 @@ int main(int argc, char** argv) {
             pweapon.lookup = [&](const std::string& n) { return world.weapon(n); };
             pweapon.findOffhand = [&](const std::string& cls) { return world.playerOffhandFor(cls); };
         }
+        iw2::game::Vec3 playerLookAngles{};
         for (int f = 0; f < seconds * 20; ++f) {
             // IW2_HEALTH_LOG=1: the player's health and the low-health overlay hud element's alpha every 0.5 s.
             if (std::getenv("IW2_HEALTH_LOG") && world.player() && f % 10 == 0) {
@@ -820,9 +841,60 @@ int main(int argc, char** argv) {
                     world.setPlayerOrigin(p, world.player()->obj->get("angles").asVector());
                 }
             }
+            if (!playerLooks.empty() && world.player()) {
+                // --player-look: the view angles (yaw,pitch) from T on; the use key and the commands read them.
+                for (const auto& l : playerLooks)
+                    if (f * 0.05f >= l.first) {
+                        playerLookAngles = {l.second[1], l.second[0], 0};
+                        world.player()->obj->set("angles", iw2::script::Value(iw2::script::Vec3{l.second[1], l.second[0], 0}));
+                    }
+                iw2::game::World::PlayerCommand pc;
+                for (const auto& a : playerAds)
+                    if (f * 0.05f >= a.first) pc.adsFrac = a.second;
+                pc.viewAngles = playerLookAngles;
+                world.setPlayerCommand(pc);
+            }
+            for (auto it = playerFires.begin(); it != playerFires.end();)
+                if (world.player() && f * 0.05f >= it->first) {
+                    // --player-fire: one bullet from the eye along yaw,pitch.
+                    const float yaw = it->second[0] * 3.14159265f / 180.0f, pitch = it->second[1] * 3.14159265f / 180.0f;
+                    const auto o = world.player()->obj->get("origin").asVector();
+                    const iw2::script::Vec3 eye{o[0], o[1], o[2] + 60.0f};
+                    const iw2::script::Vec3 dir{std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), -std::sin(pitch)};
+                    const int before = world.stats.hits;
+                    world.playerFire(eye, dir);
+                    std::printf("player fired at %.2f s yaw %.0f pitch %.0f: hits %d\n", f * 0.05f, it->second[0], it->second[1], world.stats.hits - before);
+                    it = playerFires.erase(it);
+                } else {
+                    ++it;
+                }
+            for (auto it = playerWeapons.begin(); it != playerWeapons.end();)
+                if (world.player() && f * 0.05f >= it->first) {
+                    world.player()->obj->set("$weapon", iw2::script::Value(it->second));
+                    it = playerWeapons.erase(it);
+                } else {
+                    ++it;
+                }
+            for (auto it = playerFireAts.begin(); it != playerFireAts.end();)
+                if (world.player() && f * 0.05f >= it->first) {
+                    const auto o = world.player()->obj->get("origin").asVector();
+                    const iw2::script::Vec3 eye{o[0], o[1], o[2] + 60.0f};
+                    iw2::script::Vec3 dir{it->second[0] - eye[0], it->second[1] - eye[1], it->second[2] - eye[2]};
+                    const float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+                    for (auto& c : dir) c /= l;
+                    const int before = world.stats.hits;
+                    world.playerFire(eye, dir);
+                    std::printf("player fired at %.2f s at %.0f,%.0f,%.0f: hits %d\n", f * 0.05f, it->second[0], it->second[1], it->second[2], world.stats.hits - before);
+                    it = playerFireAts.erase(it);
+                } else {
+                    ++it;
+                }
             if (!playerUses.empty() && world.player()) {
                 // --player-use: the use key (buttons 0x28 pressed) for one frame, looking along yaw,pitch.
                 iw2::game::World::PlayerCommand pc;
+                for (const auto& a : playerAds)
+                    if (f * 0.05f >= a.first) pc.adsFrac = a.second;
+                pc.viewAngles = playerLookAngles;
                 const float t = f * 0.05f;
                 for (const auto& u : playerUses)
                     if (t >= u.first) {

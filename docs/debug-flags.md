@@ -26,7 +26,7 @@ described in the code that reads them.
 - iw2view: `--menu` (front end without a level), `--cvar name=value`, `--ride F,R` / `--ride-after S` / `--ride-fire`
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,
   `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`.
-- iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify`, `--lookat-test`.
+- iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--lookat-test`.
 
 ## Menu debug helpers (iw2view --menu)
 

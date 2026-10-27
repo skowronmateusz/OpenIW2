@@ -3871,6 +3871,7 @@ int main(int argc, char** argv) {
                 pc.weaponState = pweapon.stateNumber();
                 pc.grenadeFuseMs = pweapon.fuseMs();
                 pc.lean = ps.lean;
+                pc.adsFrac = pweapon.adsFrac();
                 world->setPlayerCommand(pc);
             }
             if (onTurret) {
