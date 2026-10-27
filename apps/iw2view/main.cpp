@@ -1789,6 +1789,9 @@ int main(int argc, char** argv) {
         // docs/spec/campaign.md), so its fields are copied into the new world before its script starts.
         struct Subtitle { std::string key; uint64_t untilNs; };
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
+        // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
+        // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
@@ -2180,11 +2183,13 @@ int main(int argc, char** argv) {
         // Menu "weaponinfo" (hud.menu:184): the ammo counter backdrop `ammocounterback` (ownerdraw CG_PLAYER_AMMO_BACKDROP 6), rect
         // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
         const ui::Item* ammoBackItem = nullptr;
+        const ui::Item* fireModeItem = nullptr; // item "weaponfiremode" (ownerdraw 83), rect -115 -35 20 20
         const ui::Item* ammoTextItem = nullptr; // item "ammotex" (ownerdraw CG_PLAYER_AMMO_VALUE 5), rect -85 -15 70 40
         if (const ui::Menu* m = hudMenus.find("weaponinfo"))
             for (const auto& it : m->items) {
                 if (it->name == "ammocounterback") ammoBackItem = it.get();
                 else if (it->name == "ammotex") ammoTextItem = it.get();
+                else if (it->name == "weaponfiremode") fireModeItem = it.get();
             }
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
@@ -2723,7 +2728,25 @@ int main(int argc, char** argv) {
             // left at rect.x, stock "%3i" right-aligned at rect.x + rect.w, "|" centred in the rect minus 5 (0x591ef0);
             // baseline at rect.y (4c3790 gets the item rect y unchanged). TODO(spec): low-ammo red (0.89 0.18 0.01,
             // 0x4a76b0: stock < clip size * 0x592020), the hud fade alpha (0x4a7600), the firemode icon (ownerdraw 83).
-            if (pweapon.equipped()) {
+            // Fade (0x4a7600 / 0x4b0900): dvar seconds 0 -> 1; else touch == 0 or elapsed >= ticks -> 0, else min(1, (ticks - elapsed) / 700).
+            // Ammo backdrop / text use hud_fade_ammodisplay (default 2 s, 0x10438d8) from the ammo touch time; the firemode icon the same dvar
+            // but a fixed 0x708 = 1800 ms window from the weapon change time (0xf796e4); the compass hud_fade_compass (default 8 s).
+            auto fadeAlpha = [&](int64_t touch, float dvarSeconds, int ticksMs) {
+                if (dvarSeconds == 0.0f) return 1.0f;
+                const int64_t now = world ? world->timeMs() : 0, el = now - touch;
+                if (touch == 0 || el >= ticksMs) return 0.0f;
+                const int64_t rem = ticksMs - el;
+                return rem >= 700 ? 1.0f : float(rem) / 700.0f;
+            };
+            const float ammoAlpha = fadeAlpha(hudFade.ammo, 2.0f, 2000);
+            const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
+            // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
+            // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
+            // TODO(spec): that def +0x1d4 / +0x1d8 are maxAmmo / clipSize (matches the usage: stock vs max, clip vs clip size).
+            const float maxAmmo = std::min(pweapon.number("maxAmmo"), 999.0f), clipSize = std::min(pweapon.number("clipSize"), 999.0f);
+            const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
+            const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
+            if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
                 const float rightEdge = float(w), bottomEdge = float(h); // RIGHT / BOTTOM alignment, safe area 0
                 if (ammoBackItem && !ammoBackItem->background.empty()) {
                     const auto& r = ammoBackItem->rect;
@@ -2731,6 +2754,8 @@ int main(int argc, char** argv) {
                     q.x1 = q.x0 + r.w * sc;
                     q.y1 = q.y0 + r.h * sc;
                     for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(ammoBackItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                    if (stockLow) q.rgba[0] = uint8_t(0.89f * 255.0f), q.rgba[1] = uint8_t(0.18f * 255.0f), q.rgba[2] = uint8_t(0.01f * 255.0f);
+                    q.rgba[3] = uint8_t(std::clamp(ammoAlpha, 0.0f, 1.0f) * 255.0f);
                     q.texture = materialTexture(ammoBackItem->background);
                     out.push_back(q);
                 }
@@ -2752,17 +2777,50 @@ int main(int argc, char** argv) {
                         const float x0 = rightEdge + r.x * sc, y0 = bottomEdge + r.y * sc, w0 = r.w * sc;
                         const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", pweapon.stock());
                         const int st = ammoTextItem->textStyle;
+                        // Colours (0x4a7930): alpha = the fade; the clip keeps the item colour, "|" and the stock turn red when the
+                        // stock is low; a low clip is overdrawn in red with a sawtooth alpha (800 ms, 1 -> 0, restarting),
+                        // limited by the fade alpha (0x4a7aab..0x4a7b09, state 0xf79690).
+                        col[3] = uint8_t(std::clamp(ammoAlpha, 0.0f, 1.0f) * 255.0f);
+                        uint8_t col2[4] = {col[0], col[1], col[2], col[3]};
+                        if (stockLow) col2[0] = uint8_t(0.89f * 255.0f), col2[1] = uint8_t(0.18f * 255.0f), col2[2] = uint8_t(0.01f * 255.0f);
                         hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
-                        hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col, 0.0f, 1.0f, st);
-                        hudText(out, stock, x0 + w0, y0, gs, *f, col, 1.0f, 1.0f, st);
+                        if (clipLow) {
+                            const int64_t now = world ? world->timeMs() : 0;
+                            if (hudFade.flashStart > now || hudFade.flashStart + 800 < now) hudFade.flashStart = now;
+                            const float saw = float(hudFade.flashStart - now + 800) * 0.00125f;
+                            const uint8_t flash[4] = {uint8_t(0.89f * 255.0f), uint8_t(0.18f * 255.0f), uint8_t(0.01f * 255.0f),
+                                                      uint8_t(std::clamp(std::min(saw, ammoAlpha), 0.0f, 1.0f) * 255.0f)};
+                            hudText(out, clip, x0, y0, gs, *f, flash, 0.0f, 1.0f, st);
+                        }
+                        hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col2, 0.0f, 1.0f, st);
+                        hudText(out, stock, x0 + w0, y0, gs, *f, col2, 1.0f, 1.0f, st);
                     }
+                }
+            }
+            // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
+            // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
+            // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
+            if (fireModeItem && pweapon.equipped() && !inVeh) {
+                const std::string icon = pweapon.field("modeIcon");
+                const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
+                if (!icon.empty() && a > 0.0f) {
+                    const auto& r = fireModeItem->rect;
+                    Quad2D q{float(w) + r.x * sc, float(h) + r.y * sc, 0, 0};
+                    q.x1 = q.x0 + r.w * sc;
+                    q.y1 = q.y0 + r.h * sc;
+                    for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(fireModeItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                    q.rgba[3] = uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f);
+                    q.texture = materialTexture(icon);
+                    out.push_back(q);
                 }
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
             // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), objective ring pulses (no ring start time is
             // tracked), the default pointer material when an objective has no icon, ownerdraw 87/88.
-            if (compassMenu && world) {
+            // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
+            const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
+            if (compassMenu && world && compassAlpha > 0.0f) {
                 const float csize = 1.0f; // cg_hudCompassSize
                 const float cyaw = c.yaw, north = world->northYaw();
                 auto wrap360 = [](float a) { a = std::fmod(a, 360.0f); return a < 0 ? a + 360.0f : a; };
@@ -2776,6 +2834,7 @@ int main(int argc, char** argv) {
                     const float qw = rw * csize * sc, qh = rh * csize * sc;
                     uint8_t col[4];
                     for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                    col[3] = uint8_t(std::clamp(compassAlpha, 0.0f, 1.0f) * 255.0f);
                     if (it.ownerDraw != 86) {
                         if (it.background.empty()) continue;
                         Quad2D q{bx, by, bx + qw, by + qh};
@@ -2802,7 +2861,7 @@ int main(int argc, char** argv) {
                             const float ix = ccx - icon * 0.5f - std::sin(a) * rad, iy = ccy - icon * 0.5f - std::cos(a) * rad;
                             Quad2D q{ix, iy, ix + icon, iy + icon};
                             std::memcpy(q.rgba, col, 4);
-                            q.rgba[3] = uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+                            q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
                             q.texture = materialTexture(ob.icon);
                             out.push_back(q);
                         }
@@ -2850,6 +2909,8 @@ int main(int argc, char** argv) {
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen too
                         if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
                 }
+                // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
@@ -3200,6 +3261,26 @@ int main(int argc, char** argv) {
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
                 writeWeapon();
+                {
+                    // HUD fade touches. Weapon change (0x4b76e8 / 0x4b839a): ammo display + weapon change time. Per frame 0x4be5f0:
+                    // the compass is touched when the view angles or buttons (except 0x2b00) changed, the player moves, an
+                    // offhand button (0x30000) is down, or 0x4be520 fired: attack (0x1), or reload / use-reload (0x30) under
+                    // conditions, with pm_flags & 0x300 clear, which also touches the ammo display (0x4be556).
+                    // TODO(spec): the 0x4be520 conditions for 0x30 (0xf708f4 bit 4, ps+0x580 bit 2), 0x4be440, pm_flags 0x300.
+                    const int64_t nowMs = world ? world->timeMs() : 0;
+                    if (pweapon.name() != hudFade.weapon) {
+                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = nowMs;
+                        hudFade.weapon = pweapon.name();
+                    }
+                    const bool fireTouch = (buttons & game::Button::Attack) != 0;
+                    const bool viewMoved = cam.pitch != hudFade.pitch || cam.yaw != hudFade.yaw;
+                    hudFade.pitch = cam.pitch, hudFade.yaw = cam.yaw;
+                    if (fireTouch) hudFade.ammo = nowMs;
+                    if (fireTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
+                        ((buttons ^ hudFade.buttons) & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
+                        hudFade.compass = nowMs;
+                    hudFade.buttons = buttons;
+                }
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
