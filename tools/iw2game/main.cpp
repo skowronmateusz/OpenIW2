@@ -798,6 +798,7 @@ int main(int argc, char** argv) {
                 int n = 0;
                 for (const auto& ep : world.entities())
                     if (ep->vehicle && !ep->obj->removed) {
+                        if (std::getenv("IW2_KILL_VERBOSE")) std::printf("  vehicle %d %s health %s\n", ep->number, ep->obj->get("model").toString().c_str(), ep->obj->get("health").toString().c_str());
                         world.debugDamage(*ep, 100000);
                         ++n;
                     }
