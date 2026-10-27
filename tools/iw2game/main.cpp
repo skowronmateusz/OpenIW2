@@ -534,6 +534,7 @@ int main(int argc, char** argv) {
         float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
         std::vector<std::pair<float, std::array<float, 2>>> playerLooks, playerFires; // --player-look / --player-fire T yaw,pitch
         std::vector<std::pair<float, iw2::game::Vec3>> playerFireAts; // --player-fire-at T x,y,z: one bullet from the eye at the point
+        std::vector<std::pair<float, iw2::game::Vec3>> playerMelees;  // --player-melee T x,y,z: one melee blow looking at the point
         std::vector<std::pair<float, float>> playerAds;               // --player-ads T frac: the aim fraction from T
         std::vector<std::pair<float, std::string>> playerWeapons;     // --player-weapon T name: the player's current weapon from T
         std::vector<std::pair<float, std::array<float, 2>>> playerUses; // --player-use T yaw,pitch: press the use key once at T looking that way (headless test)
@@ -576,6 +577,11 @@ int main(int argc, char** argv) {
                 iw2::game::Vec3 p{};
                 std::sscanf(argv[++i], "%f,%f,%f", &p[0], &p[1], &p[2]);
                 playerFireAts.push_back({t, p});
+            } else if (a == "--player-melee" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                iw2::game::Vec3 p{};
+                std::sscanf(argv[++i], "%f,%f,%f", &p[0], &p[1], &p[2]);
+                playerMelees.push_back({t, p});
             } else if (a == "--player-ads" && i + 2 < argc) {
                 const float t = std::stof(argv[++i]);
                 playerAds.push_back({t, std::stof(argv[++i])});
@@ -614,6 +620,10 @@ int main(int argc, char** argv) {
         for (int i = 3; i < argc; ++i)
             if (std::string(argv[i]) == "--mixer") mixer = std::make_unique<iw2::audio::Mixer>(vfs, aliases, 44100);
         const bool soundLog = std::getenv("IW2_SOUND_LOG") != nullptr; // debug: every sound start with its sim time
+        world.soundExists = [&](const std::string& n) {
+            std::mt19937 r(0);
+            return aliases.pick(n, r) != nullptr;
+        };
         world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration) {
             if (soundLog) std::cout << "[sound " << world.timeMs() << "ms] " << alias << "\n";
             if (mixer) return mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration);
@@ -872,6 +882,20 @@ int main(int argc, char** argv) {
                 if (world.player() && f * 0.05f >= it->first) {
                     world.player()->obj->set("$weapon", iw2::script::Value(it->second));
                     it = playerWeapons.erase(it);
+                } else {
+                    ++it;
+                }
+            for (auto it = playerMelees.begin(); it != playerMelees.end();)
+                if (world.player() && f * 0.05f >= it->first) {
+                    const auto o = world.player()->obj->get("origin").asVector();
+                    const iw2::script::Vec3 eye{o[0], o[1], o[2] + 60.0f};
+                    const float dx = it->second[0] - eye[0], dy = it->second[1] - eye[1], dz = it->second[2] - eye[2];
+                    const float yaw = std::atan2(dy, dx) * 180.0f / 3.14159265f;
+                    const float pitch = -std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * 180.0f / 3.14159265f;
+                    const int before = world.stats.hits;
+                    world.playerMelee(eye, iw2::script::Vec3{pitch, yaw, 0});
+                    std::printf("player meleed at %.2f s toward %.0f,%.0f,%.0f: hits %d\n", f * 0.05f, it->second[0], it->second[1], it->second[2], world.stats.hits - before);
+                    it = playerMelees.erase(it);
                 } else {
                     ++it;
                 }

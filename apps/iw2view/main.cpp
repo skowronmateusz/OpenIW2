@@ -1965,6 +1965,10 @@ int main(int argc, char** argv) {
                     subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS() + uint64_t(std::max(dur, 3.0f) * 1e9f)});
                 return handle;
             };
+            w->soundExists = [&aliases](const std::string& n) {
+                std::mt19937 r(0);
+                return aliases.pick(n, r) != nullptr;
+            };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
             w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
                 return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});

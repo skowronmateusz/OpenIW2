@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace iw2::game {
 
@@ -95,9 +97,14 @@ void World::meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Ve
         const Vec3 end = add(add(add(eye, scale(f, range)), scale(r, a)), scale(u, b));
         int location = 0;
         const TraceResult tr = locationalTrace(eye, end, Contents::BulletMask, &attacker, kHitPriorityDefault, location);
+        static const bool log = std::getenv("IW2_MELEE_LOG") != nullptr;
+        if (log)
+            std::fprintf(stderr, "[melee] trace %d from %.0f,%.0f,%.0f to %.0f,%.0f,%.0f: fraction %.3f entity %d (%s) surf 0x%x\n", i, eye[0], eye[1],
+                         eye[2], end[0], end[1], end[2], tr.fraction, tr.entity,
+                         tr.entity >= 0 && entityByNumber(tr.entity) ? entityByNumber(tr.entity)->classname.c_str() : "-", tr.surfaceFlags);
         if ((tr.surfaceFlags & 0x10) || tr.fraction == 1.0f) continue;
         Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
-        if (hit && isAlive(*hit)) {
+        if (hit) { // damage() applies the G_Damage (0x528050) takedamage check (ent+0x111)
             meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3; // the Q3 rand() at 0x5a56f4
             damage(*hit, &attacker, int((meleeSeed_ >> 0x11) % 5) + base, f, tr.endPos, "MOD_MELEE", hitLocationName(location));
         }

@@ -278,7 +278,10 @@ public:
         float lean = 0.0f;     // leanf
         float adsFrac = 0.0f;  // the aim fraction (client +0xb8), read by playerads
     };
-    void setPlayerCommand(const PlayerCommand& c) { playerCmd_ = c; }
+    void setPlayerCommand(const PlayerCommand& c) {
+        prevButtons_ = playerCmd_.buttons;
+        playerCmd_ = c;
+    }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
     uint32_t playerPmFlags() const { return pmFlags_; }
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
@@ -351,6 +354,8 @@ public:
 
     // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
     // returns a handle (0 = nothing played); stopSound(handle).
+    // soundexists: whether an alias resolves (0x4ef380 -> 0x428320), set by the front end; without one every alias exists.
+    std::function<bool(const std::string&)> soundExists = [](const std::string&) { return true; };
     std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
     std::function<void(int)> stopSound = [](int) {};
     // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
@@ -801,6 +806,7 @@ private:
     };
     std::optional<PlayerLink> playerLink_;
     PlayerCommand playerCmd_;
+    uint32_t prevButtons_ = 0; // the buttons of the previous command (meleebuttonpressed)
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;
     std::vector<VehicleNode> vnodes_;

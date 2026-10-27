@@ -985,6 +985,57 @@ void World::registerBuiltins() {
         if (!e || !e->isPlayer) throw std::runtime_error("GetStance is only defined for players.");
         return Value(std::string(playerCmd_.stance == 2 ? "prone" : playerCmd_.stance == 1 ? "crouch" : "stand"));
     });
+    // issavesuccessful (0x4f3d80): an int, 1 when the byte at [0x1114184]+0xd is 0 (the "last save failed" flag). We write no
+    // saves (savegame is not implemented), so the flag is never set. TODO(spec): the writer of that byte.
+    vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(int32_t(1)); });
+    // meleebuttonpressed (0x5388d0): player-only; (client+0x8640 | client+0x8634) & 4 -> int 1/0. 0x8640 is taken as the
+    // current usercmd buttons and 0x8634 as the previous frame's (TODO(spec): confirm the pair); the bit is the melee button (4).
+    vm_.registerBuiltin("meleebuttonpressed", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("meleebuttonpressed: entity is not a player");
+        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 4u) ? 1 : 0));
+    });
+    // enableaimassist / disableaimassist (0x4f81c0 / 0x4f8230): set / clear the entity flag 0x800 (entity+0x10). Stored as the
+    // script-invisible field $aimassist; nothing in the port reads it yet (TODO(spec): the console auto-aim consumer).
+    vm_.registerBuiltin("enableaimassist", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) e->obj->set("$aimassist", Value(int32_t(1)));
+        return Value();
+    });
+    vm_.registerBuiltin("disableaimassist", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) e->obj->set("$aimassist", Value(int32_t(0)));
+        return Value();
+    });
+    // pushplayer (0x5407a0): actor-only (the pointer at entity+0x100, error 0x591798); arg true clears, false sets the bit 0x2000000 of actor+0x28c (stored as $nopush;
+    // nothing consumes it yet, TODO(spec): the pmove effect of that bit).
+    vm_.registerBuiltin("pushplayer", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("pushplayer: entity is not an actor");
+        e->obj->set("$nopush", Value(int32_t(c.args.empty() || !c.arg(0).truthy() ? 1 : 0)));
+        return Value();
+    });
+    // savegame / savegamenocommit / commitsave (0x4f3a30 / 0x4f3bd0 / 0x4f3db0): the port writes no save games. These are
+    // stand-ins, NOT the original behaviour: savegamenocommit returns a non-negative save id (the script treats < 0 as a failed
+    // save), savegame and commitsave do nothing. TODO(spec): the save file format and the id.
+    vm_.registerBuiltin("savegamenocommit", [](CallContext&) { return Value(int32_t(1)); });
+    vm_.registerBuiltin("savegame", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("commitsave", [](CallContext&) { return Value(); });
+    // soundexists (0x4ef380): int 1 when the alias name resolves in the sound alias table (0x428320), else 0.
+    vm_.registerBuiltin("soundexists", [this](CallContext& c) {
+        return Value(int32_t(soundExists(c.arg(0).isString() ? c.arg(0).asString() : std::string()) ? 1 : 0));
+    });
+    // issaverecentlyloaded (0x4f3da0): the byte at 0x1b15ac0 (set when a save was just loaded). The port loads no saves: 0.
+    vm_.registerBuiltin("issaverecentlyloaded", [](CallContext&) { return Value(int32_t(0)); });
+    // teleport (0x53dfb0): actor-only (error 0x591798); moves the actor to arg 0 (origin), optionally turning it to arg 1
+    // (angles), clears its velocity and returns 1. SIMPLIFIED: the original checks (0x532100) the actor box at the new origin
+    // when it moved more than a threshold (0x591f98) and returns 0 with a console message when blocked; that check, the
+    // movement-state resets (actor +0x724 etc.) and the link update (0x515040) are TODO(spec).
+    vm_.registerBuiltin("teleport", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("teleport: entity is not an actor");
+        e->obj->set("origin", c.arg(0));
+        if (c.argc() > 1 && c.arg(1).isVector()) e->obj->set("angles", c.arg(1));
+        return Value(int32_t(1));
+    });
     // playerads (0x538a60): player-only (error 0x590ab8 otherwise); returns the float at client +0xb8 (the aim fraction, 0..1).
     vm_.registerBuiltin("playerads", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
