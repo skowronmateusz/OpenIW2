@@ -491,3 +491,16 @@ with the 0.0 constant 0x591e00 so the origin is kept), traces down by the step h
 0x47f390 and accepts the stepped move when the down trace fraction passes 0x591e78 and normal.z passes 0x592018 (then
 0x547540 clips the velocity and 0x408ad0 (two args) compared against origin z + 0x59202c decides to store the hit entity in
 +0xf4). Helpers 0x4db7f0, 0x47f390, 0x408ad0 and the constants 0x591e78, 0x592018, 0x59202c are not decoded: TODO(spec).
+
+Helpers of 0x547db0, decoded:
+- 0x4db7f0: a thin wrapper of G_LocationalTrace 0x44bf00 (pushes 0, 0, 0 for the three trailing arguments, no other work).
+  Argument order at the call sites: result, start, mins, maxs, end, pass entity, content mask.
+- 0x47f390 (eax = a, edx = b, ecx = out, stack t): out = a + (b - a) · t (vector lerp, per component in x87).
+- 0x408ad0 (a, b): max(a, b) (returns a when a - b >= 0, else b).
+- Constants: 0x591e78 = 0.0, 0x592018 = 0.3, 0x59202c = 0.1 (0x591e00 = 0.0, 0x591e20 = 1.0).
+In the step wrapper: the up-step test compares the down-trace normal.z against 0.3 (0x592018) and the fraction against 0.0
+(0x591e78), the final hit-entity rule is max(lerp-corrected z delta, ...) + 0.1 compared against the block origin z. The exact
+stack offsets of the two scratch trace results inside 0x547db0 (0x44 / 0x60 / 0x82 relative to esp after the pushes) have not been
+mapped to trace_t fields yet, so the wrapper is not ported: TODO(spec). The ground probe 0x548290, 0x5485a0, 0x548650
+and the 0x5487c0 mode dispatch are also still undecoded in detail, and World::moveActor, +0x318, gethitenttype and the
+follow link stay as documented above.
