@@ -2827,7 +2827,7 @@ int main(int argc, char** argv) {
                 const auto& mr = compassMenu->rect;
                 for (const auto& itp : compassMenu->items) {
                     const ui::Item& it = *itp;
-                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86) continue;
+                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86 && it.ownerDraw != 87) continue;
                     const float rx = mr.x + it.rect.x, ry = mr.y + it.rect.y, rw = it.rect.w, rh = it.rect.h;
                     const float bx = rx * sc;                                  // LEFT: window left edge
                     const float by = float(h) + (ry - (csize - 1.0f) * rh) * sc; // BOTTOM: window bottom edge
@@ -2835,6 +2835,29 @@ int main(int argc, char** argv) {
                     uint8_t col[4];
                     for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
                     col[3] = uint8_t(std::clamp(compassAlpha, 0.0f, 1.0f) * 255.0f);
+                    if (it.ownerDraw == 87) {
+                        // Friendly actors (4c0f20): R = size * r * 43.75, icon size*10 (0x591e8c), r from the distance between
+                        // cg_hudCompassMinRange 0 and MaxRange 1500 (0xf48b54) clamped to the rim (no culling), minRadius 0;
+                        // placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor - view yaw;
+                        // the arrow turns by (view yaw - actor yaw). TODO(spec): the 800 ms entry age, springy yaw
+                        // (cg_hudCompassSpringyPointers 0), the sound ping rings (cg_hudCompassSoundPingFadeTime).
+                        if (it.background.empty()) continue;
+                        const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = 10.0f * csize * sc;
+                        const int tex = materialTexture(it.background);
+                        for (const auto& m : world->compassFriendlies()) {
+                            const float dx = m.pos[0] - c.pos.x, dy = m.pos[1] - c.pos.y;
+                            const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
+                            const float t = std::clamp(std::sqrt(dx * dx + dy * dy) / 1500.0f, 0.0f, 1.0f);
+                            const float rad = csize * t * 43.75f * sc;
+                            const float ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
+                            Quad2D q{ix, iy, ix + icon, iy + icon};
+                            std::memcpy(q.rgba, col, 4);
+                            q.texture = tex;
+                            q.rotDeg = wrap360(cyaw - m.yaw);
+                            out.push_back(q);
+                        }
+                        continue;
+                    }
                     if (it.ownerDraw != 86) {
                         if (it.background.empty()) continue;
                         Quad2D q{bx, by, bx + qw, by + qh};
@@ -2849,7 +2872,9 @@ int main(int argc, char** argv) {
                     const float maxR = 1500.0f, minR = 0.0f, minRad = 0.0f, objMax = 2048.0f, minAlpha = 1.0f;
                     const float icon = 16.0f * csize * sc;
                     for (const auto& ob : world->objectives()) {
-                        if (ob.state != 4 || ob.icon.empty()) continue;
+                        // An objective without an icon uses the default material "objective" (0xf5b6cc, registered at 0x4a2d62
+                        // from the string 0x57e3f4; used at 0x4a96da when the icon lookup 0x4a8fc0 fails): the star on the compass.
+                        if (ob.state != 4) continue;
                         for (const auto& p : ob.positions) {
                             if (p[0] == 0 && p[1] == 0 && p[2] == 0) continue;
                             const float dx = p[0] - c.pos.x, dy = p[1] - c.pos.y, d = std::sqrt(dx * dx + dy * dy);
@@ -2862,7 +2887,7 @@ int main(int argc, char** argv) {
                             Quad2D q{ix, iy, ix + icon, iy + icon};
                             std::memcpy(q.rgba, col, 4);
                             q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
-                            q.texture = materialTexture(ob.icon);
+                            q.texture = materialTexture(ob.icon.empty() ? std::string("objective") : ob.icon);
                             out.push_back(q);
                         }
                     }

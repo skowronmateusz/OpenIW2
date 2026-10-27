@@ -461,6 +461,24 @@ void World::pickUpWeaponItem(Entity& item) {
 
 namespace iw2::game {
 
+std::vector<World::CompassMarker> World::compassFriendlies() const {
+    std::vector<CompassMarker> out;
+    if (!drawCompassFriendlies_) return out;
+    for (const auto& e : entities_) {
+        if (e->obj->removed || e->obj->kind != "actor" || !isAlive(*e)) continue;
+        const Value team = e->obj->get("team");
+        if (!team.isString() || team.asString() != "allies") continue;
+        if (!e->obj->get("drawoncompass").truthy()) continue;
+        const Value org = e->obj->get("origin"), ang = e->obj->get("angles");
+        if (!org.isVector()) continue;
+        CompassMarker m;
+        m.pos = org.asVector();
+        if (ang.isVector()) m.yaw = ang.asVector()[1];
+        out.push_back(m);
+    }
+    return out;
+}
+
 // 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
 // eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets

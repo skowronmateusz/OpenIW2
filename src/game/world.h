@@ -354,6 +354,12 @@ public:
     const std::array<Objective, 16>& objectives() const { return objectives_; }
     // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
     float northYaw() const { return float(std::atof(northYaw_.c_str())); }
+    // Compass friendlies (ownerdraw 87, server 0x4db2ee..0x4db37b): with drawcompassfriendlies (0x4f4450, flag 0x1c61050) on, every
+    // living ally actor whose `drawoncompass` field (actor +0x2120) is set is listed with its origin and yaw.
+    struct CompassMarker { Vec3 pos{}; float yaw = 0; };
+    std::vector<CompassMarker> compassFriendlies() const;
+    bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
+    void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
     // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
     std::optional<LevelChange> dueLevelChange() const {
@@ -770,6 +776,7 @@ private:
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;
     std::string northYaw_ = "0";
+    bool drawCompassFriendlies_ = false;
     std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;

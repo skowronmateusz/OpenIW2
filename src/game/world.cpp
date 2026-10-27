@@ -748,6 +748,12 @@ void World::registerBuiltins() {
         return Value(toArray(out));
     });
 
+    // 0x4f4450: stores GetInt(0) at 0x1c61050; the per-frame actor pass (0x4db31f) then marks allies with drawoncompass.
+    vm_.registerBuiltin("drawcompassfriendlies", [this](CallContext& c) {
+        drawCompassFriendlies_ = c.arg(0).isDefined() && c.arg(0).truthy();
+        return Value();
+    });
+
     auto doSpawn = [this](CallContext& c) -> Value {
         Entity* sp = entityOf(c.self);
         if (!sp || !sp->isSpawner) throw std::runtime_error("dospawn can only be called on actor spawners");
