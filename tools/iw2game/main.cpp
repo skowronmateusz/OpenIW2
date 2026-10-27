@@ -555,6 +555,8 @@ int main(int argc, char** argv) {
         float fireVehiclesAt = std::getenv("IW2_FIRE_VEHICLES") ? float(std::atof(std::getenv("IW2_FIRE_VEHICLES"))) : -1.0f;
         float touchTestAt = std::getenv("IW2_TOUCH_TEST") ? float(std::atof(std::getenv("IW2_TOUCH_TEST"))) : -1.0f, touchReportAt = -1.0f;
         bool touchTestIsRocket = false;
+        float combatSceneAt = std::getenv("IW2_COMBAT_SCENE") ? float(std::atof(std::getenv("IW2_COMBAT_SCENE"))) : -1.0f;
+        decltype(world.player()) sceneA = nullptr, sceneB = nullptr;
         int touchBefore = 0;
         decltype(world.player()) touchTarget = nullptr;
         if (std::getenv("IW2_ROCKET_TEST")) {
@@ -860,6 +862,43 @@ int main(int argc, char** argv) {
                         ++n;
                     }
                 std::printf("killed %d vehicles at %.1f s\n", n, f * 0.05f);
+            }
+            if (combatSceneAt >= 0 && f * 0.05f >= combatSceneAt) { // IW2_COMBAT_SCENE=<s>: two actors of opposite teams fight, step log
+                if (!sceneA) {
+                    float best = 1e30f; // the closest living axis/allies pair
+                    for (const auto& ea : world.entities()) {
+                        if (!ea->isActor || ea->obj->removed || ea->obj->get("health").asInt() <= 0 || ea->obj->get("team").toString() != "axis") continue;
+                        for (const auto& eb : world.entities()) {
+                            if (!eb->isActor || eb->obj->removed || eb->obj->get("health").asInt() <= 0 || eb->obj->get("team").toString() != "allies") continue;
+                            const auto oa = ea->obj->get("origin").asVector(), ob = eb->obj->get("origin").asVector();
+                            const float d = (oa[0] - ob[0]) * (oa[0] - ob[0]) + (oa[1] - ob[1]) * (oa[1] - ob[1]) + (oa[2] - ob[2]) * (oa[2] - ob[2]);
+                            if (d < best) { best = d; sceneA = ea.get(); sceneB = eb.get(); }
+                        }
+                    }
+                    if (sceneA) std::printf("[scene] closest pair distance %.0f\n", std::sqrt(best));
+                    // Search for an axis actor with a clear line to where B is placed (the shot must reach B).
+                    if (sceneA && sceneB)
+                        for (const auto& ea : world.entities()) {
+                            if (!ea->isActor || ea->obj->removed || ea->obj->get("health").asInt() <= 0 || ea->obj->get("team").toString() != "axis") continue;
+                            world.debugPlaceBefore(*sceneB, *ea);
+                            if (world.debugShoot(*ea, *sceneB) == sceneB->number) { sceneA = ea.get(); break; }
+                        }
+                    if (sceneA && sceneB) {
+                        world.debugPlaceBefore(*sceneB, *sceneA);
+                        std::printf("[scene] B placed 120 in front of A\n");
+                        world.debugSetEnemy(*sceneA, sceneB);
+                        world.debugSetEnemy(*sceneB, sceneA);
+                        std::printf("[scene %.2f] A=#%d (axis) B=#%d (allies) now enemies\n", f * 0.05f, sceneA->number, sceneB->number);
+                    } else { std::printf("[scene] no axis/allies actor pair\n"); combatSceneAt = -1; }
+                }
+                if (sceneA && sceneB && f % 6 == 0 && f * 0.05f < combatSceneAt + 3.0f) std::printf("[scene %.2f] shot hit entity %d (shots %d hits %d)\n", f * 0.05f, world.debugShoot(*sceneA, *sceneB), world.stats.shots, world.stats.hits);
+                if (sceneA && sceneB && f * 0.05f < combatSceneAt + 8.0f) {
+                    for (auto* a : {sceneA, sceneB}) {
+                        int planes = 0;
+                        for (const auto& dp : a->dangerPlanes) planes += dp.timeMs != 0;
+                        std::printf("[scene %.2f] #%d state %d sub %d hp %d planes %d pain %lld\n", f * 0.05f, a->number, a->ai.stack[size_t(a->ai.depth)], a->ai.substate, a->obj->get("health").asInt(), planes, (long long)a->ai.painStartMs);
+                    }
+                } else if (sceneA) combatSceneAt = -1;
             }
             if (touchTestAt >= 0 && f * 0.05f >= touchTestAt) { // IW2_TOUCH_TEST=<s> / IW2_ROCKET_TEST=<s>
                 const bool rocket = touchTestIsRocket;

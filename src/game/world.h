@@ -294,6 +294,23 @@ public:
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
     // Debug (iw2view IW2_FIRE_TURRETS): one shot from every turret entity (number of turrets fired).
     int debugFireTurrets();
+    void debugSetEnemy(Entity& a, Entity* b) { setEnemy(a, b, true); } // IW2_COMBAT_SCENE
+    // IW2_COMBAT_SCENE: puts b 120 units in front of a (a's yaw), same height.
+    void debugPlaceBefore(Entity& b, Entity& a) {
+        Vec3 p = a.obj->get("origin").asVector();
+        const float yaw = a.obj->get("angles").asVector()[1] * 3.14159265f / 180.0f;
+        p[0] += std::cos(yaw) * 120.0f;
+        p[1] += std::sin(yaw) * 120.0f;
+        b.obj->set("origin", Value(p));
+    }
+    // IW2_COMBAT_SCENE: one rifle bullet from a's muzzle height to b's chest, credited to a.
+    int debugShoot(Entity& a, Entity& b) {
+        Vec3 s = a.obj->get("origin").asVector(), t = b.obj->get("origin").asVector();
+        s[2] += 56.0f;
+        t[2] += 40.0f;
+        Entity* h = fireBullet(a, s, t, 10, &a);
+        return h ? h->number : -1;
+    }
     bool playerOnTurret() const { return (playerEFlags_ & 0x300u) != 0; }
     // The eye on a turret (0x4e8b70 → 0x4d7730): the turret's tag_player.
     // Cursor hint of what the use key would use (ps+0x578 hint, +0x57c string; 0x534d40). hint: 0 none, 1 HINT_NONE,
