@@ -340,6 +340,8 @@ public:
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
 
     const std::array<Objective, 16>& objectives() const { return objectives_; }
+    // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
+    float northYaw() const { return float(std::atof(northYaw_.c_str())); }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
     // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
     std::optional<LevelChange> dueLevelChange() const {
