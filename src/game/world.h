@@ -388,7 +388,9 @@ public:
     void setRealTimeMs(int64_t ms) { realMs_ = ms; }
 
     // Effects started by scripts since the last call: path, origin, forward.
-    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; };
+    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag; }; // entity/tag: bolted (0x4853f0)
+    // World position of an entity tag (lower case), false when the entity or tag is gone.
+    bool entityTagPosition(int number, const std::string& tag, Vec3& out);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     std::vector<FxEvent> fxEvents_;
     // Sight-blocking particles of the effect runtime, rebuilt by the host after each effects update (0x48b000).

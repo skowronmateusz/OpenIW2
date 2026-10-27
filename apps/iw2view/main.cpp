@@ -125,6 +125,21 @@ struct Camera {
     }
 };
 
+// The four side planes of the view frustum for the effect gate frustumCull (0x486e90): inward normals through the eye;
+// the vertical field of view is fixed by fovX43 at 4:3 (viewProj above), the horizontal one follows the aspect.
+static void setFxFrustum(game::FxSystem& fx, const Camera& cam, float aspect) {
+    const Vec3 f = cam.forward(), r = cam.right(), u = cross(r, f);
+    const float ty = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f, tx = ty * aspect;
+    auto plane = [&](Vec3 n) {
+        const float l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        n = {n.x / l, n.y / l, n.z / l};
+        return std::array<float, 4>{n.x, n.y, n.z, n.x * cam.pos.x + n.y * cam.pos.y + n.z * cam.pos.z};
+    };
+    auto comb = [&](float a, const Vec3& v, float b, const Vec3& w) { return Vec3{a * v.x + b * w.x, a * v.y + b * w.y, a * v.z + b * w.z}; };
+    fx.viewPlanes = {plane(comb(tx, f, 1, r)), plane(comb(tx, f, -1, r)), plane(comb(ty, f, -1, u)), plane(comb(ty, f, 1, u))};
+}
+
+
 // ---------------------------------------------------------------------------------------------
 // GPU upload helper: stages data in one transfer buffer and flushes when it is full.
 
@@ -2005,6 +2020,10 @@ int main(int argc, char** argv) {
         };
         fxSystem.loader = efx;
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
+        // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
+        // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
         // Client interpolation state: entity origin/angles before the latest server frame and the fraction of the
@@ -2018,12 +2037,60 @@ int main(int argc, char** argv) {
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
-        auto gatherItems = [&](const Camera&) {
+        auto gatherItems = [&](const Camera& viewCam) {
             std::vector<DrawItem> items;
             if (!world) return items;
+            // View frustum (Gribb-Hartmann planes of the view-projection; 32:9 aspect so any window is covered) used to skip
+            // the CPU skinning of animated entities that cannot be seen. The player's view model is never culled.
+            const Mat4 cullVp = viewCam.viewProj(3.6f);
+            std::array<std::array<float, 4>, 5> cullPlanes{};
+            {
+                auto row = [&](int i) { return std::array<float, 4>{cullVp[size_t(i)], cullVp[size_t(4 + i)], cullVp[size_t(8 + i)], cullVp[size_t(12 + i)]}; };
+                const auto r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+                for (int k = 0; k < 4; ++k) {
+                    cullPlanes[0][size_t(k)] = r3[size_t(k)] + r0[size_t(k)];
+                    cullPlanes[1][size_t(k)] = r3[size_t(k)] - r0[size_t(k)];
+                    cullPlanes[2][size_t(k)] = r3[size_t(k)] + r1[size_t(k)];
+                    cullPlanes[3][size_t(k)] = r3[size_t(k)] - r1[size_t(k)];
+                    cullPlanes[4][size_t(k)] = r2[size_t(k)]; // near (depth range 0..w)
+                }
+                for (auto& pl : cullPlanes) {
+                    const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
+                    for (float& v : pl) v /= len;
+                }
+            }
+            static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr; // debug: disable the culling above
+            auto sphereVisible = [&](float x, float y, float z, float radius) {
+                for (const auto& pl : cullPlanes)
+                    if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
+                return true;
+            };
             Uploader up(dev, false);
             for (const auto& ev : world->takeFxEvents()) {
                 if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
+                if (ev.entity >= 0 && !ev.tag.empty()) {
+                    // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
+                    game::World* wp = world.get();
+                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FVec{}, ok = false](game::FVec& out) mutable {
+                        if (wp->timeMs() != lastT) {
+                            lastT = wp->timeMs();
+                            game::Vec3 p{};
+                            ok = wp->entityTagPosition(n, tag, p);
+                            if (ok) last = {p[0], p[1], p[2]};
+                        }
+                        out = last;
+                        return ok;
+                    });
+                    game::FVec f{ev.forward[0], ev.forward[1], ev.forward[2]};
+                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    f = fl > 0 ? game::FVec{f[0] / fl, f[1] / fl, f[2] / fl} : game::FVec{0, 0, 1};
+                    game::FVec r = std::fabs(f[2]) < 0.99f ? game::FVec{f[1], -f[0], 0} : game::FVec{1, 0, 0};
+                    const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+                    r = {r[0] / rl, r[1] / rl, r[2] / rl};
+                    const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs());
+                    continue;
+                }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
@@ -2112,6 +2179,7 @@ int main(int argc, char** argv) {
                 // skinned with the blended pose and carry their attachments.
                 if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
+                    if (!noCull && !sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f)) continue; // anim state already stepped
                     const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!body) continue;
                     assets::XPose pose;
@@ -2291,6 +2359,30 @@ int main(int argc, char** argv) {
                 DrawItem it = base;
                 it.model = skinModel(scene, dev, up, -1, pweapon.gunModel(), *gun, gp);
                 if (it.model) items.push_back(it);
+                {
+                    BoneMap gunBones;
+                    addBones(gunBones, gun->parts, gp);
+                    const auto tf = gunBones.find("tag_flash");
+                    viewFlash->valid = tf != gunBones.end();
+                    if (viewFlash->valid) {
+                        const auto& m = base.transform; // columns: forward, left, up, origin (entityTransform)
+                        const auto& q = tf->second.first;
+                        for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        if (viewFlash->pending && world) {
+                            viewFlash->pending = false;
+                            const std::string path = pweapon.field("viewFlashEffect");
+                            if (!path.empty()) {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->pos;
+                                    return vf->valid;
+                                });
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
+                            }
+                        }
+                    }
+                }
             }
             up.flush();
         };
@@ -3454,7 +3546,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            pweapon.update(fireSeconds, shotIn);
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -3477,12 +3569,17 @@ int main(int argc, char** argv) {
             fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
+            setFxFrustum(fxSystem, cam, float(width) / float(height));
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
+            if (viewFlash->pending && !(world && world->playerOnTurret())) {
+                std::vector<DrawItem> scratch;
+                addViewModel(scratch, cam); // plays the view flash (the live loop shows it one frame later)
+            }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
@@ -3917,6 +4014,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
+                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
@@ -4121,6 +4219,7 @@ int main(int argc, char** argv) {
             fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
+            setFxFrustum(fxSystem, cam, float(width) / float(height));
             auto items = gatherItems(cam);
             // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
             // binocular weapon states 0x11–0x16.

@@ -60,6 +60,33 @@ int main() {
     }
     sys.sprites(2000);
     CHECK(sys.sightBlockers().empty());
+    // Bolted effect (0x4853f0 attachment, 0x485bf0): a relative element follows the tag, a non-relative one stays; an
+    // invalid attachment plays nothing.
+    const char* bolted =
+        "Particle\n{\n\tname rel\n\tflags relative blocksSight\n\tlife 1000\n\tsize\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 3\n\t\t]\n\t}\n}\n"
+        "Particle\n{\n\tname abs\n\tflags blocksSight\n\tlife 1000\n\tsize\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 3\n\t\t]\n\t}\n}\n";
+    auto boltedFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(bolted));
+    iw2::game::FxSystem sys2;
+    float tagX = 100;
+    bool valid = true;
+    auto bolt = std::make_shared<iw2::game::FxBolt>([&](iw2::game::FVec& o) {
+        o = {tagX, 0, 0};
+        return valid;
+    });
+    sys2.playBolted(boltedFx, bolt, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 0);
+    tagX = 150;
+    sys2.sprites(100);
+    const auto& b2 = sys2.sightBlockers();
+    CHECK(b2.size() == 2);
+    if (b2.size() == 2) {
+        CHECK(std::fabs(b2[0].origin[0] - 150) < 1e-3f); // relative: moved with the tag
+        CHECK(std::fabs(b2[1].origin[0] - 100) < 1e-3f); // not relative: stays
+    }
+    valid = false;
+    iw2::game::FxSystem sys3;
+    sys3.playBolted(boltedFx, bolt, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 0);
+    sys3.sprites(100);
+    CHECK(sys3.count() == 0);
     if (failures) return 1;
     std::cout << "efx tests passed\n";
     return 0;

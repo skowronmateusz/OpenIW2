@@ -166,8 +166,12 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiTurret:
         return turretStateStart(e); // 0x549960
-    case AiDeath: // 0x548980. TODO(spec): the claimed node release (0x5191a0) and the head look-at hand-over
-                  // (0x514970, 0x4fd9e0) are not modelled.
+    case AiDeath: // 0x548980: +0x740 / +0x741 cleared and the claimed node released at once (0x548995..0x54899a).
+                  // TODO(spec): the head look-at hand-over (0x514970, 0x4fd9e0; 500 ms override-angle gate) and sentient +0x28 = 200
+                  // (0x548a02) are not modelled.
+        e.obj->set("keepclaimednode", Value(int32_t(0)));
+        e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+        if (e.claimedNode >= 0) releaseNode(e);
         e.ai.substate = kSubDeath;
         return true;
     case AiPain: // 0x54d2a0
@@ -407,6 +411,10 @@ int World::deathThink(Entity& e) {
 // animcustom think (0x54b240): the custom function runs as the animscript (anim mode override or 4); when it has
 // finished the state is popped.
 int World::customThink(Entity& e) {
+    // 0x54b240..0x54b26c: keepclaimednode (+0x740) / keepclaimednodeingoal (+0x741) cleared, claimed node released.
+    e.obj->set("keepclaimednode", Value(int32_t(0)));
+    e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+    if (e.claimedNode >= 0) releaseNode(e);
     clearActorPath(e);
     setActorAnimScript(e, "<custom>", 0, 4);
     if (!actorAnimScriptDone(e)) {
@@ -628,19 +636,43 @@ static float quantYaw(float deg) { return float(int(deg * 182.04444885253906f) &
 void World::actorFacing(Entity& e) {
     const ActorAi& ai = e.ai;
     const int m = ai.orient ? ai.orient : ai.facing; // 0x505d80: the orientmode override, else the facing mode
-    float target;
+    float target = 0;
+    // Mode 3 with an enemy (0x505960 -> 0x5059c2): the enemy's sight record decides. Visible now (record byte 0): turn
+    // towards the enemy's origin (0x505a80; ignored when the 2D distance² < 1.0, 0x591e20). Not visible: with no path and
+    // the enemy seen (record +8) less than 5000 ms ago the target is left alone (0x505a08); otherwise (never seen, or
+    // seen long ago) the node facing below runs (0x505a16 -> 0x505920).
+    // TODO(spec): the path branch (0x505a22: +0x6ec time gate, 0x5432f0 position when not seen for > 500 ms); while a path
+    // is followed moveActor writes the yaw.
+    bool enemyTargeted = false;
+    if (ai.orient != 1 && m == 3) {
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (enemy) {
+            if (e.path.count > 0) return;
+            const auto it = e.sentientInfo.find(enemy->obj.get());
+            if (it != e.sentientInfo.end() && it->second.visible) {
+                const Vec3 o = vecField(e.obj, "origin"), eo = vecField(enemy->obj, "origin");
+                const float dx = eo[0] - o[0], dy = eo[1] - o[1];
+                if (dx * dx + dy * dy < 1.0f) return;
+                target = quantYaw(yawOfVector({dx, dy, 0}));
+                enemyTargeted = true;
+            } else if (it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000) {
+                return;
+            }
+        }
+    }
     if (ai.orient == 1) {
         // orientmode angle / current / direction / point (0x53f510): 0x504ca0 turns to the override target +0x120
         // every frame (no selector runs for mode 1). While a path is followed moveActor writes the yaw instead.
         if (e.path.count > 0) return;
         target = ai.orientTarget;
+    } else if (enemyTargeted) {
+        // target set from the enemy (0x505a80 .. 0x505aec)
     } else {
         if (e.path.count > 0 || e.claimedNode < 0) return;
         const PathNode& n = nodes_[size_t(e.claimedNode)];
         if (!(n.spawnflags & 0x8000)) return;
         const Vec3 o = vecField(e.obj, "origin");
         if (m == 3) {
-            if (entityOf(e.obj->get("enemy"))) return; // TODO(spec): 0x5059c2
             const Vec3 np = vecField(n.obj, "origin");
             const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
             if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
