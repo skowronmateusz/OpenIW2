@@ -19,11 +19,10 @@ void World::releaseTurret(Entity& turret) {
 // Inside the goal widened by `extra` (0x502760): height within goalheight, horizontal distance within
 // goalradius + extra. Without a goal the actor counts as inside.
 bool World::actorInGoal(Entity& e, float extra) {
-    const Value g = e.obj->get("$goalpos");
-    if (!g.isVector()) return true;
-    const Vec3 gp = g.asVector(), o = e.obj->get("origin").asVector();
-    const Value rv = e.obj->get("goalradius"), hv = e.obj->get("goalheight");
-    const float r = rv.isNumber() ? rv.asFloat() : 0.0f, h = hv.isNumber() ? hv.asFloat() : 0.0f;
+    Vec3 gp{};
+    float r = 0, h = 0;
+    if (!actorGoal(e, gp, r, h)) return true;
+    const Vec3 o = e.obj->get("origin").asVector();
     const float dz = gp[2] - o[2];
     if (h * h < dz * dz) return false;
     const float dx = gp[0] - o[0], dy = gp[1] - o[1];

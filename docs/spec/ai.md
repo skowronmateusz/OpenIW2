@@ -424,8 +424,16 @@ whose hold time has not passed). A node is a candidate when usable by the actor 
 chain node (0x518510); among equal positions one is sampled with the exe's own LCG (0x5184c0; the stream is not reproduced). A chain node
 without a claimed node is claimed (0x5152f0).
 
-Not done: 0x505f70 (the working goal: mode 2 uses the chain node's origin, or the leader's origin, with its radius at least 4 and height at
-least 80), the toucher filter of 0x529140, the g_spawnai dvar.
+Working goal (0x505f70, run after the fighting test of the path update; actor +0x748 pos, +0x754 radius, +0x758 height, +0x760 mode,
+`Entity::workGoal`): pathing to the enemy (+0x788): the enemy's last known position, mode 3, radius max(pathenemyfightdist, 4), height 512 when
+pathenemyfightdist > 80 else 80. Else with a goal entity (+0x77c): a sentient on a friendly team (not an enemy, followmin <= followmax) gives
+mode 2: the actor's own origin without a chain node (radius and height untouched); with one the chain node's origin, and a non-zero node
+radius sets radius = max(node radius, 4) and height = max(goalheight, 80) (a zero one leaves them as the last update set them). Any other goal
+entity gives its origin (mode 1); no goal entity the setgoalpos / setgoalnode position (mode 0, `setgoalpos` and `setgoalnode` clear the goal
+entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight, 80). The cover search, `pathToGoal` and the in-goal test read it
+(`World::actorGoal`; the script fields stand in until the first update). The `isingoal` built-in still reads the script goal, TODO(spec).
+
+Not done: the second caller of 0x505ed0 / 0x505f70 (0x54ad05), the toucher filter of 0x529140, the g_spawnai dvar.
 
 ## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype, checkprone)
 
