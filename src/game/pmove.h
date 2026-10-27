@@ -56,12 +56,35 @@ struct PlayerState {
     int stanceEvent = -1;        // client stance set by a mantle event this move (0x8d → 1, 0x8c → 0), else −1
     int landSeq = 0;             // landings so far (PM_CrashLand 0x508fe0 reached the ground from the air)
     float landHeight = 0;        // the last landing's fall height
-    int landDamage = 0;          // the last landing's fall damage 0..100 (not applied to health yet)
+    int landDamage = 0;          // the last landing's fall damage 0..100 (applied to health by World::applyPlayerEvent)
+    bool landTimer = false;      // pm_flags 0x200: the landing slowdown, cleared with pm_time
+    // The player-state event ring (ps+0x80 sequence, +0x84 events, +0x94 parameters; 4 slots, PM_AddEvent 0x507ba0 /
+    // 0x4fb3b0): footsteps, jumps and landings the cgame turns into sounds (CG_EntityEvent 0x4ba8d0) and the game into
+    // fall damage (ClientEvents 0x4e75f0).
+    int eventSeq = 0;
+    int events[4]{};
+    int eventParms[4]{};
     float aimSpread = 255;       // ps+0x5b0: aim spread scale 0..255 (0x4de540)
     int bobCycle = 0;            // ps+8: 0..255 (PM_Footsteps 0x50a850)
     float prevCmdPitch = 0, prevCmdYaw = 0; // the previous command's angles (pm+0x40)
     bool havePrevCmd = false;
 };
+
+// Appends an event (PM_AddEvent 0x4fb3b0: nothing for event 0).
+void addPlayerEvent(PlayerState& ps, int event, int parm = 0);
+
+// The result of PM_CrashLand (0x508fe0) for a fall height h: the damage 0..100, the view dip, the new pm_time and
+// movement scale, and the event added. `surfaceFlags` are the ground trace's.
+struct LandingOutcome {
+    int damage = 0;
+    int dip = 0;            // the view dip parameter of a hard landing (0x509107), 0..24
+    int pmTimeMs = 0;       // pm_time set by a damaging landing (0x50914b), 0 = unchanged
+    float velScale = 1.0f;  // the velocity is multiplied by this (0x5091a7 / 0x5091ca / 0x5092a8)
+    int event = 0;          // 0 = none
+    int eventParm = 0;
+    bool landTimer = false; // pm_flags 0x200 set
+};
+LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead);
 
 // Hip spread fields of the current weapon (weapon def +0x28c … +0x2b8).
 struct HipSpread {

@@ -69,7 +69,7 @@ add_library(iw2_game
   src/game/animtree.cpp
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
-  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp
+  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
@@ -157,6 +157,9 @@ add_test(NAME recoil COMMAND test_recoil)
 add_executable(test_viewimpulses tests/test_viewimpulses.cpp)
 target_link_libraries(test_viewimpulses PRIVATE iw2_game)
 add_test(NAME viewimpulses COMMAND test_viewimpulses)
+add_executable(test_playerevents tests/test_playerevents.cpp)
+target_link_libraries(test_playerevents PRIVATE iw2_game)
+add_test(NAME playerevents COMMAND test_playerevents)
 
 add_executable(test_sound tests/test_sound.cpp)
 target_link_libraries(test_sound PRIVATE iw2_audio)

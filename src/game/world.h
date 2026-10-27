@@ -296,6 +296,8 @@ public:
     // max health). The aim spread scale also grows by count (ps+0x5b0).
     struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
+    // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
+    void applyPlayerEvent(int ev, int parm);
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }

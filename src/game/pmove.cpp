@@ -42,24 +42,82 @@ struct Pml {
     bool dead = false; // pm_type >= 4
 };
 
-// PM_CrashLand (0x508fe0), the part that reaches the player's view: the fall height h = vz²/(2g) + (previous z − z)
-// from the speed at the start of the step, the fall damage 0..100 between bg_fallDamageMinHeight (200) and
-// bg_fallDamageMaxHeight (350) (none on a no-damage surface, flag 1, or when dead), and the landing report the
-// cgame turns into the view dip. TODO(spec): the velocity scale (0x592014) and pm_time of a landing (0x5091a7-0x5091eb),
-// the footstep landing events below h 12, applying the damage to the player's health.
+} // namespace
+
+// Surface type of a trace's flags (0x508f80 and friends): 0 for a surface flagged 0x2000, else flags >> 20 & 0x1f.
+static int surfaceTypeOf(uint32_t surfaceFlags) { return (surfaceFlags & 0x2000) ? 0 : int((surfaceFlags >> 20) & 0x1f); }
+
+// PM_CrashLand (0x508fe0): the fall height h = vz²/(2g) + (previous z − z) from the speed at the start of the step.
+// Damage 0..100 between bg_fallDamageMinHeight (200) and bg_fallDamageMaxHeight (350) (none on a no-damage surface,
+// flag 1, or when dead). A damaging landing below 100 (and not on slick ground, flag 2) sets pm_time to 500 + 35 ·
+// damage ms (pm_flags 0x200) and scales the velocity by 0.5 falling to 0.2 over 500..1500 ms (0x5091a7-0x5091eb); a
+// lethal or slick one scales it by 0.67; the event is 0x74 + surface with the damage as parameter. Without damage:
+// h <= 4 nothing; h < 8 the walk footstep (0x18 + surface); h < 12 the run footstep (1 + surface); otherwise the
+// velocity is scaled by 0.67 and the event is the landing 0x5d + surface with the view dip as parameter.
+LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead) {
+    LandingOutcome o;
+    constexpr float kMinH = 200.0f, kMaxH = 350.0f; // bg_fallDamageMinHeight / MaxHeight defaults (0x4fa818, 0x4fa83b)
+    if (h > kMinH && !(surfaceFlags & 1) && !dead)
+        o.damage = h >= kMaxH ? 100 : std::clamp(int((h - kMinH) / (kMaxH - kMinH) * 100.0f), 0, 100);
+    if (h > 12.0f) o.dip = std::min(24, int(((h - 12.0f) * 0.03846153989434242f + 1.0f) * 4.0f));
+    const int surf = surfaceTypeOf(surfaceFlags);
+    if (o.damage != 0) {
+        if (o.damage < 100 && !(surfaceFlags & 2)) {
+            const int t = o.damage * 35 + 500;
+            o.pmTimeMs = t;
+            o.landTimer = true;
+            if (t > 2000) o.velScale = 0.2f, o.pmTimeMs = 2000;
+            else if (t <= 500) o.velScale = 0.5f;
+            else if (t >= 1500) o.velScale = 0.2f;
+            else o.velScale = 0.5f - (float(t) - 500.0f) * 0.001f * 0.3f;
+        } else {
+            o.velScale = 0.67f;
+        }
+        o.event = 0x74 + surf;
+        o.eventParm = o.damage;
+        return o;
+    }
+    if (h <= 4.0f) return o;
+    if (h < 8.0f) {
+        o.event = surf ? surf + 0x18 : 0;
+    } else if (h < 12.0f) {
+        o.event = surf ? surf + 1 : 0;
+    } else {
+        o.velScale = 0.67f;
+        o.event = 0x5d + surf;
+        o.eventParm = o.dip;
+    }
+    return o;
+}
+
+void addPlayerEvent(PlayerState& ps, int event, int parm) {
+    if (event == 0) return;
+    ps.events[ps.eventSeq & 3] = event & 0xff;
+    ps.eventParms[ps.eventSeq & 3] = parm & 0xffff;
+    ++ps.eventSeq;
+}
+
+namespace {
+
+// Applies PM_CrashLand: the landing report the cgame turns into the view dip, the speed loss and the event.
+// TODO(spec): the exact velocity at the start of the step is the pml copy; the pm_time of a damaging landing only
+// matters through the walk accel (x0.25) and friction (x0.3) of pm_flags 0x200.
 void crashLand(PlayerState& ps, const Pml& pml) {
     const float g = pml.gravity;
     const float d = pml.prevVelZ * pml.prevVelZ + 2.0f * g * (pml.prevOriginZ - ps.origin[2]);
     if (d < 0) return;
     const float s = std::sqrt(d);
     const float h = s * s / (2.0f * g);
-    int dmg = 0;
-    constexpr float kMinH = 200.0f, kMaxH = 350.0f; // bg_fallDamageMinHeight / MaxHeight defaults (0x4fa818, 0x4fa83b)
-    if (h > kMinH && !(pml.groundTrace.surfaceFlags & 1) && !pml.dead)
-        dmg = h >= kMaxH ? 100 : std::clamp(int((h - kMinH) / (kMaxH - kMinH) * 100.0f), 0, 100);
+    const LandingOutcome o = landingOutcome(h, pml.groundTrace.surfaceFlags, pml.dead);
     ps.landSeq++;
     ps.landHeight = h;
-    ps.landDamage = dmg;
+    ps.landDamage = o.damage;
+    if (o.pmTimeMs) {
+        ps.pmTimeMs = o.pmTimeMs;
+        ps.landTimer = o.landTimer;
+    }
+    if (o.velScale != 1.0f) ps.velocity = scale(ps.velocity, o.velScale);
+    addPlayerEvent(ps, o.event, o.eventParm);
 }
 
 // 0x507c20 and the inline copies: v − n·(d − |d|·0.001) with d = v·n.
@@ -431,7 +489,7 @@ void applyFriction(PlayerState& ps, float dt, const MoveParams& mp) {
         return;
     }
     float drop = 0;
-    if (ps.onGround) drop = std::max(speed, mp.stopSpeed) * mp.friction * dt;
+    if (ps.onGround) drop = std::max(speed, mp.stopSpeed) * (ps.landTimer ? 0.3f : 1.0f) * mp.friction * dt; // 0x507d10: pm_flags 0x200 x0.3
     const float ns = std::max(0.0f, speed - drop) / speed;
     ps.velocity = scale(ps.velocity, ns);
 }
@@ -538,10 +596,11 @@ void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerIn
     normalize(right);
     Vec wish = wishVelocity(fwd, right, f, r);
     const float wishSpeed = normalize(wish) * s;
-    // Acceleration 9 standing, 12 crouched, 19 prone, 1 on slick ground (surface flag 2). TODO(spec): ×0.25 with
-    // pm_flags 0x200 and knockback (0x400), both set by the landing code that is not implemented.
+    // Acceleration 9 standing, 12 crouched, 19 prone, 1 on slick ground (surface flag 2), x0.25 with pm_flags 0x200
+    // (0x5088d0, set by a damaging landing). TODO(spec): knockback (pm_flags 0x400) also gives 1.
     const bool slick = (pml.groundTrace.surfaceFlags & 2) != 0;
-    const float accel = slick ? 1.0f : ps.stance == Stance::Prone ? 19.0f : ps.stance == Stance::Crouch ? 12.0f : 9.0f;
+    float accel = slick ? 1.0f : ps.stance == Stance::Prone ? 19.0f : ps.stance == Stance::Crouch ? 12.0f : 9.0f;
+    if (ps.landTimer) accel *= 0.25f;
     accelerate(ps, wish, wishSpeed, accel, pml.frametime, mp);
     if (slick) ps.velocity[2] -= mp.gravity * pml.frametime;
     // Along the ground plane, keeping the speed.
@@ -778,9 +837,11 @@ void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, f
 // backwards only: × back; right only: ((strafe − 1)·0.75 + 1)·s), × 0.4 while leaning or with pm_flags 0x100; prone
 // × 0.15 and k 0.25 (0.24 with the 0.4), crouched × 0.65 and k 0.34 (0.315), standing k 0.335 (0.305), with
 // pm_flags 0x80 0.36 (0.325); the cycle advances by trunc(bobmove · msec + cycle) & 0xff.
-// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf), the footstep
-// events (0x50a6d0) and the ladder case.
-void updateBobCycle(PlayerState& ps, float f, float r, int ms, const MoveParams& mp) {
+// A footstep event (PM_FootstepEvent 0x50a6d0) fires whenever bit 7 of (cycle + 64) changes, on the walking or ground
+// plane (0x50abe6): the event of 0x508f20 for the ground's surface type: none for surface 0 (or flag 0x2000), prone
+// 0x2f + surface, walking (pm_flags 0x100 or leaning) 0x18 + surface, else the run step 1 + surface.
+// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf) and the ladder case.
+void updateBobCycle(PlayerState& ps, const Pml& pml, float f, float r, int ms, const MoveParams& mp) {
     if (!ps.onGround) return;
     const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
     if (xy < mp.moveThreshold) {
@@ -805,7 +866,12 @@ void updateBobCycle(PlayerState& ps, float f, float r, int ms, const MoveParams&
     else if (ps.viewHeightTarget == 40) { s *= 0.65f; k = slow ? 0.315f : 0.34f; }
     else k = slow ? 0.305f : 0.335f;
     const float bobmove = xy / s * k;
+    const int oldCycle = ps.bobCycle;
     ps.bobCycle = int(bobmove * float(ms) + float(ps.bobCycle)) & 0xff;
+    if ((pml.walking || pml.groundPlane) && (((oldCycle + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80)) {
+        const int surf = surfaceTypeOf(pml.groundTrace.surfaceFlags);
+        if (surf != 0) addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x2f + surf : (ps.adsSlow || ps.lean != 0) ? 0x18 + surf : 1 + surf);
+    }
 }
 
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
@@ -863,6 +929,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
         } else {
             ps.pmTimeMs = 0;
             ps.jumping = false;
+            ps.landTimer = false;
         }
     }
 
@@ -878,7 +945,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
-    updateBobCycle(ps, f, r, ms, mp);
+    updateBobCycle(ps, pml, f, r, ms, mp);
 }
 
 } // namespace

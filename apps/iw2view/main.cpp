@@ -2091,6 +2091,7 @@ int main(int argc, char** argv) {
         std::string aimBlendWeapon;
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
+        int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -3445,6 +3446,12 @@ int main(int argc, char** argv) {
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
                 }
+                // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
+                if (world) {
+                    if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
+                    for (; lastEventSeq < ps.eventSeq; ++lastEventSeq)
+                        world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
+                }
                 // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
                 if (!fellOut) {
                     const game::TraceResult under = pcw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 4000}, {0, 0, 0},
@@ -3619,6 +3626,7 @@ int main(int argc, char** argv) {
                     lerpPrev.clear();
                     lastDamageEvent = 0;
                     lastLandSeq = 0;
+                    lastEventSeq = 0;
                     viewImp.reset(); // 0x4ba570
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
