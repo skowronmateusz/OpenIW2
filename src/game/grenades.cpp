@@ -67,6 +67,12 @@ Vec3 World::grenadePosition(const GrenadeState& g, int64_t atMs) const {
     return {g.trBase[0] + g.trDelta[0] * t, g.trBase[1] + g.trDelta[1] * t, g.trBase[2] + g.trDelta[2] * t - 400.0f * t * t};
 }
 
+// BG_EvaluateTrajectory type 2 (0x4fae80) for the grenade's angular trajectory: base + delta · t.
+Vec3 World::grenadeAngles(const GrenadeState& g, int64_t atMs) const {
+    const float t = float(atMs - g.aTime) * 0.001f;
+    return {g.aBase[0] + g.aDelta[0] * t, g.aBase[1] + g.aDelta[1] * t, g.aBase[2] + g.aDelta[2] * t};
+}
+
 Vec3 World::grenadeVelocity(const GrenadeState& g, int64_t atMs) const {
     if (g.trType != 5) return {0, 0, 0};
     const float t = float(atMs - g.trTime) * 0.001f;
@@ -88,6 +94,24 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
     g.trBase = start;
     g.trDelta = velocity;
     e.obj->set("origin", Value(start));
+    // Angular trajectory (0x5275f0): base angles = vectoangles(velocity) with the pitch replaced by AngleMod(pitch − 120); linear
+    // spin per second: pitch r1/32768·90 + 675, yaw 0, roll r2/32768·90 + 315 (r = the game's rand() draws, 0x5a56f4, pitch
+    // first). TODO(spec): the AngleMod/vectoangles details beyond the current evidence.
+    {
+        const float hyp = std::sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
+        const float yaw = std::atan2(velocity[1], velocity[0]) * 57.29578f;
+        const float pitch = -std::atan2(velocity[2], hyp) * 57.29578f;
+        const float a = pitch - 120.0f;
+        const float pm = (360.0f / 65536.0f) * float(int(a * (65536.0f / 360.0f)) & 65535);
+        meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
+        const float r1 = float(meleeSeed_ >> 0x11 & 0x7fff);
+        meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
+        const float r2 = float(meleeSeed_ >> 0x11 & 0x7fff);
+        g.aBase = {pm, yaw, 0};
+        g.aDelta = {r1 / 32768.0f * 90.0f + 675.0f, 0, r2 / 32768.0f * 90.0f + 315.0f};
+        g.aTime = timeMs_;
+        e.obj->set("angles", Value(g.aBase));
+    }
     const std::string model = weaponField(weaponName, "projectileModel");
     if (!model.empty()) e.obj->set("model", Value(model));
     grenades_.push_back(&e);
@@ -104,6 +128,8 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
 bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
     GrenadeState& g = *e.grenade;
     const Vec3 v = grenadeVelocity(g, hitMs);
+    g.aBase = grenadeAngles(g, hitMs); // 0x525cb0: re-base the angular trajectory at the hit time (spin rescale: TODO(spec))
+    g.aTime = hitMs;
     const Vec3& n = tr.normal;
     const float d = dot(v, n);
     Vec3 nv = add(v, scale(n, -2.0f * d));
@@ -119,6 +145,8 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
             g.trBase = tr.endPos;
             g.trDelta = {0, 0, 0};
             g.onGround = true;
+            g.aDelta = {0, 0, 0}; // TODO(spec): the exe's angular trajectory of a resting grenade
+            e.obj->set("angles", Value(g.aBase));
             e.obj->set("origin", Value(tr.endPos));
             return false;
         }
@@ -250,6 +278,7 @@ void World::runGrenade(Entity& e) {
         g.pingMs = timeMs_;
     }
     if (!g.inHand) {
+        if (g.trType != 0) e.obj->set("angles", Value(grenadeAngles(g, timeMs_)));
         Vec3 o = originOf(e.obj);
         const int pass = g.parent ? g.parent->number : -1;
         if (g.trType == 0) {

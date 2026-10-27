@@ -139,6 +139,9 @@ struct GrenadeState {
     Vec3 landing{};                   // +0x154 predicted rest point, zero = none
     int64_t landingMs = 0;            // +0x160
     int64_t pingMs = -1000;           // +0x164 last grenade_ping
+    // Angular trajectory (type 2, linear: base + delta·t; set at 0x5275f0, re-based on a bounce 0x525cb0).
+    Vec3 aBase{}, aDelta{};
+    int64_t aTime = 0;
 };
 
 // The scripted animation block of an entity (+0x1d0, 0x60 bytes from the pool 0x82e980; src/game/animscripted.cpp).
@@ -596,6 +599,7 @@ private:
     // Grenades (src/game/grenades.cpp, src/game/actorgrenade.cpp)
     float gravity();
     float weaponFloat(const std::string& weaponName, const char* key);
+    Vec3 grenadeAngles(const GrenadeState& g, int64_t atMs) const;
     Vec3 grenadePosition(const GrenadeState& g, int64_t atMs) const;
     Vec3 grenadeVelocity(const GrenadeState& g, int64_t atMs) const;
     Entity& spawnGrenade(Entity& thrower, const std::string& weaponName, const Vec3& start, const Vec3& velocity, int fuseMs);
