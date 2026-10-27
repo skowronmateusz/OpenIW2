@@ -36,6 +36,22 @@ struct FxParticle {
     int seqStart = 0;
     float seqRate = 0;
     int seqLoopMode = 0, seqLoopTimes = 0;
+    // Emitter element (type 5, class vtable 0x57c760, created by 0x48d7d0). The instance is stepped per frame
+    // (0x480bd0): pos += velocity(u) * dt, with a bounce offset `bounceOff` (+0xc4) added to the velocity.
+    bool emitter = false;
+    std::string model;                  // chosen from `models` at random when useModel (0x10) is set
+    FVec pos{};                         // current position (+0x4)
+    FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
+    FVec ang{}, angRate{};              // +0x278 angles (degrees), +0x284 rates (per ms * 0.01)
+    bool rest = false;                  // flag 0x1000000: physics finished
+    int64_t lastMs = 0;                 // time the particle was stepped up to
+};
+
+// A model instance of an Emitter element with useModel, to be drawn by the host as a static xmodel.
+struct FxModelInst {
+    std::string model;
+    FVec pos{}, angles{};
+    float scale = 1.0f;
 };
 
 struct FxSprite {
@@ -103,6 +119,11 @@ public:
     FVec viewRight{1, 0, 0}, viewUp{0, 0, 1};
     // Drops finished particles and returns the visible ones at nowMs.
     std::vector<FxSprite> sprites(int64_t nowMs);
+    // World trace used by usePhysics (0x20) elements (0x486f70): segment a -> b with an optional box, true on a hit
+    // that is not start-solid, giving the fraction and the surface normal. Set by the host.
+    std::function<bool(const FVec& a, const FVec& b, float& frac, FVec& normal)> trace;
+    // Emitter models at the time of the last sprites() call.
+    const std::vector<FxModelInst>& models() const { return models_; }
     size_t count() const { return particles_.size(); }
     // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
@@ -138,6 +159,9 @@ private:
     std::vector<Tracer> tracers_;
     void runPending(int64_t nowMs);
     std::vector<FxSightBlocker> sightBlockers_;
+    std::vector<FxModelInst> models_;
+    FVec velocityAt(const FxParticle& p, float u) const;
+    void stepEmitter(FxParticle& p, int64_t nowMs);
 };
 
 } // namespace iw2::game
