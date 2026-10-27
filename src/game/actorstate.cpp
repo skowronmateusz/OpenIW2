@@ -508,9 +508,10 @@ void World::exposedNoncombat(Entity& e) {
     ActorAi& ai = e.ai;
     updateActorPath(e);
     if (!actorHasPath(e)) {
-        // TODO(spec): at a claimed node with spawnflag 0x8000 the stop/cover script runs with facing 6; 0x548be0
-        // (keepclaimednode / stop timing) is not read.
+        // 0x549520 (0x549643..0x5496d8): holding the position (0x502850) at a claimed node flagged 0x8000: facing 6, else 3.
+        // TODO(spec): 0x548be0 (keepclaimednode / stop timing) before the facing-3 stop choice is not read.
         ai.facing = 3;
+        if (e.claimedNode >= 0 && (nodes_[size_t(e.claimedNode)].spawnflags & 0x8000) && holdsPosition(e)) ai.facing = 6;
         if (entityOf(e.obj->get("enemy"))) {
             combatScript(e);
             return;
@@ -593,6 +594,45 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
         setActorAnimScript(e, "move", runNow ? 3 : 2, 1);
     if (!moving && ai.animMode == 1 && ai.movemode != 0) ai.stopSoonMs = 0;
     moveActor(e, 0.05f);
+}
+
+// Goal facing (FUN_00505d80, run by the movement frame FUN_00504160 right before FUN_00504ca0).
+// The facing mode (+0x104) selects the turn target: 6 -> the claimed node's yaw (node +0x20) when it is flagged 0x8000
+// (0x505dcc); 3 without an enemy -> the same node yaw when the actor stands at the node (0x502660: height within 80,
+// 2D distance within 30), after the hostile check 0x505790 (0x50596c..0x5059af). The target is stored by 0x504950 as a
+// 16-bit binary angle (trunc(deg * 65536/360) & 0xffff, * 360/65536) and 0x504ca0 turns the entity towards it, at most
+// 0.4 * 50 = 20 degrees per frame, re-quantising the yaw (pitch and roll 0), and refreshes desiredangle.
+// TODO(spec): modes 2, 4, 5 and 3 with an enemy / hostile target (0x505630, 0x505b80, 0x505cb0, 0x505790, 0x505a80), the
+// pair update by the path move (0x504aa0), orientmode (+0x114), the override angle (+0x159..0x160, 1.8 degrees/frame) and
+// the target while a path is followed (moveActor writes the yaw there).
+static Vec3 vecField(const ObjectPtr& o, const char* key) {
+    const Value v = o->get(key);
+    return v.isVector() ? v.asVector() : Vec3{0, 0, 0};
+}
+
+void World::actorFacing(Entity& e) {
+    const ActorAi& ai = e.ai;
+    if (e.path.count > 0 || e.claimedNode < 0) return;
+    const PathNode& n = nodes_[size_t(e.claimedNode)];
+    if (!(n.spawnflags & 0x8000)) return;
+    const Vec3 o = vecField(e.obj, "origin");
+    if (ai.facing == 3) {
+        if (entityOf(e.obj->get("enemy"))) return; // TODO(spec): 0x5059c2
+        const Vec3 np = vecField(n.obj, "origin");
+        const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
+        if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
+    } else if (ai.facing != 6) {
+        return;
+    }
+    auto quant = [](float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; }; // 0x591e68, 0x591f10
+    const float target = quant(vecField(n.obj, "angles")[1]);
+    const Vec3 a = vecField(e.obj, "angles");
+    float d = target - a[1]; // FUN_00423f50 (AngleNormalize180)
+    while (d > 180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    d = std::max(-20.0f, std::min(20.0f, d)); // 0.4 * +-50 (0x592030 / 0x592034)
+    e.obj->set("angles", Value(Vec3{0, quant(a[1] + d), 0}));
+    e.obj->set("desiredangle", Value(target)); // 0x504ca0
 }
 
 void World::registerActorStateBuiltins() {
