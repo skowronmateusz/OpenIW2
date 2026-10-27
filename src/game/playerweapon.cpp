@@ -53,8 +53,27 @@ void PlayerWeapon::enter(State s, const char* animKey, float duration) {
         anim_ = a.empty() ? idle : a;
         animTime_ = 0;
     }
-    const char* soundKey = s == State::Reloading ? "reloadSound" : s == State::Rechamber ? "rechamberSound" : nullptr;
-    if (soundKey && !fieldValue(soundKey).empty()) sounds_.push_back(fieldValue(soundKey));
+    // The cgame events of the state change play one sound each: the first non-empty of a priority chain (0x4ba8d0).
+    if (s == State::Reloading) {
+        // Reload 0x96 / reload-from-empty 0x97 (the latter for a bullet weapon with an empty clip, 0x4dd9d8): the player
+        // variants first (reloadSoundPlayer, reloadEmptySoundPlayer; swapped for 0x97), then reloadSound, reloadEmptySound.
+        const bool fromEmpty = clip_ == 0 && fieldValue("weaponType") == "bullet";
+        if (fromEmpty) playFirst({"reloadEmptySoundPlayer", "reloadSoundPlayer", "reloadEmptySound", "reloadSound"});
+        else playFirst({"reloadSoundPlayer", "reloadEmptySoundPlayer", "reloadSound", "reloadEmptySound"});
+    } else if (s == State::Rechamber) {
+        playFirst({"rechamberSoundPlayer", "rechamberSound"}); // event 0xa1
+    }
+}
+
+// The first non-empty sound of the current weapon among the keys (the cgame chains of 0x4ba8d0).
+void PlayerWeapon::playFirst(std::initializer_list<const char*> keys) {
+    for (const char* k : keys) {
+        const std::string v = fieldValue(k);
+        if (!v.empty()) {
+            sounds_.push_back(v);
+            return;
+        }
+    }
 }
 
 // A state whose view animation comes from another definition (the offhand's, or the new weapon's).
@@ -89,6 +108,7 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
     needsRechamber_ = false;
     triggerReleased_ = true;
     enter(State::Raising, "raiseAnim", time("raiseTime", 0.5f));
+    playFirst({"raiseSound"}); // event 0x9a (0x4dde44), once per raise (the alt raise re-enters with its own anim)
 }
 
 // Begin a weapon change (0x4ddb40): the drop takes altDropTime when the new weapon is this one's altWeapon, else
@@ -105,6 +125,9 @@ void PlayerWeapon::startDrop(const std::string& next) {
     }
     const bool alt = !next.empty() && next == fieldValue("altWeapon");
     enter(State::Dropping, alt ? "altDropAnim" : "dropAnim", time(alt ? "altDropTime" : "dropTime", 0));
+    // 0x4ddb40: event 0x9c (altSwitchSound) when the new weapon is the altWeapon, else 0x9b (putawaySound).
+    // TODO(spec): the putaway event is conditional on a client flag (+0x340 == 0 -> 1), assumed to hold for the player.
+    playFirst({alt ? "altSwitchSound" : "putawaySound"});
 }
 
 // The drop finished (PM_Weapon state 2): the command's weapon becomes the player's; the raise takes altRaiseTime
@@ -240,6 +263,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
                 anim_ = fieldValue("meleeAnim").empty() ? fieldValue("idleAnim") : fieldValue("meleeAnim");
                 animTime_ = 0;
                 events_.push_back({Event::MeleeSwing, name_});
+                playFirst({"meleeSwipeSound"}); // event 0xa3 (0x4df021)
                 if (time("meleeDelay", 0) == 0) {
                     meleeHit();
                 } else {
@@ -357,7 +381,15 @@ int PlayerWeapon::update(float dt, const Input& in) {
     if (clip_ == 0 && !in.proneMoving && (state_ == State::Ready || state_ == State::Rechamber) && startReload()) return 0;
     if (in.fire && (automatic || triggerReleased_)) {
         if (clip_ == 0) {
-            if (!startReload()) triggerReleased_ = false;
+            if (!startReload()) {
+                triggerReleased_ = false;
+                // No ammo (0x4deb70): a non-grenade weapon sends event 0x92 (the cgame plays player_out_of_ammo, 0x4baec1) and
+                // the next action waits 500 ms (0x4dec37).
+                if (fieldValue("weaponType") != "grenade") {
+                    sounds_.push_back("player_out_of_ammo");
+                    timer_ = 0.5f;
+                }
+            }
             return 0;
         }
         --clip_;

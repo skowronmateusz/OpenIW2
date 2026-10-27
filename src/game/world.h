@@ -446,7 +446,8 @@ public:
     const CollisionWorld& collision() const { return *collision_; }
 
     // Player fires the current weapon from `eye` along `forward` (unit vector).
-    void playerFire(const Vec3& eye, const Vec3& forward);
+    // lastShot: the clip ran empty with this shot (event 0xa0 instead of 0x9e: the last-shot sound replaces the fire sound).
+    void playerFire(const Vec3& eye, const Vec3& forward, bool lastShot = false);
     // Player weapon events (src/game/playeractions.cpp): the melee blow, the offhand throw and the offhand pick.
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
     void meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& weapon);
@@ -496,6 +497,7 @@ private:
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                 const std::string& location = "none");
     // attacker: the entity credited with the damage (nullptr = the world).
+    bool playerLastShot_ = false;
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
                       const std::string& weaponName = std::string(), int depth = 0);
     int weaponDamage(const std::string& weaponName);

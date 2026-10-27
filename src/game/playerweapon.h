@@ -75,7 +75,7 @@ public:
     std::string handModel() const;
     const std::string& anim() const { return anim_; }
     float animTime() const { return animTime_; }
-    // Sound aliases started by state changes since the last call (reload, rechamber).
+    // Sound aliases started by state changes since the last call (reload, rechamber, raise, putaway, melee swipe, empty click).
     std::vector<std::string> takeSounds() { return std::exchange(sounds_, {}); }
     std::vector<Event> takeEvents() { return std::exchange(events_, {}); }
     // Aim fraction 0..1 and whether it is rising (docs/spec/weapons.md, 0x4dd0d0).
@@ -105,6 +105,7 @@ private:
         OffhandInit = 12, OffhandPrepare = 13, OffhandHold = 14, OffhandThrow = 15, OffhandEnd = 16
     };
     std::string fieldValue(const char* key) const;
+    void playFirst(std::initializer_list<const char*> keys);
     float time(const char* key, float fallback) const;
     static std::string defValue(const Def& d, const char* key);
     static float defNumber(const Def& d, const char* key);
