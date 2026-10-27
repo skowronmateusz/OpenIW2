@@ -895,6 +895,29 @@ void updateBobCycle(PlayerState& ps, const Pml& pml, float f, float r, int ms, c
     }
 }
 
+// PM_FoliageSounds (0x50ac30, after the bob cycle): below bg_foliagesnd_minspeed the last-event time is cleared once
+// resetinterval has passed. From minspeed up the interval between events is slow + (fast - slow) · frac with
+// frac = clamp((speed - min) / (max - min), 0, 1); when it has elapsed, a box of 0.75 × the stance box (z 0.9 ×
+// maxs.z) at the origin traced with contents mask 2 (foliage) that is entirely inside it gives event 0x8b.
+// TODO(spec): the tested result byte is the allsolid flag by analogy with 0x507b31 (the frame offset at 0x50ad5e did
+// not resolve to 0x23 by hand); the trace's pass entity is ps+0xa8.
+void foliageSounds(const CollisionWorld& w, PlayerState& ps, const Pml& pml, const MoveParams& mp) {
+    const float speed = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
+    if (speed < mp.foliageMinSpeed) {
+        if (ps.lastFoliageMs + mp.foliageResetInterval < ps.timeMs) ps.lastFoliageMs = 0;
+        return;
+    }
+    float frac = (speed - mp.foliageMinSpeed) / (mp.foliageMaxSpeed - mp.foliageMinSpeed);
+    if (!(frac <= 1.0f)) frac = 1.0f;
+    const int interval = int(float(mp.foliageFastInterval - mp.foliageSlowInterval) * frac + float(mp.foliageSlowInterval));
+    if (ps.lastFoliageMs + interval >= ps.timeMs) return;
+    const Vec mins{pml.mins[0] * 0.75f, pml.mins[1] * 0.75f, pml.mins[2] * 0.75f};
+    const Vec maxs{pml.maxs[0] * 0.75f, pml.maxs[1] * 0.75f, pml.maxs[2] * 0.9f};
+    if (!w.trace(ps.origin, ps.origin, mins, maxs, 2u, pml.passEntity).allSolid) return;
+    addPlayerEvent(ps, 0x8b);
+    ps.lastFoliageMs = ps.timeMs;
+}
+
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
 // Leaving the ladder (0x50bd70): the flag 0x40000 marks a ladder that was just left.
 void clearLadder(PlayerState& ps) {
@@ -905,7 +928,8 @@ void clearLadder(PlayerState& ps) {
 // PM_CheckLadderMove (0x50bd90). A box 6 units smaller than the player's horizontally (mins z 8, maxs z at least 8) is
 // traced 8 units (walking) or 30 units along the facing, or along -vLadder when already climbing in the air; a hit on a
 // surface with flag 0x8 starts the climb (walking players must press forward), confirmed by a second trace against the
-// stored normal. TODO(spec): ps+0xd0 == 0xb (leaves the ladder), pm_flags 0x400 in the pm_time test.
+// stored normal. ps+0xd0 is the view height target (0x28 crouch, 0xb prone, as in PM_Footsteps 0x50a88b).
+// TODO(spec): pm_flags 0x400 (read as part of the 0x600 mask in the pm_time test) has no setter ported (knockback).
 void checkLadder(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float fwdMove, const Vec& fwd) {
     if (pml.walking) ps.ladderLeft = false;
     if (ps.pmTimeMs != 0 && !ps.onLadder && ps.landTimer) { clearLadder(ps); return; }
@@ -923,7 +947,8 @@ void checkLadder(const CollisionWorld& w, PlayerState& ps, Pml& pml, const Playe
         ps.onLadder = false;
         return;
     }
-    if (ps.ladderLeft || ps.timeMs - ps.lastJumpMs < 300) {
+    // 0x50be6f: the ladder is left with 0x40000 set, prone (ps+0xd0 == 11, the view height target), or within 300 ms of a jump.
+    if (ps.ladderLeft || ps.viewHeightTarget == 11 || ps.timeMs - ps.lastJumpMs < 300) {
         if (ps.onLadder) ps.ladderLeft = true;
         ps.onLadder = false;
         return;
@@ -952,8 +977,9 @@ void checkLadder(const CollisionWorld& w, PlayerState& ps, Pml& pml, const Playe
 // with k = clamp((view forward z + 0.25) · 2.5, -1, 1) (looking up climbs up); strafing runs along the ladder plane;
 // accel 9. Without forward the vertical speed decays by gravity · frametime, without strafing the sideways speed is
 // removed and gradually re-added (16 · frametime, at least 1); in the air the speed into the wall is removed and a
-// mostly vertical climb is pressed 50 units/s into the wall. TODO(spec): the ps+0x78 view yaw limit (written, consumer
-// not located).
+// mostly vertical climb is pressed 50 units/s into the wall. ps+0x78 (the ladder-relative yaw, clamped to ±75)
+// is only copied as a float into entityState+0x74 (BG_PlayerStateToEntityState 0x4e7a9b / 0x4fb42c), i.e. for the body model; no
+// first-person reader. TODO(spec): the entityState+0x74 consumer (third-person pose).
 void ladderMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float f, float r, const MoveParams& mp) {
     if (checkJump(ps, pml, in, mp)) {
         airMove(w, ps, pml, f, r, {std::cos(in.yaw * float(M_PI) / 180.0f), std::sin(in.yaw * float(M_PI) / 180.0f), 0},
@@ -1093,6 +1119,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
     updateBobCycle(ps, pml, f, r, ms, mp);
+    foliageSounds(w, ps, pml, mp);
 }
 
 } // namespace
