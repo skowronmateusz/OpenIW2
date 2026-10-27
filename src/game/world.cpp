@@ -501,8 +501,8 @@ void World::moveActor(Entity& e, float dt) {
         // direction, like the angles write above.
         e.obj->set("desiredangle", Value(yaw));
     }
-    // Stand on the ground.
-    const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::PlayerSolid);
+    // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
+    const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
     if (!tr.startSolid && tr.fraction < 1.0f) o[2] = tr.endPos[2];
     e.obj->set("origin", Value(o));
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
