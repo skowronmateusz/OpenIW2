@@ -372,6 +372,10 @@ public:
     std::vector<CompassMarker> compassVehicles() const;
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
     void debugDamage(Entity& e, int amount);
+    // Test hooks (iw2game IW2_TOUCH_TEST / IW2_ROCKET_TEST): the vehicle touch callback with the vehicle placed 100 units
+    // behind `t` moving at 400 units/s towards it; a vehicle rocket fired from 300 units away at `t`.
+    void debugVehicleTouch(Entity& v, Entity& t);
+    void debugVehicleRocket(Entity& v, Entity& t);
     bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
     void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
