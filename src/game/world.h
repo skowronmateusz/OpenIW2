@@ -351,6 +351,12 @@ public:
     // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
     float northYaw() const { return float(std::atof(northYaw_.c_str())); }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
+    // Script menus (src/game/menus.cpp): the client command "cmd mr <menu index> <response>" (exe 0x4ea700) notifies the player
+    // "menuresponse" (menu name, response). menuNames() is the precached list (configstrings 0x4ad+index).
+    void menuResponse(int menuIndex, const std::string& response);
+    const std::vector<std::string>& menuNames() const { return menus_; }
+    // freezecontrols(): client +0x8630 (0x5392e0); the front end ignores movement and button input while it is set.
+    bool controlsFrozen() const { return controlsFrozen_; }
     // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
     std::optional<LevelChange> dueLevelChange() const {
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
@@ -491,6 +497,10 @@ private:
     int ambientHandle_ = 0, musicHandle_ = 0;
     int nearestNode(const std::array<float, 3>& p) const;
 
+    // Script menus (src/game/menus.cpp)
+    void registerMenuBuiltins();
+    std::vector<std::string> menus_;
+    bool controlsFrozen_ = false;
     // Vehicles (src/game/vehicles.cpp)
     void registerVehicleBuiltins();
     // Turrets (src/game/turrets.cpp)

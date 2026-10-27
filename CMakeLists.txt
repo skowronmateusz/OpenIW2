@@ -69,7 +69,7 @@ add_library(iw2_game
   src/game/animtree.cpp
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
-  src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp
+  src/game/combat.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
@@ -80,7 +80,8 @@ target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_ui
-  src/ui/menu.cpp)
+  src/ui/menu.cpp
+  src/ui/menurun.cpp)
 target_include_directories(iw2_ui PUBLIC src)
 target_link_libraries(iw2_ui PUBLIC iw2_fs)
 target_compile_options(iw2_ui PRIVATE -Wall -Wextra -Wpedantic)
@@ -158,6 +159,9 @@ add_test(NAME sound COMMAND test_sound)
 add_executable(test_menu tests/test_menu.cpp)
 target_link_libraries(test_menu PRIVATE iw2_ui)
 add_test(NAME menu COMMAND test_menu)
+add_executable(test_menurun tests/test_menurun.cpp)
+target_link_libraries(test_menurun PRIVATE iw2_ui)
+add_test(NAME menurun COMMAND test_menurun)
 
 add_executable(test_movers tests/test_movers.cpp)
 target_link_libraries(test_movers PRIVATE iw2_game)

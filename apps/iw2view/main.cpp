@@ -29,6 +29,7 @@
 #include "game/turrets.h"
 #include "game/world.h"
 #include "ui/menu.h"
+#include "ui/menurun.h"
 #include "util/png.h"
 
 #include <SDL3/SDL.h>
@@ -1753,6 +1754,7 @@ int main(int argc, char** argv) {
     try {
         fs::Vfs vfs;
         vfs.mountDirectory(args[0]);
+        if (const char* overlay = std::getenv("IW2_OVERLAY")) vfs.mountDirectory(overlay); // debug: loose test scripts override the game files
 
         if (!SDL_Init(SDL_INIT_VIDEO | (shot.empty() && audioOn ? SDL_INIT_AUDIO : 0))) sdlFail("SDL_Init");
 
@@ -2171,6 +2173,58 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("MantleHint"))
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
+        // Script menus (openmenu, docs/spec/ui.md): loaded from "ui/scriptmenus/<name>.menu" on the first "popupopen" (0x4c3ad0).
+        ui::MenuLibrary scriptMenus(vfs);
+        const ui::Menu* activeMenu = nullptr;
+        float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
+        SDL_Window* menuWindow = nullptr; // set once the window exists
+        // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
+        ui::MenuEnv menuEnv;
+        menuEnv.getCvar = [&](const std::string& n) {
+            if (!world) return std::string();
+            const auto it = world->cvars.find(n);
+            return it == world->cvars.end() ? std::string() : it->second;
+        };
+        menuEnv.setCvar = [&](const std::string& n, const std::string& v) { if (world) world->cvars[n] = v; };
+        menuEnv.scriptMenuResponse = [&](const std::string& menu, const std::string& response) {
+            // "cmd mr <menu index> <response>" (0x4c8e20); the index is the menu's precache slot.
+            if (!world) return;
+            const auto& names = world->menuNames();
+            for (size_t i = 0; i < names.size(); ++i)
+                if (names[i] == menu) world->menuResponse(int(i), response);
+        };
+        menuEnv.close = [&](const std::string& menu) {
+            if (!activeMenu || activeMenu->name != menu) return;
+            activeMenu = nullptr;
+            if (menuWindow) SDL_SetWindowRelativeMouseMode(menuWindow, true);
+        };
+        menuEnv.play = [&](const std::string& alias) {
+            if (!world) return;
+            float duration = 0;
+            world->playSound(alias, nullptr, &duration);
+        };
+        ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
+        // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
+        // TODO(spec): the "1" (openmenunomouse) variant keeps the cursor hidden; here the cursor is always shown.
+        auto menuCommand = [&](const std::string& name, const std::string& arg) {
+            if (name == "popupclose") {
+                activeMenu = nullptr;
+                if (menuWindow) SDL_SetWindowRelativeMouseMode(menuWindow, true);
+                return;
+            }
+            const int idx = std::atoi(arg.c_str());
+            if (!world || idx < 0 || size_t(idx) >= world->menuNames().size()) return;
+            const std::string& menuName = world->menuNames()[size_t(idx)];
+            if (!scriptMenus.find(menuName)) scriptMenus.loadFile("ui/scriptmenus/" + menuName + ".menu");
+            activeMenu = scriptMenus.find(menuName);
+            if (!activeMenu) {
+                std::cerr << "warning: script menu " << menuName << " not found\n";
+                return;
+            }
+            menuMx = 320.0f, menuMy = 240.0f;
+            if (menuWindow) SDL_SetWindowRelativeMouseMode(menuWindow, false);
+            ui::runScript(activeMenu->onOpen, activeMenu->name, menuEnv);
+        };
         bool mantleHint = false;
         float hudAimSpread = 255.0f, hudViewHeight = 60.0f; // ps+0x5b0 and the view height for the crosshair
         // Damage direction icons (cgame 0x4ba2a0 → 8 slots at 0xf79704: start, duration, yaw).
@@ -2786,6 +2840,45 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            if (activeMenu) {
+                // A script menu (popup): items are laid out relative to the menu rect in the 640x480 virtual screen. Style 3
+                // (WINDOW_STYLE_SHADER) items draw their background material, text items their (localized) text; the item under
+                // the cursor uses the menu's focusColor. TODO(spec): the original's font choice by textscale (here the HUD's
+                // rule), the cursor material draw (ui/assets/3_cursor3 registered at 0x44ccc6, size 16) and ordering.
+                const ui::Menu& menu = *activeMenu;
+                const ui::Item* hover = ui::itemAt(menu, menuMx, menuMy);
+                auto col8 = [](const ui::Color& c) { return std::array<uint8_t, 4>{uint8_t(std::clamp(c[0], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[1], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[2], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[3], 0.0f, 1.0f) * 255)}; };
+                for (const auto& itp : menu.items) {
+                    const ui::Item& it = *itp;
+                    if (!it.visible) continue;
+                    const float ix = menu.rect.x + it.rect.x, iy = menu.rect.y + it.rect.y;
+                    if (it.style == 3 && !it.background.empty()) {
+                        Quad2D q{left43 + ix * sc, iy * sc, left43 + (ix + it.rect.w) * sc, (iy + it.rect.h) * sc};
+                        const auto c = col8(it.foreColor);
+                        std::memcpy(q.rgba, c.data(), 4);
+                        q.texture = materialTexture(it.background);
+                        out.push_back(q);
+                    }
+                    if (it.text.empty()) continue;
+                    std::string key = it.text;
+                    if (key[0] == '@') key.erase(0, 1);
+                    const std::string* t = loc.find(key);
+                    const std::string text = t ? *t : key;
+                    const float ts = it.textScale;
+                    const assets::Font* f = font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont");
+                    if (!f) continue;
+                    const float gs = ts * 48.0f / float(f->pixelHeight);
+                    const auto c = col8(&it == hover ? menu.focusColor : it.foreColor);
+                    const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
+                    hudText(front, text, left43 + (ix + it.textAlignX) * sc, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                }
+                {   // the cursor
+                    Quad2D q{left43 + (menuMx - 8.0f) * sc, (menuMy - 8.0f) * sc, left43 + (menuMx + 8.0f) * sc, (menuMy + 8.0f) * sc};
+                    std::memset(q.rgba, 255, 4);
+                    q.texture = materialTexture("ui/assets/3_cursor3");
+                    front.push_back(q);
+                }
+            }
             if (const char* key = std::getenv("IW2_HUD_TEXT")) { // debug: show a localized string
                 const std::string* t = loc.find(key);
                 const uint8_t yellow[4] = {255, 230, 120, 255};
@@ -2818,8 +2911,9 @@ int main(int argc, char** argv) {
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     world->frame();
-                    for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen too
+                    for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen and script menus too
                         if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
+                        else if (cmd.name == "popupopen" || cmd.name == "popupclose") menuCommand(cmd.name, cmd.arg);
                 }
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
@@ -2900,6 +2994,7 @@ int main(int argc, char** argv) {
         if (!SDL_ClaimWindowForGPUDevice(dev, window)) sdlFail("SDL_ClaimWindowForGPUDevice");
         renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window));
         SDL_SetWindowRelativeMouseMode(window, true);
+        menuWindow = window;
 
         uint64_t last = SDL_GetTicksNS();
         bool running = true;
@@ -2923,9 +3018,40 @@ int main(int argc, char** argv) {
         const game::MoveParams mp;
         game::MantleAnims mantleAnims;
         for (int i = 1; i < 11; ++i) mantleAnims.anims[size_t(i)] = viewAnim(vfs, game::mantleAnimName(i));
+        // Window pixels to the 640x480 virtual screen (4:3 area centred horizontally, as the HUD).
+        auto toVirtual = [&](float wx, float wy) {
+            int pw = 0, ph = 0, ww = 0, wh = 0;
+            SDL_GetWindowSizeInPixels(window, &pw, &ph);
+            SDL_GetWindowSize(window, &ww, &wh);
+            const float sc = float(ph) / 480.0f;
+            const float left = (float(pw) - 640.0f * sc) * 0.5f;
+            return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
+        };
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
+                if (activeMenu) {
+                    // A script menu owns the mouse (cursor) and ESC; key releases still reach the bindings.
+                    if (ev.type == SDL_EVENT_MOUSE_MOTION) {
+                        const auto v = toVirtual(ev.motion.x, ev.motion.y);
+                        menuMx = v[0], menuMy = v[1];
+                        continue;
+                    }
+                    if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                            const auto v = toVirtual(ev.button.x, ev.button.y);
+                            menuMx = v[0], menuMy = v[1];
+                            const ui::Menu* m = activeMenu;
+                            if (const ui::Item* hit = ui::itemAt(*m, menuMx, menuMy)) ui::runScript(hit->action, m->name, menuEnv);
+                        }
+                        continue;
+                    }
+                    if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.scancode == SDL_SCANCODE_ESCAPE) {
+                        ui::runScript(activeMenu->onEsc, activeMenu->name, menuEnv);
+                        continue;
+                    }
+                    if (ev.type == SDL_EVENT_KEY_DOWN) continue;
+                }
                 if (ev.type == SDL_EVENT_QUIT) running = false;
                 else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat)
                     input.key(keyName(ev.key.scancode), ev.type == SDL_EVENT_KEY_DOWN);
@@ -2941,8 +3067,15 @@ int main(int argc, char** argv) {
                     // CL_MouseMove 0x409720). The base 0.15 deg per count is kept (exe default sensitivity 5 · m_yaw 0.022 = 0.11, TODO(spec):
                     // SDL xrel units).
                     const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
-                    cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
-                    cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens, -89.0f, 89.0f);
+                    // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
+                    // the base 0.15 stands for the default.
+                    float pitchScale = 1.0f;
+                    if (world)
+                        if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
+                    if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
+                        cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
+                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens * pitchScale, -89.0f, 89.0f);
+                    }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
                 if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
@@ -2973,13 +3106,15 @@ int main(int argc, char** argv) {
             const bool onTurret = world && world->playerOnTurret();
             if (onTurret) world->clampPlayerView(cam.pitch, cam.yaw);
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
-            const uint32_t buttons = input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
+            // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
+            const bool controlsBlocked = activeMenu || (world && world->controlsFrozen());
+            const uint32_t buttons = controlsBlocked ? 0u : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
             const bool reloadPressed = (buttons & game::Button::Reload) && !(prevButtons & game::Button::Reload);
             prevButtons = buttons;
             if (world) {
                 game::World::PlayerCommand pc;
-                pc.forward = input.forwardMove();
-                pc.right = input.rightMove();
+                pc.forward = controlsBlocked ? 0 : input.forwardMove();
+                pc.right = controlsBlocked ? 0 : input.rightMove();
                 pc.buttons = buttons;
                 pc.viewAngles = {cam.pitch, cam.yaw, 0};
                 pc.stance = ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0;
@@ -3046,8 +3181,8 @@ int main(int argc, char** argv) {
                 }
                 havePrevBody = false;
                 game::PlayerInput in;
-                in.forward = float(input.forwardMove()) / 127.0f;
-                in.right = float(input.rightMove()) / 127.0f;
+                in.forward = controlsBlocked ? 0.0f : float(input.forwardMove()) / 127.0f;
+                in.right = controlsBlocked ? 0.0f : float(input.rightMove()) / 127.0f;
                 in.jump = (buttons & game::Button::Jump) != 0;
                 in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
                             : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
@@ -3284,7 +3419,9 @@ int main(int argc, char** argv) {
                 }
                 for (const auto& cmd : world->takeClientCommands()) {
                     std::istringstream a(cmd.arg);
-                    if (cmd.name == "obj_update" || cmd.name == "obj_complete")
+                    if (cmd.name == "popupopen" || cmd.name == "popupclose") {
+                        menuCommand(cmd.name, cmd.arg);
+                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 4000000000ull}); // display time inferred
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)

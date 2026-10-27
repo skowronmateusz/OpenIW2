@@ -65,3 +65,30 @@ after 0.05 s the title line, after `pause1` the place and date lines, after `pau
 `jumpto` set to something other than `start`, skip it. Checked on `moscow` with the Polish strings
 (`iw2view <main> moscow --sim-seconds 4`: title, place and date on black; at 8 s the fade-out is under way and the
 info line is shown; at 12 s only the game HUD is left).
+
+## Script menus (openmenu, moscow invert-axis prompt)
+
+moscow asks "invert mouse look?" after the player shoots the teddy bear (`maps/moscow.gsc` ~1580: `openMenu("invert_axis1")`,
+`freezecontrols(true)`, `setblur(5, .1)`, `player waittill("menuresponse", menu, response)`; `try_invert` repeats the
+shooting and opens `invert_axis2`). Evidence:
+
+- `precachemenu(name)` (0x4f8860) stores the name in one of 32 configstring slots 0x4ad+; an already stored name only prints.
+- `openmenu` (0x539000) / `openmenunomouse` (0x539110): the entity must be the player; the server sends the client command
+  `popupopen <index>` (`popupopen <index> 1` for no mouse). `closemenu` (0x539220) sends `popupclose`. The client handles both
+  at 0x4a7094 and loads `ui/scriptmenus/<name>.menu` (0x4c3ad0).
+- `freezecontrols(on)` (0x5392e0) stores the argument in client +0x8630; ClientThink (0x4e7bc0) turns it into ps `pm_flags` 0x8000.
+  The front end stops movement, buttons and view changes meanwhile. TODO(spec): the exact pmove effect of 0x8000.
+- The menu command `scriptMenuResponse "x"` (command table entry 0x4c8e20) sends `cmd mr <menu index> x`; the server command
+  `mr` (0x4ea700) notifies the player `menuresponse` with (menu name, response): argc != 3 gives ("", "bad"), an index outside
+  0..31 an empty name.
+- `execnow "toggle ui_mousePitch"` (0x433b80 -> 0x433a10) flips the bool dvar; `uiScript update ui_mousePitch` (0x4c5118) sets
+  the cvar `m_pitch` to -0.022 (0xbcb43958) when the bool is set and +0.022 (0x3cb43958) otherwise. At UI start-up
+  `ui_mousePitch = (m_pitch < 0)` (0x4c30db). The mouse look pitch change is `dy * m_pitch`, so a negative value inverts it.
+- invert_axis1: "Tak" -> toggle + response `try_invert`; "Nie" and ESC -> `accept_normal`. invert_axis2 reverses the roles
+  (its "Nie" toggles back and answers `try_invert`).
+
+Implementation: `World` (src/game/menus.cpp), `ui::runScript` (src/ui/menurun.cpp), iw2view menu draw and mouse cursor
+(`ui/assets/3_cursor3` registered at 0x44ccc6). TODO(spec): font choice by textscale, cursor draw details and focus sounds, the
+`openmenunomouse` cursor state, the console commands other than `toggle`, the error text for a menu that was not precached.
+Headless check: `iw2game <main> <map> --answer-menus try_invert,accept_normal` answers the menus that open; `IW2_OVERLAY=<dir>`
+mounts loose test scripts over the game files.
