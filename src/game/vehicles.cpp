@@ -1213,6 +1213,19 @@ void World::registerVehicleBuiltins() {
         vehicleJolt(*e, d, c.arg(1).asFloat(), c.argc() > 2 ? c.arg(2).asFloat() : 0.0f, c.argc() > 3 ? c.arg(3).asFloat() * kMphToIps : 0.0f);
         return Value();
     });
+    // TODO(spec): the consumers of +0x190 (compass icon, cgame) and +0x194 (look-at hint) are not drawn yet.
+    vm_.registerBuiltin("addvehicletocompass", [this](CallContext& c) {
+        vehicleState(c.self).onCompass = true;
+        return Value();
+    });
+    vm_.registerBuiltin("removevehiclefromcompass", [this](CallContext& c) {
+        vehicleState(c.self).onCompass = false;
+        return Value();
+    });
+    vm_.registerBuiltin("setvehiclelookattext", [this](CallContext& c) {
+        vehicleState(c.self).lookAtText = c.argc() > 0 ? c.arg(0).toString() : std::string();
+        return Value();
+    });
     vm_.registerBuiltin("startenginesound", [this](CallContext& c) {
         vehicleState(c.self).engineOn = true; // 0x513e80: +0x1ec = 1
         return Value();
