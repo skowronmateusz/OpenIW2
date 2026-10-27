@@ -211,4 +211,105 @@ float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac,
     return cgFov - (cgFov - zoom) * t;
 }
 
+
+// ---- Recoil ----
+float RecoilKick::rand01() {
+    // The exe uses the CRT rand() / 32768 (0x553d5d); a deterministic LCG stands in for it.
+    seed_ = seed_ * 1103515245u + 12345u;
+    return float((seed_ >> 16) & 0x7fff) / 32768.0f;
+}
+
+void RecoilKick::fire(const Field& w, float adsFrac, bool reducedKick) {
+    auto lerp = [&](const char* mn, const char* mx) { return w(mn) + (w(mx) - w(mn)) * rand01(); };
+    const bool adsView = adsFrac == 1.0f; // view kick: ADS block only at exactly 1.0
+    const bool adsGun = adsFrac > 0.0f;   // gun kick: ADS block for any positive fraction
+    float reduce = 1.0f;
+    if (reducedKick) reduce = w(adsView ? "adsGunKickReducedKickPercent" : "hipGunKickReducedKickPercent") * 0.01f;
+    const float vp = (adsView ? lerp("adsViewKickPitchMin", "adsViewKickPitchMax") : lerp("hipViewKickPitchMin", "hipViewKickPitchMax")) * reduce;
+    const float vy = (adsView ? lerp("adsViewKickYawMin", "adsViewKickYawMax") : lerp("hipViewKickYawMin", "hipViewKickYawMax")) * reduce;
+    viewVel_ = {-vp, vy, vy * -0.5f};
+    const float gp = adsGun ? lerp("adsGunKickPitchMin", "adsGunKickPitchMax") : lerp("hipGunKickPitchMin", "hipGunKickPitchMax");
+    const float gy = adsGun ? lerp("adsGunKickYawMin", "adsGunKickYawMax") : lerp("hipGunKickYawMin", "hipGunKickYawMax");
+    gunVel_[0] += gp * reduce;
+    gunVel_[1] += gy * reduce;
+}
+
+namespace {
+// 0x4b5bc0: one step of the gun-kick integrator; returns true when at rest.
+bool gunKickStep(float dt, float limit, float accel, float speedMax, float speedDecay, float staticDecay, float& pos, float& vel) {
+    if (std::fabs(pos) < 0.25f && std::fabs(vel) < 1.0f) {
+        pos = vel = 0;
+        return true;
+    }
+    pos += dt * vel;
+    if (pos > limit) {
+        pos = limit;
+        if (vel > 0) vel = 0;
+    } else if (pos < -limit) {
+        pos = -limit;
+        if (vel < 0) vel = 0;
+    }
+    if (pos > 0) vel -= dt * accel;
+    else if (pos < 0) vel += dt * accel;
+    vel -= dt * vel * speedDecay;
+    if (vel > 0) {
+        vel -= dt * staticDecay;
+        if (vel < 0) vel = 0;
+    } else {
+        vel += dt * staticDecay;
+        if (vel > 0) vel = 0;
+    }
+    if (vel > speedMax) vel = speedMax;
+    else if (vel < -speedMax) vel = -speedMax;
+    return false;
+}
+} // namespace
+
+void RecoilKick::update(const Field& w, int ms, bool hasWeapon, float adsFrac) {
+    // View-kick spring (0x4ade00), steps of at most 5 ms.
+    for (int rem = ms; rem > 0;) {
+        const int step = std::min(rem, 5);
+        rem -= step;
+        const float dt = float(step) * 0.001f;
+        for (int i = 0; i < 3; ++i) {
+            float& v = viewVel_[size_t(i)];
+            float& p = viewPos_[size_t(i)];
+            if (v == 0 && p == 0) continue;
+            if (p != 0) {
+                const float dir = p > 0 ? -1.0f : 1.0f;
+                const float speed = hasWeapon ? (adsFrac > 0.5f ? w("adsViewKickCenterSpeed") : w("hipViewKickCenterSpeed")) : 2400.0f;
+                v += dir * speed * dt;
+            }
+            float x = dt * v;
+            if (x * p < 0) x *= 0.06f;
+            const float np = p + x;
+            if (np * p < 0) {
+                p = 0;
+                v = 0;
+            } else {
+                p = np;
+                if (np == 0) v = 0;
+                else if (std::fabs(np) > 10.0f) {
+                    p = np > 0 ? 10.0f : -10.0f;
+                    v = 0;
+                }
+            }
+        }
+    }
+    // Gun-kick spring (0x4b5d10): only for weapons with aimDownSight.
+    if (w("aimDownSight") == 0) return;
+    auto blend = [&](const char* hip, const char* ads) { return w(hip) + (w(ads) - w(hip)) * adsFrac; };
+    const float accel = blend("hipGunKickAccel", "adsGunKickAccel"), speedMax = blend("hipGunKickSpeedMax", "adsGunKickSpeedMax");
+    const float speedDecay = blend("hipGunKickSpeedDecay", "adsGunKickSpeedDecay");
+    const float staticDecay = blend("hipGunKickStaticDecay", "adsGunKickStaticDecay");
+    const float maxPitch = w("gunMaxPitch"), maxYaw = w("gunMaxYaw");
+    for (int rem = ms; rem > 0;) {
+        const int step = std::min(rem, 5);
+        rem -= step;
+        const float dt = float(step) * 0.001f;
+        gunKickStep(dt, maxPitch, accel, speedMax, speedDecay, staticDecay, gunPos_[0], gunVel_[0]);
+        gunKickStep(dt, maxYaw, accel, speedMax, speedDecay, staticDecay, gunPos_[1], gunVel_[1]);
+    }
+}
+
 } // namespace iw2::game

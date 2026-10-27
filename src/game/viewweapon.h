@@ -35,6 +35,27 @@ private:
     bool havePrev_ = false;
 };
 
+// Weapon recoil. fire(): the impulse of the cgame fire event (0x4dfea0); update(): the view-kick
+// spring (0x4ade00; pos is added to the view angles) and the gun-kick spring (0x4b5d10 / integrator 0x4b5bc0; pos is added to
+// the view-model angles). Angles in degrees, pitch/yaw/roll order.
+class RecoilKick {
+public:
+    using Field = ViewWeaponMotion::Field;
+    // adsFrac: the player's aim fraction. reducedKick: ps+0x40 > 0 (TODO(spec): meaning).
+    void fire(const Field& w, float adsFrac, bool reducedKick);
+    // hasWeapon: the current weapon index is non-zero (otherwise the centring speed is the constant 2400).
+    void update(const Field& w, int ms, bool hasWeapon, float adsFrac);
+    const V3& viewKick() const { return viewPos_; }   // 0xf798c8
+    V3 gunKick() const { return {gunPos_[0], gunPos_[1], 0}; } // 0xf79928..30
+    void reset() { *this = RecoilKick{}; }
+
+private:
+    float rand01();
+    V3 viewVel_{}, viewPos_{};
+    float gunVel_[2] = {0, 0}, gunPos_[2] = {0, 0};
+    unsigned seed_ = 1;
+};
+
 // Gun bob angles (cgame 0x4b4a90, added to the weapon angles by 0x4b4d10): pitch, yaw, roll in degrees from the
 // player state's bob cycle (0..255), the horizontal speed and the view height target (11 prone, 40 crouched).
 // adsBobFactor: the weapon's; reticle: the weapon has an adsOverlayReticle (then also × (1 − adsFrac)).

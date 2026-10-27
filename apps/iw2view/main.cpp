@@ -1702,6 +1702,7 @@ int main(int argc, char** argv) {
         // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
+        game::RecoilKick recoil;
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -1760,6 +1761,10 @@ int main(int argc, char** argv) {
             const auto mv = vmMotion.move();
             auto rt = vmMotion.rot();
             for (int k = 0; k < 3; ++k) rt[size_t(k)] += gunBobAngles[size_t(k)]; // 0x4b4d10
+            {
+                const auto gk = recoil.gunKick(); // 0x4b5d10
+                for (int k = 0; k < 3; ++k) rt[size_t(k)] += gk[size_t(k)];
+            }
             base.transform = entityTransform(c.pos + c.forward() * mv[0] + c.right() * mv[1] + cross(c.right(), c.forward()) * mv[2],
                                              {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
             if (const char* dbg = std::getenv("IW2_VIEWMODEL_DEBUG")) {
@@ -2721,6 +2726,7 @@ int main(int argc, char** argv) {
                                                 ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"),
                                                 !ret.empty() && ret != "none");
                 }
+                recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
                                           pweapon.adsZoomingIn());
@@ -2735,6 +2741,7 @@ int main(int argc, char** argv) {
                     hs.fireAdd = pweapon.number("hipSpreadFireAdd");
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
+                for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
@@ -2842,6 +2849,8 @@ int main(int argc, char** argv) {
                 }
             }
             const Camera camBase = cam;
+            cam.pitch += recoil.viewKick()[0]; // view kick spring (0x4ae327)
+            cam.yaw += recoil.viewKick()[1];
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
             fxRight = cam.right();

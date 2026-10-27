@@ -140,6 +140,10 @@ add_executable(test_clientinput tests/test_clientinput.cpp)
 target_link_libraries(test_clientinput PRIVATE iw2_game)
 add_test(NAME clientinput COMMAND test_clientinput)
 
+add_executable(test_recoil tests/test_recoil.cpp)
+target_link_libraries(test_recoil PRIVATE iw2_game)
+add_test(NAME recoil COMMAND test_recoil)
+
 add_executable(test_sound tests/test_sound.cpp)
 target_link_libraries(test_sound PRIVATE iw2_audio)
 add_test(NAME sound COMMAND test_sound)
