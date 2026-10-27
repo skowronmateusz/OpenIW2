@@ -22,5 +22,13 @@ int main() {
     check(d >= 99 && d <= 100, "dvar overrides the vehicle scale");
     check(vehicleTexScrollStep(1, 40, 0.0f, 0.0f, 5.5f) == 40, "stationary keeps the value");
     check(vehicleTexScrollOffset(-1) == 0.0f && vehicleTexScrollOffset(1500) > 1.4999f && vehicleTexScrollOffset(1500) < 1.5001f, "offset = acc / 1000, negative skipped");
+    {
+        // Body jolt step (0x510770): amplitude 1 -> 0 in 20 thinks, phase +36 degrees each.
+        float amp = 1, phase = 90, p = 0, r = 0;
+        check(vehicleJoltStep(amp, phase, 2.0f, 4.0f, p, r) && p > 1.999f && p < 2.001f && r > 3.999f && r < 4.001f, "jolt first step");
+        check(amp > 0.949f && amp < 0.951f && phase == 126.0f, "jolt decay and phase");
+        amp = 0;
+        check(!vehicleJoltStep(amp, phase, 1, 1, p, r), "idle jolt");
+    }
     return failures;
 }

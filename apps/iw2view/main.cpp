@@ -1975,7 +1975,8 @@ int main(int argc, char** argv) {
                     for (size_t bi = 0; bi < vm->parts.bones.size(); ++bi) {
                         std::string n = vm->parts.bones[bi].name;
                         for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                        if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0)});
+                        if (n == "tag_body") ctl.push_back({int(bi), assets::anglesQuat(e->vehicle->joltPitch, 0, e->vehicle->joltRoll)});
+                        else if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0)});
                         else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0)});
                     }
                     assets::XPose vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
