@@ -225,6 +225,12 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             fill(e.obj);
             if (cls == "info_player_start") starts.push_back(e.obj);
+            if (cls == "trigger_hurt") { // spawn 0x5292a0: dmg 0 becomes 5; spawnflags 1 (start off) selects handler 6, else 7
+                const Value dv = e.obj->get("dmg");
+                if (!dv.isNumber() || dv.asInt() == 0) e.obj->set("dmg", Value(int32_t(5)));
+                const Value sf = e.obj->get("spawnflags");
+                if (sf.isNumber() && (sf.asInt() & 1)) e.obj->set("$hurtOff", Value(true));
+            }
         } else if (startsWith(cls, "weapon_") && weapon(cls.substr(7))) {
             // weapon_<name> with a known weapon is an item entity (0x4f96d0 → item spawn 0x522c70).
             // TODO(spec): item spawn details (model from the weapon, drop to floor, pickup).
@@ -730,6 +736,23 @@ void World::runTriggers() {
             continue;
         if (e->obj->get("$disabled").truthy()) continue;
         const Value sf = e->obj->get("spawnflags");
+        // trigger_hurt (spawn 0x5292a0) sets its contents to 0x405c0008 itself, so spawnflags 8 does not exclude it.
+        if (e->classname == "trigger_hurt") {
+            if (e->obj->get("$hurtOff").truthy() || !triggerContact(*e, pmin, pmax)) continue;
+            // Touch function 0x5291d0: the next hit is due at ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms);
+            // G_Damage(other, self, self, no direction, no point, dmg, flags (spawnflags 8) << 2, MOD_TRIGGER_HURT); then
+            // spawnflags 0x20 switches it off (handler 6). Spawnflags 2 skips actors (the player is not one).
+            // TODO(spec): the damage flag 0x20 (spawnflags 8) is not modelled by damage(); actors do not touch triggers here.
+            const int flags = sf.isNumber() ? sf.asInt() : 0;
+            const Value nt = e->obj->get("$hurtNext");
+            if (nt.isNumber() && nt.asInt() > timeMs_) continue;
+            e->obj->set("$hurtNext", Value(int32_t(timeMs_ + ((flags & 0x10) ? 1000 : 50))));
+            vm_.notify(e->obj, "trigger", {Value(player_->obj)}); // the touch record 0x528cb0
+            const Value dv = e->obj->get("dmg");
+            damage(*player_, e.get(), dv.isNumber() ? dv.asInt() : 5, Vec3{0, 0, 0}, Vec3{0, 0, 0}, "MOD_TRIGGER_HURT");
+            if (flags & 0x20) e->obj->set("$hurtOff", Value(true));
+            continue;
+        }
         if (sf.isNumber() && (sf.asInt() & 8)) continue;
         if (triggerContact(*e, pmin, pmax)) fired.push_back(e.get());
     }

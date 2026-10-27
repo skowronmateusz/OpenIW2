@@ -382,3 +382,18 @@ direction with the 2D direction vehicle -> other < 0.8 (0x591f94) does nothing; 
   Splash on a second entity next to the impact is not staged.
 - Still open here: barrel pull-back endpoints (0x44c1b0 line and the two tags), eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
   and the sound entities' pitch (see the TODO(spec) markers above).
+
+## Handler 6 / 7 is trigger_hurt (checked)
+
+Use function 0x529280 (handler table 0x5a573c +4, entries 6 and 7) toggles ent+0x116 between 6 (off, no touch) and 7 (on, touch 0x5291d0). Spawn 0x5292a0: contents 0x405c0008, dmg (+0x144) 0 becomes 5, handler 6 when spawnflags bit 1, else 7. Touch 0x5291d0: needs takedamage (+0x111); spawnflags 2 skips actors; waits until ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms); records the touch (0x528cb0); G_Damage(other, self, self, no dir, no point, dmg, (spawnflags & 8) << 2, MOD_TRIGGER_HURT = 13); spawnflags 0x20 then switches it off. Implemented for the player (runTriggers, `useby` toggle). TODO(spec): damage flag 0x20 inside G_Damage, actors touching triggers, use function 0x529450 (handler 8).
+
+## Player link angles (checked)
+
+VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0x214 (the barrel tag) is valid, a second transform is read and used for the orientation. Approximated with the barrel tag's turned forward (the 0x424b70 conversion is not decoded).
+
+## Think calls, frozen controls, wheels (checked)
+
+- ps+0xc 0x8000 is the freezecontrols flag (client +0x8630). The driven vehicle's command and the fire button are blocked by it (implemented); the second source +0x8698 is TODO(spec).
+- 0x5107e0 sets ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45), 0 when the vehicle info has no steerWheels. 0x510770 (jolt step) and 0x510870 (tread scroll) were already implemented.
+- Turret spin and stop sounds, engine pitch: already implemented in updateVehicleEngineSound (0x510be0).
+- Wheels: the cgame function 0x4ac2b0 (with 0x4ac6b0 interpolating ent+0x64/0x6c/0x70/0x74/0x94/0x60 into 0x16c..0x180) runs a per-wheel loop over the six wheel tags (names at 0x5a4cb4..0x5a4ccc), traces each wheel position down (mask 0x211) and sets a bone control that moves the wheel to the ground; the first two wheels also get the steering angle. Visual only and the control layout (0x4746e0 with translation) is not implemented: TODO(spec).
