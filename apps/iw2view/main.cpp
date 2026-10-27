@@ -905,6 +905,15 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
 // y * 32 + x. Column x has t = clamp(x / 30, 0, 1) and exponent P = ln 0.1 / ln cos((180 - 175 t) / 4 degrees), i.e. cos^P
 // reaches 0.1 at that angle (column 31: P = 30). Row y is N.H = y / 255 and the byte is round(255 * (y / 255)^P).
 // U = specularMap.a (the power), V = N.H, sampled with linear filtering and clamped (sampler state 0x32 at 0x10038e0a).
+// r_specularColorScale (gfx DLL dvar 0x101ce638, default 1, range 0.01..100): lightSpecular0 = lightColor0 * scale. IW2_SPEC_SCALE sets it.
+float specColorScaleDvar() {
+    static const float v = [] {
+        const char* e = std::getenv("IW2_SPEC_SCALE");
+        return e ? std::clamp(float(std::atof(e)), 0.01f, 100.0f) : 1.0f;
+    }();
+    return v;
+}
+
 std::vector<uint8_t> specularityTable() {
     std::vector<uint8_t> t(32 * 256);
     for (int x = 0; x < 32; ++x) {
@@ -1702,6 +1711,7 @@ struct Renderer {
                         any = true;
                     }
                     SDL_BindGPUGraphicsPipeline(pass, specPipelines[int(p)][b.polygonOffset][b.cull]);
+                    const float specColorScale = specColorScaleDvar();
                     struct SVU { VU base; float sun[4]; } svu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
                     svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                     SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
@@ -1711,7 +1721,7 @@ struct Renderer {
                                                            {scene.textures[size_t(b.specTex)], repeatSampler}, {scene.specularity, clampSampler}};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 6);
                     FragmentUniforms fu = {
-                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
