@@ -53,17 +53,21 @@ Vec3 viewForward(const Vec3& angles) {
 
 // The turret's pitch and yaw towards view angles (0x51db50 / 0x51b140): AngleDelta from the turret's angles, then
 // held inside the arcs (a value at or past an arc takes the arc).
-void turretAnglesFromView(TurretState& ts, const Vec3& base, const Vec3& view) {
+void turretAnglesFromView(const TurretState& ts, const Vec3& base, const Vec3& view, float& pitch, float& yaw) {
     float p = angleDelta(view[0], base[0]);
     const float p0 = p;
     if (p0 - ts.bottomArc >= 0.0f) p = ts.bottomArc;
     if (ts.topArc - p0 >= 0.0f) p = ts.topArc;
-    ts.pitch = p;
+    pitch = p;
     float y = angleDelta(view[1], base[1]);
     const float y0 = y;
     if (y0 - ts.leftArc >= 0.0f) y = ts.leftArc;
     if (ts.rightArc - y0 >= 0.0f) y = ts.rightArc;
-    ts.yaw = y;
+    yaw = y;
+}
+
+void turretAnglesFromView(TurretState& ts, const Vec3& base, const Vec3& view) {
+    turretAnglesFromView(ts, base, view, ts.pitch, ts.yaw);
 }
 
 } // namespace
@@ -78,6 +82,30 @@ Vec3 World::playerEye() {
     }
     const game::Vec lo = leanOffset(playerCmd_.viewAngles[1], playerCmd_.lean);
     return {o[0] + lo[0], o[1] + lo[1], o[2] + playerCmd_.viewHeight + lo[2]};
+}
+
+// The turret's pitch and yaw for the given view angles (the same rule as the 20 Hz think), evaluated for any view so
+// the client can pose the gun and the eye from one pair per rendered frame.
+bool World::playerTurretAnglesFor(const Vec3& view, float& pitch, float& yaw) {
+    if (!playerOnTurret() || !playerTurret_ || !playerTurret_->turret) return false;
+    const Value a = playerTurret_->obj->get("angles");
+    turretAnglesFromView(*playerTurret_->turret, a.isVector() ? a.asVector() : Vec3{0, 0, 0}, view, pitch, yaw);
+    return true;
+}
+
+// tag_player with the turret bone controls (0x4ab0d0) at the given pitch and yaw instead of the stored think angles.
+// TODO(spec): whether the original cgame poses the eye per client frame (0x4e8b70 is the server side; the cgame view
+// origin path was not read).
+bool World::playerTurretEyeAt(float pitch, float yaw, Vec3& eye) {
+    if (!playerTurret_ || playerTurret_->obj->removed || !playerTurret_->turret) return false;
+    TurretState& ts = *playerTurret_->turret;
+    const float sp = ts.pitch, sy = ts.yaw;
+    ts.pitch = pitch;
+    ts.yaw = yaw;
+    const bool ok = turretTag(*playerTurret_, "tag_player", eye);
+    ts.pitch = sp;
+    ts.yaw = sy;
+    return ok;
 }
 
 bool World::playerTurretEye(Vec3& eye) {

@@ -300,6 +300,10 @@ public:
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
+    // Per rendered frame on a turret: the pitch/yaw the turret takes toward `view`
+    // inside its arcs, and tag_player at a given pitch/yaw, so the drawn gun and the eye use one pair.
+    bool playerTurretAnglesFor(const Vec3& view, float& pitch, float& yaw);
+    bool playerTurretEyeAt(float pitch, float yaw, Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
