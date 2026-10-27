@@ -5239,6 +5239,12 @@ int main(int argc, char** argv) {
                         shockSeenStart = rec ? int(ss.startMs) : -1;
                         shockEndPlayed = !rec;
                     }
+                    {
+                        // Channel volumes during the shock (shockChannelVolume, f = shockSoundFraction); 1 once it is over.
+                        const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
+                        const float f = rec ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
+                        for (int c = 0; c < 11; ++c) mixer.channelScale[c] = rec ? game::shockChannelVolume(*rec, c, f) : 1.0f;
+                    }
                     if (rec && rec->sound) {
                         const int el = int(world->timeMs() - ss.startMs);
                         const float b = game::shockLoopBlend(*rec, el, ss.durationMs);

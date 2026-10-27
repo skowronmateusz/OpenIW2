@@ -9,6 +9,16 @@
 #include <stdexcept>
 
 namespace iw2::audio {
+
+namespace {
+int channelIndex(const std::string& c) {
+    static const char* const kChannels[11] = {"auto", "auto2d", "menu", "body", "item", "weapon",
+                                              "voice", "local", "music", "announcer", "shellshock"};
+    for (int i = 0; i < 11; ++i)
+        if (c == kChannels[i]) return i;
+    return -1;
+}
+} // namespace
 namespace {
 
 uint32_t u32(std::span<const uint8_t> d, size_t at) {
@@ -193,6 +203,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     v.distMin = a->distMin;
     v.distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 10.0f; // inferred default
     v.loop = a->loop;
+    v.chan = channelIndex(a->channel);
     int handle;
     {
         std::lock_guard lock(mutex_);
@@ -224,6 +235,7 @@ int Mixer::playBlend(const std::string& low, const std::string& high, float f, c
     const float dmax = hi->distMax > hi->distMin ? hi->distMax : hi->distMin * 10.0f;
     v.distMax = dmax;
     v.loop = true;
+    v.chan = channelIndex(lo->channel);
     std::lock_guard lock(mutex_);
     {
         // Culled when the listener is farther than lerp(distMax) (0x44247b); a running loop is not culled again.
@@ -304,8 +316,9 @@ void Mixer::mix(float* out, int frames) {
     for (Voice& v : voices_) {
         float gl, gr;
         gains(v, gl, gr);
-        gl *= masterVolume * fadeVolume;
-        gr *= masterVolume * fadeVolume;
+        const float cs = v.chan >= 0 ? channelScale[v.chan] : 1.0f;
+        gl *= masterVolume * fadeVolume * cs;
+        gr *= masterVolume * fadeVolume * cs;
         const Wav& w = *v.wav;
         const size_t n = w.frames();
         for (int i = 0; i < frames; ++i) {

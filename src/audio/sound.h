@@ -78,6 +78,9 @@ public:
 
     int active() const;
     float masterVolume = 0.8f;
+    // Per-channel volume scales in the order auto, auto2d, menu, body, item, weapon, voice, local, music, announcer,
+    // shellshock (the shell shock channel volumes, shellshock.h); 1 = unchanged.
+    float channelScale[11] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
     // snd_fade (0x4431a0): volume scale moving linearly to `fadeTarget` at `fadeRate` per ms (fadeStep advances it).
     float fadeVolume = 1.0f, fadeTarget = 1.0f, fadeRate = 0.0f;
     void fade(float target, int ms);
@@ -95,6 +98,7 @@ private:
         float distMin = 0, distMax = 0;
         bool loop = false;
         bool blend = false;
+        int chan = -1; // index into kChannels (the alias `channel` column), -1 = unknown
         float volLow = 0, volHigh = 0;
     };
     std::shared_ptr<const Wav> load(const std::string& file);
