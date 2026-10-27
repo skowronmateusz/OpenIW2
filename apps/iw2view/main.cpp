@@ -3907,6 +3907,20 @@ int main(int argc, char** argv) {
                     mixer.fade(1.0f, 0);
                 pendingLevel.reset();
             }
+            if (const char* keys = std::getenv("IW2_MENU_KEYS")) { // debug: scripted menu keys (up,down,enter,esc), one per 2 s
+                static std::string rest = keys;
+                static uint64_t nextKey = SDL_GetTicksNS() + 3000000000ull;
+                if (!rest.empty() && SDL_GetTicksNS() >= nextKey) {
+                    const size_t comma = rest.find(',');
+                    const std::string k = rest.substr(0, comma);
+                    rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    std::cout << "menu key " << k << "\n";
+                    frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
+                    if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
+                    nextKey = SDL_GetTicksNS() + 2000000000ull;
+                }
+            }
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();
                 if (wantCursor == SDL_GetWindowRelativeMouseMode(window)) SDL_SetWindowRelativeMouseMode(window, !wantCursor);
