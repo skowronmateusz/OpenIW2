@@ -171,6 +171,13 @@ bool correctAllSolid(const CollisionWorld& w, PlayerState& ps, Pml& pml, TraceRe
 
 // Ground trace (0x509480): a 0.25-unit trace above to below the origin. TODO(spec): the landing (fall damage and
 // slowdown, 0x508fe0) when the player lands, ladders (pm_flags 0x20).
+// Ladder state (decoded from the exe, not yet ported): PM_CheckLadderMove is 0x50bd90. pm_flags 0x20 is set by 0x50c04e / cleared
+// by 0x50bd70 (which turns a cleared 0x20 into 0x40000, ladder-just-left). It is skipped for pm type >= 4, while 0x40000 is set,
+// or for 300 ms after the last jump (ps+0x70) unless the move state is 0x28 / 0xb. It traces from the origin along the horizontal
+// facing (ps+0x64 ladder normal when already on it, else a 0x4210d0 yaw vector) over the player box with the pm trace mask
+// (pml+0xa8) and needs trace fraction < 1 and surface flag 0x8 (ladder) on the hit; a new contact stores the hit normal in ps+0x64..0x6c.
+// TODO(spec): the ladder velocity/move itself (not located yet) and the distances (consts 0x41000000 / 0x41f00000 by the aim state).
+
 void groundTrace(const CollisionWorld& w, PlayerState& ps, Pml& pml) {
     Vec start{ps.origin[0], ps.origin[1], ps.origin[2] + kGroundTraceOffset};
     const Vec end{ps.origin[0], ps.origin[1], ps.origin[2] - kGroundTraceOffset};
