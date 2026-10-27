@@ -105,16 +105,18 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
   quad (x+3, rowTop+2, w-20, eh) in `outlinecolor`.
 - Scroll: `maxScroll = max(0, count - ftol(h/eh) + 1)`, `thumbY = ftol(startPos*(h-50)/maxScroll + y + 17)`. Zones of the scrollbar column: 0x100 up,
   0x200 down, 0x400 thumb, 0x800 page up, 0x1000 page down; arrows auto-repeat (500 ms, then faster); the thumb drags.
-- Mouse: hover row `ftol((mouseY-2-y)/eh) + startPos`; a second click on the selected row within 300 ms runs `doubleclick`. Keys: Up/Down/wheel, Home/End,
-  PgUp/PgDn; each change calls the feeder selection.
+- Mouse: hover row `ftol((mouseY-2-y)/eh) + startPos`; a second click on the selected row within 300 ms runs `doubleclick`. Keys: see "List keys" below.
 - Edit fields: editing starts on focus or click (cursor 0, overstrike on); cursor glyph `_` (overstrike) or `|`; VALIDFILEFIELD takes `[A-Za-z0-9_-]`; every
   change writes the dvar; Enter runs `accept`; Tab/Up/Down move the focus.
 - Feeders: 0x18 player profiles (`ProfileList`, `players/<name>/` directories, uiScripts addPlayerProfiles, sortPlayerProfiles, selectActivePlayerProfile,
   createPlayerProfile, deletePlayerProfile, loadPlayerProfile; dvars `ui_playerProfileCount/Selected/NameNew/AlreadyChosen`, `com_playerProfile`),
   0x10 savegames (`save/*.svg`, newest first). `Menu_SetFeederSelection` visits every open menu from the top of the stack down (0x4c4c42..0x4c4c7f),
   so a popup on top does not hide the list.
-- TODO(spec): image columns, the edit field paint window 0x4cc170 and `^N` colour codes, thumb drag clamp, End/PgUp/PgDn scroll amounts, savegame
-  header fields (level, time, health, difficulty), selection semantics 0x4c6050 for savegames, horizontal listbox, 64-profile cap on the add loop, the
-  restart of sound/video on profile load.
+- List keys (handler 0x4c9c60, PROVEN, vertical lists): Up 0x9c/0xb9 and Down 0x9d/0xbb (0xb9/0xbb are the wheel codes) move one row; Home (0xa5/0xb6) sets
+  cursor and startPos to 0; End (0xa6/0xbc) sets cursor = count-1 and, when it is not shown, startPos = cursor - rows + 1; PgUp (0xa4/0xb8) / PgDn (0xa3/0xbe) move
+  the cursor by the visible row count (rows = 0x4c9320), clamped to [0, count-1], scrolling only as far as needed to keep it shown. Every key ends in the feeder
+  selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Horizontal lists (flag at +0x108) use the left/right keys instead; unimplemented.
+- TODO(spec): image columns, the edit field paint window 0x4cc170 and `^N` colour codes, thumb drag clamp, drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
+  textsavegame, horizontal listbox, 64-profile cap on the add loop, the restart of sound/video on profile load.
 - No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
   out of scope.
