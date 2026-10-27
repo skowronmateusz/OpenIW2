@@ -298,6 +298,10 @@ public:
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
+    // The crosshair name target (ps+0x8678, 0x535070) of the last update as the two HUD lines 0x534aa0 sends as configstrings
+    // 0xb (name) and 0xc (weapon display name) for an actor; empty when there is no target or it has no name.
+    const std::string& crosshairNameLine() const { return crosshairName_; }
+    const std::string& crosshairWeaponLine() const { return crosshairWeaponLine_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
@@ -726,6 +730,7 @@ private:
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
     uint32_t crosshairFlags_ = 0;
+    std::string crosshairName_, crosshairWeaponLine_;
     void updateCrosshairTarget();
     int damageBlood_ = 0;                // client +0x8658
     Vec3 damageFrom_{};                  // +0x865c

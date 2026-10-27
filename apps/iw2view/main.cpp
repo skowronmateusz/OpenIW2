@@ -2691,6 +2691,23 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Crosshair target names (cgame 0x4bf8b0, drawn when cl_paused is 0): the server's configstrings 0xb / 0xc (0x534aa0:
+            // the target actor's name and weapon display name) as localized text at CENTER/CENTER alignment (0x440e60 mode 2):
+            // line 1 at (+25, -2) in green (0 1 0 1), line 2 at (+25, +18) in white alpha 0.7, textscale 1/3, style 3
+            // (shadowed), baseline at y, left aligned. The font follows the scale as for menu items. TODO(spec): the font
+            // selection thresholds (dvars 0x1107418 / 0x10fec20 / 0x10fec18, here the menu rule), \x15 localization fallback.
+            if (world && !world->crosshairNameLine().empty()) {
+                const float ts = 1.0f / 3.0f, fs = ts * float(h) / 480.0f;
+                if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                    const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                    const float cx = float(w) * 0.5f + 25.0f * sc, cy = float(h) * 0.5f;
+                    auto loca = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                    const uint8_t green[4] = {0, 255, 0, 255}, white7[4] = {255, 255, 255, uint8_t(0.7f * 255.0f)};
+                    hudText(out, loca(world->crosshairNameLine()), cx, cy - 2.0f * sc, gs, *f, green, 0.0f, 1.0f, 3);
+                    if (!world->crosshairWeaponLine().empty())
+                        hudText(out, loca(world->crosshairWeaponLine()), cx, cy + 18.0f * sc, gs, *f, white7, 0.0f, 1.0f, 3);
+                }
+            }
             // Ammo counter. Menu "weaponinfo" has rect 0 0 0 0 HORIZONTAL_ALIGN_RIGHT VERTICAL_ALIGN_BOTTOM and its items
             // give no alignment of their own, so they inherit RIGHT/BOTTOM: the negative rects are offsets from the
             // viewable right/bottom edge (exe 0x440e60: RIGHT = x*sx + 0x79397c, the right edge of the window, set up
@@ -2817,6 +2834,12 @@ int main(int argc, char** argv) {
             if (world) {
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
+                    {
+                        // The view angles feed the crosshair target trace (0x535070) as in play.
+                        game::World::PlayerCommand pc;
+                        pc.viewAngles = {cam.pitch, cam.yaw, 0.0f};
+                        world->setPlayerCommand(pc);
+                    }
                     world->frame();
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen too
                         if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
