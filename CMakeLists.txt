@@ -78,6 +78,7 @@ add_library(iw2_game
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
+  src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp)
 target_include_directories(iw2_game PUBLIC src)
@@ -178,6 +179,10 @@ add_test(NAME actorslide COMMAND test_actorslide)
 add_executable(test_shellshock tests/test_shellshock.cpp)
 target_link_libraries(test_shellshock PRIVATE iw2_game)
 add_test(NAME shellshock COMMAND test_shellshock)
+add_executable(test_friendlychain tests/test_friendlychain.cpp)
+target_link_libraries(test_friendlychain PRIVATE iw2_game)
+add_test(NAME friendlychain COMMAND test_friendlychain)
+
 add_executable(test_itempickup tests/test_itempickup.cpp)
 target_link_libraries(test_itempickup PRIVATE iw2_game)
 add_test(NAME itempickup COMMAND test_itempickup)

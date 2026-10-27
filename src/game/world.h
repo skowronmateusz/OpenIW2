@@ -11,6 +11,7 @@
 #include "game/campaign.h"
 #include "game/fx.h"
 #include "game/collision.h"
+#include "game/friendlychain.h"
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
@@ -211,6 +212,12 @@ struct Entity {
     std::unique_ptr<GrenadeState> grenade; // grenade missile (src/game/grenades.cpp)
     std::unique_ptr<RocketState> rocket;   // rocket missile (src/game/rockets.cpp)
     int claimedNode = -1;                  // sentient +0x2c: claimed path node (script field "node")
+    // Friendly chain (src/game/friendlychain.cpp): the sentient's chain node (+0x30, set by setfriendlychain / a chain
+    // trigger, advanced to the nearest chain node once a frame while followed), the time of that advance (+0x34), and
+    // the actor's own chain node (actor +0x78c, script field "chainnode").
+    int friendlyChain = -1;
+    int64_t friendlyChainMs = -1;
+    int chainNode = -1;
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
     std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
@@ -701,6 +708,11 @@ private:
     void releaseNode(Entity& e);
     void giveUpClaimedNode(Entity& e);
     void blockNodeForTeam(int node, Entity& e);
+    // Friendly chains (src/game/friendlychain.cpp)
+    void buildFriendlyChains();
+    void setFriendlyChain(Entity& sentient, int node);
+    void touchFriendlyChain(Entity& trigger, Entity& other);
+    void followFriendlyChain(Entity& e);
     bool coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& script);
     bool nodeFacesEnemy(Entity& e, int node);
     bool claimedNodeGood(Entity& e, int node);
@@ -928,6 +940,7 @@ private:
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;
     std::vector<PathNode> nodes_;
+    FriendlyChains chains_;
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;

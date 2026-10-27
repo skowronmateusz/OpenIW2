@@ -251,6 +251,7 @@ void World::spawnMapEntities() {
     } catch (const std::exception& e) {
         print(std::string("path data: ") + e.what());
     }
+    buildFriendlyChains(); // 0x52d630; its errors are fatal
 
     Entity& p = spawnEntity("player");
     p.isPlayer = true;
@@ -762,6 +763,7 @@ void World::runTriggers() {
     }
     for (Entity* e : fired) {
         if (e->obj->removed) continue;
+        if (e->classname == "trigger_friendlychain") touchFriendlyChain(*e, *player_); // touch 0x529140
         vm_.notify(e->obj, "trigger", {Value(player_->obj)});
         if (e->classname == "trigger_once") e->obj->removed = true;
     }
