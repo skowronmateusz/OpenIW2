@@ -92,6 +92,7 @@ struct ActorAi {
     int64_t painStartMs = 0;                  // +0xa4
     int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
     int orient = 0;                           // +0x114 orientmode override (0 = none, else a facing mode 1..6)
+    int64_t meleeFrameMs = -1;                // +0xcc: level time of the last melee blow (one per frame, 0x550c7a)
     float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
@@ -243,7 +244,7 @@ public:
     // Spawns map entities and the player, then runs maps/<map>.gsc::main().
     void start();
     // Advances game time by one server frame (50 ms).
-    void frame();
+    void frame(bool advanceTime = true);
 
     script::VM& vm() { return vm_; }
     const assets::D3dBsp& bsp() const { return *bsp_; }
@@ -388,7 +389,9 @@ public:
     void setRealTimeMs(int64_t ms) { realMs_ = ms; }
 
     // Effects started by scripts since the last call: path, origin, forward.
-    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; };
+    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag; }; // entity/tag: bolted (0x4853f0)
+    // World position of an entity tag (lower case), false when the entity or tag is gone.
+    bool entityTagPosition(int number, const std::string& tag, Vec3& out);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     std::vector<FxEvent> fxEvents_;
     // Sight-blocking particles of the effect runtime, rebuilt by the host after each effects update (0x48b000).
@@ -412,6 +415,8 @@ public:
     void playerFire(const Vec3& eye, const Vec3& forward);
     // Player weapon events (src/game/playeractions.cpp): the melee blow, the offhand throw and the offhand pick.
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
+    void meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& weapon);
+    void aiMelee(Entity& a);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);
@@ -421,12 +426,14 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
     Entity& spawnEntity(const std::string& classname);
-    Entity* spawnActor(Entity& spawner);
+    // force = the exe's third argument of the spawn core 0x532200: stalingradspawn passes 1 (skips the telefrag test),
+    // dospawn passes 0.
+    Entity* spawnActor(Entity& spawner, bool force = true);
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void registerBuiltins();
@@ -602,7 +609,16 @@ private:
     void actorLearns(Entity& target, Entity& about); // 0x500c50
     bool actorKnowsRecently(const Entity& target, const Entity& about, int64_t ms) const; // 0x54ddc0
     void aiEventDispatch(Entity& source, Entity& target, int type); // 0x535d70
-    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true); // 0x535770
+public:
+    // G_ClientEvents (0x4e75f0), the AI part: the player's pmove events since the last call (ring of 4) tell the enemy
+    // actors around: run steps and landings (events 1..0x17, 0x46..0x73) as AI event 2 (radius 512), walk steps
+    // (0x18..0x2e) as event 3 (radius 256), prone steps (0x2f..0x45) nothing; none while crouched (pm_flags 2).
+    void playerPmEvents(int eventSeq, const int (&events)[4], bool crouched);
+private:
+    int playerEventSeq_ = 0;
+    // Receivers of an AI event by team (the mask in EAX of 0x535770: 0 = the source's enemy team, 1 << team otherwise).
+    enum class AiHear { All, Enemy, Own };
+    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true, AiHear hear = AiHear::All); // 0x535770
     void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2 = 0,
                      bool forced = true); // 0x535860 + 0x535f20
     // Path planner (src/game/actorpath.cpp)

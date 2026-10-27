@@ -260,9 +260,60 @@ void World::spawnMapEntities() {
 
 // Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new
 // actor, notifies the spawner "spawned", and starts animscripts/init.gsc::main() (docs/spec/ai.md).
-Entity* World::spawnActor(Entity& spawner) {
+Entity* World::spawnActor(Entity& spawner, bool force) {
     const Value count = spawner.obj->get("count");
     if (count.isInt() && count.asInt() <= 0) return nullptr;
+
+    // dospawn (arg3 == 0) refuses a spawnpoint whose box (origin + (-15,-15,0)..(15,15,70), 0x5a5bdc..0x5a5bf0) holds a
+    // living body: an entity with contents & 0x200c000 that is a client in state < 4 or an actor with health > 0
+    // (0x4e8500). The message is "couldn't spawn from %s because spawnpoint would telefrag" and the result undefined
+    // (0x532253-0x53227e). stalingradspawn passes force and skips the test. The "player can see the spawnpoint"
+    // test (0x532288) is skipped when the global at 0x1c61048 is set, which it is in-game (SP), so it is not done.
+    // TODO(spec): the player's contents bits and the client-state meaning of the <4 compare.
+    if (!force) {
+        const Value so = spawner.obj->get("origin");
+        if (so.isVector()) {
+            const Vec3 sp = so.asVector();
+            bool blocked = false;
+            for (const auto& e : entities_) {
+                if (e.get() == &spawner || e->obj->removed || !(e->isActor || e->isPlayer)) continue;
+                if (e->isActor && (e->ai.corpse || !e->ai.alive)) continue;
+                const Value eo = e->obj->get("origin");
+                if (!eo.isVector()) continue;
+                const Vec3 p = eo.asVector();
+                // actor box (-15,-15,0)..(15,15,72) against the spawn box (-15,-15,0)..(15,15,70), touching counts
+                const float height = e->isPlayer ? 70.0f : 72.0f; // TODO(spec): the player's box height
+                if (p[0] - 15 <= sp[0] + 15 && p[0] + 15 >= sp[0] - 15 && p[1] - 15 <= sp[1] + 15 && p[1] + 15 >= sp[1] - 15 &&
+                    p[2] <= sp[2] + 70 && p[2] + height >= sp[2]) {
+                    if (e->isPlayer && !isAlive(*e)) continue;
+                    blocked = true;
+                    break;
+                }
+            }
+            if (blocked) {
+                const Value tn = spawner.obj->get("targetname");
+                print("^3couldn't spawn from " + (tn.isString() ? tn.toString() : std::string("<unnamed>")) +
+                      " because spawnpoint would telefrag");
+                return nullptr;
+            }
+        }
+    }
+    // The actor pool has 32 slots (FUN_004fc8d0 scans 0x20 slots of 0x21a4 bytes); a corpse conversion (0x4fdba0 ->
+    // 0x4fc960) or a freed entity returns its slot. With no free slot the spawn fails with "Actor allocation failed",
+    // the fresh entity is freed (0x4d7c30) and dospawn reports "couldn't spawn from %s because there are no free
+    // actors" (0x532398), returning undefined; the spawner's count is untouched (it is decremented only after a
+    // successful spawn, 0x5325ca). TODO(spec): the spawner flag 2 retry that frees the farthest actor (0x4fcaf0).
+    {
+        int live = 0;
+        for (const auto& e : entities_)
+            if (e->isActor && !e->obj->removed && !e->ai.corpse) ++live;
+        if (live >= 32) {
+            const Value tn = spawner.obj->get("targetname");
+            print("^3couldn't spawn from " + (tn.isString() ? tn.toString() : std::string("<unnamed>")) +
+                  " because there are no free actors");
+            return nullptr;
+        }
+    }
     if (count.isInt()) spawner.obj->set("count", Value(int32_t(count.asInt() - 1)));
 
     const std::string cls = spawner.classname;
@@ -339,6 +390,16 @@ void World::start() {
     syncEntityClips();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
+    // Threads the init code woke by notify were appended to the current frame list (counter 0x9bef20), which the first
+    // Scr_RunFrame runs before the next frame's list that holds the timed waits (VM_Notify 0x46ca60, Scr_RunFrame 0x46f5c0).
+    // TODO(spec): whether the exe runs a frame at time 0 before the first 50 ms step; only the order is evidenced.
+    vm_.drainReady();
+    // The exe's script lists are keyed by a frame counter (0x9bef20): a thread that init code left in `wait 0.05` is in the
+    // NEXT frame's list, so something already ran the current one. moscow/matmata need that: matmata's start trigger_multiple
+    // (the player stands inside it) must fire and spawn the jeep before ridein's `wait 0.05` ends and does getent("jeep").
+    // So one game frame runs at time 0 before the first 50 ms step. TODO(spec): the exe's server start-up frames (count and
+    // time step) are not read.
+    frame(false);
 }
 
 Entity* World::entityByNumber(int number) {
@@ -347,8 +408,8 @@ Entity* World::entityByNumber(int number) {
     return nullptr;
 }
 
-void World::frame() {
-    timeMs_ += 50;
+void World::frame(bool advanceTime) {
+    if (advanceTime) timeMs_ += 50;
     if (player_) { // the player's velocity for the AI (TODO(spec): the original reads ps->velocity)
         const Value po = player_->obj->get("origin");
         if (po.isVector()) {
@@ -756,14 +817,14 @@ void World::registerBuiltins() {
         return Value();
     });
 
-    auto doSpawn = [this](CallContext& c) -> Value {
+    auto doSpawn = [this](CallContext& c, bool force) -> Value {
         Entity* sp = entityOf(c.self);
         if (!sp || !sp->isSpawner) throw std::runtime_error("dospawn can only be called on actor spawners");
-        Entity* a = spawnActor(*sp);
+        Entity* a = spawnActor(*sp, force);
         return a ? Value(a->obj) : Value();
     };
-    vm_.registerBuiltin("dospawn", doSpawn);
-    vm_.registerBuiltin("stalingradspawn", doSpawn);
+    vm_.registerBuiltin("dospawn", [doSpawn](CallContext& c) { return doSpawn(c, false); });           // 0x4edff0: arg3 = 0
+    vm_.registerBuiltin("stalingradspawn", [doSpawn](CallContext& c) { return doSpawn(c, true); });    // 0x4ee120: arg3 = 1
     vm_.registerBuiltin("attach", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("attach on a non-entity");
@@ -953,7 +1014,9 @@ void World::registerBuiltins() {
         std::string tag = c.arg(2).toString();
         for (char& ch : tag) ch = char(std::tolower(static_cast<unsigned char>(ch)));
         if (auto it = bones.find(tag); it != bones.end()) at = it->second.position;
-        fxEvents_.push_back({path, at, Vec3{0, 0, 1}});
+        // EV_PLAY_FX_ON_TAG: the client plays the effect with an attachment record (entity, tag) (0x4853f0), so the
+        // `relative` elements follow the tag.
+        fxEvents_.push_back({path, at, Vec3{0, 0, 1}, e->number, tag});
         return Value();
     });
     vm_.registerBuiltin("playloopedfx", [this, fxPath](CallContext& c) {
@@ -1005,4 +1068,16 @@ void World::registerMissingStubs() {
             });
 }
 
+} // namespace iw2::game
+
+namespace iw2::game {
+bool World::entityTagPosition(int number, const std::string& tag, Vec3& out) {
+    Entity* e = entityByNumber(number);
+    if (!e) return false;
+    const auto bones = entityBones(*e);
+    const auto it = bones.find(tag);
+    if (it == bones.end()) return false;
+    out = it->second.position;
+    return true;
+}
 } // namespace iw2::game

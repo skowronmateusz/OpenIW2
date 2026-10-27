@@ -551,16 +551,26 @@ void World::updateCrosshairTarget() {
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
     if (std::getenv("IW2_CROSSHAIR_DEBUG")) std::fprintf(stderr, "crosshair eye %g %g %g yaw %g ent %d\n", eye[0], eye[1], eye[2], playerCmd_.viewAngles[1], tr.entity);
     // A vehicle (entity type 0xc, 0x5353ce): inside g_friendlyNameDist (15000) it becomes the name target (0x535455) and the
-    // HUD lines are its look-at strings (+0x194 / +0x196, 0x534b61): nothing when it has none. TODO(spec): 0x535471.. the
-    // enemy crosshair flag from the vehicle team (+0x178) when the player is in a vehicle (pm_flags 0x20000).
+    // HUD lines are its look-at strings (+0x194 / +0x196, 0x534b61): nothing when it has none. The enemy crosshair flag
+    // 0x200000 (0x535471..0x5354cb): the player is in a vehicle (pm_flags 0x20000), the distance is inside the current
+    // weapon's enemyCrosshairRange (weapon def +0x260) and the vehicle's team (+0x178, setvehicleteam) is the player's enemy
+    // team (0x4e7010).
     if (hit && hit->vehicle && hit->classname == "script_vehicle") {
         const Value org = hit->obj->get("origin");
-        if (org.isVector() && !hit->vehicle->lookAtText.empty()) {
+        if (org.isVector()) {
             const Vec3 o = org.asVector();
             const float dx = o[0] - eye[0], dy = o[1] - eye[1], dz = o[2] - eye[2];
-            if (dx * dx + dy * dy + dz * dz < 15000.0f * 15000.0f) {
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < 15000.0f * 15000.0f && !hit->vehicle->lookAtText.empty()) {
                 crosshairName_ = hit->vehicle->lookAtText;
                 crosshairWeaponLine_ = hit->vehicle->lookAtText2;
+            }
+            if (pmFlags_ & 0x20000) {
+                const std::string wn = playerOnTurret() ? playerTurretWeapon() : lowerStr(player_->obj->get("$weapon").toString());
+                const std::string ts = player_->obj->get("team").isString() ? player_->obj->get("team").asString() : std::string();
+                const int pt = ts == "axis" ? 1 : 2;
+                const float range = weaponFloat(wn, "enemyCrosshairRange");
+                if (d2 < range * range && hit->vehicle->team == (pt == 1 ? 2 : 1)) crosshairFlags_ |= 0x200000u;
             }
         }
         return;

@@ -125,6 +125,21 @@ struct Camera {
     }
 };
 
+// The four side planes of the view frustum for the effect gate frustumCull (0x486e90): inward normals through the eye;
+// the vertical field of view is fixed by fovX43 at 4:3 (viewProj above), the horizontal one follows the aspect.
+static void setFxFrustum(game::FxSystem& fx, const Camera& cam, float aspect) {
+    const Vec3 f = cam.forward(), r = cam.right(), u = cross(r, f);
+    const float ty = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f, tx = ty * aspect;
+    auto plane = [&](Vec3 n) {
+        const float l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        n = {n.x / l, n.y / l, n.z / l};
+        return std::array<float, 4>{n.x, n.y, n.z, n.x * cam.pos.x + n.y * cam.pos.y + n.z * cam.pos.z};
+    };
+    auto comb = [&](float a, const Vec3& v, float b, const Vec3& w) { return Vec3{a * v.x + b * w.x, a * v.y + b * w.y, a * v.z + b * w.z}; };
+    fx.viewPlanes = {plane(comb(tx, f, 1, r)), plane(comb(tx, f, -1, r)), plane(comb(ty, f, -1, u)), plane(comb(ty, f, 1, u))};
+}
+
+
 // ---------------------------------------------------------------------------------------------
 // GPU upload helper: stages data in one transfer buffer and flushes when it is full.
 
@@ -1166,6 +1181,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
+    SDL_GPUSampler* waterMapSampler = nullptr;
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
@@ -1362,6 +1378,9 @@ struct Renderer {
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         si.enable_anisotropy = false;
         clampSampler = SDL_CreateGPUSampler(dev, &si);
+        si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        waterMapSampler = SDL_CreateGPUSampler(dev, &si);
     }
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
@@ -1534,8 +1553,9 @@ struct Renderer {
                 if (!wm.cube || !wm.normalMap) continue;
                 SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
-                SDL_GPUTextureSamplerBinding wsb{wm.cube, clampSampler};
-                SDL_BindGPUFragmentSamplers(pass, 0, &wsb, 1);
+                // cubicEnvMap: sampler state 0x30 (clamp U/V); normalMap: 0x6 = linear min/mag, point mip filter, repeat (0x1003dd..e1b1).
+                SDL_GPUTextureSamplerBinding wsb[2] = {{wm.cube, clampSampler}, {wm.normalMap, waterMapSampler}};
+                SDL_BindGPUFragmentSamplers(pass, 0, wsb, 2);
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -1965,7 +1985,7 @@ int main(int argc, char** argv) {
         }
         Scene scene = menuMode ? emptyScene(dev) : loadScene(dev, vfs, args[1], !world);
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
-        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; };
+        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; uint64_t startNs = 0, endNs = 0; };
         std::vector<ScreenMessage> screenMessages;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -2005,6 +2025,10 @@ int main(int argc, char** argv) {
         };
         fxSystem.loader = efx;
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
+        // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
+        // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
         // Client interpolation state: entity origin/angles before the latest server frame and the fraction of the
@@ -2018,12 +2042,60 @@ int main(int argc, char** argv) {
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
-        auto gatherItems = [&](const Camera&) {
+        auto gatherItems = [&](const Camera& viewCam) {
             std::vector<DrawItem> items;
             if (!world) return items;
+            // View frustum (Gribb-Hartmann planes of the view-projection; 32:9 aspect so any window is covered) used to skip
+            // the CPU skinning of animated entities that cannot be seen. The player's view model is never culled.
+            const Mat4 cullVp = viewCam.viewProj(3.6f);
+            std::array<std::array<float, 4>, 5> cullPlanes{};
+            {
+                auto row = [&](int i) { return std::array<float, 4>{cullVp[size_t(i)], cullVp[size_t(4 + i)], cullVp[size_t(8 + i)], cullVp[size_t(12 + i)]}; };
+                const auto r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+                for (int k = 0; k < 4; ++k) {
+                    cullPlanes[0][size_t(k)] = r3[size_t(k)] + r0[size_t(k)];
+                    cullPlanes[1][size_t(k)] = r3[size_t(k)] - r0[size_t(k)];
+                    cullPlanes[2][size_t(k)] = r3[size_t(k)] + r1[size_t(k)];
+                    cullPlanes[3][size_t(k)] = r3[size_t(k)] - r1[size_t(k)];
+                    cullPlanes[4][size_t(k)] = r2[size_t(k)]; // near (depth range 0..w)
+                }
+                for (auto& pl : cullPlanes) {
+                    const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
+                    for (float& v : pl) v /= len;
+                }
+            }
+            static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr; // debug: disable the culling above
+            auto sphereVisible = [&](float x, float y, float z, float radius) {
+                for (const auto& pl : cullPlanes)
+                    if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
+                return true;
+            };
             Uploader up(dev, false);
             for (const auto& ev : world->takeFxEvents()) {
                 if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
+                if (ev.entity >= 0 && !ev.tag.empty()) {
+                    // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
+                    game::World* wp = world.get();
+                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FVec{}, ok = false](game::FVec& out) mutable {
+                        if (wp->timeMs() != lastT) {
+                            lastT = wp->timeMs();
+                            game::Vec3 p{};
+                            ok = wp->entityTagPosition(n, tag, p);
+                            if (ok) last = {p[0], p[1], p[2]};
+                        }
+                        out = last;
+                        return ok;
+                    });
+                    game::FVec f{ev.forward[0], ev.forward[1], ev.forward[2]};
+                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    f = fl > 0 ? game::FVec{f[0] / fl, f[1] / fl, f[2] / fl} : game::FVec{0, 0, 1};
+                    game::FVec r = std::fabs(f[2]) < 0.99f ? game::FVec{f[1], -f[0], 0} : game::FVec{1, 0, 0};
+                    const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+                    r = {r[0] / rl, r[1] / rl, r[2] / rl};
+                    const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs());
+                    continue;
+                }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
@@ -2112,6 +2184,7 @@ int main(int argc, char** argv) {
                 // skinned with the blended pose and carry their attachments.
                 if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
+                    if (!noCull && !sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f)) continue; // anim state already stepped
                     const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!body) continue;
                     assets::XPose pose;
@@ -2291,6 +2364,30 @@ int main(int argc, char** argv) {
                 DrawItem it = base;
                 it.model = skinModel(scene, dev, up, -1, pweapon.gunModel(), *gun, gp);
                 if (it.model) items.push_back(it);
+                {
+                    BoneMap gunBones;
+                    addBones(gunBones, gun->parts, gp);
+                    const auto tf = gunBones.find("tag_flash");
+                    viewFlash->valid = tf != gunBones.end();
+                    if (viewFlash->valid) {
+                        const auto& m = base.transform; // columns: forward, left, up, origin (entityTransform)
+                        const auto& q = tf->second.first;
+                        for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        if (viewFlash->pending && world) {
+                            viewFlash->pending = false;
+                            const std::string path = pweapon.field("viewFlashEffect");
+                            if (!path.empty()) {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->pos;
+                                    return vf->valid;
+                                });
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
+                            }
+                        }
+                    }
+                }
             }
             up.flush();
         };
@@ -2428,12 +2525,14 @@ int main(int argc, char** argv) {
         // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
         const ui::Item* ammoBackItem = nullptr;
         const ui::Item* fireModeItem = nullptr; // item "weaponfiremode" (ownerdraw 83), rect -115 -35 20 20
+        const ui::Item* weapNameItem = nullptr; // item "weapname" (ownerdraw 81), rect -385 -15 290 40
         const ui::Item* ammoTextItem = nullptr; // item "ammotex" (ownerdraw CG_PLAYER_AMMO_VALUE 5), rect -85 -15 70 40
         if (const ui::Menu* m = hudMenus.find("weaponinfo"))
             for (const auto& it : m->items) {
                 if (it->name == "ammocounterback") ammoBackItem = it.get();
                 else if (it->name == "ammotex") ammoTextItem = it.get();
                 else if (it->name == "weaponfiremode") fireModeItem = it.get();
+                else if (it->name == "weapname") weapNameItem = it.get();
             }
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
@@ -2626,7 +2725,7 @@ int main(int argc, char** argv) {
             }
             {
                 // Subtitles (cgame 0x4bf2e0): x 120, y 400, char height 12 on the 640x480 screen, wrapped at 80 characters.
-                // TODO(spec): font, colour and shadow (0x4068e0), the wrap algorithm (0x403fb0), cg_subtitles off.
+                // Anchor: 0x406c60 calls 0x4068e0 with horizontal and vertical code 1, i.e. x·scale + 0x793974 = the left edge of the 4:3 area (left43) in widescreen, as here. TODO(spec): colour, cg_subtitles off.
                 const uint64_t now = SDL_GetTicksNS();
                 std::erase_if(subtitles, [&](const Subtitle& st) { return st.untilNs < now; });
                 const uint8_t white[4] = {255, 255, 255, 255};
@@ -2666,11 +2765,12 @@ int main(int argc, char** argv) {
                 // with x 6, y 100, character height 12, horizontal code 1 (LEFT edge of the window, 0x440ff4[1]) and vertical
                 // code 1 (TOP of the window, 0x441014[1]), style 3: the rows of the window go bottom-up, the newest row's top
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
-                // TODO(spec): the fade-out of old rows (window fields +0x18/+0x1c, 0x406758), the exact message text for
+                // TODO(spec): the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
                 // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                struct WindowRow { std::string text; uint64_t startNs, endNs; };
                 auto windowRows = [&](bool bold, size_t width, size_t lines) {
-                    std::vector<std::string> rows;
+                    std::vector<WindowRow> rows;
                     for (const auto& m : screenMessages) {
                         if (m.bold != bold) continue;
                         std::string raw = m.text.substr(0, m.text.find('\x1f'));
@@ -2686,37 +2786,58 @@ int main(int argc, char** argv) {
                         std::string cur;
                         std::istringstream words(text);
                         for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back(cur); cur.clear(); }
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back({cur, m.startNs, m.endNs}); cur.clear(); }
                             cur += (cur.empty() ? "" : " ") + wd;
                         }
-                        if (!cur.empty()) rows.push_back(cur);
+                        if (!cur.empty()) rows.push_back({cur, m.startNs, m.endNs});
                     }
                     if (rows.size() > lines) rows.erase(rows.begin(), rows.end() - std::ptrdiff_t(lines));
                     return rows;
                 };
+                // Window row drawing (0x4065e0): each row has a start and an end time (row fields [8] and [4]). Fade: alpha ×
+                // age / fadeIn while age < window +0x1c (250 ms), else × remaining / fadeOut while remaining < +0x20 (500 ms)
+                // (0x406758 / 0x40677b); no row is drawn before its start or after its end. Scroll (first loop 0x406628): every
+                // row younger than +0x18 (250 ms) moves the whole window down by (1 − age / 250) × the row pitch, so the
+                // rows slide up when a new row is added.
+                auto drawWindow = [&](const std::vector<WindowRow>& rows, float x, float yBottom, float pitch, const assets::Font& f,
+                                      const uint8_t base[4], float alignX) {
+                    auto ms = [&](uint64_t a, uint64_t b) { return a >= b ? 0.0f : float(b - a) / 1.0e6f; };
+                    float shift = 0;
+                    for (const auto& r : rows) {
+                        const float age = r.startNs ? ms(r.startNs, now) : 1e9f;
+                        if (age < 250.0f) shift += (1.0f - age / 250.0f) * pitch;
+                    }
+                    float ry = yBottom - pitch + std::floor(shift + 0.5f);
+                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= pitch) {
+                        float a = 1.0f;
+                        if (it->startNs) {
+                            if (it->startNs > now || it->endNs <= now) continue;
+                            const float age = ms(it->startNs, now), left = ms(now, it->endNs);
+                            if (age < 250.0f) a = age / 250.0f;
+                            else if (left < 500.0f) a = left / 500.0f;
+                        }
+                        const uint8_t col[4] = {base[0], base[1], base[2], uint8_t(base[3] * a)};
+                        hudText(out, it->text, x, ry * sc, 12.0f / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
+                    }
+                };
                 const uint8_t green[4] = {0, 255, 0, 255};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    const std::vector<std::string> rows = windowRows(false, 70, 9);
-                    float ry = 100.0f - 12.0f;
-                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 12.0f)
-                        hudText(out, *it, 6.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, green, 0, 0, 3);
+                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, green, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
                 // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
                 // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
                 // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
                 // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
-                // TODO(spec): the drawing starts at the centre point (no centring of the text was found in 0x4062d0 /
-                // 0x4065e0 / 0x403b90); here rows are centred on it because a start at the screen centre looks wrong.
+                // Re-checked: 0x4bf210 passes only the horizontal code 7 and x 0; 0x440e60 code 7 gives (0x79397c + 0x793974) / 2
+                // + x·scale and 0x4062d0 draws the text from that point (0x617bf0), so each row STARTS at the centre of the box
+                // (no centring in 0x4062d0 / 0x4065e0 / 0x403b90).
                 {
                     const float scale = 12.0f / 48.0f * float(h) / 480.0f;
                     if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
-                        const std::vector<std::string> rows = windowRows(true, 60, 10);
                         const uint8_t white[4] = {255, 255, 255, 255};
-                        float ry = 180.0f - 16.0f;
-                        for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 16.0f)
-                            hudText(out, *it, left43 + 320.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, white, 0.5f, 0, 3);
+                        drawWindow(windowRows(true, 60, 10), left43 + 320.0f * sc, 180.0f, 16.0f, *f, white, 0);
                     }
                 }
             }
@@ -3126,6 +3247,31 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Weapon name (ownerdraw 81, 0x4a7da0): not in a vehicle (pm_flags 0x20000); same fade as the firemode icon (hud_fade_ammodisplay,
+            // 1800 ms from the weapon change time 0xf796e4, 0x4a7600). Text = localized displayName (client weapon info +0xb4), plus
+            // " / " + localized modeName (+0xb8, def +0x70) when the weapon has a modeName ("%s / %s" 0x57fb54, else "%s" 0x56ca4c).
+            // Drawn at x = rect.x + rect.w - textWidth - 28 (0x592084), y = rect.y, item colour with the fade alpha, item text style,
+            // font by the HUD rule. TODO(spec): the weapon preselected while switching (0xf796e0) is not tracked; the current weapon is used.
+            if (weapNameItem && pweapon.equipped() && !inVeh) {
+                const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
+                const float ts = weapNameItem->textScale, fs = ts * float(h) / 480.0f;
+                if (a > 0.0f)
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string text = name(pweapon.field("displayName"));
+                        const std::string mode = pweapon.field("modeName");
+                        if (!mode.empty()) text += " / " + name(mode);
+                        const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const auto& r = weapNameItem->rect;
+                        uint8_t col[4];
+                        for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(weapNameItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        col[3] = uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f);
+                        hudText(out, text, float(w) + (r.x + r.w - 28.0f) * sc - tw, float(h) + r.y * sc, gs, *f, col, 0.0f, 1.0f, weapNameItem->textStyle);
+                    }
+            }
             // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
             // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
@@ -3145,9 +3291,18 @@ int main(int argc, char** argv) {
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), objective ring pulses (no ring start time is
-            // tracked), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), the default pointer material when an objective has no icon, ownerdraw 87/88.
             // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
+            // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
+            // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
+            constexpr int ringNum = 10, ringTime = 10000;
+            auto ringElapsed = [&](const game::Objective& ob) -> int64_t {
+                if (!world || ob.state != 4 || ob.ringStartMs < 0 || ob.ringStartMs + ringTime <= world->timeMs()) return -1;
+                return world->timeMs() - ob.ringStartMs;
+            };
+            if (world)
+                for (const auto& ob : world->objectives())
+                    if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = world->timeMs();
             const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
                 const float csize = 1.0f; // cg_hudCompassSize
@@ -3220,6 +3375,25 @@ int main(int argc, char** argv) {
                             q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
                             q.texture = materialTexture(ob.icon.empty() ? std::string("objective") : ob.icon);
                             out.push_back(q);
+                            // Ring pulse (0x4a9748..0x4a9915): period = RingTime / NumRings; phase = (elapsed mod period) / period;
+                            // alpha = triangle(phase) clamped to the pointer alpha; size = phase * cg_hudObjectiveRingSize (64) *
+                            // compass size, halved once a full period has passed; material "objective_ring", or the icon when the
+                            // objective has one.
+                            if (const int64_t el = ringElapsed(ob); el >= 0) {
+                                const float period = float(ringTime) / float(ringNum);
+                                float rem = float(el);
+                                bool later = false;
+                                while (rem > period) { rem -= period; later = true; }
+                                const float ph = rem / period;
+                                const float tri = ph > 0.5f ? 1.0f - (ph - 0.5f) * 2.0f : ph * 2.0f;
+                                float rs = ph * 64.0f * (later ? 0.5f : 1.0f) * csize * sc;
+                                const float rx2 = ccx - rs * 0.5f - std::sin(a) * rad, ry2 = ccy - rs * 0.5f - std::cos(a) * rad;
+                                Quad2D rq{rx2, ry2, rx2 + rs, ry2 + rs};
+                                std::memcpy(rq.rgba, col, 4);
+                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, alpha * compassAlpha), 0.0f, 1.0f) * 255.0f);
+                                rq.texture = materialTexture(ob.icon.empty() ? std::string("objective_ring") : ob.icon);
+                                out.push_back(rq);
+                            }
                         }
                     }
                 }
@@ -3403,9 +3577,10 @@ int main(int argc, char** argv) {
                 }
                 // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
                 for (const auto& m : shotMsgs)
-                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) screenMessages.push_back({m.text, SDL_GetTicksNS() + 600000000000ull, m.bold});
+                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(world->timeMs() - m.at) * 1000000ull;
+                        screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
-                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true});
+                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
@@ -3479,7 +3654,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            pweapon.update(fireSeconds, shotIn);
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -3502,12 +3677,17 @@ int main(int argc, char** argv) {
             fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
+            setFxFrustum(fxSystem, cam, float(width) / float(height));
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
+            if (viewFlash->pending && !(world && world->playerOnTurret())) {
+                std::vector<DrawItem> scratch;
+                addViewModel(scratch, cam); // plays the view flash (the live loop shows it one frame later)
+            }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
@@ -3950,9 +4130,13 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
+                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
-                if (!inVehicle && !onTurret && !world->playerLinked()) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                if (!inVehicle && !onTurret && !world->playerLinked()) {
+                    world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                    world->playerPmEvents(ps.eventSeq, ps.events, ps.stance == game::Stance::Crouch); // G_ClientEvents
+                }
                 // time_slow: the frame scale moves linearly from `from` to `to` over the real time (0x4bee00).
                 if (slowStartNs) {
                     const uint64_t nowNs = SDL_GetTicksNS();
@@ -4033,9 +4217,9 @@ int main(int argc, char** argv) {
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull, false, SDL_GetTicksNS(), SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
                     else if (cmd.name == "gmb")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true}); // con_boldgamemessagetime 8 s (0x571100)
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true, SDL_GetTicksNS(), SDL_GetTicksNS() + 8000000000ull}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
@@ -4166,6 +4350,7 @@ int main(int argc, char** argv) {
             fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
+            setFxFrustum(fxSystem, cam, float(width) / float(height));
             auto items = gatherItems(cam);
             // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
             // binocular weapon states 0x11–0x16.

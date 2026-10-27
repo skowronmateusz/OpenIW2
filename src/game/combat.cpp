@@ -565,14 +565,18 @@ void World::registerCombatBuiltins() {
         Entity* enemy = entityOf(a->obj->get("enemy"));
         Vec3 target;
         if (c.arg(1).isVector()) target = c.arg(1).asVector();
-        else if (enemy) target = add(enemy->obj->get("origin").asVector(), {0, 0, 40});
+        else if (enemy) target = enemy->isPlayer ? eyePosition(*enemy) : sightEye(*enemy, nullptr); // 0x54ff90: 0x4e8b70 / 0x500910
         else return Value();
         // Hit or miss (0x550a70 → 0x54fde0): the shot hits when graph(distance) · accuracy · accMod (clamped to 0..1)
         // beats a random number; then 0x54ff90 aims at a random point of the target's body box, else 0x550390 beside it
         // A shoot() with an explicit position fires straight at it (0x550af6). The shot
-        // has spread 0 (0x550bee passes 0 to 0x5312b0). TODO(spec): the actor target point (exe: actor +0x174 from
-        // 0x500910; here the origin + 40), the shooter's up axis (ctx +0xf8, world up here).
+        // has spread 0 (0x550bee passes 0 to 0x5312b0). The target point of an actor is its tag_eye (actor +0x174
+        // from 0x500910, origin + 64 without the tag; sightEye), the up axis the shooter's own (AngleVectors of its pitch and
+        // yaw, actor +0xf8 written at 0x504a00, copied into the shot context by 0x54fee0).
         if (!c.arg(1).isVector()) {
+            // Firing at the current enemy is an AI event (type 4) at the shooter's origin, heard by its own team
+            // (0x550b5f: EAX 1 << the shooter's team; 0x535ba0 passes the shooter's enemy knowledge on).
+            if (enemy) aiEventPoint(*a, 4, a->obj->get("origin").asVector(), 0.0f, true, AiHear::Own);
             const Value accV = a->obj->get("accuracy");
             const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
             const Value wnv = a->obj->get("weapon");
@@ -595,7 +599,10 @@ void World::registerCombatBuiltins() {
             Vec3 v = sub(T, start);
             const float vl = len(v);
             if (vl > 0) v = scale(v, 1.0f / vl);
-            const Vec3f up{0, 0, 1};
+            const Value shooterAngles = a->obj->get("angles");
+            const float pitchR = (shooterAngles.isVector() ? shooterAngles.asVector()[0] : 0.0f) * float(M_PI) / 180.0f;
+            const float yawR = (shooterAngles.isVector() ? shooterAngles.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
+            const Vec3f up{std::sin(pitchR) * std::cos(yawR), std::sin(pitchR) * std::sin(yawR), std::cos(pitchR)};
             const Vec3f cs = aiSideAxis({v[0], v[1], v[2]}, up);
             const Vec3f Tf{T[0], T[1], T[2]};
             const Vec3f p = hitRoll ? aiHitPoint(Tf, cs, up, enemy->isPlayer, accuracy, u(rng_), u(rng_))
@@ -603,9 +610,6 @@ void World::registerCombatBuiltins() {
             target = {p.x, p.y, p.z};
         }
         const Vec3 dir = sub(target, start);
-        // 0x550a70: firing with a current enemy is an AI event (type 4) at the actor's origin: the actors around
-        // learn the shooter's enemy from the shooter's own knowledge (0x535ba0).
-        if (enemy) aiEventPoint(*a, 4, start);
         const Value wpn = a->obj->get("weapon");
         fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
         // The shot adds EV_FIRE_WEAPON (0x9e, 0xa0 without a bullet: 0x550c46 / 0x550c1b) to the actor; the client handler
@@ -614,7 +618,7 @@ void World::registerCombatBuiltins() {
         // effect axes come from the tag, here the shot direction.
         if (wpn.isString()) {
             const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
-            if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir});
+            if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir, a->number, "tag_flash"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();
