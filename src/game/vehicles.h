@@ -52,6 +52,8 @@ struct VehicleInfo {
     int texScroll = 0;
     float texScrollScale = 0;
     std::string turretWeapon;
+    // lowIdleSnd / highIdleSnd / lowEngineSnd / highEngineSnd (info slots +0x260..+0x266), turretSpinSnd / turretStopSnd.
+    std::string lowIdleSnd, highIdleSnd, lowEngineSnd, highEngineSnd;
 };
 
 struct VehicleState {
@@ -87,6 +89,11 @@ struct VehicleState {
     bool usable = false;       // contents 0x200000; initially spawnflags & 1 (0x50dcd5)
     // Tread scroll accumulator (entity +0x5c, 0x510870): -1 = no scroll; the cgame reads it (0x4ac839).
     int texScroll = 0;
+    // Engine sound (0x50dbb7, 0x510be0): engineOn (+0x1ec) is set at spawn when both aliases of a pair exist and by
+    // startenginesound / stopenginesound (0x513e80 / 0x513ee0); idleFrac / engFrac (+0x1f8 / +0x1fc); live voices.
+    bool engineOn = true;
+    float idleFrac = 0, engFrac = 0;
+    int idleHandle = 0, engHandle = 0;
     int owner = -1;            // entity number of the player using it (entity +0xf4, 0x7ff = none)
 };
 

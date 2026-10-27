@@ -1576,6 +1576,10 @@ int main(int argc, char** argv) {
                 return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
+                return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
+            };
+            w->setBlendSound = [&mixer](int h, float f, const game::Vec3& o) { mixer.setBlend(h, f, audio::Vec3{o[0], o[1], o[2]}); };
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             // The bindings from default.cfg, reported to scripts through getkeybinding.

@@ -199,6 +199,41 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     return handle;
 }
 
+int Mixer::playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin) {
+    const SoundAlias* lo = aliases_.pick(low, rng_);
+    const SoundAlias* hi = aliases_.pick(high, rng_);
+    if (!lo || !hi) return 0;
+    auto wav = load(hi->file);
+    if (!wav || wav->frames() == 0) return 0;
+    Voice v;
+    v.wav = wav;
+    v.blend = true;
+    v.volLow = lo->volMin;
+    v.volHigh = hi->volMin;
+    v.volume = lo->volMin + (hi->volMin - lo->volMin) * f;
+    const float pitch = lo->pitchMin + (hi->pitchMin - lo->pitchMin) * f;
+    v.step = double(wav->rate) * pitch / double(rate_);
+    v.origin = origin;
+    v.distMin = lo->distMin + (hi->distMin - lo->distMin) * f;
+    const float dmax = hi->distMax > hi->distMin ? hi->distMax : hi->distMin * 10.0f;
+    v.distMax = dmax;
+    v.loop = true;
+    std::lock_guard lock(mutex_);
+    v.handle = nextHandle_++;
+    const int h = v.handle;
+    voices_.push_back(std::move(v));
+    return h;
+}
+
+void Mixer::setBlend(int handle, float f, const Vec3& origin) {
+    std::lock_guard lock(mutex_);
+    for (Voice& v : voices_)
+        if (v.handle == handle && v.blend) {
+            v.volume = v.volLow + (v.volHigh - v.volLow) * f;
+            v.origin = origin;
+        }
+}
+
 void Mixer::stop(int handle) {
     std::lock_guard lock(mutex_);
     std::erase_if(voices_, [&](const Voice& v) { return v.handle == handle; });

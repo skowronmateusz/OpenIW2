@@ -325,6 +325,7 @@ public:
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
     std::string vehicleCollmap(Entity& vehicle);
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
+    void updateVehicleEngineSound(Entity& e);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
@@ -335,6 +336,10 @@ public:
     // returns a handle (0 = nothing played); stopSound(handle).
     std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
     std::function<void(int)> stopSound = [](int) {};
+    // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
+    std::function<int(const std::string&, const std::string&, float, const Vec3&)> playBlendSound =
+        [](const std::string&, const std::string&, float, const Vec3&) { return 0; };
+    std::function<void(int, float, const Vec3&)> setBlendSound = [](int, float, const Vec3&) {};
 
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
