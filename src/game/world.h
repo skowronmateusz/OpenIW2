@@ -243,7 +243,7 @@ public:
     // Spawns map entities and the player, then runs maps/<map>.gsc::main().
     void start();
     // Advances game time by one server frame (50 ms).
-    void frame();
+    void frame(bool advanceTime = true);
 
     script::VM& vm() { return vm_; }
     const assets::D3dBsp& bsp() const { return *bsp_; }

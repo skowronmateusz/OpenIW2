@@ -983,6 +983,15 @@ void VM::step(Thread& t, bool& suspended) {
     case Op::Wait: {
         const float s = pop().asFloat();
         if (s < 0) throw std::runtime_error("negative wait");
+        if (s == 0.0f) {
+            // The exe's wait (0x46a1fc..0x46a2e9): frames = (int)(s * 20 + 0.5), a non-zero s that rounds to 0 becomes 1; the
+            // thread is scheduled for counter + frames (0x9bef20). wait 0 therefore lands in the CURRENT frame's list
+            // (appended after what is queued, run by the same Scr_RunFrame), not in the next frame.
+            t.state = ThreadState::Ready;
+            ready_.push_back(&t);
+            suspended = true;
+            break;
+        }
         t.state = ThreadState::Waiting;
         t.wakeTimeMs = nowMs_ + std::max<int64_t>(1, int64_t(std::lround(s * 1000.0f)));
         suspended = true;

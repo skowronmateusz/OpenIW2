@@ -390,6 +390,16 @@ void World::start() {
     syncEntityClips();
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
+    // Threads the init code woke by notify were appended to the current frame list (counter 0x9bef20), which the first
+    // Scr_RunFrame runs before the next frame's list that holds the timed waits (VM_Notify 0x46ca60, Scr_RunFrame 0x46f5c0).
+    // TODO(spec): whether the exe runs a frame at time 0 before the first 50 ms step; only the order is evidenced.
+    vm_.drainReady();
+    // The exe's script lists are keyed by a frame counter (0x9bef20): a thread that init code left in `wait 0.05` is in the
+    // NEXT frame's list, so something already ran the current one. moscow/matmata need that: matmata's start trigger_multiple
+    // (the player stands inside it) must fire and spawn the jeep before ridein's `wait 0.05` ends and does getent("jeep").
+    // So one game frame runs at time 0 before the first 50 ms step. TODO(spec): the exe's server start-up frames (count and
+    // time step) are not read.
+    frame(false);
 }
 
 Entity* World::entityByNumber(int number) {
@@ -398,8 +408,8 @@ Entity* World::entityByNumber(int number) {
     return nullptr;
 }
 
-void World::frame() {
-    timeMs_ += 50;
+void World::frame(bool advanceTime) {
+    if (advanceTime) timeMs_ += 50;
     if (player_) { // the player's velocity for the AI (TODO(spec): the original reads ps->velocity)
         const Value po = player_->obj->get("origin");
         if (po.isVector()) {
@@ -811,7 +821,6 @@ void World::registerBuiltins() {
         Entity* sp = entityOf(c.self);
         if (!sp || !sp->isSpawner) throw std::runtime_error("dospawn can only be called on actor spawners");
         Entity* a = spawnActor(*sp, force);
-        if (std::getenv("DBGSPAWN")) print("DBG dospawn t=" + std::to_string(timeMs_) + " tn=" + sp->obj->get("targetname").toString() + " sn=" + sp->obj->get("script_noteworthy").toString() + " ok=" + std::to_string(a != nullptr)); // DBGTMP
         return a ? Value(a->obj) : Value();
     };
     vm_.registerBuiltin("dospawn", [doSpawn](CallContext& c) { return doSpawn(c, false); });           // 0x4edff0: arg3 = 0
