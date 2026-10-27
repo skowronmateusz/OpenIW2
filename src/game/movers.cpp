@@ -270,6 +270,18 @@ void World::registerMoverBuiltins() {
         ch.tr = {5, timeMs_, int(t * 1000.0f), {cur[0], cur[1], cur[2]}, {vel[0], vel[1], vel[2]}};
         return Value();
     });
+    // launch (0x4f7be0): sets the position trajectory to type 5 (gravity) starting now at the current origin with the given
+    // velocity (trTime = level time, trDelta = vector), then relinks (0x44b2d0). The duration is not written; the movement
+    // lasts until the entity is deleted. TODO(spec): collision/landing of a launched script_model (not examined).
+    vm_.registerBuiltin("launch", [this, mover](CallContext& c) {
+        Entity& e = mover(c);
+        MoverChannel& ch = movers_[e.number].pos;
+        const Vec3 cur = e.obj->get("origin").asVector(), vel = c.arg(0).asVector();
+        ch = {};
+        ch.active = true;
+        ch.tr = {5, timeMs_, 600000, {cur[0], cur[1], cur[2]}, {vel[0], vel[1], vel[2]}};
+        return Value();
+    });
     // solid / notsolid (0x533f70 / 0x534050): errors on script_origin; collision of moving brush models is not
     // connected yet (needs the submodel traces of the collision spec).
     vm_.registerBuiltin("solid", [this](CallContext& c) {
