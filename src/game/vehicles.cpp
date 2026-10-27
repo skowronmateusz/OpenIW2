@@ -516,7 +516,7 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
 // World position of a model tag on the vehicle (0x4d75b0): the tag's model-space position through the entity's
 // axes, with the turret bone controls of the server controller 0x5127a0 (DObj controls through 0x4746e0): bone info+0x210
 // (tag_turret) gets angles (0, es+0x74 = turret yaw, 0), bone info+0x214 (tag_barrel) gets (es+0x70 = turret pitch, 0, 0).
-// TODO(spec): the body-jolt control on bone info+0x20c (angles es+0x64, 0, es+0x6c); that the three info slots are
+// The body bone info+0x20c gets angles (es+0x64, 0, es+0x6c) (checked in 0x5127a0); that the three info slots are
 // tag_body / tag_turret / tag_barrel follows the init order 0x5071b4..0x5071e3 and the cgame use (0x4ac354).
 // turnedForward (optional): the world direction the body's forward axis takes through the controls of this tag
 // (rotation of the controlled tag times the inverse of its bind rotation, rotated into the world).
@@ -987,7 +987,9 @@ void World::thinkVehicles() {
 // A player starts using a vehicle (VEH_LinkPlayer 0x511610): the player is placed at tag_player with the vehicle's
 // pitch and yaw (roll 0) and linked to that tag; both entities record each other.
 // pm_flags become 0x60000 (in a vehicle, view turns with it; 0x80000 cleared).
-// TODO(spec): the second tag the original prefers for the angles (vehicle +0x214).
+// VEH_LinkPlayer reads the tag_player transform (info+0x200) and, when the barrel tag (info+0x214) exists, a second
+// transform that supplies the orientation instead (0x51169c..0x5116bb picks the second buffer). The angles are taken from
+// that barrel tag's turned forward; the exact matrix-to-angles step (0x424b70) is approximated by vectoangles.
 void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     VehicleState& v = *vehicle.vehicle;
     if (player.usingVehicle >= 0) throw std::runtime_error("VEH_LinkPlayer: Player is already using a vehicle");
@@ -997,7 +999,15 @@ void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     if (!found) throw std::runtime_error("VEH_LinkPlayer: Trying to use vehicle without a bone [tag_player]");
     const Vec3 a = vehicle.obj->get("angles").asVector();
     player.obj->set("origin", Value(pos));
-    player.obj->set("angles", Value(Vec3{a[0], a[1], 0.0f}));
+    Vec3 ang{a[0], a[1], 0.0f};
+    bool barrelFound = false;
+    Vec3 barrelFwd{};
+    vehicleTagPosition(vehicle, "tag_barrel", barrelFound, &barrelFwd);
+    if (barrelFound) {
+        const Vec3 t = vectorToAngles(barrelFwd);
+        ang = Vec3{t[0], t[1], 0.0f};
+    }
+    player.obj->set("angles", Value(ang));
     Link l;
     l.parent = vehicle.number;
     l.tag = "tag_player";
