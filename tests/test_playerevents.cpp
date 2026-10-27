@@ -77,12 +77,13 @@ int main() {
         using V = std::vector<std::string>;
         CHECK(playerEventSounds(0x1e, true) == (V{"step_walk_plr_dirt", "gear_rattle_plr_walk"}));
         CHECK(playerEventSounds(0x1e, false) == (V{"gear_rattle_plr_walk"}));
+        CHECK(playerEventSounds(0x8b, false) == (V{"movement_foliage"}));
         CHECK(playerEventSounds(1 + 13, true) == (V{"step_run_plr_metal", "gear_rattle_plr_run"}));
         CHECK(playerEventSounds(0x2f + 10, true) == (V{"step_prone_plr_grass", "gear_rattle_plr_walk"}));
         CHECK(playerEventSounds(0x46, false) == (V{"step_run_plr_default", "gear_rattle_plr_run"}));
         CHECK(playerEventSounds(0x5d + 6, false) == (V{"land_plr_dirt"}));
         CHECK(playerEventSounds(0x74 + 22, false) == (V{"land_plr_asphalt", "land_damage"}));
-        CHECK(playerEventSounds(0x8b, true).empty());
+        CHECK(playerEventSounds(0x8c, true).empty());
         CHECK(playerEventSounds(0, true).empty());
     }
 
