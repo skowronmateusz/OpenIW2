@@ -92,9 +92,12 @@ void MenuStack::closeAll() {
 }
 
 bool MenuStack::itemVisible(const Item& it) const {
+    // show/hide commands set the item's visible flag; the dvarTest/showDvar/hideDvar gate still applies on top (the pause menu
+    // has "newgame" and "restart" at the same rect, separated only by sv_running).
+    bool flag = it.visible;
     for (auto o = shownOverrides_.rbegin(); o != shownOverrides_.rend(); ++o)
-        if (o->first == &it) return o->second;
-    if (!it.visible) return false;
+        if (o->first == &it) { flag = o->second; break; }
+    if (!flag) return false;
     if (!it.dvarTest.empty()) {
         const std::string v = env_.getCvar ? env_.getCvar(it.dvarTest) : std::string();
         // TODO(spec): the exe handler of showDvar/hideDvar; the shipped menus show an item when the value is listed in
