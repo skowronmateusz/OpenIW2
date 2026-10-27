@@ -372,9 +372,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
             else endReload();
             break;
         }
-        const int take = std::min(clipSize - clip_, stock_);
-        clip_ += take;
-        stock_ -= take;
+        if (addPending_) applyReloadAdd();
         needsRechamber_ = false;
         enter(State::Ready, nullptr, 0);
         break;
@@ -452,6 +450,7 @@ bool PlayerWeapon::segmented() const { return std::atoi(fieldValue("segmentedRel
 bool PlayerWeapon::startReload() {
     if (!canLoadMore()) return false;
     reloadInterrupted_ = false;
+    events_.push_back({Event::ReloadBegin, name_});
     if (segmented() && time("reloadStartTime", 0) != 0) {
         const float t = time("reloadStartTime", 0);
         enter(State::ReloadStart, "reloadStartAnim", t);
@@ -470,7 +469,6 @@ void PlayerWeapon::beginRound() {
     const bool empty = clip_ == 0;
     const float t = time(empty && fieldValue("weaponType") == "bullet" ? "reloadEmptyTime" : "reloadTime", 2.0f);
     enter(State::Reloading, empty ? "reloadEmptyAnim" : "reloadAnim", t);
-    if (!segmented()) return; // the plain reload adds its rounds when the round ends
     float d = t;
     const float a = time("reloadAddTime", 0);
     if (a != 0 && a < d) d = a;

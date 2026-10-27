@@ -224,7 +224,12 @@ void segmentedReload() {
         fireDown(w, 2);
         CHECK(w.clip() == 2 && w.stock() == 5);
         w.takeSounds();
+        w.takeEvents();
         run(w, 0.02f, false, true);
+        {
+            const auto ev = w.takeEvents();
+            CHECK(ev.size() == 1 && ev[0].kind == PlayerWeapon::Event::ReloadBegin);
+        }
         CHECK(w.takeSounds() == std::vector<std::string>{"start"});
         run(w, 1.3f, false); // t = 1.32: the intro adds its round only at 1.4
         CHECK(w.clip() == 2);
@@ -273,7 +278,37 @@ void segmentedReload() {
     }
 }
 
+// A plain reload adds its rounds reloadAddTime into the round (0x4dd8c0, 0x4dd5b0), not at its end.
+void reloadAddTiming() {
+    const Def a{{"clipsize", "5"}, {"startammo", "10"}, {"raisetime", "0"}, {"firetime", "0.1"}, {"reloadtime", "1.0"},
+                {"reloadaddtime", "0.4"}, {"weapontype", "bullet"}};
+    PlayerWeapon w;
+    w.equip("a", a);
+    run(w, 0.1f, false);
+    while (w.clip() > 2) run(w, 0.15f, true);
+    run(w, 0.3f, false);
+    run(w, 0.02f, false, true);
+    run(w, 0.3f, false);
+    CHECK(w.clip() == 2);
+    run(w, 0.2f, false); // 0.52 s into the round
+    CHECK(w.clip() == 5 && w.stock() == 2);
+    // A weapon change before the add leaves the clip as it was.
+    PlayerWeapon v;
+    v.lookup = [&](const std::string&) -> const Def* { return &a; };
+    v.equip("a", a);
+    run(v, 0.1f, false);
+    while (v.clip() > 2) run(v, 0.15f, true);
+    run(v, 0.3f, false);
+    run(v, 0.02f, false, true);
+    v.update(0.01f, {false, false, false, false, false, false, "b"});
+    run(v, 0.5f, false);
+    v.update(0.01f, {false, false, false, false, false, false, "a"});
+    run(v, 1.5f, false);
+    CHECK(v.clip() == 2);
+}
+
 int main() {
+    reloadAddTiming();
     segmentedReload();
     weaponSounds();
     boltAction();
