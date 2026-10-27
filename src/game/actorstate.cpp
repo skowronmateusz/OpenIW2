@@ -195,6 +195,19 @@ bool World::aiStart(Entity& e, int state) {
     }
 }
 
+// 0x54d300 / the tail of 0x54d340: with an attacker pending on the sentient (+0x28) the pain event (type 5) is sent from the
+// actor's own origin (+0xdc) to the actors of its own team (EAX = 1 << team, radius 0 = the type's default), then +0x28 is
+// cleared. Team none has bit 0 set in the mask, which skips the source gate.
+void World::painBroadcast(Entity& e) {
+    if (!e.lastAttacker) return;
+    const Value t = e.obj->get("team");
+    const std::string ts = t.isString() ? t.asString() : std::string();
+    const bool noTeam = !(ts == "axis" || ts == "allies" || ts == "neutral");
+    const Value o = e.obj->get("origin");
+    aiEventPoint(e, 5, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, noTeam, AiHear::Own);
+    e.lastAttacker = nullptr;
+}
+
 void World::aiFinish(Entity& e, int state) {
     switch (state) {
     case AiTurret:
@@ -206,9 +219,11 @@ void World::aiFinish(Entity& e, int state) {
     case AiScripted: // 0x54b070: the scripted block is freed
         e.scripted.reset();
         break;
+    case AiPain: // 0x54d300: a still pending attacker (sentient +0x28) is broadcast as the pain event
+        painBroadcast(e);
+        break;
     default:
-        // exposed 0x548d20, death / custom 0x549890: nothing. TODO(spec): pain 0x54d300 broadcasts the pending
-        // pain event to nearby AI (0x535770).
+        // exposed 0x548d20, death / custom 0x549890: nothing.
         break;
     }
 }
@@ -315,8 +330,7 @@ void World::actorThink(Entity& e) {
         actorBecomeCorpse(e);
         return;
     }
-    // 0x4fef50: inside the goal and the path (if any) ends inside it. TODO(spec): facing mode 6 at a cover node
-    // also needs the actor's yaw within range of the node's angle.
+    // 0x4fef50: inside the goal and the path (if any) ends inside it.
     if (actorInGoal(e, 0.0f)) {
         bool pathInGoal = true;
         if (actorHasPath(e)) {
@@ -325,6 +339,17 @@ void World::actorThink(Entity& e) {
             e.obj->set("origin", Value(Vec3{end[0], end[1], end[2]}));
             pathInGoal = actorInGoal(e, 0.0f);
             e.obj->set("origin", saved);
+        }
+        // 0x4fef89..0x4feff9: with facing mode 6 (+0x104) and no orient override (+0x114), a claimed node (sentient +0x2c) of a
+        // non-cover type with spawnflag 0x8000 also needs the actor's yaw (+0xec) within 20 degrees of the node's (+0x20).
+        if (pathInGoal && e.ai.facing == 6 && e.ai.orient == 0 && e.claimedNode >= 0) {
+            const PathNode& cn = nodes_[size_t(e.claimedNode)];
+            if (!(0x41ffcu >> cn.typeNum & 1u) && (cn.spawnflags & 0x8000)) {
+                float d = std::fmod(cn.obj->get("angles").asVector()[1] - e.obj->get("angles").asVector()[1], 360.0f);
+                if (d > 180.0f) d -= 360.0f;
+                else if (d < -180.0f) d += 360.0f;
+                if (d < -20.0f || d > 20.0f) pathInGoal = false;
+            }
         }
         if (pathInGoal) {
             // DEV-ONLY BYPASS (IW2_DEV_SNAP_GOAL_YAW=1, docs/debug-flags.md): turns the actor to its goal node's angles before
@@ -378,8 +403,7 @@ int World::painThink(Entity& e) {
     // 0x54d340: 500 ms into the pain, with an attacker on the sentient (+0x28), the pain event (type 5) reveals
     // the attacker to the actors around; the attacker is then forgotten.
     if (e.lastAttacker && timeMs_ - ai.painStartMs > 499) {
-        aiEventPoint(e, 5, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
-        e.lastAttacker = nullptr;
+        painBroadcast(e);
     }
     actorPerceive(e);
     ai.facing = 1;
@@ -827,7 +851,7 @@ void World::actorMoveNoise(Entity& e) {
     {
         const Value ov = e.obj->get("origin");
         const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
-        const TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 0.25f}, {-15, -15, 0}, {15, 15, 72}, 0x2820011u, e.number);
+        const TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 0.25f}, {-15, -15, 0}, {15, 15, 72}, e.ai.noPush ? 0x2820011u : 0x820011u, e.number); // actor +0x28c: pushplayer clears the player contents bit
         static const bool dbg = std::getenv("IW2_GROUND_DEBUG") != nullptr;
         if (dbg) ++(tr.fraction < 1.0f || tr.startSolid ? stats.groundHit : stats.groundMiss);
         if (!(tr.fraction < 1.0f || tr.startSolid)) return;

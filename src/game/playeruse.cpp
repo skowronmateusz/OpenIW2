@@ -557,7 +557,7 @@ std::vector<World::CompassMarker> World::compassVehicles() const {
 // 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
 // eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
-// 0x100000. TODO(spec): the name target (ps+0x8678, g_friendlyNameDist), the 0x8000000 flag, non-actor hits
+// 0x100000. TODO(spec): the name target (ps+0x8678, g_friendlyNameDist), non-actor hits
 // (turrets/vehicles, +0x1b4), the trace surface-flag 0x10 exception.
 void World::updateCrosshairTarget() {
     crosshairFlags_ = 0;
@@ -628,7 +628,13 @@ void World::updateCrosshairTarget() {
     } else {
         constexpr float nameDist = 15000.0f; // g_friendlyNameDist default (0x4d8a1a), 0x5352e3 / 0x535455
         if (dist2 < nameDist * nameDist) target = true;
-        if (dist2 < 128.0f * 128.0f) crosshairFlags_ |= 0x100000u;
+        if (dist2 < 128.0f * 128.0f) {
+            crosshairFlags_ |= 0x100000u;
+            // 0x535366: unless the actor keeps the player contents bit in its mask (+0x28c & 0x2000000, pushplayer(0), the default)
+            // and dontavoidplayer (+0x734) is 0, the 0x8000000 flag is set too.
+            const Value dap = hit->obj->get("dontavoidplayer");
+            if (!hit->ai.noPush || (dap.isNumber() && dap.asInt() != 0)) crosshairFlags_ |= 0x8000000u;
+        }
     }
     // 0x534aa0: configstring 0xb = "\x15" + the actor's name (+0xd0, script `.name`), 0xc = the display name of its weapon
     // (+0xd2, `.weapon`; weapon def +8). Nothing for an unnamed actor.

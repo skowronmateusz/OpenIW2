@@ -119,7 +119,7 @@ struct ActorAi {
     bool throwFromTag = false;                // +0x20d4: re-solve the throw from tag_weapon_right when thrown
     std::string throwMethod;                  // +0x20cc
     Vec3 throwStart{}, throwTarget{}, throwVel{}; // +0x20dc / +0x20e8 / +0x20f4
-    bool noPush = false;                      // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
+    bool noPush = true;                       // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
     bool potentialThreat = false;             // +0x20b4: setpotentialthreat; +0x20b8 cos, +0x20bc sin of the angle (TODO(spec): consumer)
     float potentialThreatDir[2] = {0, 0};
     int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (TODO(spec): consumer)
@@ -683,6 +683,7 @@ private:
     int playerEventSeq_ = 0;
     // Receivers of an AI event by team (the mask in EAX of 0x535770: 0 = the source's enemy team, 1 << team otherwise).
     enum class AiHear { All, Enemy, Own };
+    void painBroadcast(Entity& e); // 0x54d300
     void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true, AiHear hear = AiHear::All); // 0x535770
     void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2 = 0,
                      bool forced = true); // 0x535860 + 0x535f20

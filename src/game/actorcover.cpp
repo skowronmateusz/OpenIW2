@@ -283,16 +283,36 @@ float World::coverScore(Entity& e, int node) {
         }
     }
     const float open = (n.typeNum >= 10 && n.typeNum <= 12) ? 0.0f : 1.0f;
-    // 0x54bdd0: the enemy's yaw from the node inside the node's arcs. TODO(spec): actor +0x20b4 (an offset used
-    // instead of the enemy when it was not seen within 250 ms) is not known; treated as unset.
+    // 0x54bdd0: whether the node covers the point of interest (0x54b8c0: beyond the node's distance, in front of it or inside
+    // its arc, as in coverScriptAt). The point is the enemy's origin, unless the actor has a potential threat
+    // (setpotentialthreat, +0x20b4 / +0x20b8 / +0x20bc) and has not seen the enemy within 250 ms (0x54ce10); with no enemy it
+    // is the node's origin plus the threat's (cos, sin) offset at the node's height. Without either: not covered.
     float inArc = 0.0f;
-    if (enemy) {
-        const CoverArc arc = coverArc(n.typeNum);
-        const Vec3 p = vecField(enemy->obj, "origin");
-        const float yaw = vecField(n.obj, "angles")[1];
-        const float d = angleNormalize360(std::atan2(p[1] - no[1], p[0] - no[0]) * 57.29578f - yaw);
-        const bool in = arc.arcMin <= arc.arcMax ? (arc.arcMin <= d && d <= arc.arcMax) : (d >= arc.arcMin || d <= arc.arcMax);
-        inArc = in ? 1.0f : 0.0f;
+    {
+        const ActorAi& ai = e.ai;
+        bool have = false;
+        Vec3 p{};
+        if (enemy && (seesEnemyRecently(e, 250) || !ai.potentialThreat)) {
+            p = vecField(enemy->obj, "origin");
+            have = true;
+        } else if (ai.potentialThreat) {
+            p = {no[0] + ai.potentialThreatDir[0], no[1] + ai.potentialThreatDir[1], no[2]};
+            have = true;
+        }
+        if (have) {
+            const CoverArc arc = coverArc(n.typeNum);
+            const float yaw = vecField(n.obj, "angles")[1];
+            bool in;
+            if (dist2d(no, p) < arc.distSq) in = false;
+            else if (arc.useFacing) {
+                const float fx = std::cos(yaw * float(M_PI) / 180.0f), fy = std::sin(yaw * float(M_PI) / 180.0f);
+                in = (p[0] - no[0]) * fx + (p[1] - no[1]) * fy >= 0.0f;
+            } else {
+                const float d = angleNormalize360(std::atan2(p[1] - no[1], p[0] - no[0]) * 57.29578f - yaw);
+                in = arc.arcMin <= arc.arcMax ? (arc.arcMin <= d && d <= arc.arcMax) : (d >= arc.arcMin || d <= arc.arcMax);
+            }
+            inArc = in ? 1.0f : 0.0f;
+        }
     }
     return near + sees + open + open + inArc * 4.0f + ((n.spawnflags & 0x40) ? 8.0f : 0.0f);
 }

@@ -849,6 +849,13 @@ void World::registerCombatBuiltins() {
         a.ai.potentialThreatDir[1] = std::sin(r);
         return Value();
     });
+    // clearpotentialthreat (0x540e70): no arguments; actor +0x20b4 = 0.
+    vm_.registerBuiltin("clearpotentialthreat", [actorSelf](CallContext& c) {
+        Entity& a = actorSelf(c);
+        if (c.argc() != 0) throw std::runtime_error("clearpotentialthreat: usage");
+        a.ai.potentialThreat = false;
+        return Value();
+    });
     // traversemode (0x53f360): actor +0x210 = 1 "gravity" (script string 0x1c7f080), 2 "nogravity" (0x1c7f0a4), 3 "noclip"
     // (0x1c7f0a2); anything else errors (0x591464). TODO(spec): the mode's effect (negotiation is not implemented).
     vm_.registerBuiltin("traversemode", [actorSelf](CallContext& c) {
