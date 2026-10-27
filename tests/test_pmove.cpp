@@ -85,6 +85,16 @@ int main() {
         std::cout << "from 0.5 below the floor: z " << in0.origin[2] - floor[2] << " relative to the floor\n";
         CHECK(in0.origin[2] > floor[2] - 1.0f);
 
+        // PM_FoliageSounds (0x50ac30): standing still, the last foliage time is cleared after the reset interval.
+        {
+            PlayerState fs;
+            fs.origin = floor;
+            fs.lastFoliageMs = 5;
+            for (int i = 0; i < 20; ++i) playerMove(cw, fs, {}, 1.0f / 60.0f); // ~330 ms: still within 500 ms
+            CHECK(fs.lastFoliageMs == 5);
+            for (int i = 0; i < 20; ++i) playerMove(cw, fs, {}, 1.0f / 60.0f); // ~660 ms
+            CHECK(fs.lastFoliageMs == 0);
+        }
         // Ladder climb (PM_CheckLadderMove 0x50bd90 + 0x50c070): a sweep of horizontal traces finds a ladder surface (flag 0x8).
         {
             float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};

@@ -57,6 +57,7 @@ struct PlayerState {
     int mantleTrans = 0;
     uint32_t mantleFlags = 0;
     int stanceEvent = -1;        // client stance set by a mantle event this move (0x8d → 1, 0x8c → 0), else −1
+    int64_t lastFoliageMs = 0;   // ps+0x44: time of the last foliage event, 0 after the reset interval at low speed
     int landSeq = 0;             // landings so far (PM_CrashLand 0x508fe0 reached the ground from the air)
     float landHeight = 0;        // the last landing's fall height
     int landDamage = 0;          // the last landing's fall damage 0..100 (applied to health by World::applyPlayerEvent)
@@ -139,6 +140,12 @@ struct MoveParams {
     float aimSpreadMoveSpeedThreshold = 11.0f; // bg_aimSpreadMoveSpeedThreshold (0x4fa98e)
     float jumpSpreadAdd = 64.0f;      // jump_spreadAdd (0x541240)
     float moveThreshold = 10.0f;      // player_moveThreshhold (0x4fab25)
+    // PM_FoliageSounds dvars (registered at 0x4fa6fd..0x4fa813)
+    float foliageMinSpeed = 40.0f;    // bg_foliagesnd_minspeed
+    float foliageMaxSpeed = 180.0f;   // bg_foliagesnd_maxspeed
+    int foliageSlowInterval = 1500;   // bg_foliagesnd_slowinterval (ms)
+    int foliageFastInterval = 500;    // bg_foliagesnd_fastinterval (ms)
+    int foliageResetInterval = 500;   // bg_foliagesnd_resetinterval (ms)
 };
 
 // PM_AddEvent (0x507ba0): event 0 is ignored; the ring keeps the last 4.
