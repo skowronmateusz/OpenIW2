@@ -2111,7 +2111,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -3409,7 +3409,7 @@ int main(int argc, char** argv) {
                 const int64_t rem = ticksMs - el;
                 return rem >= 700 ? 1.0f : float(rem) / 700.0f;
             };
-            const float ammoAlpha = fadeAlpha(hudFade.ammo, 2.0f, 2000);
+            const float ammoAlpha = fadeAlpha(hudFade.ammo, 3.0f, 3000) /* hud_fade_ammodisplay default 3.0 (0x4a728a) */;
             const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
@@ -3509,6 +3509,42 @@ int main(int argc, char** argv) {
                     q.texture = materialTexture(icon);
                     out.push_back(q);
                 }
+            }
+            // Stance (menu "stance", ownerdraw 20, 0x4a81e0): alpha = fade of hud_fade_stance (default 1.7 s, 0x10438e4, ticks = dvar * 1000,
+            // touch 0xf79a44); nothing while the alpha is 0, nor in a vehicle (pm_flags 0x20000 without 0x80000). The stance change
+            // time (0xf796c8) is set to now when it lies in the future or the stance (pm_flags & 3) differs from the stored one
+            // (0xf796c4). Icon: bit 0 stance_prone, else bit 1 stance_crouch, else stance_stand; then, for 1000 ms after the change,
+            // the stance_flash overlay with the cg_hudStanceFlash colour (default white) and alpha (changeTime + 1000 - now) * 0.001 * 0.8
+            // (0x591e30, 0x591f94) capped by the fade alpha. Rect: menu 90 -70 LEFT / BOTTOM + item 60x60.
+            // TODO(spec): the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
+            // the bool dvar 0x1040c4c checked in the fade.
+            if (const ui::Menu* sm = hudMenus.find("stance"); sm && world) {
+                const int64_t now = world->timeMs();
+                const uint32_t st = world->playerPmFlags() & 3u;
+                if (hudFade.stanceChange > now || hudFade.stanceState != st) hudFade.stanceChange = now;
+                hudFade.stanceState = st;
+                const float sa = fadeAlpha(hudFade.stance, 1.7f, 1700);
+                const bool stanceInVeh = (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
+                if (sa > 0.0f && !stanceInVeh)
+                    for (const auto& itp : sm->items) {
+                        if (itp->ownerDraw != 20) continue;
+                        const auto& r = itp->rect;
+                        Quad2D q{(sm->rect.x + r.x) * sc, float(h) + (sm->rect.y + r.y) * sc, 0, 0};
+                        q.x1 = q.x0 + r.w * sc;
+                        q.y1 = q.y0 + r.h * sc;
+                        for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        q.rgba[3] = uint8_t(std::clamp(sa, 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture((st & 1u) ? "stance_prone" : (st & 2u) ? "stance_crouch" : "stance_stand");
+                        out.push_back(q);
+                        if (hudFade.stanceChange + 1000 > now) {
+                            const float fa = std::min(sa, float(hudFade.stanceChange + 1000 - now) * 0.001f * 0.8f);
+                            Quad2D f = q;
+                            for (int k = 0; k < 3; ++k) f.rgba[k] = 255; // cg_hudStanceFlash default (1 1 1 1); TODO(spec): dvar override
+                            f.rgba[3] = uint8_t(std::clamp(fa, 0.0f, 1.0f) * 255.0f);
+                            f.texture = materialTexture("stance_flash");
+                            out.push_back(f);
+                        }
+                    }
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
@@ -3854,7 +3890,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
