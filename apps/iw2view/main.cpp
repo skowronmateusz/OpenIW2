@@ -17,6 +17,7 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "game/compassspring.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
@@ -1939,6 +1940,7 @@ int main(int argc, char** argv) {
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
+        game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
@@ -3274,7 +3276,7 @@ int main(int argc, char** argv) {
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
             // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
             // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
             // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
@@ -3332,7 +3334,7 @@ int main(int argc, char** argv) {
                         Quad2D q{bx, by, bx + qw, by + qh};
                         std::memcpy(q.rgba, col, 4);
                         q.texture = materialTexture(it.background);
-                        if (it.ownerDraw == 84) q.rotDeg = wrap360(cyaw - north);
+                        if (it.ownerDraw == 84) q.rotDeg = compassSpring.update(int(world->timeMs()), wrap360(cyaw - north)); // 0x4b09a0
                         out.push_back(q);
                         continue;
                     }

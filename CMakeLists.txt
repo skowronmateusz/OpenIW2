@@ -214,3 +214,7 @@ add_test(NAME frontend COMMAND test_frontend)
 add_executable(test_profile tests/test_profile.cpp)
 target_link_libraries(test_profile PRIVATE iw2_ui)
 add_test(NAME profile COMMAND test_profile)
+
+add_executable(test_compassspring tests/test_compassspring.cpp)
+target_link_libraries(test_compassspring PRIVATE iw2_game)
+add_test(NAME compassspring COMMAND test_compassspring)
