@@ -2035,7 +2035,7 @@ int main(int argc, char** argv) {
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
         // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
         // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
-        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; bool brassPending = false, brassValid = false; game::FVec brassPos{}; };
         auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
@@ -2386,6 +2386,27 @@ int main(int argc, char** argv) {
                         const auto& q = tf->second.first;
                         for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
                         if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        // CG_EjectWeaponBrass (0x4b7730) for the local client: shellEjectEffect bolted on the view weapon's tag_brass.
+                        const auto tb = gunBones.find("tag_brass");
+                        viewFlash->brassValid = tb != gunBones.end();
+                        if (viewFlash->brassValid) {
+                            const auto& m = base.transform;
+                            const auto& q = tb->second.first;
+                            for (int k = 0; k < 3; ++k) viewFlash->brassPos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        }
+                        if (viewFlash->brassPending && world) {
+                            viewFlash->brassPending = false;
+                            const std::string path = pweapon.field("shellEjectEffect");
+                            if (viewFlash->brassValid && !path.empty() && path != "none") {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->brassPos;
+                                    return vf->brassValid;
+                                });
+                                const auto& m = base.transform;
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
+                            }
+                        }
                         if (viewFlash->pending && world) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
@@ -3666,7 +3687,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = viewFlash->brassPending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -4149,7 +4170,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
-                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
+                if (shots) viewFlash->pending = viewFlash->brassPending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) {

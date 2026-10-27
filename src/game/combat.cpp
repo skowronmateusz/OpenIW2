@@ -630,6 +630,12 @@ void World::registerCombatBuiltins() {
         if (wpn.isString()) {
             const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
             if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir, a->number, "tag_flash"});
+            // The same handler ejects the brass (CG_EjectWeaponBrass 0x4b7730, cg_brass 0xf48cfc default 1): the weapon's
+            // shellEjectEffect (+0x160; lastShotEjectEffect +0x164 for event 0xa0) played bolted (0x4853f0) on the
+            // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). TODO(spec): which of 0x9e / 0xa0
+            // this shot is, so lastShotEjectEffect is never chosen here.
+            const std::string brass = weaponField(wpn.asString(), "shellEjectEffect");
+            if (!brass.empty() && brass != "none" && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();
