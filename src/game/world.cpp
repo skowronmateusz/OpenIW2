@@ -241,8 +241,10 @@ void World::spawnMapEntities() {
 
     Entity& p = spawnEntity("player");
     p.isPlayer = true;
-    p.obj->set("health", Value(int32_t(100)));
-    p.obj->set("maxhealth", Value(int32_t(100)));
+    // Client spawn 0x4e991e-0x4e9945: health = maxhealth = g_player_maxhealth (set by skill, see start()).
+    const int maxhealth = std::atoi(cvars["g_player_maxhealth"].c_str());
+    p.obj->set("health", Value(int32_t(maxhealth)));
+    p.obj->set("maxhealth", Value(int32_t(maxhealth)));
     p.obj->set("team", Value("allies"));
     if (playerStart) {
         p.obj->set("origin", (*playerStart)->get("origin"));
@@ -307,7 +309,27 @@ void World::start() {
     // maps/_load.gsc sets level.script from getcvar("mapname"), so the cvar must name the running map before the
     // level script starts (docs/spec/ui.md, intro screen).
     cvars["mapname"] = mapName_;
-    cvars["g_gameskill"] = "1"; // registered at 0x446b33 with default 1 (Regular), range 0..3
+    // Skill-health dvar cluster (registered in FUN_00449b10, defaults per the 1.3 exe): g_gameskill range 0..3
+    // (0x446b33, default 1), g_player_maxhealth 500, player_healthEasy/Medium/Hard/Fu 500/275/165/115,
+    // player_deathInvulnerableTime 1000 ms. DEVIATION: g_gameskill defaults to 0 (easy), not the original's 1,
+    // because openiw2 has no menu UI to pick a difficulty (Mateusz 2026-10-27).
+    if (cvars.find("g_gameskill") == cvars.end()) cvars["g_gameskill"] = "0";
+    cvars["player_healthEasy"] = "500";
+    cvars["player_healthMedium"] = "275";
+    cvars["player_healthHard"] = "165";
+    cvars["player_healthFu"] = "115";
+    cvars["g_player_maxhealth"] = "500";
+    cvars["player_deathInvulnerableTime"] = "1000";
+    // FUN_004467b0 ("apply game skill", called once at game start 0x4d8788): pick the per-skill player health
+    // into g_player_maxhealth and set player_deathInvulnerableTime to 4000/1000/100/100 ms for skill 0..3.
+    // This is the ONLY engine-side skill scaling — damage and NPC health are skill-blind (G_Damage 0x528050).
+    static const char* const kSkillHealthCvar[4] = {"player_healthEasy", "player_healthMedium", "player_healthHard", "player_healthFu"};
+    static const int kSkillDeathInvulMs[4] = {4000, 1000, 100, 100};
+    int skill = std::atoi(cvars["g_gameskill"].c_str());
+    if (skill < 0) skill = 0;
+    if (skill > 3) skill = 3;
+    cvars["g_player_maxhealth"] = cvars[kSkillHealthCvar[skill]];
+    cvars["player_deathInvulnerableTime"] = std::to_string(kSkillDeathInvulMs[skill]);
     spawnMapEntities();
     linkVehicleNodes();
     initMapTurrets();
