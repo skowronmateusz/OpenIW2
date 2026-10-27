@@ -640,8 +640,6 @@ int main(int argc, char** argv) {
                 seconds = std::stoi(a);
             }
         }
-        // The menu default of the saved cvar (50 digits); maps/_endmission.gsc indexes it at the end of a mission.
-        world.cvars.emplace("mis_difficulty", std::string(50, '0'));
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
         // Sounds are not played here; count requests and aliases that do not resolve.
         iw2::audio::SoundAliases aliases;

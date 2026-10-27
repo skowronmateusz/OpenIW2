@@ -8,7 +8,7 @@ namespace iw2::ui {
 bool isArchivedCvar(const std::string& name) {
     std::string n;
     for (char c : name) n += char(std::tolower(static_cast<unsigned char>(c)));
-    if (n == "sensitivity" || n == "m_pitch" || n == "snd_volume" || n == "g_gameskill" || n == "mis_difficulty") return true;
+    if (n == "sensitivity" || n == "m_pitch" || n == "snd_volume" || n == "g_gameskill" || n == "mis_difficulty" || n == "mis_none") return true;
     return n.size() == 6 && n.compare(0, 4, "mis_") == 0 && std::isdigit(static_cast<unsigned char>(n[4])) && std::isdigit(static_cast<unsigned char>(n[5]));
 }
 

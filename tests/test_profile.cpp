@@ -1,4 +1,5 @@
 // Profile config text round trip.
+#include "ui/menurun.h"
 #include "ui/profile.h"
 
 #include <iostream>
@@ -13,5 +14,11 @@ int main() {
     check(back.at("m_pitch") == "-0.022" && back.at("sensitivity") == "7" && back.at("mis_03") == "1", __LINE__);
     check(back.count("ui_background") == 0 && back.count("sv_running") == 0, __LINE__);
     check(iw2::ui::parseConfig("bind A x\nseta snd_volume \"0.3\"\r\n").at("snd_volume") == "0.3", __LINE__);
+    // Mission progress (mis_NN, mis_none, mis_difficulty) is archived and defaults as registered by the exe.
+    std::string prog(50, '0');
+    prog[0] = '2';
+    const auto pb = iw2::ui::parseConfig(iw2::ui::formatConfig({{"mis_01", "10"}, {"mis_none", "0"}, {"mis_difficulty", prog}}));
+    check(pb.size() == 3 && pb.at("mis_01") == "10" && pb.at("mis_difficulty") == prog, __LINE__);
+    check(iw2::ui::registeredDefault("mis_difficulty") == std::string(50, '0') && iw2::ui::registeredDefault("mis_10") == "0", __LINE__);
     return failures ? 1 : 0;
 }

@@ -107,6 +107,9 @@ World::World(const fs::Vfs& vfs, std::string mapName)
           if (!d) return std::nullopt;
           return std::string(d->begin(), d->end());
       }) {
+    // Mission-progress dvars the exe registers at start (archived; docs/spec/savegame.md): mis_01..mis_10 int 0, mis_difficulty string of 50 '0'.
+    for (int i = 1; i <= 10; ++i) cvars.emplace(std::string("mis_") + (i < 10 ? "0" : "") + std::to_string(i), "0");
+    cvars.emplace("mis_difficulty", std::string(50, '0'));
     auto d = vfs_.read("maps/" + mapName_ + ".d3dbsp");
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);
@@ -1083,6 +1086,18 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("setcvar", [this](CallContext& c) {
         const Value v = c.arg(1);
         cvars[c.arg(0).toString()] = std::holds_alternative<LocalizedString>(v.v) ? std::get<LocalizedString>(v.v).key : v.toString();
+        return Value();
+    });
+    // setmissioncvar (0x4f40b0): the name must be one of mis_01..mis_10, mis_difficulty (table 0x5a974c, else "Invalid mission dvar name");
+    // the dvar must exist; an int dvar (type 5) takes the int argument, a string dvar (type 7) the string argument; other types error.
+    vm_.registerBuiltin("setmissioncvar", [this](CallContext& c) {
+        const std::string name = c.arg(0).toString();
+        static const char* const valid[] = {"mis_01", "mis_02", "mis_03", "mis_04", "mis_05", "mis_06", "mis_07", "mis_08", "mis_09", "mis_10", "mis_difficulty"};
+        bool ok = false;
+        for (const char* v : valid) ok = ok || name == v;
+        if (!ok) throw std::runtime_error("Invalid mission dvar name: " + name);
+        if (name == "mis_difficulty") cvars[name] = c.arg(1).toString();
+        else cvars[name] = std::to_string(c.arg(1).asInt());
         return Value();
     });
     vm_.registerBuiltin("setsavedcvar", [this](CallContext& c) { cvars[c.arg(0).toString()] = c.arg(1).toString(); return Value(); });

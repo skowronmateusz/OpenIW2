@@ -5175,6 +5175,14 @@ int main(int argc, char** argv) {
                     nextKey = SDL_GetTicksNS() + 2000000000ull;
                 }
             }
+            if (world) { // mission progress written by scripts (setmissioncvar, maps/_endmission.gsc) is archived: copy it to the profile
+                for (const char* n : {"mis_01", "mis_02", "mis_03", "mis_04", "mis_05", "mis_06", "mis_07", "mis_08", "mis_09", "mis_10", "mis_difficulty"}) {
+                    const auto it = world->cvars.find(n);
+                    if (it == world->cvars.end()) continue;
+                    auto& u = uiCvars[n];
+                    if (u != it->second) { u = it->second; profileDirty = true; }
+                }
+            }
             if (profileDirty) { // write the archived cvars (config.cfg) after a menu changed one
                 profileDirty = false;
                 std::error_code ec;
