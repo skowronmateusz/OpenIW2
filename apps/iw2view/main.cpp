@@ -2500,7 +2500,7 @@ int main(int argc, char** argv) {
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
-        if (menuMode) {
+        { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
             scriptMenus.loadList("ui/menus.txt");
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
         }
