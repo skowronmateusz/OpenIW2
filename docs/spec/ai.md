@@ -420,3 +420,23 @@ methods (entity from the self object, the "entity" check at 0x468ed0 error path)
   through counter 0x1c6104c and a per-depth table at 0x1c7e52c. `predictoriginandangles` 0x53ff50 and `predictanim` 0x540020
   (tail-jumps to 0x5045c0) run an animation step inside such a snapshot and return the resulting origin/angles. They need a
   C++ copy of ActorAi plus the animation-step internals (animscripted domain), so they are not implemented.
+
+### Bumped entity +0x318: writer analysis (not wired)
+
++0x318 is written only inside the actor move-obstruction step that spans 0x500dc0..0x501359 (callers 0x504228 / 0x505255
+read it in the move code and re-call 0x500d80; init at 0x500d1d). That step copies the actor origin into the +0x224 vector, runs
+the forward probe 0x5487c0 (returns 0 = clear: the actor's contents bits 0x18 at +0x128 are cleared and the function returns 0;
+else the entity number found is in the local at esp+0x14), checks 0x5442a0 on the +0x330 block, and stores the found entity
+number to +0x318 at 0x501330 (or 0x7ff at 0x501346 when nothing remains, and at 0x501c6f in the second writer). The producer of
+the entity number is the probe 0x5487c0 plus the +0x6b0 / 0x5037e0 per-node state, neither of which is modelled in
+`World::moveActor` (which does not run the actor physics 0x501xxx). Wiring +0x318 faithfully therefore needs 0x5487c0 and
+0x5037e0 decoded first; guessing the entity from the repo's own clipping would not reproduce the exe, so gethitenttype,
+the actorfollow +0x2148 link and the 0x500d80 lookahead shrink stay TODO(spec).
+
+### Libya start view: pale flat surface
+
+Not a death or mission-fail view and not a terrain bug. At sim 16..30 s the player is alive, looking out of the commander
+hatch (hatch overlay) of the player tank, vehicle 13 `xmodel/vehicle_crusader2_viewmodel` at -53265,5736,-198 (turret
+-4.4/-0.6). The pale plane with the straight far edge is that viewmodel's own hull/turret top seen from the hatch eye point
+(the same pale camo seen from outside in a follow shot). It is unchanged with IW2_NO_SPEC, IW2_NO_DETAIL and IW2_NO_PROBE.
+TODO(spec): the near-field look of that surface (texture detail) has not been compared with the original.
