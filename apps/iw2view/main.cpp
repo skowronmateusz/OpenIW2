@@ -5450,6 +5450,11 @@ int main(int argc, char** argv) {
                     } else if (k.rfind("set:", 0) == 0) { // set:name=value
                         const size_t eq = k.find('=');
                         menuEnv.setCvar(k.substr(4, eq - 4), k.substr(eq + 1));
+                    } else if (k.rfind("call:", 0) == 0 && world) { // call:file.gsc:function: a thread on level (headless test of script flows)
+                        const size_t cl = k.rfind(':');
+                        world->vm().start(k.substr(5, cl - 5), k.substr(cl + 1), {}, script::Value(world->vm().level()));
+                    } else if (k.rfind("exec:", 0) == 0) { // exec:console text, e.g. exec:map moscow
+                        execText(k.substr(5));
                     } else if (k.rfind("open:", 0) == 0) {
                         frontStack.open(k.substr(5));
                     } else if (k.rfind("click:", 0) == 0) { // click:X/Y in virtual pixels (left press and release)
@@ -5468,6 +5473,14 @@ int main(int argc, char** argv) {
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
                     std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
                     nextKey = SDL_GetTicksNS() + 2000000000ull;
+                }
+            }
+            if (world) { // mission progress written by scripts (setmissioncvar, maps/_endmission.gsc) is archived: copy it to the profile
+                for (const char* n : {"mis_01", "mis_02", "mis_03", "mis_04", "mis_05", "mis_06", "mis_07", "mis_08", "mis_09", "mis_10", "mis_difficulty"}) {
+                    const auto it = world->cvars.find(n);
+                    if (it == world->cvars.end()) continue;
+                    auto& u = uiCvars[n];
+                    if (u != it->second) { u = it->second; profileDirty = true; }
                 }
             }
             if (profileDirty) { // write the archived cvars (config.cfg) after a menu changed one

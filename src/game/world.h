@@ -18,6 +18,8 @@
 #include "game/vehicles.h"
 #include "script/vm.h"
 
+#include <algorithm>
+#include <cctype>
 #include <functional>
 #include <map>
 #include <memory>
@@ -471,7 +473,15 @@ public:
     // The player's weapon inventory (throws for non-players).
     Inventory& inventory(Entity& player);
 
-    std::map<std::string, std::string> cvars;
+    // Dvar names compare case-insensitively (dvar lookup 0x431260 -> 0x43f6d0, the same compare dvarStrList uses): scripts read
+    // getCvar("g_gameSkill") for the dvar registered as g_gameskill.
+    struct CvarNameLess {
+        bool operator()(const std::string& a, const std::string& b) const {
+            return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                                [](char x, char y) { return std::tolower(static_cast<unsigned char>(x)) < std::tolower(static_cast<unsigned char>(y)); });
+        }
+    };
+    std::map<std::string, std::string, CvarNameLess> cvars;
     // Key bindings of the front end: command (e.g. "+attack") → key names (getkeybinding).
     std::map<std::string, std::vector<std::string>> keyBindings;
 

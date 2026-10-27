@@ -572,6 +572,8 @@ int main(int argc, char** argv) {
         std::vector<std::pair<float, float>> playerAds;               // --player-ads T frac: the aim fraction from T
         std::vector<std::pair<float, std::string>> playerWeapons;     // --player-weapon T name: the player's current weapon from T
         std::vector<std::pair<float, std::array<float, 2>>> playerUses; // --player-use T yaw,pitch: press the use key once at T looking that way (headless test)
+        struct LevelCall { float t; std::string file, func; };
+        std::vector<LevelCall> levelCalls; // --level-call T file.gsc function: starts a thread on level at T seconds (headless test)
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -601,6 +603,10 @@ int main(int argc, char** argv) {
                 turretTest = std::stoi(argv[++i]);
             } else if (a == "--drive") {
                 drive = true; // in a vehicle: forward, turn right, turn to the view (jump), fire; prints the vehicle each second
+            } else if (a == "--level-call" && i + 3 < argc) {
+                const float t = std::stof(argv[++i]);
+                std::string file = argv[++i];
+                levelCalls.push_back({t, file, argv[++i]});
             } else if (a == "--level-notify" && i + 2 < argc) {
                 const float t = std::stof(argv[++i]);
                 levelNotifies.push_back({t, argv[++i]});
@@ -646,8 +652,6 @@ int main(int argc, char** argv) {
                 seconds = std::stoi(a);
             }
         }
-        // The menu default of the saved cvar (50 digits); maps/_endmission.gsc indexes it at the end of a mission.
-        world.cvars.emplace("mis_difficulty", std::string(50, '0'));
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
         // Sounds are not played here; count requests and aliases that do not resolve.
         iw2::audio::SoundAliases aliases;
@@ -971,6 +975,13 @@ int main(int argc, char** argv) {
                 }
                 std::printf("vehicles: %d corpses, %d still script_vehicle\n", corpses, alive);
             }
+            for (auto it = levelCalls.begin(); it != levelCalls.end();)
+                if (f * 0.05f >= it->t) {
+                    world.vm().start(it->file, it->func, {}, iw2::script::Value(world.vm().level()));
+                    it = levelCalls.erase(it);
+                } else {
+                    ++it;
+                }
             for (auto it = levelNotifies.begin(); it != levelNotifies.end();)
                 if (f * 0.05f >= it->first) {
                     world.vm().notify(world.vm().level(), it->second, {});
@@ -1228,6 +1239,7 @@ int main(int argc, char** argv) {
         std::vector<std::pair<int, std::string>> top;
         for (const auto& [f, n] : world.missingBuiltins()) top.push_back({n, f});
         std::sort(top.rbegin(), top.rend());
+        for (const char* n : {"mis_01", "mis_02", "mis_03", "mis_04", "ui_nextMission", "mis_difficulty"}) std::cout << "cvar " << n << " = " << world.cvars[n] << "\n";
         std::cout << "unimplemented built-ins called: " << top.size() << "\n";
         for (size_t i = 0; i < top.size() && i < 60; ++i) std::cout << "  " << top[i].second << " x" << top[i].first << "\n";
     } catch (const std::exception& e) {

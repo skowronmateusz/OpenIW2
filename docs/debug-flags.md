@@ -35,7 +35,7 @@ described in the code that reads them.
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
 | `IW2_DEV_SNAP_GOAL_YAW=1` | iw2game/iw2view | DEV-ONLY BYPASS, not original behaviour: an actor whose goal was set with `setgoalnode` is turned to that node's angles right before it is notified "goal". Lets moscow's `letlev.angles != node.angles` loop (moscow.gsc:5031, the commissar yaw stall) pass so later stages can be walked. |
 | `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname starts with the prefix (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
-| `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`). |
+| `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`, `call:file.gsc:function` runs a thread on level, `exec:console text`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
 | `IW2_SHOT_HEALTH=<hp>[,<trail>[,<phase ms>]]` | iw2view `--shot` | Sets the player health (a value <= 1 is a fraction of maxhealth), the health-bar trail fraction and how far into its pulse period the low-health background is. |
 | `IW2_SHOT_HINT=<n>` | iw2view `--shot` | Shows the invalid-command hint state `<n>` (1 no ammo, 2 no frag, 3 no smoke, 4 stand blocked, 5 crouch blocked) 300 ms into its blink cycle. |
@@ -46,6 +46,7 @@ described in the code that reads them.
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,
   `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`.
 - iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--player-throw frag|smoke` (holds +frag / +smoke 1 s..2 s through PM_Weapon; prints the throw and the explosion time: frag 3.5 s, smoke 4 s after the throw on 88ridge), `--lookat-test`.
+- iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--level-call T file.gsc function` (thread on level), `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--lookat-test`.
 - iw2game `<main> <map> --item-test [weapon=N] weapon ...`: spawns weapon items at the player and prints stock / clip after the touch pickup (`weapon=N` first sets that weapon's clip, e.g. `mk1britishfrag=0 fraggrenade fraggrenade`).
 
 ## Menu debug helpers (iw2view --menu)
