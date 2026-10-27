@@ -405,6 +405,7 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "accel") info->accel = f * kMphToIps;
                 else if (k == "rotrate") info->rotRate = f;
                 else if (k == "rotaccel") info->rotAccel = f;
+                else if (k == "collisiondamage") info->collisionDamage = f;
                 else if (k == "collisionspeed") info->collisionSpeed = f * kMphToIps;
                 else if (k == "enginesndspeed") info->engineSndSpeed = f * kMphToIps;
                 else if (k == "suspensiontravel") info->suspensionTravel = f;
@@ -814,6 +815,36 @@ bool World::tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const V
     return !blocked(base);
 }
 
+// The vehicle's touch callback (0x512d40, handler table 0x5a573c entry 9 / 10), run for every contact after the notifies: the
+// other entity must be a player / actor / mover, take damage and not be linked (+0x1c8 = 0), and the vehicle file's
+// collisionDamage (info +0x80) positive. The vehicle's velocity direction (0x421270, length >= 0.001) against the
+// 2D direction to the other entity: dot < 0.8 does nothing; a prone player (pm_flags 1) takes 999999; otherwise
+// (dot - 0.8) * min(1, |forward speed| / collisionSpeed) * 5 * collisionDamage, truncated, as damage (MOD_CRUSH 9,
+// inflictor and attacker the vehicle, direction the velocity direction, point the other's origin) when positive.
+// TODO(spec): script movers (eType 5, 999999 at once), the actor touch callback 0x4ff2f0.
+void World::vehicleTouchDamage(Entity& e, Entity& t) {
+    if (!e.vehicle || !e.vehicle->info || e.vehicle->info->collisionDamage <= 0.0f) return;
+    if (links_.count(t.number) || (t.isPlayer && playerLinked())) return; // +0x1c8 (taken as the link, as in the push 0x50fe40)
+    const Vec3 v = e.vehicle->velocity;
+    const float vl = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (vl < 0.001f) return;
+    const Vec3 dir{v[0] / vl, v[1] / vl, v[2] / vl};
+    const Vec3 to = t.obj->get("origin").asVector(), from = e.obj->get("origin").asVector();
+    float dx = to[0] - from[0], dy = to[1] - from[1];
+    const float dl = std::sqrt(dx * dx + dy * dy);
+    if (dl != 0.0f) { dx /= dl; dy /= dl; }
+    const float dot = dir[0] * dx + dir[1] * dy;
+    if (dot < 0.8f) return;
+    if (t.isPlayer && playerCmd_.stance == 2) {
+        damage(t, &e, 999999, dir, to, "MOD_CRUSH", "none");
+        return;
+    }
+    float f = e.vehicle->info->collisionSpeed != 0.0f ? e.vehicle->forwardSpeed / e.vehicle->info->collisionSpeed : 0.0f;
+    if (!(f <= 1.0f)) f = 1.0f;
+    const int amount = int((dot - 0.8f) * f * 5.0f * e.vehicle->info->collisionDamage);
+    if (amount > 0) damage(t, &e, amount, dir, to, "MOD_CRUSH", "none");
+}
+
 // Touch (0x50ff00) of a solid vehicle after its move: players and living actors in contact with its collmap (a
 // zero-length box trace against contents 0x800000 that starts in the vehicle) are notified "touch" (and the vehicle
 // with them); then, unless linked or the vehicle neither moved nor turned (≥ 0.001 squared), they are pushed and
@@ -837,6 +868,7 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
         if (!tr.startSolid || tr.entity != e.number) continue;
         vm_.notify(e.obj, "touch", {Value(t.obj)});
         vm_.notify(t.obj, "touch", {Value(e.obj)});
+        vehicleTouchDamage(e, t);
         if (links_.count(t.number) || (t.isPlayer && playerLinked()) || !moving) continue;
         if (t.isActor && (std::find(t.ai.predicted.begin(), t.ai.predicted.begin() + t.ai.predictedDepth + 1, int(AiScripted)) !=
                               t.ai.predicted.begin() + t.ai.predictedDepth + 1 ||

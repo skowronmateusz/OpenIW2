@@ -357,3 +357,12 @@ command's delta angles are adjusted so the input keeps that view.
   (_tankai.gsc endon("death") on the tank). Running level (libya, IW2_KILL_VEHICLES): 13 of 14 vehicles become script_vehicle_corpse.
 - Vehicle weapons end to end (libya, IW2_FIRE_VEHICLES): "turret_fire" makes _tank.gsc shoot() call fireturret: 14 rockets, 0 errors.
 - Touch callbacks and script movers (eType 5) in 0x50ff00 remain TODO(spec).
+
+## Vehicle touch callback 0x512d40 (implemented: `World::vehicleTouchDamage`)
+Handler table 0x5a573c (stride 0x2c, index ent+0x116): touch at +0, handlers 9 / 10 (vehicles) 0x512d40, 1 / 2 (actors) 0x4ff2f0, 5 0x529140, 7 0x5291d0, 4 0x528e50; the corpse (11) has none.
+0x50ff00 runs the other's callback with (other, vehicle, 1) then the vehicle's (vehicle, other, 1). 0x512d40: other eType 1 / 9 / 5 with take-damage and +0x1c8 = 0,
+info collisionDamage (+0x80) > 0, vehicle velocity (+0x100) length >= 0.001; eType 5 takes 999999 (MOD 9) at once; others: dot of the velocity
+direction with the 2D direction vehicle -> other < 0.8 (0x591f94) does nothing; a client with pm_flags 1 (prone) takes 999999; else
+(dot - 0.8) * min(1, |forward speed (+0x1b0)| / collisionSpeed (+0x84)) * 5 (0x592358) * collisionDamage, ftol, damage when > 0
+(0x528050, inflictor and attacker the vehicle, dir the velocity direction, point the other's origin, MOD 9 = MOD_CRUSH). Open: script movers
+(eType 5) have no counterpart here, actor callback 0x4ff2f0, the 0x9bef24 gate of the "touch" notifies.
