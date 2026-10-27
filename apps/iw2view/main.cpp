@@ -24,6 +24,7 @@
 #include "game/viewweapon.h"
 #include "game/watersim.h"
 #include "game/fx.h"
+#include "game/fog.h"
 #include "game/marks.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
@@ -1052,6 +1053,8 @@ struct FragmentUniforms {
     float params[4];
     float ambient[4];
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
+    float fogParams[4]; // x: 1 = on, y: scale, z: shift
+    float fogColor[4];
 };
 
 // An entity model to draw this frame.
@@ -1114,6 +1117,11 @@ struct Renderer {
     // stored byte 0, which a B8G8R8A8 texture returns in .b.
     float lmWeights[4] = {0.0f, 0.0f, 1.0f, 0.0f};
     bool fullbright = false;
+    game::FogConsts fog; // set by the caller each frame (client fog state)
+    void applyFog(FragmentUniforms& fu) const {
+        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift;
+        std::memcpy(fu.fogColor, fog.color, sizeof fog.color);
+    }
 
     void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_) {
         dev = device;
@@ -1471,6 +1479,7 @@ struct Renderer {
                     {0, 0, 0, 0},
                     {0, 0, 0, 0},
                     {wm.color[0], wm.color[1], wm.color[2], 0}};
+                applyFog(fu);
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
             }
@@ -1489,6 +1498,7 @@ struct Renderer {
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                     {p == Pass::AlphaTest ? 1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
                     {0, 0, 0, 0}};
+                if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                 if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, vu);
@@ -1519,6 +1529,7 @@ struct Renderer {
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
+                    if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
@@ -1865,6 +1876,7 @@ int main(int argc, char** argv) {
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
+        game::FogState fogState; // "fog" server command (client 0x4a5770)
         game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
         // Effects started by scripts (playfx & co.), simulated by FxSystem and drawn as sprites.
@@ -3063,6 +3075,12 @@ int main(int argc, char** argv) {
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen and script menus too
                         if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
                         else if (cmd.name == "popupopen" || cmd.name == "popupclose") menuCommand(cmd.name, cmd.arg);
+                        else if (cmd.name == "fog") {
+                            std::istringstream a(cmd.arg);
+                            float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
+                            a >> nearD >> farD >> one >> r >> g >> b >> ms;
+                            fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        }
                 }
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
@@ -3138,6 +3156,7 @@ int main(int argc, char** argv) {
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
+            renderer.fog = fogState.consts(world ? world->timeMs() : 0);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam), forcedBlur);
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
@@ -3619,6 +3638,11 @@ int main(int argc, char** argv) {
                         a >> vol >> ms;
                         mixer.fade(vol, ms);
                     }
+                    else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
+                        float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
+                        a >> nearD >> farD >> one >> r >> g >> b >> ms;
+                        fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                    }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
                     else if (cmd.name == "scr_blur") { // scr_blur <ms> <radius> <realtime> <priority> (0x4beb80)
@@ -3634,6 +3658,7 @@ int main(int argc, char** argv) {
                     // Level change or restart: rebuild the world and the scene for the next map.
                     currentMap = change->map;
                     std::cout << (change->failed ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
+                    fogState.clear();
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     const script::ObjectPtr carried = world->vm().game();
                     world.reset();
@@ -3680,6 +3705,7 @@ int main(int argc, char** argv) {
             uint32_t w = 0, h = 0;
             if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap)
             {
+                renderer.fog = fogState.consts(world ? world->timeMs() : 0);
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
                 updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);

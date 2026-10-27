@@ -1,5 +1,6 @@
 // Script sound built-ins and weapon sounds (docs/spec/sound.md). Mixing and output belong to the front end,
 // which installs World::playSound / World::stopSound.
+#include <cstdio>
 #include "game/world.h"
 
 namespace iw2::game {
@@ -28,6 +29,17 @@ void World::registerSoundBuiltins() {
         // TODO(spec): the original raises script errors "Time must be positive" / "Blur value must be greater than 0".
         if (time < 0 || amount < 0) return Value();
         clientCommands_.push_back({"scr_blur", std::to_string(int(time * 1000.0f)) + " " + std::to_string(amount) + " 0 1"});
+        return Value();
+    });
+    // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): sends "fog <near> <far> 1 <r> <g> <b> <time*1000>" to the client
+    // (format "%g %g %g %g %g %g %.0f" 0x585bd4). TODO(spec): the original raises script errors for near < 0, far <= near,
+    // colour components outside 0..1 and time < 0 (0x4f53f0); setexpfog (0x4f5630, no SP script uses it) is not implemented.
+    vm_.registerBuiltin("setcullfog", [this](CallContext& c) {
+        if (c.args.size() < 6) return Value();
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", double(c.arg(0).asFloat()), double(c.arg(1).asFloat()), 1.0, double(c.arg(2).asFloat()),
+                      double(c.arg(3).asFloat()), double(c.arg(4).asFloat()), double(c.arg(5).asFloat() * 1000.0f));
+        clientCommands_.push_back({"fog", buf});
         return Value();
     });
     vm_.registerBuiltin("playsound", [this, originOf](CallContext& c) {
