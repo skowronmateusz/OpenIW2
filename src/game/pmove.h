@@ -32,6 +32,7 @@ struct PlayerState {
     Vec origin{};
     Vec velocity{};
     bool onGround = false;       // groundEntityNum (ps+0x60) != ENTITYNUM_NONE
+    bool onLadder = false;       // pm_flags 0x20; only read by the jump event (0x541640), no ladder movement yet
     bool jumping = false;        // pm_flags 0x80000: set by a jump, cleared by the landing timer
     float jumpOriginZ = 0;       // ps+0x74: origin z at the jump
     int pmTimeMs = 0;            // pm_time (ps+0x10)
