@@ -12,7 +12,10 @@ namespace iw2::game {
 struct SlideTrace {
     float fraction = 1.0f;
     float normal[3] = {0, 0, 0};
+    uint32_t surface = 0;    // trace +0x14 (bit 0x2000000 asks for a retrace without that content bit)
+    uint32_t surfFlags = 0;  // trace +0x10 (surface type in bits 20..24, read at 0x548941)
     uint16_t entity = 0x7ff; // trace +0x1c: 0x7fe world, 0x7ff none
+    bool startSolid = false; // trace +0x22
     bool allSolid = false;   // trace +0x23
 };
 using SlideTraceFn = std::function<SlideTrace(const float start[3], const float end[3])>;
@@ -26,6 +29,19 @@ struct ActorSlide {
     float groundNormal[3] = {0, 0, 1}; // 0x1cbac68
     float impactSpeed = 0;         // 0x1cbac88 (max of -into)
     bool flag87 = false;           // 0x1cbac87
+    uint32_t mask = 0;             // 0x1cbaca4 (trace content mask)
+    uint16_t groundEnt = 0x7ff;    // block +0x18 (0x7ff none)
+    int mode = 0;                  // block +0x40 (5 = the special case of the ground snap)
+    float groundTrace[9] = {};     // 0x1cbac64..: the last ground trace (fraction, normal, ..., entity, allsolid byte)
+    uint32_t groundSurfFlags = 0;  // 0x1cbac74
+    float moveDelta[3] = {0, 0, 0}; // block +0x2c (the desired displacement of this frame)
+    int timeMs = 0;                // block +0x48
+    bool lowStep = false;          // block byte +0x64: step height 10 instead of 18
+    bool contact = false;          // block +0x20 (set when the ground normal.z >= 0.3)
+    float contactNormalZ = 0;      // block +0x24
+    int surfaceType = 0;           // block +0x28
+    bool groundEntValid = false;   // 0x1cbac5c (set with the ground plane by the ground probe)
+    float stepHeight = 18.0f;      // 0x1cbaca8: 10, or 18 when the block byte +0x64 is 0 (0x548888)
     // Hit bookkeeping of the block: the first wall hit.
     uint16_t hitEnt = 0x7ff; // +0xf4
     float hitPos[2] = {0, 0};    // +0xf8
@@ -42,5 +58,24 @@ void clipVelocity(const float in[3], const float normal[3], float out[3], float 
 // 0x5475e0. Returns 0 when the move was not blocked, 1 when it bumped (or got stuck), 2 for an all-solid start on the
 // first iteration with flag87 set.
 int slideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace);
+
+// 0x548290: the ground probe (PM_GroundTrace). Traces from origin + 0.25 down 0.25 (the step height when moving down on a ground
+// entity) with the pm mask (the trace function reads pm.mask), handles all-solid starts (drops content bit 0x2000000 and retraces,
+// then retraces from the origin), and sets groundEnt, groundPlane, groundEntValid, flag87 and the hit entity for steep ground.
+void groundProbe(ActorSlide& pm, const SlideTraceFn& trace);
+// 0x547500: adds an entity number to the touched list (not the world, at most 0x20, no duplicates).
+void addTouch(ActorSlide& pm, uint16_t entity);
+
+// 0x547db0 (the actor StepSlideMove): slide move; when it bumped, retry from a step height up and keep whichever works.
+// Returns 1 normally, 0 when the move is stuck (all-solid slide, or the step-up start is solid at fraction 0).
+int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace);
+
+// 0x5487c0 (without the footstep timer 0x5485a0 and the sound call 0x535770, see TODO(spec) in docs/spec/ai.md): one actor move.
+// mode 3: origin += moveDelta; mode 4 (0x548260): velocity = moveDelta / dt, slide move without gravity; otherwise the ground
+// probe and then mode 5 (0x548200): velocity xy = moveDelta / dt, z = 0, step slide with gravity; ground entity (0x548110): the
+// same, clipped to the ground plane, keeping the speed, step slide without gravity (stays put when standing still); else
+// (0x5480d0): clip to the ground plane when there is one, step slide with gravity. A ground entity (0x7fe) with no desired motion
+// just zeroes the velocity. Returns the step slide result (1 for the early outs).
+int moveBlock(ActorSlide& pm, const SlideTraceFn& trace);
 
 } // namespace iw2::game

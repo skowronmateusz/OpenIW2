@@ -542,3 +542,30 @@ stack offsets of the two scratch trace results inside 0x547db0 (0x44 / 0x60 / 0x
 mapped to trace_t fields yet, so the wrapper is not ported: TODO(spec). The ground probe 0x548290, 0x5485a0, 0x548650
 and the 0x5487c0 mode dispatch are also still undecoded in detail, and World::moveActor, +0x318, gethitenttype and the
 follow link stay as documented above.
+
+### Actor step slide port (0x547db0), stack offsets mapped
+
+Both scratch trace results sit at esp0 + 0x44 (fraction +0x0, normal +0x4, entity word +0x1c, startsolid +0x22, allsolid +0x23, the
+same trace_t as in 0x5475e0); saved origin O0 at +0x10, saved velocity V0 at +0x34. Flow (src/game/actorslide.cpp, stepSlideMove):
+slide move; result 0 returns 1, result 2 returns 0. When the post-slide vz > 0 and the ground-entity flag 0x1cbac5c is clear, a
+down trace from O0 by the step height (0x1cbaca8) with fraction 1.0 or normal.z < 0.7 returns 1. Then an up trace from O0 to
+O0 + step: startsolid returns 0 when fraction 0 else 1. Save the block and scratch (the whole ActorSlide), hit entity := 0x7ff,
+ground plane flag := 0, origin = (O0.x, O0.y, lerp z at the up fraction), velocity := V0, slide move again (2 restores the
+saved state, returns 1). Then trace down from the new origin by (O0.z - up z) (0x4db7f0 from the block origin), snap the origin
+to the end point unless allsolid, return 1 when fraction >= 1.0; normal.z >= 0.3 clips the velocity (1.001) and clears the hit
+entity when max(O0.z, saved z) + 0.1 < origin z; otherwise the saved state is restored. Helper identities are in the previous
+section (0x4db7f0 trace wrapper, 0x47f390 lerp, 0x408ad0 max; 0x591e78 is the double 1.0). Tested with a step of height 10.
+
+### Actor ground probe (0x548290), ported
+
+`groundProbe` in `src/game/actorslide.cpp`: trace from origin+0.25 to origin-D (D = step height when vz<=0 and a ground entity exists, else 0.25).
+All-solid: touch-add the entity and retry without content bit 0x2000000 if set, then retrace from the origin; still all-solid -> ground entity = hit entity, groundPlane=0.
+Fraction 1 -> no ground. vz>0 and dot(normal, vel)>10 (0x591e8c) -> no ground. Normal z<0.7 -> groundPlane=1, no ground entity, hit record if none yet (normal.x stored in both slots, as at 0x548521/0x54852c).
+Walkable: z snaps to the trace end only if lower than the origin or mode==5; ground entity = trace entity, touch-add. Mode dispatch (0x5487c0 callees 0x548260/0x548200/0x548110/0x5480d0/0x5485a0/0x548650) is not yet ported: TODO(spec).
+
+### Actor move dispatch (0x5487c0), ported as moveBlock
+
+Block fields: +0x18 ground entity, +0x20 contact flag, +0x24 ground normal.z, +0x28 surface type ((trace +0x10 >> 20) & 0x1f), +0x2c desired displacement, +0x40 mode, +0x48 time ms (dt = ms * 0.001), +0x64 byte (step height 10 if set, else 18), +0x68 trace mask.
+Early out: ground entity 0x7fe and zero displacement -> velocity zeroed. Mode 3 adds the displacement; mode 4 (0x548260) sets velocity = displacement/dt and slide-moves without gravity; otherwise the ground probe runs and then mode 5 (0x548200), ground-entity walking (0x548110) or airborne (0x5480d0), see the header comment of moveBlock.
+After the move, the contact flag, normal.z and surface type are set when a ground plane exists with normal.z at least 0.3 (0x592018).
+Not ported: 0x5485a0 (footstep timer: +0x1c/+0x48 accumulates to 500 ms and plays a sound via 0x535770) and the world wiring. TODO(spec) for the sound call.

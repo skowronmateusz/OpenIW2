@@ -1,5 +1,6 @@
 #include "game/world.h"
 #include "game/actorfields.h"
+#include "game/actorslide.h"
 
 #include "script/builtins_core.h"
 #include "script/parser.h"
@@ -578,9 +579,44 @@ void World::moveActor(Entity& e, float dt) {
         // direction, like the angles write above.
         e.obj->set("desiredangle", Value(yaw));
     }
-    // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
-    const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
-    if (!tr.startSolid && tr.fraction < 1.0f) o[2] = tr.endPos[2];
+    static const bool slide = std::getenv("IW2_ACTOR_SLIDE") != nullptr;
+    if (slide) {
+        // The actor slide move (actorslide.cpp, exe 0x5487c0 and callees) instead of the ground snap below. TODO(spec): the
+        // block mode of a path-walking actor (mode 1 here, one of the ground modes 1/2/5), the actor gravity (g_gravity here)
+        // and the pass entity of the trace (the collision world has none).
+        ActorSlide pm;
+        for (int a = 0; a < 3; ++a) {
+            pm.origin[a] = before[a];
+            pm.moveDelta[a] = o[a] - before[a];
+        }
+        pm.dt = dt;
+        pm.timeMs = int(dt * 1000.0f + 0.5f);
+        pm.mode = 1;
+        pm.gravity = 800.0f;
+        pm.mask = Contents::ActorClipMask;
+        pm.groundEnt = uint16_t(e.ai.groundEnt);
+        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.velocity[a];
+        const SlideTraceFn fn = [&](const float s[3], const float en[3]) {
+            const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 70}, pm.mask);
+            SlideTrace t;
+            t.fraction = tr.fraction;
+            for (int a = 0; a < 3; ++a) t.normal[a] = tr.normal[a];
+            t.surface = tr.contents;
+            t.surfFlags = tr.surfaceFlags;
+            t.entity = tr.fraction < 1.0f || tr.startSolid ? uint16_t(tr.entity < 0 ? 0x7fe : tr.entity) : uint16_t(0x7ff);
+            t.startSolid = tr.startSolid;
+            t.allSolid = tr.allSolid;
+            return t;
+        };
+        moveBlock(pm, fn);
+        for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
+        e.ai.groundEnt = pm.groundEnt;
+        e.ai.bumpedEnt = pm.hitEnt;
+    } else {
+        // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
+        const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
+        if (!tr.startSolid && tr.fraction < 1.0f) o[2] = tr.endPos[2];
+    }
     e.obj->set("origin", Value(o));
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     // 0x503ec0 (TODO(spec): the negotiation branch, +0x244 / +0x23c and flag 0x40).
@@ -935,6 +971,18 @@ void World::registerBuiltins() {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("getentnum on a non-entity");
         return Value(int32_t(e->number));
+    });
+    // gethitenttype 0x5400c0: "none" for 0x7ff, "obstacle" when the bumped entity's r.contents (ent +0x128) has bit 0x400, else "world".
+    // The bumped entity (+0x318) is only tracked with IW2_ACTOR_SLIDE (World::moveActor), so it is "none" otherwise.
+    vm_.registerBuiltin("gethitenttype", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("gethitenttype on a non-actor");
+        const int b = e->ai.bumpedEnt;
+        if (b == 0x7ff) return Value(std::string("none"));
+        if (b != 0x7fe)
+            for (const EntityClip& k : collision_->entityClips())
+                if (k.id == b && (k.contents & 0x400)) return Value(std::string("obstacle"));
+        return Value(std::string("world"));
     });
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
     vm_.registerBuiltin("setgoalnode", [](CallContext& c) {

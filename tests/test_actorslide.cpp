@@ -101,6 +101,112 @@ int main() {
         });
         CHECK(r == 2);
     }
+    // Step slide: a step of height 10 at x >= 2 is climbed with stepHeight 18; with stepHeight 4 the wall blocks.
+    {
+        auto solid = [](float x, float, float z) { return z < 0.0f || (x >= 2.0f && z < 10.0f); };
+        auto stepTrace = [&](const float* s, const float* e) {
+            SlideTrace t;
+            const int N = 4000;
+            float px = s[0], py = s[1], pz = s[2];
+            if (solid(px, py, pz)) {
+                t.fraction = 0;
+                t.startSolid = true;
+                return t;
+            }
+            for (int i = 1; i <= N; ++i) {
+                const float f = float(i) / N;
+                const float x = s[0] + (e[0] - s[0]) * f, y = s[1] + (e[1] - s[1]) * f, z = s[2] + (e[2] - s[2]) * f;
+                if (solid(x, y, z)) {
+                    t.fraction = float(i - 1) / N;
+                    // face: the axis that changed solidity
+                    if (solid(px, py, z) && !solid(x, py, pz)) { /* z entered */ }
+                    if (!solid(px, py, pz) && solid(px, py, z) && !solid(x, py, pz)) {
+                        t.normal[2] = 1;
+                    } else {
+                        t.normal[0] = -1;
+                    }
+                    t.entity = 0x7fe;
+                    return t;
+                }
+                px = x; py = y; pz = z;
+            }
+            return t;
+        };
+        ActorSlide a;
+        a.dt = 0.1f;
+        a.velocity[0] = 100;
+        a.stepHeight = 18;
+        const int r = stepSlideMove(a, false, stepTrace);
+        CHECK(r == 1);
+        CHECK(a.origin[0] > 2.5f);
+        CHECK(a.origin[2] > 9.5f && a.origin[2] < 10.5f);
+        ActorSlide b;
+        b.dt = 0.1f;
+        b.velocity[0] = 100;
+        b.stepHeight = 4;
+        stepSlideMove(b, false, stepTrace);
+        CHECK(b.origin[0] < 2.01f);
+        CHECK(b.origin[2] < 1.0f);
+    }
+    { // ground probe
+        auto floorAt = [](float zf, float nz) {
+            return [zf, nz](const float st[3], const float en[3]) {
+                SlideTrace t;
+                if (st[2] >= zf && en[2] < zf) {
+                    t.fraction = (st[2] - zf) / (st[2] - en[2]);
+                    t.normal[2] = nz;
+                    t.normal[0] = nz < 0.7f ? 0.9f : 0.0f;
+                    t.entity = 0x7fe;
+                }
+                return t;
+            };
+        };
+        ActorSlide a;
+        a.origin[2] = 0.1f;
+        groundProbe(a, floorAt(0.0f, 1.0f));
+        CHECK(a.groundPlane && a.groundEntValid && a.groundEnt == 0x7fe);
+        CHECK(a.origin[2] >= -0.001f && a.origin[2] <= 0.1f);
+        ActorSlide b;
+        b.origin[2] = 50;
+        groundProbe(b, floorAt(0.0f, 1.0f));
+        CHECK(!b.groundPlane && b.groundEnt == 0x7ff);
+        ActorSlide c;
+        c.origin[2] = 0.1f;
+        groundProbe(c, floorAt(0.0f, 0.5f));
+        CHECK(c.groundPlane && !c.groundEntValid && c.groundEnt == 0x7ff && c.hitEnt == 0x7fe);
+        ActorSlide d;
+        d.origin[2] = 0.1f;
+        d.velocity[2] = 50;
+        groundProbe(d, floorAt(0.0f, 1.0f));
+        CHECK(!d.groundPlane); // moving up away from the floor: dot > 10 -> no ground
+    }
+    { // move block: walking on a floor
+        auto floor0 = [](const float st[3], const float en[3]) {
+            SlideTrace t;
+            if (en[2] < 0.0f && st[2] >= 0.0f) {
+                t.fraction = st[2] / (st[2] - en[2]);
+                t.normal[2] = 1;
+                t.entity = 0x7fe;
+            }
+            return t;
+        };
+        ActorSlide a;
+        a.dt = 0.05f;
+        a.timeMs = 50;
+        a.origin[2] = 0.0f;
+        a.groundEnt = 0x7fe;
+        a.moveDelta[0] = 5.0f;
+        const int r = moveBlock(a, floor0);
+        CHECK(r == 1);
+        CHECK(a.origin[0] > 4.9f && a.origin[0] < 5.1f);
+        CHECK(a.groundPlane && a.groundEntValid && a.contact);
+        ActorSlide b;
+        b.dt = 0.05f;
+        b.groundEnt = 0x7fe;
+        b.velocity[0] = 9;
+        moveBlock(b, floor0);
+        CHECK(b.velocity[0] == 0.0f && b.origin[0] == 0.0f);
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }
