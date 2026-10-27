@@ -81,7 +81,7 @@ WaterSim::WaterSim(const WaterParams& p) : p_(p), sinTable_(1024) {
     }
 }
 
-void WaterSim::update(float t, std::vector<uint8_t>& bgra) {
+std::vector<float> WaterSim::heightMagnitude(float t) {
     const int m = p_.size, n = p_.size;
     const size_t count = size_t(m) * size_t(n);
     std::vector<std::complex<float>> h(count);
@@ -95,6 +95,35 @@ void WaterSim::update(float t, std::vector<uint8_t>& bgra) {
     for (int x = 0; x < m; ++x) fft1d(&h[size_t(x)], n, m);
     std::vector<float> mag(count);
     for (size_t i = 0; i < count; ++i) mag[i] = std::abs(h[i]);
+    return mag;
+}
+
+void WaterSim::updateL8(float t, std::vector<std::vector<uint8_t>>& levels) {
+    const std::vector<float> mag = heightMagnitude(t);
+    const float inv = 1.0f / float(mag.size());
+    levels.clear();
+    levels.emplace_back(mag.size());
+    for (size_t i = 0; i < mag.size(); ++i)
+        levels[0][i] = uint8_t(std::nearbyint(std::min(mag[i] * inv, 1.0f) * 255.0f + 9.3132257e-10f));
+    for (int w = p_.size; w > 1;) {
+        const int nw = w / 2;
+        const auto& src = levels.back();
+        std::vector<uint8_t> dst(size_t(nw) * size_t(nw));
+        for (int y = 0; y < nw; ++y)
+            for (int x = 0; x < nw; ++x) {
+                const int s = src[size_t(2 * y) * size_t(w) + size_t(2 * x)] + src[size_t(2 * y) * size_t(w) + size_t(2 * x + 1)] +
+                              src[size_t(2 * y + 1) * size_t(w) + size_t(2 * x)] + src[size_t(2 * y + 1) * size_t(w) + size_t(2 * x + 1)];
+                dst[size_t(y) * size_t(nw) + size_t(x)] = uint8_t(s >> 2);
+            }
+        levels.push_back(std::move(dst));
+        w = nw;
+    }
+}
+
+void WaterSim::update(float t, std::vector<uint8_t>& bgra) {
+    const int m = p_.size, n = p_.size;
+    const size_t count = size_t(m) * size_t(n);
+    const std::vector<float> mag = heightMagnitude(t);
     bgra.resize(count * 4);
     const float dz = float(count);
     for (size_t i = 0; i < count; ++i) {
