@@ -141,6 +141,7 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level) {
             a.channel = lower(get("channel"));
             a.loop = lower(get("loop")) == "looping";
             a.secondary = lower(get("secondaryaliasname"));
+            a.subtitle = get("subtitle");
             if (a.file.empty()) continue;
             aliases_[a.name].push_back(std::move(a));
         }
@@ -170,6 +171,7 @@ std::shared_ptr<const Wav> Mixer::load(const std::string& file) {
 }
 
 int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* duration) {
+    lastSubtitle_.clear();
     const SoundAlias* a = aliases_.pick(name, rng_);
     if (!a) return 0;
     auto wav = load(a->file);
@@ -191,7 +193,9 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
         v.handle = handle = nextHandle_++;
         voices_.push_back(std::move(v));
     }
+    const std::string sub = a->subtitle;
     if (!a->secondary.empty() && a->secondary != a->name) play(a->secondary, origin, nullptr);
+    lastSubtitle_ = sub;
     return handle;
 }
 

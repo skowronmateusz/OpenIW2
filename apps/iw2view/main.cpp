@@ -1551,11 +1551,19 @@ int main(int argc, char** argv) {
         else std::cerr << "warning: default.cfg not found, no key bindings\n";
         // A level's game world. game[] survives level changes (maps/_endmission.gsc and _loadout.gsc rely on it,
         // docs/spec/campaign.md), so its fields are copied into the new world before its script starts.
+        struct Subtitle { std::string key; uint64_t untilNs; };
+        std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
-            w->playSound = [&mixer](const std::string& alias, const game::Vec3* origin, float* duration) {
-                return mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, duration);
+            w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration) {
+                float dur = 0;
+                const int handle = mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, &dur);
+                if (duration) *duration = dur;
+                // A started alias with a subtitle column shows its caption for max(sound length, cg_subtitleMinTime 3 s) (0x4a3540).
+                if (handle && !mixer.lastSubtitle().empty())
+                    subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS() + uint64_t(std::max(dur, 3.0f) * 1e9f)});
+                return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
             if (carriedGame)
@@ -2051,6 +2059,32 @@ int main(int argc, char** argv) {
                     const std::string fontName = o->get("font").toString();
                     const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
                     if (f) hudText(dst, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
+                }
+            }
+            {
+                // Subtitles (cgame 0x4bf2e0): x 120, y 400, char height 12 on the 640x480 screen, wrapped at 80 characters.
+                // TODO(spec): font, colour and shadow (0x4068e0), the wrap algorithm (0x403fb0), cg_subtitles off.
+                const uint64_t now = SDL_GetTicksNS();
+                std::erase_if(subtitles, [&](const Subtitle& st) { return st.untilNs < now; });
+                const uint8_t white[4] = {255, 255, 255, 255};
+                if (const assets::Font* f = font("normalfont")) {
+                    float sy = 400.0f;
+                    for (const auto& st : subtitles) {
+                        const std::string* t = loc.find(st.key);
+                        std::string text = t ? *t : st.key; // an untranslated key is shown as it is
+                        std::vector<std::string> lines;
+                        std::string cur;
+                        std::istringstream words(text);
+                        for (std::string wd; words >> wd;) {
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > 80) { lines.push_back(cur); cur.clear(); }
+                            cur += (cur.empty() ? "" : " ") + wd;
+                        }
+                        if (!cur.empty()) lines.push_back(cur);
+                        for (const auto& ln : lines) {
+                            hudText(out, ln, left43 + 120.0f * sc, sy * sc, 12.0f / float(f->pixelHeight) * sc, *f, white, 0, 0, 3);
+                            sy += 12.0f;
+                        }
+                    }
                 }
             }
             {

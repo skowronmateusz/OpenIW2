@@ -35,6 +35,7 @@ struct SoundAlias {
     std::string channel;       // "local" plays without position
     bool loop = false;
     std::string secondary;     // secondaryaliasname
+    std::string subtitle;      // `subtitle` column: localised caption key (e.g. SUBTITLE_MOSCOW_RS1_PICKUPRIFLE), original case
 };
 
 class SoundAliases {
@@ -59,6 +60,8 @@ public:
 
     // Starts an alias; `origin` empty plays it at full volume without panning. Returns a handle (0 = nothing).
     int play(const std::string& alias, std::optional<Vec3> origin = std::nullopt, float* duration = nullptr);
+    // The subtitle key of the alias started by the last play() call (empty when none).
+    const std::string& lastSubtitle() const { return lastSubtitle_; }
     void stop(int handle);
     void setListener(const Vec3& origin, const Vec3& forward, const Vec3& right);
     void mix(float* out, int frames);
@@ -71,6 +74,7 @@ public:
     void fadeStep(float ms);
 
 private:
+    std::string lastSubtitle_;
     struct Voice {
         int handle = 0;
         std::shared_ptr<const Wav> wav;
