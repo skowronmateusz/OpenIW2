@@ -22,6 +22,14 @@ void World::registerSoundBuiltins() {
         if (!o.isVector()) return std::nullopt;
         return o.asVector();
     };
+    // setblur(amount, time) (0x4f3340): sends "scr_blur <time*1000> <amount> 0 1" to the client.
+    vm_.registerBuiltin("setblur", [this](CallContext& c) {
+        const float amount = c.arg(0).asFloat(), time = c.arg(1).asFloat();
+        // TODO(spec): the original raises script errors "Time must be positive" / "Blur value must be greater than 0".
+        if (time < 0 || amount < 0) return Value();
+        clientCommands_.push_back({"scr_blur", std::to_string(int(time * 1000.0f)) + " " + std::to_string(amount) + " 0 1"});
+        return Value();
+    });
     vm_.registerBuiltin("playsound", [this, originOf](CallContext& c) {
         const auto o = originOf(c);
         const bool local = c.self.isObject() && entityOf(c.self) && entityOf(c.self)->isPlayer;

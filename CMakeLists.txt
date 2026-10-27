@@ -116,6 +116,10 @@ else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")
 endif()
 
+add_executable(test_screen_blur tests/test_screen_blur.cpp)
+target_link_libraries(test_screen_blur PRIVATE iw2_game)
+add_test(NAME screen_blur COMMAND test_screen_blur)
+
 add_executable(test_xmodel tests/test_xmodel.cpp)
 target_link_libraries(test_xmodel PRIVATE iw2_assets)
 add_test(NAME xmodel COMMAND test_xmodel)
