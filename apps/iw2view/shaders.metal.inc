@@ -217,14 +217,19 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
                         texture2d<float> specularMap [[texture(4)]],
                         texture2d<float> specularity [[texture(5)]],
                         texture2d<float> lmWeightMap [[texture(6)]],
+                        texture2d<float> detailMap [[texture(7)]],
                         sampler colorSampler [[sampler(0)]],
                         sampler lmSampler [[sampler(1)]],
                         sampler sunSampler [[sampler(2)]],
                         sampler normalSampler [[sampler(3)]],
                         sampler specSampler [[sampler(4)]],
                         sampler specularitySampler [[sampler(5)]],
-                        sampler lmWeightSampler [[sampler(6)]]) {
-    float4 base = colorMap.sample(colorSampler, in.uv) * in.color;
+                        sampler lmWeightSampler [[sampler(6)]],
+                        sampler detailSampler [[sampler(7)]]) {
+    // Textured diffuse with the detail variant: same detail add as above (detail scale in lmWeights.xy, flag in .z)
+    float4 tex = colorMap.sample(colorSampler, in.uv);
+    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
+    float4 base = tex * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), base.a);
     // Normal_GetSample (PC: channels wy = alpha, green) and Normal_DecodeNormalizedWorldSpace: N + (2x-1) T + (2y-1) B.
