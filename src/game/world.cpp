@@ -929,7 +929,9 @@ void World::registerBuiltins() {
         e.obj->set("vehicletype", c.arg(2));
         if (c.arg(3).isVector()) e.obj->set("origin", c.arg(3));
         if (c.arg(4).isVector()) e.obj->set("angles", c.arg(4));
-        e.obj->set("health", Value(int32_t(1000)));
+        // No health is written by spawnvehicle (0x4ecf50), the vehicle spawn 0x511af0 / 0x50d820 or G_Spawn: the entity starts with health 0
+        // (zeroed), the scripts of path vehicles set self.health themselves (_crusader.gsc etc.). Engine sounds treat health < 1 as dead (0x510be0).
+        e.obj->set("health", Value(int32_t(0)));
         e.obj->set("$takedamage", Value(true)); // 0x50d8f4: ent+0x111 = 1 in the vehicle spawn (0x50d820..0x50d900)
         return Value(e.obj);
     });

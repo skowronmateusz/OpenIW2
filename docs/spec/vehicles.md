@@ -366,3 +366,19 @@ direction with the 2D direction vehicle -> other < 0.8 (0x591f94) does nothing; 
 (dot - 0.8) * min(1, |forward speed (+0x1b0)| / collisionSpeed (+0x84)) * 5 (0x592358) * collisionDamage, ftol, damage when > 0
 (0x528050, inflictor and attacker the vehicle, dir the velocity direction, point the other's origin, MOD 9 = MOD_CRUSH). Open: script movers
 (eType 5) have no counterpart here, actor callback 0x4ff2f0, the 0x9bef24 gate of the "touch" notifies.
+
+## Spawn health, touch gate, actor touch (checked)
+- Vehicle health: `spawnvehicle` (0x4ecf50), the vehicle spawn (0x511af0 / 0x50d820..0x50d900) and G_Spawn write no health (no store to ent+0x13c; the only
+  writes in 0x50d..0x513 are freevehicle's); the exe has no "script_startinghealth" string, only the generic key "health" (0x18407f). Scripts set
+  self.health (`_crusader.gsc`, `_armoredcar.gsc`, `_cars.gsc`... from script_startinghealth). `spawnvehicle` therefore leaves health 0 (OpenIW2 used 1000
+  before); 0x510be0 then treats the vehicle as dead for its engine sounds.
+- 0x9bef24 (gate of the "touch" notifies in 0x50ff00 and of the use scan) is the script VM's "level scripts running" global (written in the VM init,
+  read throughout 0x46xxxx): set for the whole level, so the notifies are unconditional here.
+- Actor touch callback 0x4ff2f0 (handlers 1 / 2) dispatches on the actor's current AI state through the state tables at 0x56f734 (stride 0x1c, entry 0:
+  most states 0x549900 -- the player-contact reset, states 1 / 2 call 0x500c50 -- states 3..8 also 0x549900). TODO(spec): decode 0x500c50 / 0x549900
+  (AI domain).
+- Staged tests (`IW2_TOUCH_TEST`, `IW2_ROCKET_TEST`, `IW2_TEST_ACTOR`): libya, an actor 100 units in front of a crusader moving at 400 units/s takes 199
+  damage (health 100 -> -99; formula (dot - 0.8) * 1 * 5 * 200); a turret rocket fired at an actor hits it (MOD_PROJECTILE direct damage) and kills it.
+  Splash on a second entity next to the impact is not staged.
+- Still open here: barrel pull-back endpoints (0x44c1b0 line and the two tags), eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
+  and the sound entities' pitch (see the TODO(spec) markers above).

@@ -509,6 +509,25 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
 
 void World::debugDamage(Entity& e, int amount) { damage(e, player_, amount, {0, 0, 1}, e.obj->get("origin").asVector(), "MOD_EXPLOSIVE"); }
 
+void World::debugVehicleTouch(Entity& v, Entity& t) {
+    if (!v.vehicle) return;
+    const Vec3 to = t.obj->get("origin").asVector(), saved = v.obj->get("origin").asVector();
+    v.obj->set("origin", Value(Vec3{to[0] - 100.0f, to[1], to[2]}));
+    v.vehicle->velocity = {400, 0, 0};
+    v.vehicle->forwardSpeed = 400;
+    vehicleTouchDamage(v, t);
+    v.vehicle->velocity = {0, 0, 0};
+    v.vehicle->forwardSpeed = 0;
+    v.obj->set("origin", Value(saved));
+}
+
+void World::debugVehicleRocket(Entity& v, Entity& t) {
+    if (!v.vehicle || !v.vehicle->info || v.vehicle->info->turretWeapon.empty()) return;
+    const Vec3 to = t.obj->get("origin").asVector();
+    const Vec3 start{to[0] - 300.0f, to[1], to[2] + 40.0f};
+    spawnRocket(v, v.vehicle->info->turretWeapon, start, {1, 0, 0});
+}
+
 std::vector<World::CompassMarker> World::compassVehicles() const {
     std::vector<CompassMarker> out;
     for (const auto& e : entities_) {

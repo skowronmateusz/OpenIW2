@@ -531,6 +531,14 @@ int main(int argc, char** argv) {
         std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
         size_t menuAnswered = 0;
         float fireVehiclesAt = std::getenv("IW2_FIRE_VEHICLES") ? float(std::atof(std::getenv("IW2_FIRE_VEHICLES"))) : -1.0f;
+        float touchTestAt = std::getenv("IW2_TOUCH_TEST") ? float(std::atof(std::getenv("IW2_TOUCH_TEST"))) : -1.0f, touchReportAt = -1.0f;
+        bool touchTestIsRocket = false;
+        int touchBefore = 0;
+        decltype(world.player()) touchTarget = nullptr;
+        if (std::getenv("IW2_ROCKET_TEST")) {
+            touchTestAt = float(std::atof(std::getenv("IW2_ROCKET_TEST")));
+            touchTestIsRocket = true;
+        }
         float killReportAt = -1.0f, fireVehiclesReportAt = -1.0f;
         float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
@@ -790,10 +798,38 @@ int main(int argc, char** argv) {
                 int n = 0;
                 for (const auto& ep : world.entities())
                     if (ep->vehicle && !ep->obj->removed) {
+                        if (std::getenv("IW2_KILL_VERBOSE")) std::printf("  vehicle %d %s health %s\n", ep->number, ep->obj->get("model").toString().c_str(), ep->obj->get("health").toString().c_str());
                         world.debugDamage(*ep, 100000);
                         ++n;
                     }
                 std::printf("killed %d vehicles at %.1f s\n", n, f * 0.05f);
+            }
+            if (touchTestAt >= 0 && f * 0.05f >= touchTestAt) { // IW2_TOUCH_TEST=<s> / IW2_ROCKET_TEST=<s>
+                const bool rocket = touchTestIsRocket;
+                touchTestAt = -1;
+                auto* pl = world.player();
+                if (std::getenv("IW2_TEST_ACTOR")) { // target the first living actor instead of the player
+                    pl = nullptr;
+                    for (const auto& ep : world.entities())
+                        if (!pl && ep->isActor && !ep->obj->removed && ep->obj->get("health").asInt() > 0) pl = ep.get();
+                }
+                decltype(world.player()) veh = nullptr;
+                for (const auto& ep : world.entities())
+                    if (!veh && ep->vehicle && ep->vehicle->info && !ep->obj->removed && (rocket || ep->vehicle->info->collisionDamage > 0)) veh = ep.get();
+                if (!pl || !veh) {
+                    std::printf("touch/rocket test: no player or suitable vehicle\n");
+                } else {
+                    touchTarget = pl;
+                    touchBefore = pl->obj->get("health").asInt();
+                    if (rocket) world.debugVehicleRocket(*veh, *pl);
+                    else world.debugVehicleTouch(*veh, *pl);
+                    touchReportAt = f * 0.05f + (rocket ? 3.0f : 0.0f);
+                    std::printf("%s test at %.1f s on vehicle %d (%s, collisionDamage %g, collisionSpeed %g), player health %d\n", rocket ? "rocket" : "touch", f * 0.05f, veh->number, veh->vehicle->info->name.c_str(), veh->vehicle->info->collisionDamage, veh->vehicle->info->collisionSpeed, touchBefore);
+                }
+            }
+            if (touchReportAt >= 0 && f * 0.05f >= touchReportAt) {
+                touchReportAt = -1;
+                std::printf("target health %d -> %d\n", touchBefore, touchTarget->obj->get("health").asInt());
             }
             if (fireVehiclesAt >= 0 && f * 0.05f >= fireVehiclesAt) { // IW2_FIRE_VEHICLES=<s>: "turret_fire" on every vehicle
                 fireVehiclesAt = -1;
