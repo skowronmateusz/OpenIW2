@@ -111,7 +111,7 @@ bool MenuStack::itemVisible(const Item& it) const {
 std::vector<const Item*> MenuStack::selectable(const Menu& m) const {
     std::vector<const Item*> out;
     for (const auto& it : m.items)
-        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
+        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 13 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
     return out;
 }
 
@@ -167,6 +167,13 @@ float MenuStack::valueTextX(const Menu& m, const Item& it) const {
 
 std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
+    if (it.type == 13) { // exe 0x4cd720: the domain string of the enum dvar at the item's current index
+        if (it.enumList.empty()) return "<dvarEnumList not set>";
+        if (!env_.enumValues) return "<not an enum dvar>";
+        const auto names = env_.enumValues(it.enumList);
+        const int i = int(cvarValue(it)); // TODO(spec): the index clamp of 0x4ca510
+        return i >= 0 && size_t(i) < names.size() ? names[size_t(i)] : std::string();
+    }
     if (it.type == 12 && !it.floatList.empty()) {
         const float v = cvarValue(it);
         for (const auto& e : it.floatList)
@@ -204,6 +211,13 @@ bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, 
         char buf[64];
         std::snprintf(buf, sizeof buf, "%g", double(it.floatList[size_t(next)].second));
         if (env_.setCvar) env_.setCvar(it.dvar, buf);
+        return true;
+    }
+    if (it.type == 13) { // exe 0x4ca6f0: next/previous domain entry (0x4ca5e0), dvar set as "%i"
+        const int n = env_.enumValues && !it.enumList.empty() ? int(env_.enumValues(it.enumList).size()) : 0;
+        if (n == 0) return false;
+        const int next = ((int(cvarValue(it)) + step) % n + n) % n;
+        if (env_.setCvar) env_.setCvar(it.dvar, std::to_string(next));
         return true;
     }
     if (it.type == 14) { // exe 0x4ce100: Enter / mouse1 on a BIND item starts the capture

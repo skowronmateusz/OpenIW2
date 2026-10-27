@@ -2633,6 +2633,9 @@ int main(int argc, char** argv) {
                 for (const auto& [k, c] : input.bindings()) world->keyBindings[c].push_back(k);
             }
         };
+        // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
+        // TODO(spec): the macOS display modes as r_mode entries.
+        menuEnv.enumValues = [](const std::string&) { return std::vector<std::string>{}; };
         menuEnv.textWidth = [&](const ui::Item& it) {
             const assets::Font* f = menuFont(it.textScale);
             if (!f) return 0.0f;
@@ -3454,7 +3457,7 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 14) continue;
+                        if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14) continue;
                         const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts);
@@ -3482,7 +3485,7 @@ int main(int argc, char** argv) {
                             }
                             hudText(front, label, x0 + frontStack.valueTextX(menu, it) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
                         }
-                        if (it.type == 11 || it.type == 12) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
+                        if (it.type == 11 || it.type == 12 || it.type == 13) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
                             const std::string label = frontStack.valueLabel(it);
                             if (!label.empty())
                                 hudText(front, menuLocalized(label), x0 + frontStack.valueTextX(menu, it) * xs,
