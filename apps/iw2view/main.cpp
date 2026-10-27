@@ -1691,7 +1691,9 @@ int main(int argc, char** argv) {
                     base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                     base.sunVisibility = sun;
                 }
-                if (e->isActor) {
+                // Actors and animated script_models (drones: spawn("script_model") + useanimtree + attach head/gun, maps/_drones.gsc) are
+                // skinned with the blended pose and carry their attachments.
+                if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
                     const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!body) continue;
@@ -2912,7 +2914,7 @@ int main(int argc, char** argv) {
                     }
                     for (const auto& e : world->entities()) {
                         if (e->turret) prevTurret[e->number] = {e->turret->pitch, e->turret->yaw};
-                        if (!e->isActor || !e->anim) continue;
+                        if (!e->anim) continue;
                         prevAnim.erase(e->number);
                         prevAnim.emplace(e->number, *e->anim);
                     }
