@@ -122,6 +122,21 @@ struct Camera {
     }
 };
 
+// The four side planes of the view frustum for the effect gate frustumCull (0x486e90): inward normals through the eye;
+// the vertical field of view is fixed by fovX43 at 4:3 (viewProj above), the horizontal one follows the aspect.
+static void setFxFrustum(game::FxSystem& fx, const Camera& cam, float aspect) {
+    const Vec3 f = cam.forward(), r = cam.right(), u = cross(r, f);
+    const float ty = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f, tx = ty * aspect;
+    auto plane = [&](Vec3 n) {
+        const float l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        n = {n.x / l, n.y / l, n.z / l};
+        return std::array<float, 4>{n.x, n.y, n.z, n.x * cam.pos.x + n.y * cam.pos.y + n.z * cam.pos.z};
+    };
+    auto comb = [&](float a, const Vec3& v, float b, const Vec3& w) { return Vec3{a * v.x + b * w.x, a * v.y + b * w.y, a * v.z + b * w.z}; };
+    fx.viewPlanes = {plane(comb(tx, f, 1, r)), plane(comb(tx, f, -1, r)), plane(comb(ty, f, -1, u)), plane(comb(ty, f, 1, u))};
+}
+
+
 // ---------------------------------------------------------------------------------------------
 // GPU upload helper: stages data in one transfer buffer and flushes when it is full.
 
@@ -3348,6 +3363,7 @@ int main(int argc, char** argv) {
             fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
+            setFxFrustum(fxSystem, cam, float(width) / float(height));
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
@@ -3951,6 +3967,7 @@ int main(int argc, char** argv) {
             fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
+            setFxFrustum(fxSystem, cam, float(width) / float(height));
             auto items = gatherItems(cam);
             // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
             // binocular weapon states 0x11–0x16.

@@ -85,6 +85,10 @@ public:
     FVec viewOrigin{};
     float viewScale = 1.0f;
     bool viewValid = false;
+    // The view frustum planes (view struct +0x90.., stride 0x10, count +0xf0; 0x486e90): normal and distance, inward
+    // normals. An element with spawn flag frustumCull (0x400) is skipped when n·origin − d < −radius for any plane, radius
+    // from `spawnFrustumCullRadius` (+0x2a0, default 0). TODO(spec): the exe's plane set (we pass the four side planes).
+    std::vector<std::array<float, 4>> viewPlanes;
     // Drops finished particles and returns the visible ones at nowMs.
     std::vector<FxSprite> sprites(int64_t nowMs);
     size_t count() const { return particles_.size(); }

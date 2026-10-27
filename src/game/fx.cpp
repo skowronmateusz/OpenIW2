@@ -184,6 +184,14 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
     keep_.push_back(fx);
     for (const auto& e : fx->elements) {
         if (!inRange(e, origin)) continue;
+        if (e.spawnFlagBits() & 0x400) { // 0x4854f9: frustumCull -> 0x486e90 (true = outside, element skipped)
+            const auto cr = e.numbers("spawnfrustumcullradius");
+            const float radius = cr.empty() ? 0.0f : cr[0];
+            bool outside = false;
+            for (const auto& pl : viewPlanes)
+                if (pl[0] * origin[0] + pl[1] * origin[1] + pl[2] * origin[2] - pl[3] < -radius) outside = true;
+            if (outside) continue;
+        }
         const uint32_t flags = e.flagBits();
         if (bolt && (flags & 0x2)) { // 0x485bf0: a relative element needs a valid attachment
             FVec t{};
