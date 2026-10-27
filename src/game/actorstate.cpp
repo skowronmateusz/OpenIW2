@@ -699,6 +699,14 @@ void World::registerActorStateBuiltins() {
     // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and
     // clears the override. TODO(spec): "face current" takes desiredangle (+0x124), which only follows the turn target here
     // when this turn code ran, so the current yaw is used; 0x504aa0 (animation yaw delta into the pairs) is not modelled.
+    vm_.registerBuiltin("melee", [this](CallContext& c) {
+        Entity* a = entityOf(c.self);
+        if (!a || !a->obj || !isAlive(*a)) return Value();
+        if (a->ai.meleeFrameMs == timeMs_) return Value(); // 0x550c7a: once per frame
+        a->ai.meleeFrameMs = timeMs_;
+        aiMelee(*a);
+        return Value();
+    });
     vm_.registerBuiltin("orientmode", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("orientmode on a non-actor");

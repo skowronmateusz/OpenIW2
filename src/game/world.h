@@ -92,6 +92,7 @@ struct ActorAi {
     int64_t painStartMs = 0;                  // +0xa4
     int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
     int orient = 0;                           // +0x114 orientmode override (0 = none, else a facing mode 1..6)
+    int64_t meleeFrameMs = -1;                // +0xcc: level time of the last melee blow (one per frame, 0x550c7a)
     float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
@@ -414,6 +415,8 @@ public:
     void playerFire(const Vec3& eye, const Vec3& forward);
     // Player weapon events (src/game/playeractions.cpp): the melee blow, the offhand throw and the offhand pick.
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
+    void meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& weapon);
+    void aiMelee(Entity& a);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);
