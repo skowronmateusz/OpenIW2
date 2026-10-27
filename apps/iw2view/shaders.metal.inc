@@ -237,7 +237,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     const float4 ss = specularMap.sample(specSampler, in.uv);
     const float nh = dot(normalize(in.halfAngle), n);
     const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
-    const float3 spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength); // lightSpecular0 = lightColor0 * 1.0
+    const float3 spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w; // lightSpecular0 = lightColor0 * r_specularColorScale (sunDirection.w, default 1)
     return float4(apply_fog(base.rgb * (lm + sunDiffuse) + spec, length(in.eyeVec), u), base.a);
 }
 )MSL"
