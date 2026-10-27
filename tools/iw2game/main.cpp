@@ -640,6 +640,8 @@ int main(int argc, char** argv) {
                 seconds = std::stoi(a);
             }
         }
+        // The menu default of the saved cvar (50 digits); maps/_endmission.gsc indexes it at the end of a mission.
+        world.cvars.emplace("mis_difficulty", std::string(50, '0'));
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
         // Sounds are not played here; count requests and aliases that do not resolve.
         iw2::audio::SoundAliases aliases;
@@ -1131,6 +1133,20 @@ int main(int argc, char** argv) {
                 std::cout << "corpses " << corpses << ", still holding a gun " << armed << ", weapon items " << items << "\n";
             }
             if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
+        }
+        if (const char* tp = std::getenv("IW2_TRIGGER_DUMP"); tp) { // debug: bounds of the brush entities whose targetname starts with tp
+            for (const auto& e : world.entities()) {
+                const auto tn = e->obj->get("targetname");
+                iw2::game::Vec3 mn{}, mx{};
+                if (e->obj->removed || !tn.isString() || tn.asString().rfind(tp, 0) != 0) continue;
+                const auto m = e->obj->get("model");
+                if (m.isString() && world.submodelBounds(m.asString(), mn, mx)) {
+                    const auto o = e->obj->get("origin");
+                    const iw2::game::Vec3 ov = o.isVector() ? o.asVector() : iw2::game::Vec3{0, 0, 0};
+                    std::printf("trigger %s %s mins %.0f,%.0f,%.0f maxs %.0f,%.0f,%.0f\n", e->classname.c_str(), tn.asString().c_str(), mn[0] + ov[0],
+                                mn[1] + ov[1], mn[2] + ov[2], mx[0] + ov[0], mx[1] + ov[1], mx[2] + ov[2]);
+                }
+            }
         }
         if (const char* pre = std::getenv("IW2_THREADS_PREFIX")) { // debug: every live thread whose wait site starts with the prefix
             for (const auto& d : world.vm().describeThreads())
