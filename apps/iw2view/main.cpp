@@ -2963,7 +2963,24 @@ int main(int argc, char** argv) {
         };
         // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
         // TODO(spec): the macOS display modes as r_mode entries.
-        menuEnv.enumValues = [](const std::string&) { return std::vector<std::string>{}; };
+        // dvarEnumList domains (exe 0x4cd720: the domain string of the named enum dvar; the D3D adapter modes behind r_mode and
+        // r_displayRefresh are registered by the renderer DLL). TODO(spec): here the primary display's SDL fullscreen modes are listed:
+        // r_mode = distinct "WxH" sizes, r_displayRefresh = distinct "N Hz" rates.
+        menuEnv.enumValues = [](const std::string& dvar) {
+            std::vector<std::string> out;
+            const bool mode = dvar == "r_mode", rate = dvar == "r_displayRefresh";
+            if (!mode && !rate) return out;
+            int n = 0;
+            SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n);
+            for (int i = 0; modes && i < n; ++i) {
+                char buf[64];
+                if (mode) std::snprintf(buf, sizeof buf, "%dx%d", modes[i]->w, modes[i]->h);
+                else std::snprintf(buf, sizeof buf, "%d Hz", int(modes[i]->refresh_rate + 0.5f));
+                if (std::find(out.begin(), out.end(), buf) == out.end()) out.push_back(buf);
+            }
+            SDL_free(modes);
+            return out;
+        };
         menuEnv.language = [&] { // ids of the ui_language list in options_game.menu
             static const char* const names[] = {"english", "french", "german", "italian", "spanish", "british", "russian", "polish", "korean", "taiwanese", "japanese", "chinese", "thai"};
             for (int i = 0; i < 13; ++i)
@@ -3845,6 +3862,19 @@ int main(int argc, char** argv) {
                             }
                         }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
+                        if (it.autoWrapped) {
+                            // exe 0x4ccc70: autowrapped text is split only at CR (0xd) and each line is drawn by textalign; the next line
+                            // starts one line height + 5 lower. TODO(spec): exact line step (the exe adds 5 to the result of 0x4c3790).
+                            float ly = iy + it.textAlignY;
+                            size_t pos = 0;
+                            while (true) {
+                                const size_t e = text.find('\r', pos);
+                                hudText(out, text.substr(pos, e == std::string::npos ? e : e - pos), x0 + (ix + it.textAlignX) * xs, ly * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                                if (e == std::string::npos) break;
+                                pos = e + 1;
+                                ly += ts * 48.0f + 5.0f;
+                            }
+                        } else
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
                         if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
                             auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
