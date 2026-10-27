@@ -920,6 +920,10 @@ int main(int argc, char** argv) {
             }
             if (mover) std::cout << "a moving actor is at " << mover->obj->get("origin").toString() << "\n";
         }
+        if (const char* pre = std::getenv("IW2_THREADS_PREFIX")) { // debug: every live thread whose wait site starts with the prefix
+            for (const auto& d : world.vm().describeThreads())
+                if (d.rfind(pre, 0) == 0) std::cout << "thread " << d << "\n";
+        }
         {
             std::map<std::string, int> waits;
             for (const auto& d : world.vm().describeThreads())

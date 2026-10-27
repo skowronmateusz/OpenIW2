@@ -1754,6 +1754,10 @@ int main(int argc, char** argv) {
     std::string language = "polish";
     bool scripts = true;
     bool spawnAll = false;
+    std::vector<std::pair<std::string, std::string>> extraCvars; // --cvar name=value (e.g. start=ride)
+    std::optional<std::array<float, 2>> rideDrive; // --ride F,R: with --shot, drive the player's vehicle (forward, right in -1..1) after --ride-after
+    float rideAfter = 0;
+    uint32_t rideButtons = 0; // --ride-fire sets the attack button
     int followVehicle = -2; // -2 off, -1 list only, N the Nth entity with vehicle state
     float followDist = 400.0f, followYaw = 180.0f, followPitch = 12.0f;
     std::optional<std::array<float, 2>> forceTurret, forceJolt;
@@ -1767,6 +1771,10 @@ int main(int argc, char** argv) {
         try {
             if (a == "--shot") shot = next();
             else if (a == "--follow-vehicle") followVehicle = std::stoi(next()); // debug: the shot is taken from behind vehicle N
+            else if (a == "--cvar") { const std::string kv = next(); const auto eq = kv.find('='); extraCvars.emplace_back(kv.substr(0, eq), eq == std::string::npos ? "1" : kv.substr(eq + 1)); }
+            else if (a == "--ride") { auto v = parseFloats(next()); rideDrive = {v.at(0), v.at(1)}; }
+            else if (a == "--ride-after") rideAfter = std::stof(next());
+            else if (a == "--ride-fire") rideButtons = 1;
             else if (a == "--follow-pitch") followPitch = std::stof(next());
             else if (a == "--force-turret") { auto v = parseFloats(next()); forceTurret = {v.at(0), v.at(1)}; } // debug: pitch,yaw of every vehicle
             else if (a == "--force-jolt") { auto v = parseFloats(next()); forceJolt = {v.at(0), v.at(1)}; } // debug: tag_body pitch,roll
@@ -1848,6 +1856,7 @@ int main(int argc, char** argv) {
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
+            for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
             w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration) {
                 float dur = 0;
@@ -3080,15 +3089,56 @@ int main(int argc, char** argv) {
                 std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
             }
             if (world) {
+                std::array<game::Vec3, 3> rPrev{};
+                bool rHave = false, rInit = false;
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
-                    if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
+                    const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
+                    if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     {
                         // The view angles feed the crosshair target trace (0x535070) as in play.
                         game::World::PlayerCommand pc;
                         pc.viewAngles = {cam.pitch, cam.yaw, 0.0f};
+                        if (rideNow && rideDrive && float(f) / 20.0f >= rideAfter) {
+                            pc.forward = int(rideDrive->at(0) * 127.0f);
+                            pc.right = int(rideDrive->at(1) * 127.0f);
+                            pc.buttons = rideButtons;
+                        }
                         world->setPlayerCommand(pc);
                     }
                     world->frame();
+                    if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
+                        std::array<game::Vec3, 3> body;
+                        if (world->playerVehicleBodyAxis(body)) {
+                            if (!rInit) { cam.yaw = std::atan2(body[0][1], body[0][0]) * 180.0f / float(M_PI); cam.pitch = 0; rInit = true; }
+                            if (!rHave) rPrev = body;
+                            float d[3][3], v[3][3], m[3][3];
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j) {
+                                    d[i][j] = 0;
+                                    for (int k = 0; k < 3; ++k) d[i][j] += rPrev[size_t(k)][size_t(i)] * body[size_t(k)][size_t(j)];
+                                }
+                            const Vec3 fw = cam.forward(), rt = cam.right(), up = cross(rt, fw);
+                            const float rows[3][3] = {{fw.x, fw.y, fw.z}, {-rt.x, -rt.y, -rt.z}, {up.x, up.y, up.z}};
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j) { v[i][j] = rows[i][j]; m[i][j] = 0; }
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j)
+                                    for (int k = 0; k < 3; ++k) m[i][j] += v[i][k] * d[k][j];
+                            cam.pitch = std::clamp(-std::atan2(m[0][2], std::sqrt(m[0][0] * m[0][0] + m[0][1] * m[0][1])) * 180.0f / float(M_PI), -89.0f, 89.0f);
+                            if (world->playerPmFlags() & 0x40000) cam.yaw = std::atan2(m[0][1], m[0][0]) * 180.0f / float(M_PI);
+                            rPrev = body;
+                            rHave = true;
+                        }
+                        const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                        cam.pos = {po[0], po[1], po[2] + 60.0f};
+                        if (f % 20 == 0 || std::getenv("IW2_RIDE_TRACE")) std::cout << "ride f=" << f << " cam " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " yaw " << cam.yaw << " pitch " << cam.pitch;
+                        if (std::getenv("IW2_RIDE_TRACE"))
+                            for (const auto& pv : world->entities()) if (pv->number == world->player()->usingVehicle && pv->vehicle) {
+                                const script::Vec3 vo = pv->obj->get("origin").asVector(), va = pv->obj->get("angles").asVector();
+                                std::cout << " | veh " << vo[0] << "," << vo[1] << "," << vo[2] << " ang " << va[0] << "," << va[1] << "," << va[2] << " spd " << pv->vehicle->forwardSpeed;
+                            }
+                        std::cout << "\n";
+                    }
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen and script menus too
                         if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
                         else if (cmd.name == "popupopen" || cmd.name == "popupclose") menuCommand(cmd.name, cmd.arg);
@@ -3113,10 +3163,11 @@ int main(int argc, char** argv) {
                         }
                 if (followVehicle >= -1) {
                     int n = 0;
+                    std::cout << "player pm_flags 0x" << std::hex << world->playerPmFlags() << std::dec << "\n";
                     for (const auto& e : world->entities()) {
                         if (!e->vehicle || e->obj->removed) continue;
                         const script::Vec3 o = e->obj->get("origin").asVector(), an = e->obj->get("angles").asVector();
-                        std::cout << "vehicle " << n << ": " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
+                        std::cout << "vehicle " << n << " (" << e->obj->get("targetname").toString() << "): " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
                                   << " yaw " << an[1] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
                                   << " jolt " << e->vehicle->joltPitch << "/" << e->vehicle->joltRoll << " speed " << e->vehicle->speed
                                   << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << " compass " << e->vehicle->onCompass
