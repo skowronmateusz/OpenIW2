@@ -2275,7 +2275,7 @@ int main(int argc, char** argv) {
                     const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
                     r = {r[0] / rl, r[1] / rl, r[2] / rl};
                     const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
-                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs());
+                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
                     continue;
                 }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
@@ -3828,6 +3828,16 @@ int main(int argc, char** argv) {
                         }
                         world->setPlayerCommand(pc);
                     }
+                    // Debug: IW2_FIRE_VEHICLES=1 sends the script notify "turret_fire" (the AI tank fire loop) to every vehicle in the
+                    // last 3 simulation frames, so their muzzle flashes are in the shot.
+                    if (std::getenv("IW2_FIRE_VEHICLES") && f >= int(simSeconds * 20) - 3)
+                        for (const auto& ve : world->entities())
+                            if (ve->vehicle && !ve->obj->removed) world->vm().notify(ve->obj, "turret_fire", {});
+                    if (const char* ft = std::getenv("IW2_FIRE_TURRETS"); ft && f >= int(simSeconds * 20) - 3) {
+                        // Debug: IW2_FIRE_TURRETS=N fires every turret entity in the last 3 frames and puts the camera 150 units
+                        // beside and 60 above the Nth one (muzzle flashes in the shot).
+                        world->debugFireTurrets();
+                    }
                     world->frame();
                     if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
                         std::array<game::Vec3, 3> body;
@@ -3886,6 +3896,17 @@ int main(int argc, char** argv) {
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
+                }
+                if (const char* ft = std::getenv("IW2_FIRE_TURRETS")) { // IW2_FIRE_TURRETS=N: camera beside the Nth turret
+                        int n = 0;
+                        for (const auto& te : world->entities())
+                            if (te->turret && !te->obj->removed && n++ == std::atoi(ft)) {
+                                const script::Vec3 to = te->obj->get("origin").asVector();
+                                const float yr = (te->turret->yaw + 100.0f) * float(M_PI) / 180.0f;
+                                cam.pos = {to[0] + std::cos(yr) * 150.0f, to[1] + std::sin(yr) * 150.0f, to[2] + 60.0f};
+                                cam.yaw = std::atan2(to[1] - cam.pos.y, to[0] - cam.pos.x) * 180.0f / float(M_PI);
+                                cam.pitch = 15.0f;
+                            }
                 }
                 if (forceTurret || forceJolt)
                     for (const auto& e : world->entities())

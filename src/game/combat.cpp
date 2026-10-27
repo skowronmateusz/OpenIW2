@@ -671,7 +671,8 @@ void World::registerCombatBuiltins() {
             // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). TODO(spec): which of 0x9e / 0xa0
             // this shot is, so lastShotEjectEffect is never chosen here.
             const std::string brass = weaponField(wpn.asString(), "shellEjectEffect");
-            if (!brass.empty() && brass != "none" && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
+            // 0x4b79d1: no brass when the weapon def has boltAction (+0x328 of the table at 0x5a86c0) set.
+            if (!brass.empty() && brass != "none" && std::atoi(weaponField(wpn.asString(), "boltAction").c_str()) == 0 && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();
