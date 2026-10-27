@@ -1769,6 +1769,10 @@ int main(int argc, char** argv) {
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
+            pweapon.animLength = [&](const std::string& n) {
+                const assets::XAnim* an = n.empty() ? nullptr : viewAnim(vfs, n);
+                return an && !an->looping ? an->length() : 0.0f;
+            };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
             if (world->player()->obj->get("$weapontaken").truthy()) {
                 world->player()->obj->set("$weapontaken", script::Value());

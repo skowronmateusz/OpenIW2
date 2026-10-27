@@ -41,8 +41,18 @@ void PlayerWeapon::enter(State s, const char* animKey, float duration) {
     state_ = s;
     timer_ = duration;
     const std::string a = animKey ? fieldValue(animKey) : std::string();
-    anim_ = a.empty() ? fieldValue("idleAnim") : a;
-    animTime_ = 0;
+    const std::string idle = fieldValue("idleAnim");
+    pendingIdle_ = false;
+    if (!animKey && animLength && anim_ != idle) {
+        const float len = animLength(anim_);
+        if (len > 0 && animTime_ < len) { // keep the action anim playing, idle follows when it ends
+            pendingIdle_ = true;
+        }
+    }
+    if (!pendingIdle_) {
+        anim_ = a.empty() ? idle : a;
+        animTime_ = 0;
+    }
     const char* soundKey = s == State::Reloading ? "reloadSound" : s == State::Rechamber ? "rechamberSound" : nullptr;
     if (soundKey && !fieldValue(soundKey).empty()) sounds_.push_back(fieldValue(soundKey));
 }
@@ -54,9 +64,11 @@ void PlayerWeapon::enterWith(const Def& d, State s, const char* animKey, float d
     const std::string a = defValue(d, animKey);
     anim_ = a.empty() ? defValue(d, "idleAnim") : a;
     animTime_ = 0;
+    pendingIdle_ = false;
 }
 
 void PlayerWeapon::equip(const std::string& name, const Def& def) {
+    pendingIdle_ = false;
     if (!name_.empty()) ammo_[name_] = {clip_, stock_};
     name_ = name;
     def_ = def;
@@ -139,6 +151,14 @@ int PlayerWeapon::update(float dt, const Input& in) {
         if (adsFrac_ == 1) zoomingIn_ = false;
     }
     animTime_ += dt;
+    if (pendingIdle_) {
+        const float len = animLength ? animLength(anim_) : 0.0f;
+        if (len <= 0 || animTime_ >= len) {
+            anim_ = fieldValue("idleAnim");
+            animTime_ = 0;
+            pendingIdle_ = false;
+        }
+    }
     timer_ -= dt;
     // Weapon delay (0x4de720): reaching 0 lets this frame's state change happen at once.
     bool delayDone = false;
@@ -204,6 +224,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
             const bool canMelee = adsFrac_ <= 0 || reticle.empty() || reticle == "none";
             if (canMelee && state_ != State::Raising && state_ != State::Dropping && state_ != State::Melee &&
                 state_ != State::MeleeEnd) {
+                pendingIdle_ = false;
                 anim_ = fieldValue("meleeAnim").empty() ? fieldValue("idleAnim") : fieldValue("meleeAnim");
                 animTime_ = 0;
                 events_.push_back({Event::MeleeSwing, name_});

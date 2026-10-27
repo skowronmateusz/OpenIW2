@@ -43,6 +43,8 @@ public:
 
     // Weapon definitions for weapon changes and offhands (World::weapon).
     std::function<const Def*(const std::string&)> lookup;
+    // Length in seconds of a view animation; <= 0 for looping or unknown ones (set by the viewer from the XAnim).
+    std::function<float(const std::string&)> animLength;
     // 0x4dc6d0: the first owned weapon of an offhand class ("Frag Grenade", "Smoke Grenade") with ammo, or "".
     std::function<std::string(const std::string& offhandClass)> findOffhand;
 
@@ -116,6 +118,7 @@ private:
     float delay_ = 0;  // ps weaponDelay (+0x38)
     std::string anim_;
     float animTime_ = 0;
+    bool pendingIdle_ = false; // cgame 0x4b299d: idle waits until the running action anim has finished
     int clip_ = 0, stock_ = 0;
     std::map<std::string, std::pair<int, int>> ammo_; // clip and stock of weapons put away
     bool triggerReleased_ = true;
