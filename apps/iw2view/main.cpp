@@ -17,6 +17,7 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
 #include "game/clientinput.h"
@@ -293,6 +294,8 @@ struct Batch {
     bool scroll = false; // see MatInfo::scroll
     // *_spec techniques (lmap_s: lib/phong.hlsl): indices into Scene::textures of the normalMap / specularMap, -1 = none.
     int normalTex = -1, specTex = -1;
+    uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
+    int detail = -1; // Scene::details index
 };
 
 struct Lightmap {
@@ -312,6 +315,8 @@ struct MatInfo {
     int cull = 0;
     // For Pass::Water `texture` indexes Scene::waters.
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
+    uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState
+    int detail = -1; // Scene::details index (technique set *_detail)
     int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
 };
@@ -336,8 +341,11 @@ struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* tbn = nullptr;           // world vertices' tangent + binormal (6 floats each), parallel to `vertices`
+    SDL_GPUTexture* lmWeightTex = nullptr;  // "$lightmapweights" (32 x 32 RGBA8): (alpha, green) of the normal map -> 4 lightmap coefficient weights
     SDL_GPUTexture* specularity = nullptr;  // "$specularity" lookup (32 x 256 L8): U = specular power, V = N.H
     std::vector<SDL_GPUTexture*> textures; // [0] = white
+    struct Detail { int tex; uint8_t state; float scale[2]; }; // material detailMap + detailScale.xy (lib/shade.hlsl USE_DETAIL)
+    std::vector<Detail> details;
     std::vector<Lightmap> lightmaps;
     Lightmap dummyLightmap;
     std::vector<Batch> batches;
@@ -535,8 +543,15 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
                     for (const auto& t : m.textures) {
                         if (t.imageName.empty() || t.imageName[0] == '$') continue;
-                        if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap") mi.normalTex = imageSlot(t.imageName);
-                        if (t.semantic == assets::TextureSemantic::Specular && t.samplerName == "specularMap") mi.specTex = imageSlot(t.imageName);
+                        if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap") { mi.normalTex = imageSlot(t.imageName); mi.normalState = t.samplerState; }
+                        if (t.semantic == assets::TextureSemantic::Specular && t.samplerName == "specularMap") { mi.specTex = imageSlot(t.imageName); mi.specState = t.samplerState; }
+                        if (t.samplerName == "detailMap") {
+                            Scene::Detail dt{imageSlot(t.imageName), t.samplerState, {1.0f, 1.0f}};
+                            for (const auto& c : m.constants)
+                                if (c.name == "detailScale") dt.scale[0] = c.value[0], dt.scale[1] = c.value[1];
+                            mi.detail = int(scene.details.size());
+                            scene.details.push_back(dt);
+                        }
                     }
             }
         } catch (const std::exception& e) {
@@ -901,6 +916,7 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
     buf(scene.indices);
     buf(scene.tbn);
     tex(scene.specularity);
+    tex(scene.lmWeightTex);
     for (size_t i = 1; i < scene.textures.size(); ++i) tex(scene.textures[i]); // [0] is the shared white texture
     for (auto& lm : scene.lightmaps) { tex(lm.coeffs); tex(lm.sun); }
     tex(scene.sky);
@@ -931,6 +947,41 @@ float cosinePowerShiftDvar() {
         return e ? std::clamp(float(std::atof(e)), -1.0f, 1.0f) : 0.0f;
     }();
     return v;
+}
+
+// "$lightmapweights" (gfx 0x1000ff10 -> basis 0x1000fdf0): 32 x 32 A8R8G8B8. Texel (row i, column j) holds the weights of the direction
+// v = (2(j+.5)/32 - 1, 2(i+.5)/32 - 1, sqrt(1 - x^2 - y^2)) (outside the unit disc: x, y normalised, z = 0); w0 = clamp(1 - acos(z) / acos(1/sqrt 3)),
+// azimuth a = atan2(y, x) * 3 / 2pi - 0.75 wrapped into [0, 3): a < 1: w1 = 1 - a, w2 = a; a < 2: w2 = 2 - a, w3 = a - 1; else w1 = a - 2, w3 = 3 - a;
+// w1..w3 are scaled by 1 - w0. Bytes are B,G,R,A = w0,w1,w2,w3, so the sampled rgba is (w2, w1, w0, w3) and a flat normal gives (0, 0, 1, 0).
+// Rounded as the DLL does: byte = (int)(w * 255 + 2^-30) (0x1019be00).
+std::vector<uint8_t> lightmapWeightsTable() {
+    std::vector<uint8_t> t(32 * 32 * 4);
+    for (int i = 0; i < 32; ++i)
+        for (int j = 0; j < 32; ++j) {
+            float x = (float(j) + 0.5f) / 32.0f * 2.0f - 1.0f, y = (float(i) + 0.5f) / 32.0f * 2.0f - 1.0f;
+            float z2 = 1.0f - (x * x + y * y);
+            if (!(z2 > 0.0f)) {
+                const float len = std::sqrt(x * x + y * y);
+                if (len != 0.0f) { x /= len; y /= len; }
+                z2 = 0.0f;
+            }
+            const float z = std::sqrt(z2);
+            float a = std::atan2(y, x) * 0.47746482f - 0.75f;
+            if (a < 0.0f) a += 3.0f;
+            else if (a > 3.0f) a -= 3.0f;
+            float w[4];
+            if (a < 1.0f) { w[3] = 0; w[1] = 1.0f - a; w[2] = a; }
+            else if (a < 2.0f) { a -= 1.0f; w[1] = 0; w[2] = 1.0f - a; w[3] = a; }
+            else { a -= 2.0f; w[2] = 0; w[1] = a; w[3] = 1.0f - a; }
+            w[0] = std::clamp(1.0f - std::acos(z) * 1.0467734f, 0.0f, 1.0f);
+            for (int k = 1; k < 4; ++k) w[k] *= 1.0f - w[0];
+            uint8_t* px = &t[(size_t(i) * 32 + size_t(j)) * 4];
+            px[0] = uint8_t(int(w[2] * 255.0f + 9.313225746154785e-10f)); // R = w2
+            px[1] = uint8_t(int(w[1] * 255.0f + 9.313225746154785e-10f)); // G = w1
+            px[2] = uint8_t(int(w[0] * 255.0f + 9.313225746154785e-10f)); // B = w0
+            px[3] = uint8_t(int(w[3] * 255.0f + 9.313225746154785e-10f)); // A = w3
+        }
+    return t;
 }
 
 std::vector<uint8_t> specularityTable(float shift) {
@@ -1005,7 +1056,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<std::tuple<int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
     for (const auto& s : bsp.soups()) {
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
@@ -1014,7 +1065,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1}];
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, spec ? mi.detail : -1}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1108,7 +1159,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1125,6 +1176,9 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.cull = std::get<4>(key);
         b.normalTex = std::get<5>(key);
         b.specTex = std::get<6>(key);
+        b.normalState = uint8_t(std::get<7>(key));
+        b.specState = uint8_t(std::get<8>(key));
+        b.detail = std::get<9>(key);
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -1158,6 +1212,9 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         const auto lut = specularityTable(cosinePowerShiftDvar());
         scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
         up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
+        const auto wl = lightmapWeightsTable();
+        scene.lmWeightTex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 32, 32, 1);
+        up.texture(scene.lmWeightTex, 0, 0, 32, 32, wl.data(), uint32_t(wl.size()));
     }
     up.flush();
 
@@ -1285,6 +1342,27 @@ struct Renderer {
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
     SDL_GPUSampler* waterMapSampler = nullptr;
+    SDL_GPUDevice* samplerDev = nullptr;
+    SDL_GPUSampler* matSamplers[128] = {};
+    // Per-material sampler state (MaterialTexture::samplerState; SetSamplerState in gfx 0x1003dd00..0x1003e1b1): bits 0-1 min/mag filter
+    // (1 point, 2 linear, 0/3 default = linear here), bits 2-3 mip filter (1 point, 2 linear, 0/3 default = linear), bit 4/5 = clamp U/V (clear = wrap).
+    SDL_GPUSampler* matSampler(uint8_t state) {
+        state &= 0x7f;
+        if (!matSamplers[state]) {
+            SDL_GPUSamplerCreateInfo si{};
+            const int mm = state & 3, mip = (state >> 2) & 3;
+            si.min_filter = si.mag_filter = mm == 1 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+            si.mipmap_mode = mip == 1 ? SDL_GPU_SAMPLERMIPMAPMODE_NEAREST : SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+            si.address_mode_u = state & 0x10 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.address_mode_v = state & 0x20 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.address_mode_w = state & 0x40 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.enable_anisotropy = mm != 1;
+            si.max_anisotropy = 8;
+            si.max_lod = 1000;
+            matSamplers[state] = SDL_CreateGPUSampler(samplerDev, &si);
+        }
+        return matSamplers[state];
+    }
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
@@ -1344,7 +1422,7 @@ struct Renderer {
         svsi.entrypoint = "vs_spec";
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
-        sfsi.num_samplers = 6;
+        sfsi.num_samplers = 8;
         SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
         SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
         if (!specVsh || !specFsh) sdlFail("spec shaders");
@@ -1514,6 +1592,7 @@ struct Renderer {
         si.enable_anisotropy = true;
         si.max_anisotropy = 8;
         si.max_lod = 1000;
+        samplerDev = dev;
         repeatSampler = SDL_CreateGPUSampler(dev, &si);
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         si.enable_anisotropy = false;
@@ -1730,7 +1809,7 @@ struct Renderer {
             if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
                 bool any = false;
                 for (const Batch& b : scene.batches) {
-                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity) continue;
+                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
                     if (!any) {
                         SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
                         SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
@@ -1742,14 +1821,16 @@ struct Renderer {
                     svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                     SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
                     const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
-                    SDL_GPUTextureSamplerBinding tex[6] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
-                                                           {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], repeatSampler},
-                                                           {scene.textures[size_t(b.specTex)], repeatSampler}, {scene.specularity, clampSampler}};
-                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 6);
+                    SDL_GPUTextureSamplerBinding tex[8] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
+                                                           {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], matSampler(b.normalState)},
+                                                           {scene.textures[size_t(b.specTex)], matSampler(b.specState)}, {scene.specularity, clampSampler}, {scene.lmWeightTex, clampSampler},
+                                                           {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
+                                                            matSampler(b.detail >= 0 ? scene.details[size_t(b.detail)].state : uint8_t(0))}};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 8);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
-                        {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
+                        {b.detail >= 0 ? scene.details[size_t(b.detail)].scale[0] : 0.0f, b.detail >= 0 ? scene.details[size_t(b.detail)].scale[1] : 0.0f, b.detail >= 0 ? 1.0f : 0.0f, 0.0f},
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {0, 0, 0, 0}};
                     applyFog(fu);
@@ -2016,6 +2097,7 @@ int main(int argc, char** argv) {
     float forcedBlur = 0; // --blur N: force the composed blur radius (debug)
     int shootMarks = 0; // --shoot N: with --shot, the player fires N bullets along the view (fanned 1° apart) before the shot
     bool audioOn = true;
+    bool skipIntro = false; // --no-intro: no start-up movies in the front end
     bool menuMode = false; // --menu: start in the front end (main menu) without a level
     float shotViewHeight = 60;
     float shotLean = 0;
@@ -2070,6 +2152,7 @@ int main(int argc, char** argv) {
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--menu") menuMode = true;
+            else if (a == "--no-intro") skipIntro = true;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
@@ -2127,7 +2210,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -2184,6 +2267,7 @@ int main(int argc, char** argv) {
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
+        game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         game::FogState fogState; // "fog" server command (client 0x4a5770)
         game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
@@ -2879,7 +2963,24 @@ int main(int argc, char** argv) {
         };
         // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
         // TODO(spec): the macOS display modes as r_mode entries.
-        menuEnv.enumValues = [](const std::string&) { return std::vector<std::string>{}; };
+        // dvarEnumList domains (exe 0x4cd720: the domain string of the named enum dvar; the D3D adapter modes behind r_mode and
+        // r_displayRefresh are registered by the renderer DLL). TODO(spec): here the primary display's SDL fullscreen modes are listed:
+        // r_mode = distinct "WxH" sizes, r_displayRefresh = distinct "N Hz" rates.
+        menuEnv.enumValues = [](const std::string& dvar) {
+            std::vector<std::string> out;
+            const bool mode = dvar == "r_mode", rate = dvar == "r_displayRefresh";
+            if (!mode && !rate) return out;
+            int n = 0;
+            SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n);
+            for (int i = 0; modes && i < n; ++i) {
+                char buf[64];
+                if (mode) std::snprintf(buf, sizeof buf, "%dx%d", modes[i]->w, modes[i]->h);
+                else std::snprintf(buf, sizeof buf, "%d Hz", int(modes[i]->refresh_rate + 0.5f));
+                if (std::find(out.begin(), out.end(), buf) == out.end()) out.push_back(buf);
+            }
+            SDL_free(modes);
+            return out;
+        };
         menuEnv.language = [&] { // ids of the ui_language list in options_game.menu
             static const char* const names[] = {"english", "french", "german", "italian", "spanish", "british", "russian", "polish", "korean", "taiwanese", "japanese", "chinese", "thai"};
             for (int i = 0; i < 13; ++i)
@@ -3466,7 +3567,7 @@ int main(int argc, char** argv) {
                 const int64_t rem = ticksMs - el;
                 return rem >= 700 ? 1.0f : float(rem) / 700.0f;
             };
-            const float ammoAlpha = fadeAlpha(hudFade.ammo, 2.0f, 2000);
+            const float ammoAlpha = fadeAlpha(hudFade.ammo, 3.0f, 3000) /* hud_fade_ammodisplay default 3.0 (0x4a728a) */;
             const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
@@ -3566,6 +3667,109 @@ int main(int argc, char** argv) {
                     q.texture = materialTexture(icon);
                     out.push_back(q);
                 }
+            }
+            // Health bar (menu "Health": back + cross = ownerdraw 95 (0x4a8ab0), bar = ownerdraw 79 (0x4a8800)). Fade: hud_fade_healthbar
+            // (2 s, touch 0xf79a3c, touched by a damage event 0x4ba537). Fraction (0x4a8790) = health / maxhealth clamped to 0..1 (1 when
+            // either is 0). Bar: item rect with width * fraction, texcoords s 0..fraction, item colour with alpha = fade, adjusted by
+            // the fraction c: c > 0.5 -> r and b scaled by 2 * (1 - c); else g = (c + 0.2) * g + 0.3. A red (1 0 0) trail (0xf796a8)
+            // covers fraction..trail: it follows the fraction up at once and falls by 0.0012 per ms (0x592080) after a damage frame.
+            // Back (95): background drawn with the item colour and the fade alpha; below hud_health_startpulse_injured (1.0) the same
+            // background is drawn again in (0.89 0.18 0.01) with alpha (timer - now + period) / period, capped by the fade, period =
+            // hud_health_pulserate_injured (1.0 s), below hud_health_startpulse_critical (0.33) pulserate_critical (0.5 s).
+            // TODO(spec): the pm_type == 4 case of 0x4a8790, other health touches, the cg_drawHealth-style dvar 0xf48cf8 (assumed on),
+            // the texcoords of the trail (assumed fraction..trail), the hud_health_pulserate dvar flags.
+            if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player()) {
+                const int64_t now = world->timeMs();
+                const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
+                hudFade.lastHudMs = now;
+                const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
+                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // TODO(spec): player maxhealth source
+                float frac = 1.0f;
+                if (hp != 0 && maxHp != 0) frac = std::clamp(float(hp) / float(maxHp), 0.0f, 1.0f);
+                const float fa = fadeAlpha(hudFade.health, 2.0f, 2000);
+                if (fa > 0.0f) {
+                    // trail state machine (0x4a8988..0x4a8a00)
+                    if (frac >= hudFade.healthTrail) {
+                        hudFade.healthTrail = frac;
+                        hudFade.healthTrailTimer = 1;
+                    } else if (hudFade.healthTrailTimer != 0) {
+                        hudFade.healthTrailTimer -= dtMs;
+                        if (hudFade.healthTrailTimer < 0) hudFade.healthTrailTimer = 0;
+                    } else {
+                        hudFade.healthTrail = std::max(frac, hudFade.healthTrail - float(dtMs) * 0.0012f);
+                    }
+                    for (const auto& itp : hm->items) {
+                        const ui::Item& it = *itp;
+                        if (it.ownerDraw != 79 && it.ownerDraw != 95) continue;
+                        const float rx = float(w) + (hm->rect.x + it.rect.x) * sc, ry = float(h) + (hm->rect.y + it.rect.y) * sc;
+                        const float rw = it.rect.w * sc, rh = it.rect.h * sc;
+                        float col[4] = {it.foreColor[0], it.foreColor[1], it.foreColor[2], fa};
+                        auto put = [&](float x0, float x1, float s0, float s1, const float* cl, const std::string& mat) {
+                            Quad2D q{x0, ry, x1, ry + rh};
+                            q.s0 = s0, q.s1 = s1;
+                            for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(cl[k], 0.0f, 1.0f) * 255.0f);
+                            q.texture = materialTexture(mat);
+                            out.push_back(q);
+                        };
+                        if (it.ownerDraw == 95) {
+                            if (it.background.empty()) continue;
+                            put(rx, rx + rw, 0, 1, col, it.background);
+                            if (frac == 0.0f) continue;
+                            int period = 0;
+                            if (frac < 0.33f) period = int(0.5f * 1000.0f + 0.5f);       // hud_health_startpulse_critical / pulserate_critical
+                            else if (frac < 1.0f) period = int(1.0f * 1000.0f + 0.5f);   // hud_health_startpulse_injured / pulserate_injured
+                            if (period == 0) continue;
+                            if (hudFade.healthPulse > now || hudFade.healthPulse + period < now) hudFade.healthPulse = now;
+                            const float pa = float(hudFade.healthPulse - now + period) / float(period);
+                            const float pc[4] = {0.89f, 0.18f, 0.01f, std::min(pa, fa)};
+                            put(rx, rx + rw, 0, 1, pc, it.background);
+                        } else if (frac > 0.0f && !it.background.empty()) {
+                            if (frac > 0.5f) { col[0] = 2.0f * (1.0f - frac) * col[0]; col[2] = 2.0f * (1.0f - frac) * col[2]; }
+                            else col[1] = (frac + 0.2f) * col[1] + 0.3f;
+                            put(rx, rx + rw * frac, 0, frac, col, it.background);
+                            if (hudFade.healthTrail > frac) {
+                                const float tc[4] = {1.0f, 0.0f, 0.0f, fa};
+                                put(rx + rw * frac, rx + rw * hudFade.healthTrail, frac, hudFade.healthTrail, tc, it.background);
+                            }
+                        }
+                    }
+                }
+            }
+            // Stance (menu "stance", ownerdraw 20, 0x4a81e0): alpha = fade of hud_fade_stance (default 1.7 s, 0x10438e4, ticks = dvar * 1000,
+            // touch 0xf79a44); nothing while the alpha is 0, nor in a vehicle (pm_flags 0x20000 without 0x80000). The stance change
+            // time (0xf796c8) is set to now when it lies in the future or the stance (pm_flags & 3) differs from the stored one
+            // (0xf796c4). Icon: bit 0 stance_prone, else bit 1 stance_crouch, else stance_stand; then, for 1000 ms after the change,
+            // the stance_flash overlay with the cg_hudStanceFlash colour (default white) and alpha (changeTime + 1000 - now) * 0.001 * 0.8
+            // (0x591e30, 0x591f94) capped by the fade alpha. Rect: menu 90 -70 LEFT / BOTTOM + item 60x60.
+            // TODO(spec): the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
+            // the bool dvar 0x1040c4c checked in the fade.
+            if (const ui::Menu* sm = hudMenus.find("stance"); sm && world) {
+                const int64_t now = world->timeMs();
+                const uint32_t st = world->playerPmFlags() & 3u;
+                if (hudFade.stanceChange > now || hudFade.stanceState != st) hudFade.stanceChange = now;
+                hudFade.stanceState = st;
+                const float sa = fadeAlpha(hudFade.stance, 1.7f, 1700);
+                const bool stanceInVeh = (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
+                if (sa > 0.0f && !stanceInVeh)
+                    for (const auto& itp : sm->items) {
+                        if (itp->ownerDraw != 20) continue;
+                        const auto& r = itp->rect;
+                        Quad2D q{(sm->rect.x + r.x) * sc, float(h) + (sm->rect.y + r.y) * sc, 0, 0};
+                        q.x1 = q.x0 + r.w * sc;
+                        q.y1 = q.y0 + r.h * sc;
+                        for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        q.rgba[3] = uint8_t(std::clamp(sa, 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture((st & 1u) ? "stance_prone" : (st & 2u) ? "stance_crouch" : "stance_stand");
+                        out.push_back(q);
+                        if (hudFade.stanceChange + 1000 > now) {
+                            const float fa = std::min(sa, float(hudFade.stanceChange + 1000 - now) * 0.001f * 0.8f);
+                            Quad2D f = q;
+                            for (int k = 0; k < 3; ++k) f.rgba[k] = 255; // cg_hudStanceFlash default (1 1 1 1); TODO(spec): dvar override
+                            f.rgba[3] = uint8_t(std::clamp(fa, 0.0f, 1.0f) * 255.0f);
+                            f.texture = materialTexture("stance_flash");
+                            out.push_back(f);
+                        }
+                    }
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
@@ -3725,6 +3929,19 @@ int main(int argc, char** argv) {
                             }
                         }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
+                        if (it.autoWrapped) {
+                            // exe 0x4ccc70: autowrapped text is split only at CR (0xd) and each line is drawn by textalign; the next line
+                            // starts one line height + 5 lower. TODO(spec): exact line step (the exe adds 5 to the result of 0x4c3790).
+                            float ly = iy + it.textAlignY;
+                            size_t pos = 0;
+                            while (true) {
+                                const size_t e = text.find('\r', pos);
+                                hudText(out, text.substr(pos, e == std::string::npos ? e : e - pos), x0 + (ix + it.textAlignX) * xs, ly * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                                if (e == std::string::npos) break;
+                                pos = e + 1;
+                                ly += ts * 48.0f + 5.0f;
+                            }
+                        } else
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
                         if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
                             auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
@@ -3767,6 +3984,14 @@ int main(int argc, char** argv) {
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
             out.insert(out.end(), front.begin(), front.end());
+            // The fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
+            screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+            if (screenFade.alpha() > 0) {
+                Quad2D q{0, 0, float(w), float(h)};
+                q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
+                q.rgba[3] = uint8_t(std::min(screenFade.alpha(), 1.0f) * 255.0f + 0.5f);
+                out.push_back(q);
+            }
             (void)c;
             return out;
         };
@@ -3903,7 +4128,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
@@ -4069,14 +4294,21 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
-        // Cinematic playback (docs/spec/video.md): modal, the way the original's `cinematic <name> 0` (0x4d9f90) is: the movie
-        // fills the 4:3 screen area, any key or mouse button skips it (skippable byte 0x59a0d0), and the level load goes on after it.
-        auto playCinematic = [&](const std::string& name) {
+        // Cinematic playback (docs/spec/video.md), modelled on CL_PlayCinematic_f (0x49e690) and the per-frame run (0x49dcc0): modal; the
+        // movie fills the 640x480 area (letterbox: y 105, height 270, 0x49e722); the clock is wall time with frozen hitches (a frame delta
+        // over 100 ms moves the start time, 0x49dd91), the shown frame is elapsed * fps / 1000 and late frames are decoded and dropped;
+        // audio is queued when its frame is decoded. Any key or mouse button skips it when skippable (`cinematic` sets the skippable
+        // byte 0x59a0d0, `unskippablecinematic` clears it). `loop` restarts it at the end (the command's flag '2', 0x49ded8).
+        // Returns false when the window was closed.
+        auto playCinematic = [&](const std::string& rawName, bool skippable, bool letterbox, bool loop) {
+            std::string name = rawName;
+            for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
             const auto data = vfs.read("video/" + name + ".roq");
-            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return; }
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return true; }
             std::unique_ptr<video::RoqDecoder> dec;
-            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return; }
-            std::cout << "cinematic " << name << "\n";
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return true; }
+            std::cout << "cinematic " << name << (skippable ? "" : " (unskippable)") << (letterbox ? " letterbox" : "") << (loop ? " loop" : "") << "\n";
+            const bool stats = std::getenv("IW2_CINEMATIC_STATS") != nullptr;
             Scene movieScene = emptyScene(dev);
             SDL_GPUTexture* tex = nullptr;
             int tw = 0, th = 0;
@@ -4086,20 +4318,34 @@ int main(int argc, char** argv) {
                 snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
                 if (snd) SDL_ResumeAudioStreamDevice(snd);
             }
+            // The mixer's own stream must not talk over the movie.
+            if (audioStream) SDL_PauseAudioStreamDevice(audioStream);
             const uint64_t t0 = SDL_GetTicksNS();
+            uint64_t lastNs = t0, startShiftNs = 0;
             bool more = true, skipped = false;
+            int64_t shown = -1, dropped = 0, audioPut = 0;
+            double syncSum = 0, syncMax = 0, syncMin = 1e9;
+            int64_t syncN = 0;
             while (more && !skipped && running) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     if (e.type == SDL_EVENT_QUIT) running = false;
-                    else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) skipped = true;
+                    else if (skippable && (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)) skipped = true;
                 }
-                const int64_t due = int64_t(double(SDL_GetTicksNS() - t0) * 1e-9 * dec->fps()) + 1; // frames that should have been shown
+                const uint64_t nowNs = SDL_GetTicksNS();
+                if (const char* lim = std::getenv("IW2_EXIT_AFTER"))
+                    if (nowNs > uint64_t(std::atof(lim) * 1e9)) { running = false; break; } // debug: leave after N seconds, movie included
+                if (nowNs - lastNs > 100000000ull) startShiftNs += nowNs - lastNs; // a hitch over 100 ms freezes the movie clock (0x49dd91)
+                lastNs = nowNs;
+                const double elapsed = double(nowNs - t0 - startShiftNs) * 1e-9;
+                const int64_t due = int64_t(elapsed * dec->fps()) + 1; // frames that should have been shown
                 bool fresh = false;
                 while (more && dec->frameIndex() < due) {
+                    const bool hadFrame = dec->frameIndex() > 0;
                     more = dec->nextFrame();
                     if (!more) break;
                     fresh = true;
+                    if (hadFrame && dec->frameIndex() < due) ++dropped;
                     auto pcm = dec->takeAudio();
                     if (snd && !pcm.empty()) {
                         if (dec->audioChannels() == 1) {
@@ -4108,7 +4354,13 @@ int main(int argc, char** argv) {
                             pcm = std::move(st);
                         }
                         SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                        audioPut += int64_t(pcm.size() / 2);
                     }
+                }
+                if (!more && loop && !skipped) { // restart (0x49d490)
+                    dec = std::make_unique<video::RoqDecoder>(*data);
+                    more = true;
+                    continue;
                 }
                 if (dec->width() == 0) break;
                 if (!tex || tw != dec->width() || th != dec->height()) {
@@ -4122,29 +4374,71 @@ int main(int argc, char** argv) {
                 if (fresh) {
                     Uploader up(dev, false);
                     up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                    shown = dec->frameIndex();
+                }
+                if (stats && snd && audioPut > 0) {
+                    // Sync measurement: the picture time (shown frame / fps) against the audio actually played by the device stream
+                    // (samples put minus samples still queued), both in seconds since the start.
+                    const double played = double(audioPut - SDL_GetAudioStreamQueued(snd) / 4) / video::RoqDecoder::kAudioRate;
+                    const double picture = double(std::max<int64_t>(shown, 0)) / dec->fps();
+                    if (elapsed > 1.0) { // the first second includes the device start-up
+                        const double d = picture - played; // > 0: the picture is ahead of the sound
+                        syncSum += d, syncMax = std::max(syncMax, d), syncMin = std::min(syncMin, d), ++syncN;
+                    }
                 }
                 SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
                 SDL_GPUTexture* swap = nullptr;
                 uint32_t w = 0, h = 0;
                 if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
                     const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
-                    Quad2D q{left, 0, left + 640.0f * sc, 480.0f * sc};
+                    const float y0 = letterbox ? 105.0f : 0.0f, y1 = letterbox ? 105.0f + 270.0f : 480.0f;
+                    Quad2D q{left, y0 * sc, left + 640.0f * sc, y1 * sc};
                     q.texture = 1;
                     renderer.fog = {};
-                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, std::vector<Quad2D>{q}, 0.0f);
+                    std::vector<Quad2D> quads;
+                    if (letterbox) { // black bars outside the picture
+                        Quad2D bar{0, 0, float(w), float(h)};
+                        bar.rgba[0] = bar.rgba[1] = bar.rgba[2] = 0;
+                        quads.push_back(bar);
+                    }
+                    quads.push_back(q);
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
                 }
                 SDL_SubmitGPUCommandBuffer(cmd);
             }
+            if (stats) {
+                const double wall = double(SDL_GetTicksNS() - t0) * 1e-9;
+                std::cout << "cinematic stats: " << name << " " << tw << "x" << th << " " << dec->fps() << " fps; wall " << wall << " s, last frame "
+                          << shown << " (" << double(shown) / dec->fps() << " s), dropped " << dropped << ", audio " << double(audioPut) / video::RoqDecoder::kAudioRate
+                          << " s queued"
+                          << (syncN ? "; picture minus audio played (after 1 s) mean " + std::to_string(syncSum / double(syncN) * 1000.0) + " ms, min " + std::to_string(syncMin * 1000.0) + ", max " + std::to_string(syncMax * 1000.0) + " ms over " + std::to_string(syncN) + " draws" : std::string())
+                          << (skipped ? "; skipped" : "") << "\n";
+            }
             if (snd) SDL_DestroyAudioStream(snd);
+            if (audioStream) SDL_ResumeAudioStreamDevice(audioStream);
             SDL_WaitForGPUIdle(dev);
             releaseScene(dev, movieScene);
-            // Held keys and buttons that skipped the movie must not reach the game (their release does).
-            SDL_PumpEvents();
+            return running;
         };
-        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
         int shockLoop = 0, shockSeenStart = -1;
         bool shockEndPlayed = true;
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
+        // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
+        auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) { // debug: play video/<name>.roq (e.g. "iw_logo" or "legal!" for unskippable) first
+            std::string n = mv;
+            const bool unskippable = !n.empty() && n.back() == '!';
+            if (unskippable) n.pop_back();
+            playCinematic(n, !unskippable, std::getenv("IW2_CINEMATIC_LETTERBOX") != nullptr, std::getenv("IW2_CINEMATIC_LOOP") != nullptr);
+        }
+        // Start-up movie chain of the front end (Com_Init 0x42dee0, 0x42e7d5): `unskippablecinematic legal`, then, while com_introPlayed is
+        // 0, `cinematic atvi; set nextmap "cinematic IW_logo; set nextmap cinematic cod_intro"`. A movie that is missing or ends runs
+        // nextmap; a skip stops the current movie only. TODO(spec): nothing in the exe sets com_introPlayed, it is only read.
+        if (menuMode && running && !std::getenv("IW2_SKIP_INTRO") && !skipIntro) {
+            playCinematic("legal", false, false, false);
+            for (const char* m : {"atvi", "IW_logo", "cod_intro"})
+                if (running && !playCinematic(m, true, false, false)) break;
+        }
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -4293,6 +4587,7 @@ int main(int argc, char** argv) {
                 pc.weaponState = pweapon.stateNumber();
                 pc.grenadeFuseMs = pweapon.fuseMs();
                 pc.lean = ps.lean;
+                pc.adsFrac = pweapon.adsFrac();
                 world->setPlayerCommand(pc);
             }
             if (onTurret) {
@@ -4653,6 +4948,7 @@ int main(int argc, char** argv) {
                 // angle. TODO(spec): the view kick (0xf7979c / 0xf797a0) and the "Health" menu flag.
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
+                    if (hudFade.health < world->timeMs()) hudFade.health = world->timeMs(); // 0x4ba537: damage touches the health bar
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
                     if (df.count != 0) { // 0x4ba1c3: only with a damage count
                         const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
@@ -4709,6 +5005,12 @@ int main(int argc, char** argv) {
                         if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                         else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                     }
+                    else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
+                        float alpha = 0;
+                        int startMs = 0, durMs = 0;
+                        a >> alpha >> startMs >> durMs;
+                        screenFade.command(alpha, startMs, durMs, world->timeMs());
+                    }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
                     else if (cmd.name == "scr_blur") { // scr_blur <ms> <radius> <realtime> <priority> (0x4beb80)
@@ -4727,10 +5029,11 @@ int main(int argc, char** argv) {
                     currentMap = pendingLevel->first;
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
+                    screenFade.clear(); // the new level starts unfaded
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
                         const std::string movie = world->takeCinematic();
-                        if (!movie.empty()) playCinematic(movie);
+                        if (!movie.empty()) playScripted(movie);
                     }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();

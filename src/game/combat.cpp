@@ -3,6 +3,7 @@
 
 #include "game/world.h"
 #include "game/bulletdamage.h"
+#include "game/vehicles.h"
 
 #include <algorithm>
 #include <cctype>
@@ -821,6 +822,39 @@ void World::registerCombatBuiltins() {
         Vec3 out = add(s, scale(f, 8192.0f));
         out = add(out, add(scale(right, k * std::cos(ang)), scale(up, k * std::sin(ang))));
         return Value(out);
+    });
+    // isturretready (0x5148e0): only on a player-controlled vehicle ("Must be called on a player controlled vehicle", vehicle
+    // +0x174 bit 0); true when the fire timer (+0x184) is <= 0.
+    vm_.registerBuiltin("isturretready", [this](CallContext& c) {
+        VehicleState& v = vehicleState(c.self);
+        if (v.owner < 0) throw std::runtime_error("Must be called on a player controlled vehicle");
+        return Value(v.fireTimerMs <= 0);
+    });
+    // dontinterpolate (0x4edf90): toggles bit 2 (the teleport bit) of the client's eFlags (+0x7c) or the entity's (+0x128) so the
+    // renderer skips interpolation for one snapshot. No interpolation state here, so nothing to do.
+    vm_.registerBuiltin("dontinterpolate", [](CallContext&) { return Value(); });
+    // earthquake(scale, duration, origin, radius) (0x4f4330): scale, duration and radius must be > 0; event 0xc7 goes to the clients.
+    vm_.registerBuiltin("earthquake", [this](CallContext& c) {
+        const float scale = c.arg(0).asFloat(), dur = c.arg(1).asFloat(), radius = c.arg(3).asFloat();
+        if (scale <= 0) throw std::runtime_error("Scale must be greater than 0");
+        const int ms = int(dur * 1000.0f);
+        if (ms <= 0) throw std::runtime_error("duration must be greater than 0");
+        if (radius <= 0) throw std::runtime_error("Radius must be greater than 0");
+        earthquakes_.push_back({scale, ms, c.arg(2).asVector(), radius, timeMs_});
+        return Value();
+    });
+    // viewkick(damage percent, origin) (0x4f7a40): client +0x8658 = (percent * maxhealth + 50) / 100 (error "viewkick: damage %g < 0"),
+    // +0x865c = player origin - origin. TODO(spec): the consumer of these fields.
+    vm_.registerBuiltin("viewkick", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("not a player");
+        const int pct = c.arg(0).asInt();
+        if (pct < 0) throw std::runtime_error("viewkick: damage " + std::to_string(pct) + " < 0");
+        const Value mh = e->obj->get("maxhealth");
+        const int maxHealth = mh.isNumber() ? mh.asInt() : 100;
+        viewKick_.count = (pct * maxHealth + 50) / 100;
+        viewKick_.dir = sub(e->obj->get("origin").asVector(), c.arg(1).asVector());
+        return Value();
     });
     for (const char* noop : {"exitprone", "enterprone", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})

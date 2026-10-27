@@ -143,21 +143,39 @@ void World::registerCampaignBuiltins() {
     };
     vm_.registerBuiltin("iprintln", printMessage("gm"));
     vm_.registerBuiltin("iprintlnbold", printMessage("gmb"));
-    // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds ≥ 0.
-    auto change = [this](CallContext& c, bool fromMissionSuccess) {
+    // The level change / cinematic request (0x4f3f00, 0x4f4220 -> 0x4d9da0): the exit time (seconds, >= 0, 0x1c60fec) sets how long the
+    // screen takes to fade out. The client is sent "scr_fade 1 <now+250> <exit+750>" and "snd_fade 0 <exit+1000>" and the change falls due
+    // exit + 1000 ms after the request (0x1c60f54); only with a live player (0x13c(entity) > 0).
+    auto scheduleChange = [this]() {
+        if (!levelChange_.pending) return;
+        levelChange_.atMs = timeMs_ + exitMs_ + 1000;
+        clientCommands_.push_back({"scr_fade", "1 " + std::to_string(timeMs_ + 250) + " " + std::to_string(exitMs_ + 750)});
+        clientCommands_.push_back({"snd_fade", "0 " + std::to_string(exitMs_ + 1000)});
+    };
+    // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds >= 0.
+    auto change = [this, scheduleChange](CallContext& c, bool fromMissionSuccess) {
         if (!player_ || !isAlive(*player_)) return Value();
         if (fromMissionSuccess && c.args.size() > 2) throw std::runtime_error("missionsuccess: too many parameters");
-        const float exitTime = !fromMissionSuccess && c.args.size() > 2 ? c.arg(2).asFloat() : 0.0f;
-        if (exitTime < 0) throw std::runtime_error("exitTime cannot be negative");
-        levelChange_ = {true, false, c.arg(0).toString().substr(0, 63), c.args.size() > 1 && c.arg(1).truthy(),
-                        timeMs_ + int64_t(exitTime * 1000.0f)};
+        if (!fromMissionSuccess && c.args.size() > 2) {
+            const float exitTime = c.arg(2).asFloat();
+            if (exitTime < 0) throw std::runtime_error("exitTime cannot be negative");
+            exitMs_ = int(exitTime * 1000.0f + 0.5f);
+        }
+        levelChange_ = {true, false, c.arg(0).toString().substr(0, 63), c.args.size() > 1 && c.arg(1).truthy(), 0};
+        scheduleChange();
         return Value();
     };
-    // cinematic(name [, timeout seconds]) (0x4f4220): stores the name (63 characters) and, unless the dvar at 0x1c148c4 is set, the
-    // timeout; a negative timeout is a script error (0x586138). TODO(spec): the timeout's use (0x1c60fec) and the dvar 0x1c148c4.
-    vm_.registerBuiltin("cinematic", [this](CallContext& c) {
-        if (c.args.size() > 1 && c.arg(1).asFloat() < 0) throw std::runtime_error("cinematic: negative timeout");
+    // cinematic(name [, exit time seconds]) (0x4f4220): stores the name (63 characters) and the exit time (the screen fade before the
+    // movie, see above; a negative value is a script error, 0x586138). The movie plays when the change falls due, before the next level
+    // loads. TODO(spec): the dvar at 0x1c148c4 that disables the request when non-zero.
+    vm_.registerBuiltin("cinematic", [this, scheduleChange](CallContext& c) {
+        if (c.args.size() > 1) {
+            const float exitTime = c.arg(1).asFloat();
+            if (exitTime < 0) throw std::runtime_error("cinematic: negative timeout");
+            exitMs_ = int(exitTime * 1000.0f + 0.5f);
+        }
         cinematic_ = c.arg(0).toString().substr(0, 63);
+        scheduleChange();
         return Value();
     });
     vm_.registerBuiltin("changelevel", [change](CallContext& c) { return change(c, false); });

@@ -278,8 +278,12 @@ public:
         int weaponState = 0;
         int grenadeFuseMs = 0;
         float lean = 0.0f;     // leanf
+        float adsFrac = 0.0f;  // the aim fraction (client +0xb8), read by playerads
     };
-    void setPlayerCommand(const PlayerCommand& c) { playerCmd_ = c; }
+    void setPlayerCommand(const PlayerCommand& c) {
+        prevButtons_ = playerCmd_.buttons;
+        playerCmd_ = c;
+    }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
     uint32_t playerPmFlags() const { return pmFlags_; }
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
@@ -313,6 +317,12 @@ public:
     };
     const ShellShockState& shellShock() const { return shellShock_; }
     const ShockRecord* shellShockRecord() const;
+    // earthquake (0x4f4330) sends event 0xc7 (scale in event param, duration ms, origin, radius) to the clients: kept as a log for the
+    // front end (TODO(spec): the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
+    struct Earthquake { float scale; int durationMs; Vec3 origin; float radius; int64_t startMs; };
+    const std::vector<Earthquake>& earthquakes() const { return earthquakes_; }
+    struct ViewKick { int count = 0; Vec3 dir{}; };
+    const ViewKick& playerViewKick() const { return viewKick_; }
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
@@ -542,6 +552,7 @@ private:
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
     std::string cinematic_; // pending cinematic name (video/<name>.roq)
+    int exitMs_ = 0;        // level change / cinematic exit time (0x1c60fec)
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
     void openDeathScreen();
     void runDeathScreen();
@@ -824,6 +835,8 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
+    std::vector<Earthquake> earthquakes_;
+    ViewKick viewKick_;
     uint32_t crosshairFlags_ = 0;
     std::string crosshairName_, crosshairWeaponLine_;
     void updateCrosshairTarget();
@@ -845,6 +858,7 @@ private:
     };
     std::optional<PlayerLink> playerLink_;
     PlayerCommand playerCmd_;
+    uint32_t prevButtons_ = 0; // the buttons of the previous command (meleebuttonpressed)
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;
     std::vector<VehicleNode> vnodes_;
