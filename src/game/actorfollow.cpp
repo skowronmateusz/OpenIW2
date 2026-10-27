@@ -150,6 +150,51 @@ bool World::pathLookClear(const ActorPath& p, const Vec3& o, const Vec3& target)
     return aiReach(o, target, kNoEntity, mask, out, 18.0f);
 }
 
+// 0x4fedc0, run at the start of every think (0x4fef20) for the actor's followed gentity (+0x2148): at 37.5 units (1406.25 squared,
+// 0x591fd0) or more it is let go, and the followed actor's own link back to this one is cleared too; closer, it is let go
+// when the followed actor is blocked by this one (its +0x72c). Between 30 and 37.5 units (900, 0x591fd4) a moving actor
+// (anim mode 1 with a path, not itself blocked +0x728) is let go once it heads away from the followed one (dot of the
+// offset to the followed with the lookahead direction +0x6c8 > 0).
+// TODO(spec): the retarget to the player (0x4fec50, via the box test 0x447830, 0x504610 and 0x519050), the movement trail
+// (0x505520 / 0x504f60: the follower is not path-walked in the exe, 0x5041a3) and the other consumers (0x4fe6ca, 0x4fe8eb,
+// 0x50081d, 0x53ade0) are not ported.
+void World::updateFollowed(Entity& e) {
+    ActorAi& ai = e.ai;
+    Entity* f = ai.followed;
+    if (!f) return;
+    if (f->obj->removed) {
+        ai.followed = nullptr;
+        return;
+    }
+    const Vec3 mo = originOf(e.obj), fo = originOf(f->obj);
+    const float dx = fo[0] - mo[0], dy = fo[1] - mo[1];
+    const float d2 = dy * dy + dx * dx;
+    const bool fActor = f->isActor;
+    if (!(d2 < 1406.25f)) {
+        if (fActor && f->ai.followed == &e) f->ai.followed = nullptr;
+        ai.followed = nullptr;
+    } else if (fActor && f->ai.blockerEnt == &e) {
+        ai.followed = nullptr;
+    }
+    f = ai.followed;
+    if (!f) {
+        ++stats.followReleases;
+        return;
+    }
+    if (d2 < 900.0f) return;
+    if (ai.blocker == &e || ai.animMode != 1 || e.path.count <= 0) return;
+    if ((mo[0] - fo[0]) * e.path.lookDir[0] + (mo[1] - fo[1]) * e.path.lookDir[1] > 0.0f) ai.followed = nullptr, ++stats.followReleases;
+}
+
+// 0x501c6f..0x501c8b (after the actor move 0x5487c0): +0x318 = the hit entity; when it is an actor that follows nobody it
+// starts following this actor (its +0x2148 = this gentity).
+void World::linkBumpedActor(Entity& e, int hit) {
+    e.ai.bumpedEnt = hit;
+    if (hit >= 0x7fe) return;
+    Entity* o = entityByNumber(hit);
+    if (o && o->isActor && o != &e && !o->ai.followed) o->ai.followed = &e, ++stats.followLinks;
+}
+
 // 0x5451b0: a detour past a blocker: from `o` to the corner `a`, on to `b`, and back onto the path at point `k` (or
 // the one after it). Failing that, with `split` the second corner is pulled back 15 units towards the first and the
 // path is split at the lookahead point when that is reachable from it. The corners become the path's last points
