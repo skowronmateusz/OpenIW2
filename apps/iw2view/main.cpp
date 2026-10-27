@@ -1815,6 +1815,10 @@ int main(int argc, char** argv) {
     std::string language = "polish";
     bool scripts = true;
     bool spawnAll = false;
+    std::vector<std::pair<std::string, std::string>> extraCvars; // --cvar name=value (e.g. start=ride)
+    std::optional<std::array<float, 2>> rideDrive; // --ride F,R: with --shot, drive the player's vehicle (forward, right in -1..1) after --ride-after
+    float rideAfter = 0;
+    uint32_t rideButtons = 0; // --ride-fire sets the attack button
     int followVehicle = -2; // -2 off, -1 list only, N the Nth entity with vehicle state
     float followDist = 400.0f, followYaw = 180.0f, followPitch = 12.0f;
     std::optional<std::array<float, 2>> forceTurret, forceJolt;
@@ -1828,6 +1832,10 @@ int main(int argc, char** argv) {
         try {
             if (a == "--shot") shot = next();
             else if (a == "--follow-vehicle") followVehicle = std::stoi(next()); // debug: the shot is taken from behind vehicle N
+            else if (a == "--cvar") { const std::string kv = next(); const auto eq = kv.find('='); extraCvars.emplace_back(kv.substr(0, eq), eq == std::string::npos ? "1" : kv.substr(eq + 1)); }
+            else if (a == "--ride") { auto v = parseFloats(next()); rideDrive = {v.at(0), v.at(1)}; }
+            else if (a == "--ride-after") rideAfter = std::stof(next());
+            else if (a == "--ride-fire") rideButtons = 1;
             else if (a == "--follow-pitch") followPitch = std::stof(next());
             else if (a == "--force-turret") { auto v = parseFloats(next()); forceTurret = {v.at(0), v.at(1)}; } // debug: pitch,yaw of every vehicle
             else if (a == "--force-jolt") { auto v = parseFloats(next()); forceJolt = {v.at(0), v.at(1)}; } // debug: tag_body pitch,roll
@@ -1913,6 +1921,7 @@ int main(int argc, char** argv) {
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
+            for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
             w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration) {
                 float dur = 0;
@@ -1943,7 +1952,7 @@ int main(int argc, char** argv) {
         }
         Scene scene = menuMode ? emptyScene(dev) : loadScene(dev, vfs, args[1], !world);
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
-        struct ScreenMessage { std::string text; uint64_t untilNs; };
+        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; };
         std::vector<ScreenMessage> screenMessages;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -2554,6 +2563,22 @@ int main(int argc, char** argv) {
                         const auto at = label.find("&&1");
                         text = at == std::string::npos ? label + text : label.substr(0, at) + text + label.substr(at + 3);
                     }
+                    // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
+                    // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
+                    // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
+                    // TODO(spec): the "KEY_" prefix handling of 0x4c6a20 (key.str has UNBOUND / OR / TAB without it).
+                    for (size_t b; (b = text.find("[{")) != std::string::npos;) {
+                        const size_t e = text.find("}]", b);
+                        if (e == std::string::npos) break;
+                        const auto it = world->keyBindings.find(text.substr(b + 2, e - b - 2));
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string keys = name("UNBOUND");
+                        if (it != world->keyBindings.end() && !it->second.empty()) {
+                            keys = name(it->second[0]);
+                            if (it->second.size() > 1) keys += " " + name("OR") + " " + name(it->second[1]);
+                        }
+                        text = text.substr(0, b) + keys + text.substr(e + 2);
+                    }
                     if (text.empty()) continue;
                     const std::string fontName = o->get("font").toString();
                     const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
@@ -2604,23 +2629,56 @@ int main(int argc, char** argv) {
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
                 // TODO(spec): the fade-out of old rows (window fields +0x18/+0x1c, 0x406758), the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
-                const uint8_t green[4] = {0, 255, 0, 255};
-                const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
-                if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    std::vector<std::string> rows; // oldest first
+                // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                auto windowRows = [&](bool bold, size_t width, size_t lines) {
+                    std::vector<std::string> rows;
                     for (const auto& m : screenMessages) {
-                        const std::string* t = loc.find(m.text);
+                        if (m.bold != bold) continue;
+                        std::string raw = m.text.substr(0, m.text.find('\x1f'));
+                        const std::string* t = loc.find(raw);
+                        std::string text = t ? *t : raw;
+                        for (size_t at = m.text.find('\x1f'), n = 1; at != std::string::npos; ++n) {
+                            const size_t next = m.text.find('\x1f', at + 1);
+                            const std::string arg = m.text.substr(at + 1, next == std::string::npos ? next : next - at - 1);
+                            const std::string mark = "&&" + std::to_string(n);
+                            if (const size_t k = text.find(mark); k != std::string::npos) text.replace(k, mark.size(), arg);
+                            at = next;
+                        }
                         std::string cur;
-                        std::istringstream words(t ? *t : m.text);
+                        std::istringstream words(text);
                         for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > 70) { rows.push_back(cur); cur.clear(); }
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back(cur); cur.clear(); }
                             cur += (cur.empty() ? "" : " ") + wd;
                         }
                         if (!cur.empty()) rows.push_back(cur);
                     }
+                    if (rows.size() > lines) rows.erase(rows.begin(), rows.end() - std::ptrdiff_t(lines));
+                    return rows;
+                };
+                const uint8_t green[4] = {0, 255, 0, 255};
+                const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
+                if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
+                    const std::vector<std::string> rows = windowRows(false, 70, 9);
                     float ry = 100.0f - 12.0f;
                     for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 12.0f)
                         hudText(out, *it, 6.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, green, 0, 0, 3);
+                }
+                // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
+                // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
+                // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
+                // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
+                // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
+                // TODO(spec): the drawing starts at the centre point (no centring of the text was found in 0x4062d0 /
+                // 0x4065e0 / 0x403b90); here rows are centred on it because a start at the screen centre looks wrong.
+                {
+                    const float scale = 12.0f / 48.0f * float(h) / 480.0f;
+                    if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
+                        const std::vector<std::string> rows = windowRows(true, 60, 10);
+                        const uint8_t white[4] = {255, 255, 255, 255};
+                        float ry = 180.0f - 16.0f;
+                        for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 16.0f)
+                            hudText(out, *it, left43 + 320.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, white, 0.5f, 0, 3);
+                    }
                 }
             }
             // Scope overlay (0x4bcdd0 → 0x4bca90): the weapon's adsOverlayShader, white with the overlay alpha. Wider than
@@ -3059,7 +3117,7 @@ int main(int argc, char** argv) {
                 const auto& mr = compassMenu->rect;
                 for (const auto& itp : compassMenu->items) {
                     const ui::Item& it = *itp;
-                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86 && it.ownerDraw != 87) continue;
+                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86 && it.ownerDraw != 87 && it.ownerDraw != 88) continue;
                     const float rx = mr.x + it.rect.x, ry = mr.y + it.rect.y, rw = it.rect.w, rh = it.rect.h;
                     const float bx = rx * sc;                                  // LEFT: window left edge
                     const float by = float(h) + (ry - (csize - 1.0f) * rh) * sc; // BOTTOM: window bottom edge
@@ -3067,16 +3125,18 @@ int main(int argc, char** argv) {
                     uint8_t col[4];
                     for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
                     col[3] = uint8_t(std::clamp(compassAlpha, 0.0f, 1.0f) * 255.0f);
-                    if (it.ownerDraw == 87) {
+                    if (it.ownerDraw == 87 || it.ownerDraw == 88) {
                         // Friendly actors (4c0f20): R = size * r * 43.75, icon size*10 (0x591e8c), r from the distance between
                         // cg_hudCompassMinRange 0 and MaxRange 1500 (0xf48b54) clamped to the rim (no culling), minRadius 0;
                         // placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor - view yaw;
                         // the arrow turns by (view yaw - actor yaw). TODO(spec): the 800 ms entry age, springy yaw
                         // (cg_hudCompassSpringyPointers 0), the sound ping rings (cg_hudCompassSoundPingFadeTime).
                         if (it.background.empty()) continue;
-                        const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = 10.0f * csize * sc;
+                                                // 88 tanks (4c1700): the same formulas over the vehicles with addvehicletocompass, icon 16 (0x591e84).
+                        const bool tanks = it.ownerDraw == 88;
+                        const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
                         const int tex = materialTexture(it.background);
-                        for (const auto& m : world->compassFriendlies()) {
+                        for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
                             const float dx = m.pos[0] - c.pos.x, dy = m.pos[1] - c.pos.y;
                             const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
                             const float t = std::clamp(std::sqrt(dx * dx + dy * dy) / 1500.0f, 0.0f, 1.0f);
@@ -3207,16 +3267,58 @@ int main(int argc, char** argv) {
                 std::cout << "walked to " << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << "\n";
             }
             if (world) {
-                std::vector<std::pair<std::string, int64_t>> shotMsgs; // obj_update / obj_complete with their world time
+                std::array<game::Vec3, 3> rPrev{};
+                bool rHave = false, rInit = false;
+                struct ShotMsg { std::string text; int64_t at; bool bold; };
+                std::vector<ShotMsg> shotMsgs; // game messages with their world time
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
-                    if (!world->playerLinked()) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
+                    const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
+                    if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     {
                         // The view angles feed the crosshair target trace (0x535070) as in play.
                         game::World::PlayerCommand pc;
                         pc.viewAngles = {cam.pitch, cam.yaw, 0.0f};
+                        if (rideNow && rideDrive && float(f) / 20.0f >= rideAfter) {
+                            pc.forward = int(rideDrive->at(0) * 127.0f);
+                            pc.right = int(rideDrive->at(1) * 127.0f);
+                            pc.buttons = rideButtons;
+                        }
                         world->setPlayerCommand(pc);
                     }
                     world->frame();
+                    if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
+                        std::array<game::Vec3, 3> body;
+                        if (world->playerVehicleBodyAxis(body)) {
+                            if (!rInit) { cam.yaw = std::atan2(body[0][1], body[0][0]) * 180.0f / float(M_PI); cam.pitch = 0; rInit = true; }
+                            if (!rHave) rPrev = body;
+                            float d[3][3], v[3][3], m[3][3];
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j) {
+                                    d[i][j] = 0;
+                                    for (int k = 0; k < 3; ++k) d[i][j] += rPrev[size_t(k)][size_t(i)] * body[size_t(k)][size_t(j)];
+                                }
+                            const Vec3 fw = cam.forward(), rt = cam.right(), up = cross(rt, fw);
+                            const float rows[3][3] = {{fw.x, fw.y, fw.z}, {-rt.x, -rt.y, -rt.z}, {up.x, up.y, up.z}};
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j) { v[i][j] = rows[i][j]; m[i][j] = 0; }
+                            for (int i = 0; i < 3; ++i)
+                                for (int j = 0; j < 3; ++j)
+                                    for (int k = 0; k < 3; ++k) m[i][j] += v[i][k] * d[k][j];
+                            cam.pitch = std::clamp(-std::atan2(m[0][2], std::sqrt(m[0][0] * m[0][0] + m[0][1] * m[0][1])) * 180.0f / float(M_PI), -89.0f, 89.0f);
+                            if (world->playerPmFlags() & 0x40000) cam.yaw = std::atan2(m[0][1], m[0][0]) * 180.0f / float(M_PI);
+                            rPrev = body;
+                            rHave = true;
+                        }
+                        const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                        cam.pos = {po[0], po[1], po[2] + 60.0f};
+                        if (f % 20 == 0 || std::getenv("IW2_RIDE_TRACE")) std::cout << "ride f=" << f << " cam " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " yaw " << cam.yaw << " pitch " << cam.pitch;
+                        if (std::getenv("IW2_RIDE_TRACE"))
+                            for (const auto& pv : world->entities()) if (pv->number == world->player()->usingVehicle && pv->vehicle) {
+                                const script::Vec3 vo = pv->obj->get("origin").asVector(), va = pv->obj->get("angles").asVector();
+                                std::cout << " | veh " << vo[0] << "," << vo[1] << "," << vo[2] << " ang " << va[0] << "," << va[1] << "," << va[2] << " spd " << pv->vehicle->forwardSpeed;
+                            }
+                        std::cout << "\n";
+                    }
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen and script menus too
                         if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
                         else if (cmd.name == "popupopen" || cmd.name == "popupclose") menuCommand(cmd.name, cmd.arg);
@@ -3226,11 +3328,14 @@ int main(int argc, char** argv) {
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
                             fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                         }
-                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete") shotMsgs.emplace_back(cmd.arg, world->timeMs());
+                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
+                        else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
                 }
-                // Messages still on screen (con_gamemessagetime 5 s) at the end of the simulation.
-                for (const auto& [text, at] : shotMsgs)
-                    if (world->timeMs() - at < 5000) screenMessages.push_back({text, SDL_GetTicksNS() + 600000000000ull});
+                // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
+                for (const auto& m : shotMsgs)
+                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) screenMessages.push_back({m.text, SDL_GetTicksNS() + 600000000000ull, m.bold});
+                // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
+                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
@@ -3245,13 +3350,15 @@ int main(int argc, char** argv) {
                         }
                 if (followVehicle >= -1) {
                     int n = 0;
+                    std::cout << "player pm_flags 0x" << std::hex << world->playerPmFlags() << std::dec << "\n";
                     for (const auto& e : world->entities()) {
                         if (!e->vehicle || e->obj->removed) continue;
                         const script::Vec3 o = e->obj->get("origin").asVector(), an = e->obj->get("angles").asVector();
-                        std::cout << "vehicle " << n << ": " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
+                        std::cout << "vehicle " << n << " (" << e->obj->get("targetname").toString() << "): " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
                                   << " yaw " << an[1] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
                                   << " jolt " << e->vehicle->joltPitch << "/" << e->vehicle->joltRoll << " speed " << e->vehicle->speed
-                                  << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << "\n";
+                                  << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << " compass " << e->vehicle->onCompass
+                                  << " lookat '" << e->vehicle->lookAtText << "'/'" << e->vehicle->lookAtText2 << "'\n";
                         if (n == followVehicle) {
                             const float yr = (an[1] + followYaw) * float(M_PI) / 180.0f;
                             const float pr = followPitch * float(M_PI) / 180.0f;
@@ -3839,8 +3946,10 @@ int main(int argc, char** argv) {
                     std::istringstream a(cmd.arg);
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
-                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete")
+                    } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                    else if (cmd.name == "gmb")
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)

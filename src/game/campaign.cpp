@@ -121,6 +121,22 @@ void World::registerCampaignBuiltins() {
         arr->set(ArrayKey{true, 0, "count"}, Value(int32_t(std::min<size_t>(keys.size(), 2))));
         return Value(arr);
     });
+    // iprintln / iprintlnbold (0x4ebc50 / 0x4ebc60 → 0x4ebc00): the arguments are formatted (0x4eb9b0) and sent to the
+    // client as the command `gm "<text>"` / `gmb "<text>"` (format 0x587bd8 = `%s "%s"`); the client shows them in the game
+    // message window (type 1) or the bold message window (type 2) (0x4a6bff / 0x4a6c3f). The text here is the first
+    // argument (a localized reference stays a key), the further arguments follow after \x1f for the "&&N" substitution.
+    // TODO(spec): the exact formatting of 0x4eb9b0 (number and localized-string arguments).
+    auto printMessage = [this](const char* command) {
+        return [this, command](CallContext& c) {
+            std::string text = c.args.empty() ? std::string() : textOf(c.arg(0));
+            for (size_t i = 1; i < c.args.size(); ++i) text += "\x1f" + c.arg(i).toString();
+            clientCommands_.push_back({command, text});
+            if (std::string(command) == "gm") c.vm.print(c.args.empty() ? std::string() : c.arg(0).toString());
+            return Value();
+        };
+    };
+    vm_.registerBuiltin("iprintln", printMessage("gm"));
+    vm_.registerBuiltin("iprintlnbold", printMessage("gmb"));
     // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds ≥ 0.
     auto change = [this](CallContext& c, bool fromMissionSuccess) {
         if (!player_ || !isAlive(*player_)) return Value();

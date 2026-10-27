@@ -597,16 +597,17 @@ void World::updateVehicleTurret(Entity& e) {
         const Vec3 local{dot(dir, fwd), -dot(dir, right), dot(dir, up)};
         want = vectorToAngles(local);
     }
-    const float oldPitch = v.turretPitch, oldYaw = v.turretYaw;
     const float dPitch = angleDelta(want[0], v.turretPitch), dYaw = angleDelta(want[1], v.turretYaw);
     v.turretPitch = turnAngle(want[0], v.turretPitch, v.info->turretRotRate, kFrameTime);
     v.turretYaw = turnAngle(want[1], v.turretYaw, v.info->turretRotRate, kFrameTime);
+    const float turnedPitch = v.turretPitch, turnedYaw = v.turretYaw; // before the span clamp (stack 0x20/0x24)
     v.turretPitch = std::clamp(v.turretPitch, -v.info->turretVertSpanUp, v.info->turretVertSpanDown);
     v.turretYaw = std::clamp(v.turretYaw, -v.info->turretHorizSpanRight, v.info->turretHorizSpanLeft);
     e.obj->set("$turretangles", Value(Vec3{v.turretPitch, v.turretYaw, 0}));
-    // +0x18c (0x510664..0x51068c): 2 while turning, then 2 -> 1 -> 0. TODO(spec): the exact "turning" test (0x510620..0x51065f
-    // compares the per-axis values 0x14/0x18/0x20/0x24(esp) with 0x591ed0 and 0); here: an angle changed this think.
-    if (v.turretPitch != oldPitch || v.turretYaw != oldYaw) v.turretMoved = true;
+    // +0x18c (0x510620..0x51068c): 2 when |dPitch| >= 2 and the turned (unclamped) pitch is exactly 0, or |dYaw| >= 2 and the
+    // turned yaw is exactly 0 (slots: |delta| 0x14/0x18, turned angles 0x20/0x24, constants 2.0 @0x591ed0 and 0.0
+    // @0x591e00); otherwise 2 -> 1 -> 0. The "== 0" test is as the asm reads, not a guess.
+    if ((std::fabs(dPitch) >= 2.0f && turnedPitch == 0.0f) || (std::fabs(dYaw) >= 2.0f && turnedYaw == 0.0f)) v.turretMoved = true;
     if (std::fabs(dPitch) < 1.0f && std::fabs(dYaw) < 1.0f) {
         vm_.notify(e.obj, "turret_on_target");
         if (target) {
@@ -1213,7 +1214,7 @@ void World::registerVehicleBuiltins() {
         vehicleJolt(*e, d, c.arg(1).asFloat(), c.argc() > 2 ? c.arg(2).asFloat() : 0.0f, c.argc() > 3 ? c.arg(3).asFloat() * kMphToIps : 0.0f);
         return Value();
     });
-    // TODO(spec): the consumers of +0x190 (compass icon, cgame) and +0x194 (look-at hint) are not drawn yet.
+    // Consumers: +0x190 compass ownerdraw 88 (0x4c1700, World::compassVehicles); +0x194/+0x196 the crosshair target lines (0x534b61).
     vm_.registerBuiltin("addvehicletocompass", [this](CallContext& c) {
         vehicleState(c.self).onCompass = true;
         return Value();
@@ -1223,7 +1224,11 @@ void World::registerVehicleBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("setvehiclelookattext", [this](CallContext& c) {
-        vehicleState(c.self).lookAtText = c.argc() > 0 ? c.arg(0).toString() : std::string();
+        auto& vs = vehicleState(c.self);
+        // Strings are stored as script strings (0x513d16 -> +0x194); a localized reference keeps just its key.
+        auto text = [](const Value& v) { return std::holds_alternative<LocalizedString>(v.v) ? std::get<LocalizedString>(v.v).key : v.toString(); };
+        vs.lookAtText = c.argc() > 0 ? text(c.arg(0)) : std::string();
+        if (c.argc() > 1) vs.lookAtText2 = text(c.arg(1)); // 0x513d4e: the second string only with more than one argument
         return Value();
     });
     vm_.registerBuiltin("startenginesound", [this](CallContext& c) {

@@ -2,6 +2,7 @@
 // actor think, the exposed / pain / death / animcustom states and the engine's choice of animscript.
 #include "game/world.h"
 
+#include <cctype>
 #include <cmath>
 
 namespace iw2::game {
@@ -610,28 +611,50 @@ static Vec3 vecField(const ObjectPtr& o, const char* key) {
     return v.isVector() ? v.asVector() : Vec3{0, 0, 0};
 }
 
+static std::string lowerStr(std::string s) {
+    for (char& ch : s) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
+
+// Yaw of a direction vector (0x421b30, the same as vectortoangles: 0..360).
+static float yawOfVector(const Vec3& v) {
+    float yaw = v[0] != 0.0f ? std::atan2(v[1], v[0]) * 57.2957795f : (v[1] > 0 ? 90.0f : 270.0f);
+    if (yaw < 0) yaw += 360.0f;
+    return yaw;
+}
+
+static float quantYaw(float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; } // 0x591e68, 0x591f10
+
 void World::actorFacing(Entity& e) {
     const ActorAi& ai = e.ai;
-    if (e.path.count > 0 || e.claimedNode < 0) return;
-    const PathNode& n = nodes_[size_t(e.claimedNode)];
-    if (!(n.spawnflags & 0x8000)) return;
-    const Vec3 o = vecField(e.obj, "origin");
-    if (ai.facing == 3) {
-        if (entityOf(e.obj->get("enemy"))) return; // TODO(spec): 0x5059c2
-        const Vec3 np = vecField(n.obj, "origin");
-        const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
-        if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
-    } else if (ai.facing != 6) {
-        return;
+    const int m = ai.orient ? ai.orient : ai.facing; // 0x505d80: the orientmode override, else the facing mode
+    float target;
+    if (ai.orient == 1) {
+        // orientmode angle / current / direction / point (0x53f510): 0x504ca0 turns to the override target +0x120
+        // every frame (no selector runs for mode 1). While a path is followed moveActor writes the yaw instead.
+        if (e.path.count > 0) return;
+        target = ai.orientTarget;
+    } else {
+        if (e.path.count > 0 || e.claimedNode < 0) return;
+        const PathNode& n = nodes_[size_t(e.claimedNode)];
+        if (!(n.spawnflags & 0x8000)) return;
+        const Vec3 o = vecField(e.obj, "origin");
+        if (m == 3) {
+            if (entityOf(e.obj->get("enemy"))) return; // TODO(spec): 0x5059c2
+            const Vec3 np = vecField(n.obj, "origin");
+            const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
+            if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
+        } else if (m != 6) {
+            return;
+        }
+        target = quantYaw(vecField(n.obj, "angles")[1]);
     }
-    auto quant = [](float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; }; // 0x591e68, 0x591f10
-    const float target = quant(vecField(n.obj, "angles")[1]);
     const Vec3 a = vecField(e.obj, "angles");
     float d = target - a[1]; // FUN_00423f50 (AngleNormalize180)
     while (d > 180.0f) d -= 360.0f;
     while (d < -180.0f) d += 360.0f;
     d = std::max(-20.0f, std::min(20.0f, d)); // 0.4 * +-50 (0x592030 / 0x592034)
-    e.obj->set("angles", Value(Vec3{0, quant(a[1] + d), 0}));
+    e.obj->set("angles", Value(Vec3{0, quantYaw(a[1] + d), 0}));
     e.obj->set("desiredangle", Value(target)); // 0x504ca0
 }
 
@@ -639,6 +662,48 @@ void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
     registerBadPlaceBuiltins();
     registerGrenadeBuiltins();
+    // orientmode(mode[, angle | vector]) (0x53f510): sets the override facing +0x114 and, for the explicit modes, the
+    // override target +0x120 (16-bit quantised yaw). "face enemy" 3, "face enemy or motion" 4, "face goal" 6, "face
+    // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and
+    // clears the override. TODO(spec): "face current" takes desiredangle (+0x124), which only follows the turn target here
+    // when this turn code ran, so the current yaw is used; 0x504aa0 (animation yaw delta into the pairs) is not modelled.
+    vm_.registerBuiltin("orientmode", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("orientmode on a non-actor");
+        ActorAi& ai = e->ai;
+        const std::string mode = lowerStr(c.arg(0).toString());
+        if (mode == "face angle") {
+            ai.orient = 1;
+            ai.orientTarget = quantYaw(c.arg(1).asFloat());
+        } else if (mode == "face current") {
+            ai.orient = 1;
+            ai.orientTarget = quantYaw(vecField(e->obj, "angles")[1]);
+        } else if (mode == "face direction") {
+            const Vec3 v = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
+            if (v[0] == 0.0f && v[1] == 0.0f) throw std::runtime_error("cannot face (0, 0, *)");
+            ai.orient = 1;
+            ai.orientTarget = quantYaw(yawOfVector(v));
+        } else if (mode == "face enemy") {
+            ai.orient = 3;
+        } else if (mode == "face enemy or motion") {
+            ai.orient = 4;
+        } else if (mode == "face goal") {
+            ai.orient = 6;
+        } else if (mode == "face motion") {
+            ai.orient = 2;
+        } else if (mode == "face point") {
+            const Vec3 p = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
+            const Vec3 o = vecField(e->obj, "origin");
+            const Vec3 d{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
+            ai.orient = 1;
+            if (d[0] * d[0] + d[1] * d[1] >= 1.0f) ai.orientTarget = quantYaw(yawOfVector(d)); // 0x591e20 = 1.0
+        } else if (mode == "face default") {
+            ai.orient = 0; // the base pair keeps the override target; the base target is not modelled
+        } else {
+            throw std::runtime_error("orientMode must be 'face angle', 'face current', 'face direction', 'face enemy', 'face enemy or motion', 'face goal', 'face motion', 'face point', or 'face default'");
+        }
+        return Value();
+    });
     // animcustom(function) (0x540450): push the custom state; when pushed, kill the current animscript and keep the
     // function for the state's think.
     vm_.registerBuiltin("animcustom", [this](CallContext& c) {

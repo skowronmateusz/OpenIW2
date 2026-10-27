@@ -712,7 +712,7 @@ void World::registerCombatBuiltins() {
         const Vec3 d = sub(c.arg(0).asVector(), g.asVector());
         return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
     });
-    for (const char* noop : {"exitprone", "enterprone", "orientmode", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
+    for (const char* noop : {"exitprone", "enterprone", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
