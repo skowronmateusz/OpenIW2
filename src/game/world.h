@@ -351,6 +351,7 @@ public:
     // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
     // returns a handle (0 = nothing played); stopSound(handle).
     std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
+    std::function<bool(const std::string&)> soundExists = [](const std::string&) { return true; }; // soundexists (0x4ef380 -> 0x428320)
     std::function<void(int)> stopSound = [](int) {};
     // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
     std::function<int(const std::string&, const std::string&, float, const Vec3&)> playBlendSound =

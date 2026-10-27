@@ -1974,6 +1974,7 @@ int main(int argc, char** argv) {
                 return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            w->soundExists = [&aliases](const std::string& n) { return aliases.exists(n); };
             w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
                 return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
             };

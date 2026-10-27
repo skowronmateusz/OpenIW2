@@ -50,6 +50,8 @@ void World::registerSoundBuiltins() {
         cullDist_ = c.arg(0).asFloat();
         return Value();
     });
+    // soundexists(alias) (0x4ef380 -> 0x428320): is there a sound alias of that name (hash lookup, case-insensitive).
+    vm_.registerBuiltin("soundexists", [this](CallContext& c) { return Value(soundExists(c.arg(0).toString())); });
     // setshadowhint(name) (0x4ef700): sets entity state bits 0x2000..0xe000 (shadow hint, render only). TODO(spec): not applied.
     vm_.registerBuiltin("setshadowhint", [](CallContext&) { return Value(); });
     // saveGame(name, description, image) (0x4f3a30): writes a save game. Not modelled (no save system).
