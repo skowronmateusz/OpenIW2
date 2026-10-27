@@ -986,9 +986,9 @@ void VM::step(Thread& t, bool& suspended) {
         if (s == 0.0f) {
             // The exe's wait (0x46a1fc..0x46a2e9): frames = (int)(s * 20 + 0.5), a non-zero s that rounds to 0 becomes 1; the
             // thread is scheduled for counter + frames (0x9bef20). wait 0 therefore lands in the CURRENT frame's list
-            // (appended after what is queued, run by the same Scr_RunFrame), not in the next frame.
+            // (filed at the head like a notify wake, see VM::notify), run by the same Scr_RunFrame, not in the next frame.
             t.state = ThreadState::Ready;
-            ready_.push_back(&t);
+            ready_.push_front(&t);
             suspended = true;
             break;
         }
@@ -1057,6 +1057,8 @@ void VM::unwind(Thread& t, size_t frame) {
 }
 
 void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args) {
+    if (static const char* log = std::getenv("IW2_NOTIFY_LOG"); log && (object->kind == "level" || std::string(log) == "all")) // debug
+        print("[notify " + std::to_string(nowMs_) + "ms] " + object->kind + "#" + std::to_string(object->id) + " " + event);
     // endon: end threads first (inferred ordering). An endon registered by a called function ends that call (and
     // the calls it made); the caller continues as if it returned undefined (*inferred*, docs/spec/gsc-vm.md).
     std::vector<Thread*> resumed;
@@ -1085,7 +1087,9 @@ void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<V
         finishNotifyWait(*th, args);
         woken.push_back(th.get());
     }
-    for (Thread* th : woken) ready_.push_back(th);
+    // The frame list takes new entries at its head (0x4643a0) and the waiters are walked last-registered first (0x46c130): the
+    // waiters of this notify run in registration order, before anything an earlier notify woke (docs/spec/gsc-vm.md).
+    for (auto it = woken.rbegin(); it != woken.rend(); ++it) ready_.push_front(*it);
 }
 
 void VM::drainReady() {

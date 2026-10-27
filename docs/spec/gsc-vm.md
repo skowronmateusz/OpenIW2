@@ -57,11 +57,20 @@ function.
 threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> compile`).
 
 ## Notify queueing, `wait 0`, frame lists (exe evidence)
-- `notify` does not run the waiters. VM_Notify (0x46ca60, from Scr_NotifyNum 0x46d0f0) moves each woken thread to the end of the
-  list of the current frame counter (0x9bef20, via 0x46c570 -> 0x46c130). Only VM_RunList (0x46d560) calls the interpreter
+- `notify` does not run the waiters. VM_Notify (0x46ca60, from Scr_NotifyNum 0x46d0f0) files each woken thread in the list of the
+  current frame counter (0x9bef20, via 0x46c570 -> 0x46c130). CORRECTION (2026-10-27): the filing is a head insertion, not an
+  append. 0x46c130 walks the waiters from the last registered to the first (esi/edi count down from the end, 0x46c151..0x46c1a4)
+  and files each through the script-variable child insertion 0x4643a0, which sets the parent's +0xe (the first element) to the new
+  entry and links the old first behind it; the runner (0x46d560, 0x46d5b4) and the iterator idiom (0x46def0..0x46dfb0) start at
+  the parent's +0xe. So the list behaves as a stack: the waiters of ONE notify run in registration order (double reversal), and
+  the threads woken by a LATER notify run BEFORE those of an earlier one. Evidence by behaviour: moscow.gsc:1396-1399, where
+  dialogue() must run before friendly_letlev_block's resume_idle restart (else the block loop animscripted cancels lookcompass
+  and the chain dies; with the old FIFO the lines moscow_rs1_lookcompass / storeroom never played; with the stack they do).
+  TODO(spec): the same head insertion probably applies to `wait` filing (0x46a2e9), so threads due in one frame would run
+  newest-first; ours still runs them in creation order. Only VM_RunList (0x46d560) calls the interpreter
   (0x4690c0); it runs the list head and re-reads the head until the list is empty. Scr_RunFrame (0x46f5c0) = run the current list
   (0x46de90), the frame-end threads (0x467150), then `incl 0x9bef20`. `thread f()` runs f at once. Ours: `VM::notify` queues,
-  `VM::drainReady` runs the queue FIFO after the timed threads of `runFrame`.
+  `VM::drainReady` runs the queue as a stack (push at the head) after the timed threads of `runFrame`.
 - `wait s` (0x46a1fc..0x46a2e9): frames = (int)(s*20 + 0.5), a non-zero s that rounds to 0 becomes 1, the thread is filed under
   counter + frames. `wait 0` therefore resumes in the SAME frame's list (after what is already queued). Ours: `wait 0` queues the
   thread like a notify wake-up.

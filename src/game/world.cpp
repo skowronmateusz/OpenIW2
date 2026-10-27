@@ -933,10 +933,17 @@ void World::registerBuiltins() {
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
     vm_.registerBuiltin("setgoalnode", [](CallContext& c) {
         auto o = c.self.asObject();
-        if (c.arg(0).isObject()) o->set("$goalpos", c.arg(0).asObject()->get("origin"));
+        if (c.arg(0).isObject()) {
+            o->set("$goalpos", c.arg(0).asObject()->get("origin"));
+            o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
+        }
         return Value();
     });
-    vm_.registerBuiltin("setgoalpos", [](CallContext& c) { c.self.asObject()->set("$goalpos", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalpos", [](CallContext& c) {
+        c.self.asObject()->set("$goalpos", c.arg(0));
+        c.self.asObject()->set("$goalnodeangles", Value());
+        return Value();
+    });
     vm_.registerBuiltin("setgoalentity", [](CallContext& c) { c.self.asObject()->set("$goalent", c.arg(0)); return Value(); });
     vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
     vm_.registerBuiltin("spawn", [this](CallContext& c) {
@@ -997,6 +1004,61 @@ void World::registerBuiltins() {
         o->set("$fakeai", Value(true));
         return Value();
     });
+    // getstance (0x4ee330): only for a client entity ("GetStance is only defined for players.", 0x587544); the string by
+    // ps pm_flags (client+0xc): bit 1 -> prone, bit 2 -> crouch, else stand (the three strings are runtime script strings, so
+    // which text sits at 0x1c7f0b0 / 0x1c7f056 / 0x1c7f0da is inferred from pm_flags 1 = prone, 2 = crouch, world.h).
+    vm_.registerBuiltin("getstance", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("GetStance is only defined for players.");
+        return Value(std::string(playerCmd_.stance == 2 ? "prone" : playerCmd_.stance == 1 ? "crouch" : "stand"));
+    });
+    // meleebuttonpressed (0x5388d0): player-only; (client+0x8640 | client+0x8634) & 4 -> int 1/0. 0x8640 is taken as the
+    // current usercmd buttons and 0x8634 as the previous frame's (TODO(spec): confirm the pair); the bit is the melee button (4).
+    vm_.registerBuiltin("meleebuttonpressed", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("meleebuttonpressed: entity is not a player");
+        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 4u) ? 1 : 0));
+    });
+    // enableaimassist / disableaimassist (0x4f81c0 / 0x4f8230): set / clear the entity flag 0x800 (entity+0x10). Stored as the
+    // script-invisible field $aimassist; nothing in the port reads it yet (TODO(spec): the console auto-aim consumer).
+    vm_.registerBuiltin("enableaimassist", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) e->obj->set("$aimassist", Value(int32_t(1)));
+        return Value();
+    });
+    vm_.registerBuiltin("disableaimassist", [this](CallContext& c) {
+        if (Entity* e = entityOf(c.self)) e->obj->set("$aimassist", Value(int32_t(0)));
+        return Value();
+    });
+    // pushplayer (0x5407a0): actor-only (the pointer at entity+0x100, error 0x591798); arg true clears, false sets the bit 0x2000000 of actor+0x28c (stored as $nopush;
+    // nothing consumes it yet, TODO(spec): the pmove effect of that bit).
+    vm_.registerBuiltin("pushplayer", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("pushplayer: entity is not an actor");
+        e->obj->set("$nopush", Value(int32_t(c.args.empty() || !c.arg(0).truthy() ? 1 : 0)));
+        return Value();
+    });
+    // playerads (0x538a60): player-only (error 0x590ab8 otherwise); returns the float at client +0xb8 (the aim fraction, 0..1).
+    vm_.registerBuiltin("playerads", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("playerads: entity is not a player");
+        return Value(playerCmd_.adsFrac);
+    });
+    // isfiring / isthrowinggrenade / ismeleeing (0x539aa0 / 0x539b60 / 0x539c10): player-only (error 0x590ab8 for a non-client);
+    // an int from the weapon state ps+0xb4: firing 3, 4, 10, 11; throwing a grenade 12..16 (0xc..0x10); meleeing 10, 11.
+    // The value of playerCmd_.weaponState is the front end's copy of ps+0xb4 (world.h).
+    auto weaponStateQuery = [this](const char* name, int lo, int hi, std::vector<int> extra) {
+        vm_.registerBuiltin(name, [this, lo, hi, extra, name](CallContext& c) {
+            Entity* e = entityOf(c.self);
+            if (!e || !e->isPlayer) throw std::runtime_error(std::string(name) + ": entity is not a player");
+            const int ws = playerCmd_.weaponState;
+            bool r = lo <= hi && ws >= lo && ws <= hi;
+            for (int x : extra) r = r || ws == x;
+            return Value(int32_t(r ? 1 : 0));
+        });
+    };
+    weaponStateQuery("isfiring", 1, 0, {3, 4, 10, 11});
+    weaponStateQuery("isthrowinggrenade", 12, 16, {});
+    weaponStateQuery("ismeleeing", 1, 0, {10, 11});
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
     vm_.registerBuiltin("getorigin", [](CallContext& c) { return c.self.asObject()->get("origin"); });

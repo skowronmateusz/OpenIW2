@@ -278,8 +278,12 @@ public:
         int weaponState = 0;
         int grenadeFuseMs = 0;
         float lean = 0.0f;     // leanf
+        float adsFrac = 0.0f;  // the aim fraction (client +0xb8), read by playerads
     };
-    void setPlayerCommand(const PlayerCommand& c) { playerCmd_ = c; }
+    void setPlayerCommand(const PlayerCommand& c) {
+        prevButtons_ = playerCmd_.buttons;
+        playerCmd_ = c;
+    }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
     uint32_t playerPmFlags() const { return pmFlags_; }
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
@@ -852,6 +856,7 @@ private:
     };
     std::optional<PlayerLink> playerLink_;
     PlayerCommand playerCmd_;
+    uint32_t prevButtons_ = 0; // the buttons of the previous command (meleebuttonpressed)
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;
     std::vector<VehicleNode> vnodes_;
