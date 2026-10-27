@@ -22,3 +22,6 @@ described in the code that reads them.
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,
   `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`.
 - iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify`, `--lookat-test`.
+- Env `IW2_ACC_DEBUG=1` (iw2game/iw2view): prints one `ACC <weapon> <ai|player> dist <d> chance <c> hit|miss` line per AI/player shot (combat.cpp).
+- Env `IW2_PMOVE_FORWARD=1` (iw2game `--pmove` / fall test): the test pmove holds forward, so footstep events reach the AI (stats line "player noise events").
+- iw2game stats line also prints "actor noise events" (the 500 ms movement noise of actors, 0x5485a0).
