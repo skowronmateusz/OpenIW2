@@ -3145,6 +3145,10 @@ int main(int argc, char** argv) {
                                       pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn());
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
+            // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
+            fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
+            fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
+            fxSystem.viewValid = true;
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const Vec3 at = cam.pos + cam.forward() * 150.0f;
@@ -3692,6 +3696,10 @@ int main(int argc, char** argv) {
             cam.yaw += bobAngles[1];
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
+            // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
+            fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
+            fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
+            fxSystem.viewValid = true;
             auto items = gatherItems(cam);
             // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
             // binocular weapon states 0x11–0x16.
