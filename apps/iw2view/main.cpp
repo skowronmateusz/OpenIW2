@@ -3651,6 +3651,65 @@ int main(int argc, char** argv) {
                         hudText(out, text, float(w) + (r.x + r.w - 28.0f) * sc - tw, float(h) + r.y * sc, gs, *f, col, 0.0f, 1.0f, weapNameItem->textStyle);
                     }
             }
+            // Offhand items (menu "offhandinfo"; ownerdraws 100 / 101 icon, 102 / 103 ammo, 104 / 105 name for class 1 frag / 2 smoke,
+            // 0x4b84f0 / 0x4b8850 / 0x4b8990): hidden in a vehicle (pm_flags 0x20000 without 0x80000), until the offhand touch
+            // (0xf79a48) and when the player owns no weapon of the class; alpha = hud_fade_offhand (3 s, 0x10438cc). Icon = hudIcon of the
+            // first owned weapon of the class with rounds (0x4dc6d0), item colour. Ammo = "%i" of the rounds of the class' weapons
+            // (0x4b8690), red (0.89 0.18 0.01) at 0, else the item colour. Name = localized WEAPON_FRAGGRENADE / WEAPON_SMOKEGRENADE (table
+            // 0x5a4d58). TODO(spec): the [0xf708ec] < 4 test, 0x4dc740 (class owned without rounds is assumed), 0x4b8490, flash helper 0x4b8620.
+            if (world && world->player() && !(world->playerPmFlags() & 0x20000 && !(world->playerPmFlags() & 0x80000))) {
+                const float oa = fadeAlpha(hudFade.offhand, 3.0f, 3000);
+                if (oa > 0.0f)
+                    if (const ui::Menu* om = hudMenus.find("offhandinfo"))
+                        for (const auto& itp : om->items) {
+                            const ui::Item& it = *itp;
+                            if (it.ownerDraw < 100 || it.ownerDraw > 105) continue;
+                            const int cls = (it.ownerDraw - 100) % 2 + 1, kind = (it.ownerDraw - 100) / 2; // 0 icon, 1 ammo, 2 name
+                            const std::string clsName = cls == 1 ? "Frag Grenade" : "Smoke Grenade";
+                            auto lower = [](std::string v) { for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch))); return v; };
+                            auto wf = [&](const std::string& n, const char* k) { const auto* d = world->weapon(n); return d && d->count(k) ? d->at(k) : std::string(); };
+                            int rounds = 0;
+                            bool owned = false;
+                            auto& inv = world->inventory(*world->player());
+                            for (const std::string& wn : inv.owned)
+                                if (lower(wf(wn, "offhandclass")) == lower(clsName)) {
+                                    owned = true;
+                                    rounds += inv.clip[wf(wn, "clipname")] + inv.ammo[wf(wn, "ammoname")];
+                                }
+                            const std::string wep = world->playerOffhandFor(clsName);
+                            if (wep.empty() && !owned) continue;
+                            const auto& r = it.rect;
+                            uint8_t col[4];
+                            for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                            col[3] = uint8_t(std::clamp(oa, 0.0f, 1.0f) * 255.0f);
+                            if (kind == 0) {
+                                if (wep.empty()) continue;
+                                const std::string icon = wf(wep, "hudicon");
+                                if (icon.empty()) continue;
+                                Quad2D q{float(w) + (om->rect.x + r.x) * sc, float(h) + (om->rect.y + r.y) * sc, 0, 0};
+                                q.x1 = q.x0 + r.w * sc;
+                                q.y1 = q.y0 + r.h * sc;
+                                std::memcpy(q.rgba, col, 4);
+                                q.texture = materialTexture(icon);
+                                out.push_back(q);
+                                continue;
+                            }
+                            std::string text;
+                            if (kind == 1) {
+                                text = std::to_string(rounds);
+                                if (rounds == 0) { col[0] = 227; col[1] = 46; col[2] = 3; }
+                            } else {
+                                const std::string key = cls == 1 ? "WEAPON_FRAGGRENADE" : "WEAPON_SMOKEGRENADE";
+                                const std::string* t = loc.find(key);
+                                text = t ? *t : key;
+                            }
+                            const float ts = it.textScale, fs = ts * float(h) / 480.0f;
+                            if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                                const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                                hudText(out, text, float(w) + (om->rect.x + r.x) * sc, float(h) + (om->rect.y + r.y) * sc, gs, *f, col, 0.0f, 1.0f, it.textStyle);
+                            }
+                        }
+            }
             // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
             // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
@@ -4128,7 +4187,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
