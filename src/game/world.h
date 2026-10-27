@@ -522,6 +522,7 @@ private:
     void exposedSubstate(Entity& e);
     void exposedCombat(Entity& e);
     void exposedNoncombat(Entity& e);
+    void actorFacing(Entity& e); // 0x505d80 + 0x504ca0 (goal facing)
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);
