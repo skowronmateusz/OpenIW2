@@ -22,3 +22,14 @@ described in the code that reads them.
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,
   `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`.
 - iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify`, `--lookat-test`.
+
+## Menu debug helpers (iw2view --menu)
+
+| Flag | Effect |
+|---|---|
+| `IW2_SHOT_MENU=a,b` | Opens the named menus before a `--menu --shot`. |
+| `IW2_SHOT_SET=dvar=value,...` | Sets cvars before a `--menu --shot`. |
+| `IW2_MENU_KEYS` tokens | `open:name`, `click:X/Y`, `left`, `right` (besides the existing tokens, `quit`). |
+| `IW2_EXIT_AFTER=N` | Exits iw2view after N seconds. |
+
+
