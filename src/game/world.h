@@ -840,6 +840,7 @@ private:
     std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;
     std::map<std::string, std::vector<assets::XCollSurf>> collSurfs_; // xmodel collision surfaces, filled by skeleton()
     ObjectPtr worldEntityObj_; // the world entity (g_entities[2046] = 0x1c13b08), the attacker of damage without one
+    void vehicleTouchDamage(Entity& vehicle, Entity& other); // 0x512d40 (src/game/vehicles.cpp)
     Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
