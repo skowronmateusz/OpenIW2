@@ -955,6 +955,18 @@ void World::registerBuiltins() {
         c.self.asObject()->set("model", c.arg(0));
         return Value();
     });
+    // makefakeai (0x4f82a0): the entity must be a script_model (eType 5, else "makeFakeAI must be applied to a script_model",
+    // string 0x5853c4); it clears ent+0xa2 bits 1|2, sets the box mins (-15,-15,0) maxs (15,15,72) (0xa8..0xbc), ORs 0x8000
+    // into ent+0xc0 and relinks (0x44b2d0). Recorded as script fields; TODO(spec): what the exe's traces/damage do with the
+    // 0x8000 contents of a fake AI (bullets only hit script models through their xmodel surfaces here).
+    vm_.registerBuiltin("makefakeai", [](CallContext& c) {
+        const ObjectPtr o = c.self.asObject();
+        if (o->get("classname").toString() != "script_model") throw std::runtime_error("makeFakeAI must be applied to a script_model");
+        o->set("$fakeai_mins", Value(Vec3{-15, -15, 0}));
+        o->set("$fakeai_maxs", Value(Vec3{15, 15, 72}));
+        o->set("$fakeai", Value(true));
+        return Value();
+    });
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
     vm_.registerBuiltin("getorigin", [](CallContext& c) { return c.self.asObject()->get("origin"); });
