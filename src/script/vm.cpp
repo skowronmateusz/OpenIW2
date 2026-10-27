@@ -1076,7 +1076,18 @@ void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<V
         finishNotifyWait(*th, args);
         woken.push_back(th.get());
     }
-    for (Thread* th : woken) run(*th);
+    for (Thread* th : woken) ready_.push_back(th);
+}
+
+void VM::drainReady() {
+    if (draining_) return; // a nested call: the outer drain picks up what was queued
+    draining_ = true;
+    while (!ready_.empty()) {
+        Thread* th = ready_.front();
+        ready_.pop_front();
+        if (th->state == ThreadState::Ready && !th->running) run(*th);
+    }
+    draining_ = false;
 }
 
 void VM::runFrame(int64_t nowMs) {
@@ -1087,6 +1098,7 @@ void VM::runFrame(int64_t nowMs) {
         if (th->state == ThreadState::Waiting && th->wakeTimeMs <= nowMs_) due.push_back(th.get());
     for (Thread* th : due)
         if (th->state == ThreadState::Waiting) run(*th);
+    drainReady(); // the notify-woken threads follow the timed ones in the current frame's list (0x46d560)
     // waittillframeend threads run after everything else this frame.
     for (int pass = 0; pass < 8; ++pass) {
         std::vector<Thread*> fe;
@@ -1094,6 +1106,7 @@ void VM::runFrame(int64_t nowMs) {
             if (th->state == ThreadState::WaitingFrameEnd) fe.push_back(th.get());
         if (fe.empty()) break;
         for (Thread* th : fe) run(*th);
+        drainReady(); // TODO(spec): where 0x467150 runs what the frame-end threads notify
     }
     // Drop finished threads.
     threads_.erase(std::remove_if(threads_.begin(), threads_.end(), [](const auto& th) { return th->state == ThreadState::Done; }),

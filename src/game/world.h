@@ -422,7 +422,9 @@ public:
 
 private:
     Entity& spawnEntity(const std::string& classname);
-    Entity* spawnActor(Entity& spawner);
+    // force = the exe's third argument of the spawn core 0x532200: stalingradspawn passes 1 (skips the telefrag test),
+    // dospawn passes 0.
+    Entity* spawnActor(Entity& spawner, bool force = true);
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void registerBuiltins();

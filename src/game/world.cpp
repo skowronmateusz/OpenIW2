@@ -260,9 +260,60 @@ void World::spawnMapEntities() {
 
 // Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new
 // actor, notifies the spawner "spawned", and starts animscripts/init.gsc::main() (docs/spec/ai.md).
-Entity* World::spawnActor(Entity& spawner) {
+Entity* World::spawnActor(Entity& spawner, bool force) {
     const Value count = spawner.obj->get("count");
     if (count.isInt() && count.asInt() <= 0) return nullptr;
+
+    // dospawn (arg3 == 0) refuses a spawnpoint whose box (origin + (-15,-15,0)..(15,15,70), 0x5a5bdc..0x5a5bf0) holds a
+    // living body: an entity with contents & 0x200c000 that is a client in state < 4 or an actor with health > 0
+    // (0x4e8500). The message is "couldn't spawn from %s because spawnpoint would telefrag" and the result undefined
+    // (0x532253-0x53227e). stalingradspawn passes force and skips the test. The "player can see the spawnpoint"
+    // test (0x532288) is skipped when the global at 0x1c61048 is set, which it is in-game (SP), so it is not done.
+    // TODO(spec): the player's contents bits and the client-state meaning of the <4 compare.
+    if (!force) {
+        const Value so = spawner.obj->get("origin");
+        if (so.isVector()) {
+            const Vec3 sp = so.asVector();
+            bool blocked = false;
+            for (const auto& e : entities_) {
+                if (e.get() == &spawner || e->obj->removed || !(e->isActor || e->isPlayer)) continue;
+                if (e->isActor && (e->ai.corpse || !e->ai.alive)) continue;
+                const Value eo = e->obj->get("origin");
+                if (!eo.isVector()) continue;
+                const Vec3 p = eo.asVector();
+                // actor box (-15,-15,0)..(15,15,72) against the spawn box (-15,-15,0)..(15,15,70), touching counts
+                const float height = e->isPlayer ? 70.0f : 72.0f; // TODO(spec): the player's box height
+                if (p[0] - 15 <= sp[0] + 15 && p[0] + 15 >= sp[0] - 15 && p[1] - 15 <= sp[1] + 15 && p[1] + 15 >= sp[1] - 15 &&
+                    p[2] <= sp[2] + 70 && p[2] + height >= sp[2]) {
+                    if (e->isPlayer && !isAlive(*e)) continue;
+                    blocked = true;
+                    break;
+                }
+            }
+            if (blocked) {
+                const Value tn = spawner.obj->get("targetname");
+                print("^3couldn't spawn from " + (tn.isString() ? tn.toString() : std::string("<unnamed>")) +
+                      " because spawnpoint would telefrag");
+                return nullptr;
+            }
+        }
+    }
+    // The actor pool has 32 slots (FUN_004fc8d0 scans 0x20 slots of 0x21a4 bytes); a corpse conversion (0x4fdba0 ->
+    // 0x4fc960) or a freed entity returns its slot. With no free slot the spawn fails with "Actor allocation failed",
+    // the fresh entity is freed (0x4d7c30) and dospawn reports "couldn't spawn from %s because there are no free
+    // actors" (0x532398), returning undefined; the spawner's count is untouched (it is decremented only after a
+    // successful spawn, 0x5325ca). TODO(spec): the spawner flag 2 retry that frees the farthest actor (0x4fcaf0).
+    {
+        int live = 0;
+        for (const auto& e : entities_)
+            if (e->isActor && !e->obj->removed && !e->ai.corpse) ++live;
+        if (live >= 32) {
+            const Value tn = spawner.obj->get("targetname");
+            print("^3couldn't spawn from " + (tn.isString() ? tn.toString() : std::string("<unnamed>")) +
+                  " because there are no free actors");
+            return nullptr;
+        }
+    }
     if (count.isInt()) spawner.obj->set("count", Value(int32_t(count.asInt() - 1)));
 
     const std::string cls = spawner.classname;
@@ -756,14 +807,15 @@ void World::registerBuiltins() {
         return Value();
     });
 
-    auto doSpawn = [this](CallContext& c) -> Value {
+    auto doSpawn = [this](CallContext& c, bool force) -> Value {
         Entity* sp = entityOf(c.self);
         if (!sp || !sp->isSpawner) throw std::runtime_error("dospawn can only be called on actor spawners");
-        Entity* a = spawnActor(*sp);
+        Entity* a = spawnActor(*sp, force);
+        if (std::getenv("DBGSPAWN")) print("DBG dospawn t=" + std::to_string(timeMs_) + " tn=" + sp->obj->get("targetname").toString() + " sn=" + sp->obj->get("script_noteworthy").toString() + " ok=" + std::to_string(a != nullptr)); // DBGTMP
         return a ? Value(a->obj) : Value();
     };
-    vm_.registerBuiltin("dospawn", doSpawn);
-    vm_.registerBuiltin("stalingradspawn", doSpawn);
+    vm_.registerBuiltin("dospawn", [doSpawn](CallContext& c) { return doSpawn(c, false); });           // 0x4edff0: arg3 = 0
+    vm_.registerBuiltin("stalingradspawn", [doSpawn](CallContext& c) { return doSpawn(c, true); });    // 0x4ee120: arg3 = 1
     vm_.registerBuiltin("attach", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("attach on a non-entity");
