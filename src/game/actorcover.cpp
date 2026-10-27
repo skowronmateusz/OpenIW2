@@ -505,6 +505,7 @@ void World::registerCoverBuiltins() {
         Entity& e = actor(c);
         e.ai.coverNodes.clear();
         if (hasEnemy(e) && exposed(e)) e.ai.coverNodes = findCoverNodes(e, -1, -1, -1, 1000);
+        if (std::getenv("IW2_COVER_LOG")) std::fprintf(stderr, "[cover %lld] #%d findcovernode enemy %d exposed %d -> %zu nodes\n", (long long)timeMs_, e.number, int(hasEnemy(e)), int(exposed(e)), e.ai.coverNodes.size());
         return Value();
     });
     // findbestcovernode(["prefer" | "ignore" | "better", node]) (0x53c730): the best cover node, or undefined.
@@ -521,6 +522,7 @@ void World::registerCoverBuiltins() {
             throw std::runtime_error("findbestcovernode: wrong number of parameters");
         }
         const auto best = findCoverNodes(e, better, ignore, prefer, 1);
+        if (std::getenv("IW2_COVER_LOG")) std::fprintf(stderr, "[cover %lld] #%d findbestcovernode(prefer %d ignore %d better %d) -> %d\n", (long long)timeMs_, e.number, prefer, ignore, better, best.empty() ? -1 : best.back());
         return best.empty() ? Value() : nodeValue(best.back());
     });
     // getcovernode (0x54c580): the next node of findcovernode while there is a path or the plan time has passed.
@@ -547,6 +549,7 @@ void World::registerCoverBuiltins() {
         }
         const int node = nodeIndex(c.arg(0));
         const int state = e.ai.stack[size_t(e.ai.depth)];
+        if (std::getenv("IW2_COVER_LOG")) std::fprintf(stderr, "[cover %lld] #%d usecovernode(%d) state %d usable %d facesEnemy %d\n", (long long)timeMs_, e.number, node, state, node >= 0 ? int(nodeUsable(e, node)) : -1, node >= 0 ? int(nodeFacesEnemy(e, node)) : -1);
         if (state != AiExposed && state != AiTurret) return Value(0);
         if (!nodeUsable(e, node) || !nodeFacesEnemy(e, node)) return Value(0);
         claimNode(e, node);
