@@ -469,7 +469,21 @@ void World::updateCrosshairTarget() {
     if (!player_ || !isAlive(*player_)) return;
     const Vec3 eye = playerEye(), f = viewForward(playerCmd_.viewAngles);
     int loc = 0;
-    const TraceResult tr = locationalTrace(eye, Vec3{eye[0] + f[0] * 15000.0f, eye[1] + f[1] * 15000.0f, eye[2] + f[2] * 15000.0f}, 0x2280e801u, player_, nullptr, loc);
+    const Vec3 end{eye[0] + f[0] * 15000.0f, eye[1] + f[1] * 15000.0f, eye[2] + f[2] * 15000.0f};
+    TraceResult tr = locationalTrace(eye, end, 0x2280e801u, player_, nullptr, loc);
+    // A first hit whose classname is trigger_lookat (0x535201, string 0x5883f4) is touched by the player (0x528cb0 queues
+    // {hit, player}; the frame flush 0x4daaa8..0x4dabe9 skips stale serials and entities already touched this frame, then
+    // notifies the hit entity "trigger" (0x58a278) with the player as activator, 0x4dab7c..0x4daba6): every frame while
+    // looked at, no one-shot, no spawnflags or distance test beyond the 15000-unit trace. The trace is then repeated with
+    // mask 0x280e801 (without 0x20000000) for the actor logic below. TODO(spec): the notify is deferred to the flush
+    // here immediate; ps+0x8678 (= the hit entity) is not kept.
+    if (Entity* lk = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr; lk && lk->classname == "trigger_lookat") {
+        if (!lk->obj->removed) {
+            ++stats.lookatTouches;
+            vm_.notify(lk->obj, "trigger", {Value(player_->obj)});
+        }
+        tr = locationalTrace(eye, end, 0x280e801u, player_, nullptr, loc);
+    }
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
     if (!hit || !hit->isActor || !isAlive(*hit)) return;
     const Vec3 d = sub(hit->obj->get("origin").asVector(), eye);
