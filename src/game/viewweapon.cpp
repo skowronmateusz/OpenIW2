@@ -168,6 +168,21 @@ float ViewImpulses::landOffset(int64_t timeMs) {
     return 0;
 }
 
+void ViewImpulses::step(int parm, int64_t timeMs) {
+    const int64_t dt = timeMs - stepTime_;
+    const float carry = dt < 100 ? float(100 - dt) * stepChange_ * 0.009999999776482582f * 0.8999999761581421f : 0.0f;
+    stepChange_ = carry + float(parm - 0x80);
+    if (stepChange_ > 24.0f) stepChange_ = 24.0f;
+    else if (stepChange_ < -16.0f) stepChange_ = -16.0f;
+    stepTime_ = timeMs;
+}
+
+float ViewImpulses::stepOffset(int64_t timeMs) {
+    int64_t dt = timeMs - stepTime_;
+    if (dt < 0) stepTime_ = timeMs; // 0x4addc3 (dt itself is not recomputed)
+    return dt < 100 ? float(100 - dt) * stepChange_ * 0.009999999776482582f : 0.0f;
+}
+
 std::array<float, 2> ViewImpulses::damageKick(int64_t timeMs, float adsFrac, bool reticle) const {
     if (damageTime_ == 0) return {0, 0};
     const float a = adsFrac * 0.5f;

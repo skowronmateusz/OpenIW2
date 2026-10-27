@@ -322,7 +322,7 @@ void capJumpStep(PlayerState& ps, float startZ, const MoveParams& mp) {
 
 // Step slide move (0x54f2e0): the slide, then on a hit the same move from up to 18 units higher (10 prone), dropped
 // back down; on the ground the result sticks to ground up to 9 units below. The step is kept when it got further
-// along the velocity. TODO(spec): ladders (pm_flags 0x20), the step event 0x8f and footsteps (0x50a830, 0x50a6d0).
+// along the velocity.
 void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool gravity, const MoveParams& mp) {
     const bool onGroundPlane = pml.groundPlane;
     if (!onGroundPlane && ps.jumping && ps.pmTimeMs != 0) {
@@ -395,13 +395,28 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
         }
     }
     if (jumpStepped) capJumpStep(ps, startO[2], mp);
-    // Stairs (0x54f846): a height change of more than half a unit against the plain slide slows the player down.
-    // TODO(spec): the prone surface test 0x4fc000 (0x54e990) that undoes a prone step.
-    if (onGroundPlane) {
+    // Stairs (0x54f846): a height change of more than half a unit against the plain slide gives the step event 0x8f
+    // (parameter: the rounded height clamped to -16..24, + 0x80) and slows the player down. Not on a ladder.
+    // Steps over 3 units also advance the bob cycle by min(|step| / 2, 4) · 1.25 + 7 (a footstep when bit 7 changes,
+    // 0x50a830 always allows it). TODO(spec): the prone surface test 0x4fc000 (0x54e990, pm_flags 1) that undoes a prone
+    // step: it traces boxes (+-6 units, 30 up, 66 down) against ps+0x558 and restores the start origin and velocity.
+    if (onGroundPlane && !ps.onLadder) {
         const float dz = ps.origin[2] - downO[2];
-        if (std::fabs(dz) > 0.5f && std::lrint(double(dz) + 9.313225746154785e-10) != 0) {
-            const float f = (1.0f - std::fabs(ps.origin[2] - startO[2]) / stepSize) * 0.8f + 0.2f;
-            ps.velocity = scale(ps.velocity, f);
+        if (std::fabs(dz) > 0.5f) {
+            const int step = std::lrint(double(dz) + 9.313225746154785e-10);
+            if (step != 0) {
+                addPlayerEvent(ps, 0x8f, (std::clamp(step, -16, 24) + 0x80) & 0xffff);
+                const float f = (1.0f - std::fabs(ps.origin[2] - startO[2]) / stepSize) * 0.8f + 0.2f;
+                ps.velocity = scale(ps.velocity, f);
+                if (std::abs(step) > 3 && ps.onGround) {
+                    const int oldCycle = ps.bobCycle;
+                    ps.bobCycle = int(float(std::min(std::abs(step) / 2, 4)) * 1.25f + 7.0f + float(oldCycle)) & 0xff;
+                    if (((oldCycle + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80) {
+                        const int surf = surfaceTypeOf(pml.groundTrace.surfaceFlags);
+                        if (surf != 0) addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x2f + surf : (ps.adsSlow || ps.lean != 0) ? 0x18 + surf : 1 + surf);
+                    }
+                }
+            }
         }
     }
 }

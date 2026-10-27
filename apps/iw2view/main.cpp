@@ -5608,6 +5608,7 @@ int main(int argc, char** argv) {
                     if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
                     for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
                         world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
+                        if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], world->timeMs()); // CG_EntityEvent 0x4bac84
                         // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
                         const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
                         if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, world->timeMs());
@@ -5658,6 +5659,7 @@ int main(int argc, char** argv) {
                             viewImp.land(ps.landHeight, ps.landDamage, world->timeMs());
                         }
                         cam.pos.z += viewImp.landOffset(world->timeMs()); // 0x4ae6c7
+                        cam.pos.z -= viewImp.stepOffset(world->timeMs()); // 0x4addb0 (step event 0x8f)
                     }
                 }
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.

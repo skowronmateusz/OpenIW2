@@ -62,5 +62,17 @@ int main() {
     for (int i = 0; i < 20; ++i) ab.update(true, 0.0125f);
     CHECK(near(ab.up(), 1.0f) && ab.down() == 0);
     if (failures == 0) std::cout << "viewimpulses tests passed\n";
+    {
+        // Step event 0x8f (0x4bac84 / 0x4addb0): +8 unit step, the offset decays over 100 ms; a second step carries 90% of the rest.
+        ViewImpulses st;
+        st.step(0x80 + 8, 1000);
+        CHECK(near(st.stepOffset(1000), 8.0f * 100 * 0.01f));
+        CHECK(near(st.stepOffset(1050), 8.0f * 50 * 0.01f));
+        CHECK(st.stepOffset(1100) == 0);
+        st.step(0x80 + 30, 2000);
+        CHECK(near(st.stepOffset(2000), 24.0f)); // clamped to 24
+        st.step(0x80 - 40, 3000);
+        CHECK(near(st.stepOffset(3000), -16.0f)); // clamped to -16
+    }
     return failures ? 1 : 0;
 }
