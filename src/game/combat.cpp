@@ -943,12 +943,16 @@ void World::registerCombatBuiltins() {
     });
     // issavesuccessful (0x4f3d80): true unless the save-failed byte (+0xd of the save state) is set; savegame is a stub.
     vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(true); });
-    // setfriendlychain (0x4eeb10): the entity must be a player ("Entity must be a player", 0x5872e0); the node goes into the
-    // client's chain slot. TODO(spec): the "not a friendly chain node" test (node +0x34 < 1) and the chain's consumers.
+    // setfriendlychain (0x4eeb10): src/game/friendlychain.cpp.
     vm_.registerBuiltin("setfriendlychain", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("Entity must be a player");
-        e->obj->set("$friendlychain", c.arg(0));
+        if (c.argc() != 1) throw std::runtime_error("sentient SetFriendlyChain <node>, where <none> is on a friendly chain.");
+        int node = -1;
+        for (size_t i = 0; i < nodes_.size(); ++i)
+            if (c.arg(0).isObject() && nodes_[i].obj == c.arg(0).asObject()) node = int(i);
+        if (node < 0) throw std::runtime_error("setfriendlychain: not a pathnode");
+        setFriendlyChain(*e, node);
         return Value();
     });
     // bulletspread (start, end, degrees) (0x4ee760 → 0x531210): the point 8192 units along end-start with a random

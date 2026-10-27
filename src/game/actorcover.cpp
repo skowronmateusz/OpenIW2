@@ -441,7 +441,8 @@ void World::updateActorPath(Entity& e) {
         ai.planTimeMs = timeMs_ + 500;
         return;
     }
-    // TODO(spec): 0x505ed0 (goal entity and follow distances) and 0x505f70 (the goal while pathing to the enemy).
+    followFriendlyChain(e); // 0x505ed0
+    // TODO(spec): 0x505f70 (the working goal: the chain node / goal entity / the enemy while pathing to it).
     // 0x503080: fighting = an enemy known within 5 s, or (without a path) one whose node the claimed node sees.
     bool fighting = false;
     if (Entity* enemy = entityOf(e.obj->get("enemy"))) {

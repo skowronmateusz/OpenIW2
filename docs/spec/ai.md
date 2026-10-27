@@ -397,6 +397,36 @@ bytes. `toujane`: 2,571 nodes, 21,583 links; the lump is consumed exactly.
 
 OpenIW2 moves actors along the planner's path ("Path planner") at the root-motion speed of their animations.
 
+## Friendly chain (observed; src/game/friendlychain.cpp, friendlychainworld.cpp)
+
+Nodes (0x78 bytes: +0 type, +4 spawnflags, +6 targetname, +0xc target, +0x14 origin, +0x34 chain id, +0x36 position, +0x38 predecessor,
++0x44 hold time) are chained at load by 0x52d630. A node whose `target` equals another node's `targetname` is that node's
+predecessor. Fatal errors: "multiple nodes target node with name '%s'", "node with name '%s' targets itself", "found chain loop including node
+with name '%s'". Heads (a predecessor of something, with none of their own), visited in array order, get ids 1, 2, ... and position 1; each
+successor gets position + 1 (0x52d4c0). A head or successor with spawnflags bit 2 is excluded (id 0). The nodes are sorted (qsort, 0x52d580)
+by chain id descending, position ascending, predecessor ascending, type descending; the nodes before the first id 0 are the chain nodes
+(0x1c8da08). A chain node of type 0 is fatal ("bad node ... in friendly chain").
+
+`setfriendlychain(node)` (0x4eeb10): the entity must be a player, one argument, and the node's chain id must be >= 1 ("Node %d (%.2f, %.2f,
+%.2f) is not a friendly chain node."); it is stored as the sentient's chain node (+0x30). `trigger_friendlychain` (type 5, spawn 0x529170,
+contents 0x405c0008, spawnflags |= 1, needs `target`) does the same on touch (0x529140 -> 0x518bf0) for the chain node named by its `target`,
+unless the sentient already is on a node of that name; errors "Node '%s' is not part of a friendly chain" and "Friendly chain node '%s' does
+not exist". It is gated by g_spawnai (default 1, not modelled).
+
+An actor with a goal entity (`setgoalentity`, +0x77c) that is a sentient runs 0x505ed0 from the path update (0x503490, before the fighting test):
+for an enemy-team goal entity it records the enemy (0x500c50) and clears its chain node (+0x78c); with followmin > followmax it clears it;
+otherwise 0x506250: the followed sentient's chain node moves to the nearest node of its chain (0x518270) once per frame (sentient +0x34); no
+chain node there is fatal ("Sentient %s at (...) is following the sentient %s at (...) that is not on a friendly chain"; the port logs it and
+skips the update). The actor keeps its chain node while on the leader's chain, within [followmin, followmax] positions of the leader and within
+64 units of the node; otherwise 0x518a70 picks one: window lo/hi = leader position + followmin/followmax, scanning descendants of the current
+node (0x518580, 0x5186f0), the ancestors of the leader (0x5187e0), then the nearest usable node outside the window (0x518860; 0x518960 for nodes
+whose hold time has not passed). A node is a candidate when usable by the actor (0x518f20) and no other actor of a non-enemy team has it as
+chain node (0x518510); among equal positions one is sampled with the exe's own LCG (0x5184c0; the stream is not reproduced). A chain node
+without a claimed node is claimed (0x5152f0).
+
+Not done: 0x505f70 (the working goal: mode 2 uses the chain node's origin, or the leader's origin, with its radius at least 4 and height at
+least 80), the toucher filter of 0x529140, the g_spawnai dvar.
+
 ## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype, checkprone)
 
 Sweep with `iw2game <main> <map> 40 --spawn-all` over all 28 SP maps: the only built-in still reported as unimplemented is
