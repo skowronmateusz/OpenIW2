@@ -12,8 +12,10 @@ namespace iw2::game {
 // minPlayerDamage (+0x594); otherwise damage (+0x1ec) and minDamage (+0x590). distance < maxDamageRange (+0x598):
 // the damage; distance >= minDamageRange (+0x59c): the minimum; between them (and with different ranges) the
 // linear blend damage·(1−t) + min·t, t = (distance − max)/(min − max), truncated (0x565994 is _ftol2).
-// The caller multiplies the result by its float factor (0x80(%esp) at 0x531787): 1.0 for the normal shot
-// (0x5312b8 pushes 0x3f800000), the other values (rifleBullet refire) are TODO(spec).
+// The caller multiplies the result by a float factor (arg 5 of Bullet_Fire_Extended, 0x80(%esp) at 0x531797). Every
+// initial caller passes 1.0f (player 0x4eea17, vehicle 0x51481b, AI / turret through 0x5312b0 which pushes 0x3f800000)
+// and the recursive calls (same-team pass-through 0x5317f9, penetration 0x531733 / 0x53185f / 0x531980) only forward
+// their own argument, so the factor is always 1.0 and the multiplication is omitted.
 int bulletDamageAtDistance(const std::map<std::string, std::string>& weaponDef, bool targetIsClient, float distance);
 
 // AI weapon accuracy graph (accuracy/aivsai|aivsplayer/<name>.accu, "WEAPONACCUFILE", a point count, then x y pairs).
