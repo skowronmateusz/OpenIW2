@@ -2,6 +2,7 @@
 // until the corresponding engine code is analyzed; each is marked in the spec.
 
 #include "game/world.h"
+#include "game/bulletdamage.h"
 
 #include <algorithm>
 #include <cctype>
@@ -352,7 +353,9 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
 }
 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
-Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker) {
+// `damageAmount` is the fallback when the weapon (weaponName, else the shooter's own) has no definition.
+Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
+                          const std::string& weaponName) {
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
     const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
     const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
@@ -398,6 +401,9 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     if (hit) {
         ++stats.hits;
         const Vec3 dir = scale(sub(end, start), 1.0f / std::max(1.0f, len(sub(end, start))));
+        // Damage by weapon, target and distance start → impact (0x531090, called at 0x531787).
+        const auto* dmgDef = weaponName.empty() ? def : weapon(weaponName);
+        if (dmgDef) damageAmount = bulletDamageAtDistance(*dmgDef, hit->isPlayer, len(sub(tr.endPos, start)));
         damage(*hit, attacker, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
     }
     return hit;
@@ -525,7 +531,9 @@ void World::registerCombatBuiltins() {
         const float accuracy = std::clamp((accV.isNumber() ? accV.asFloat() : 0.5f) * accMod, 0.0f, 1.0f);
         std::uniform_real_distribution<float> u(0.0f, 1.0f);
         if (u(rng_) > accuracy) {
-            // Miss: aim off to the side by up to 40 units (inferred spread).
+            // Miss: aim off to the side by up to 40 units (inferred spread). TODO(spec): the exe fires a spread cone
+            // (0x531210: random angle within tan(spread°)·8192, called by 0x5312b0 with damage factor 1.0); the AI
+            // accuracy → spread mapping (0x550a70) is not read, so the hit rate here is a model (too high at range).
             std::uniform_real_distribution<float> off(-40.0f, 40.0f);
             target = add(target, {off(rng_), off(rng_), off(rng_) * 0.5f});
         }
