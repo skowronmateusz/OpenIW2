@@ -98,6 +98,13 @@ const AnimTree* AnimLibrary::tree(const std::string& name) {
 }
 
 const assets::XAnim* AnimLibrary::anim(const std::string& name) {
+    if (auto m = memo_.find(name); m != memo_.end()) return m->second;
+    const assets::XAnim* r = animUncached(name);
+    memo_.emplace(name, r);
+    return r;
+}
+
+const assets::XAnim* AnimLibrary::animUncached(const std::string& name) {
     const std::string n = lower(name);
     if (auto it = anims_.find(n); it != anims_.end()) return it->second.get();
     if (missing_.count(n)) return nullptr;

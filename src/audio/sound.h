@@ -41,7 +41,10 @@ struct SoundAlias {
 class SoundAliases {
 public:
     // Loads every soundaliases/*.csv; rows whose loadspec excludes `level` (or names other levels) are skipped.
-    void load(const fs::Vfs& vfs, const std::string& level);
+    // Adds the aliases allowed for `level`. With `menuOnly` only rows whose loadspec names "menu" are taken (the front-end and
+    // pause-menu sounds).
+    void load(const fs::Vfs& vfs, const std::string& level, bool menuOnly = false);
+    void clear() { aliases_.clear(); }
     // One of the variants with this name (random), nullptr if unknown.
     const SoundAlias* pick(const std::string& name, std::mt19937& rng) const;
     size_t size() const { return aliases_.size(); }

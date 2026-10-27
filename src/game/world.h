@@ -338,7 +338,7 @@ public:
     std::string vehicleCollmap(Entity& vehicle);
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
     void updateVehicleEngineSound(Entity& e);
-    void vehicleJolt(Entity& e, const Vec3& dir, float intensity);
+    void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
@@ -417,7 +417,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -454,7 +454,7 @@ private:
                 const std::string& location = "none");
     // attacker: the entity credited with the damage (nullptr = the world).
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
-                      const std::string& weaponName = std::string());
+                      const std::string& weaponName = std::string(), int depth = 0);
     int weaponDamage(const std::string& weaponName);
     // Accuracy graph of a weapon for the target kind (weapon fields aiVsPlayerAccuracyGraph / aiVsAiAccuracyGraph); null without one.
     const AccuracyGraph* accuracyGraph(const std::string& weaponName, bool targetClient);
