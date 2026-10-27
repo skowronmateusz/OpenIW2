@@ -70,7 +70,7 @@ bool World::actorKnowsRecently(const Entity& target, const Entity& about, int64_
 // 12 (door open) and 13 (door kick) only print "not yet handled" in the exe; 11 does nothing; 8/9 (grenade ping) are
 // implemented as the per-actor loop of `grenadePing` (0x526c07 → 0x5200e0), not through this dispatch.
 // TODO(spec): the turret's entity +0x10c field of the pain/death handler (only the "is on a turret" part is
-// modelled), the player pain events 2/3 of the client fire path (0x4e786b / 0x4e787b).
+// modelled), pain accumulator 0x5485a0 (field meanings of actor+0x224.. not decoded, TODO(spec)) and grenade flee fallback 0x5429e0 (node search radius 192 via 0x517f90, TODO(spec)). Player events 2/3 are ported (playerPmEvents).
 void World::aiEventDispatch(Entity& source, Entity& target, int type) {
     switch (type) {
     case 2:
