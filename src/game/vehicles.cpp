@@ -416,6 +416,8 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "turretvertspanup") info->turretVertSpanUp = f;
                 else if (k == "turretvertspandown") info->turretVertSpanDown = f;
                 else if (k == "turretrotrate") info->turretRotRate = f;
+                else if (k == "texurescroll") info->texScroll = std::atoi(v.c_str());
+                else if (k == "texurescrollscale") info->texScrollScale = f;
                 else if (k == "quadbarrel") info->quadBarrel = std::atoi(v.c_str()) != 0;
             }
         }
@@ -826,6 +828,12 @@ void World::thinkVehicles() {
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
         updateVehicleTurret(e);
+        // 0x510870 (after the turret/aim calls, before 0x510be0): tread texture scroll accumulator.
+        if (v.info) {
+            const auto dv = cvars.find("g_vehicleTexScrollScale");
+            const float dvar = dv == cvars.end() ? 0.0f : float(std::atof(dv->second.c_str()));
+            v.texScroll = vehicleTexScrollStep(v.info->texScroll, v.texScroll, v.forwardSpeed, dvar, v.info->texScrollScale);
+        }
         // The driver rides at tag_player (linked in VEH_LinkPlayer).
         if (Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr) {
             bool found = false;

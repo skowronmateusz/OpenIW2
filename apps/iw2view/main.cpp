@@ -231,6 +231,7 @@ struct Batch {
     int polygonOffset = 0; // mtlPolygonOffset level 0..2 (material state bits)
     int cull = 0;          // mtlCullFace: 0 none, 1 back, 2 front
     uint32_t firstIndex = 0, indexCount = 0;
+    bool scroll = false; // see MatInfo::scroll
 };
 
 struct Lightmap {
@@ -248,6 +249,7 @@ struct MatInfo {
     // 0x8000 / 0xc000, 1.3 renderer table 0x1018fa10), set as D3DRS_CULLMODE through {0, NONE, CCW, CW} (0x10190704,
     // 0x1003cb13). Here 0 none, 1 back (D3DCULL_CCW), 2 front (D3DCULL_CW).
     int cull = 0;
+    bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
 };
 
 // A model uploaded for dynamic (entity) drawing, in model space.
@@ -386,6 +388,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
+            mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             const std::string& img = m.colorImage();
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
@@ -446,6 +449,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             b.lightmap = -3;
             b.polygonOffset = mi.polygonOffset;
             b.cull = mi.cull;
+        b.scroll = mi.scroll;
             b.firstIndex = uint32_t(indices.size());
             for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
             b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -526,6 +530,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.lightmap = -3;
         b.polygonOffset = mi.polygonOffset;
         b.cull = mi.cull;
+        b.scroll = mi.scroll;
         b.firstIndex = uint32_t(indices.size());
         for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -988,6 +993,7 @@ struct FragmentUniforms {
     float lmWeights[4];
     float params[4];
     float ambient[4];
+    float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
 };
 
 // An entity model to draw this frame.
@@ -996,6 +1002,7 @@ struct DrawItem {
     Mat4 transform{};
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
+    float scrollV = 0.0f; // vehicle tread scroll
 };
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -1315,7 +1322,8 @@ struct Renderer {
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
-                        {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility}};
+                        {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
+                        {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
@@ -1684,6 +1692,7 @@ int main(int argc, char** argv) {
                 }
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                if (e->vehicle) base.scrollV = game::vehicleTexScrollOffset(e->vehicle->texScroll); // TODO(spec): accumulator interpolation
                 assets::LightGridCoeffs c;
                 float sun = 1.0f;
                 if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
