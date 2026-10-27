@@ -58,6 +58,15 @@ struct FxModelInst {
     float scale = 1.0f;
 };
 
+// A Light element (class vtable 0x57c734, created by 0x48dbc0) as submitted to the renderer every frame: draw slot 0x4841b0
+// calls refexport 0x617b1c (DLL AddLightToScene 0x10024420) with the origin (+0x7c), radius = the size channel (+0x88) and
+// r, g, b = the rgb channel (+0x6c..0x74, not clamped; alpha is unused).
+struct FxLight {
+    FVec origin{};
+    float radius = 0;
+    float rgb[3]{};
+};
+
 struct FxSprite {
     FVec position{};
     float rgba[4]{};
@@ -131,6 +140,9 @@ public:
     std::function<bool(const FVec& a, const FVec& b, float& frac, FVec& normal)> trace;
     // Emitter models at the time of the last sprites() call.
     const std::vector<FxModelInst>& models() const { return models_; }
+    // Light elements alive at the last sprites() call (DLL keeps at most r_dlightLimit = 4 of them, TODO(spec): the order
+    // 0x10015180 chooses when there are more).
+    const std::vector<FxLight>& lights() const { return lights_; }
     size_t count() const { return particles_.size(); }
     // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
@@ -167,6 +179,7 @@ private:
     void runPending(int64_t nowMs);
     std::vector<FxSightBlocker> sightBlockers_;
     std::vector<FxModelInst> models_;
+    std::vector<FxLight> lights_;
     FVec velocityAt(const FxParticle& p, float u) const;
     void stepEmitter(FxParticle& p, int64_t nowMs);
 };

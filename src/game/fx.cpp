@@ -199,7 +199,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             FVec t{};
             if (!(*bolt)(t)) continue;
         }
-        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" || e.type == "Tail";
+        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" || e.type == "Tail" || e.type == "Light";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -512,6 +512,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         }
     }
     models_.clear();
+    lights_.clear();
     for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
@@ -559,6 +560,14 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
         s.rgba[3] = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
+        if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite
+            FxLight l;
+            l.origin = pos;
+            l.radius = s.size;
+            for (int c = 0; c < 3; ++c) l.rgb[c] = channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f);
+            lights_.push_back(l);
+            continue;
+        }
         const auto shaders = e.list("shaders");
         if (!shaders.empty()) s.shader = shaders[std::min(p.shader, shaders.size() - 1)];
         // Frame (0x481c30): frame = start + _ftol((now − spawn) · rate); n frames; loop mode 0: frame mod n once

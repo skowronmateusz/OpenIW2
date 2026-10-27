@@ -4637,6 +4637,7 @@ int main(int argc, char** argv) {
             }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
+            for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
