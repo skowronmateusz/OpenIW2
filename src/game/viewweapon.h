@@ -21,7 +21,9 @@ public:
 
     // Gun sway, after update(): idle sway (0x4b51a0) and the lag behind view turns (0x4b4dc0, applied by 0x4b61d0 /
     // 0x4b6420). viewPitch/viewYaw: the view angles this frame; stance: 0 stand, 1 crouch, 2 prone.
-    void sway(const Field& weapon, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle);
+    // `shock` is the shell-shock envelope 0..1 (shellShockRatio), 0 without shell shock.
+    void sway(const Field& weapon, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle,
+              float shock = 0.0f);
 
     // Offsets to add: forward/right/up and pitch/yaw/roll, already faded for aiming down the sights.
     const V3& move() const { return outMove_; }
@@ -67,6 +69,11 @@ V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, floa
 // Aiming a weapon with adsViewBobMult turns the view: pitch −= adsFrac · mult · wave (cap 45), yaw −= adsFrac ·
 // mult · side (cap 45). Returns {up, side, pitch, yaw}.
 std::array<float, 4> viewBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, float adsViewBobMult);
+
+// Shell-shock envelope of the gun sway (0x4b4e01-0x4b4e8d): remaining = start + duration - time; 0 when it is over, 1 while
+// it is at least the shock's first parameter `fadeMs` (the int at +0 of its 0x84-byte record, 0xf7e888), else
+// smoothstep(remaining / fadeMs) = r*r*(3 - 2r). The sway scales are multiplied by (swayShellShockScale - 1) * ratio + 1.
+float shellShockRatio(int remainingMs, int fadeMs);
 
 // Field of view while aiming (0x4ae7d9): horizontal cg_fov towards min(adsZoomFov, cg_fov). `zoomingIn` is true
 // while the aim fraction rises (it becomes true at fraction 0 and false at 1).

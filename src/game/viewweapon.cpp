@@ -204,7 +204,15 @@ float diffTrackAngle(float target, float cur, float rate, float dt) {
 float angleDelta(float a, float b) { return std::remainder(a - b, 360.0f); } // 0x423f50
 } // namespace
 
-void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle) {
+float shellShockRatio(int remainingMs, int fadeMs) {
+    if (remainingMs <= 0) return 0;
+    float r = 1.0f;
+    if (remainingMs < fadeMs) r = float(remainingMs) / float(fadeMs);
+    return r * (3.0f - r * 2.0f) * r; // 0x4b4e73-0x4b4e87
+}
+
+void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle,
+                            float shock) {
     const bool adsWeapon = w("aimDownSight") != 0;
     // Idle sway (0x4b51a0): amount / speed hipIdle* (aiming weapons lerp to adsIdle* by the aim fraction; without
     // hipIdleAmount: 80 and 1), × the stance factor (idleProneFactor / idleCrouchFactor) the smoothed factor
@@ -237,13 +245,16 @@ void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewY
     // View-lag sway (0x4b4dc0): the view angle change since the last frame, scaled to 60 fps and clamped to
     // swayMaxAngle, drives side/up offsets (swayHoriz/VertScale) and pitch/yaw (swayPitch/YawScale) tracked at
     // swayLerpSpeed; aiming weapons lerp to the ads* values, none while a reticle weapon aims. 0x4b61d0 subtracts the
-    // side from the right offset and adds the up; 0x4b6420 subtracts pitch and yaw. TODO(spec): the shell-shock
-    // scale (swayShellShockScale), taken as 1.
+    // side from the right offset and adds the up; 0x4b6420 subtracts pitch and yaw. The four scales are multiplied by
+    // (swayShellShockScale - 1) * shock + 1 (0x4b4e95, 0x4b4fc8-0x4b5004). TODO(spec): shell shock itself (the shellshock
+    // script builtin, ps+0x5bc/0x5c0/0x5c4) is not implemented, so iw2view passes 0.
     if (ms > 0 && !(adsFrac > 0 && reticle && adsWeapon)) {
         auto lerpF = [&](const char* hip, const char* ads) { return adsWeapon ? w(hip) + (w(ads) - w(hip)) * adsFrac : w(hip); };
         const float maxAng = lerpF("swayMaxAngle", "adsSwayMaxAngle"), rate = lerpF("swayLerpSpeed", "adsSwayLerpSpeed");
-        const float pitchS = lerpF("swayPitchScale", "adsSwayPitchScale"), yawS = lerpF("swayYawScale", "adsSwayYawScale");
-        const float horizS = lerpF("swayHorizScale", "adsSwayHorizScale"), vertS = lerpF("swayVertScale", "adsSwayVertScale");
+        const float shockScale0 = (w("swayShellShockScale") - 1.0f) * shock + 1.0f;
+        const float pitchS = lerpF("swayPitchScale", "adsSwayPitchScale") * shockScale0, yawS = lerpF("swayYawScale", "adsSwayYawScale") * shockScale0;
+        const float shockScale = (w("swayShellShockScale") - 1.0f) * shock + 1.0f;
+        const float horizS = lerpF("swayHorizScale", "adsSwayHorizScale") * shockScale, vertS = lerpF("swayVertScale", "adsSwayVertScale") * shockScale;
         const float dt = float(ms) * 0.001f;
         if (!havePrev_) { prevPitch_ = viewPitch; prevYaw_ = viewYaw; havePrev_ = true; }
         const float k = 1.0f / (dt * 60.0f);

@@ -49,6 +49,10 @@ int main() {
     ViewImpulses e;
     e.damage(0, 0, 10, f, l, 0 + 1);
     CHECK(near(e.damageKick(101, 0, false)[0], 6.0f));
+    // Shell-shock envelope of the gun sway (0x4b4e01).
+    CHECK(shellShockRatio(0, 1000) == 0 && shellShockRatio(-5, 1000) == 0);
+    CHECK(shellShockRatio(2000, 1000) == 1.0f && near(shellShockRatio(500, 1000), 0.5f));
+    CHECK(near(shellShockRatio(250, 1000), 0.15625f)); // r*r*(3 - 2r) at r = .25
     if (failures == 0) std::cout << "viewimpulses tests passed\n";
     return failures ? 1 : 0;
 }
