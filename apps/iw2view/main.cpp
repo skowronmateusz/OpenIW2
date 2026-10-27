@@ -3522,7 +3522,7 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
@@ -4180,7 +4180,7 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
                     }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();

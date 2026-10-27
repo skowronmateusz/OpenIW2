@@ -816,6 +816,7 @@ private:
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;
+    float cullDist_ = 0;                  // setculldist (configstring 8), unused
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
     std::vector<FxSightBlocker> fxSightBlockers_;
