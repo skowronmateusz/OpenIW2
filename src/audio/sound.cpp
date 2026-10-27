@@ -104,7 +104,7 @@ Wav parseWav(std::span<const uint8_t> d) {
     throw std::runtime_error("wav: no data chunk");
 }
 
-void SoundAliases::load(const fs::Vfs& vfs, const std::string& level) {
+void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuOnly) {
     const std::string lvl = lower(level);
     for (const std::string& path : vfs.list("soundaliases/")) {
         if (path.size() < 4 || lower(path.substr(path.size() - 4)) != ".csv") continue;
@@ -129,6 +129,7 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level) {
                 return {};
             };
             if (!loadspecAllows(get("loadspec"), lvl)) continue;
+            if (menuOnly && (get("loadspec").empty() || !loadspecAllows(get("loadspec"), "menu"))) continue;
             SoundAlias a;
             a.name = lower(f[0]);
             a.file = get("file");

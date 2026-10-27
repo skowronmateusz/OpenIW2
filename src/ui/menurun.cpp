@@ -52,6 +52,13 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         else if (name == "open" && cmd.size() > 1) { if (env.open) env.open(cmd[1]); }
         else if (name == "setfocus" && cmd.size() > 1) { if (env.setFocus) env.setFocus(cmd[1]); }
         else if (name == "setfocusbydvar" && cmd.size() > 1) { if (env.setFocusByDvar) env.setFocusByDvar(cmd[1]); }
+        else if ((name == "savegameshow" || name == "savegamehide") && cmd.size() > 1) {
+            // Inferred from the menus (main onOpen: savegameshow resume; savegamehide newgame): resume only with a saved game.
+            const bool has = env.savegameExists && env.savegameExists();
+            if (env.showItem) env.showItem(cmd[1], name == "savegameshow" ? has : !has);
+        } else if (name == "restarthide" && cmd.size() > 1) {
+            if (env.showItem && env.restartAvailable && !env.restartAvailable()) env.showItem(cmd[1], false);
+        }
         else if ((name == "show" || name == "hide") && cmd.size() > 1) { if (env.showItem) env.showItem(cmd[1], name == "show"); }
         else if ((name == "execnow" || name == "exec") && cmd.size() > 1) execConsole(cmd[1], env);
         else if (name == "uiscript" && cmd.size() > 2 && lowerStr(cmd[1]) == "update") uiScriptUpdate(cmd[2], env);
