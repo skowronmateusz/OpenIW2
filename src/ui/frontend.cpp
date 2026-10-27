@@ -516,15 +516,18 @@ bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
 // Menu_SetFeederSelection (0x4cf5b0) on the open menu: every list of that feeder gets the selection; row 0 resets the scroll,
 // a row above the first shown one scrolls up to it.
 void MenuStack::setFeederSelection(int feeder, int row) {
-    Menu* m = top();
-    if (!m) return;
-    for (const auto& itp : m->items) {
-        if (itp->type != 6 || itp->feeder != feeder) continue;
-        ListState& st = lists_[itp.get()];
-        st.cursor = row;
-        if (env_.feederSelect) env_.feederSelect(feeder, row);
-        if (row == 0) st.hover = st.startPos = 0;
-        else if (row < st.startPos) st.startPos = row;
+    // The profile scripts (0x4c4c42..0x4c4c7f) walk the open menus from the top of the stack down and select in each one
+    // (a popup may be on top of the list's menu). TODO(spec): the exe only visits menus whose flag word 0xe8 bit 2 is set.
+    for (size_t mi = stack_.size(); mi-- > 0;) {
+        Menu* m = stack_[mi];
+        for (const auto& itp : m->items) {
+            if (itp->type != 6 || itp->feeder != feeder) continue;
+            ListState& st = lists_[itp.get()];
+            st.cursor = row;
+            if (env_.feederSelect) env_.feederSelect(feeder, row);
+            if (row == 0) st.hover = st.startPos = 0;
+            else if (row < st.startPos) st.startPos = row;
+        }
     }
 }
 
