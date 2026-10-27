@@ -58,6 +58,10 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     float4 base = colorMap.sample(colorSampler, in.uv) * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
 
+    if (u.params.y > 3.5) { // effect_multiply: blends the texture towards white by the vertex alpha, no light
+        float4 t = colorMap.sample(colorSampler, in.uv);
+        return float4((1.0 - in.color.a) + t.rgb * in.color.rgb * in.color.a, 1.0);
+    }
     float3 light;
     if (u.params.w > 0.5) {
         light = float3(1.0);

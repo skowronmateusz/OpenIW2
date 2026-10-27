@@ -221,7 +221,7 @@ struct GpuVertex {
 };
 static_assert(sizeof(GpuVertex) == 56);
 
-enum class Pass { Opaque, AlphaTest, Blend, Additive, Sky, Skip };
+enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip };
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -289,6 +289,8 @@ Pass classify(const std::string& techset) {
     if (techset == "sky") return Pass::Sky;
     if (techset == "tools" || techset.rfind("tools", 0) == 0) return Pass::Skip;
     if (techset.find("_add") != std::string::npos) return Pass::Additive;
+    // effect_multiply -> vertcol_mul.tech -> mul.hlsl: multiplied into the framebuffer (DST_COLOR, ZERO), unlit.
+    if (techset == "effect_multiply") return Pass::Multiply;
     if (techset.find("blend") != std::string::npos || techset.rfind("effect", 0) == 0) return Pass::Blend;
     if (techset.find("alphatest") != std::string::npos) return Pass::AlphaTest;
     return Pass::Opaque;
@@ -1026,8 +1028,8 @@ struct Renderer {
     SDL_GPUBuffer* overlayVerts = nullptr;
     SDL_GPUBuffer* overlayIndices = nullptr;
     static constexpr uint32_t kMaxQuads = 8192;
-    SDL_GPUGraphicsPipeline* pipelines[4] = {}; // Opaque, AlphaTest, Blend, Additive
-    SDL_GPUGraphicsPipeline* statePipelines[4][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
+    SDL_GPUGraphicsPipeline* pipelines[5] = {}; // Opaque, AlphaTest, Blend, Additive, Multiply
+    SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
@@ -1069,15 +1071,15 @@ struct Renderer {
             {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, light)},
         };
 
-        for (int p = 0; p < 4; ++p) {
+        for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
             ct.format = colorFormat;
             if (p >= 2) {
                 ct.blend_state.enable_blend = true;
                 ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
                 ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-                ct.blend_state.src_color_blendfactor = p == 2 ? SDL_GPU_BLENDFACTOR_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
-                ct.blend_state.dst_color_blendfactor = p == 2 ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
+                ct.blend_state.src_color_blendfactor = p == 4 ? SDL_GPU_BLENDFACTOR_DST_COLOR : p == 2 ? SDL_GPU_BLENDFACTOR_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
+                ct.blend_state.dst_color_blendfactor = p == 4 ? SDL_GPU_BLENDFACTOR_ZERO : p == 2 ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
                 ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
                 ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
             }
@@ -1270,7 +1272,7 @@ struct Renderer {
             for (const Batch& b : scene.batches)
                 if (b.pass == Pass::Sky) SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         }
-        for (Pass p : {Pass::Opaque, Pass::AlphaTest, Pass::Blend, Pass::Additive}) {
+        for (Pass p : {Pass::Opaque, Pass::AlphaTest, Pass::Blend, Pass::Additive, Pass::Multiply}) {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
                 if (b.pass != p) continue;
@@ -1283,7 +1285,7 @@ struct Renderer {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                    {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
+                    {p == Pass::AlphaTest ? 1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
                     {0, 0, 0, 0}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
