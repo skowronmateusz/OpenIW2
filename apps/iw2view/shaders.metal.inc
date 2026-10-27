@@ -331,4 +331,27 @@ fragment float4 fs_glow_apply(GlowVOut in [[stage_in]], constant GlowU& u [[buff
     const float a = saturate(blurred.a * 2.0) * u.a.y;
     return float4(skyRgb * a + blurred.rgb * u.a.x, a);
 }
+
+// Dynamic point light, technique l_point (lib/light_point.hlsl): the distance to the light, divided by its radius, indexes the linear falloff ramp;
+// colour = diffuse * light colour * N.L * falloff, added to the lit scene.
+// TODO(spec): Phong specular and normal maps of the l_point technique, the exact N.L form of Phong_Lighting.
+struct DLightU {
+    float4 light;  // xyz position, w radius
+    float4 color;  // rgb
+    float4 params; // x: alpha test
+    float4 eye;
+    float4 ramp[4]; // images/falloff_linear.iwi texels / 255 (16 x 1, bilinear, clamp)
+};
+fragment float4 fs_dlight(VertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float4 base = colorMap.sample(s, in.uv) * in.color;
+    if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
+    const float3 wp = in.eyeVec + u.eye.xyz;
+    const float3 delta = (u.light.xyz - wp) / u.light.w;
+    const float d = length(delta);
+    const float ndl = max(dot(normalize(in.normal), delta / max(d, 1e-5)), 0.0);
+    const float x = clamp(saturate(d) * 16.0 - 0.5, 0.0, 15.0);
+    const int i0 = int(floor(x)), i1 = min(i0 + 1, 15);
+    const float f = mix(u.ramp[i0 >> 2][i0 & 3], u.ramp[i1 >> 2][i1 & 3], x - float(i0));
+    return float4(base.rgb * u.color.rgb * (ndl * f), 1.0);
+}
 )MSL"
