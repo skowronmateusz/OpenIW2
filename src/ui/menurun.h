@@ -21,6 +21,8 @@ struct MenuEnv {
     std::function<void(const std::string& item)> setFocus;             // "setfocus"
     std::function<void(const std::string& dvar)> setFocusByDvar;       // "setfocusbydvar"
     std::function<void(const std::string& item, bool show)> showItem;   // "show" / "hide"
+    std::function<bool()> savegameExists;  // "savegameshow/savegamehide": TODO(spec) exact exe semantics; unset = no save
+    std::function<bool()> restartAvailable; // "restarthide": unset = available
     std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle
     std::function<void(const std::string& name, const Command& args)> uiScript; // "uiScript" other than update
 };
