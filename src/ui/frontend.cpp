@@ -49,6 +49,10 @@ bool MenuStack::open(const std::string& name) {
     std::erase(stack_, m);
     stack_.push_back(m);
     focus_ = nullptr;
+    if (!m->soundLoop.empty() && lower(m->soundLoop) != loopAlias_ && env_.startLoop) {
+        loopAlias_ = lower(m->soundLoop);
+        env_.startLoop(m->soundLoop);
+    }
     runItem(*m, m->onOpen);
     if (!focus_) {
         const auto sel = selectable(*m);
@@ -64,6 +68,15 @@ void MenuStack::close(const std::string& name) {
     if (it == stack_.end()) return;
     const bool wasTop = stack_.back() == m;
     stack_.erase(it);
+    // TODO(spec): the exe's stop/fade of the loop on close (0x4cf92c); here it stops when no open menu names the same loop.
+    if (!loopAlias_.empty() && lower(m->soundLoop) == loopAlias_) {
+        bool still = false;
+        for (const Menu* o : stack_) still = still || lower(o->soundLoop) == loopAlias_;
+        if (!still) {
+            loopAlias_.clear();
+            if (env_.stopLoop) env_.stopLoop();
+        }
+    }
     runItem(*m, m->onClose);
     if (wasTop) focus_ = nullptr;
     if (!stack_.empty() && !focus_) {

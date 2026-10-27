@@ -2379,6 +2379,14 @@ int main(int argc, char** argv) {
                 // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
             }
         };
+        int menuLoopHandle = 0;
+        menuEnv.startLoop = [&](const std::string& alias) {
+            if (menuLoopHandle) mixer.stop(menuLoopHandle);
+            float d = 0;
+            menuLoopHandle = mixer.play(alias, std::nullopt, &d);
+            std::cout << "menu loop " << alias << (menuLoopHandle ? " started\n" : " not started\n");
+        };
+        menuEnv.stopLoop = [&] { if (menuLoopHandle) mixer.stop(menuLoopHandle); menuLoopHandle = 0; };
         menuEnv.exec = execText;
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
