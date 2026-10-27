@@ -445,6 +445,73 @@ int main(int argc, char** argv) {
             std::cout << "fall test: " << agents << " agents, " << tunnels << " tunnels, " << fell << " fell, " << stuck << " in solid\n";
             return tunnels + fell ? 1 : 0;
         }
+        if (argc > 3 && std::string(argv[3]) == "--lookat-test") {
+            // For each trigger_lookat: search a view direction from the player's eye whose look trace (mask 0x2280e801)
+            // first hits it, then run frames looking there (expect touches) and in the opposite direction (expect none).
+            world.start();
+            world.frame();
+            int fail = 0, tested = 0;
+            for (const auto& ep : world.entities()) {
+                if (ep->classname != "trigger_lookat" || ep->obj->removed) continue;
+                const auto o = world.player()->obj->get("origin").asVector();
+                iw2::game::World::PlayerCommand cmd;
+                const iw2::game::Vec3 eye{o[0], o[1], o[2] + cmd.viewHeight};
+                iw2::game::Vec3 standAt{};
+                bool found = false;
+                float fp = 0, fy = 0;
+                {
+                    std::printf("trigger_lookat #%d: model %s brush contents 0x%x\n", ep->number, ep->obj->get("model").toString().c_str(),
+                                world.collision().modelContents(std::atoi(ep->obj->get("model").toString().c_str() + 1)));
+                    // Where is the brush? Ray search with only the lookat contents; stand 150 units in front of it.
+                    for (float pitch = -80; pitch <= 80 && !found; pitch += 2)
+                        for (float yaw = 0; yaw < 360 && !found; yaw += 2) {
+                            const float cp = std::cos(pitch * 3.14159265f / 180), sp = std::sin(pitch * 3.14159265f / 180);
+                            const float cy = std::cos(yaw * 3.14159265f / 180), sy = std::sin(yaw * 3.14159265f / 180);
+                            const iw2::game::Vec3 end{eye[0] + 15000 * cp * cy, eye[1] + 15000 * cp * sy, eye[2] - 15000 * sp};
+                            const iw2::game::Vec3 mo = ep->obj->get("origin").isVector() ? ep->obj->get("origin").asVector() : iw2::game::Vec3{0, 0, 0};
+                            const iw2::game::Vec3 ma = ep->obj->get("angles").isVector() ? ep->obj->get("angles").asVector() : iw2::game::Vec3{0, 0, 0};
+                            const auto tr = world.collision().traceModel(std::atoi(ep->obj->get("model").toString().c_str() + 1), mo, ma, eye, end, {0, 0, 0}, {0, 0, 0}, 1u);
+                            if (tr.fraction < 1.0f) {
+                                found = true;
+                                standAt = {tr.endPos[0] - cp * cy * 120.0f, tr.endPos[1] - cp * sy * 120.0f, tr.endPos[2] + sp * 120.0f - cmd.viewHeight};
+                                std::printf("trigger_lookat #%d: lookat-only ray from the spawn eye hits at (%.0f %.0f %.0f)\n", ep->number, tr.endPos[0], tr.endPos[1], tr.endPos[2]);
+                            }
+                        }
+                    if (!found) std::printf("trigger_lookat #%d: not hit by a lookat-contents ray at all\n", ep->number);
+                    if (found) world.setPlayerOrigin(standAt, world.player()->obj->get("angles").asVector());
+                    found = false;
+                }
+                const auto o2 = world.player()->obj->get("origin").asVector();
+                const iw2::game::Vec3 eye2{o2[0], o2[1], o2[2] + cmd.viewHeight};
+                for (float pitch = -60; pitch <= 60 && !found; pitch += 2)
+                    for (float yaw = 0; yaw < 360 && !found; yaw += 2) {
+                        const float cp = std::cos(pitch * 3.14159265f / 180), sp = std::sin(pitch * 3.14159265f / 180);
+                        const float cy = std::cos(yaw * 3.14159265f / 180), sy = std::sin(yaw * 3.14159265f / 180);
+                        const iw2::game::Vec3 end{eye2[0] + 15000 * cp * cy, eye2[1] + 15000 * cp * sy, eye2[2] - 15000 * sp};
+                        const auto tr = world.collision().trace(eye2, end, {0, 0, 0}, {0, 0, 0}, 0x2280e801u, world.player()->number);
+                        if (tr.entity == ep->number) { found = true; fp = pitch; fy = yaw; }
+                    }
+                ++tested;
+                if (!found) {
+                    std::printf("trigger_lookat #%d: no direction from the spawn eye hits it (blocked or out of view)\n", ep->number);
+                    continue;
+                }
+                const int b0 = world.stats.lookatTouches;
+                cmd.viewAngles = {fp, fy, 0};
+                world.setPlayerCommand(cmd);
+                for (int f = 0; f < 10; ++f) world.frame();
+                const int looked = world.stats.lookatTouches - b0;
+                cmd.viewAngles = {fp, fy + 180.0f, 0};
+                world.setPlayerCommand(cmd);
+                const int b1 = world.stats.lookatTouches;
+                for (int f = 0; f < 10; ++f) world.frame();
+                const int away = world.stats.lookatTouches - b1;
+                std::printf("trigger_lookat #%d: look (pitch %.0f yaw %.0f) touches %d, away touches %d\n", ep->number, fp, fy, looked, away);
+                if (looked == 0 || away != 0) ++fail;
+            }
+            std::printf("lookat test: %d trigger_lookat entities, %d failed\n", tested, fail);
+            return fail ? 1 : 0;
+        }
         int seconds = 10;
         bool spawnAll = false;
         int traceActor = -1;

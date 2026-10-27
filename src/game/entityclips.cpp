@@ -72,6 +72,21 @@ void World::syncEntityClips() {
             clips.push_back(c);
             continue;
         }
+        // trigger_lookat (spawn 0x529930): the brush model with contents 0x20000000, hit by the look trace of
+        // updateCrosshairTarget (0x535070, mask 0x2280e801).
+        if (e.classname == "trigger_lookat" && !e.obj->removed) {
+            const Value m = e.obj->get("model");
+            if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') continue;
+            EntityClip c;
+            c.id = e.number;
+            c.model = std::atoi(m.asString().c_str() + 1);
+            const Value o = e.obj->get("origin"), a = e.obj->get("angles");
+            if (o.isVector()) c.origin = o.asVector();
+            if (a.isVector()) c.angles = a.asVector();
+            c.contents = 0x20000000u;
+            clips.push_back(c);
+            continue;
+        }
         if (e.obj->removed || e.classname != "script_brushmodel") continue;
         if (e.obj->get("$notsolid").truthy()) continue;
         const Value m = e.obj->get("model");

@@ -385,7 +385,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
