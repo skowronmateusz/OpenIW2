@@ -149,6 +149,7 @@ Entity& World::spawnEntity(const std::string& classname) {
     e->obj->set("angles", Value(Vec3{0, 0, 0}));
     // Native integer entity fields (table at 0x56f4a8: spawnflags, count, health, dmg, maxhealth) of a zeroed entity.
     for (const char* f : {"spawnflags", "count", "health", "dmg", "maxhealth"}) e->obj->set(f, Value(int32_t(0)));
+    if (classname == "script_vehicle") e->obj->set("$takedamage", Value(true)); // 0x50d8f4 (vehicle spawn, ent+0x111 = 1)
     byObject_[e->obj.get()] = e.get();
     entities_.push_back(std::move(e));
     return *entities_.back();
@@ -505,6 +506,7 @@ void World::thinkActors() {
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
         actorThink(e);
         if (!e.ai.corpse) actorFacing(e);
+        if (!e.ai.corpse) actorMoveNoise(e);
     }
     // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
     if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
@@ -928,6 +930,7 @@ void World::registerBuiltins() {
         if (c.arg(3).isVector()) e.obj->set("origin", c.arg(3));
         if (c.arg(4).isVector()) e.obj->set("angles", c.arg(4));
         e.obj->set("health", Value(int32_t(1000)));
+        e.obj->set("$takedamage", Value(true)); // 0x50d8f4: ent+0x111 = 1 in the vehicle spawn (0x50d820..0x50d900)
         return Value(e.obj);
     });
     // Load-time hints and profiling markers have no effect on the simulation.

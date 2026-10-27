@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <cmath>
 #include <map>
 
 namespace {
@@ -86,10 +87,50 @@ int main() {
 		}
 	}
 })";
+    std::ofstream(dir / "ui/w.menu") << R"({
+	menuDef
+	{
+		name opts
+		rect 10 20 400 300
+		visible 1
+		itemDef
+		{
+			name vol
+			type 10
+			text " "
+			dvarfloat "snd_volume" 0.8 0 1
+			rect -30 0 200 13
+			origin 50 100
+			visible 1
+		}
+		itemDef
+		{
+			name yn
+			type 11
+			text "x"
+			dvar "flag"
+			rect 0 0 200 13
+			origin 0 120
+			visible 1
+		}
+		itemDef
+		{
+			name multi
+			type 12
+			text "x"
+			dvarFloatList { "@A" 0 "@B" 1 "@C" 2 }
+			dvar "mode"
+			rect 0 0 200 13
+			origin 0 140
+			visible 1
+		}
+	}
+})";
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(dir);
     iw2::ui::MenuLibrary lib(vfs);
     CHECK(lib.loadFile("ui/t.menu"));
+    CHECK(lib.loadFile("ui/w.menu"));
     std::map<std::string, std::string> cv;
     std::vector<std::string> log;
     iw2::ui::MenuEnv env;
@@ -129,6 +170,47 @@ int main() {
     CHECK(st.top()->name == "main");
     st.closeAll();
     CHECK(st.empty());
+
+    // Options widgets: origin adds to the rect (exe 0x4d1dd0); slider, yes/no and multi items.
+    {
+        env.textWidth = [](const iw2::ui::Item&) { return 10.0f; };
+        CHECK(st.open("opts"));
+        const iw2::ui::Menu* m = st.top();
+        const iw2::ui::Item& vol = *m->items[0];
+        CHECK(vol.hasRange && vol.dvar == "snd_volume" && vol.dvarDef == 0.8f && vol.dvarMax == 1.0f);
+        CHECK(vol.rect.x == 20 && vol.rect.y == 100);
+        CHECK(m->items[2]->floatList.size() == 3 && m->items[2]->floatList[1].second == 1.0f);
+        CHECK(st.selectable(*m).size() == 3);
+        // track x = menu x + item x + text width + 8 = 10 + 20 + 10 + 8; thumb at the dvarfloat default 0.8 while the dvar is unset
+        CHECK(st.sliderTrackX(*m, vol) == 48.0f);
+        CHECK(std::abs(st.sliderFraction(vol) - 0.8f) < 1e-5f);
+        // a click sets the value from the pointer: fraction = (x - (track + 6)) / 84
+        CHECK(st.click(48.0f + 6.0f + 42.0f, 20 + 105));
+        CHECK(cv["snd_volume"] == "0.5");
+        st.mouseMove(48.0f + 6.0f + 84.0f, 20 + 105); // drag to the end
+        CHECK(cv["snd_volume"] == "1");
+        st.release();
+        st.mouseMove(48.0f + 6.0f + 10.0f, 20 + 105); // no drag after release
+        CHECK(cv["snd_volume"] == "1");
+        st.key(iw2::ui::MenuStack::Key::Left); // arrows: 5% of the range
+        CHECK(cv["snd_volume"] == "0.95");
+        // yes/no: label by value, click toggles ("%i")
+        const iw2::ui::Item& yn = *m->items[1];
+        CHECK(st.valueLabel(yn) == "EXE_NO");
+        CHECK(st.click(10 + 5, 20 + 125));
+        CHECK(cv["flag"] == "1" && st.valueLabel(yn) == "EXE_YES");
+        CHECK(st.valueTextX(*m, yn) == 10 + 0 + 10 + 8);
+        // multi: next / previous with wrap, unmatched value shows index 0
+        const iw2::ui::Item& mu = *m->items[2];
+        CHECK(st.valueLabel(mu) == "@A");
+        CHECK(st.click(15, 20 + 145));
+        CHECK(cv["mode"] == "1" && st.valueLabel(mu) == "@B");
+        CHECK(st.clickBack(15, 20 + 145));
+        CHECK(cv["mode"] == "0");
+        CHECK(st.clickBack(15, 20 + 145));
+        CHECK(cv["mode"] == "2");
+        st.closeAll();
+    }
 
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;
