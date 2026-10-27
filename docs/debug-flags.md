@@ -12,6 +12,8 @@ described in the code that reads them.
 | `IW2_COS_SHIFT=x` | iw2view | r_cosinePowerMapShift (DLL dvar 0x101ce680, default 0, clamped -1..1): shifts the `$specularity` power ramp (t = clamp(x/30 + shift)). |
 | `IW2_NO_SPEC=1` | iw2view | Disables the lmap_s specular path (world batches of `phong_*_spec*` materials fall back to the plain lightmap shader, no normal map). For A/B comparison. |
 | `IW2_NO_DETAIL=1` | iw2view | Disables detail-map blending (lib/shade.hlsl USE_DETAIL) on the non-spec lightmap/model path (`phong_*_detail`: lmap_dtl, lmap_a_dtl, lprobe_dtl). For A/B comparison. |
+| `IW2_NO_GLOW=1` | iw2view | Disables the glow/bloom post chain (glow_setup, two blur layers, glow_apply_bloom/sky_bleed); the scene then goes straight to the swapchain. For A/B comparison. |
+| `IW2_NO_PROBE=1` | iw2view | Entities and the view model use the old single up-normal light-grid colour instead of per-pixel ProbeLighting(N). For A/B comparison. |
 | `IW2_PROF=N` | iw2view | Prints average per-frame CPU timings every N frames and quits after two reports. |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
@@ -35,13 +37,15 @@ described in the code that reads them.
 | `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname starts with the prefix (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
 | `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
+| `IW2_SHOT_HEALTH=<hp>[,<trail>[,<phase ms>]]` | iw2view `--shot` | Sets the player health (a value <= 1 is a fraction of maxhealth), the health-bar trail fraction and how far into its pulse period the low-health background is. |
+| `IW2_SHOT_HINT=<n>` | iw2view `--shot` | Shows the invalid-command hint state `<n>` (1 no ammo, 2 no frag, 3 no smoke, 4 stand blocked, 5 crouch blocked) 300 ms into its blink cycle. |
 | `IW2_BOLD_MESSAGE=<text>` | iw2view `--shot` | Shows a bold game message (iprintlnbold window). |
 
 ## Command-line options
 - iw2view: `--menu` (front end without a level), `--cvar name=value`, `--ride F,R` / `--ride-after S` / `--ride-fire`
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,
   `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`.
-- iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--lookat-test`.
+- iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--player-throw frag|smoke` (holds +frag / +smoke 1 s..2 s through PM_Weapon; prints the throw and the explosion time: frag 3.5 s, smoke 4 s after the throw on 88ridge), `--lookat-test`.
 - iw2game `<main> <map> --item-test [weapon=N] weapon ...`: spawns weapon items at the player and prints stock / clip after the touch pickup (`weapon=N` first sets that weapon's clip, e.g. `mk1britishfrag=0 fraggrenade fraggrenade`).
 
 ## Menu debug helpers (iw2view --menu)
