@@ -1754,6 +1754,9 @@ int main(int argc, char** argv) {
     std::string language = "polish";
     bool scripts = true;
     bool spawnAll = false;
+    int followVehicle = -2; // -2 off, -1 list only, N the Nth entity with vehicle state
+    float followDist = 400.0f, followYaw = 180.0f, followPitch = 12.0f;
+    std::optional<std::array<float, 2>> forceTurret, forceJolt;
     Renderer renderer;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -1763,6 +1766,12 @@ int main(int argc, char** argv) {
         };
         try {
             if (a == "--shot") shot = next();
+            else if (a == "--follow-vehicle") followVehicle = std::stoi(next()); // debug: the shot is taken from behind vehicle N
+            else if (a == "--follow-pitch") followPitch = std::stof(next());
+            else if (a == "--force-turret") { auto v = parseFloats(next()); forceTurret = {v.at(0), v.at(1)}; } // debug: pitch,yaw of every vehicle
+            else if (a == "--force-jolt") { auto v = parseFloats(next()); forceJolt = {v.at(0), v.at(1)}; } // debug: tag_body pitch,roll
+            else if (a == "--follow-dist") followDist = std::stof(next());
+            else if (a == "--follow-yaw") followYaw = std::stof(next()); // degrees added to the vehicle yaw (orbit)
             else if (a == "--pos") { auto v = parseFloats(next()); pos = Vec3{v.at(0), v.at(1), v.at(2)}; }
             else if (a == "--yaw") yaw = std::stof(next());
             else if (a == "--pitch") pitch = std::stof(next());
@@ -3093,6 +3102,31 @@ int main(int argc, char** argv) {
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
+                }
+                if (forceTurret || forceJolt)
+                    for (const auto& e : world->entities())
+                        if (e->vehicle) {
+                            if (forceTurret) e->vehicle->turretPitch = (*forceTurret)[0], e->vehicle->turretYaw = (*forceTurret)[1];
+                            if (forceJolt) e->vehicle->joltPitch = (*forceJolt)[0], e->vehicle->joltRoll = (*forceJolt)[1];
+                        }
+                if (followVehicle >= -1) {
+                    int n = 0;
+                    for (const auto& e : world->entities()) {
+                        if (!e->vehicle || e->obj->removed) continue;
+                        const script::Vec3 o = e->obj->get("origin").asVector(), an = e->obj->get("angles").asVector();
+                        std::cout << "vehicle " << n << ": " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
+                                  << " yaw " << an[1] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
+                                  << " jolt " << e->vehicle->joltPitch << "/" << e->vehicle->joltRoll << " speed " << e->vehicle->speed
+                                  << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << "\n";
+                        if (n == followVehicle) {
+                            const float yr = (an[1] + followYaw) * float(M_PI) / 180.0f;
+                            const float pr = followPitch * float(M_PI) / 180.0f;
+                            cam.pos = {o[0] + std::cos(yr) * followDist * std::cos(pr), o[1] + std::sin(yr) * followDist * std::cos(pr), o[2] + 60.0f + followDist * std::sin(pr)};
+                            cam.yaw = std::atan2(o[1] - cam.pos.y, o[0] - cam.pos.x) * 180.0f / float(M_PI);
+                            cam.pitch = followPitch;
+                        }
+                        ++n;
+                    }
                 }
                 if (shotUse) {
                     game::World::PlayerCommand pc;

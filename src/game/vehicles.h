@@ -96,10 +96,12 @@ struct VehicleState {
     // Body jolt (joltbody / fireturret recoil 0x50dcf0, step 0x510770): direction factors (+0x1d4 forward, +0x1d8 right),
     // amplitude (+0x1dc), phase in degrees (+0x1e0); joltPitch / joltRoll are the entity fields +0x64 / +0x6c that the
     // controller 0x5127a0 applies to tag_body as angles (pitch, 0, roll).
-    float joltDirF = 0, joltDirR = 0, joltAmp = 0, joltPhase = 0, joltPitch = 0, joltRoll = 0;
+    float joltDirF = 0, joltDirR = 0, joltAmp = 0, joltPhase = 0, joltPitch = 0, joltRoll = 0, joltSpeed = 0, joltDecel = 0;
     int turretSnd = 0;         // +0x18c: 2 turning, 1 just stopped (one stop sound), 0 idle
     int spinHandle = 0;
     bool turretMoved = false;
+    bool onCompass = false;    // +0x190 (addvehicletocompass 0x513c10 / removevehiclefromcompass 0x513c70)
+    std::string lookAtText;    // +0x194 (setvehiclelookattext 0x513cd0): the HUD string shown when the player looks at the vehicle
     bool engineOn = true;
     float idleFrac = 0, engFrac = 0;
     int idleHandle = 0, engHandle = 0;

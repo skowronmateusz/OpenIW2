@@ -338,7 +338,7 @@ public:
     std::string vehicleCollmap(Entity& vehicle);
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
     void updateVehicleEngineSound(Entity& e);
-    void vehicleJolt(Entity& e, const Vec3& dir, float intensity);
+    void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
