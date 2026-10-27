@@ -167,6 +167,18 @@ float MenuStack::valueTextX(const Menu& m, const Item& it) const {
 
 std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
+    if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
+        // TODO(spec): the dvar type test (float only) and the decimal comma of some languages (0x42f410); here a numeric
+        // dvar (or the unset default) is formatted, other strings are shown as they are.
+        const std::string raw = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
+        char* end = nullptr;
+        double v = std::strtod(raw.c_str(), &end);
+        if (raw.empty()) v = double(cvarValue(it));
+        else if (end == raw.c_str() || *end) return raw;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "%.2f", v);
+        return buf;
+    }
     if (it.type == 13) { // exe 0x4cd720: the domain string of the enum dvar at the item's current index
         if (it.enumList.empty()) return "<dvarEnumList not set>";
         if (!env_.enumValues) return "<not an enum dvar>";
