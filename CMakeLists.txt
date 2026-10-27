@@ -81,7 +81,8 @@ target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_ui
   src/ui/menu.cpp
-  src/ui/menurun.cpp)
+  src/ui/menurun.cpp
+  src/ui/frontend.cpp)
 target_include_directories(iw2_ui PUBLIC src)
 target_link_libraries(iw2_ui PUBLIC iw2_fs)
 target_compile_options(iw2_ui PRIVATE -Wall -Wextra -Wpedantic)
@@ -201,3 +202,7 @@ add_test(NAME watersim COMMAND test_watersim)
 add_executable(test_fog tests/test_fog.cpp)
 target_link_libraries(test_fog PRIVATE iw2_game)
 add_test(NAME fog COMMAND test_fog)
+
+add_executable(test_frontend tests/test_frontend.cpp)
+target_link_libraries(test_frontend PRIVATE iw2_ui)
+add_test(NAME frontend COMMAND test_frontend)
