@@ -290,6 +290,8 @@ struct Batch {
     int cull = 0;          // mtlCullFace: 0 none, 1 back, 2 front
     uint32_t firstIndex = 0, indexCount = 0;
     bool scroll = false; // see MatInfo::scroll
+    // *_spec techniques (lmap_s: lib/phong.hlsl): indices into Scene::textures of the normalMap / specularMap, -1 = none.
+    int normalTex = -1, specTex = -1;
 };
 
 struct Lightmap {
@@ -309,6 +311,7 @@ struct MatInfo {
     int cull = 0;
     // For Pass::Water `texture` indexes Scene::waters.
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
+    int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
 };
 
@@ -331,6 +334,8 @@ struct GpuModel {
 struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUBuffer* tbn = nullptr;           // world vertices' tangent + binormal (6 floats each), parallel to `vertices`
+    SDL_GPUTexture* specularity = nullptr;  // "$specularity" lookup (32 x 256 L8): U = specular power, V = N.H
     std::vector<SDL_GPUTexture*> textures; // [0] = white
     std::vector<Lightmap> lightmaps;
     Lightmap dummyLightmap;
@@ -503,25 +508,35 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             }
             mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             const std::string& img = m.colorImage();
-            if (mi.pass == Pass::Sky) {
-                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is used as a UI background
-                auto it = scene.imageIndex.find(img);
+            auto imageSlot = [&](const std::string& image) {
+                auto it = scene.imageIndex.find(image);
                 if (it == scene.imageIndex.end()) {
                     SDL_GPUTexture* t = nullptr;
-                    if (img == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
+                    if (image == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
                         const uint8_t black[4] = {0, 0, 0, 255};
                         t = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1);
                         up.texture(t, 0, 0, 1, 1, black, 4);
-                    } else t = loadImage(dev, up, vfs, img);
+                    } else t = loadImage(dev, up, vfs, image);
                     int idx = 0;
                     if (t) {
                         idx = int(scene.textures.size());
                         scene.textures.push_back(t);
                     }
-                    it = scene.imageIndex.emplace(img, idx).first;
+                    it = scene.imageIndex.emplace(image, idx).first;
                 }
-                mi.texture = it->second;
+                return it->second;
+            };
+            if (mi.pass == Pass::Sky) {
+                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is a UI background
+                mi.texture = imageSlot(img);
+                // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
+                if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
+                    for (const auto& t : m.textures) {
+                        if (t.imageName.empty() || t.imageName[0] == '$') continue;
+                        if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap") mi.normalTex = imageSlot(t.imageName);
+                        if (t.semantic == assets::TextureSemantic::Specular && t.samplerName == "specularMap") mi.specTex = imageSlot(t.imageName);
+                    }
             }
         } catch (const std::exception& e) {
             std::cerr << "warning: material " << name << ": " << e.what() << "\n";
@@ -875,6 +890,8 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
     auto tex = [&](SDL_GPUTexture* t) { if (t) SDL_ReleaseGPUTexture(dev, t); };
     buf(scene.vertices);
     buf(scene.indices);
+    buf(scene.tbn);
+    tex(scene.specularity);
     for (size_t i = 1; i < scene.textures.size(); ++i) tex(scene.textures[i]); // [0] is the shared white texture
     for (auto& lm : scene.lightmaps) { tex(lm.coeffs); tex(lm.sun); }
     tex(scene.sky);
@@ -882,6 +899,26 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
         if (m) { buf(m->vertices); buf(m->indices); }
     for (auto& [key, m] : scene.skinned) { buf(m.vertices); buf(m.indices); }
     scene = Scene{};
+}
+
+// "$specularity" (gfx DLL 0x1000fd60 -> generator 0x10029710, shift argument 0): 32 columns x 256 rows of L8, stored at
+// y * 32 + x. Column x has t = clamp(x / 30, 0, 1) and exponent P = ln 0.1 / ln cos((180 - 175 t) / 4 degrees), i.e. cos^P
+// reaches 0.1 at that angle (column 31: P = 30). Row y is N.H = y / 255 and the byte is round(255 * (y / 255)^P).
+// U = specularMap.a (the power), V = N.H, sampled with linear filtering and clamped (sampler state 0x32 at 0x10038e0a).
+std::vector<uint8_t> specularityTable() {
+    std::vector<uint8_t> t(32 * 256);
+    for (int x = 0; x < 32; ++x) {
+        double P = 30.0;
+        if (x != 31) {
+            const double u = std::clamp(double(float(x) * 0.033333335f), 0.0, 1.0);
+            P = std::log(0.1) / std::log(std::cos((180.0 - 175.0 * u) * 0.004363323251406352));
+        }
+        for (int y = 0; y < 256; ++y) {
+            const float v = float(std::pow(double(float(y) * 0.003921569f), P) * 255.0);
+            t[size_t(y) * 32 + size_t(x)] = uint8_t(std::lrint(double(v) + 9.313225746154785e-10)); // + 2^-30 (0x1019be00)
+        }
+    }
+    return t;
 }
 
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
@@ -940,12 +977,16 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<std::tuple<int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
     for (const auto& s : bsp.soups()) {
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull}];
+        // Specular only on lightmapped soups with both maps present (lmap_s); IW2_NO_SPEC disables it.
+        static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
+        const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
+                          (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1039,7 +1080,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1054,6 +1095,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.lightmap = std::get<2>(key);
         b.polygonOffset = std::get<3>(key);
         b.cull = std::get<4>(key);
+        b.normalTex = std::get<5>(key);
+        b.specTex = std::get<6>(key);
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -1071,6 +1114,23 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     if (!scene.vertices || !scene.indices) sdlFail("SDL_CreateGPUBuffer");
     up.buffer(scene.vertices, verts.data(), vb.size);
     up.buffer(scene.indices, indices.data(), ib.size);
+    {
+        // Tangent frame of the BSP vertices (lib/normalmap.hlsl Normal_VertexSetup); static-model vertices appended after them have none.
+        std::vector<float> tbn(verts.size() * 6, 0.0f);
+        for (size_t i = 0; i < bsp.vertices().size(); ++i) {
+            std::memcpy(&tbn[i * 6], bsp.vertices()[i].tangent.data(), 12);
+            std::memcpy(&tbn[i * 6 + 3], bsp.vertices()[i].binormal.data(), 12);
+        }
+        SDL_GPUBufferCreateInfo tb{};
+        tb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        tb.size = uint32_t(tbn.size() * sizeof(float));
+        scene.tbn = SDL_CreateGPUBuffer(dev, &tb);
+        if (!scene.tbn) sdlFail("SDL_CreateGPUBuffer");
+        up.buffer(scene.tbn, tbn.data(), tb.size);
+        const auto lut = specularityTable();
+        scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
+        up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
+    }
     up.flush();
 
     // Sun and spawn point from the entity string.
@@ -1184,6 +1244,7 @@ struct Renderer {
     static constexpr uint32_t kMaxQuads = 8192;
     SDL_GPUGraphicsPipeline* pipelines[5] = {}; // Opaque, AlphaTest, Blend, Additive, Multiply
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
+    SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
@@ -1240,6 +1301,18 @@ struct Renderer {
             {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, light)},
         };
 
+        SDL_GPUVertexBufferDescription vbd2[2] = {vbd, {1, 24, SDL_GPU_VERTEXINPUTRATE_VERTEX, 0}};
+        SDL_GPUVertexAttribute attrs8[8] = {attrs[0], attrs[1], attrs[2], attrs[3], attrs[4], attrs[5],
+                                            {6, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0},
+                                            {7, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12}};
+        SDL_GPUShaderCreateInfo svsi = vs;
+        svsi.entrypoint = "vs_spec";
+        SDL_GPUShaderCreateInfo sfsi = fs;
+        sfsi.entrypoint = "fs_spec";
+        sfsi.num_samplers = 6;
+        SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
+        SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
+        if (!specVsh || !specFsh) sdlFail("spec shaders");
         for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
             ct.format = colorFormat;
@@ -1287,10 +1360,35 @@ struct Renderer {
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
                 }
+            if (p < 3) { // lmap_s (specular) variants: tangent frame in vertex buffer 1, six samplers
+                pi.vertex_shader = specVsh;
+                pi.fragment_shader = specFsh;
+                pi.vertex_input_state.vertex_buffer_descriptions = vbd2;
+                pi.vertex_input_state.num_vertex_buffers = 2;
+                pi.vertex_input_state.vertex_attributes = attrs8;
+                pi.vertex_input_state.num_vertex_attributes = 8;
+                for (int lvl = 0; lvl <= 2; ++lvl)
+                    for (int c = 0; c < 3; ++c) {
+                        pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                        pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                        pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                        pi.rasterizer_state.front_face = kFrontFace;
+                        specPipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                        if (!specPipelines[p][lvl][c]) sdlFail("spec pipeline");
+                    }
+                pi.vertex_shader = vsh;
+                pi.fragment_shader = fsh;
+                pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                pi.vertex_input_state.num_vertex_buffers = 1;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
+            }
             pi.rasterizer_state.enable_depth_bias = false;
             pi.rasterizer_state.depth_bias_slope_factor = 0;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         }
+        SDL_ReleaseGPUShader(dev, specVsh);
+        SDL_ReleaseGPUShader(dev, specFsh);
         {
             SDL_GPUShaderCreateInfo svs = vs;
             svs.entrypoint = "vs_sky";
@@ -1576,7 +1674,7 @@ struct Renderer {
             }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
-                if (b.pass != p) continue;
+                if (b.pass != p || b.specTex >= 0) continue;
                 if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, vu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[3] = {
@@ -1592,6 +1690,41 @@ struct Renderer {
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                 if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, vu);
+            }
+            // lmap_s world batches (lib/phong.hlsl specular): tangent frame from vertex buffer 1.
+            if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
+                bool any = false;
+                for (const Batch& b : scene.batches) {
+                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity) continue;
+                    if (!any) {
+                        SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
+                        SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
+                        any = true;
+                    }
+                    SDL_BindGPUGraphicsPipeline(pass, specPipelines[int(p)][b.polygonOffset][b.cull]);
+                    struct SVU { VU base; float sun[4]; } svu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
+                    svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                    SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
+                    const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
+                    SDL_GPUTextureSamplerBinding tex[6] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
+                                                           {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], repeatSampler},
+                                                           {scene.textures[size_t(b.specTex)], repeatSampler}, {scene.specularity, clampSampler}};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 6);
+                    FragmentUniforms fu = {
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                        {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                        {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
+                        {p == Pass::AlphaTest ? 1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {0, 0, 0, 0}};
+                    applyFog(fu);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                }
+                if (any) { // restore the single-stream state for the model draws that follow
+                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                    SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
+                    SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                }
             }
             // Entity models of this pass.
             for (const DrawItem& it : items) {

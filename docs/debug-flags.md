@@ -8,6 +8,7 @@ described in the code that reads them.
 | Variable | Tool | Effect |
 |---|---|---|
 | `IW2_NO_CULL=1` | iw2view | Disables frustum culling of animated-entity skinning (actors are skinned even when off screen). For comparing output/perf. |
+| `IW2_NO_SPEC=1` | iw2view | Disables the lmap_s specular path (world batches of `phong_*_spec*` materials fall back to the plain lightmap shader, no normal map). For A/B comparison. |
 | `IW2_PROF=N` | iw2view | Prints average per-frame CPU timings every N frames and quits after two reports. |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
