@@ -1837,6 +1837,7 @@ int main(int argc, char** argv) {
     float forcedBlur = 0; // --blur N: force the composed blur radius (debug)
     int shootMarks = 0; // --shoot N: with --shot, the player fires N bullets along the view (fanned 1° apart) before the shot
     bool audioOn = true;
+    bool skipIntro = false; // --no-intro: no start-up movies in the front end
     bool menuMode = false; // --menu: start in the front end (main menu) without a level
     float shotViewHeight = 60;
     float shotLean = 0;
@@ -1891,6 +1892,7 @@ int main(int argc, char** argv) {
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--menu") menuMode = true;
+            else if (a == "--no-intro") skipIntro = true;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
@@ -3788,14 +3790,21 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
-        // Cinematic playback (docs/spec/video.md): modal, the way the original's `cinematic <name> 0` (0x4d9f90) is: the movie
-        // fills the 4:3 screen area, any key or mouse button skips it (skippable byte 0x59a0d0), and the level load goes on after it.
-        auto playCinematic = [&](const std::string& name) {
+        // Cinematic playback (docs/spec/video.md), modelled on CL_PlayCinematic_f (0x49e690) and the per-frame run (0x49dcc0): modal; the
+        // movie fills the 640x480 area (letterbox: y 105, height 270, 0x49e722); the clock is wall time with frozen hitches (a frame delta
+        // over 100 ms moves the start time, 0x49dd91), the shown frame is elapsed * fps / 1000 and late frames are decoded and dropped;
+        // audio is queued when its frame is decoded. Any key or mouse button skips it when skippable (`cinematic` sets the skippable
+        // byte 0x59a0d0, `unskippablecinematic` clears it). `loop` restarts it at the end (the command's flag '2', 0x49ded8).
+        // Returns false when the window was closed.
+        auto playCinematic = [&](const std::string& rawName, bool skippable, bool letterbox, bool loop) {
+            std::string name = rawName;
+            for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
             const auto data = vfs.read("video/" + name + ".roq");
-            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return; }
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return true; }
             std::unique_ptr<video::RoqDecoder> dec;
-            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return; }
-            std::cout << "cinematic " << name << "\n";
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return true; }
+            std::cout << "cinematic " << name << (skippable ? "" : " (unskippable)") << (letterbox ? " letterbox" : "") << (loop ? " loop" : "") << "\n";
+            const bool stats = std::getenv("IW2_CINEMATIC_STATS") != nullptr;
             Scene movieScene = emptyScene(dev);
             SDL_GPUTexture* tex = nullptr;
             int tw = 0, th = 0;
@@ -3805,20 +3814,34 @@ int main(int argc, char** argv) {
                 snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
                 if (snd) SDL_ResumeAudioStreamDevice(snd);
             }
+            // The mixer's own stream must not talk over the movie.
+            if (audioStream) SDL_PauseAudioStreamDevice(audioStream);
             const uint64_t t0 = SDL_GetTicksNS();
+            uint64_t lastNs = t0, startShiftNs = 0;
             bool more = true, skipped = false;
+            int64_t shown = -1, dropped = 0, audioPut = 0;
+            double syncSum = 0, syncMax = 0, syncMin = 1e9;
+            int64_t syncN = 0;
             while (more && !skipped && running) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     if (e.type == SDL_EVENT_QUIT) running = false;
-                    else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) skipped = true;
+                    else if (skippable && (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)) skipped = true;
                 }
-                const int64_t due = int64_t(double(SDL_GetTicksNS() - t0) * 1e-9 * dec->fps()) + 1; // frames that should have been shown
+                const uint64_t nowNs = SDL_GetTicksNS();
+                if (const char* lim = std::getenv("IW2_EXIT_AFTER"))
+                    if (nowNs > uint64_t(std::atof(lim) * 1e9)) { running = false; break; } // debug: leave after N seconds, movie included
+                if (nowNs - lastNs > 100000000ull) startShiftNs += nowNs - lastNs; // a hitch over 100 ms freezes the movie clock (0x49dd91)
+                lastNs = nowNs;
+                const double elapsed = double(nowNs - t0 - startShiftNs) * 1e-9;
+                const int64_t due = int64_t(elapsed * dec->fps()) + 1; // frames that should have been shown
                 bool fresh = false;
                 while (more && dec->frameIndex() < due) {
+                    const bool hadFrame = dec->frameIndex() > 0;
                     more = dec->nextFrame();
                     if (!more) break;
                     fresh = true;
+                    if (hadFrame && dec->frameIndex() < due) ++dropped;
                     auto pcm = dec->takeAudio();
                     if (snd && !pcm.empty()) {
                         if (dec->audioChannels() == 1) {
@@ -3827,7 +3850,13 @@ int main(int argc, char** argv) {
                             pcm = std::move(st);
                         }
                         SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                        audioPut += int64_t(pcm.size() / 2);
                     }
+                }
+                if (!more && loop && !skipped) { // restart (0x49d490)
+                    dec = std::make_unique<video::RoqDecoder>(*data);
+                    more = true;
+                    continue;
                 }
                 if (dec->width() == 0) break;
                 if (!tex || tw != dec->width() || th != dec->height()) {
@@ -3841,26 +3870,68 @@ int main(int argc, char** argv) {
                 if (fresh) {
                     Uploader up(dev, false);
                     up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                    shown = dec->frameIndex();
+                }
+                if (stats && snd && audioPut > 0) {
+                    // Sync measurement: the picture time (shown frame / fps) against the audio actually played by the device stream
+                    // (samples put minus samples still queued), both in seconds since the start.
+                    const double played = double(audioPut - SDL_GetAudioStreamQueued(snd) / 4) / video::RoqDecoder::kAudioRate;
+                    const double picture = double(std::max<int64_t>(shown, 0)) / dec->fps();
+                    if (elapsed > 1.0) { // the first second includes the device start-up
+                        const double d = picture - played; // > 0: the picture is ahead of the sound
+                        syncSum += d, syncMax = std::max(syncMax, d), syncMin = std::min(syncMin, d), ++syncN;
+                    }
                 }
                 SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
                 SDL_GPUTexture* swap = nullptr;
                 uint32_t w = 0, h = 0;
                 if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
                     const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
-                    Quad2D q{left, 0, left + 640.0f * sc, 480.0f * sc};
+                    const float y0 = letterbox ? 105.0f : 0.0f, y1 = letterbox ? 105.0f + 270.0f : 480.0f;
+                    Quad2D q{left, y0 * sc, left + 640.0f * sc, y1 * sc};
                     q.texture = 1;
                     renderer.fog = {};
-                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, std::vector<Quad2D>{q}, 0.0f);
+                    std::vector<Quad2D> quads;
+                    if (letterbox) { // black bars outside the picture
+                        Quad2D bar{0, 0, float(w), float(h)};
+                        bar.rgba[0] = bar.rgba[1] = bar.rgba[2] = 0;
+                        quads.push_back(bar);
+                    }
+                    quads.push_back(q);
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
                 }
                 SDL_SubmitGPUCommandBuffer(cmd);
             }
+            if (stats) {
+                const double wall = double(SDL_GetTicksNS() - t0) * 1e-9;
+                std::cout << "cinematic stats: " << name << " " << tw << "x" << th << " " << dec->fps() << " fps; wall " << wall << " s, last frame "
+                          << shown << " (" << double(shown) / dec->fps() << " s), dropped " << dropped << ", audio " << double(audioPut) / video::RoqDecoder::kAudioRate
+                          << " s queued"
+                          << (syncN ? "; picture minus audio played (after 1 s) mean " + std::to_string(syncSum / double(syncN) * 1000.0) + " ms, min " + std::to_string(syncMin * 1000.0) + ", max " + std::to_string(syncMax * 1000.0) + " ms over " + std::to_string(syncN) + " draws" : std::string())
+                          << (skipped ? "; skipped" : "") << "\n";
+            }
             if (snd) SDL_DestroyAudioStream(snd);
+            if (audioStream) SDL_ResumeAudioStreamDevice(audioStream);
             SDL_WaitForGPUIdle(dev);
             releaseScene(dev, movieScene);
-            // Held keys and buttons that skipped the movie must not reach the game (their release does).
-            SDL_PumpEvents();
+            return running;
         };
-        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
+        // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
+        auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) { // debug: play video/<name>.roq (e.g. "iw_logo" or "legal!" for unskippable) first
+            std::string n = mv;
+            const bool unskippable = !n.empty() && n.back() == '!';
+            if (unskippable) n.pop_back();
+            playCinematic(n, !unskippable, std::getenv("IW2_CINEMATIC_LETTERBOX") != nullptr, std::getenv("IW2_CINEMATIC_LOOP") != nullptr);
+        }
+        // Start-up movie chain of the front end (Com_Init 0x42dee0, 0x42e7d5): `unskippablecinematic legal`, then, while com_introPlayed is
+        // 0, `cinematic atvi; set nextmap "cinematic IW_logo; set nextmap cinematic cod_intro"`. A movie that is missing or ends runs
+        // nextmap; a skip stops the current movie only. TODO(spec): nothing in the exe sets com_introPlayed, it is only read.
+        if (menuMode && running && !std::getenv("IW2_SKIP_INTRO") && !skipIntro) {
+            playCinematic("legal", false, false, false);
+            for (const char* m : {"atvi", "IW_logo", "cod_intro"})
+                if (running && !playCinematic(m, true, false, false)) break;
+        }
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -4397,7 +4468,7 @@ int main(int argc, char** argv) {
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
                         const std::string movie = world->takeCinematic();
-                        if (!movie.empty()) playCinematic(movie);
+                        if (!movie.empty()) playScripted(movie);
                     }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();

@@ -42,3 +42,7 @@ described in the code that reads them.
 - Env `IW2_GROUND_DEBUG=1` (iw2game): counts the actor ground-trace hits/misses of the movement noise (stats line "ground trace hit/miss"); toujane 40 s: 24444/1123.
 - iw2game stats line also prints "grenade away-flee/cower/plane-retry" (grenadeReact outcomes; duhoc_assault 150 s: 34 grenades, 6 flee, 0 cower, 0 retry).
 - Env `IW2_PLAY_CINEMATIC=<name>` (iw2view): plays `video/<name>.roq` (e.g. `iw_logo`) before the level starts; any key skips it. Scripted `cinematic()` calls play automatically before the next level (docs/spec/video.md).
+- Env `IW2_PLAY_CINEMATIC=<name>[!]` (iw2view): plays `video/<name>.roq` before the level (`!` = unskippable); `IW2_CINEMATIC_LETTERBOX=1` / `IW2_CINEMATIC_LOOP=1` set the letterbox / loop flags of that run (docs/spec/video.md).
+- Env `IW2_CINEMATIC_STATS=1` (iw2view): after every movie prints wall time, last frame, dropped frames, audio length and the picture-minus-audio-played offset (min / mean / max).
+- `--no-intro` / env `IW2_SKIP_INTRO=1` (iw2view `--menu`): no start-up movies (legal, atvi, IW_logo, cod_intro).
+- Env `IW2_EXIT_AFTER=N` also leaves a playing movie after N seconds.
