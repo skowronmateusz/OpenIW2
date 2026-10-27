@@ -892,7 +892,7 @@ int main(int argc, char** argv) {
                     for (const auto& ea : world.entities()) {
                         if (!ea->isActor || ea->obj->removed || ea->obj->get("health").asInt() <= 0 || ea->obj->get("team").toString() != "axis") continue;
                         for (const auto& eb : world.entities()) {
-                            if (!eb->isActor || eb->obj->removed || eb->obj->get("health").asInt() <= 0 || eb->obj->get("team").toString() != "allies") continue;
+                            if (!eb->isActor || eb->obj->removed || eb->obj->get("health").asInt() <= 0 || eb->obj->get("team").toString() != "allies" || eb->ai.stack[size_t(eb->ai.depth)] == 7) continue;
                             const auto oa = ea->obj->get("origin").asVector(), ob = eb->obj->get("origin").asVector();
                             const float d = (oa[0] - ob[0]) * (oa[0] - ob[0]) + (oa[1] - ob[1]) * (oa[1] - ob[1]) + (oa[2] - ob[2]) * (oa[2] - ob[2]);
                             if (d < best) { best = d; sceneA = ea.get(); sceneB = eb.get(); }
@@ -904,17 +904,18 @@ int main(int argc, char** argv) {
                         for (const auto& ea : world.entities()) {
                             if (!ea->isActor || ea->obj->removed || ea->obj->get("health").asInt() <= 0 || ea->obj->get("team").toString() != "axis") continue;
                             world.debugPlaceBefore(*sceneB, *ea);
-                            if (world.debugShoot(*ea, *sceneB) == sceneB->number) { sceneA = ea.get(); break; }
+                            if (world.debugClearShot(*ea, *sceneB)) { sceneA = ea.get(); break; }
                         }
                     if (sceneA && sceneB) {
                         world.debugPlaceBefore(*sceneB, *sceneA);
                         std::printf("[scene] B placed 120 in front of A\n");
+                        if (!std::getenv("IW2_SCENE_LETHAL")) sceneB->obj->set("health", iw2::script::Value(1000)); // survive to show the pain reaction
                         world.debugSetEnemy(*sceneA, sceneB);
                         world.debugSetEnemy(*sceneB, sceneA);
                         std::printf("[scene %.2f] A=#%d (axis) B=#%d (allies) now enemies\n", f * 0.05f, sceneA->number, sceneB->number);
                     } else { std::printf("[scene] no axis/allies actor pair\n"); combatSceneAt = -1; }
                 }
-                if (sceneA && sceneB && f % 6 == 0 && f * 0.05f < combatSceneAt + 3.0f) std::printf("[scene %.2f] shot hit entity %d (shots %d hits %d)\n", f * 0.05f, world.debugShoot(*sceneA, *sceneB), world.stats.shots, world.stats.hits);
+                if (sceneA && sceneB && f % 6 == 0 && f * 0.05f < combatSceneAt + 3.0f && (world.debugPlaceBefore(*sceneB, *sceneA), true)) std::printf("[scene %.2f] shot hit entity %d (shots %d hits %d)\n", f * 0.05f, world.debugShoot(*sceneA, *sceneB), world.stats.shots, world.stats.hits);
                 if (sceneA && sceneB && f * 0.05f < combatSceneAt + 8.0f) {
                     for (auto* a : {sceneA, sceneB}) {
                         int planes = 0;

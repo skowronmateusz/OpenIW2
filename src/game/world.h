@@ -304,12 +304,21 @@ public:
         p[0] += std::cos(yaw) * 120.0f;
         p[1] += std::sin(yaw) * 120.0f;
         b.obj->set("origin", Value(p));
+        syncEntityClips(); // the clips are rebuilt once per frame; the scene shoots in the same frame
     }
     // IW2_COMBAT_SCENE: one rifle bullet from a's muzzle height to b's chest, credited to a.
+    // IW2_COMBAT_SCENE: true when a bullet from a reaches b (hit boxes, no damage).
+    bool debugClearShot(Entity& a, Entity& b) {
+        Vec3 s = a.obj->get("origin").asVector(), t = b.obj->get("origin").asVector();
+        s[2] += 56.0f;
+        t[2] += 20.0f;
+        int loc = 0;
+        return locationalTrace(s, t, Contents::BulletMask, &a, kHitPriorityDefault, loc).entity == b.number;
+    }
     int debugShoot(Entity& a, Entity& b) {
         Vec3 s = a.obj->get("origin").asVector(), t = b.obj->get("origin").asVector();
         s[2] += 56.0f;
-        t[2] += 40.0f;
+        t[2] += 20.0f; // a scripted-pose actor is low; the hit boxes follow the pose
         Entity* h = fireBullet(a, s, t, 10, &a);
         return h ? h->number : -1;
     }
