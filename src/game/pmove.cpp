@@ -37,7 +37,30 @@ struct Pml {
     uint32_t mask = 0;
     int passEntity = -1;
     Vec mins{}, maxs{};
+    float prevOriginZ = 0, prevVelZ = 0; // pml+0x64 / +0x70: origin z and vertical speed at the start of the step
+    float gravity = 800.0f;
+    bool dead = false; // pm_type >= 4
 };
+
+// PM_CrashLand (0x508fe0), the part that reaches the player's view: the fall height h = vz²/(2g) + (previous z − z)
+// from the speed at the start of the step, the fall damage 0..100 between bg_fallDamageMinHeight (200) and
+// bg_fallDamageMaxHeight (350) (none on a no-damage surface, flag 1, or when dead), and the landing report the
+// cgame turns into the view dip. TODO(spec): the velocity scale (0x592014) and pm_time of a landing (0x5091a7-0x5091eb),
+// the footstep landing events below h 12, applying the damage to the player's health.
+void crashLand(PlayerState& ps, const Pml& pml) {
+    const float g = pml.gravity;
+    const float d = pml.prevVelZ * pml.prevVelZ + 2.0f * g * (pml.prevOriginZ - ps.origin[2]);
+    if (d < 0) return;
+    const float s = std::sqrt(d);
+    const float h = s * s / (2.0f * g);
+    int dmg = 0;
+    constexpr float kMinH = 200.0f, kMaxH = 350.0f; // bg_fallDamageMinHeight / MaxHeight defaults (0x4fa818, 0x4fa83b)
+    if (h > kMinH && !(pml.groundTrace.surfaceFlags & 1) && !pml.dead)
+        dmg = h >= kMaxH ? 100 : std::clamp(int((h - kMinH) / (kMaxH - kMinH) * 100.0f), 0, 100);
+    ps.landSeq++;
+    ps.landHeight = h;
+    ps.landDamage = dmg;
+}
 
 // 0x507c20 and the inline copies: v − n·(d − |d|·0.001) with d = v·n.
 Vec clipVelocity(const Vec& v, const Vec& n) {
@@ -124,6 +147,7 @@ void groundTrace(const CollisionWorld& w, PlayerState& ps, Pml& pml) {
         return;
     }
     pml.groundPlane = pml.walking = true;
+    if (!ps.onGround) crashLand(ps, pml); // 0x509678: the ground entity was none
     ps.onGround = true;
 }
 
@@ -792,6 +816,10 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     pml.passEntity = mp.passEntity;
     pml.mins = mp.mins;
     pml.maxs = {mp.maxs[0], mp.maxs[1], maxsZ(ps.stance, mp)};
+    pml.prevOriginZ = ps.origin[2];
+    pml.prevVelZ = ps.velocity[2];
+    pml.gravity = mp.gravity;
+    pml.dead = in.dead;
     // Aiming while prone (pm_flags 0x40 from the previous step, view height target 11) clears the command's forward
     // and right moves (0x50c5c7).
     float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);

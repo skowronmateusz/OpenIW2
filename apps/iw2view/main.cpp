@@ -2055,6 +2055,8 @@ int main(int argc, char** argv) {
         game::PlayerWeapon pweapon;
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
+        game::ViewImpulses viewImp; // damage kick, landing dip
+        int lastLandSeq = 0;
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -3167,10 +3169,18 @@ int main(int argc, char** argv) {
                     bobAngles = {vb[2], vb[3]};
                     const Vec3 rgt = cam.right();
                     cam.pos = cam.pos + Vec3{0, 0, vb[0]} + rgt * vb[1];
+                    if (world) {
+                        if (ps.landSeq != lastLandSeq) { // a landing (cgame 0x4bab6e / 0x4bab15: the own client's fall event)
+                            lastLandSeq = ps.landSeq;
+                            viewImp.land(ps.landHeight, ps.landDamage, world->timeMs());
+                        }
+                        cam.pos.z += viewImp.landOffset(world->timeMs()); // 0x4ae6c7
+                    }
                 }
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
+                if (!playerDead) cam.pos.z = std::max(cam.pos.z, game::ViewImpulses::minEyeZ(ps.origin[2])); // 0x4ae775
             } else {
                 const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
                 Vec3 move;
@@ -3271,6 +3281,8 @@ int main(int argc, char** argv) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
                     lastDamageEvent = 0;
+                    lastLandSeq = 0;
+                    viewImp.reset(); // 0x4ba570
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                         if (o.isVector())
@@ -3300,6 +3312,10 @@ int main(int argc, char** argv) {
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
+                    if (df.count != 0) { // 0x4ba1c3: only with a damage count
+                        const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
+                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, world->timeMs());
+                    }
                     if (!(df.pitch == 0xff && df.yaw == 0xff)) {
                         size_t slot = 0;
                         for (size_t k = 1; k < damageIcons.size(); ++k)
@@ -3387,6 +3403,12 @@ int main(int argc, char** argv) {
             cam.yaw += recoil.viewKick()[1];
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
+            if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll
+                const std::string ret = pweapon.field("adsOverlayReticle");
+                const auto dk = viewImp.damageKick(world->timeMs(), pweapon.adsFrac(), !ret.empty() && ret != "none");
+                cam.pitch += dk[0];
+                cam.roll += dk[1];
+            }
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
             auto items = gatherItems(cam);
@@ -3410,6 +3432,7 @@ int main(int argc, char** argv) {
             SDL_SubmitGPUCommandBuffer(cmd);
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
             cam.yaw = camBase.yaw;
+            cam.roll = camBase.roll;
         }
         if (audioStream) SDL_DestroyAudioStream(audioStream);
         SDL_ReleaseWindowFromGPUDevice(dev, window);
