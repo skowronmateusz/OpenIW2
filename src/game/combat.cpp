@@ -694,7 +694,25 @@ void World::registerCombatBuiltins() {
         if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
         // 0x5220f0 → 0x521f70: the item is launched and falls (G_RunItem). TODO(spec): from the hand tag, as above.
         launchItem(item, *e);
-        if (hand == "left" || hand == "right") item.obj->set("origin", Value(at)), item.obj->set("$trbase", Value(at));
+        // 0x53da50 / 0x5220f0: the item starts where a 0x491 trace from the body centre
+        // (origin + half the box height) to the hand tag ends (the dropper passes), and flies with dir × throwSpeed, dir =
+        // normalize(tag − centre) with 2.0 added to z; throwSpeed 0 gives a zero velocity (it just falls).
+        // TODO(spec): the box height is the 72/70 of launchItem; the slide/ease rules on a hit (0x5231b2-0x52327b).
+        if (hand == "left" || hand == "right") {
+            const float height = e->isPlayer ? 70.0f : e->isActor ? 72.0f : 0.0f;
+            const Vec3 o = e->obj->get("origin").asVector();
+            const Vec3 centre{o[0], o[1], o[2] + height * 0.5f};
+            const TraceResult st = collision_->trace(centre, at, {-1, -1, -1}, {1, 1, 1}, 0x491, e->number);
+            const Vec3 start{st.endPos[0], st.endPos[1], st.endPos[2]};
+            item.obj->set("origin", Value(start));
+            item.obj->set("$trbase", Value(start));
+            const float speed = c.arg(2).isNumber() ? c.arg(2).asFloat() : 0.0f;
+            Vec3 d{at[0] - centre[0], at[1] - centre[1], at[2] - centre[2] + 2.0f};
+            const float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (speed != 0 && dl > 0) d = {d[0] / dl * speed, d[1] / dl * speed, d[2] / dl * speed};
+            else d = {0, 0, 0};
+            item.obj->set("$trdelta", Value(d));
+        }
         return Value(item.obj);
     });
     vm_.registerBuiltin("issuppressed", [](CallContext&) { return Value(false); });
