@@ -101,6 +101,7 @@ struct VehicleState {
     int spinHandle = 0;
     bool turretMoved = false;
     bool onCompass = false;    // +0x190 (addvehicletocompass 0x513c10 / removevehiclefromcompass 0x513c70)
+    std::string lookAtText2;   // +0x196 (the optional second argument of setvehiclelookattext)
     std::string lookAtText;    // +0x194 (setvehiclelookattext 0x513cd0): the HUD string shown when the player looks at the vehicle
     bool engineOn = true;
     float idleFrac = 0, engFrac = 0;

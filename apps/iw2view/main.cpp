@@ -2944,7 +2944,7 @@ int main(int argc, char** argv) {
                 const auto& mr = compassMenu->rect;
                 for (const auto& itp : compassMenu->items) {
                     const ui::Item& it = *itp;
-                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86 && it.ownerDraw != 87) continue;
+                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86 && it.ownerDraw != 87 && it.ownerDraw != 88) continue;
                     const float rx = mr.x + it.rect.x, ry = mr.y + it.rect.y, rw = it.rect.w, rh = it.rect.h;
                     const float bx = rx * sc;                                  // LEFT: window left edge
                     const float by = float(h) + (ry - (csize - 1.0f) * rh) * sc; // BOTTOM: window bottom edge
@@ -2952,16 +2952,18 @@ int main(int argc, char** argv) {
                     uint8_t col[4];
                     for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
                     col[3] = uint8_t(std::clamp(compassAlpha, 0.0f, 1.0f) * 255.0f);
-                    if (it.ownerDraw == 87) {
+                    if (it.ownerDraw == 87 || it.ownerDraw == 88) {
                         // Friendly actors (4c0f20): R = size * r * 43.75, icon size*10 (0x591e8c), r from the distance between
                         // cg_hudCompassMinRange 0 and MaxRange 1500 (0xf48b54) clamped to the rim (no culling), minRadius 0;
                         // placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor - view yaw;
                         // the arrow turns by (view yaw - actor yaw). TODO(spec): the 800 ms entry age, springy yaw
                         // (cg_hudCompassSpringyPointers 0), the sound ping rings (cg_hudCompassSoundPingFadeTime).
                         if (it.background.empty()) continue;
-                        const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = 10.0f * csize * sc;
+                                                // 88 tanks (4c1700): the same formulas over the vehicles with addvehicletocompass, icon 16 (0x591e84).
+                        const bool tanks = it.ownerDraw == 88;
+                        const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
                         const int tex = materialTexture(it.background);
-                        for (const auto& m : world->compassFriendlies()) {
+                        for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
                             const float dx = m.pos[0] - c.pos.x, dy = m.pos[1] - c.pos.y;
                             const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
                             const float t = std::clamp(std::sqrt(dx * dx + dy * dy) / 1500.0f, 0.0f, 1.0f);
@@ -3117,7 +3119,8 @@ int main(int argc, char** argv) {
                         std::cout << "vehicle " << n << ": " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
                                   << " yaw " << an[1] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
                                   << " jolt " << e->vehicle->joltPitch << "/" << e->vehicle->joltRoll << " speed " << e->vehicle->speed
-                                  << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << "\n";
+                                  << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << " compass " << e->vehicle->onCompass
+                                  << " lookat '" << e->vehicle->lookAtText << "'/'" << e->vehicle->lookAtText2 << "'\n";
                         if (n == followVehicle) {
                             const float yr = (an[1] + followYaw) * float(M_PI) / 180.0f;
                             const float pr = followPitch * float(M_PI) / 180.0f;
