@@ -2463,6 +2463,22 @@ int main(int argc, char** argv) {
                         const auto at = label.find("&&1");
                         text = at == std::string::npos ? label + text : label.substr(0, at) + text + label.substr(at + 3);
                     }
+                    // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
+                    // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
+                    // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
+                    // TODO(spec): the "KEY_" prefix handling of 0x4c6a20 (key.str has UNBOUND / OR / TAB without it).
+                    for (size_t b; (b = text.find("[{")) != std::string::npos;) {
+                        const size_t e = text.find("}]", b);
+                        if (e == std::string::npos) break;
+                        const auto it = world->keyBindings.find(text.substr(b + 2, e - b - 2));
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string keys = name("UNBOUND");
+                        if (it != world->keyBindings.end() && !it->second.empty()) {
+                            keys = name(it->second[0]);
+                            if (it->second.size() > 1) keys += " " + name("OR") + " " + name(it->second[1]);
+                        }
+                        text = text.substr(0, b) + keys + text.substr(e + 2);
+                    }
                     if (text.empty()) continue;
                     const std::string fontName = o->get("font").toString();
                     const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
