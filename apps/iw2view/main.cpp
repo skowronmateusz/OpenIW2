@@ -4212,6 +4212,43 @@ int main(int argc, char** argv) {
                         }
                     }
             }
+            // Tank status (menu "tankstatus", ownerdraws 90 body 0x4aa1b0 / 91 barrel 0x4aa360): only in a vehicle (pm_flags 0x20000, not
+            // 0x80000). Both are LEFT / BOTTOM aligned like the stance icon. angle = wrap180(view yaw (0xf79194) - yaw), yaw = the
+            // vehicle's angles[1] (centity +0x158) for the body, the tag_barrel forward yaw (0x4ab9e0) for the barrel. The body quad
+            // turns about its centre (0x4b0310); the barrel quad (x ± w/2, y - 0.75 h .. y + 0.25 h; constants 0x591e38, 0x591fe0) turns
+            // about the item's top-left corner (0x4b0490), which is the body's centre. The x offset (cg_hudCompassSize - 1) * 0xf5bcc8 * 0.7
+            // is 0 at the default size 1. TODO(spec): the centity flag test (+0xb0 & 0x10000), the corner-to-UV order of 0x617b68
+            // (taken as (0,0) (1,0) (1,1) (0,1) like the damage indicator).
+            if (const ui::Menu* tm = hudMenus.find("tankstatus"); tm && world) {
+                float bodyYaw = 0, barrelYaw = 0;
+                bool hasBarrel = false;
+                if (!(world->playerPmFlags() & 0x80000) && world->playerVehicleHudYaws(bodyYaw, barrelYaw, hasBarrel))
+                    for (const auto& itp : tm->items) {
+                        if (itp->ownerDraw != 90 && itp->ownerDraw != 91) continue;
+                        if (itp->ownerDraw == 91 && !hasBarrel) continue;
+                        const auto& r = itp->rect;
+                        float dlt = c.yaw - (itp->ownerDraw == 90 ? bodyYaw : barrelYaw);
+                        while (dlt > 180.0f) dlt -= 360.0f;
+                        while (dlt < -180.0f) dlt += 360.0f;
+                        const float x = (tm->rect.x + r.x) * sc, y = float(h) + (tm->rect.y + r.y) * sc, rw = r.w * sc, rh = r.h * sc;
+                        Quad2D q{x, y, x + rw, y + rh};
+                        for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture(itp->background);
+                        if (itp->ownerDraw == 90) {
+                            q.rotDeg = dlt;
+                        } else {
+                            const float px[4] = {rw * 0.5f, -rw * 0.5f, -rw * 0.5f, rw * 0.5f};
+                            const float py[4] = {-rh * 0.75f, -rh * 0.75f, rh * 0.25f, rh * 0.25f};
+                            const float ang = dlt * float(M_PI) / 180.0f, cs = std::cos(ang), sn = std::sin(ang);
+                            q.free = true;
+                            for (int k = 0; k < 4; ++k) {
+                                q.qx[k] = cs * px[k] - sn * py[k] + x;
+                                q.qy[k] = sn * px[k] + cs * py[k] + y;
+                            }
+                        }
+                        out.push_back(q);
+                    }
+            }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
             // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
