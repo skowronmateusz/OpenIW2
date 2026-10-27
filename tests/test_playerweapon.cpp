@@ -190,6 +190,20 @@ void weaponSounds() {
     CHECK(e.takeSounds().empty());
     run(e, 0.2f, true);
     CHECK(e.takeSounds() == std::vector<std::string>{"player_out_of_ammo"});
+    // clipOnly: no click on an empty clip, and no putaway sound with an empty clip (0x4ddbd9, 0x4baec1).
+    PlayerWeapon::Def c = a;
+    c["cliponly"] = "1";
+    c["startammo"] = "2";
+    PlayerWeapon p;
+    p.lookup = [&](const std::string&) -> const Def* { return &b; };
+    p.equip("c", c);
+    run(p, 0.2f, false);
+    p.takeSounds();
+    run(p, 0.25f, true);
+    CHECK(p.takeSounds().empty());
+    run(p, 0.6f, false);
+    p.update(0.01f, {false, false, false, false, false, false, "b"});
+    for (const auto& snd : p.takeSounds()) CHECK(snd != "down");
 }
 
 // Segmented reload (springfield-like values; PM_Weapon states 7, 5, 9: 0x4dda60, 0x4dd980, 0x4de0e0, 0x4de200).
