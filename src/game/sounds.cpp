@@ -103,9 +103,16 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("playloopsound", [this, originOf](CallContext& c) {
         if (!c.self.isObject()) return Value();
         const auto obj = c.self.asObject();
-        if (const Value h = obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
+        // 0x4ef3f0 only stores the alias' configstring index in the entity state (ent+6) and clears flag bit 0 of ent+0xa2; the
+        // client keeps one running loop, so the same alias again does not restart it.
+        const std::string alias = c.arg(0).toString();
+        if (const Value h = obj->get("$loopsound"); h.isNumber()) {
+            if (obj->get("$loopalias").toString() == alias) return Value();
+            stopSound(h.asInt());
+        }
         const auto o = originOf(c);
-        obj->set("$loopsound", Value(int32_t(startSound(c.arg(0).toString(), o ? &*o : nullptr))));
+        obj->set("$loopsound", Value(int32_t(startSound(alias, o ? &*o : nullptr))));
+        obj->set("$loopalias", Value(alias));
         return Value();
     });
     vm_.registerBuiltin("stoploopsound", [this](CallContext& c) {
@@ -113,6 +120,7 @@ void World::registerSoundBuiltins() {
         const auto obj = c.self.asObject();
         if (const Value h = obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
         obj->set("$loopsound", Value());
+        obj->set("$loopalias", Value());
         return Value();
     });
     // Fade seconds (argument `i`, default 0) as milliseconds, truncated like the configstring time (0x4f3800: x1000 via 0x565994).
