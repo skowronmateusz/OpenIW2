@@ -44,6 +44,11 @@ struct FxSprite {
     float size = 0;
     std::string shader;
     float uv[4]{0, 0, 1, 1}; // atlas frame rectangle u0, v0, u1, v1 (renderer 0x1003fa60)
+    // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
+    // `position` / `size` are unused.
+    bool beam = false;
+    FVec beamA{}, beamB{}, beamPerp{};
+    float widthA = 0, widthB = 0;
 };
 
 // A live particle of a blocksSight (0x1000) element as entered in the sight-blocker list (0x480970 → 0xc3ed80,
@@ -89,6 +94,13 @@ public:
     // normals. An element with spawn flag frustumCull (0x400) is skipped when n·origin − d < −radius for any plane, radius
     // from `spawnFrustumCullRadius` (+0x2a0, default 0). TODO(spec): the exe's plane set (we pass the four side planes).
     std::vector<std::array<float, 4>> viewPlanes;
+    // Bullet tracers (0x4b8140 -> 0x4b7b60, entity drawn by 0x4c0d98 -> 0x4b7d90): rolls cg_tracerchance (0.4), then a
+    // local entity moves from `from` towards `to` at cg_tracerSpeed (5000) for length / speed seconds and is drawn as a
+    // streak of up to cg_tracerlength (300) units ahead of its position. frameMs = cg frame time (0xf708d4; the start is
+    // moved back by a random part of half of it, 0 = no jitter).
+    void addTracer(const FVec& from, const FVec& to, int64_t nowMs, int frameMs = 0);
+    // Right / up of the view for the beam's facing (0xf79168 / 0xf79174; only the sign of the quad's perpendicular depends on them).
+    FVec viewRight{1, 0, 0}, viewUp{0, 0, 1};
     // Drops finished particles and returns the visible ones at nowMs.
     std::vector<FxSprite> sprites(int64_t nowMs);
     size_t count() const { return particles_.size(); }
@@ -118,6 +130,12 @@ private:
     };
     std::shared_ptr<FxBolt> curBolt_; // the attachment of the effect being played (children inherit it, 0x48dac0)
     std::vector<PendingRun> pending_;
+    struct Tracer {
+        FVec base{}, dir{};
+        float length = 0; // distance base -> impact (+0x44)
+        int64_t startMs = 0, endMs = 0;
+    };
+    std::vector<Tracer> tracers_;
     void runPending(int64_t nowMs);
     std::vector<FxSightBlocker> sightBlockers_;
 };

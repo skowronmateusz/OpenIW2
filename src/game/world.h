@@ -400,6 +400,11 @@ public:
     bool entityTagPosition(int number, const std::string& tag, Vec3& out);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     std::vector<FxEvent> fxEvents_;
+    // Bullet tracers requested by impact events (0x4b8140): muzzle point and impact point; the host applies the
+    // cg_tracerchance roll and draws them (FxSystem::addTracer).
+    struct TracerEvent { Vec3 from, to; };
+    std::vector<TracerEvent> takeTracerEvents() { return std::exchange(tracerEvents_, {}); }
+    std::vector<TracerEvent> tracerEvents_;
     // Sight-blocking particles of the effect runtime, rebuilt by the host after each effects update (0x48b000).
     void setFxSightBlockers(std::vector<FxSightBlocker> b) { fxSightBlockers_ = std::move(b); }
     // Visibility (0..1) through sight-blocking effects between two points (0x48b090).
