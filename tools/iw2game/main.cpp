@@ -284,6 +284,7 @@ int main(int argc, char** argv) {
                         iw2::game::playerMove(cw, ps, in, fdt, mp);
                         if (live && f % 3 == 0) {
                             world.setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, in.yaw, 0});
+                            world.playerPmEvents(ps.eventSeq, ps.events, ps.stance == iw2::game::Stance::Crouch);
                             world.frame();
                         }
                         const iw2::game::Vec c0{before.origin[0], before.origin[1], before.origin[2] + 15};
@@ -809,8 +810,10 @@ int main(int argc, char** argv) {
                 mp.passEntity = world.player()->number;
                 iw2::game::PlayerInput in;
                 in.yaw = world.player()->obj->get("angles").asVector()[1];
+                if (std::getenv("IW2_PMOVE_FORWARD")) in.forward = 1; // walk ahead to make footstep noise
                 for (int k = 0; k < 3; ++k) iw2::game::playerMove(world.collision(), pmoveState, in, 1.0f / 60.0f, mp);
                 world.setPlayerOrigin({pmoveState.origin[0], pmoveState.origin[1], pmoveState.origin[2]}, world.player()->obj->get("angles").asVector());
+                world.playerPmEvents(pmoveState.eventSeq, pmoveState.events, pmoveState.stance == iw2::game::Stance::Crouch);
             }
             std::map<const iw2::game::Entity*, iw2::script::Vec3> before;
             if (moveStats)
@@ -891,7 +894,7 @@ int main(int argc, char** argv) {
                 if (e->isActor) (world.isAlive(*e) ? alive : dead)++;
             std::cout << "actors alive " << alive << ", dead " << dead << "; player health " << world.player()->obj->get("health").toString() << "\n";
             std::cout << "shots " << world.stats.shots << ", hits " << world.stats.hits << ", kills " << world.stats.kills << "; grenades "
-                      << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << ", penetrations " << world.stats.bulletPenetrations << "\n";
+                      << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << ", penetrations " << world.stats.bulletPenetrations << ", player noise events " << world.stats.playerNoise << "\n";
             std::cout << "actor animscripts:";
             for (const auto& [k, v] : states) std::cout << " " << k << "=" << v;
             std::cout << "\n";

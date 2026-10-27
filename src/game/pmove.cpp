@@ -46,7 +46,9 @@ struct Pml {
 // from the speed at the start of the step, the fall damage 0..100 between bg_fallDamageMinHeight (200) and
 // bg_fallDamageMaxHeight (350) (none on a no-damage surface, flag 1, or when dead), and the landing report the
 // cgame turns into the view dip. TODO(spec): the velocity scale (0x592014) and pm_time of a landing (0x5091a7-0x5091eb),
-// the footstep landing events below h 12, applying the damage to the player's health.
+// applying the damage to the player's health, the hard landing's velocity scale 0.67 (0x5092a8).
+// The landing events without damage (0x509236): height ≤ 4 none, < 8 the walk step event 0x18 + surface, < 12 the run
+// step event 1 + surface (none for surface type 0 or a flag-0x2000 surface), else the hard landing 0x5d + surface.
 void crashLand(PlayerState& ps, const Pml& pml) {
     const float g = pml.gravity;
     const float d = pml.prevVelZ * pml.prevVelZ + 2.0f * g * (pml.prevOriginZ - ps.origin[2]);
@@ -60,6 +62,13 @@ void crashLand(PlayerState& ps, const Pml& pml) {
     ps.landSeq++;
     ps.landHeight = h;
     ps.landDamage = dmg;
+    if (dmg == 0 && h > 4.0f) {
+        const uint32_t sf = pml.groundTrace.surfaceFlags;
+        const int type = (sf & 0x2000) ? 0 : int((sf >> 20) & 0x1f);
+        if (h < 8.0f) addPmEvent(ps, type ? 0x18 + type : 0);
+        else if (h < 12.0f) addPmEvent(ps, type ? 1 + type : 0);
+        else addPmEvent(ps, 0x5d + type);
+    }
 }
 
 // 0x507c20 and the inline copies: v − n·(d − |d|·0.001) with d = v·n.
@@ -778,9 +787,11 @@ void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, f
 // backwards only: × back; right only: ((strafe − 1)·0.75 + 1)·s), × 0.4 while leaning or with pm_flags 0x100; prone
 // × 0.15 and k 0.25 (0.24 with the 0.4), crouched × 0.65 and k 0.34 (0.315), standing k 0.335 (0.305), with
 // pm_flags 0x80 0.36 (0.325); the cycle advances by trunc(bobmove · msec + cycle) & 0xff.
-// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf), the footstep
-// events (0x50a6d0) and the ladder case.
-void updateBobCycle(PlayerState& ps, float f, float r, int ms, const MoveParams& mp) {
+// With a move command (forward or right) the cycle crossing 0x40 or 0xc0 adds a footstep event (0x50a6d0): the
+// surface type of the ground trace (surfaceFlags >> 20 & 0x1f, none for type 0 or flag 0x2000) as 0x2f + type
+// prone, 0x18 + type when aiming slows the move or leaning (walk), else 1 + type (run; crouching too).
+// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf) and the ladder case.
+void updateBobCycle(PlayerState& ps, float f, float r, int ms, const MoveParams& mp, uint32_t surfaceFlags) {
     if (!ps.onGround) return;
     const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
     if (xy < mp.moveThreshold) {
@@ -805,7 +816,15 @@ void updateBobCycle(PlayerState& ps, float f, float r, int ms, const MoveParams&
     else if (ps.viewHeightTarget == 40) { s *= 0.65f; k = slow ? 0.315f : 0.34f; }
     else k = slow ? 0.305f : 0.335f;
     const float bobmove = xy / s * k;
+    const int oldBob = ps.bobCycle;
     ps.bobCycle = int(bobmove * float(ms) + float(ps.bobCycle)) & 0xff;
+    if ((f != 0 || r != 0) && (((oldBob + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80)) {
+        const int type = (surfaceFlags & 0x2000) ? 0 : int((surfaceFlags >> 20) & 0x1f);
+        if (type == 0) return;
+        if (ps.stance == Stance::Prone) addPmEvent(ps, 0x2f + type);
+        else if (slow) addPmEvent(ps, 0x18 + type);
+        else addPmEvent(ps, 1 + type);
+    }
 }
 
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
@@ -878,7 +897,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
-    updateBobCycle(ps, f, r, ms, mp);
+    updateBobCycle(ps, f, r, ms, mp, pml.groundTrace.surfaceFlags);
 }
 
 } // namespace

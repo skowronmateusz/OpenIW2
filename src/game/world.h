@@ -417,7 +417,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -598,7 +598,16 @@ private:
     void actorLearns(Entity& target, Entity& about); // 0x500c50
     bool actorKnowsRecently(const Entity& target, const Entity& about, int64_t ms) const; // 0x54ddc0
     void aiEventDispatch(Entity& source, Entity& target, int type); // 0x535d70
-    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true); // 0x535770
+public:
+    // G_ClientEvents (0x4e75f0), the AI part: the player's pmove events since the last call (ring of 4) tell the enemy
+    // actors around: run steps and landings (events 1..0x17, 0x46..0x73) as AI event 2 (radius 512), walk steps
+    // (0x18..0x2e) as event 3 (radius 256), prone steps (0x2f..0x45) nothing; none while crouched (pm_flags 2).
+    void playerPmEvents(int eventSeq, const int (&events)[4], bool crouched);
+private:
+    int playerEventSeq_ = 0;
+    // Receivers of an AI event by team (the mask in EAX of 0x535770: 0 = the source's enemy team, 1 << team otherwise).
+    enum class AiHear { All, Enemy, Own };
+    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true, AiHear hear = AiHear::All); // 0x535770
     void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2 = 0,
                      bool forced = true); // 0x535860 + 0x535f20
     // Path planner (src/game/actorpath.cpp)

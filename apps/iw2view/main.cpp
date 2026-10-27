@@ -3610,7 +3610,10 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
-                if (!inVehicle && !onTurret && !world->playerLinked()) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                if (!inVehicle && !onTurret && !world->playerLinked()) {
+                    world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
+                    world->playerPmEvents(ps.eventSeq, ps.events, ps.stance == game::Stance::Crouch); // G_ClientEvents
+                }
                 // time_slow: the frame scale moves linearly from `from` to `to` over the real time (0x4bee00).
                 if (slowStartNs) {
                     const uint64_t nowNs = SDL_GetTicksNS();
