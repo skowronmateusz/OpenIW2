@@ -56,7 +56,11 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("setshadowhint", [](CallContext&) { return Value(); });
     // saveGame(name, description, image) (0x4f3a30): writes a save game. Not modelled (no save system).
     vm_.registerBuiltin("savegame", [](CallContext&) { return Value(); });
-    vm_.registerBuiltin("savegamenocommit", [](CallContext&) { return Value(); }); // 0x4f3bd0: stub like savegame
+    // savegamenocommit (0x4f3bd0) returns the save id (int, < 0 on failure; _autosave.gsc tryAutoSave); commitsave (0x4f3db0) and
+    // issaverecentlyloaded (0x4f3da0, a byte set by a load) have no save system behind them.
+    vm_.registerBuiltin("savegamenocommit", [](CallContext&) { return Value(1); });
+    vm_.registerBuiltin("commitsave", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("issaverecentlyloaded", [](CallContext&) { return Value(false); });
     // playrumble (0x4f8bf0) is a bare `ret` in the original.
     vm_.registerBuiltin("playrumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("setcullfog", [this](CallContext& c) {
