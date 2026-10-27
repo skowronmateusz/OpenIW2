@@ -2416,6 +2416,7 @@ int main(int argc, char** argv) {
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
+        int musicHandle = 0; // mu_play voice (cgame music slot)
         float slowFrom = 1, slowTo = 1, slowmo = 1;
         game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         game::FogState fogState; // "fog" server command (client 0x4a5770)
@@ -5355,6 +5356,14 @@ int main(int argc, char** argv) {
                         a >> ms >> slowFrom >> slowTo;
                         slowStartNs = SDL_GetTicksNS();
                         slowEndNs = slowStartNs + uint64_t(std::max(ms, 0)) * 1000000ull;
+                    } else if (cmd.name == "mu_play") { // mu_play <alias> (0x4a6e2b -> 0x443030): the music slot; a new one replaces it
+                        if (musicHandle) mixer.stop(musicHandle);
+                        musicHandle = mixer.play(cmd.arg);
+                    } else if (cmd.name == "mu_stop") { // mu_stop <ms> (0x4a6e60 -> 0x442fb0): stop at once or fade out over ms
+                        int ms = 0;
+                        a >> ms;
+                        if (musicHandle) mixer.fadeOut(musicHandle, ms);
+                        musicHandle = 0;
                     } else if (cmd.name == "snd_fade") { // snd_fade <volume> <ms> (0x4a6ec4)
                         float vol = 1;
                         int ms = 0;

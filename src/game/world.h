@@ -630,7 +630,7 @@ private:
     int startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj = nullptr, const std::string& notify = {});
     struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
     std::vector<PendingNotify> pendingNotifies_;
-    int ambientHandle_ = 0, musicHandle_ = 0;
+    int ambientHandle_ = 0;
     int nearestNode(const std::array<float, 3>& p) const;
 
     // Script menus (src/game/menus.cpp)
