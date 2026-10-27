@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@ struct Objective {
     std::array<std::array<float, 3>, 8> positions{};
     std::string icon;
     bool ring = false;
+    int64_t ringStartMs = -1;              // pointer +0x464: pulse start (cg time), -1 none
 };
 
 struct LevelChange {
