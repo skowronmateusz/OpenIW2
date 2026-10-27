@@ -68,3 +68,5 @@ described in the code that reads them.
 - Env `IW2_CINEMATIC_STATS=1` (iw2view): after every movie prints wall time, last frame, dropped frames, audio length and the picture-minus-audio-played offset (min / mean / max).
 - `--no-intro` / env `IW2_SKIP_INTRO=1` (iw2view `--menu`): no start-up movies (legal, atvi, IW_logo, cod_intro).
 - Env `IW2_EXIT_AFTER=N` also leaves a playing movie after N seconds.
+
+- Env `IW2_COMBAT_SCENE=<s>` (iw2game): at sim time `<s>` takes the closest living axis/allies actor pair, places the allied one 120 units in front of an axis actor with a clear shot line (if any), makes them enemies and fires a rifle bullet every 0.3 s for 3 s; prints `[scene t] #n state sub hp planes pain` for both for 8 s and `shot hit entity` per shot. Debug only; the bullets use the real `fireBullet` path (events 10 and 16, danger planes).

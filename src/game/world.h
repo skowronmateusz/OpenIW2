@@ -119,7 +119,7 @@ struct ActorAi {
     bool throwFromTag = false;                // +0x20d4: re-solve the throw from tag_weapon_right when thrown
     std::string throwMethod;                  // +0x20cc
     Vec3 throwStart{}, throwTarget{}, throwVel{}; // +0x20dc / +0x20e8 / +0x20f4
-    bool noPush = false;                      // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
+    bool noPush = true;                       // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
     bool potentialThreat = false;             // +0x20b4: setpotentialthreat; +0x20b8 cos, +0x20bc sin of the angle (TODO(spec): consumer)
     float potentialThreatDir[2] = {0, 0};
     int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (TODO(spec): consumer)
@@ -294,6 +294,23 @@ public:
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
     // Debug (iw2view IW2_FIRE_TURRETS): one shot from every turret entity (number of turrets fired).
     int debugFireTurrets();
+    void debugSetEnemy(Entity& a, Entity* b) { setEnemy(a, b, true); } // IW2_COMBAT_SCENE
+    // IW2_COMBAT_SCENE: puts b 120 units in front of a (a's yaw), same height.
+    void debugPlaceBefore(Entity& b, Entity& a) {
+        Vec3 p = a.obj->get("origin").asVector();
+        const float yaw = a.obj->get("angles").asVector()[1] * 3.14159265f / 180.0f;
+        p[0] += std::cos(yaw) * 120.0f;
+        p[1] += std::sin(yaw) * 120.0f;
+        b.obj->set("origin", Value(p));
+    }
+    // IW2_COMBAT_SCENE: one rifle bullet from a's muzzle height to b's chest, credited to a.
+    int debugShoot(Entity& a, Entity& b) {
+        Vec3 s = a.obj->get("origin").asVector(), t = b.obj->get("origin").asVector();
+        s[2] += 56.0f;
+        t[2] += 40.0f;
+        Entity* h = fireBullet(a, s, t, 10, &a);
+        return h ? h->number : -1;
+    }
     bool playerOnTurret() const { return (playerEFlags_ & 0x300u) != 0; }
     // The eye on a turret (0x4e8b70 → 0x4d7730): the turret's tag_player.
     // Cursor hint of what the use key would use (ps+0x578 hint, +0x57c string; 0x534d40). hint: 0 none, 1 HINT_NONE,
@@ -688,6 +705,7 @@ private:
     int playerEventSeq_ = 0;
     // Receivers of an AI event by team (the mask in EAX of 0x535770: 0 = the source's enemy team, 1 << team otherwise).
     enum class AiHear { All, Enemy, Own };
+    void painBroadcast(Entity& e); // 0x54d300
     void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true, AiHear hear = AiHear::All); // 0x535770
     void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2 = 0,
                      bool forced = true); // 0x535860 + 0x535f20
