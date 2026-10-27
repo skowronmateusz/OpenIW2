@@ -530,6 +530,8 @@ int main(int argc, char** argv) {
         bool moveStats = false;
         std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
         size_t menuAnswered = 0;
+        float fireVehiclesAt = std::getenv("IW2_FIRE_VEHICLES") ? float(std::atof(std::getenv("IW2_FIRE_VEHICLES"))) : -1.0f;
+        float killReportAt = -1.0f, fireVehiclesReportAt = -1.0f;
         float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
@@ -783,6 +785,7 @@ int main(int argc, char** argv) {
             }
             if (killVehiclesAt >= 0 && f * 0.05f >= killVehiclesAt) { // IW2_KILL_VEHICLES=<s>: 100000 damage to every vehicle
                 killVehiclesAt = -1;
+                killReportAt = f * 0.05f + 5.0f;
                 int n = 0;
                 for (const auto& ep : world.entities())
                     if (ep->vehicle && !ep->obj->removed) {
@@ -790,6 +793,31 @@ int main(int argc, char** argv) {
                         ++n;
                     }
                 std::printf("killed %d vehicles at %.1f s\n", n, f * 0.05f);
+            }
+            if (fireVehiclesAt >= 0 && f * 0.05f >= fireVehiclesAt) { // IW2_FIRE_VEHICLES=<s>: "turret_fire" on every vehicle
+                fireVehiclesAt = -1;
+                int n = 0;
+                for (const auto& ep : world.entities())
+                    if (ep->vehicle && !ep->obj->removed) {
+                        world.vm().notify(ep->obj, "turret_fire", {});
+                        ++n;
+                    }
+                std::printf("turret_fire sent to %d vehicles at %.1f s (rockets so far %d, bullets %d)\n", n, f * 0.05f, world.stats.rockets, world.stats.shots);
+                fireVehiclesReportAt = f * 0.05f + 3.0f;
+            }
+            if (fireVehiclesReportAt >= 0 && f * 0.05f >= fireVehiclesReportAt) {
+                fireVehiclesReportAt = -1;
+                std::printf("3 s after turret_fire: rockets %d, bullets %d, bullet hits %d\n", world.stats.rockets, world.stats.shots, world.stats.hits);
+            }
+            if (killReportAt >= 0 && f * 0.05f >= killReportAt) { // 5 s after IW2_KILL_VEHICLES: how many became corpses
+                killReportAt = -1;
+                int corpses = 0, alive = 0;
+                for (const auto& ep : world.entities()) {
+                    if (ep->obj->removed) continue;
+                    if (ep->classname == "script_vehicle_corpse") ++corpses;
+                    else if (ep->vehicle) ++alive;
+                }
+                std::printf("vehicles: %d corpses, %d still script_vehicle\n", corpses, alive);
             }
             for (auto it = levelNotifies.begin(); it != levelNotifies.end();)
                 if (f * 0.05f >= it->first) {

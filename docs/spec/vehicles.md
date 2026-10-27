@@ -347,3 +347,13 @@ command's delta angles are adjusted so the input keeps that view.
 - Open: the endpoints of the 0x44c1b0 test and the two tag names; therefore not implemented (shotDir/start unchanged).
 - joltbody (above) and the fireturret recoil jolt are implemented (`World::vehicleJolt`, `vehicleJoltStep`); the heading
   "Not implemented" in this file is stale for them.
+
+## Damage attacker, death and corpse (checked)
+- G_Damage (0x5280b8 / 0x5280c9) replaces a null inflictor / attacker by the world entity 0x1c13b08 (g_entities[2046], 0x1b15f00 + 2046 * 0x1fc);
+  `radiusdamage` (0x4f3e70) passes 0x1c13b08 as the attacker of 0x5289d0. The "damage" / "death" callbacks therefore get an entity, never
+  undefined (`_tank.gsc friendlyfire_shield` reads attacker.origin). TODO(spec): the world entity's other fields (origin zero here).
+- freevehicle (0x511c80..0x511d83) has no rider handling: health 0, think sounds silenced (0x510be0), the two sound entities (+0x1f0 / +0x1f4)
+  freed, eType 0xb, contents 0, take-damage and +0x112 cleared, vehicle data detached. Riders on death are script behaviour only
+  (_tankai.gsc endon("death") on the tank). Running level (libya, IW2_KILL_VEHICLES): 13 of 14 vehicles become script_vehicle_corpse.
+- Vehicle weapons end to end (libya, IW2_FIRE_VEHICLES): "turret_fire" makes _tank.gsc shoot() call fireturret: 14 rockets, 0 errors.
+- Touch callbacks and script movers (eType 5) in 0x50ff00 remain TODO(spec).
