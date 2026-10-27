@@ -344,8 +344,9 @@ void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const Note
                 if (note.name != "end" && note.time > before && note.time <= to) onNote(s.notify, note.name);
         }
     }
-    if (a && !a->looping && to >= 1.0f && !s.ended) {
-        s.ended = true;
+    // 0x476f10: a node that already stands at time 1.0 sends the last notetrack ("end") again on every call, so
+    // a non-looping flagged node that sits at its end keeps ending (a pain anim reused without a restart ends at once).
+    if (a && !a->looping && to >= 1.0f) {
         if (notes && !s.notify.empty()) onNote(s.notify, "end");
     }
     s.time = to;

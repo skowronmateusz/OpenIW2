@@ -143,6 +143,7 @@ public:
     bool isThreadAlive(uint64_t id) const;
     // Debug: "file:line function (state event)" for each live thread's innermost frame.
     std::vector<std::string> describeThreads() const;
+    std::string describeThread(uint64_t id) const; // debug: wait site of one thread (empty if gone)
     // Debug: " < file:line function" for each frame of a thread, outermost first.
     std::string backtrace(const Thread& t) const;
     const std::vector<std::string>& errors() const { return errors_; }

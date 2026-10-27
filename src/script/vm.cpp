@@ -1140,6 +1140,19 @@ std::vector<std::string> VM::describeThreads() const {
     return out;
 }
 
+std::string VM::describeThread(uint64_t id) const {
+    for (const auto& th : threads_) {
+        if (th->id != id || th->state == ThreadState::Done || th->frames.empty()) continue;
+        const Frame& fr = th->frames.back();
+        const CompiledFunction& f = functions_[size_t(fr.function)];
+        const int line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
+        std::string st = th->state == ThreadState::Waiting ? "wait" : th->state == ThreadState::WaitingNotify ? "waittill " + th->waitEvent
+                         : th->state == ThreadState::WaitingFrameEnd ? "frameend" : "ready";
+        return f.file + ":" + std::to_string(line) + " " + f.name + " (" + st + ")";
+    }
+    return "";
+}
+
 bool VM::isThreadAlive(uint64_t id) const {
     for (const auto& th : threads_)
         if (th->id == id) return th->state != ThreadState::Done;

@@ -558,6 +558,7 @@ int main(int argc, char** argv) {
         bool touchTestIsRocket = false;
         float combatSceneAt = std::getenv("IW2_COMBAT_SCENE") ? float(std::atof(std::getenv("IW2_COMBAT_SCENE"))) : -1.0f;
         decltype(world.player()) sceneA = nullptr, sceneB = nullptr;
+        int sceneCoverNode = -1;
         int touchBefore = 0;
         decltype(world.player()) touchTarget = nullptr;
         if (std::getenv("IW2_ROCKET_TEST")) {
@@ -900,27 +901,38 @@ int main(int argc, char** argv) {
                     }
                     if (sceneA) std::printf("[scene] closest pair distance %.0f\n", std::sqrt(best));
                     // Search for an axis actor with a clear line to where B is placed (the shot must reach B).
-                    if (sceneA && sceneB)
+                    if (sceneA && sceneB && std::getenv("IW2_SCENE_COVER")) { // cover scene: a cover node next to B, A in front of it
+                        sceneCoverNode = world.debugCoverSetup(*sceneA, *sceneB);
+                        std::printf("[scene] cover node %d (type %d)\n", sceneCoverNode, sceneCoverNode >= 0 ? world.nodes()[size_t(sceneCoverNode)].typeNum : 0);
+                        if (sceneCoverNode < 0) sceneA = sceneB = nullptr;
+                    } else if (sceneA && sceneB)
                         for (const auto& ea : world.entities()) {
                             if (!ea->isActor || ea->obj->removed || ea->obj->get("health").asInt() <= 0 || ea->obj->get("team").toString() != "axis") continue;
                             world.debugPlaceBefore(*sceneB, *ea);
                             if (world.debugClearShot(*ea, *sceneB)) { sceneA = ea.get(); break; }
                         }
                     if (sceneA && sceneB) {
-                        world.debugPlaceBefore(*sceneB, *sceneA);
-                        std::printf("[scene] B placed 120 in front of A\n");
+                        if (sceneCoverNode < 0) world.debugPlaceBefore(*sceneB, *sceneA);
+                        std::printf("[scene] B placed\n");
                         if (!std::getenv("IW2_SCENE_LETHAL")) sceneB->obj->set("health", iw2::script::Value(1000)); // survive to show the pain reaction
                         world.debugSetEnemy(*sceneA, sceneB);
                         world.debugSetEnemy(*sceneB, sceneA);
                         std::printf("[scene %.2f] A=#%d (axis) B=#%d (allies) now enemies\n", f * 0.05f, sceneA->number, sceneB->number);
                     } else { std::printf("[scene] no axis/allies actor pair\n"); combatSceneAt = -1; }
                 }
-                if (sceneA && sceneB && f % 6 == 0 && f * 0.05f < combatSceneAt + 3.0f && (world.debugPlaceBefore(*sceneB, *sceneA), true)) std::printf("[scene %.2f] shot hit entity %d (shots %d hits %d)\n", f * 0.05f, world.debugShoot(*sceneA, *sceneB), world.stats.shots, world.stats.hits);
+                if (sceneA && sceneB && f % 6 == 0 && f * 0.05f < combatSceneAt + 3.0f && (sceneCoverNode >= 0 || (world.debugPlaceBefore(*sceneB, *sceneA), true))) std::printf("[scene %.2f] shot hit entity %d (shots %d hits %d)\n", f * 0.05f, world.debugShoot(*sceneA, *sceneB), world.stats.shots, world.stats.hits);
                 if (sceneA && sceneB && f * 0.05f < combatSceneAt + 8.0f) {
                     for (auto* a : {sceneA, sceneB}) {
                         int planes = 0;
                         for (const auto& dp : a->dangerPlanes) planes += dp.timeMs != 0;
-                        std::printf("[scene %.2f] #%d state %d sub %d hp %d planes %d pain %lld\n", f * 0.05f, a->number, a->ai.stack[size_t(a->ai.depth)], a->ai.substate, a->obj->get("health").asInt(), planes, (long long)a->ai.painStartMs);
+                        {
+                            const auto ao = a->obj->get("origin").asVector();
+                            float dn = -1;
+                            if (sceneCoverNode >= 0) { const auto no = world.nodes()[size_t(sceneCoverNode)].obj->get("origin").asVector(); dn = std::sqrt((ao[0] - no[0]) * (ao[0] - no[0]) + (ao[1] - no[1]) * (ao[1] - no[1])); }
+                            std::printf("[scene %.2f] #%d state %d sub %d hp %d planes %d pain %lld node %d distToCoverNode %.0f pos %.0f %.0f\n", f * 0.05f, a->number, a->ai.stack[size_t(a->ai.depth)], a->ai.substate, a->obj->get("health").asInt(), planes, (long long)a->ai.painStartMs, a->claimedNode, dn, ao[0], ao[1]);
+                            if (std::getenv("IW2_COVER_LOG") && a->animScriptThread) std::printf("[scene %.2f]   anim thread: %s\n", f * 0.05f, world.vm().describeThread(a->animScriptThread).c_str());
+                            if (std::getenv("IW2_COVER_LOG") && a == sceneB && a->anim && f % 20 == 0) std::printf("%s", a->anim->debugString().c_str());
+                        }
                     }
                 } else if (sceneA) combatSceneAt = -1;
             }

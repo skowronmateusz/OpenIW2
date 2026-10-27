@@ -314,6 +314,32 @@ public:
         syncEntityClips(); // the clips are rebuilt once per frame; the scene shoots in the same frame
     }
     // IW2_COMBAT_SCENE: one rifle bullet from a's muzzle height to b's chest, credited to a.
+    // IW2_COMBAT_SCENE with IW2_SCENE_COVER=1: finds a cover node (types 2..9, not spawnflag 1) and puts b 150 units to its
+    // side (in the open, node nearby) and a 300 units in front of the node facing it, with a clear shot a -> b. Returns
+    // the node index or -1.
+    int debugCoverSetup(Entity& a, Entity& b) {
+        for (size_t i = 0; i < nodes_.size(); ++i) {
+            const PathNode& n = nodes_[i];
+            if (n.typeNum < 2 || n.typeNum > 9 || (n.spawnflags & 1)) continue;
+            const Vec3 no = n.obj->get("origin").asVector();
+            const float yaw = n.obj->get("angles").asVector()[1] * 3.14159265f / 180.0f;
+            const float fx = std::cos(yaw), fy = std::sin(yaw);
+            for (float side : {150.0f, -150.0f}) {
+                Vec3 bp = {no[0] - fy * side, no[1] + fx * side, no[2]};
+                Vec3 ap = {no[0] + fx * 300.0f, no[1] + fy * 300.0f, no[2]};
+                b.obj->set("origin", Value(bp));
+                a.obj->set("origin", Value(ap));
+                a.obj->set("angles", Value(Vec3{0, n.obj->get("angles").asVector()[1] + 180.0f, 0}));
+                syncEntityClips();
+                if (debugClearShot(a, b)) {
+                    b.obj->set("$goalpos", Value(bp)); // the cover search stays inside the goal volume around this point
+                    b.obj->set("goalradius", Value(512.0f));
+                    return int(i);
+                }
+            }
+        }
+        return -1;
+    }
     // IW2_COMBAT_SCENE: true when a bullet from a reaches b (hit boxes, no damage).
     bool debugClearShot(Entity& a, Entity& b) {
         Vec3 s = a.obj->get("origin").asVector(), t = b.obj->get("origin").asVector();
