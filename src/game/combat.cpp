@@ -483,15 +483,38 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     const bool rifle = flag("riflebullet"), ap = flag("armorpiercing");
     const Vec3 at = tr.endPos;
     if (!shooter.isPlayer) {
-        // 0x4b8140 / 0x4b8040: not for eType 1 (players); the start is the weapon's tag_flash (0x4abb20), else the
-        // entity origin raised by 60 (stand; 40 crouched and 11 prone by eFlags 0x4 / 0x8, not tracked here).
-        // TODO(spec): the tracer gate for eType 0xc, the stance heights.
+        // 0x4b8140 / 0x4b8040: the start is the weapon's tag_flash (0x4abb20), else the entity origin raised by 60 (stand; 40
+        // crouched and 11 prone by eFlags 0x4 / 0x8, not tracked here). The player's own shots start at the view origin
+        // (the whiz below then always rejects them: closest approach < 64).
+        // TODO(spec): the stance heights.
         Vec3 from{};
         if (!entityTagPosition(shooter.number, "tag_flash", from)) {
             from = shooter.obj->get("origin").isVector() ? shooter.obj->get("origin").asVector() : Vec3{0, 0, 0};
             from[2] += 60.0f;
         }
-        tracerEvents_.push_back({from, at});
+        // No tracer for eType 1 (players, above) nor eType 0xc (live vehicles: the vehicle spawn 0x50d863 stores 0xc, the
+        // dead vehicle is 0xb); actors are 9 and draw tracers (after the cg_tracerchance roll in the viewer).
+        if (!shooter.vehicle) tracerEvents_.push_back({from, at});
+        // 0x4b79f0 (always called from 0x4b8140, also for eType 1 / 0xc): the "whizby" alias (0xf5bc64) plays, with entity
+        // number 0x7fe, 16 units back along the path from the closest point to the view origin when that point is at
+        // least 64 units from both the start and the end of the path and within 140 units of the view.
+        // TODO(spec): the cg_tracerchance > 0 gate (cvar not modelled; default 0.4) and the 0x4b8040 range check.
+        if (player_) {
+            const Vec3 view = eyePosition(*player_);
+            const Vec3 dv = sub(at, from);
+            const float total = len(dv);
+            if (total > 0.0f) {
+                const Vec3 dir = scale(dv, 1.0f / total);
+                const float t = dot(sub(view, from), dir);
+                if (t >= 64.0f && t + 64.0f <= total) {
+                    const Vec3 q = add(from, scale(dir, t));
+                    if (len(sub(q, view)) <= 140.0f) {
+                        const Vec3 at16 = sub(q, scale(dir, 16.0f));
+                        startSound("whizby", &at16);
+                    }
+                }
+            }
+        }
     }
     if (hit && hit->isPlayer) {
         startSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
@@ -658,7 +681,8 @@ void World::registerCombatBuiltins() {
             // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). TODO(spec): which of 0x9e / 0xa0
             // this shot is, so lastShotEjectEffect is never chosen here.
             const std::string brass = weaponField(wpn.asString(), "shellEjectEffect");
-            if (!brass.empty() && brass != "none" && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
+            // 0x4b79d1: no brass when the weapon def has boltAction (+0x328 of the table at 0x5a86c0) set.
+            if (!brass.empty() && brass != "none" && std::atoi(weaponField(wpn.asString(), "boltAction").c_str()) == 0 && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();

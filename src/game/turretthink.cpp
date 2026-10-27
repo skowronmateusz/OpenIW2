@@ -249,6 +249,18 @@ void World::turretTurn(Entity& t, bool tracking) {
     t.obj->set("$turretangles", Value(Vec3{ts.pitch, ts.yaw, 0}));
 }
 
+int World::debugFireTurrets() {
+    int n = 0;
+    for (const auto& e : entities_)
+        if (e->turret && !e->obj->removed) {
+            shootTurret(*e);
+            const Vec3 o = e->obj->get("origin").isVector() ? e->obj->get("origin").asVector() : Vec3{0, 0, 0};
+            print("debug turret " + e->obj->get("model").toString() + " at " + std::to_string(o[0]) + "," + std::to_string(o[1]) + "," + std::to_string(o[2]) + " yaw " + std::to_string(e->turret->yaw));
+            ++n;
+        }
+    return n;
+}
+
 // One shot (0x51b250 → 0x51ada0): countdown = fireTime · 3; from tag_flash towards the aim point with a random
 // offset of up to 8 units on the two axes across the line of fire (0x5501e0) when engaging a target, else along the
 // barrel; bullet spread aiSpread (AI or no gunner) or playerSpread, range 8192.
@@ -282,10 +294,16 @@ void World::shootTurret(Entity& t) {
     fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user, ts.weapon);
     // EV_FIRE_WEAPON_MG42 (0xaf, sent at 0x51afc1) → cgame 0x4b7800: for an entity that is not the local client
     // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
-    // (empty for the MG42s) plays too. TODO(spec): the shell eject
-    // (0x4b7730), the view shake 0x4bf5e0 (0.05, 100, 100) of the event. The effect is bolted on tag_flash of the turret entity.
+    // (empty for the MG42s) plays too. TODO(spec): the view shake 0x4bf5e0 (0.05, 100, 100) of the event. The effect is bolted on tag_flash of the turret entity.
     const std::string flash = weaponField(ts.weapon, "worldFlashEffect");
     if (!flash.empty()) fxEvents_.push_back({flash, muzzle, dir, t.number, "tag_flash"});
+    // Shell eject: the same handler 0x4b7800 calls CG_EjectWeaponBrass (0x4b7730, 0x4b79dc) unless boltAction (+0x328) is set:
+    // shellEjectEffect bolted on tag_brass. No shipped turret weapon (mg42_bipod_*, mg42_tank_*) defines shellEjectEffect, so
+    // nothing ejects in the shipped data. TODO(spec): lastShotEjectEffect for event 0xa0.
+    const std::string brass = weaponField(ts.weapon, "shellEjectEffect");
+    Vec3 brassAt;
+    if (!brass.empty() && brass != "none" && std::atoi(weaponField(ts.weapon, "boltAction").c_str()) == 0 && turretTag(t, "tag_brass", brassAt))
+        fxEvents_.push_back({brass, brassAt, dir, t.number, "tag_brass"});
     const std::string fireSnd = weaponField(ts.weapon, "fireSound");
     if (!fireSnd.empty()) startSound(fireSnd, &muzzle);
 }
