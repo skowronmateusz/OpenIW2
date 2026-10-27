@@ -54,7 +54,8 @@ struct FragmentUniforms {
 
 static float3 apply_fog(float3 rgb, float dist, constant FragmentUniforms& u) {
     if (u.fogParams.x < 0.5) return rgb;
-    return mix(u.fogColor.rgb, rgb, clamp(dist * u.fogParams.y + u.fogParams.z, 0.0, 1.0)); // Fog_PixelCalc
+    const float f = u.fogParams.w != 0.0 ? exp(dist * u.fogParams.w) : dist * u.fogParams.y + u.fogParams.z; // Fog_ExponentialFactor / Fog_LinearFactor
+    return mix(u.fogColor.rgb, rgb, clamp(f, 0.0, 1.0)); // Fog_PixelCalc
 }
 
 fragment float4 fs_main(VertexOut in [[stage_in]],

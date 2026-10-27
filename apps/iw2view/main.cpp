@@ -1215,7 +1215,7 @@ struct FragmentUniforms {
     float params[4];
     float ambient[4];
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
-    float fogParams[4]; // x: 1 = on, y: scale, z: shift
+    float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
     float fogColor[4];
 };
 
@@ -1283,7 +1283,7 @@ struct Renderer {
     bool fullbright = false;
     game::FogConsts fog; // set by the caller each frame (client fog state)
     void applyFog(FragmentUniforms& fu) const {
-        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift;
+        fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift, fu.fogParams[3] = fog.exponential ? fog.exponent : 0.0f;
         std::memcpy(fu.fogColor, fog.color, sizeof fog.color);
     }
 
@@ -3784,7 +3784,8 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
+                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
@@ -4541,7 +4542,8 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs()); // < 1: exponential, TODO(spec)
+                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                     }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
