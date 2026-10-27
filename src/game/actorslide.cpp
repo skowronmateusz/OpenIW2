@@ -1,6 +1,7 @@
 #include "game/actorslide.h"
 
 #include <cmath>
+#include <cstdlib>
 
 namespace iw2::game {
 namespace {
@@ -308,6 +309,14 @@ void groundProbe(ActorSlide& pm, const SlideTraceFn& trace) {
     pm.groundPlane = true;
     pm.groundEntValid = true;
     addTouch(pm, r.entity);
+}
+
+bool actorSlideEnabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("IW2_ACTOR_SLIDE");
+        return !(v && v[0] == '0');
+    }();
+    return on;
 }
 
 int moveBlock(ActorSlide& pm, const SlideTraceFn& trace) {
