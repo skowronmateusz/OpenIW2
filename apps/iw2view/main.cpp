@@ -2365,15 +2365,16 @@ int main(int argc, char** argv) {
             }
             // Crosshair (cgame 0x4bd760). On a turret (eFlags & 0x300) only the turret's: with cg_drawTurretCrosshair (1)
             // and cg_crosshairAlpha (1) ≥ 0.01, its weapon's reticleCenter, reticleCenterSize virtual units square,
-            // centred (0x4bcef0). In a vehicle the vehicle's (0x4bd000, not drawn yet). Otherwise the hand weapon's
+            // centred (0x4bcef0). In a vehicle the vehicle's turret weapon (0x4bd000). Otherwise the hand weapon's
             // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
             // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
             // TODO(spec): the friend / enemy colours (ps flags 0x100000 / 0x200000), the reticleCenter +
             // four reticleSide drawing with the spread (0x4bd2c0, 0x4bd520) and the sway offset (0x4bc6e0).
             const bool onTurretHud = world && world->playerOnTurret();
             const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
-            if (onTurretHud) {
-                const std::string tw = world->playerTurretWeapon();
+            if (onTurretHud || inVehicleHud) {
+                // 0x4bd000: the vehicle's weapon reticle, drawn unconditionally (the 0x4bd110 conditions are not checked there).
+                const std::string tw = onTurretHud ? world->playerTurretWeapon() : world->playerVehicleTurretWeapon();
                 const auto* td = tw.empty() ? nullptr : world->weapon(tw);
                 const std::string reticle = td && td->count("reticlecenter") ? td->at("reticlecenter") : std::string();
                 const float size = td && td->count("reticlecentersize") ? float(std::atof(td->at("reticlecentersize").c_str())) : 0.0f;

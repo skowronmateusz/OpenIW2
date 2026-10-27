@@ -301,6 +301,9 @@ public:
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
+    // The turretWeapon of the vehicle the player rides ("" when none). TODO(spec): the original reads the weapon index from
+    // cg_entities[0xf70e50]+0xa2 (0x4bd000); that it is the vehicle's turret weapon is a hypothesis.
+    std::string playerVehicleTurretWeapon();
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
     // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).

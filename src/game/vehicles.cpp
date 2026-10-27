@@ -843,6 +843,11 @@ void World::updateVehicleEngineSound(Entity& e) {
     pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac);
 }
 
+std::string World::playerVehicleTurretWeapon() {
+    const Entity* v = player_ && player_->usingVehicle >= 0 ? entityByNumber(player_->usingVehicle) : nullptr;
+    return v && v->vehicle && v->vehicle->info ? v->vehicle->info->turretWeapon : std::string();
+}
+
 void World::thinkVehicles() {
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
