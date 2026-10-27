@@ -59,3 +59,26 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
 - Alias loadspec (0x428f40): a row whose loadspec equals the mode tag `all_sp` loads in every single-player level
   (the fallback compare of the whole spec with the tag); "menu" and "!list" cases follow the same function.
   Effect: bullet_small_flesh (and every other `all_sp` row) was previously dropped.
+
+## Round 2: ambient, soundfade, volumes, dvars (exe evidence)
+
+- Slot layout of the client sound code (0x442df0 play-into-slot, 0x442fb0 stop/fade-out, table 0x793ce0 current/rate per slot):
+  music is slot 0 (`mu_play` / `mu_stop`); ambient uses slots 1/2 alternately (0x443080, `3 - current`). A new ambient alias
+  fades the old slot out and itself in over the fade time (rate = volume / ms); the same alias keeps playing. The engine models
+  configstring 3 as the client commands `ambient_play <alias> <fade ms>` / `ambient_stop <fade ms>`.
+- `soundfade(volume [, seconds])` (0x4f3520) sends `snd_fade <volume> <ms>` (ms = int(seconds * 1000), 0 without the argument).
+- Ambient / music aliases must be `streamed` and must not use a 3D channel type (load-time errors at 0x442e47 / 0x442e72).
+- Master volume = `snd_volume` (float, default 1.0, range 0..1, archived, 0x4449d6) x `snd_fade` volume x 0.75 (0x443ac4).
+  The engine's former default 0.8 was replaced by 0.75.
+- `vol_mod` column: group volumes come from `soundaliases/volumemodgroups.def`; the post-parse check (0x429783) multiplies
+  `vol_min` and `vol_max` by the group volume and clamps to 0..1; an unknown group gives 0 (0x428c2c). Implemented.
+- `dist_max` 0 means 5 x `dist_min` (0x429701); the engine used 10 x (guess) before.
+- Registered dvars (0x444900): `snd_khz` (default 44, 0x1021), `snd_bits` (16), `snd_stereo` (1), `snd_volume`,
+  `snd_slaveFadeTime` (int, default 500, 0..5000, 0x1081), `snd_enable2D/3D/Stream/Reverb` (default 1, 0x1080),
+  `snd_touchStreamFilesOnLoad` (0). `snd_channelvolprio_shellshock/pain/holdbreath` and `snd_enveffectsprio_level/shellshock`
+  are priority names (0x506f61..0x506fbc) accepted by `snd_setEnvironmentEffects` (0x444be9) and the script `setreverb`.
+- `masterslave` column: `master` sets alias flag 0x2, a number in 0..1 sets slave flag 0x4 with that percentage (+0x134,
+  error text "SlavePercentage"). 3141 rows are masters (dialogue); 0.7 / 0.5 slaves are ducked while a master plays, fading
+  over `snd_slaveFadeTime` ms. TODO(spec): the runtime ducking (the engine plays slaves at full volume).
+- TODO(spec): 3D attenuation curve (.vfcurve, `volumefalloffcurve` column), occlusion, reverb mixing, `speakermap`, per-channel
+  voice priority; `lfe percentage`. Not decoded this round.
