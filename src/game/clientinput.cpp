@@ -49,9 +49,9 @@ void ClientInput::loadConfig(const std::string& text) {
         const auto t = tokens(line);
         if (t.empty()) continue;
         const std::string cmd = lower(t[0]);
-        if (cmd == "unbindall") binds_.clear();
-        else if (cmd == "bind" && t.size() >= 3) binds_[upper(t[1])] = t[2];
-        else if (cmd == "unbind" && t.size() >= 2) binds_.erase(upper(t[1]));
+        if (cmd == "unbindall") binds_.clear(), seq_.clear();
+        else if (cmd == "bind" && t.size() >= 3) binds_[upper(t[1])] = t[2], seq_[upper(t[1])] = nextSeq_++;
+        else if (cmd == "unbind" && t.size() >= 2) binds_.erase(upper(t[1])), seq_.erase(upper(t[1]));
     }
 }
 
@@ -59,7 +59,30 @@ std::vector<std::string> ClientInput::keysFor(const std::string& command) const 
     std::vector<std::string> keys;
     for (const auto& [k, c] : binds_)
         if (lower(c) == lower(command)) keys.push_back(k);
+    std::sort(keys.begin(), keys.end(), [&](const std::string& a, const std::string& b) { return seq_.at(a) < seq_.at(b); });
     return keys;
+}
+
+void ClientInput::rebind(const std::string& command, const std::string& rawKey) {
+    const std::string key = upper(rawKey);
+    if (key.empty()) { // exe 0x4ce1ea: clear both slots
+        for (const auto& k : keysFor(command)) binds_.erase(k), seq_.erase(k);
+        return;
+    }
+    binds_.erase(key), seq_.erase(key); // 0x4ce1a0: the key leaves any other binding (the other slot moves up)
+    const auto cur = keysFor(command);
+    if (cur.size() >= 2) // both slots taken: replace by this key alone (0x4ce237)
+        for (const auto& k : cur) binds_.erase(k), seq_.erase(k);
+    binds_[key] = command, seq_[key] = nextSeq_++; // slot 0 or slot 1 free (0x4ce21a / 0x4ce22f)
+}
+
+std::string ClientInput::formatBindings() const {
+    std::vector<std::pair<int, std::string>> order;
+    for (const auto& [k, c] : binds_) order.emplace_back(seq_.at(k), k);
+    std::sort(order.begin(), order.end());
+    std::string out = "unbindall\n";
+    for (const auto& [n, k] : order) out += "bind " + k + " \"" + binds_.at(k) + "\"\n";
+    return out;
 }
 
 void ClientInput::key(const std::string& keyName, bool down) {
