@@ -104,6 +104,11 @@ void World::meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Ve
                          tr.entity >= 0 && entityByNumber(tr.entity) ? entityByNumber(tr.entity)->classname.c_str() : "-", tr.surfaceFlags);
         if ((tr.surfaceFlags & 0x10) || tr.fraction == 1.0f) continue;
         Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+        // The hit event of 0x530f80 (0x530fcf…0x531031), sent for every counted hit, the world included: 0xad when the hit
+        // entity has a client or an actor (+0xfc / +0x100), else 0xae. The cgame plays "melee_hit" on the entity (0xad,
+        // 0x4a34a0) or "melee_hit_other" at the position (0xae, 0x4a35c0).
+        if (hit && (hit->isPlayer || hit->isActor)) startSound("melee_hit", hit->isPlayer ? nullptr : &tr.endPos);
+        else startSound("melee_hit_other", &tr.endPos);
         if (hit) { // damage() applies the G_Damage (0x528050) takedamage check (ent+0x111)
             meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3; // the Q3 rand() at 0x5a56f4
             damage(*hit, &attacker, int((meleeSeed_ >> 0x11) % 5) + base, f, tr.endPos, "MOD_MELEE", hitLocationName(location));

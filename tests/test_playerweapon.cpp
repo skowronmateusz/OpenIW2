@@ -157,7 +157,43 @@ void offhand() {
 
 } // namespace
 
+// Weapon sounds follow the cgame priority chains (0x4ba8d0): player variants first, one sound per event.
+void weaponSounds() {
+    PlayerWeapon w;
+    PlayerWeapon::Def a = {{"clipsize", "2"}, {"startammo", "4"}, {"raisetime", "0.1"}, {"reloadtime", "0.5"}, {"reloademptytime", "0.5"},
+                           {"weaponType", "bullet"}, {"raisesound", "up"}, {"putawaysound", "down"}, {"reloadsound", "rel"},
+                           {"reloademptysoundplayer", "relempty_p"}, {"meleedamage", "50"}, {"meleetime", "0.5"},
+                           {"meleeswipesound", "swipe"}, {"firetime", "0.1"}};
+    w.lookup = [&](const std::string&) -> const Def* { return &a; };
+    w.equip("a", a);
+    CHECK(w.takeSounds() == std::vector<std::string>{"up"});
+    // Reload with an empty clip (event 0x97): reloadEmptySoundPlayer wins over reloadSound.
+    PlayerWeapon r;
+    r.equip("a", a);
+    run(r, 0.2f, false);
+    r.takeSounds();
+    for (int i = 0; i < 40 && r.clip() > 0; ++i) r.update(0.01f, {true, false});
+    while (r.clip() > 0) run(r, 0.2f, true);
+    run(r, 0.3f, false);
+    const auto snd = r.takeSounds();
+    CHECK(!snd.empty() && snd.back() == "relempty_p");
+    // Out of ammo: the empty click plays and the next action waits 500 ms.
+    PlayerWeapon e;
+    PlayerWeapon::Def b = a;
+    b["startammo"] = "2";
+    e.equip("b", b);
+    run(e, 0.2f, false);
+    e.takeSounds();
+    run(e, 0.25f, true); // fires both rounds (0.1 s apart), then the empty click at ~0.2 s
+    CHECK(e.takeSounds() == std::vector<std::string>{"player_out_of_ammo"});
+    run(e, 0.4f, true); // 500 ms wait: no second click yet
+    CHECK(e.takeSounds().empty());
+    run(e, 0.2f, true);
+    CHECK(e.takeSounds() == std::vector<std::string>{"player_out_of_ammo"});
+}
+
 int main() {
+    weaponSounds();
     boltAction();
     automatic();
     autoReload();

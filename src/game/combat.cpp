@@ -432,7 +432,14 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     if (def) {
         // Weapon sound: fireSoundPlayer without position for the player, fireSound at the shooter otherwise.
         auto it = def->find(shooter.isPlayer ? "firesoundplayer" : "firesound");
-        if (it != def->end() && !it->second.empty()) startSound(it->second, shooter.isPlayer ? nullptr : &start);
+        const std::string* snd = it != def->end() && !it->second.empty() ? &it->second : nullptr;
+        // The last shot of a clip (event 0xa0, 0x4b7800) overrides it with lastShotSoundPlayer (player) or lastShotSound.
+        if (shooter.isPlayer && playerLastShot_) {
+            auto ls = def->find("lastshotsoundplayer");
+            if (ls == def->end() || ls->second.empty()) ls = def->find("lastshotsound");
+            if (ls != def->end() && !ls->second.empty()) snd = &ls->second;
+        }
+        if (snd) startSound(*snd, shooter.isPlayer ? nullptr : &start);
     }
     if (hit) {
         ++stats.hits;
@@ -536,11 +543,13 @@ int World::weaponDamage(const std::string& weaponName) {
     return it == w->end() ? 35 : std::max(1, std::atoi(it->second.c_str()));
 }
 
-void World::playerFire(const Vec3& eye, const Vec3& forward) {
+void World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot) {
     if (!player_ || !isAlive(*player_)) return;
+    playerLastShot_ = lastShot;
     const Value w = player_->obj->get("$weapon");
     const int dmg = weaponDamage(w.isString() ? w.asString() : "kar98k");
     fireBullet(*player_, eye, add(eye, scale(forward, 8192.0f)), dmg, player_);
+    playerLastShot_ = false;
 }
 
 void World::registerCombatBuiltins() {
