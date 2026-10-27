@@ -545,13 +545,16 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                         if (t.imageName.empty() || t.imageName[0] == '$') continue;
                         if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap") { mi.normalTex = imageSlot(t.imageName); mi.normalState = t.samplerState; }
                         if (t.semantic == assets::TextureSemantic::Specular && t.samplerName == "specularMap") { mi.specTex = imageSlot(t.imageName); mi.specState = t.samplerState; }
-                        if (t.samplerName == "detailMap") {
-                            Scene::Detail dt{imageSlot(t.imageName), t.samplerState, {1.0f, 1.0f}};
-                            for (const auto& c : m.constants)
-                                if (c.name == "detailScale") dt.scale[0] = c.value[0], dt.scale[1] = c.value[1];
-                            mi.detail = int(scene.details.size());
-                            scene.details.push_back(dt);
-                        }
+                    }
+                // phong_*_detail techsets (lmap_dtl / lmap_a_dtl / lprobe_dtl / l_point_dtl and the _s variants): detailMap + detailScale.
+                if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_detail") != std::string::npos)
+                    for (const auto& t : m.textures) {
+                        if (t.imageName.empty() || t.imageName[0] == '$' || t.samplerName != "detailMap") continue;
+                        Scene::Detail dt{imageSlot(t.imageName), t.samplerState, {1.0f, 1.0f}};
+                        for (const auto& c : m.constants)
+                            if (c.name == "detailScale") dt.scale[0] = c.value[0], dt.scale[1] = c.value[1];
+                        mi.detail = int(scene.details.size());
+                        scene.details.push_back(dt);
                     }
             }
         } catch (const std::exception& e) {
@@ -599,6 +602,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             b.polygonOffset = mi.polygonOffset;
             b.cull = mi.cull;
         b.scroll = mi.scroll;
+            b.detail = mi.detail;
             b.firstIndex = uint32_t(indices.size());
             for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
             b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -680,6 +684,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.polygonOffset = mi.polygonOffset;
         b.cull = mi.cull;
         b.scroll = mi.scroll;
+        b.detail = mi.detail;
         b.firstIndex = uint32_t(indices.size());
         for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -1065,7 +1070,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, spec ? mi.detail : -1}];
+        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1397,7 +1402,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo fs = vs;
         fs.entrypoint = "fs_main";
         fs.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-        fs.num_samplers = 3;
+        fs.num_samplers = 4;
         SDL_GPUShader* fsh = SDL_CreateGPUShader(dev, &fs);
         if (!vsh || !fsh) sdlFail("SDL_CreateGPUShader");
 
@@ -1745,6 +1750,18 @@ struct Renderer {
 
         struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 0}, kIdentity};
         // Binds the pass pipeline for a batch's polygon offset level; w of eye carries the constant depth bias.
+        // lib/shade.hlsl USE_DETAIL: texture slot 3 + detailScale in FragmentUniforms.scroll.yzw (white texture when absent).
+        auto detailBinding = [&](int d) {
+            return d >= 0 ? SDL_GPUTextureSamplerBinding{scene.textures[size_t(scene.details[size_t(d)].tex)], matSampler(scene.details[size_t(d)].state)}
+                          : SDL_GPUTextureSamplerBinding{scene.textures[0], repeatSampler};
+        };
+        auto detailUniforms = [&](FragmentUniforms& fu, int d) {
+            static const bool noDetail = std::getenv("IW2_NO_DETAIL") != nullptr;
+            if (d < 0 || noDetail) return;
+            fu.scroll[1] = 1.0f;
+            fu.scroll[2] = scene.details[size_t(d)].scale[0];
+            fu.scroll[3] = scene.details[size_t(d)].scale[1];
+        };
         auto bindOffset = [&](Pass p, int level, int cull, VU u) {
             SDL_BindGPUGraphicsPipeline(pass, statePipelines[int(p)][level][cull]);
             u.eye[3] = float(level) * kPolygonOffsetBias / 65536.0f;
@@ -1791,15 +1808,16 @@ struct Renderer {
                 if (b.pass != p || b.specTex >= 0) continue;
                 if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, vu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
-                SDL_GPUTextureSamplerBinding tex[3] = {
-                    {scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}};
-                SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                SDL_GPUTextureSamplerBinding tex[4] = {
+                    {scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
+                SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                     {p == Pass::AlphaTest ? 1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
                     {0, 0, 0, 0}};
+                detailUniforms(fu, b.detail);
                 if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
@@ -1864,9 +1882,9 @@ struct Renderer {
                         bound = true;
                     }
                     const Lightmap& elm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
-                    SDL_GPUTextureSamplerBinding tex[3] = {
-                        {scene.textures[size_t(b.texture)], repeatSampler}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}};
-                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                    SDL_GPUTextureSamplerBinding tex[4] = {
+                        {scene.textures[size_t(b.texture)], repeatSampler}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -1874,6 +1892,7 @@ struct Renderer {
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
+                    detailUniforms(fu, b.detail);
                     if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                     if (b.polygonOffset || b.cull) {
@@ -1938,10 +1957,11 @@ struct Renderer {
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
             SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
             for (int q = 0; q < 2; ++q) {
-                SDL_GPUTextureSamplerBinding tex[3] = {{srcs[q], clampSampler},
+                SDL_GPUTextureSamplerBinding tex[4] = {{srcs[q], clampSampler},
                                                        {scene.dummyLightmap.coeffs, clampSampler},
-                                                       {scene.dummyLightmap.sun, clampSampler}};
-                SDL_BindGPUFragmentSamplers(p2, 0, tex, 3);
+                                                       {scene.dummyLightmap.sun, clampSampler},
+                                                       {scene.textures[0], repeatSampler}};
+                SDL_BindGPUFragmentSamplers(p2, 0, tex, 4);
                 SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, q * 4, 0);
             }
             if (nq) drawOverlay(p2, cmd, scene, overlay, nq);
@@ -1980,10 +2000,11 @@ struct Renderer {
             while (i < nq) {
                 size_t j = i + 1;
                 while (j < nq && overlay[j].texture == overlay[i].texture) ++j;
-                SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(overlay[i].texture)], clampSampler},
+                SDL_GPUTextureSamplerBinding tex[4] = {{scene.textures[size_t(overlay[i].texture)], clampSampler},
                                                        {scene.dummyLightmap.coeffs, clampSampler},
-                                                       {scene.dummyLightmap.sun, clampSampler}};
-                SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                                                       {scene.dummyLightmap.sun, clampSampler},
+                                                       {scene.textures[0], repeatSampler}};
+                SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                 SDL_DrawGPUIndexedPrimitives(pass, uint32_t((j - i) * 6), 1, uint32_t(i * 6), 0, 0);
                 i = j;
             }

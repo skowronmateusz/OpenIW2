@@ -65,9 +65,14 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
                         texture2d<float> lmSun [[texture(2)]],
                         sampler colorSampler [[sampler(0)]],
                         sampler lmSampler [[sampler(1)]],
-                        sampler sunSampler [[sampler(2)]]) {
+                        sampler sunSampler [[sampler(2)]],
+                        texture2d<float> detailMap [[texture(3)]],
+                        sampler detailSampler [[sampler(3)]]) {
     const float2 uv = in.uv - float2(0.0, u.scroll.x);
-    float4 base = colorMap.sample(colorSampler, uv) * in.color;
+    float4 tex0 = colorMap.sample(colorSampler, uv);
+    // Detail texture (shade library, USE_DETAIL variant): the detail sample, centred on 0.5, is added to the base colour before the vertex colour multiply.
+    if (u.scroll.y > 0.5) tex0.rgb += detailMap.sample(detailSampler, in.uv * u.scroll.zw).rgb - 0.5;
+    float4 base = tex0 * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
 
     if (u.params.y > 3.5) { // effect_multiply: blends the texture towards white by the vertex alpha, no light
