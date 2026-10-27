@@ -344,7 +344,11 @@ command's delta angles are adjusted so the input keeps that view.
   (zero box 0x56ce9c, mask 0x7ff, entity from +0xf4) returns 0.
 - Fire (0x51474d): with +0x19c set the shot start is moved back along the shot direction: start = start - dir * (+0x198)
   (0x514757..0x5147a7: -(+0x198) * dir + origin).
-- Open: the endpoints of the 0x44c1b0 test and the two tag names; therefore not implemented (shotDir/start unchanged).
+- Resolved: +0x214 is tag_barrel (0x1c7f170, the third of the turret tag constants), +0x218 is tag_flash (first of the four flash tags
+  tag_flash, tag_flash_11, tag_flash_2, tag_flash_22 initialised at 0x512004..0x512049). 0x44c1b0 (zero box 0x56ce9c, pass entity the
+  vehicle, mask = ent+0x12c = 0x810211 from 0x50d900) sights between those two tag origins (the sight trace 0x418d10); +0x19c = blocked.
+  Implemented: `vehiclePlayerAim` sets `sightBlocked`; the fire code moves the start back by |tag_flash - tag_barrel| along the final
+  shot direction (0x90(%esp) after the aim bend 0x514698..0x5146e0).
 - joltbody (above) and the fireturret recoil jolt are implemented (`World::vehicleJolt`, `vehicleJoltStep`); the heading
   "Not implemented" in this file is stale for them.
 
@@ -380,7 +384,7 @@ direction with the 2D direction vehicle -> other < 0.8 (0x591f94) does nothing; 
 - Staged tests (`IW2_TOUCH_TEST`, `IW2_ROCKET_TEST`, `IW2_TEST_ACTOR`): libya, an actor 100 units in front of a crusader moving at 400 units/s takes 199
   damage (health 100 -> -99; formula (dot - 0.8) * 1 * 5 * 200); a turret rocket fired at an actor hits it (MOD_PROJECTILE direct damage) and kills it.
   Splash on a second entity next to the impact is not staged.
-- Still open here: barrel pull-back endpoints (0x44c1b0 line and the two tags), eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
+- Still open here: eType 5 movers (no counterpart in OpenIW2), vehicle wheel / suspension details
   and the sound entities' pitch (see the TODO(spec) markers above).
 
 ## Handler 6 / 7 is trigger_hurt (checked)

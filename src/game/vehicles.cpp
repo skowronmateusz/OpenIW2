@@ -1438,7 +1438,6 @@ void World::registerVehicleBuiltins() {
             auto shotDir = [&](const Vec3& start) {
                 // Aim bend (0x5144e7): a player-driven single barrel shoots towards the player's aim point
                 // (+0x1bc), at most 10° (0x591e8c / 0x59213c) off the flash direction in pitch and in yaw.
-                // TODO(spec): the barrel pull-back +0x19c / +0x198 (always 0 here).
                 if (v.owner < 0 || v.info->quadBarrel) return fwd;
                 const Vec3 d{v.aimPoint[0] - start[0], v.aimPoint[1] - start[1], v.aimPoint[2] - start[2]};
                 if (d[0] == 0 && d[1] == 0 && d[2] == 0) return fwd;
@@ -1453,9 +1452,20 @@ void World::registerVehicleBuiltins() {
             const std::string fireSnd = weaponField(v.info->turretWeapon, "fireSound");
             for (int k = 0; k < count; ++k) {
                 bool ok = false;
-                const Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
+                Vec3 start = vehicleTagPosition(*e, flash[first + k], ok);
                 if (!ok) throw std::runtime_error(std::string("No ") + flash[first + k] + " for [" + e->obj->get("model").toString() + "]");
                 const Vec3 dir = shotDir(start);
+                if (v.sightBlocked) {
+                    // Barrel pull-back (0x514757): with +0x19c set the shot starts +0x198 back along the shot direction, +0x198
+                    // being the distance between the tag_flash and tag_barrel origins (think 0x512a70).
+                    bool fo = false, bo = false;
+                    const Vec3 fp = vehicleTagPosition(*e, "tag_flash", fo), bp = vehicleTagPosition(*e, "tag_barrel", bo);
+                    if (fo && bo) {
+                        const Vec3 dd{fp[0] - bp[0], fp[1] - bp[1], fp[2] - bp[2]};
+                        const float len = std::sqrt(dot(dd, dd));
+                        for (size_t i = 0; i < 3; ++i) start[i] = start[i] - len * dir[i];
+                    }
+                }
                 if (type == "bullet") {
                     const Vec3 end{start[0] + dir[0] * 8192.0f, start[1] + dir[1] * 8192.0f, start[2] + dir[2] * 8192.0f};
                     fireBullet(*e, start, end, weaponDamage(v.info->turretWeapon), e, v.info->turretWeapon);
