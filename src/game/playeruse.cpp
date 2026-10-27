@@ -208,12 +208,12 @@ std::string World::pickupHintText(const std::string& w) {
     const Inventory& inv = inventory(*player_);
     const std::string cls = lowerStr(weaponField(w, "weaponClass")), off = lowerStr(weaponField(w, "offhandClass"));
     const std::string slotName = lowerStr(weaponField(w, "weaponSlot"));
-    if (cls == "item" || (!off.empty() && off != "none")) return "PICKUPNEWWEAPON";
-    if ((slotName == "primary" || slotName == "primaryb") && (inv.slot[1].empty() || inv.slot[2].empty())) return "PICKUPNEWWEAPON";
+    if (cls == "item" || (!off.empty() && off != "none")) return "PLATFORM_PICKUPNEWWEAPON";
+    if ((slotName == "primary" || slotName == "primaryb") && (inv.slot[1].empty() || inv.slot[2].empty())) return "PLATFORM_PICKUPNEWWEAPON";
     const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
-    if (!cur.empty() && lowerStr(weaponField(cur, "weaponSlot")) == slotName) return cur == w ? std::string() : "SWAPWEAPONS";
+    if (!cur.empty() && lowerStr(weaponField(cur, "weaponSlot")) == slotName) return cur == w ? std::string() : "PLATFORM_SWAPWEAPONS";
     const int idx = slotName == "primaryb" ? 2 : 1;
-    return inv.slot[idx] == w ? std::string() : "SWAPWEAPONS";
+    return inv.slot[idx] == w ? std::string() : "PLATFORM_SWAPWEAPONS";
 }
 
 void World::findPlayerUseEntity() {
