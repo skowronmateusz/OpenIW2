@@ -219,8 +219,12 @@ void World::registerTurretBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("setdefaultdroppitch", [this](CallContext& c) { turretOf(c.self).dropPitch = c.arg(0).asFloat(); return Value(); });
-    // restoredefaultdroppitch calls 0x51cf10 (not read yet).
-    vm_.registerBuiltin("restoredefaultdroppitch", [this](CallContext& c) { turretOf(c.self); return Value(); });
+    // restoredefaultdroppitch is a jump to 0x51cf10 (0x4f8744).
+    vm_.registerBuiltin("restoredefaultdroppitch", [this](CallContext& c) {
+        turretOf(c.self);
+        restoreDefaultDropPitch(*entityOf(c.self));
+        return Value();
+    });
     // shootturret fires once (0x51b250 → 0x51ada0, src/game/turretthink.cpp).
     vm_.registerBuiltin("shootturret", [this](CallContext& c) {
         turretOf(c.self);

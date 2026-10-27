@@ -17,7 +17,8 @@ struct TurretState {
     script::Vec3 targetOffset{};
     float topArc = 0, rightArc = 0, bottomArc = 0, leftArc = 0; // +0x34/+0x38/+0x3c/+0x40
     float setupRightArc = 0, setupLeftArc = 0;                  // +0x44/+0x48 (restored when a gunner takes it)
-    float dropPitch = 0;         // +0x4c
+    float dropPitch = -90.0f;    // +0x4c (setup 0x51e39d: -90; 0x51cf10 replaces it by the stock-on-ground pitch)
+    bool dropPitchDone = false;  // the first think (0x51ced0, +50 ms) has run 0x51cf10
     float yawConvergenceTime = 0, pitchConvergenceTime = 0;
     float suppressionTime = 0;   // seconds
     float aiSpread = 0, playerSpread = 0;

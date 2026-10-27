@@ -490,6 +490,7 @@ private:
     TurretState& turretOf(const Value& self);
     // Turret think (src/game/turretthink.cpp)
     void thinkTurrets();
+    void restoreDefaultDropPitch(Entity& t); // 0x51cf10
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
     bool actorInGoal(Entity& e, float extra);

@@ -322,9 +322,44 @@ void World::turretFireSound(Entity& t, bool playerOwner) {
     }
 }
 
+// 0x51cf10 (first think 0x51ced0 and restoredefaultdroppitch): raises the stock point tag_butt about tag_aim in 3
+// degree steps (pitch -3·i, i = 0..30, the muzzle going up) and at the first step where a point trace (mask 0x800811,
+// the turret passed) from the tag_aim pivot to the stock hits something stores -3·i + the turret's pitch as the drop
+// pitch (info +0x4c). No hit in 31 steps leaves the drop pitch as it was. Done in the turret's yaw frame.
+// TODO(spec): the exe reads the tag poses of the dobj (which include the current turret bone pitch) and the entity's
+// full angles (e+0xe8); here the unpitched bind pose is used, which is the same at the first think (pitch 0).
+void World::restoreDefaultDropPitch(Entity& t) {
+    TurretState& ts = *t.turret;
+    const auto bones = entityBones(t);
+    const auto ia = bones.find("tag_aim"), ib = bones.find("tag_butt");
+    if (ia == bones.end() || ib == bones.end()) return;
+    const Vec3 pivot = ia->second.position, butt = ib->second.position;
+    const Value av = t.obj->get("angles");
+    const float yaw = (av.isVector() ? av.asVector()[1] : 0.0f) * 3.14159265f / 180.0f;
+    const float cy = std::cos(yaw), sy = std::sin(yaw);
+    const Vec3 dw = sub(butt, pivot);
+    // Into the entity frame (x forward, y left, z up).
+    const float d0 = dw[0] * cy + dw[1] * sy, d1 = -dw[0] * sy + dw[1] * cy, d2 = dw[2];
+    for (int i = 0; i <= 30; ++i) {
+        const float p = float(i) * -3.0f * 3.14159265f / 180.0f, cp = std::cos(p), sp = std::sin(p);
+        // d0 · forward − d1 · right + d2 · up of AngleVectors(pitch p) (right = (0,-1,0)).
+        const float l0 = d0 * cp + d2 * sp, l1 = d1, l2 = -d0 * sp + d2 * cp;
+        const Vec3 end = {pivot[0] + l0 * cy - l1 * sy, pivot[1] + l0 * sy + l1 * cy, pivot[2] + l2};
+        const TraceResult tr = collision_->trace(pivot, end, {0, 0, 0}, {0, 0, 0}, 0x800811, t.number);
+        if (tr.fraction < 1.0f) {
+            ts.dropPitch = float(i) * -3.0f + ts.pitch;
+            return;
+        }
+    }
+}
+
 // Turret think for one turret (0x51d250).
 void World::thinkTurret(Entity& t) {
     TurretState& ts = *t.turret;
+    if (!ts.dropPitchDone) { // the first think (0x51ced0) computes the drop pitch
+        ts.dropPitchDone = true;
+        restoreDefaultDropPitch(t);
+    }
     Entity* owner = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
     if (owner && owner->isActor && !isAlive(*owner)) { // a dead gunner leaves the turret (state finish 0x549b20)
         owner->usingTurret.reset();
@@ -388,7 +423,9 @@ void World::thinkTurret(Entity& t) {
         if (!engaged) turretIdle(t);
         tracking = engaged;
     } else if (ai) {
-        turretSetState(t, 0); // 0x51b8a0
+        // 0x51d2e2 → 0x51b8a0 with ebx = 0: the unmanned turret turns to (drop pitch, yaw 0).
+        turretSetState(t, 0);
+        ts.wantAngles = {ts.dropPitch, 0, 0};
     } else {
         if (engageScript()) tracking = true; // 0x51cc80 without a gunner
         else turretIdle(t);
