@@ -3567,8 +3567,8 @@ int main(int argc, char** argv) {
             // and the aim fraction (0xf709a0) exactly 1.0. Text PLATFORM_HOLD_BREATH with &&1 = the key bound to +holdbreath,
             // else +melee_breath, else +breath_binoculars (0x4cdbf0), white, the item's textscale / textstyle; x = rect.x −
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
-            // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). TODO(spec): pm_flags 0x4000 is
-            // set by 0x4dd290 (disableweapon, cleared by 0x4dd2a0; the builtin is not implemented, so never set here).
+            // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is set by
+            // 0x4dd290 (cleared by 0x4dd2a0), which has no direct callers and no disableweapon string in the SP exe: never set in SP.
             if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
@@ -5049,8 +5049,12 @@ int main(int argc, char** argv) {
                 // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
                 if (world) {
                     if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
-                    for (; lastEventSeq < ps.eventSeq; ++lastEventSeq)
+                    for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
                         world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
+                        // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
+                        const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
+                        if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, world->timeMs());
+                    }
                 }
                 // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
                 if (!fellOut && (world || scene.collision)) {
@@ -5187,6 +5191,7 @@ int main(int argc, char** argv) {
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
+                    else if (e.kind == game::PlayerWeapon::Event::NoAmmo) setInvalidCmd(1, world->timeMs()); // event 0x92 (0x4baeb6)
                     else if (e.kind == game::PlayerWeapon::Event::NoOffhand) { // events 0x94 (touch offhand) + 0xc9 / 0xca (0x4baf06)
                         hudFade.offhand = world->timeMs();
                         setInvalidCmd(e.weapon == "Frag Grenade" ? 2 : 3, world->timeMs());

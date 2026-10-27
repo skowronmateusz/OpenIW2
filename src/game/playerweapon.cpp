@@ -414,6 +414,7 @@ int PlayerWeapon::update(float dt, const Input& in) {
                 if (fieldValue("weaponType") != "grenade") {
                     // The cgame plays the click only when clipOnly (+0x340) is 0 (0x4baec1).
                     if (std::atoi(fieldValue("clipOnly").c_str()) == 0) sounds_.push_back("player_out_of_ammo");
+                    events_.push_back({Event::NoAmmo, std::string()});
                     timer_ = 0.5f;
                 }
             }
