@@ -38,6 +38,13 @@ void uiScriptUpdate(const std::string& name, MenuEnv& env) {
 
 } // namespace
 
+std::string registeredDefault(const std::string& n) {
+    static const char* const names[] = {"mis_none", "mis_01", "mis_02", "mis_03", "mis_04", "mis_05", "mis_06", "mis_07", "mis_08", "mis_09", "mis_10"};
+    for (const char* k : names)
+        if (n == k) return "0";
+    return {};
+}
+
 void initUiCvars(MenuEnv& env) {
     // 0x4c30db: ui_mousePitch = m_pitch < 0 (a missing cvar counts as not inverted).
     const std::string p = env.getCvar("m_pitch");

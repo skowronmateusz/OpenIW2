@@ -503,10 +503,15 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             const std::string& img = m.colorImage();
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && img[0] != '$' && mi.pass != Pass::Skip) {
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is used as a UI background
                 auto it = scene.imageIndex.find(img);
                 if (it == scene.imageIndex.end()) {
-                    SDL_GPUTexture* t = loadImage(dev, up, vfs, img);
+                    SDL_GPUTexture* t = nullptr;
+                    if (img == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
+                        const uint8_t black[4] = {0, 0, 0, 255};
+                        t = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1);
+                        up.texture(t, 0, 0, 1, 1, black, 4);
+                    } else t = loadImage(dev, up, vfs, img);
                     int idx = 0;
                     if (t) {
                         idx = int(scene.textures.size());
@@ -2443,7 +2448,7 @@ int main(int argc, char** argv) {
                 if (it != world->cvars.end()) return it->second;
             }
             const auto u = uiCvars.find(n);
-            return u == uiCvars.end() ? std::string() : u->second;
+            return u == uiCvars.end() ? ui::registeredDefault(n) : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
             if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
