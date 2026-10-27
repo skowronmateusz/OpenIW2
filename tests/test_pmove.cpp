@@ -85,16 +85,46 @@ int main() {
         std::cout << "from 0.5 below the floor: z " << in0.origin[2] - floor[2] << " relative to the floor\n";
         CHECK(in0.origin[2] > floor[2] - 1.0f);
 
-        // Jumping with pm_flags 0x20 (ladder) adds event 0x5b (0x541640 -> 0x54164f).
-        PlayerState lad;
-        lad.origin = {floor[0], floor[1], floor[2] + 1};
-        for (int i = 0; i < 40; ++i) playerMove(cw, lad, {}, 0.05f);
-        lad.onLadder = true;
-        PlayerInput jin;
-        jin.jump = true;
-        const int before = lad.eventSeq;
-        playerMove(cw, lad, jin, 1.0f / 60.0f);
-        CHECK(lad.eventSeq == before + 1 && lad.events[before & 3] == 0x5b);
+        // Ladder climb (PM_CheckLadderMove 0x50bd90 + 0x50c070): a sweep of horizontal traces finds a ladder surface (flag 0x8).
+        {
+            float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
+            for (const auto& e : bsp.entities())
+                if (const std::string* o = e.get("origin")) {
+                    float x = 0, y = 0, z = 0;
+                    if (std::sscanf(o->c_str(), "%f %f %f", &x, &y, &z) == 3) lo[0] = std::min(lo[0], x), lo[1] = std::min(lo[1], y), hi[0] = std::max(hi[0], x), hi[1] = std::max(hi[1], y);
+                }
+            bool found = false;
+            for (float x = lo[0]; x < hi[0] && !found; x += 24)
+                for (float y = lo[1]; y < hi[1] && !found; y += 24)
+                    for (float z = -400; z < 600 && !found; z += 48)
+                        for (int d = 0; d < 4 && !found; ++d) {
+                            const Vec dir{d == 0 ? 1.f : d == 1 ? -1.f : 0.f, d == 2 ? 1.f : d == 3 ? -1.f : 0.f, 0};
+                            const TraceResult t = cw.trace({x, y, z}, {x + dir[0] * 40, y + dir[1] * 40, z}, {0, 0, 0}, {0, 0, 0}, 0xffffffffu, -1);
+                            if (t.fraction < 1 && (t.surfaceFlags & 8) && !t.startSolid) {
+                                found = true;
+                                PlayerState cl;
+                                cl.origin = {t.endPos[0] + t.normal[0] * 20, t.endPos[1] + t.normal[1] * 20, t.endPos[2]};
+                                PlayerInput ci;
+                                ci.forward = 1;
+                                ci.yaw = std::atan2(-t.normal[1], -t.normal[0]) * 180.0f / float(M_PI);
+                                ci.pitch = -45.0f; // looking up
+                                const float z0 = cl.origin[2];
+                                for (int i = 0; i < 20; ++i) playerMove(cw, cl, ci, 1.0f / 60.0f);
+                                CHECK(cl.onLadder);
+                                CHECK(cl.origin[2] > z0 + 20.0f);
+                                // Jumping off the ladder gives the ladder jump event 0x5b (checkJump).
+                                cl.lastJumpMs = -100000;
+                                PlayerInput ji = ci;
+                                ji.jump = true;
+                                const int seq0 = cl.eventSeq;
+                                playerMove(cw, cl, ji, 1.0f / 60.0f);
+                                bool ev = false;
+                                for (int k = seq0; k < cl.eventSeq; ++k) ev |= (cl.events[k & 3] & 0xff) == 0x5b;
+                                CHECK(ev);
+                            }
+                        }
+            CHECK(found);
+        }
     }
 
     if (failures) std::cerr << failures << " failures\n";

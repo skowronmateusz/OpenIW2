@@ -896,6 +896,126 @@ void updateBobCycle(PlayerState& ps, const Pml& pml, float f, float r, int ms, c
 }
 
 // One PmoveSingle step (0x50c4a0) for a normal player: ground trace, the walk or air move, ground trace.
+// Leaving the ladder (0x50bd70): the flag 0x40000 marks a ladder that was just left.
+void clearLadder(PlayerState& ps) {
+    if (ps.onLadder) ps.ladderLeft = true;
+    ps.onLadder = false;
+}
+
+// PM_CheckLadderMove (0x50bd90). A box 6 units smaller than the player's horizontally (mins z 8, maxs z at least 8) is
+// traced 8 units (walking) or 30 units along the facing, or along -vLadder when already climbing in the air; a hit on a
+// surface with flag 0x8 starts the climb (walking players must press forward), confirmed by a second trace against the
+// stored normal. TODO(spec): ps+0xd0 == 0xb (leaves the ladder), pm_flags 0x400 in the pm_time test.
+void checkLadder(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float fwdMove, const Vec& fwd) {
+    if (pml.walking) ps.ladderLeft = false;
+    if (ps.pmTimeMs != 0 && !ps.onLadder && ps.landTimer) { clearLadder(ps); return; }
+    const float dist = pml.walking ? 8.0f : 30.0f;
+    Vec dir;
+    if (ps.onLadder && !ps.onGround) dir = {-ps.vLadder[0], -ps.vLadder[1], -ps.vLadder[2]};
+    else {
+        dir = {fwd[0], fwd[1], 0};
+        normalize(dir);
+    }
+    if (in.dead) {
+        ps.onGround = false;
+        pml.walking = pml.groundPlane = false;
+        if (ps.onLadder) ps.ladderLeft = true;
+        ps.onLadder = false;
+        return;
+    }
+    if (ps.ladderLeft || ps.timeMs - ps.lastJumpMs < 300) {
+        if (ps.onLadder) ps.ladderLeft = true;
+        ps.onLadder = false;
+        return;
+    }
+    const Vec mins{pml.mins[0] + 6.0f, pml.mins[1] + 6.0f, 8.0f};
+    const Vec maxs{pml.maxs[0] - 6.0f, pml.maxs[1] - 6.0f, pml.maxs[2] < 8.0f ? 8.0f : pml.maxs[2]};
+    auto climbTrace = [&](const Vec& d) {
+        const Vec end{ps.origin[0] + d[0] * dist, ps.origin[1] + d[1] * dist, ps.origin[2] + d[2] * dist};
+        Pml box = pml;
+        box.mins = mins;
+        box.maxs = maxs;
+        const TraceResult tr = pmTrace(w, box, ps.origin, end);
+        pml.mask = box.mask;
+        return tr;
+    };
+    const TraceResult tr = climbTrace(dir);
+    if (tr.fraction >= 1.0f || (tr.surfaceFlags & 8) == 0 || (pml.walking && fwdMove <= 0)) { clearLadder(ps); return; }
+    if (ps.onLadder) return;
+    ps.vLadder = tr.normal;
+    const TraceResult t2 = climbTrace({-ps.vLadder[0], -ps.vLadder[1], -ps.vLadder[2]});
+    if (t2.fraction < 1.0f && (t2.surfaceFlags & 8)) ps.onLadder = true;
+    else clearLadder(ps);
+}
+
+// Ladder move (0x50c070). A jump leaves the ladder through the air move. The climb speed is forward · scale · 0.5 · k
+// with k = clamp((view forward z + 0.25) · 2.5, -1, 1) (looking up climbs up); strafing runs along the ladder plane;
+// accel 9. Without forward the vertical speed decays by gravity · frametime, without strafing the sideways speed is
+// removed and gradually re-added (16 · frametime, at least 1); in the air the speed into the wall is removed and a
+// mostly vertical climb is pressed 50 units/s into the wall. TODO(spec): the ps+0x78 view yaw limit (written, consumer
+// not located).
+void ladderMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float f, float r, const MoveParams& mp) {
+    if (checkJump(ps, pml, in, mp)) {
+        airMove(w, ps, pml, f, r, {std::cos(in.yaw * float(M_PI) / 180.0f), std::sin(in.yaw * float(M_PI) / 180.0f), 0},
+                {std::sin(in.yaw * float(M_PI) / 180.0f), -std::cos(in.yaw * float(M_PI) / 180.0f), 0}, mp);
+        return;
+    }
+    const float yawR = in.yaw * float(M_PI) / 180.0f;
+    const float fz = -std::sin(in.pitch * float(M_PI) / 180.0f);
+    float k = (fz + 0.25f) * 2.5f;
+    k = k > 1.0f ? 1.0f : (k < -1.0f ? -1.0f : k);
+    Vec rt{std::sin(yawR), -std::cos(yawR), 0};
+    const Vec& n = ps.vLadder;
+    const float d0 = dot(rt, n);
+    rt = {-d0 * n[0] + rt[0], -d0 * n[1] + rt[1], -d0 * n[2] + rt[2]};
+    const float s = cmdScale(ps, f, r, mp, false);
+    Vec wish{0, 0, 0};
+    if (f != 0) wish[2] = f * s * k * 0.5f;
+    if (r != 0) {
+        const float q = r * s * 0.2f;
+        wish[0] = q * rt[0];
+        wish[1] = q * rt[1];
+        wish[2] += q * rt[2];
+    }
+    const float wishSpeed = normalize(wish);
+    accelerate(ps, wish, wishSpeed, 9.0f, pml.frametime, mp);
+    if (f == 0) {
+        const float g = mp.gravity * pml.frametime;
+        float& vz = ps.velocity[2];
+        if (vz > 0) vz = std::max(0.0f, vz - g);
+        else vz = std::min(0.0f, vz + g);
+    }
+    if (r == 0) {
+        float lx = rt[0], ly = rt[1];
+        const float len = std::sqrt(lx * lx + ly * ly);
+        if (len > 0) lx /= len, ly /= len;
+        const float d = ly * ps.velocity[1] + lx * ps.velocity[0];
+        if (d != 0) {
+            ps.velocity[0] -= d * lx;
+            ps.velocity[1] -= d * ly;
+            float thing = d * pml.frametime * 16.0f;
+            const float a = std::fabs(thing);
+            if (std::fabs(d) > a) {
+                if (a < 1.0f) thing = thing < 0 ? -1.0f : 1.0f;
+                const float d2 = d - thing;
+                ps.velocity[0] += lx * d2;
+                ps.velocity[1] += ly * d2;
+            }
+        }
+    }
+    if (!pml.walking) {
+        const float t = -(ps.velocity[1] * n[1] + ps.velocity[0] * n[0]);
+        ps.velocity[0] += t * n[0];
+        ps.velocity[1] += t * n[1];
+        const Vec& v = ps.velocity;
+        if (!(v[2] * v[2] < v[0] * v[0] + v[1] * v[1])) {
+            ps.velocity[0] -= n[0] * 50.0f;
+            ps.velocity[1] -= n[1] * 50.0f;
+        }
+    }
+    stepSlideMove(w, ps, pml, false, mp);
+}
+
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     Pml pml;
     pml.frametime = float(ms) * 0.001f;
@@ -944,6 +1064,11 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     updateAds(ps, in, fwdMove, rightMove);
 
     // pm_time runs down; when it expires pm_flags 0x80000, 0x400 and 0x200 are cleared.
+    {
+        // PM_CheckLadderMove runs before the pm_time countdown (0x50ca83).
+        const Vec cf{std::cos(in.yaw * float(M_PI) / 180.0f), std::sin(in.yaw * float(M_PI) / 180.0f), 0};
+        checkLadder(w, ps, pml, in, fwdMove * 127.0f, cf);
+    }
     if (ps.pmTimeMs != 0) {
         if (ms < ps.pmTimeMs) {
             ps.pmTimeMs -= ms;
@@ -963,7 +1088,8 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
         if (sp <= 0) ps.velocity = {0, 0, 0};
         else { normalize(ps.velocity); ps.velocity = scale(ps.velocity, sp); }
     }
-    if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
+    if (ps.onLadder) ladderMove(w, ps, pml, in, f, r, mp);
+    else if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
     updateBobCycle(ps, pml, f, r, ms, mp);
