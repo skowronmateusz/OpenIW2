@@ -953,7 +953,9 @@ void World::registerBuiltins() {
         std::string tag = c.arg(2).toString();
         for (char& ch : tag) ch = char(std::tolower(static_cast<unsigned char>(ch)));
         if (auto it = bones.find(tag); it != bones.end()) at = it->second.position;
-        fxEvents_.push_back({path, at, Vec3{0, 0, 1}});
+        // EV_PLAY_FX_ON_TAG: the client plays the effect with an attachment record (entity, tag) (0x4853f0), so the
+        // `relative` elements follow the tag.
+        fxEvents_.push_back({path, at, Vec3{0, 0, 1}, e->number, tag});
         return Value();
     });
     vm_.registerBuiltin("playloopedfx", [this, fxPath](CallContext& c) {
@@ -1005,4 +1007,16 @@ void World::registerMissingStubs() {
             });
 }
 
+} // namespace iw2::game
+
+namespace iw2::game {
+bool World::entityTagPosition(int number, const std::string& tag, Vec3& out) {
+    Entity* e = entityByNumber(number);
+    if (!e) return false;
+    const auto bones = entityBones(*e);
+    const auto it = bones.find(tag);
+    if (it == bones.end()) return false;
+    out = it->second.position;
+    return true;
+}
 } // namespace iw2::game

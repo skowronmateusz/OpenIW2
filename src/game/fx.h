@@ -16,6 +16,10 @@ namespace iw2::game {
 using FVec = std::array<float, 3>;
 using FxAxes = std::array<FVec, 3>; // forward, right, up (rows of the 3x3 axis of the game)
 
+// A bolt (the attachment record of 0x4853f0: entity + tag) as a host callback returning the tag's current world position;
+// false when the attachment is no longer valid (0x485bf0).
+using FxBolt = std::function<bool(FVec&)>;
+
 struct FxParticle {
     const assets::EfxElement* element = nullptr;
     int64_t startMs = 0, endMs = 0;
@@ -24,6 +28,8 @@ struct FxParticle {
     float rnd[8]{};                     // per-channel lerp randoms: rgb, alpha, size, size2, length, rotation, vel, vel2
     float velRnd[3]{}, vel2Rnd[3]{};
     float gravity = 0;
+    std::shared_ptr<FxBolt> bolt;       // relative (0x2) particle of a bolted effect: follows the tag
+    FVec bolt0{};                       // the tag position at spawn
     float scale[8]{};                   // per-channel scale picked from the scale range
     size_t shader = 0;                  // index into the element's shader list
     // Atlas sequence (0x48cd20): start frame (+0x108), frames per ms (+0x10c), loop mode / times (+0x110 / +0x114).
@@ -70,6 +76,9 @@ public:
     std::vector<FxDecal> takeDecals(int64_t nowMs);
     // Spawns every element of an effect at `origin` facing `forward`.
     void play(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FVec& forward, int64_t nowMs);
+    // Plays an effect bolted to an entity tag (0x4853f0 with an attachment record): `relative` (flag 0x2) elements follow
+    // the tag while they live and are not spawned when the attachment is invalid (0x485bf0).
+    void playBolted(const std::shared_ptr<const assets::EfxEffect>& fx, std::shared_ptr<FxBolt> bolt, const FxAxes& axes, int64_t nowMs);
     void playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FxAxes& axes, int64_t nowMs);
     // The viewer for the per-element spawnRange / cullrange gate (0x485300): origin and tan(fovX / 2) / tan(40 deg)
     // (view struct +0x14 / +0xf4, 0x486e00). While viewValid is false the gate passes. Set by the host each frame.
@@ -101,7 +110,9 @@ private:
         FVec origin{};
         FxAxes axes{};
         int64_t startMs = 0;
+        std::shared_ptr<FxBolt> bolt;
     };
+    std::shared_ptr<FxBolt> curBolt_; // the attachment of the effect being played (children inherit it, 0x48dac0)
     std::vector<PendingRun> pending_;
     void runPending(int64_t nowMs);
     std::vector<FxSightBlocker> sightBlockers_;

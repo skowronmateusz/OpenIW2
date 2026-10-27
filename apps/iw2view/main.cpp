@@ -2002,6 +2002,29 @@ int main(int argc, char** argv) {
             Uploader up(dev, false);
             for (const auto& ev : world->takeFxEvents()) {
                 if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
+                if (ev.entity >= 0 && !ev.tag.empty()) {
+                    // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
+                    game::World* wp = world.get();
+                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FVec{}, ok = false](game::FVec& out) mutable {
+                        if (wp->timeMs() != lastT) {
+                            lastT = wp->timeMs();
+                            game::Vec3 p{};
+                            ok = wp->entityTagPosition(n, tag, p);
+                            if (ok) last = {p[0], p[1], p[2]};
+                        }
+                        out = last;
+                        return ok;
+                    });
+                    game::FVec f{ev.forward[0], ev.forward[1], ev.forward[2]};
+                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    f = fl > 0 ? game::FVec{f[0] / fl, f[1] / fl, f[2] / fl} : game::FVec{0, 0, 1};
+                    game::FVec r = std::fabs(f[2]) < 0.99f ? game::FVec{f[1], -f[0], 0} : game::FVec{1, 0, 0};
+                    const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+                    r = {r[0] / rl, r[1] / rl, r[2] / rl};
+                    const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs());
+                    continue;
+                }
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
             }
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
