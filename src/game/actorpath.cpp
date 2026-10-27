@@ -75,7 +75,10 @@ bool isEnemyTeam(const Entity& me, const Entity& other) {
 // kept side (n·origin ≤ c). A same-team source (0x54b484: only reachable through the unidentified entity +0xfc
 // exception, TODO(spec)) marks the slot short-lived and drops the actor's path.
 void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) {
-    if (!isEnemyTeam(e, source)) return;
+    // The team check is skipped for the player (its entity +0xfc, the client pointer, is nonzero — G_Damage's
+    // "client or actor" pair 0x528050, confirmed by 0x53145c), so player fire also suppresses same-team and
+    // neutral actors (which then get a short-lived plane and their path dropped).
+    if (!source.isPlayer && !isEnemyTeam(e, source)) return;
     int slot = -1;
     int64_t best = std::numeric_limits<int64_t>::max();
     for (int i = 0; i < 4; ++i) {
@@ -103,7 +106,7 @@ void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const
     p.normal[1] = ny;
     p.dist = c;
     p.shortLived = teamOf(source) == teamOf(e);
-    if (p.shortLived) clearActorPath(e);
+    if (p.shortLived) clearActorPath(e); // 0x54b48f: a same-team source drops the actor's path
 }
 
 // 0x54b4d0 (each actor think, 0x4ff030): a short-lived plane expires after 300 ms, the others after the actor's
