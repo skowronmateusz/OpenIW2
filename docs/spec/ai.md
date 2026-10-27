@@ -440,3 +440,26 @@ hatch (hatch overlay) of the player tank, vehicle 13 `xmodel/vehicle_crusader2_v
 -4.4/-0.6). The pale plane with the straight far edge is that viewmodel's own hull/turret top seen from the hatch eye point
 (the same pale camo seen from outside in a follow shot). It is unchanged with IW2_NO_SPEC, IW2_NO_DETAIL and IW2_NO_PROBE.
 TODO(spec): the near-field look of that surface (texture detail) has not been compared with the original.
+
+### Decode attempt: 0x5487c0, 0x5037e0, 0x5442a0 (stalled; findings)
+
+- 0x5487c0 (edx = the +0x224 actor move block "pm") is the actor physics entry, not a small probe: it stores the block pointer
+  in 0x1cbacac, clears hit entity +0xf4 to 0x7ff, zeroes +0x70 / byte +0x109; with ground entity +0x18 == 0x7fe and a zero
+  desired move (+0x2c..0x34 equal to 0.0 at 0x591e00) it clears the velocity (+0xc..0x14) and returns 1. Otherwise it zeroes a
+  0x15-dword scratch at 0x1cbac58, stores frame dt·scale (+0x48 as int · 0x591e30) in 0x1cbac58, copies the position / velocity,
+  and dispatches on the mode word +0x40: 3 = teleport add of the move delta (+0x2c..) to the position and return 1; 4 =
+  0x548260 (velocity = delta / dt, then 0x5475e0); 5 = 0x548200 (same, vz = 0, then 0x547db0 slide move); others 0x548290
+  (G_LocationalTrace 0x44bf00 based ground probe), 0x548110, 0x5480d0, followed by the ground / blocker handling (0x5485a0,
+  0x548650, 0x5191a0, 0x514970, 0x4fd9e0, 0x535770, 0x520470, 0x514d50, 0x541780, 0x548a10, 0x53ac90, 0x504450, 0x4fe740,
+  0x502660, 0x4fe670). It returns the move result and the per-move hit entity in the scratch (+0xf4 of the block).
+- 0x5037e0 (arg: actor): when the path point count +0x6b0 > 0, resets the +0x330 path block via 0x541780, zeroes +0x380/+0x382
+  (path index words), sets +0x6e8 |= 0x80 and clears +0x724, clears byte 0x3c of the actor goal block (+0x4), asks 0x515040
+  for a goal and, when non-zero, rebuilds the path with 0x5424d0(+0x330, goal block, goal, actor origin (+0xdc), flag
+  (+0x6e8 >> 4) & 1) and sets +0x6e8 |= 0x80 again. This is the path re-plan, not an entity probe.
+- 0x5442a0 (edx = path block +0x330): returns 0 (path ok) when the index at +0x380 minus 1 is not past +0x386, the point
+  at index-1 has non-negative fields, flag 0x20 of +0x3b8 is clear, 0x543bc0 is zero and the index words +0x380 / +0x382 differ
+  or 0x415c50(+0x3c8) is false; otherwise 1 (re-plan needed).
+- Conclusion: the +0x318 entity comes from the actor slide move result (0x547db0 / 0x44bf00 hit entity stored at block +0xf4 and
+  copied by the 0x500dc0 step), i.e. from the actor physics that World::moveActor does not model (it moves along the path
+  lookahead without clipping). Wiring +0x318, gethitenttype and the +0x2148 follow link therefore needs the full actor
+  physics port (0x547db0 slide move, 0x547540 clip velocity, 0x548290 ground probe) first. Not started, no guessing.
