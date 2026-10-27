@@ -1953,8 +1953,11 @@ int main(int argc, char** argv) {
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         const std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
         bool profileDirty = false;
-        if (std::ifstream cf(profileCfg); cf)
-            uiCvars = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        if (std::ifstream cf(profileCfg); cf) {
+            const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
+            uiCvars = ui::parseConfig(cfgText);
+            if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
+        }
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
@@ -2622,6 +2625,14 @@ int main(int argc, char** argv) {
             return t ? *t : key;
         };
         auto menuFont = [&](float ts) { return font(ts <= 0.25f ? "smallFont" : ts >= 0.55f ? "extraBigFont" : ts < 0.4f ? "normalFont" : "bigFont"); };
+        menuEnv.bindKey = [&](const std::string& command, const std::string& key) {
+            input.rebind(command, key);
+            profileDirty = true;
+            if (world) { // getkeybinding follows the new bindings
+                world->keyBindings.clear();
+                for (const auto& [k, c] : input.bindings()) world->keyBindings[c].push_back(k);
+            }
+        };
         menuEnv.textWidth = [&](const ui::Item& it) {
             const assets::Font* f = menuFont(it.textScale);
             if (!f) return 0.0f;
@@ -3443,15 +3454,34 @@ int main(int argc, char** argv) {
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
                             if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
-                        if (it.text.empty() && it.type != 11 && it.type != 12) continue;
+                        if (it.text.empty() && it.type != 11 && it.type != 12 && it.type != 14) continue;
                         const std::string text = menuLocalized(it.text);
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
-                        const auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        if (it.type == 14 && &it == frontStack.focus()) {
+                            // BIND (exe 0x4cdee0): capturing = (0.8, 0, 0, 0.8); focused = focus colour pulsing with
+                            // (sin(ms / 75) + 1) * 0.5 against focus * 0.8 (0x4c6e50). TODO(spec): argument order of the blend.
+                            if (&it == frontStack.captureItem()) c = col8(std::array<float, 4>{0.8f, 0.0f, 0.0f, 0.8f});
+                            else {
+                                const float t = (std::sin(float(SDL_GetTicks() / 75)) + 1.0f) * 0.5f;
+                                for (int i = 0; i < 3; ++i) c[size_t(i)] = uint8_t(float(c[size_t(i)]) * (1.0f - 0.2f * t));
+                            }
+                        }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                        if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
+                            auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                            const auto keys = input.keysFor(it.dvar);
+                            std::string label = name("UNBOUND");
+                            if (!keys.empty()) {
+                                label = name(keys[0]);
+                                if (keys.size() > 1) label += " " + name("OR") + " " + name(keys[1]);
+                            }
+                            hudText(front, label, x0 + frontStack.valueTextX(menu, it) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                        }
                         if (it.type == 11 || it.type == 12) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
                             const std::string label = frontStack.valueLabel(it);
                             if (!label.empty())
@@ -3526,6 +3556,8 @@ int main(int argc, char** argv) {
                         const size_t sl = k.find('/');
                         menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
                         frontStack.mouseMove(menuMx, menuMy);
+                    } else if (k.rfind("bindkey:", 0) == 0) {
+                        frontStack.captureKey(k.substr(8));
                     } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                 }
             }
@@ -3797,6 +3829,13 @@ int main(int argc, char** argv) {
                         const auto v = toVirtual(ev.motion.x, ev.motion.y);
                         menuMx = v[0], menuMy = v[1];
                         frontStack.mouseMove(menuMx, menuMy);
+                        continue;
+                    }
+                    if (frontStack.capturing()) { // a BIND item waits for a key (exe 0x4ce100)
+                        if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) frontStack.captureKey(keyName(ev.key.scancode));
+                        else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+                            frontStack.captureKey(ev.button.button == SDL_BUTTON_RIGHT ? "MOUSE2" : ev.button.button == SDL_BUTTON_MIDDLE ? "MOUSE3" : "MOUSE" + std::to_string(int(ev.button.button)));
+                        else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) frontStack.captureKey(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN");
                         continue;
                     }
                     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP) {
@@ -4348,6 +4387,8 @@ int main(int argc, char** argv) {
                     } else if (k == "quit") {
                         running = false;
                     } else if (k == "wait") {
+                    } else if (k.rfind("bindkey:", 0) == 0) {
+                        frontStack.captureKey(k.substr(8));
                     } else
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
@@ -4359,7 +4400,7 @@ int main(int argc, char** argv) {
                 profileDirty = false;
                 std::error_code ec;
                 std::filesystem::create_directories(profileCfg.parent_path(), ec);
-                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars);
+                if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars) << input.formatBindings();
             }
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause

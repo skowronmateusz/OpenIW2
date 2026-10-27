@@ -111,7 +111,7 @@ bool MenuStack::itemVisible(const Item& it) const {
 std::vector<const Item*> MenuStack::selectable(const Menu& m) const {
     std::vector<const Item*> out;
     for (const auto& it : m.items)
-        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
+        if ((it->type == 1 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
     return out;
 }
 
@@ -206,6 +206,10 @@ bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, 
         if (env_.setCvar) env_.setCvar(it.dvar, buf);
         return true;
     }
+    if (it.type == 14) { // exe 0x4ce100: Enter / mouse1 on a BIND item starts the capture
+        capture_ = &it;
+        return true;
+    }
     if (it.type == 10 && it.hasRange) {
         if (pointer) { // exe 0x4cb323: a mouse key sets the value from the pointer; dragging starts on the thumb (0x4cb100)
             dragItem_ = &it;
@@ -243,9 +247,23 @@ bool MenuStack::clickBack(float x, float y) {
     return true;
 }
 
+void MenuStack::captureKey(const std::string& name) {
+    if (!capture_) return;
+    // exe 0x4ce156: flag 0x400 keys and the console key (0x60) are swallowed; Escape (0x1b) ends the capture; Del (0x7f)
+    // clears the command's keys (0x4ce1ea); any other key is bound (0x4ce215..0x4ce257).
+    if (name == "GRAVE" || name == "`") return;
+    if (name == "ESCAPE") {
+        capture_ = nullptr;
+        return;
+    }
+    if (env_.bindKey) env_.bindKey(capture_->dvar, name == "DEL" ? std::string() : name);
+    capture_ = nullptr;
+}
+
 void MenuStack::key(Key k) {
     Menu* m = top();
     if (!m) return;
+    if (capture_) return;
     if (k == Key::Escape) {
         runItem(*m, m->onEsc); // TODO(spec): menus without onESC (main) simply ignore ESC
         return;

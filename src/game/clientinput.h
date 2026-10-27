@@ -22,7 +22,14 @@ public:
     void loadConfig(const std::string& text);
     const std::map<std::string, std::string>& bindings() const { return binds_; }
     // Keys bound to a command, for getkeybinding.
-    std::vector<std::string> keysFor(const std::string& command) const;
+    std::vector<std::string> keysFor(const std::string& command) const; // oldest binding first (slot 0, slot 1)
+
+    // Menu BIND item capture (exe 0x4ce100): `key` empty = clear the command's slots (Del). Otherwise the key is
+    // first taken from any command that holds it; then it fills slot 0, else slot 1 (if slot 0 is another key), else
+    // both slots are replaced by this key alone.
+    void rebind(const std::string& command, const std::string& key);
+    // `unbindall` + `bind KEY "cmd"` lines for config.cfg, in slot order.
+    std::string formatBindings() const;
 
     // A key went down or up: runs its bound command ("+x" on down, "-x" on up, others on down only).
     void key(const std::string& keyName, bool down);
@@ -52,6 +59,8 @@ private:
     bool stanceLocked() const { return prone_.active || moveDown_.active; }
 
     std::map<std::string, std::string> binds_;
+    std::map<std::string, int> seq_; // binding order per key (slot order of a command)
+    int nextSeq_ = 0;
     KButton attack_, melee_, holdBreath_, frag_, smoke_, binoculars_, activate_, reload_, useReload_, leanLeft_,
         leanRight_, prone_, stanceKey_, jump_, goStand_, moveDown_, speed_, forward_, back_, moveLeft_, moveRight_;
     int stance_ = 0;
