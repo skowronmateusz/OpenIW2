@@ -469,6 +469,12 @@ void World::moveActor(Entity& e, float dt) {
         const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
         e.obj->set("angles", Value(Vec3{0, yaw, 0}));
         e.obj->set("$motionyaw", Value(yaw));
+        // desiredangle (actor +0x124): the engine refreshes it at the end of every movement frame from the
+        // active turn-target pair (FUN_00504ca0, called by FUN_00504160 after its turn; degrees, the units of
+        // angles[1] — animscripts/stop.gsc:555 reads AngleClamp(desiredangle - angles[1])). We have no turn
+        // pairs yet (TODO(spec): facing modes, FUN_00504aa0), so while path-moving the target is the look
+        // direction, like the angles write above.
+        e.obj->set("desiredangle", Value(yaw));
     }
     // Stand on the ground.
     const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::PlayerSolid);

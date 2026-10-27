@@ -137,10 +137,28 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
 
 Implemented in `src/game/actorstate.cpp` / `actorturret.cpp`; grenade state in `actorgrenade.cpp`
 (docs/spec/grenades.md), badplace state in `badplace.cpp` ("Bad places" below). TODO(spec): animscripted
-(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), facing modes (also the ro actor field `desiredangle` +0x124,
-which stop.gsc:555 reads — not implemented; an actor reaching ProneStill errors "type undefined is not a float"),
+(0x4f6240, 0x54b0a0), negotiation (0x54b720/0x54b760), facing modes ("Facing and desiredangle" below),
 touch and damaged handlers, followed/blocking actors (+0x2148, +0x728). The AI events (0x535770) are implemented
 ("AI events" below).
+
+## Facing and desiredangle (observed)
+
+The facing mode is actor +0x104 (int): the state code writes it (0x548c70 combat-no-path → 6 at a covering
+claimed 0x8000 node when the enemy was not seen for 5 s inside the goal, else 3; reacquirestep 0x548f10 → 3
+with substate 0x66). Each actor movement frame FUN_00504160 switches on the anim mode (+0x218) and either
+moves along the path or turns toward a 2D direction: FUN_00423900 turns a direction into a yaw (· 57.2957764 =
+180/π, so degrees), FUN_00423f50 is AngleNormalize180 (180/360/−180 constants at 0x591e1c/0x591f08/0x591f0c),
+and FUN_00504aa0 applies the turn, maintaining the two angle pairs (+0x108/+0x110 and +0x118/+0x120, selected
+by +0x114) and driving the entity angles. Then FUN_00504ca0 — the only store to actor +0x124 in the
+executable (0x504cb7/0x504cc5; also 0x532356, but that one is dospawn's entity spawnflags `&= ~1`) — sets
+`desiredangle` to the active pair's target: degrees, the units of `angles[1]` (animscripts/stop.gsc:555
+ProneStill turns while `AngleClamp(desiredangle − angles[1])` is > 5). Reacquirestep side-steps around
+desiredangle + 90° (constant 0x5920bc).
+
+Implemented in `src/game/world.cpp` (`moveActor` writes `desiredangle` from the look direction while
+path-moving) and `src/game/actorfields.cpp` (0.0 from the zeroed allocation, so scripts always read a float).
+TODO(spec): the anim-mode switch cases, the turn-pair update rates, the facing-mode → target mapping, and the
+override angle + expiry (+0x120/+0x159/+0x15c/+0x160).
 
 ## Cover nodes (observed; Ghidra decompiles and the objdump listing)
 
