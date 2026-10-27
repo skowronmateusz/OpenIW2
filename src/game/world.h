@@ -313,6 +313,12 @@ public:
     };
     const ShellShockState& shellShock() const { return shellShock_; }
     const ShockRecord* shellShockRecord() const;
+    // earthquake (0x4f4330) sends event 0xc7 (scale in event param, duration ms, origin, radius) to the clients: kept as a log for the
+    // front end (TODO(spec): the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
+    struct Earthquake { float scale; int durationMs; Vec3 origin; float radius; int64_t startMs; };
+    const std::vector<Earthquake>& earthquakes() const { return earthquakes_; }
+    struct ViewKick { int count = 0; Vec3 dir{}; };
+    const ViewKick& playerViewKick() const { return viewKick_; }
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
@@ -822,6 +828,8 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
+    std::vector<Earthquake> earthquakes_;
+    ViewKick viewKick_;
     uint32_t crosshairFlags_ = 0;
     std::string crosshairName_, crosshairWeaponLine_;
     void updateCrosshairTarget();
