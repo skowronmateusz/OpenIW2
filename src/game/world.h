@@ -119,6 +119,9 @@ struct ActorAi {
     bool throwFromTag = false;                // +0x20d4: re-solve the throw from tag_weapon_right when thrown
     std::string throwMethod;                  // +0x20cc
     Vec3 throwStart{}, throwTarget{}, throwVel{}; // +0x20dc / +0x20e8 / +0x20f4
+    bool noPush = false;                      // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
+    bool potentialThreat = false;             // +0x20b4: setpotentialthreat; +0x20b8 cos, +0x20bc sin of the angle (TODO(spec): consumer)
+    float potentialThreatDir[2] = {0, 0};
 };
 
 // A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
@@ -317,6 +320,7 @@ public:
     // front end (TODO(spec): the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
     struct Earthquake { float scale; int durationMs; Vec3 origin; float radius; int64_t startMs; };
     const std::vector<Earthquake>& earthquakes() const { return earthquakes_; }
+    const std::optional<Vec3>& sunlightOverride() const { return sunlight_; }
     struct ViewKick { int count = 0; Vec3 dir{}; };
     const ViewKick& playerViewKick() const { return viewKick_; }
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
@@ -829,6 +833,7 @@ private:
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
     std::vector<Earthquake> earthquakes_;
+    std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight
     ViewKick viewKick_;
     uint32_t crosshairFlags_ = 0;
     std::string crosshairName_, crosshairWeaponLine_;
