@@ -1,3 +1,4 @@
+#include <sstream>
 #include "audio/sound.h"
 #include "audio/decode.h"
 
@@ -110,6 +111,18 @@ Wav parseWav(std::span<const uint8_t> d) {
 
 void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuOnly) {
     const std::string lvl = lower(level);
+    // soundaliases/volumemodgroups.def: "<group> <volume>" lines under a VOLUMEMODGROUPS header, "//" comments (0x429870).
+    std::map<std::string, float> groups;
+    if (const auto def = vfs.read("soundaliases/volumemodgroups.def")) {
+        std::istringstream in(std::string(def->begin(), def->end()));
+        std::string line;
+        while (std::getline(in, line)) {
+            std::istringstream ls(line);
+            std::string name;
+            float vol = 0;
+            if ((ls >> name >> vol) && name.rfind("//", 0) != 0) groups[lower(name)] = vol;
+        }
+    }
     for (const std::string& path : vfs.list("soundaliases/")) {
         if (path.size() < 4 || lower(path.substr(path.size() - 4)) != ".csv") continue;
         const auto data = vfs.read(path);
@@ -147,6 +160,16 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
             a.loop = lower(get("loop")) == "looping";
             a.secondary = lower(get("secondaryaliasname"));
             a.subtitle = get("subtitle");
+            // vol_mod group (0x428bf0, applied by the post-parse check 0x429783): vol_min / vol_max are multiplied by the group
+            // volume and clamped to 0..1; an unknown group gives 0. An empty cell leaves the volumes alone.
+            if (const std::string g = lower(get("vol_mod")); !g.empty()) {
+                const auto it = groups.find(g);
+                const float gv = it == groups.end() ? 0.0f : it->second;
+                if (gv != 1.0f) {
+                    a.volMin = std::clamp(a.volMin * gv, 0.0f, 1.0f);
+                    a.volMax = std::clamp(a.volMax * gv, 0.0f, 1.0f);
+                }
+            }
             if (a.file.empty()) continue;
             aliases_[a.name].push_back(std::move(a));
         }
@@ -195,7 +218,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     if (duration) *duration = a->loop ? 0.0f : float(double(wav->frames()) / (double(wav->rate) * pitch));
     if (a->channel != "local") v.origin = origin;
     v.distMin = a->distMin;
-    v.distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 10.0f; // inferred default
+    v.distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 5.0f; // dist_max 0 -> 5 * dist_min (0x429701)
     v.loop = a->loop;
     int handle;
     {
@@ -225,7 +248,7 @@ int Mixer::playBlend(const std::string& low, const std::string& high, float f, c
     v.step = double(wav->rate) * pitch / double(rate_);
     v.origin = origin;
     v.distMin = lo->distMin + (hi->distMin - lo->distMin) * f;
-    const float dmax = hi->distMax > hi->distMin ? hi->distMax : hi->distMin * 10.0f;
+    const float dmax = hi->distMax > hi->distMin ? hi->distMax : hi->distMin * 5.0f; // 0x429701
     v.distMax = dmax;
     v.loop = true;
     std::lock_guard lock(mutex_);

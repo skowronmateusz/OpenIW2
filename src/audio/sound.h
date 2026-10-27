@@ -79,7 +79,7 @@ public:
     void mix(float* out, int frames);
 
     int active() const;
-    float masterVolume = 0.8f;
+    float masterVolume = 0.75f; // snd_volume (default 1.0, 0..1) * 0.75 (0x443ab3 -> 0x793a24)
     // snd_fade (0x4431a0): volume scale moving linearly to `fadeTarget` at `fadeRate` per ms (fadeStep advances it).
     float fadeVolume = 1.0f, fadeTarget = 1.0f, fadeRate = 0.0f;
     void fade(float target, int ms);
