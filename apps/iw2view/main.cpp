@@ -4373,6 +4373,30 @@ int main(int argc, char** argv) {
                 std::vector<ShotMsg> shotMsgs; // game messages with their world time
                 bool killedVehicles = false;
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
+                    // Debug: IW2_DEBUG_ITEM=name[@seconds] drops a weapon item on the player (touch pickup, owned or not).
+                    if (const char* di = std::getenv("IW2_DEBUG_ITEM")) {
+                        std::string spec = di;
+                        const auto at = spec.find('@');
+                        const float when = at == std::string::npos ? 0.0f : std::stof(spec.substr(at + 1));
+                        if (f == int(when * 20) && world->player()) {
+                            for (auto& kv : world->inventory(*world->player()).ammo) kv.second = 0; // so the item has room
+                            for (auto& kv : world->inventory(*world->player()).clip) kv.second = 0;
+                            world->debugSpawnWeaponItem(spec.substr(0, at));
+                            std::cout << "debug-item " << spec.substr(0, at) << " at frame " << f << "\n";
+                        }
+                        if (f == int(when * 20) + 20 && world->player()) {
+                            const game::Inventory& inv = world->inventory(*world->player());
+                            std::cout << "debug-item owned:";
+                            for (const auto& o : inv.owned) std::cout << " " << o;
+                            std::cout << " | slots " << inv.slot[1] << "," << inv.slot[2];
+                            for (const auto& [a, n] : inv.ammo) std::cout << " ammo[" << a << "]=" << n;
+                            for (const auto& [a, n] : inv.clip) std::cout << " clip[" << a << "]=" << n;
+                            int items = 0;
+                            for (const auto& e : world->entities())
+                                if (e->classname.rfind("weapon_", 0) == 0 && !e->obj->removed) ++items;
+                            std::cout << " items-left " << items << "\n";
+                        }
+                    }
                     const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
                     if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     {
