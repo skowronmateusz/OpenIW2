@@ -1941,7 +1941,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -4018,22 +4018,33 @@ int main(int argc, char** argv) {
                 aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
                 {
-                    // HUD fade touches. Weapon change (0x4b76e8 / 0x4b839a): ammo display + weapon change time. Per frame 0x4be5f0:
-                    // the compass is touched when the view angles or buttons (except 0x2b00) changed, the player moves, an
-                    // offhand button (0x30000) is down, or 0x4be520 fired: attack (0x1), or reload / use-reload (0x30) under
-                    // conditions, with pm_flags & 0x300 clear, which also touches the ammo display (0x4be556).
-                    // TODO(spec): the 0x4be520 conditions for 0x30 (0xf708f4 bit 4, ps+0x580 bit 2), 0x4be440, pm_flags 0x300.
+                    // HUD fade touches. 0x4a6130(n) touches one HUD menu's fade time (menu flag +0xe8 |= 4): 0 Health (0xf79a3c),
+                    // 1 weaponinfo (0xf79a40) + offhand, 2 Compass (0xf79a38), 3 stance (0xf79a44), 4 offhandinfo (0xf79a48),
+                    // 5 objectiveinfo (0xf79200); the console command menu_show_notify <n> (0x4a70ff) calls it with n.
+                    // Weapon change (0x4b76e8 / 0x4b839a): touch(4) + ammo display + weapon change time. Per frame 0x4be5f0:
+                    //  - 0x4be520: attack (0x1), or reload / use-reload (0x30) while not mantling (pm_flags 4, 0xf708f4) and with
+                    //    eFlags & 0x300 clear, touches offhand and weaponinfo (0x4be556) and touches the compass;
+                    //  - 0x4be440: a change of the buttons 0x2300 touches stance and the compass, held ones touch stance only;
+                    //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
+                    //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
+                    // TODO(spec): the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
                     const int64_t nowMs = world ? world->timeMs() : 0;
                     if (pweapon.name() != hudFade.weapon) {
-                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = nowMs;
+                        if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
                         hudFade.weapon = pweapon.name();
                     }
-                    const bool fireTouch = (buttons & game::Button::Attack) != 0;
+                    const bool turretBits = world && world->playerOnTurret(); // 0xf70964 & 0x300
+                    const bool fireTouch = !turretBits && ((buttons & game::Button::Attack) != 0 || ((buttons & 0x30u) != 0 && !ps.mantling));
                     const bool viewMoved = cam.pitch != hudFade.pitch || cam.yaw != hudFade.yaw;
                     hudFade.pitch = cam.pitch, hudFade.yaw = cam.yaw;
-                    if (fireTouch) hudFade.ammo = nowMs;
-                    if (fireTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
-                        ((buttons ^ hudFade.buttons) & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
+                    if (fireTouch) hudFade.ammo = hudFade.offhand = nowMs;
+                    const uint32_t changed = buttons ^ hudFade.buttons;
+                    bool stanceTouch = false;
+                    if ((changed & 0x2300u) != 0) hudFade.stance = nowMs, stanceTouch = true;
+                    else if ((buttons & 0x2300u) != 0) hudFade.stance = nowMs;
+                    if ((buttons & 0x30000u) != 0) hudFade.offhand = nowMs;
+                    if (fireTouch || stanceTouch || viewMoved || input.forwardMove() != 0 || input.rightMove() != 0 ||
+                        (changed & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
                         hudFade.compass = nowMs;
                     hudFade.buttons = buttons;
                 }
