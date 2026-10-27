@@ -700,6 +700,7 @@ private:
     std::vector<UseCandidate> scanUsables(const Vec3& eye, const Vec3& forward);
     Vec3 playerEye();
     void findPlayerUseEntity();
+    std::string pickupHintText(const std::string& w);
     void pickUpWeaponItem(Entity& item);
     void usePlayerEntity(Entity& e);
     bool turretUsableByPlayer(Entity& t);

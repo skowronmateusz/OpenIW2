@@ -201,6 +201,21 @@ bool World::turretUsableByPlayer(Entity& t) {
 // vehicle, on a turret or mantling. Otherwise the first scan candidate that is usable: a trigger_use(_touch) with a
 // cursor hint (+0x98, 2 at spawn 0x52cde0 unless the cursorhint key changes it; never 0 there) ends the search
 // either way, a turret (0x51dac0) or a vehicle (0x512200) only when usable, anything else is skipped.
+// The pickup prompt for a weapon item (cgame 0x4a99b0): PICKUPNEWWEAPON when the weapon is of class
+// item, has an offhandClass, or a primary slot is free; otherwise SWAPWEAPONS unless the hinted weapon is the one in its slot.
+// TODO(spec): def+0x84 (assumed offhandClass), the slot table for slots above 2.
+std::string World::pickupHintText(const std::string& w) {
+    const Inventory& inv = inventory(*player_);
+    const std::string cls = lowerStr(weaponField(w, "weaponClass")), off = lowerStr(weaponField(w, "offhandClass"));
+    const std::string slotName = lowerStr(weaponField(w, "weaponSlot"));
+    if (cls == "item" || (!off.empty() && off != "none")) return "PICKUPNEWWEAPON";
+    if ((slotName == "primary" || slotName == "primaryb") && (inv.slot[1].empty() || inv.slot[2].empty())) return "PICKUPNEWWEAPON";
+    const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
+    if (!cur.empty() && lowerStr(weaponField(cur, "weaponSlot")) == slotName) return cur == w ? std::string() : "SWAPWEAPONS";
+    const int idx = slotName == "primaryb" ? 2 : 1;
+    return inv.slot[idx] == w ? std::string() : "SWAPWEAPONS";
+}
+
 void World::findPlayerUseEntity() {
     playerUseEntity_ = -1;
     playerUseHint_ = {};
@@ -233,6 +248,7 @@ void World::findPlayerUseEntity() {
             if (!weapon(w) || lowerStr(weaponField(w, "weaponType")) == "grenade" || inventory(*player_).owned.count(w)) continue;
             playerUseEntity_ = e.number;
             playerUseHint_.weapon = w;
+            playerUseHint_.text = pickupHintText(w);
             return;
         }
         if (e.turret) {

@@ -2101,7 +2101,6 @@ int main(int argc, char** argv) {
                     const auto* wd = world->weapon(uh.weapon);
                     icon = wd && wd->count("hudicon") && !wd->at("hudicon").empty() ? wd->at("hudicon") : "gfx/icons/hint_usable";
                     wide = wd && wd->count("widelisticon") && wd->at("widelisticon") != "0";
-                    if (!(wd && wd->count("weaponclass") && wd->at("weaponclass") == "turret")) text.clear();
                 } else if (uh.hint == 2) icon = "gfx/icons/hint_usable";
                 else if (uh.hint == 3) icon = "hint_health";
                 else if (uh.hint == 4) icon = "hint_friendly";
