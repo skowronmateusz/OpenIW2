@@ -76,11 +76,17 @@ void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, c
 // 0xad / 0xae.
 void World::playerMelee(const Vec3& eye, const Vec3& viewAngles) {
     if (!player_ || !isAlive(*player_)) return;
-    const Value wn = player_->obj->get("$weapon");
-    const std::string w = wn.isString() ? wn.asString() : std::string();
-    const int base = weaponInt(w, "meleeDamage");
     Vec3 f, r, u;
     angleVectors(viewAngles, f, r, u);
+    const Value wn = player_->obj->get("$weapon");
+    meleeBlow(*player_, eye, f, r, u, wn.isString() ? wn.asString() : std::string());
+}
+
+// The same blow for an AI (builtin melee: 0x53c690 -> 0x550c60 -> 0x530f80, range 64): from the actor's eye towards its enemy.
+// TODO(spec): the actor aim origin and direction (0x54fee0, 0x500910; here the eye position and the line to the enemy's eye);
+// the per-frame guard (actor +0xcc = level time) is the caller's.
+void World::meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& w) {
+    const int base = weaponInt(w, "meleeDamage");
     const float range = 64.0f, width = 10.0f, height = 10.0f;
     static const float offs[5][2] = {{0, 0}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
     const int n = width > 0 && height > 0 ? 5 : 1;
@@ -88,15 +94,36 @@ void World::playerMelee(const Vec3& eye, const Vec3& viewAngles) {
         const float a = width * offs[i][0], b = height * offs[i][1];
         const Vec3 end = add(add(add(eye, scale(f, range)), scale(r, a)), scale(u, b));
         int location = 0;
-        const TraceResult tr = locationalTrace(eye, end, Contents::BulletMask, player_, kHitPriorityDefault, location);
+        const TraceResult tr = locationalTrace(eye, end, Contents::BulletMask, &attacker, kHitPriorityDefault, location);
         if ((tr.surfaceFlags & 0x10) || tr.fraction == 1.0f) continue;
         Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
         if (hit && isAlive(*hit)) {
             meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3; // the Q3 rand() at 0x5a56f4
-            damage(*hit, player_, int((meleeSeed_ >> 0x11) % 5) + base, f, tr.endPos, "MOD_MELEE", hitLocationName(location));
+            damage(*hit, &attacker, int((meleeSeed_ >> 0x11) % 5) + base, f, tr.endPos, "MOD_MELEE", hitLocationName(location));
         }
         return;
     }
+}
+
+// The AI melee builtin body: aim from the eye along the line to the enemy's eye (or the facing when there is none).
+void World::aiMelee(Entity& a) {
+    Entity* enemy = entityOf(a.obj->get("enemy"));
+    const Vec3 eye = eyePosition(a);
+    const Value ang = a.obj->get("angles");
+    Vec3 f, r, u;
+    angleVectors(ang.isVector() ? ang.asVector() : Vec3{0, 0, 0}, f, r, u);
+    if (enemy) {
+        const Vec3 d = Vec3{eyePosition(*enemy)[0] - eye[0], eyePosition(*enemy)[1] - eye[1], eyePosition(*enemy)[2] - eye[2]};
+        const float l = len(d);
+        if (l > 0) {
+            f = scale(d, 1.0f / l);
+            const float rl = std::sqrt(f[0] * f[0] + f[1] * f[1]);
+            r = rl > 0 ? Vec3{f[1] / rl, -f[0] / rl, 0} : Vec3{0, -1, 0};
+            u = {r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+        }
+    }
+    const Value wn = a.obj->get("weapon");
+    meleeBlow(a, eye, f, r, u, wn.isString() ? wn.asString() : std::string());
 }
 
 // Event 200 (0x4e775d): a cooked grenade went off in the player's hand: 100000 damage to the player, MOD_SUICIDE.
