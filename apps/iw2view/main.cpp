@@ -22,6 +22,7 @@
 #include "game/playerweapon.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
+#include "game/watersim.h"
 #include "game/fx.h"
 #include "game/marks.h"
 #include "game/pmove.h"
@@ -259,6 +260,8 @@ struct MatInfo {
 struct WaterMat {
     SDL_GPUTexture* cube = nullptr;
     float color[3] = {0, 0, 0};
+    SDL_GPUTexture* normalMap = nullptr;       // FFT map, updated every frame (semantic-5 texture entry)
+    std::shared_ptr<game::WaterSim> sim;
     bool blend = false; // mtlBlendOp != Disable: SrcAlpha/InvSrcAlpha, no depth write (nofog.sm); else One/Zero + depth write
 };
 
@@ -297,6 +300,18 @@ struct Scene {
     Vec3 sunColor{1, 1, 1};
     Camera start;
 };
+
+// Regenerates every water normal map for the given time in seconds (1002cd30: once per frame, r_drawWater on).
+void updateWaterMaps(Scene& scene, SDL_GPUDevice* dev, float seconds) {
+    if (scene.waters.empty()) return;
+    Uploader up(dev);
+    std::vector<uint8_t> px;
+    for (auto& w : scene.waters) {
+        if (!w.sim || !w.normalMap) continue;
+        w.sim->update(seconds, px);
+        up.texture(w.normalMap, 0, 0, uint32_t(w.sim->size()), uint32_t(w.sim->size()), px.data(), uint32_t(px.size()));
+    }
+}
 
 Pass classify(const std::string& techset) {
     if (techset == "sky") return Pass::Sky;
@@ -405,6 +420,18 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 WaterMat wm;
                 for (const auto& t : m.textures)
                     if (t.samplerName == "cubicEnvMap") wm.cube = loadCubeImage(dev, up, vfs, t.imageName);
+                for (const auto& t : m.textures)
+                    if (t.semantic == assets::TextureSemantic::Water && t.water.size >= 2) {
+                        game::WaterParams wp;
+                        wp.size = t.water.size;
+                        wp.lx = t.water.lx, wp.ly = t.water.ly, wp.amplitude = t.water.amplitude, wp.v = t.water.v;
+                        wp.windX = t.water.windX, wp.windY = t.water.windY;
+                        wm.sim = std::make_shared<game::WaterSim>(wp);
+                        wm.normalMap = createTexture(dev, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, uint32_t(wp.size), uint32_t(wp.size), 1);
+                        std::vector<uint8_t> px;
+                        wm.sim->update(0.0f, px);
+                        up.texture(wm.normalMap, 0, 0, uint32_t(wp.size), uint32_t(wp.size), px.data(), uint32_t(px.size()));
+                    }
                 for (const auto& c : m.constants)
                     if (c.name == "waterColor") wm.color[0] = c.value[0], wm.color[1] = c.value[1], wm.color[2] = c.value[2];
                 wm.blend = mi.waterBlend;
@@ -1201,7 +1228,7 @@ struct Renderer {
             wvs.entrypoint = "vs_water";
             SDL_GPUShaderCreateInfo wfs = fs;
             wfs.entrypoint = "fs_water";
-            wfs.num_samplers = 1;
+            wfs.num_samplers = 2;
             wfs.num_uniform_buffers = 1;
             SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
             SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
@@ -1427,7 +1454,7 @@ struct Renderer {
             for (const Batch& b : scene.batches) {
                 if (b.pass != Pass::Water) continue;
                 const WaterMat& wm = scene.waters[size_t(b.texture)];
-                if (!wm.cube) continue;
+                if (!wm.cube || !wm.normalMap) continue;
                 SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
                 SDL_GPUTextureSamplerBinding wsb{wm.cube, clampSampler};
@@ -2888,6 +2915,7 @@ int main(int argc, char** argv) {
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
+            updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam), forcedBlur);
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();
@@ -3362,6 +3390,7 @@ int main(int argc, char** argv) {
             {
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
+                updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
             }
             SDL_SubmitGPUCommandBuffer(cmd);
