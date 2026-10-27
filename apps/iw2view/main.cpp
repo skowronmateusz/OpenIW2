@@ -2525,12 +2525,14 @@ int main(int argc, char** argv) {
         // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
         const ui::Item* ammoBackItem = nullptr;
         const ui::Item* fireModeItem = nullptr; // item "weaponfiremode" (ownerdraw 83), rect -115 -35 20 20
+        const ui::Item* weapNameItem = nullptr; // item "weapname" (ownerdraw 81), rect -385 -15 290 40
         const ui::Item* ammoTextItem = nullptr; // item "ammotex" (ownerdraw CG_PLAYER_AMMO_VALUE 5), rect -85 -15 70 40
         if (const ui::Menu* m = hudMenus.find("weaponinfo"))
             for (const auto& it : m->items) {
                 if (it->name == "ammocounterback") ammoBackItem = it.get();
                 else if (it->name == "ammotex") ammoTextItem = it.get();
                 else if (it->name == "weaponfiremode") fireModeItem = it.get();
+                else if (it->name == "weapname") weapNameItem = it.get();
             }
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
@@ -3228,6 +3230,31 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Weapon name (ownerdraw 81, 0x4a7da0): not in a vehicle (pm_flags 0x20000); same fade as the firemode icon (hud_fade_ammodisplay,
+            // 1800 ms from the weapon change time 0xf796e4, 0x4a7600). Text = localized displayName (client weapon info +0xb4), plus
+            // " / " + localized modeName (+0xb8, def +0x70) when the weapon has a modeName ("%s / %s" 0x57fb54, else "%s" 0x56ca4c).
+            // Drawn at x = rect.x + rect.w - textWidth - 28 (0x592084), y = rect.y, item colour with the fade alpha, item text style,
+            // font by the HUD rule. TODO(spec): the weapon preselected while switching (0xf796e0) is not tracked; the current weapon is used.
+            if (weapNameItem && pweapon.equipped() && !inVeh) {
+                const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
+                const float ts = weapNameItem->textScale, fs = ts * float(h) / 480.0f;
+                if (a > 0.0f)
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+                        std::string text = name(pweapon.field("displayName"));
+                        const std::string mode = pweapon.field("modeName");
+                        if (!mode.empty()) text += " / " + name(mode);
+                        const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const auto& r = weapNameItem->rect;
+                        uint8_t col[4];
+                        for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(weapNameItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        col[3] = uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f);
+                        hudText(out, text, float(w) + (r.x + r.w - 28.0f) * sc - tw, float(h) + r.y * sc, gs, *f, col, 0.0f, 1.0f, weapNameItem->textStyle);
+                    }
+            }
             // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
             // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
@@ -3247,9 +3274,18 @@ int main(int argc, char** argv) {
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), objective ring pulses (no ring start time is
-            // tracked), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), the default pointer material when an objective has no icon, ownerdraw 87/88.
             // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
+            // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
+            // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
+            constexpr int ringNum = 10, ringTime = 10000;
+            auto ringElapsed = [&](const game::Objective& ob) -> int64_t {
+                if (!world || ob.state != 4 || ob.ringStartMs < 0 || ob.ringStartMs + ringTime <= world->timeMs()) return -1;
+                return world->timeMs() - ob.ringStartMs;
+            };
+            if (world)
+                for (const auto& ob : world->objectives())
+                    if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = world->timeMs();
             const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
                 const float csize = 1.0f; // cg_hudCompassSize
@@ -3322,6 +3358,25 @@ int main(int argc, char** argv) {
                             q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
                             q.texture = materialTexture(ob.icon.empty() ? std::string("objective") : ob.icon);
                             out.push_back(q);
+                            // Ring pulse (0x4a9748..0x4a9915): period = RingTime / NumRings; phase = (elapsed mod period) / period;
+                            // alpha = triangle(phase) clamped to the pointer alpha; size = phase * cg_hudObjectiveRingSize (64) *
+                            // compass size, halved once a full period has passed; material "objective_ring", or the icon when the
+                            // objective has one.
+                            if (const int64_t el = ringElapsed(ob); el >= 0) {
+                                const float period = float(ringTime) / float(ringNum);
+                                float rem = float(el);
+                                bool later = false;
+                                while (rem > period) { rem -= period; later = true; }
+                                const float ph = rem / period;
+                                const float tri = ph > 0.5f ? 1.0f - (ph - 0.5f) * 2.0f : ph * 2.0f;
+                                float rs = ph * 64.0f * (later ? 0.5f : 1.0f) * csize * sc;
+                                const float rx2 = ccx - rs * 0.5f - std::sin(a) * rad, ry2 = ccy - rs * 0.5f - std::cos(a) * rad;
+                                Quad2D rq{rx2, ry2, rx2 + rs, ry2 + rs};
+                                std::memcpy(rq.rgba, col, 4);
+                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, alpha * compassAlpha), 0.0f, 1.0f) * 255.0f);
+                                rq.texture = materialTexture(ob.icon.empty() ? std::string("objective_ring") : ob.icon);
+                                out.push_back(rq);
+                            }
                         }
                     }
                 }
