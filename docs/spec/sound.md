@@ -104,3 +104,17 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   `snd_deactivateEnvironmentEffects` handlers (0x441260 / 0x4413d0), `setreverb` (0x539380): reverb mixing and occlusion are not
   decoded; no shipped script calls `setreverb` or `setsoundblend`.
 - `playloopsound` / `stoploopsound` store the handle in the entity as before; the exe-side loop entity bookkeeping was not re-verified.
+
+## Round 4: loop sounds, reverb (exe evidence)
+
+- `playloopsound(alias)` (0x4ef3f0) only writes the alias' configstring index (type 0x11d, 256 entries) into the entity state (ent+6) and
+  clears flag bit 0 of ent+0xa2; an unknown alias prints "unknown sound alias '%s'" (0x587118). `stoploopsound` (0x4ef4c0) writes 0.
+  The client plays one loop per entity, so the same alias again does not restart it (the engine now matches this; before, it
+  restarted the loop).
+- `setreverb(priority, roomtype [, dry [, wet [, fade]]])` (0x539380; 2..5 arguments, "Incorrect number of parameters" otherwise;
+  defaults dry 1.0, wet 0.5, fade 0): the priority must be `snd_enveffectsprio_level` (1) or `snd_enveffectsprio_shellshock` (2),
+  otherwise "priority must be ...". It sends the client command `reverb %i "%s" %g %g %g` (priority, room, dry, wet, fade).
+  The client-side `snd_setEnvironmentEffects <priority> <roomstring> <dry> <wet> <fade>` (0x441260, exactly 6 tokens) checks dry
+  and wet against 0..1 and the fade as an int, then hands them to the sound backend (0x443ec0). TODO(spec): the backend's reverb
+  DSP and the room presets are not reproduced; no shipped script calls `setreverb`, so it has no observable effect.
+- TODO(spec): occlusion is not found in the exe's 3D voice path (only the distance curve and the pan law above are applied).
