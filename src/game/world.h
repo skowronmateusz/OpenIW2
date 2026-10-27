@@ -368,6 +368,8 @@ public:
     std::vector<CompassMarker> compassFriendlies() const;
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
+    // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
+    void debugDamage(Entity& e, int amount);
     bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
     void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
