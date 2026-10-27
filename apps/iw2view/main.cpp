@@ -2756,6 +2756,7 @@ int main(int argc, char** argv) {
         float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
         SDL_Window* menuWindow = nullptr; // set once the window exists
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
+        bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
@@ -2816,7 +2817,8 @@ int main(int argc, char** argv) {
                 else if (c == "difficultymedium") menuEnv.setCvar("g_gameskill", "1");
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
-                else if (c == "disconnect" || c == "quit") { /* handled below */ if (c == "quit") std::exit(0); }
+                else if (c == "disconnect") pendingDisconnect = world != nullptr;
+                else if (c == "quit") std::exit(0);
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
                 // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
@@ -4966,6 +4968,18 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (auto change = world->dueLevelChange()) pendingLevel = std::make_pair(change->map, change->failed);
+            }
+            if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
+                // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
+                pendingDisconnect = false;
+                pendingLevel.reset();
+                world.reset();
+                releaseScene(dev, scene);
+                scene = emptyScene(dev);
+                currentMap.clear();
+                menuEnv.setCvar("cl_paused", "0");
+                frontStack.closeAll();
+                frontStack.open("main");
             }
             if (pendingLevel) {
                     // Level change or restart: rebuild the world and the scene for the next map.
