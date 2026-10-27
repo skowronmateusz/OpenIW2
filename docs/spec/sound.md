@@ -96,7 +96,11 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   The first knot is forced to (0,1) and the last to (1,0) (the exe prints a warning). The alias `volumefalloffcurve` column names the
   file; an empty column keeps the default curve (0,1)-(1,0) installed at 0x428d22 (alias +0x130, runtime +0x40). Blend voices
   use the curve of the low alias (0x4a0e85).
-- TODO(spec): the pan law (0x49f0b4 keeps constant-power panning from the earlier guess), `snd_setEnvironmentEffects` /
+- Pan law (0x49f000, level setter 0x49ff80 -> backend `set levels(handle, left, right)`): `a` = volume x falloff. A stereo wave
+  (channel count 0x14 of the sound == 2) plays `(a, a)`. A mono wave plays `(a (1-p), a p)` with `p = (1 - dot) / 2`, `dot` = unit
+  direction to the source (0x4210d0, zero vector stays zero) . listener axis[1] (the left axis, 0x793d94); a mono wave without a
+  position uses `p = 0.5` (0x49f5b9 / 0x4a0d22), so a centred mono voice is half as loud per channel. Implemented in `Mixer::gains`.
+- TODO(spec): `snd_setEnvironmentEffects` /
   `snd_deactivateEnvironmentEffects` handlers (0x441260 / 0x4413d0), `setreverb` (0x539380): reverb mixing and occlusion are not
   decoded; no shipped script calls `setreverb` or `setsoundblend`.
 - `playloopsound` / `stoploopsound` store the handle in the entity as before; the exe-side loop entity bookkeeping was not re-verified.

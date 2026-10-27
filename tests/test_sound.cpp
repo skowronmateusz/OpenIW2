@@ -70,13 +70,24 @@ void testMixer() {
         m.play(alias, iw2::audio::Vec3{distance, 0, 0});
         std::vector<float> out(2 * 64);
         m.mix(out.data(), 64);
-        return out[2 * 63] / 0.5f; // the wav is 0.5 full scale; straight ahead gives equal constant-power gains
+        return out[2 * 63] / 0.25f; // 0.5 full scale wav, mono centre pan = half per channel
     };
     CHECK(std::fabs(level("curved", 50) - 1.0f) < 1e-3f);   // inside dist_min
     CHECK(std::fabs(level("curved", 200) - 0.2f) < 1e-3f);  // t = 0.5 -> knot (0.5, 0.2)
     CHECK(std::fabs(level("curved", 150) - 0.6f) < 1e-3f);  // t = 0.25 -> halfway between 1 and 0.2
     CHECK(level("curved", 300) == 0.0f);                    // t >= 1
     CHECK(std::fabs(level("linear", 200) - 0.5f) < 1e-3f);  // default curve (0,1)-(1,0)
+
+    // Pan: a source on the left (listener right = -y, so +y is left) plays only in the left channel at full level.
+    {
+        iw2::audio::Mixer m(vfs, al, 48000);
+        m.masterVolume = 1.0f;
+        m.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        m.play("curved", iw2::audio::Vec3{0, 50, 0});
+        std::vector<float> out(2 * 64);
+        m.mix(out.data(), 64);
+        CHECK(std::fabs(out[2 * 63] - 0.5f) < 1e-3f && std::fabs(out[2 * 63 + 1]) < 1e-3f);
+    }
 
     // Ducking: a slave (0.5) is lowered by 1 - duck * 0.5 while a master plays; the duck builds over snd_slaveFadeTime.
     iw2::audio::Mixer m(vfs, al, 48000);
@@ -85,12 +96,12 @@ void testMixer() {
     m.play("minion");
     std::vector<float> out(2 * 2400);
     m.mix(out.data(), 2400);
-    CHECK(std::fabs(out[2 * 2399] - 0.5f) < 1e-3f); // no master yet
+    CHECK(std::fabs(out[2 * 2399] - 0.25f) < 1e-3f); // no master yet
     m.play("boss");
     m.mix(out.data(), 2400); // half the fade time: duck 0.5 -> slave factor 0.75, plus the master at 0.5
-    CHECK(std::fabs(out[2 * 2399] - (0.5f * 0.75f + 0.5f)) < 1e-3f);
+    CHECK(std::fabs(out[2 * 2399] - (0.25f * 0.75f + 0.25f)) < 1e-3f);
     m.mix(out.data(), 2400); // full duck: slave factor 0.5
-    CHECK(std::fabs(out[2 * 2399] - (0.5f * 0.5f + 0.5f)) < 1e-3f);
+    CHECK(std::fabs(out[2 * 2399] - (0.25f * 0.5f + 0.25f)) < 1e-3f);
     fsys::remove_all(dir);
 }
 

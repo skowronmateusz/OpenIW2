@@ -368,20 +368,25 @@ float Mixer::falloff(const Voice& v, float dist) {
     return -1; // the exe returns -1 when no knot matches
 }
 
-// Constant-power panning by the direction's side component (the exe's pan law is not decoded, 0x49f0b4 TODO(spec)).
+// Pan law (0x49f000 / 0x49ff80, backend call "set levels(handle, left, right)"): a = volume x falloff. A stereo wave plays (a, a). A
+// mono wave plays (a (1 - p), a p) with p = (1 - dot) / 2, dot = unit direction to the source . listener axis[1] (left); a mono
+// wave without a position uses p = 0.5, so mono is half as loud per channel at the centre (0x49f5b9 halves a mono voice).
 void Mixer::gains(const Voice& v, float& left, float& right) const {
-    left = right = v.volume;
-    if (!v.origin) return;
-    const Vec3 d{(*v.origin)[0] - listener_[0], (*v.origin)[1] - listener_[1], (*v.origin)[2] - listener_[2]};
-    const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    const float att = std::max(0.0f, falloff(v, dist));
-    float side = 0;
-    if (dist > 1) side = (d[0] * right_[0] + d[1] * right_[1] + d[2] * right_[2]) / dist;
-    const float angle = (side + 1) * 0.25f * float(M_PI); // 0 = left, pi/2 = right
-    left = v.volume * att * std::cos(angle) * float(M_SQRT2);
-    right = v.volume * att * std::sin(angle) * float(M_SQRT2);
-    left = std::min(left, v.volume);
-    right = std::min(right, v.volume);
+    float a = v.volume, p = 0.5f;
+    if (v.origin) {
+        const Vec3 d{(*v.origin)[0] - listener_[0], (*v.origin)[1] - listener_[1], (*v.origin)[2] - listener_[2]};
+        const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        a *= std::max(0.0f, falloff(v, dist));
+        float side = 0; // the direction's component along "right" (= -dot); 0 when the source is at the listener (0x4210d0)
+        if (dist > 0) side = (d[0] * right_[0] + d[1] * right_[1] + d[2] * right_[2]) / dist;
+        p = (1 + side) * 0.5f;
+    }
+    if (v.wav->channels == 2) {
+        left = right = a;
+    } else {
+        left = a * (1 - p);
+        right = a * p;
+    }
 }
 
 // snd_fade <volume> <ms> (0x4431a0): the rate is (target − current) / ms; ms 0 sets the volume at once.
