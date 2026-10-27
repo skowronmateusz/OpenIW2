@@ -225,6 +225,7 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             fill(e.obj);
             if (cls == "info_player_start") starts.push_back(e.obj);
+            if (cls == "trigger_damage") spawnTriggerDamage(e);
             if (cls == "trigger_hurt") { // spawn 0x5292a0: dmg 0 becomes 5; spawnflags 1 (start off) selects handler 6, else 7
                 const Value dv = e.obj->get("dmg");
                 if (!dv.isNumber() || dv.asInt() == 0) e.obj->set("dmg", Value(int32_t(5)));

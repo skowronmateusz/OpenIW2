@@ -470,6 +470,11 @@ public:
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
     void meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& weapon);
     void aiMelee(Entity& a);
+    // trigger_damage (triggerdamage.cpp).
+    void spawnTriggerDamage(Entity& e);
+    void triggerDamageApply(Entity& e, Entity* attacker, int damage, int mod);
+    void triggerDamageHit(Entity& e, Entity* attacker, int amount, const std::string& mod);
+    void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);

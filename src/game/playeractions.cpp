@@ -97,6 +97,9 @@ void World::meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Ve
         const Vec3 end = add(add(add(eye, scale(f, range)), scale(r, a)), scale(u, b));
         int location = 0;
         const TraceResult tr = locationalTrace(eye, end, Contents::BulletMask, &attacker, kHitPriorityDefault, location);
+        // 0x530f37: the first ray (index 0) always hits the trigger_damage brushes along it with the base damage, MOD_MELEE,
+        // whether or not it struck anything.
+        if (i == 0) triggerDamageSegment(&attacker, eye, tr.endPos, base, 7);
         static const bool log = std::getenv("IW2_MELEE_LOG") != nullptr;
         if (log)
             std::fprintf(stderr, "[melee] trace %d from %.0f,%.0f,%.0f to %.0f,%.0f,%.0f: fraction %.3f entity %d (%s) surf 0x%x\n", i, eye[0], eye[1],

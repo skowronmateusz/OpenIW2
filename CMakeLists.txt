@@ -74,7 +74,7 @@ add_library(iw2_game
   src/game/animtree.cpp
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
-  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp
+  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/triggerdamage.cpp
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp
@@ -242,3 +242,7 @@ add_test(NAME screenfade COMMAND test_screenfade)
 add_executable(test_roq tests/test_roq.cpp)
 target_link_libraries(test_roq PRIVATE iw2_video)
 add_test(NAME roq COMMAND test_roq)
+
+add_executable(test_triggerdamage tests/test_triggerdamage.cpp)
+target_link_libraries(test_triggerdamage PRIVATE iw2_game)
+add_test(NAME triggerdamage COMMAND test_triggerdamage)
