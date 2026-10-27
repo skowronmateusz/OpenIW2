@@ -913,11 +913,12 @@ void World::thinkVehicles() {
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
         updateVehicleTurret(e);
         if (e.vehicle) vehicleJoltStep(v.joltAmp, v.joltPhase, v.joltDirF, v.joltDirR, v.joltPitch, v.joltRoll); // 0x510770
+        // +0x1b0 is the path speed in path mode (0x5110a0: stepFrac +0x1ac += +0x1b0 / pointSpeed) and |forward speed| in free physics.
         // 0x510870 (after the turret/aim calls, before 0x510be0): tread texture scroll accumulator.
         if (v.info) {
             const auto dv = cvars.find("g_vehicleTexScrollScale");
             const float dvar = dv == cvars.end() ? 0.0f : float(std::atof(dv->second.c_str()));
-            v.texScroll = vehicleTexScrollStep(v.info->texScroll, v.texScroll, v.forwardSpeed, dvar, v.info->texScrollScale);
+            v.texScroll = vehicleTexScrollStep(v.info->texScroll, v.texScroll, v.started ? v.speed : v.forwardSpeed, dvar, v.info->texScrollScale);
         }
         updateVehicleEngineSound(e);
         // The driver rides at tag_player (linked in VEH_LinkPlayer).
