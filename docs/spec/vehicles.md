@@ -334,3 +334,16 @@ command's delta angles are adjusted so the input keeps that view.
 - Animated wheel tags: the tag positions come from the entity's current animation pose (bind pose without one);
   the exact pose the original samples (0x4d7460) is not checked.
 - Exact frame order of the vehicle think relative to script threads.
+
+### Barrel pull-back (+0x19c / +0x198), partly decoded
+
+- +0x198 (think 0x512a70..0x512b00): when the tag indices +0x218 and +0x214 are both >= 0, the distance between their origins
+  (0x4d75b0 per tag, sqrt 0x565e40); stored every think. +0x214 is the tag of script constant 0x1c7f170, +0x218 the first of the
+  tags named by the table at 0x5a91d4 (511ffe..512041; the names are not resolved here).
+- +0x19c is cleared every think (0x512c89) and set to 1 in the player aim (0x510bc7) when the visibility test 0x44c1b0
+  (zero box 0x56ce9c, mask 0x7ff, entity from +0xf4) returns 0.
+- Fire (0x51474d): with +0x19c set the shot start is moved back along the shot direction: start = start - dir * (+0x198)
+  (0x514757..0x5147a7: -(+0x198) * dir + origin).
+- Open: the endpoints of the 0x44c1b0 test and the two tag names; therefore not implemented (shotDir/start unchanged).
+- joltbody (above) and the fireturret recoil jolt are implemented (`World::vehicleJolt`, `vehicleJoltStep`); the heading
+  "Not implemented" in this file is stale for them.
