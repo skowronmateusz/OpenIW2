@@ -1875,6 +1875,12 @@ int main(int argc, char** argv) {
         struct DamageIcon { int64_t start = -1000000; int duration = 0; float yaw = 0; };
         std::array<DamageIcon, 8> damageIcons{};
         int lastDamageEvent = 0;
+        // Menu "weaponinfo" (hud.menu:184): the ammo counter backdrop `ammocounterback` (ownerdraw CG_PLAYER_AMMO_BACKDROP 6), rect
+        // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
+        const ui::Item* ammoBackItem = nullptr;
+        if (const ui::Menu* m = hudMenus.find("weaponinfo"))
+            for (const auto& it : m->items)
+                if (it->name == "ammocounterback") ammoBackItem = it.get();
         const ui::Item* cursorHintItem = nullptr; // menu "Cursorhints" (ownerdraw CG_CURSORHINT)
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
             for (const auto& it : m->items)
@@ -2354,6 +2360,15 @@ int main(int argc, char** argv) {
             // Ammo counter, bottom right of the 4:3 area. The ammo ownerdraws (0x4a7818 …) special-case only vehicles
             // (pm_flags 0x20000), not turrets, so the hand weapon's ammo stays on a turret.
             if (pweapon.equipped()) {
+                if (ammoBackItem && !ammoBackItem->background.empty()) {
+                    const auto& r = ammoBackItem->rect;
+                    Quad2D q{left43 + (640.0f + r.x) * sc, (480.0f + r.y) * sc, 0, 0};
+                    q.x1 = q.x0 + r.w * sc;
+                    q.y1 = q.y0 + r.h * sc;
+                    for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(ammoBackItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                    q.texture = materialTexture(ammoBackItem->background);
+                    out.push_back(q);
+                }
                 if (const assets::Font* f = font("bigfont")) {
                     const uint8_t white[4] = {255, 255, 255, 230};
                     hudText(out, std::to_string(pweapon.clip()) + " | " + std::to_string(pweapon.stock()), left43 + 620 * sc, 460 * sc,
