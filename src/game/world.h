@@ -696,7 +696,7 @@ private:
     int vehicleNodeIndex(const script::Value& v) const;
     const VehicleInfo* vehicleInfo(const std::string& type);
     void updateVehicleTurret(Entity& e);
-    Vec3 vehicleTagPosition(Entity& e, const char* tag, bool& found);
+    Vec3 vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward = nullptr);
     void linkPlayerToVehicle(Entity& vehicle, Entity& player);
     void unlinkPlayerFromVehicle(Entity& vehicle, Entity& player);
     void alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle);

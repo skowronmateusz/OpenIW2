@@ -511,20 +511,43 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
 }
 
 // World position of a model tag on the vehicle (0x4d75b0): the tag's model-space position through the entity's
-// axes. Turret bone rotation is not applied (TODO: the client-side turret controllers).
-Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found) {
+// axes, with the turret bone controls of the server controller 0x5127a0 (DObj controls through 0x4746e0): bone info+0x210
+// (tag_turret) gets angles (0, es+0x74 = turret yaw, 0), bone info+0x214 (tag_barrel) gets (es+0x70 = turret pitch, 0, 0).
+// TODO(spec): the body-jolt control on bone info+0x20c (angles es+0x64, 0, es+0x6c); that the three info slots are
+// tag_body / tag_turret / tag_barrel follows the init order 0x5071b4..0x5071e3 and the cgame use (0x4ac354).
+// turnedForward (optional): the world direction the body's forward axis takes through the controls of this tag
+// (rotation of the controlled tag times the inverse of its bind rotation, rotated into the world).
+Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward) {
     found = false;
     const Value model = e.obj->get("model");
     const assets::XModelParts* parts = model.isString() ? skeleton(model.asString()) : nullptr;
     const Vec3 origin = e.obj->get("origin").asVector(), angles = e.obj->get("angles").asVector();
     if (!parts) return origin;
-    const assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
+    assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
+    const assets::XPose uncontrolled = pose;
+    if (e.vehicle) {
+        std::vector<std::pair<int, assets::Quat>> ctl;
+        for (size_t b = 0; b < parts->bones.size(); ++b) {
+            const std::string n = lowerCopy(parts->bones[b].name);
+            if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, e.vehicle->turretYaw, 0)});
+            else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat(e.vehicle->turretPitch, 0, 0)});
+        }
+        pose = assets::applyControls(*parts, pose, ctl);
+    }
     Vec3 o{};
+    size_t tagBone = 0;
     for (size_t b = 0; b < parts->bones.size(); ++b)
-        if (lowerCopy(parts->bones[b].name) == tag) { o = pose.position[b]; found = true; break; }
+        if (lowerCopy(parts->bones[b].name) == tag) { o = pose.position[b]; tagBone = b; found = true; break; }
     if (!found) return origin;
     Vec3 fwd, right, up;
     anglesToAxis(angles, fwd, right, up);
+    if (turnedForward) {
+        const assets::Quat& r0 = uncontrolled.rotation[tagBone];
+        const assets::Quat d = assets::multiply(pose.rotation[tagBone], assets::Quat{-r0.x, -r0.y, -r0.z, r0.w});
+        const auto m = assets::rotate(d, {1, 0, 0});
+        for (int i = 0; i < 3; ++i)
+            (*turnedForward)[size_t(i)] = up[size_t(i)] * m[2] - right[size_t(i)] * m[1] + fwd[size_t(i)] * m[0];
+    }
     Vec3 w;
     for (int i = 0; i < 3; ++i) w[size_t(i)] = up[size_t(i)] * o[2] - right[size_t(i)] * o[1] + fwd[size_t(i)] * o[0] + origin[size_t(i)];
     return w;
@@ -1239,13 +1262,15 @@ void World::registerVehicleBuiltins() {
             static const char* const flash[4] = {"tag_flash", "tag_flash_11", "tag_flash_2", "tag_flash_22"};
             const int count = v.info->quadBarrel ? 2 : 1;
             const int first = v.info->quadBarrel && v.altBarrel ? 2 : 0;
-            // Direction: the body's axes turned by the turret angles (inferred: the original reads the flash tag's
-            // axis, which the turret bone controllers rotate).
-            Vec3 a = e->obj->get("angles").asVector();
-            a[0] += v.turretPitch;
-            a[1] += v.turretYaw;
-            Vec3 fwd, right, up;
-            anglesToAxis(a, fwd, right, up);
+            // Direction: the body's forward axis through the turret bone controls (rotation composition, no Euler sum;
+            // inferred that the original reads the flash tag's axis, which the controllers 0x5127a0 rotate).
+            Vec3 fwd{};
+            bool fOk = false;
+            vehicleTagPosition(*e, "tag_flash", fOk, &fwd);
+            if (!fOk) {
+                Vec3 a = e->obj->get("angles").asVector(), r, u;
+                anglesToAxis(a, fwd, r, u);
+            }
             const std::string flashFx = weaponField(v.info->turretWeapon, "worldFlashEffect");
             auto shotDir = [&](const Vec3& start) {
                 // Aim bend (0x5144e7): a player-driven single barrel shoots towards the player's aim point
