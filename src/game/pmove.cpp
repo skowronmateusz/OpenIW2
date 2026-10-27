@@ -618,8 +618,8 @@ void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerIn
     Vec wish = wishVelocity(fwd, right, f, r);
     const float wishSpeed = normalize(wish) * s;
     // Acceleration 9 standing, 12 crouched, 19 prone, 1 on slick ground (surface flag 2), x0.25 with pm_flags 0x200
-    // (0x5088d0, set by a damaging landing). TODO(spec): knockback (pm_flags 0x400) also gives 1.
-    const bool slick = (pml.groundTrace.surfaceFlags & 2) != 0;
+    // (0x5088d0, set by a damaging landing). pm_flags 0x400 (spawnSlide, ClientSpawn 0x4e925b) also gives 1 and applies gravity.
+    const bool slick = (pml.groundTrace.surfaceFlags & 2) != 0 || ps.spawnSlide; // 0x50889b: pm_flags 0x400 acts like slick ground
     float accel = slick ? 1.0f : ps.stance == Stance::Prone ? 19.0f : ps.stance == Stance::Crouch ? 12.0f : 9.0f;
     if (ps.landTimer) accel *= 0.25f;
     accelerate(ps, wish, wishSpeed, accel, pml.frametime, mp);
@@ -862,7 +862,30 @@ void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, f
 // plane (0x50abe6): the event of 0x508f20 for the ground's surface type: none for surface 0 (or flag 0x2000), prone
 // 0x2f + surface, walking (pm_flags 0x100 or leaning) 0x18 + surface, else the run step 1 + surface.
 // TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf) and the ladder case.
-void updateBobCycle(PlayerState& ps, const Pml& pml, float f, float r, int ms, const MoveParams& mp) {
+void updateBobCycle(const CollisionWorld& w, PlayerState& ps, const Pml& pml, float f, float r, int ms, const MoveParams& mp) {
+    // Ladder branch (0x50a8c5..0x50a94c, airborne with pm_flags 0x20, pm_type != 1): no bob within 300 ms of a jump, else
+    // the cycle advances by the vertical speed · 0.010499 · 0.45 (0.026247 · 0.35 with pm_flags 0x100 or leaning) · msec.
+    // A bit-7 change then fires the ladder footstep of PM_FootstepEvent (0x50a6d0): a box like the ladder check's
+    // traced 31 units along -vLadder (mask & 0xfdfe3fff): event 1 + surface of the hit, 0x16 when nothing was hit or the
+    // surface is 0.
+    if (!ps.onGround && ps.onLadder) {
+        if (ps.timeMs - ps.lastJumpMs < 300) return;
+        const bool slow = ps.adsSlow || ps.lean != 0;
+        const float k = slow ? 0.02624671906232834f * 0.3499999940395355f : 0.010498687624931335f * 0.44999998807907104f;
+        const int oldCycle = ps.bobCycle;
+        ps.bobCycle = int(ps.velocity[2] * k * float(ms) + float(ps.bobCycle)) & 0xff;
+        if (((oldCycle + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80) {
+            Pml box = pml;
+            box.mins = {pml.mins[0] + 6.0f, pml.mins[1] + 6.0f, 8.0f};
+            box.maxs = {pml.maxs[0] - 6.0f, pml.maxs[1] - 6.0f, pml.maxs[2] < 8.0f ? 8.0f : pml.maxs[2]};
+            box.mask = pml.mask & 0xfdfe3fffu;
+            const Vec end{ps.origin[0] - ps.vLadder[0] * 31.0f, ps.origin[1] - ps.vLadder[1] * 31.0f, ps.origin[2] - ps.vLadder[2] * 31.0f};
+            const TraceResult tr = pmTrace(w, box, ps.origin, end);
+            const int surf = tr.fraction == 1.0f ? 0 : surfaceTypeOf(tr.surfaceFlags);
+            addPlayerEvent(ps, surf ? 1 + surf : 0x16);
+        }
+        return;
+    }
     if (!ps.onGround) return;
     const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
     if (xy < mp.moveThreshold) {
@@ -898,9 +921,10 @@ void updateBobCycle(PlayerState& ps, const Pml& pml, float f, float r, int ms, c
 // PM_FoliageSounds (0x50ac30, after the bob cycle): below bg_foliagesnd_minspeed the last-event time is cleared once
 // resetinterval has passed. From minspeed up the interval between events is slow + (fast - slow) · frac with
 // frac = clamp((speed - min) / (max - min), 0, 1); when it has elapsed, a box of 0.75 × the stance box (z 0.9 ×
-// maxs.z) at the origin traced with contents mask 2 (foliage) that is entirely inside it gives event 0x8b.
-// TODO(spec): the tested result byte is the allsolid flag by analogy with 0x507b31 (the frame offset at 0x50ad5e did
-// not resolve to 0x23 by hand); the trace's pass entity is ps+0xa8.
+// maxs.z) at the origin traced with contents mask 2 (foliage) that is overlapping it (start solid) gives event 0x8b.
+// The tested result byte is trace+0x23 (frame arithmetic at 0x50ad5e checked, the same byte 0x507b31 tests before its retry);
+// by the trace_t layout (fraction 0, normal 4, surfaceFlags 0x10, contents 0x14, hit id 0x1c) that is startsolid.
+// The trace's pass entity is ps+0xa8.
 void foliageSounds(const CollisionWorld& w, PlayerState& ps, const Pml& pml, const MoveParams& mp) {
     const float speed = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
     if (speed < mp.foliageMinSpeed) {
@@ -913,7 +937,7 @@ void foliageSounds(const CollisionWorld& w, PlayerState& ps, const Pml& pml, con
     if (ps.lastFoliageMs + interval >= ps.timeMs) return;
     const Vec mins{pml.mins[0] * 0.75f, pml.mins[1] * 0.75f, pml.mins[2] * 0.75f};
     const Vec maxs{pml.maxs[0] * 0.75f, pml.maxs[1] * 0.75f, pml.maxs[2] * 0.9f};
-    if (!w.trace(ps.origin, ps.origin, mins, maxs, 2u, pml.passEntity).allSolid) return;
+    if (!w.trace(ps.origin, ps.origin, mins, maxs, 2u, pml.passEntity).startSolid) return;
     addPlayerEvent(ps, 0x8b);
     ps.lastFoliageMs = ps.timeMs;
 }
@@ -929,10 +953,10 @@ void clearLadder(PlayerState& ps) {
 // traced 8 units (walking) or 30 units along the facing, or along -vLadder when already climbing in the air; a hit on a
 // surface with flag 0x8 starts the climb (walking players must press forward), confirmed by a second trace against the
 // stored normal. ps+0xd0 is the view height target (0x28 crouch, 0xb prone, as in PM_Footsteps 0x50a88b).
-// TODO(spec): pm_flags 0x400 (read as part of the 0x600 mask in the pm_time test) has no setter ported (knockback).
+// pm_flags 0x400 is the spawn flag (spawnSlide).
 void checkLadder(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float fwdMove, const Vec& fwd) {
     if (pml.walking) ps.ladderLeft = false;
-    if (ps.pmTimeMs != 0 && !ps.onLadder && ps.landTimer) { clearLadder(ps); return; }
+    if (ps.pmTimeMs != 0 && !ps.onLadder && (ps.landTimer || ps.spawnSlide)) { clearLadder(ps); return; }
     const float dist = pml.walking ? 8.0f : 30.0f;
     Vec dir;
     if (ps.onLadder && !ps.onGround) dir = {-ps.vLadder[0], -ps.vLadder[1], -ps.vLadder[2]};
@@ -1102,6 +1126,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
             ps.pmTimeMs = 0;
             ps.jumping = false;
             ps.landTimer = false;
+            ps.spawnSlide = false;
         }
     }
 
@@ -1118,7 +1143,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     else if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);
     groundTrace(w, ps, pml);
-    updateBobCycle(ps, pml, f, r, ms, mp);
+    updateBobCycle(w, ps, pml, f, r, ms, mp);
     foliageSounds(w, ps, pml, mp);
 }
 

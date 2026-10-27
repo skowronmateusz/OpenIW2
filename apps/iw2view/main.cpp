@@ -5163,6 +5163,7 @@ int main(int argc, char** argv) {
         float camLinkHeight = 60.0f;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
+        game::markSpawned(ps);
         bool wasDead = false;
         std::array<float, 2> bobAngles{0, 0};
         float deadYaw = 0;
@@ -6014,6 +6015,7 @@ int main(int argc, char** argv) {
                     cam = scene.start;
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
+                    game::markSpawned(ps);
                     pweapon = game::PlayerWeapon{};
                     weaponSelect.clear();
                     weaponWritten.clear();
