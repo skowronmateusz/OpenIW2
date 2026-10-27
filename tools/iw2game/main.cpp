@@ -1,3 +1,4 @@
+#include <array>
 // iw2game: run a level headless (scripts, entities, no rendering).
 //
 //   iw2game <main-dir> <map> [seconds] [--cvar name=value ...] [--spawn-all] [--move-stats] …
@@ -531,6 +532,7 @@ int main(int argc, char** argv) {
         std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
         size_t menuAnswered = 0;
         float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
+        std::vector<std::pair<float, std::array<float, 2>>> playerUses; // --player-use T yaw,pitch: press the use key once at T looking that way (headless test)
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -560,6 +562,11 @@ int main(int argc, char** argv) {
             } else if (a == "--level-notify" && i + 2 < argc) {
                 const float t = std::stof(argv[++i]);
                 levelNotifies.push_back({t, argv[++i]});
+            } else if (a == "--player-use" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                std::array<float, 2> ang{};
+                std::sscanf(argv[++i], "%f,%f", &ang[0], &ang[1]);
+                playerUses.push_back({t, ang});
             } else if (a == "--player-at" && i + 2 < argc) {
                 iw2::game::Vec3 p{};
                 const float t = std::stof(argv[++i]);
@@ -586,7 +593,9 @@ int main(int argc, char** argv) {
         std::unique_ptr<iw2::audio::Mixer> mixer;
         for (int i = 3; i < argc; ++i)
             if (std::string(argv[i]) == "--mixer") mixer = std::make_unique<iw2::audio::Mixer>(vfs, aliases, 44100);
+        const bool soundLog = std::getenv("IW2_SOUND_LOG") != nullptr; // debug: every sound start with its sim time
         world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration) {
+            if (soundLog) std::cout << "[sound " << world.timeMs() << "ms] " << alias << "\n";
             if (mixer) return mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration);
             if (aliases.pick(alias, soundRng)) ++soundsPlayed[alias];
             else ++soundsUnknown[alias];
@@ -810,6 +819,17 @@ int main(int argc, char** argv) {
                     }
                     world.setPlayerOrigin(p, world.player()->obj->get("angles").asVector());
                 }
+            }
+            if (!playerUses.empty() && world.player()) {
+                // --player-use: the use key (buttons 0x28 pressed) for one frame, looking along yaw,pitch.
+                iw2::game::World::PlayerCommand pc;
+                const float t = f * 0.05f;
+                for (const auto& u : playerUses)
+                    if (t >= u.first) {
+                        pc.viewAngles = {u.second[1], u.second[0], 0};
+                        pc.buttons = t < u.first + 0.05f ? 0x28u : 0u;
+                    }
+                world.setPlayerCommand(pc);
             }
             if (pmove && world.player()) {
                 if (!pmoveInit) {

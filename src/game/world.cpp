@@ -908,10 +908,17 @@ void World::registerBuiltins() {
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
     vm_.registerBuiltin("setgoalnode", [](CallContext& c) {
         auto o = c.self.asObject();
-        if (c.arg(0).isObject()) o->set("$goalpos", c.arg(0).asObject()->get("origin"));
+        if (c.arg(0).isObject()) {
+            o->set("$goalpos", c.arg(0).asObject()->get("origin"));
+            o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
+        }
         return Value();
     });
-    vm_.registerBuiltin("setgoalpos", [](CallContext& c) { c.self.asObject()->set("$goalpos", c.arg(0)); return Value(); });
+    vm_.registerBuiltin("setgoalpos", [](CallContext& c) {
+        c.self.asObject()->set("$goalpos", c.arg(0));
+        c.self.asObject()->set("$goalnodeangles", Value());
+        return Value();
+    });
     vm_.registerBuiltin("setgoalentity", [](CallContext& c) { c.self.asObject()->set("$goalent", c.arg(0)); return Value(); });
     vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
     vm_.registerBuiltin("spawn", [this](CallContext& c) {
