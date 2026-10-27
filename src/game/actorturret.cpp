@@ -73,6 +73,12 @@ int World::turretStateThink(Entity& e) {
     };
     if (!t || !t->turret || t->obj->removed || !(t->turret->inUse && t->turret->owner == e.obj)) return leave();
     TurretState& ts = *t->turret;
+    // 0x54acc5..0x54ad0c: unless the claimed node is kept (0x4fe6f0), the friendly chain and the working goal are updated
+    // (0x505ed0, 0x505f70). TODO(spec): the pathToEnemy reset before it (0x502fc0, an enemy known within 5 s).
+    if (!keepClaimedNode(e)) {
+        followFriendlyChain(e);
+        updateWorkingGoal(e);
+    }
     if (!(ts.flags & 0x2000u) && !actorInGoal(e, 92.0f)) return leave();
     actorPerceive(e);
     const auto* w = weapon(ts.weapon);
