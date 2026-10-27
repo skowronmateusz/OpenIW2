@@ -644,7 +644,7 @@ void World::actorFacing(Entity& e) {
     // TODO(spec): the path branch (0x505a22: +0x6ec time gate, 0x5432f0 position when not seen for > 500 ms); while a path
     // is followed moveActor writes the yaw.
     bool enemyTargeted = false;
-    if (ai.orient != 1 && m == 3) {
+    if (ai.orient != 1 && m >= 3 && m <= 5) {
         Entity* enemy = entityOf(e.obj->get("enemy"));
         if (enemy) {
             if (e.path.count > 0) return;
@@ -672,7 +672,7 @@ void World::actorFacing(Entity& e) {
         const PathNode& n = nodes_[size_t(e.claimedNode)];
         if (!(n.spawnflags & 0x8000)) return;
         const Vec3 o = vecField(e.obj, "origin");
-        if (m == 3) {
+        if (m >= 3 && m <= 5) {
             const Vec3 np = vecField(n.obj, "origin");
             const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
             if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
