@@ -243,7 +243,7 @@ public:
     // Spawns map entities and the player, then runs maps/<map>.gsc::main().
     void start();
     // Advances game time by one server frame (50 ms).
-    void frame();
+    void frame(bool advanceTime = true);
 
     script::VM& vm() { return vm_; }
     const assets::D3dBsp& bsp() const { return *bsp_; }
@@ -428,7 +428,9 @@ public:
 
 private:
     Entity& spawnEntity(const std::string& classname);
-    Entity* spawnActor(Entity& spawner);
+    // force = the exe's third argument of the spawn core 0x532200: stalingradspawn passes 1 (skips the telefrag test),
+    // dospawn passes 0.
+    Entity* spawnActor(Entity& spawner, bool force = true);
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void registerBuiltins();

@@ -126,11 +126,11 @@ ender()
         h.vm.runFrame(50);
         CHECK(h.joined() == "main|");
         h.vm.runFrame(100);
-        CHECK(h.joined() == "main|got 7x|after notify|");
+        CHECK(h.joined() == "main|after notify|got 7x|");
         h.vm.runFrame(200);
-        CHECK(h.joined() == "main|got 7x|after notify|"); // ender was killed by endon before "tick"
+        CHECK(h.joined() == "main|after notify|got 7x|"); // ender was killed by endon before "tick"
         CHECK(h.vm.liveThreadCount() == 0);
-        if (h.joined() != "main|got 7x|after notify|") std::cerr << h.joined() << "\n";
+        if (h.joined() != "main|after notify|got 7x|") std::cerr << h.joined() << "\n";
     }
 
     // An endon registered by a called function ends that call only; the caller continues (the shipped
@@ -164,6 +164,8 @@ timed(ent)
         CHECK(h.joined() == "back 0|back 1|");
         h.vm.notify(h.vm.level()->get("ent").asObject(), "stop"); // endon of the returned call is gone
         h.vm.notify(h.vm.level(), "later");
+        CHECK(h.joined() == "back 0|back 1|"); // a notify only queues the woken thread (exe 0x46ca60)
+        h.vm.drainReady();
         CHECK(h.joined() == "back 0|back 1|later|");
         if (h.joined() != "back 0|back 1|later|") std::cerr << h.joined() << "\n";
     }
