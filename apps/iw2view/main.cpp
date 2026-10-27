@@ -2348,7 +2348,13 @@ int main(int argc, char** argv) {
                 const uint64_t now = SDL_GetTicksNS();
                 std::erase_if(subtitles, [&](const Subtitle& st) { return st.untilNs < now; });
                 const uint8_t white[4] = {255, 255, 255, 255};
-                if (const assets::Font* f = font("normalfont")) {
+                // The console text drawer 0x4062d0 picks the font from the scale = charHeight / 48 (0x591f90) * the screen scale
+                // (0x793944 = h / 480): <= ui_smallFont (0.25, 0x58156c) $smallfont, >= ui_extraBigFont (0.55) $extrabigfont,
+                // < ui_bigFont (0.4) $font (normalFont), else $bigfont (0x4063a0..0x4063e2; the same rule as menu items), so
+                // the glyphs stay close to the font's native size instead of one font being stretched.
+                // TODO(spec): the second selection path at 0x40631a (no extra-big font) for a non-zero flag argument.
+                const float subScale = 12.0f / 48.0f * float(h) / 480.0f;
+                if (const assets::Font* f = font(subScale <= 0.25f ? "smallFont" : subScale >= 0.55f ? "extraBigFont" : subScale < 0.4f ? "normalFont" : "bigFont")) {
                     float sy = 400.0f;
                     for (const auto& st : subtitles) {
                         const std::string* t = loc.find(st.key);
