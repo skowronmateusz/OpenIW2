@@ -703,6 +703,7 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     }
     DriveParams params;
     if (v.info) params = {v.info->maxSpeed, v.info->accel, v.info->rotRate, v.info->rotAccel};
+    if (v.joltAmp > 0.0f) params.maxSpeed = v.joltSpeed, params.accel = v.joltDecel; // 0x50de51..0x50de87
     DriveBody b;
     b.origin = e.obj->get("origin").asVector();
     b.angles = e.obj->get("angles").asVector();
@@ -853,8 +854,8 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
 // TODO(spec): the turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3).
 // 0x50dcf0: direction (world) against the body's forward / right axes, 2D-normalized (0x421160), scaled by the
 // intensity (clamped 0..1) and info maxBodyPitch (+0x78) / maxBodyRoll (+0x7c); amplitude 1, phase 0.
-// TODO(spec): +0x1e4 / +0x1e8 (speed fraction x |speed|, deceleration) used by the free physics while the jolt runs.
-void World::vehicleJolt(Entity& e, const Vec3& dir, float intensity) {
+// +0x1e4 / +0x1e8 (speed fraction x |speed|, deceleration) replace maxSpeed / accel in the free physics while it runs (0x50de40).
+void World::vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction, float decel) {
     VehicleState& v = *e.vehicle;
     if (!v.info) return;
     Vec3 f, r, u;
@@ -867,6 +868,8 @@ void World::vehicleJolt(Entity& e, const Vec3& dir, float intensity) {
     v.joltDirR = b * s * v.info->maxBodyRoll;
     v.joltAmp = 1.0f;
     v.joltPhase = 0.0f;
+    v.joltSpeed = speedFraction * (v.started ? std::fabs(v.speed) : v.forwardSpeed); // +0x1e4 = fraction * +0x1b0
+    v.joltDecel = decel;                                                                // +0x1e8
 }
 
 void World::updateVehicleEngineSound(Entity& e) {
@@ -1207,7 +1210,7 @@ void World::registerVehicleBuiltins() {
         if (c.argc() > 2 && (c.arg(2).asFloat() < 0.0f || c.arg(2).asFloat() > 1.0f))
             throw std::runtime_error("Speed fraction must be between 0 and 1");
         if (c.argc() > 3 && c.arg(3).asFloat() < 0.0f) throw std::runtime_error("Deceleration can't be negative");
-        vehicleJolt(*e, d, c.arg(1).asFloat());
+        vehicleJolt(*e, d, c.arg(1).asFloat(), c.argc() > 2 ? c.arg(2).asFloat() : 0.0f, c.argc() > 3 ? c.arg(3).asFloat() * kMphToIps : 0.0f);
         return Value();
     });
     vm_.registerBuiltin("startenginesound", [this](CallContext& c) {
@@ -1340,7 +1343,7 @@ void World::registerVehicleBuiltins() {
                 const float rad = float(M_PI) / 180.0f;
                 return Vec3{std::cos(p * rad) * std::cos(y * rad), std::cos(p * rad) * std::sin(y * rad), -std::sin(p * rad)};
             };
-            vehicleJolt(*e, {-fwd[0], -fwd[1], -fwd[2]}, 1.0f); // 0x5148a3: 0x50dcf0(-flash forward, 1, 0, 0)
+            vehicleJolt(*e, {-fwd[0], -fwd[1], -fwd[2]}, 1.0f, 0.0f, 0.0f); // 0x5148a3: 0x50dcf0(-flash forward, 1, 0, 0)
             const std::string fireSnd = weaponField(v.info->turretWeapon, "fireSound");
             for (int k = 0; k < count; ++k) {
                 bool ok = false;
