@@ -56,6 +56,12 @@ struct Item : Window {
     std::string dvarTest;
     std::vector<std::string> showDvar, hideDvar, enableDvar, disableDvar;
     std::vector<std::string> focusDvar; // dvarTest values that give the item the initial focus
+    // SLIDER / DECIMALFIELD: `dvarfloat "name" def min max`.
+    bool hasRange = false;
+    float dvarDef = 0, dvarMin = 0, dvarMax = 1;
+    // MULTI: `dvarFloatList { "label" value ... }` (labels are @LOCALIZE keys).
+    std::vector<std::pair<std::string, float>> floatList;
+    std::string enumList; // `dvarEnumList "dvar"` (values come from the engine; TODO(spec))
     Script action, mouseEnter, mouseExit, onFocus, leaveFocus, accept;
     std::vector<std::pair<std::string, Script>> execKeys; // execKey "k" / execKeyInt n
 };

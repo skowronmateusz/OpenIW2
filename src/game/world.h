@@ -101,7 +101,7 @@ struct ActorAi {
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
-    int64_t painEventMs = 0;                  // next pain AI event (the 0x5485a0 accumulator, throttled here)
+    int moveNoiseMs = 0;                      // actor +0x23c.. (0x224 struct +0x1c): the movement noise accumulator 0x5485a0
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
@@ -369,6 +369,8 @@ public:
     std::vector<CompassMarker> compassFriendlies() const;
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
+    // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
+    void debugDamage(Entity& e, int amount);
     bool drawCompassFriendlies() const { return drawCompassFriendlies_; }
     void setDrawCompassFriendlies(bool on) { drawCompassFriendlies_ = on; }
     std::vector<ClientCommand> takeClientCommands() { return std::exchange(clientCommands_, {}); }
@@ -383,6 +385,10 @@ public:
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
         return std::nullopt;
     }
+    // cinematic(name [, timeout]) (0x4f4220) only records the movie (client state 0x1c60ff4, up to 63 characters); it is played when
+    // the level change falls due (0x4d9f90 runs `cinematic <name> 0`, whose end continues the level load, 0x49db20 -> 0x4d9f00).
+    // The front end takes it with takeCinematic() right before it loads the next map.
+    std::string takeCinematic() { return std::exchange(cinematic_, {}); }
     const std::string& mapName() const { return mapName_; }
     // Real (wall-clock) time in ms for the timers the original runs on timeGetTime (the death screen's
     // g_deathDelay). Hosts that never set it (iw2game) run them on world time.
@@ -426,7 +432,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -501,6 +507,7 @@ private:
     std::vector<ClientCommand> clientCommands_;
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
+    std::string cinematic_; // pending cinematic name (video/<name>.roq)
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
     void openDeathScreen();
     void runDeathScreen();
@@ -564,6 +571,7 @@ private:
     void actorThink(Entity& e);
     void actorPerceive(Entity& e);
     void actorPain(Entity& e, Entity* attacker);
+    void actorMoveNoise(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);
     void setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode);
@@ -704,7 +712,7 @@ private:
     void grenadeReact(Entity& e, bool keepPath);
     bool pathNearPoint(Entity& e, const Vec3& p, float r2);
     int grenadeCoverNode(Entity& e, float r);
-    bool pathAwayFrom(Entity& e, const Vec3& p, float dist);
+    bool pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes = false);
     bool grenadeAcquire(Entity& e);
     bool grenadeGiveUp(Entity& e);
     int grenadeAcquireThink(Entity& e);

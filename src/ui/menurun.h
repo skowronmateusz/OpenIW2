@@ -28,6 +28,8 @@ struct MenuEnv {
     std::function<bool()> restartAvailable; // "restarthide": unset = available
     std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle
     std::function<void(const std::string& name, const Command& args)> uiScript; // "uiScript" other than update
+    // Width in 640x480 virtual pixels of the item's localized text at its font/scale (slider track position, widget value text).
+    std::function<float(const Item&)> textWidth;
 };
 
 // Runs the commands of `script` for a menu named `menuName` (the target of its scriptMenuResponse commands).
@@ -35,6 +37,9 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env);
 
 // UI start-up cvars: ui_mousePitch = (m_pitch < 0), exe 0x4c30db.
 void initUiCvars(MenuEnv& env);
+// Default of a dvar the exe registers at start (empty when unknown). mis_none, mis_01..mis_10: int, default 0, range 0..20, flags
+// 0x1001 (archive), registered at 0x4d02b4..0x4d0540. TODO(spec): the other registered UI dvars (cg_drawCrosshair, ...).
+std::string registeredDefault(const std::string& name);
 
 // The clickable item under (x, y) in the 640x480 virtual screen (visible button items), or nullptr.
 const Item* itemAt(const Menu& menu, float x, float y);
