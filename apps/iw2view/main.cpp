@@ -17,6 +17,7 @@
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
 #include "audio/sound.h"
+#include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
 #include "game/clientinput.h"
@@ -2096,6 +2097,7 @@ int main(int argc, char** argv) {
     float forcedBlur = 0; // --blur N: force the composed blur radius (debug)
     int shootMarks = 0; // --shoot N: with --shot, the player fires N bullets along the view (fanned 1° apart) before the shot
     bool audioOn = true;
+    bool skipIntro = false; // --no-intro: no start-up movies in the front end
     bool menuMode = false; // --menu: start in the front end (main menu) without a level
     float shotViewHeight = 60;
     float shotLean = 0;
@@ -2150,6 +2152,7 @@ int main(int argc, char** argv) {
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--menu") menuMode = true;
+            else if (a == "--no-intro") skipIntro = true;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
             else args.push_back(a);
@@ -2207,7 +2210,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -2264,6 +2267,7 @@ int main(int argc, char** argv) {
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
+        game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         game::FogState fogState; // "fog" server command (client 0x4a5770)
         game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
@@ -3546,7 +3550,7 @@ int main(int argc, char** argv) {
                 const int64_t rem = ticksMs - el;
                 return rem >= 700 ? 1.0f : float(rem) / 700.0f;
             };
-            const float ammoAlpha = fadeAlpha(hudFade.ammo, 2.0f, 2000);
+            const float ammoAlpha = fadeAlpha(hudFade.ammo, 3.0f, 3000) /* hud_fade_ammodisplay default 3.0 (0x4a728a) */;
             const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
@@ -3646,6 +3650,42 @@ int main(int argc, char** argv) {
                     q.texture = materialTexture(icon);
                     out.push_back(q);
                 }
+            }
+            // Stance (menu "stance", ownerdraw 20, 0x4a81e0): alpha = fade of hud_fade_stance (default 1.7 s, 0x10438e4, ticks = dvar * 1000,
+            // touch 0xf79a44); nothing while the alpha is 0, nor in a vehicle (pm_flags 0x20000 without 0x80000). The stance change
+            // time (0xf796c8) is set to now when it lies in the future or the stance (pm_flags & 3) differs from the stored one
+            // (0xf796c4). Icon: bit 0 stance_prone, else bit 1 stance_crouch, else stance_stand; then, for 1000 ms after the change,
+            // the stance_flash overlay with the cg_hudStanceFlash colour (default white) and alpha (changeTime + 1000 - now) * 0.001 * 0.8
+            // (0x591e30, 0x591f94) capped by the fade alpha. Rect: menu 90 -70 LEFT / BOTTOM + item 60x60.
+            // TODO(spec): the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
+            // the bool dvar 0x1040c4c checked in the fade.
+            if (const ui::Menu* sm = hudMenus.find("stance"); sm && world) {
+                const int64_t now = world->timeMs();
+                const uint32_t st = world->playerPmFlags() & 3u;
+                if (hudFade.stanceChange > now || hudFade.stanceState != st) hudFade.stanceChange = now;
+                hudFade.stanceState = st;
+                const float sa = fadeAlpha(hudFade.stance, 1.7f, 1700);
+                const bool stanceInVeh = (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
+                if (sa > 0.0f && !stanceInVeh)
+                    for (const auto& itp : sm->items) {
+                        if (itp->ownerDraw != 20) continue;
+                        const auto& r = itp->rect;
+                        Quad2D q{(sm->rect.x + r.x) * sc, float(h) + (sm->rect.y + r.y) * sc, 0, 0};
+                        q.x1 = q.x0 + r.w * sc;
+                        q.y1 = q.y0 + r.h * sc;
+                        for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        q.rgba[3] = uint8_t(std::clamp(sa, 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture((st & 1u) ? "stance_prone" : (st & 2u) ? "stance_crouch" : "stance_stand");
+                        out.push_back(q);
+                        if (hudFade.stanceChange + 1000 > now) {
+                            const float fa = std::min(sa, float(hudFade.stanceChange + 1000 - now) * 0.001f * 0.8f);
+                            Quad2D f = q;
+                            for (int k = 0; k < 3; ++k) f.rgba[k] = 255; // cg_hudStanceFlash default (1 1 1 1); TODO(spec): dvar override
+                            f.rgba[3] = uint8_t(std::clamp(fa, 0.0f, 1.0f) * 255.0f);
+                            f.texture = materialTexture("stance_flash");
+                            out.push_back(f);
+                        }
+                    }
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
@@ -3847,6 +3887,14 @@ int main(int argc, char** argv) {
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
             out.insert(out.end(), front.begin(), front.end());
+            // The fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
+            screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+            if (screenFade.alpha() > 0) {
+                Quad2D q{0, 0, float(w), float(h)};
+                q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
+                q.rgba[3] = uint8_t(std::min(screenFade.alpha(), 1.0f) * 255.0f + 0.5f);
+                out.push_back(q);
+            }
             (void)c;
             return out;
         };
@@ -3983,7 +4031,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
@@ -4149,14 +4197,21 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
-        // Cinematic playback (docs/spec/video.md): modal, the way the original's `cinematic <name> 0` (0x4d9f90) is: the movie
-        // fills the 4:3 screen area, any key or mouse button skips it (skippable byte 0x59a0d0), and the level load goes on after it.
-        auto playCinematic = [&](const std::string& name) {
+        // Cinematic playback (docs/spec/video.md), modelled on CL_PlayCinematic_f (0x49e690) and the per-frame run (0x49dcc0): modal; the
+        // movie fills the 640x480 area (letterbox: y 105, height 270, 0x49e722); the clock is wall time with frozen hitches (a frame delta
+        // over 100 ms moves the start time, 0x49dd91), the shown frame is elapsed * fps / 1000 and late frames are decoded and dropped;
+        // audio is queued when its frame is decoded. Any key or mouse button skips it when skippable (`cinematic` sets the skippable
+        // byte 0x59a0d0, `unskippablecinematic` clears it). `loop` restarts it at the end (the command's flag '2', 0x49ded8).
+        // Returns false when the window was closed.
+        auto playCinematic = [&](const std::string& rawName, bool skippable, bool letterbox, bool loop) {
+            std::string name = rawName;
+            for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
             const auto data = vfs.read("video/" + name + ".roq");
-            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return; }
+            if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return true; }
             std::unique_ptr<video::RoqDecoder> dec;
-            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return; }
-            std::cout << "cinematic " << name << "\n";
+            try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return true; }
+            std::cout << "cinematic " << name << (skippable ? "" : " (unskippable)") << (letterbox ? " letterbox" : "") << (loop ? " loop" : "") << "\n";
+            const bool stats = std::getenv("IW2_CINEMATIC_STATS") != nullptr;
             Scene movieScene = emptyScene(dev);
             SDL_GPUTexture* tex = nullptr;
             int tw = 0, th = 0;
@@ -4166,20 +4221,34 @@ int main(int argc, char** argv) {
                 snd = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
                 if (snd) SDL_ResumeAudioStreamDevice(snd);
             }
+            // The mixer's own stream must not talk over the movie.
+            if (audioStream) SDL_PauseAudioStreamDevice(audioStream);
             const uint64_t t0 = SDL_GetTicksNS();
+            uint64_t lastNs = t0, startShiftNs = 0;
             bool more = true, skipped = false;
+            int64_t shown = -1, dropped = 0, audioPut = 0;
+            double syncSum = 0, syncMax = 0, syncMin = 1e9;
+            int64_t syncN = 0;
             while (more && !skipped && running) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     if (e.type == SDL_EVENT_QUIT) running = false;
-                    else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) skipped = true;
+                    else if (skippable && (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)) skipped = true;
                 }
-                const int64_t due = int64_t(double(SDL_GetTicksNS() - t0) * 1e-9 * dec->fps()) + 1; // frames that should have been shown
+                const uint64_t nowNs = SDL_GetTicksNS();
+                if (const char* lim = std::getenv("IW2_EXIT_AFTER"))
+                    if (nowNs > uint64_t(std::atof(lim) * 1e9)) { running = false; break; } // debug: leave after N seconds, movie included
+                if (nowNs - lastNs > 100000000ull) startShiftNs += nowNs - lastNs; // a hitch over 100 ms freezes the movie clock (0x49dd91)
+                lastNs = nowNs;
+                const double elapsed = double(nowNs - t0 - startShiftNs) * 1e-9;
+                const int64_t due = int64_t(elapsed * dec->fps()) + 1; // frames that should have been shown
                 bool fresh = false;
                 while (more && dec->frameIndex() < due) {
+                    const bool hadFrame = dec->frameIndex() > 0;
                     more = dec->nextFrame();
                     if (!more) break;
                     fresh = true;
+                    if (hadFrame && dec->frameIndex() < due) ++dropped;
                     auto pcm = dec->takeAudio();
                     if (snd && !pcm.empty()) {
                         if (dec->audioChannels() == 1) {
@@ -4188,7 +4257,13 @@ int main(int argc, char** argv) {
                             pcm = std::move(st);
                         }
                         SDL_PutAudioStreamData(snd, pcm.data(), int(pcm.size() * sizeof(int16_t)));
+                        audioPut += int64_t(pcm.size() / 2);
                     }
+                }
+                if (!more && loop && !skipped) { // restart (0x49d490)
+                    dec = std::make_unique<video::RoqDecoder>(*data);
+                    more = true;
+                    continue;
                 }
                 if (dec->width() == 0) break;
                 if (!tex || tw != dec->width() || th != dec->height()) {
@@ -4202,29 +4277,71 @@ int main(int argc, char** argv) {
                 if (fresh) {
                     Uploader up(dev, false);
                     up.texture(tex, 0, 0, uint32_t(tw), uint32_t(th), dec->rgba().data(), uint32_t(dec->rgba().size()));
+                    shown = dec->frameIndex();
+                }
+                if (stats && snd && audioPut > 0) {
+                    // Sync measurement: the picture time (shown frame / fps) against the audio actually played by the device stream
+                    // (samples put minus samples still queued), both in seconds since the start.
+                    const double played = double(audioPut - SDL_GetAudioStreamQueued(snd) / 4) / video::RoqDecoder::kAudioRate;
+                    const double picture = double(std::max<int64_t>(shown, 0)) / dec->fps();
+                    if (elapsed > 1.0) { // the first second includes the device start-up
+                        const double d = picture - played; // > 0: the picture is ahead of the sound
+                        syncSum += d, syncMax = std::max(syncMax, d), syncMin = std::min(syncMin, d), ++syncN;
+                    }
                 }
                 SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
                 SDL_GPUTexture* swap = nullptr;
                 uint32_t w = 0, h = 0;
                 if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap) {
                     const float sc = float(h) / 480.0f, left = (float(w) - 640.0f * sc) * 0.5f;
-                    Quad2D q{left, 0, left + 640.0f * sc, 480.0f * sc};
+                    const float y0 = letterbox ? 105.0f : 0.0f, y1 = letterbox ? 105.0f + 270.0f : 480.0f;
+                    Quad2D q{left, y0 * sc, left + 640.0f * sc, y1 * sc};
                     q.texture = 1;
                     renderer.fog = {};
-                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, std::vector<Quad2D>{q}, 0.0f);
+                    std::vector<Quad2D> quads;
+                    if (letterbox) { // black bars outside the picture
+                        Quad2D bar{0, 0, float(w), float(h)};
+                        bar.rgba[0] = bar.rgba[1] = bar.rgba[2] = 0;
+                        quads.push_back(bar);
+                    }
+                    quads.push_back(q);
+                    renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
                 }
                 SDL_SubmitGPUCommandBuffer(cmd);
             }
+            if (stats) {
+                const double wall = double(SDL_GetTicksNS() - t0) * 1e-9;
+                std::cout << "cinematic stats: " << name << " " << tw << "x" << th << " " << dec->fps() << " fps; wall " << wall << " s, last frame "
+                          << shown << " (" << double(shown) / dec->fps() << " s), dropped " << dropped << ", audio " << double(audioPut) / video::RoqDecoder::kAudioRate
+                          << " s queued"
+                          << (syncN ? "; picture minus audio played (after 1 s) mean " + std::to_string(syncSum / double(syncN) * 1000.0) + " ms, min " + std::to_string(syncMin * 1000.0) + ", max " + std::to_string(syncMax * 1000.0) + " ms over " + std::to_string(syncN) + " draws" : std::string())
+                          << (skipped ? "; skipped" : "") << "\n";
+            }
             if (snd) SDL_DestroyAudioStream(snd);
+            if (audioStream) SDL_ResumeAudioStreamDevice(audioStream);
             SDL_WaitForGPUIdle(dev);
             releaseScene(dev, movieScene);
-            // Held keys and buttons that skipped the movie must not reach the game (their release does).
-            SDL_PumpEvents();
+            return running;
         };
-        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
         int shockLoop = 0, shockSeenStart = -1;
         bool shockEndPlayed = true;
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
+        // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
+        auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
+        if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) { // debug: play video/<name>.roq (e.g. "iw_logo" or "legal!" for unskippable) first
+            std::string n = mv;
+            const bool unskippable = !n.empty() && n.back() == '!';
+            if (unskippable) n.pop_back();
+            playCinematic(n, !unskippable, std::getenv("IW2_CINEMATIC_LETTERBOX") != nullptr, std::getenv("IW2_CINEMATIC_LOOP") != nullptr);
+        }
+        // Start-up movie chain of the front end (Com_Init 0x42dee0, 0x42e7d5): `unskippablecinematic legal`, then, while com_introPlayed is
+        // 0, `cinematic atvi; set nextmap "cinematic IW_logo; set nextmap cinematic cod_intro"`. A movie that is missing or ends runs
+        // nextmap; a skip stops the current movie only. TODO(spec): nothing in the exe sets com_introPlayed, it is only read.
+        if (menuMode && running && !std::getenv("IW2_SKIP_INTRO") && !skipIntro) {
+            playCinematic("legal", false, false, false);
+            for (const char* m : {"atvi", "IW_logo", "cod_intro"})
+                if (running && !playCinematic(m, true, false, false)) break;
+        }
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -4789,6 +4906,12 @@ int main(int argc, char** argv) {
                         if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                         else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                     }
+                    else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
+                        float alpha = 0;
+                        int startMs = 0, durMs = 0;
+                        a >> alpha >> startMs >> durMs;
+                        screenFade.command(alpha, startMs, durMs, world->timeMs());
+                    }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
                     else if (cmd.name == "scr_blur") { // scr_blur <ms> <radius> <realtime> <priority> (0x4beb80)
@@ -4807,10 +4930,11 @@ int main(int argc, char** argv) {
                     currentMap = pendingLevel->first;
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
                     fogState.clear();
+                    screenFade.clear(); // the new level starts unfaded
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
                         const std::string movie = world->takeCinematic();
-                        if (!movie.empty()) playCinematic(movie);
+                        if (!movie.empty()) playScripted(movie);
                     }
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();

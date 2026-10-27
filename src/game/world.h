@@ -546,6 +546,7 @@ private:
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
     std::string cinematic_; // pending cinematic name (video/<name>.roq)
+    int exitMs_ = 0;        // level change / cinematic exit time (0x1c60fec)
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
     void openDeathScreen();
     void runDeathScreen();
