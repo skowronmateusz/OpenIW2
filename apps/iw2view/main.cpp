@@ -2553,6 +2553,11 @@ int main(int argc, char** argv) {
         bool walk = true;
         uint32_t prevButtons = 0;
         float gameClock = 0;
+        // The camera of a player placed by a link or a vehicle is drawn interpolated like the entities (they lag one server frame): the
+        // player origin before the last server frame and whether the camera follows the link this frame. TODO(spec): the original's rule.
+        script::Vec3 prevPlayerO{0, 0, 0};
+        bool camLinkLerp = false;
+        float camLinkHeight = 60.0f;
         game::PlayerState ps;
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
         bool wasDead = false;
@@ -2668,15 +2673,20 @@ int main(int argc, char** argv) {
                 }
                 const script::Vec3 po = world->player()->obj->get("origin").asVector();
                 cam.pos = {po[0], po[1], po[2] + 60.0f}; // stand view height 60 in a vehicle (0x509d10)
+                camLinkLerp = true;
+                camLinkHeight = 60.0f;
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
             } else if (world && world->playerLinked()) {
                 // Linked by script (pm_type 1): the link places the player (src/game/playerlink.cpp); no own movement.
                 const script::Vec3 po = world->player()->obj->get("origin").asVector();
                 cam.pos = {po[0], po[1], po[2] + ps.viewHeight};
+                camLinkLerp = true;
+                camLinkHeight = ps.viewHeight;
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
             } else if (walk) {
+                camLinkLerp = false;
                 if (havePrevBody) { // just got out: continue from where the vehicle code put the player (tag_detach)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     ps.origin = {po[0], po[1], po[2]};
@@ -2877,10 +2887,16 @@ int main(int argc, char** argv) {
                         prevAnim.erase(e->number);
                         prevAnim.emplace(e->number, *e->anim);
                     }
+                    if (world->player()) prevPlayerO = world->player()->obj->get("origin").asVector();
                     world->frame();
                     gameClock -= 0.05f;
                 }
                 lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
+                if (camLinkLerp && world->player()) { // see prevPlayerO
+                    const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                    cam.pos = {prevPlayerO[0] + (po[0] - prevPlayerO[0]) * lerpFrac, prevPlayerO[1] + (po[1] - prevPlayerO[1]) * lerpFrac,
+                               prevPlayerO[2] + (po[2] - prevPlayerO[2]) * lerpFrac + camLinkHeight};
+                }
                 // Damage feedback (cgame 0x4ba2a0 on a new damageEvent): the aim spread scale grows by the count; unless
                 // the damage came from the world (pitch and yaw 255), the oldest of 8 icon slots gets the time,
                 // cg_hudDamageIconTime and yaw = yaw byte / 255 · 360 + (rand / 32768 − 0.5) · 20, through a short
@@ -2903,7 +2919,7 @@ int main(int argc, char** argv) {
                     lerpPrev.erase(world->player()->number);
                 }
                 if (const auto va = world->takePlayerViewAngles()) { // setplayerangles
-                    cam.pitch = (*va)[0];
+                    cam.pitch = std::remainder((*va)[0], 360.0f); // axisAngles gives [0,360): 355 would clamp to 89 (looking down)
                     cam.yaw = (*va)[1];
                 }
                 if (const auto rel = world->takeTurretRelease()) {
