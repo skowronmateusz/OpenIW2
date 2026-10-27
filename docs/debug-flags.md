@@ -34,6 +34,8 @@ described in the code that reads them.
 | `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname starts with the prefix (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
 | `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
+| `IW2_SHOT_HEALTH=<hp>[,<trail>[,<phase ms>]]` | iw2view `--shot` | Sets the player health (a value <= 1 is a fraction of maxhealth), the health-bar trail fraction and how far into its pulse period the low-health background is. |
+| `IW2_SHOT_HINT=<n>` | iw2view `--shot` | Shows the invalid-command hint state `<n>` (1 no ammo, 2 no frag, 3 no smoke, 4 stand blocked, 5 crouch blocked) 300 ms into its blink cycle. |
 | `IW2_BOLD_MESSAGE=<text>` | iw2view `--shot` | Shows a bold game message (iprintlnbold window). |
 
 ## Command-line options

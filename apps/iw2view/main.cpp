@@ -2778,6 +2778,19 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("MantleHint"))
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
+        const ui::Item* invalidCmdItem = nullptr; // menu "InvalidCmdHint" (ownerdraw 110)
+        if (const ui::Menu* m = hudMenus.find("InvalidCmdHint"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") invalidCmdItem = it.get();
+        int invalidCmdState = 0;       // 0xf79694: 1 no ammo, 2 no frag grenade, 3 no smoke grenade, 4 stand blocked, 5 crouch blocked
+        int64_t invalidCmdStartMs = 0; // 0xf79698
+        auto setInvalidCmd = [&](int state, int64_t nowMs) { // 0x4ba860: restarts only when the state changes
+            if (invalidCmdState != state) invalidCmdState = state, invalidCmdStartMs = nowMs;
+        };
+        const ui::Item* holdBreathItem = nullptr; // menu "HoldBreathHint" (ownerdraw 71)
+        if (const ui::Menu* m = hudMenus.find("HoldBreathHint"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") holdBreathItem = it.get();
         // Script menus (openmenu, docs/spec/ui.md): loaded from "ui/scriptmenus/<name>.menu" on the first "popupopen" (0x4c3ad0).
         ui::MenuLibrary scriptMenus(vfs);
         float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
@@ -3417,6 +3430,71 @@ int main(int argc, char** argv) {
                     out.push_back(q);
                 }
             }
+            // Hold-breath hint (ownerdraw CG_HOLD_BREATH_HINT 71, 0x4a9e30; menu "HoldBreathHint" "0 -130 0 0" centred =
+            // (320, 110) virtual): shown with cg_drawBreathHint (default 1), the 2D hud on, no objectives screen, not paused,
+            // pm_flags 0x4000 clear, the current weapon's weaponClass != item (9) with an adsOverlayReticle (def +0x278 != 0)
+            // and the aim fraction (0xf709a0) exactly 1.0. Text PLATFORM_HOLD_BREATH with &&1 = the key bound to +holdbreath,
+            // else +melee_breath, else +breath_binoculars (0x4cdbf0), white, the item's textscale / textstyle; x = rect.x −
+            // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
+            // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). TODO(spec): pm_flags 0x4000 is
+            // set by 0x4dd290 (disableweapon, cleared by 0x4dd2a0; the builtin is not implemented, so never set here).
+            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && pweapon.adsFrac() == 1.0f) {
+                const std::string reticle = pweapon.field("adsOverlayReticle");
+                if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
+                    const float ts = holdBreathItem->textScale;
+                    const float fs = ts * float(h) / 480.0f;
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        const std::string* t = loc.find("PLATFORM_HOLD_BREATH");
+                        std::string text = t ? *t : "PLATFORM_HOLD_BREATH";
+                        auto keys = input.keysFor("+holdbreath");
+                        if (keys.empty()) keys = input.keysFor("+melee_breath");
+                        if (keys.empty()) keys = input.keysFor("+breath_binoculars");
+                        if (const auto at = text.find("&&1"); at != std::string::npos)
+                            text = text.substr(0, at) + (keys.empty() ? std::string() : keys.front()) + text.substr(at + 3);
+                        const float gs = ts * 48.0f / float(f->pixelHeight);
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const uint8_t white[4] = {255, 255, 255, 255};
+                        hudText(out, text, left43 + (320.0f - float(int(tw * 0.5f))) * sc, 110.0f * sc, gs * sc, *f, white, 0.0f, 1.0f,
+                                holdBreathItem->textStyle);
+                    }
+                }
+            }
+            // Invalid-command hint (ownerdraw CG_INVALID_CMD_HINT 110, 0x4aa550; menu "InvalidCmdHint" "0 -130 0 0" centred =
+            // (320, 110), textscale .35 shadowed): state 0xf79694 set by 0x4ba860 (restarts the time 0xf79698 only on a change) is
+            // reset to 0 once cg_invalidCmdHintDuration (0xf56984, default 1800 ms) has passed. 1 WEAPON_NO_AMMO, 2
+            // WEAPON_NO_FRAG_GRENADE, 3 WEAPON_NO_SMOKE_GRENADE, 4 GAME_STAND_BLOCKED, 5 GAME_CROUCH_BLOCKED (localized). Alpha =
+            // (elapsed mod b) / b with b = cg_invalidCmdHintBlinkInterval (0xf5bcdc, default 600 ms, min 1): a sawtooth, written into
+            // the item colour's alpha. Text x = rect.x - round(int(width) / 2), baseline y = rect.y. Set by player events 0xc9 / 0xca
+            // (no offhand of the class, 0x4baf57 / 0x4baf7f). TODO(spec): state 1 (event 0x92 handler 0x4baeb6, raised by PM_Weapon
+            // 0x4de4c0 / 0x4deb70 on an empty weapon, not modelled in PlayerWeapon) and 4 / 5 (events 0x8d / 0x8e with parm 1 / 2,
+            // 0x4bac40 / 0x4bac60; the server stance trace 0x4fc000 is not modelled).
+            if (world && invalidCmdItem && invalidCmdState != 0) {
+                const int64_t nowMs = world->timeMs();
+                if (nowMs > invalidCmdStartMs + 1800) invalidCmdState = 0;
+                else {
+                    static const char* const keys[] = {"", "WEAPON_NO_AMMO", "WEAPON_NO_FRAG_GRENADE", "WEAPON_NO_SMOKE_GRENADE", "GAME_STAND_BLOCKED", "GAME_CROUCH_BLOCKED"};
+                    const std::string key = keys[invalidCmdState];
+                    const std::string* t = loc.find(key);
+                    const std::string text = t ? *t : key;
+                    const float ts = invalidCmdItem->textScale;
+                    const float fs = ts * float(h) / 480.0f;
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        const int64_t blink = 600;
+                        const float alpha = float((nowMs - invalidCmdStartMs) % blink) / float(blink);
+                        const float gs = ts * 48.0f / float(f->pixelHeight);
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const float half = std::nearbyint(float(int(tw)) * 0.5f + 9.3e-10f);
+                        uint8_t col[4];
+                        for (int k = 0; k < 3; ++k) col[k] = uint8_t(std::clamp(invalidCmdItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        col[3] = uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+                        hudText(out, text, left43 + (320.0f - half) * sc, 110.0f * sc, gs * sc, *f, col, 0.0f, 1.0f, invalidCmdItem->textStyle);
+                    }
+                }
+            }
             // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
             // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
             // it at spaces to the item width, centres each line on rect x + textalignx, line step text height + 5;
@@ -3691,6 +3769,65 @@ int main(int argc, char** argv) {
                         col[3] = uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f);
                         hudText(out, text, float(w) + (r.x + r.w - 28.0f) * sc - tw, float(h) + r.y * sc, gs, *f, col, 0.0f, 1.0f, weapNameItem->textStyle);
                     }
+            }
+            // Offhand items (menu "offhandinfo"; ownerdraws 100 / 101 icon, 102 / 103 ammo, 104 / 105 name for class 1 frag / 2 smoke,
+            // 0x4b84f0 / 0x4b8850 / 0x4b8990): hidden in a vehicle (pm_flags 0x20000 without 0x80000), until the offhand touch
+            // (0xf79a48) and when the player owns no weapon of the class; alpha = hud_fade_offhand (3 s, 0x10438cc). Icon = hudIcon of the
+            // first owned weapon of the class with rounds (0x4dc6d0), item colour. Ammo = "%i" of the rounds of the class' weapons
+            // (0x4b8690), red (0.89 0.18 0.01) at 0, else the item colour. Name = localized WEAPON_FRAGGRENADE / WEAPON_SMOKEGRENADE (table
+            // 0x5a4d58). TODO(spec): the [0xf708ec] < 4 test, 0x4dc740 (class owned without rounds is assumed), 0x4b8490, flash helper 0x4b8620.
+            if (world && world->player() && !(world->playerPmFlags() & 0x20000 && !(world->playerPmFlags() & 0x80000))) {
+                const float oa = fadeAlpha(hudFade.offhand, 3.0f, 3000);
+                if (oa > 0.0f)
+                    if (const ui::Menu* om = hudMenus.find("offhandinfo"))
+                        for (const auto& itp : om->items) {
+                            const ui::Item& it = *itp;
+                            if (it.ownerDraw < 100 || it.ownerDraw > 105) continue;
+                            const int cls = (it.ownerDraw - 100) % 2 + 1, kind = (it.ownerDraw - 100) / 2; // 0 icon, 1 ammo, 2 name
+                            const std::string clsName = cls == 1 ? "Frag Grenade" : "Smoke Grenade";
+                            auto lower = [](std::string v) { for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch))); return v; };
+                            auto wf = [&](const std::string& n, const char* k) { const auto* d = world->weapon(n); return d && d->count(k) ? d->at(k) : std::string(); };
+                            int rounds = 0;
+                            bool owned = false;
+                            auto& inv = world->inventory(*world->player());
+                            for (const std::string& wn : inv.owned)
+                                if (lower(wf(wn, "offhandclass")) == lower(clsName)) {
+                                    owned = true;
+                                    rounds += inv.clip[wf(wn, "clipname")] + inv.ammo[wf(wn, "ammoname")];
+                                }
+                            const std::string wep = world->playerOffhandFor(clsName);
+                            if (wep.empty() && !owned) continue;
+                            const auto& r = it.rect;
+                            uint8_t col[4];
+                            for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                            col[3] = uint8_t(std::clamp(oa, 0.0f, 1.0f) * 255.0f);
+                            if (kind == 0) {
+                                if (wep.empty()) continue;
+                                const std::string icon = wf(wep, "hudicon");
+                                if (icon.empty()) continue;
+                                Quad2D q{float(w) + (om->rect.x + r.x) * sc, float(h) + (om->rect.y + r.y) * sc, 0, 0};
+                                q.x1 = q.x0 + r.w * sc;
+                                q.y1 = q.y0 + r.h * sc;
+                                std::memcpy(q.rgba, col, 4);
+                                q.texture = materialTexture(icon);
+                                out.push_back(q);
+                                continue;
+                            }
+                            std::string text;
+                            if (kind == 1) {
+                                text = std::to_string(rounds);
+                                if (rounds == 0) { col[0] = 227; col[1] = 46; col[2] = 3; }
+                            } else {
+                                const std::string key = cls == 1 ? "WEAPON_FRAGGRENADE" : "WEAPON_SMOKEGRENADE";
+                                const std::string* t = loc.find(key);
+                                text = t ? *t : key;
+                            }
+                            const float ts = it.textScale, fs = ts * float(h) / 480.0f;
+                            if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                                const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                                hudText(out, text, float(w) + (om->rect.x + r.x) * sc, float(h) + (om->rect.y + r.y) * sc, gs, *f, col, 0.0f, 1.0f, it.textStyle);
+                            }
+                        }
             }
             // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
@@ -4178,8 +4315,23 @@ int main(int argc, char** argv) {
                         screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
+                // Debug: IW2_SHOT_HINT=<state> shows an invalid-command hint state 300 ms into its blink cycle.
+                if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), world->timeMs() - 300);
+                // Debug: IW2_SHOT_HEALTH=<hp or fraction of maxhealth when <= 1>[,<trail fraction>[,<pulse phase ms>]] sets the player health, the red trail of the health bar
+                // (the fraction it just fell from) and how far into its pulse period the health background is.
+                if (const char* hs = std::getenv("IW2_SHOT_HEALTH"); hs && world->player()) {
+                    float v[3] = {100, -1, 0};
+                    std::sscanf(hs, "%f,%f,%f", &v[0], &v[1], &v[2]);
+                    if (v[0] <= 1.0f) { // a fraction of the player's maxhealth
+                        const auto mv = world->player()->obj->get("maxhealth");
+                        v[0] *= mv.isNumber() ? float(mv.asInt()) : 100.0f;
+                    }
+                    world->player()->obj->set("health", script::Value(int32_t(v[0])));
+                    if (v[1] >= 0) hudFade.healthTrail = v[1];
+                    hudFade.healthPulse = world->timeMs() - int64_t(v[2]);
+                }
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
@@ -4896,6 +5048,10 @@ int main(int argc, char** argv) {
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
+                    else if (e.kind == game::PlayerWeapon::Event::NoOffhand) { // events 0x94 (touch offhand) + 0xc9 / 0xca (0x4baf06)
+                        hudFade.offhand = world->timeMs();
+                        setInvalidCmd(e.weapon == "Frag Grenade" ? 2 : 3, world->timeMs());
+                    }
                 }
                 float shockRatio = 0;
                 if (world)
