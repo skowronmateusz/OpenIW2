@@ -690,7 +690,8 @@ void addBones(BoneMap& map, const assets::XModelParts& parts, const assets::XPos
 
 // Poses an attached model. All models on an entity share one skeleton: bones whose names already exist (on the
 // body or an earlier attachment) follow them; a tag places the model's root bone at that bone (inferred rules).
-assets::XPose attachmentPose(const BoneMap& bones, const assets::XModelParts& att, const std::string& tag) {
+assets::XPose attachmentPose(const BoneMap& bones, const assets::XModelParts& att, const std::string& tag,
+                             const assets::XPose* animated = nullptr) {
     assets::XPose pose = assets::bindPose(att);
     const auto tagIt = tag.empty() ? bones.end() : bones.find(lowerName(tag));
     for (size_t i = 0; i < att.bones.size(); ++i) {
@@ -703,8 +704,17 @@ assets::XPose attachmentPose(const BoneMap& bones, const assets::XModelParts& at
             pose.rotation[i] = tagIt->second.second;
         } else if (att.bones[i].parent >= 0) {
             const size_t p = size_t(att.bones[i].parent);
-            pose.rotation[i] = assets::multiply(pose.rotation[p], att.bones[i].localRotation);
-            const auto o = assets::rotate(pose.rotation[p], att.bones[i].localOffset);
+            assets::Quat lr = att.bones[i].localRotation;
+            auto lo = att.bones[i].localOffset;
+            if (animated) { // local transform of the animated pose relative to its parent
+                const auto& pr = animated->rotation[p];
+                const assets::Quat inv{-pr.x, -pr.y, -pr.z, pr.w};
+                lr = assets::multiply(inv, animated->rotation[i]);
+                lo = assets::rotate(inv, {animated->position[i][0] - animated->position[p][0], animated->position[i][1] - animated->position[p][1],
+                                          animated->position[i][2] - animated->position[p][2]});
+            }
+            pose.rotation[i] = assets::multiply(pose.rotation[p], lr);
+            const auto o = assets::rotate(pose.rotation[p], lo);
             pose.position[i] = {pose.position[p][0] + o[0], pose.position[p][1] + o[1], pose.position[p][2] + o[2]};
         }
     }
@@ -1661,10 +1671,13 @@ int main(int argc, char** argv) {
                     const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!body) continue;
                     assets::XPose pose;
+                    const game::AnimState* animNow = e->anim.get();
+                    std::optional<game::AnimState> tmpAnim;
                     if (auto pa = prevAnim.find(e->number); e->anim && pa != prevAnim.end() && lerpFrac < 1.0f) {
-                        game::AnimState tmp(pa->second); // no notifies: they already fired in the server frame
-                        tmp.update(lerpFrac * 0.05f, [](const std::string&, const std::string&) {});
-                        pose = tmp.pose(body->parts);
+                        tmpAnim.emplace(pa->second); // no notifies: they already fired in the server frame
+                        tmpAnim->update(lerpFrac * 0.05f, [](const std::string&, const std::string&) {});
+                        animNow = &*tmpAnim;
+                        pose = tmpAnim->pose(body->parts);
                     } else {
                         pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
                     }
@@ -1676,7 +1689,11 @@ int main(int argc, char** argv) {
                     for (const auto& at : e->attachments) {
                         const Scene::CpuModel* am = sceneCpuModel(scene, dev, vfs, at.model);
                         if (!am) continue;
-                        const assets::XPose ap = attachmentPose(bones, am->parts, at.tag);
+                        // Facial bones (j_jaw, j_mouth_*, ...) exist only in the head parts and carry tracks in the full-body
+                        // anims (animscripts/face.gsc): pose the attachment from the anim too.
+                        std::optional<assets::XPose> animated;
+                        if (animNow) animated = animNow->pose(am->parts);
+                        const assets::XPose ap = attachmentPose(bones, am->parts, at.tag, animated ? &*animated : nullptr);
                         addBones(bones, am->parts, ap);
                         DrawItem ai = base;
                         ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
