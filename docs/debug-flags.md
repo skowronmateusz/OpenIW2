@@ -30,6 +30,7 @@ described in the code that reads them.
 | `IW2_DEV_SNAP_GOAL_YAW=1` | iw2game/iw2view | DEV-ONLY BYPASS, not original behaviour: an actor whose goal was set with `setgoalnode` is turned to that node's angles right before it is notified "goal". Lets moscow's `letlev.angles != node.angles` loop (moscow.gsc:5031, the commissar yaw stall) pass so later stages can be walked. |
 | `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
+| `IW2_SHOT_HINT=<n>` | iw2view `--shot` | Shows the invalid-command hint state `<n>` (1 no ammo, 2 no frag, 3 no smoke, 4 stand blocked, 5 crouch blocked) 300 ms into its blink cycle. |
 | `IW2_BOLD_MESSAGE=<text>` | iw2view `--shot` | Shows a bold game message (iprintlnbold window). |
 
 ## Command-line options

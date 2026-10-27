@@ -2751,6 +2751,15 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("MantleHint"))
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
+        const ui::Item* invalidCmdItem = nullptr; // menu "InvalidCmdHint" (ownerdraw 110)
+        if (const ui::Menu* m = hudMenus.find("InvalidCmdHint"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") invalidCmdItem = it.get();
+        int invalidCmdState = 0;       // 0xf79694: 1 no ammo, 2 no frag grenade, 3 no smoke grenade, 4 stand blocked, 5 crouch blocked
+        int64_t invalidCmdStartMs = 0; // 0xf79698
+        auto setInvalidCmd = [&](int state, int64_t nowMs) { // 0x4ba860: restarts only when the state changes
+            if (invalidCmdState != state) invalidCmdState = state, invalidCmdStartMs = nowMs;
+        };
         const ui::Item* holdBreathItem = nullptr; // menu "HoldBreathHint" (ownerdraw 71)
         if (const ui::Menu* m = hudMenus.find("HoldBreathHint"))
             for (const auto& it : m->items)
@@ -3408,6 +3417,40 @@ int main(int argc, char** argv) {
                         const uint8_t white[4] = {255, 255, 255, 255};
                         hudText(out, text, left43 + (320.0f - float(int(tw * 0.5f))) * sc, 110.0f * sc, gs * sc, *f, white, 0.0f, 1.0f,
                                 holdBreathItem->textStyle);
+                    }
+                }
+            }
+            // Invalid-command hint (ownerdraw CG_INVALID_CMD_HINT 110, 0x4aa550; menu "InvalidCmdHint" "0 -130 0 0" centred =
+            // (320, 110), textscale .35 shadowed): state 0xf79694 set by 0x4ba860 (restarts the time 0xf79698 only on a change) is
+            // reset to 0 once cg_invalidCmdHintDuration (0xf56984, default 1800 ms) has passed. 1 WEAPON_NO_AMMO, 2
+            // WEAPON_NO_FRAG_GRENADE, 3 WEAPON_NO_SMOKE_GRENADE, 4 GAME_STAND_BLOCKED, 5 GAME_CROUCH_BLOCKED (localized). Alpha =
+            // (elapsed mod b) / b with b = cg_invalidCmdHintBlinkInterval (0xf5bcdc, default 600 ms, min 1): a sawtooth, written into
+            // the item colour's alpha. Text x = rect.x - round(int(width) / 2), baseline y = rect.y. Set by player events 0xc9 / 0xca
+            // (no offhand of the class, 0x4baf57 / 0x4baf7f). TODO(spec): state 1 (event 0x92 handler 0x4baeb6, raised by PM_Weapon
+            // 0x4de4c0 / 0x4deb70 on an empty weapon, not modelled in PlayerWeapon) and 4 / 5 (events 0x8d / 0x8e with parm 1 / 2,
+            // 0x4bac40 / 0x4bac60; the server stance trace 0x4fc000 is not modelled).
+            if (world && invalidCmdItem && invalidCmdState != 0) {
+                const int64_t nowMs = world->timeMs();
+                if (nowMs > invalidCmdStartMs + 1800) invalidCmdState = 0;
+                else {
+                    static const char* const keys[] = {"", "WEAPON_NO_AMMO", "WEAPON_NO_FRAG_GRENADE", "WEAPON_NO_SMOKE_GRENADE", "GAME_STAND_BLOCKED", "GAME_CROUCH_BLOCKED"};
+                    const std::string key = keys[invalidCmdState];
+                    const std::string* t = loc.find(key);
+                    const std::string text = t ? *t : key;
+                    const float ts = invalidCmdItem->textScale;
+                    const float fs = ts * float(h) / 480.0f;
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        const int64_t blink = 600;
+                        const float alpha = float((nowMs - invalidCmdStartMs) % blink) / float(blink);
+                        const float gs = ts * 48.0f / float(f->pixelHeight);
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const float half = std::nearbyint(float(int(tw)) * 0.5f + 9.3e-10f);
+                        uint8_t col[4];
+                        for (int k = 0; k < 3; ++k) col[k] = uint8_t(std::clamp(invalidCmdItem->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        col[3] = uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+                        hudText(out, text, left43 + (320.0f - half) * sc, 110.0f * sc, gs * sc, *f, col, 0.0f, 1.0f, invalidCmdItem->textStyle);
                     }
                 }
             }
@@ -4222,6 +4265,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
+                if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), world->timeMs() - 300); // debug: invalid-command hint state
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
@@ -4928,6 +4972,10 @@ int main(int argc, char** argv) {
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
+                    else if (e.kind == game::PlayerWeapon::Event::NoOffhand) { // events 0x94 (touch offhand) + 0xc9 / 0xca (0x4baf06)
+                        hudFade.offhand = world->timeMs();
+                        setInvalidCmd(e.weapon == "Frag Grenade" ? 2 : 3, world->timeMs());
+                    }
                 }
                 float shockRatio = 0;
                 if (world)
