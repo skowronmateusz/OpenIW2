@@ -221,7 +221,7 @@ struct GpuVertex {
 };
 static_assert(sizeof(GpuVertex) == 56);
 
-enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip };
+enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water };
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -248,6 +248,15 @@ struct MatInfo {
     // 0x8000 / 0xc000, 1.3 renderer table 0x1018fa10), set as D3DRS_CULLMODE through {0, NONE, CCW, CW} (0x10190704,
     // 0x1003cb13). Here 0 none, 1 back (D3DCULL_CCW), 2 front (D3DCULL_CW).
     int cull = 0;
+    // For Pass::Water `texture` indexes Scene::waters.
+    bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
+};
+
+// water.techset / water_l_sun.tech (lib/water.hlsl): waterColor constant and the cubicEnvMap reflection cube.
+struct WaterMat {
+    SDL_GPUTexture* cube = nullptr;
+    float color[3] = {0, 0, 0};
+    bool blend = false; // mtlBlendOp != Disable: SrcAlpha/InvSrcAlpha, no depth write (nofog.sm); else One/Zero + depth write
 };
 
 // A model uploaded for dynamic (entity) drawing, in model space.
@@ -265,6 +274,7 @@ struct Scene {
     Lightmap dummyLightmap;
     std::vector<Batch> batches;
     SDL_GPUTexture* sky = nullptr;
+    std::vector<WaterMat> waters;
     std::unique_ptr<game::CollisionWorld> collision;
     game::MarkSystem marks;
     std::unique_ptr<assets::LightGrid> grid;
@@ -287,6 +297,7 @@ struct Scene {
 
 Pass classify(const std::string& techset) {
     if (techset == "sky") return Pass::Sky;
+    if (techset == "water") return Pass::Water;
     if (techset == "tools" || techset.rfind("tools", 0) == 0) return Pass::Skip;
     if (techset.find("_add") != std::string::npos) return Pass::Additive;
     // effect_multiply -> vertcol_mul.tech -> mul.hlsl: multiplied into the framebuffer (DST_COLOR, ZERO), unlit.
@@ -382,10 +393,23 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             mi.polygonOffset = ((*md)[0x30] >> 4) & 3;
             const int cf = ((*md)[0x2d] >> 6) & 3; // bits 14–15 of the word at 0x2c
             mi.cull = cf == 2 ? 1 : cf == 3 ? 2 : 0;
+            mi.waterBlend = (((*md)[0x2d]) & 7) != 0; // blendOp, bits 8-10
         }
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
+            if (mi.pass == Pass::Water) {
+                WaterMat wm;
+                for (const auto& t : m.textures)
+                    if (t.samplerName == "cubicEnvMap") wm.cube = loadCubeImage(dev, up, vfs, t.imageName);
+                for (const auto& c : m.constants)
+                    if (c.name == "waterColor") wm.color[0] = c.value[0], wm.color[1] = c.value[1], wm.color[2] = c.value[2];
+                wm.blend = mi.waterBlend;
+                mi.texture = int(scene.waters.size());
+                scene.waters.push_back(wm);
+                scene.matCache.emplace(name, mi);
+                return mi;
+            }
             const std::string& img = m.colorImage();
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
@@ -1031,6 +1055,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* pipelines[5] = {}; // Opaque, AlphaTest, Blend, Additive, Multiply
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
+    SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
     SDL_GPUTexture* depth = nullptr;
@@ -1154,6 +1179,53 @@ struct Renderer {
             SDL_ReleaseGPUShader(dev, sv);
             SDL_ReleaseGPUShader(dev, sf);
         }
+        {
+            SDL_GPUShaderCreateInfo wvs = vs;
+            wvs.entrypoint = "vs_water";
+            SDL_GPUShaderCreateInfo wfs = fs;
+            wfs.entrypoint = "fs_water";
+            wfs.num_samplers = 1;
+            wfs.num_uniform_buffers = 1;
+            SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
+            SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
+            if (!wv || !wf) sdlFail("water shaders");
+            for (int blend = 0; blend < 2; ++blend) {
+                SDL_GPUColorTargetDescription ct{};
+                ct.format = colorFormat;
+                if (blend) { // nofog.sm: blendFunc passthrough (SrcAlpha, InvSrcAlpha), separateAlphaBlendFunc Add InvDestAlpha, One
+                    ct.blend_state.enable_blend = true;
+                    ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+                    ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+                    ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+                    ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                    ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
+                    ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                }
+                SDL_GPUGraphicsPipelineCreateInfo pi{};
+                pi.vertex_shader = wv;
+                pi.fragment_shader = wf;
+                pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                pi.vertex_input_state.num_vertex_buffers = 1;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                pi.rasterizer_state.front_face = kFrontFace;
+                pi.depth_stencil_state.enable_depth_test = true;
+                pi.depth_stencil_state.enable_depth_write = !blend; // nofog.sm depthWrite: Enable only when mtlBlendOp == Disable
+                pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+                pi.target_info.color_target_descriptions = &ct;
+                pi.target_info.num_color_targets = 1;
+                pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                pi.target_info.has_depth_stencil_target = true;
+                for (int c = 0; c < 3; ++c) {
+                    pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                    waterPipelines[blend][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                    if (!waterPipelines[blend][c]) sdlFail("water pipeline");
+                }
+            }
+            SDL_ReleaseGPUShader(dev, wv);
+            SDL_ReleaseGPUShader(dev, wf);
+        }
         SDL_ReleaseGPUShader(dev, vsh);
         SDL_ReleaseGPUShader(dev, fsh);
 
@@ -1273,6 +1345,26 @@ struct Renderer {
                 if (b.pass == Pass::Sky) SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         }
         for (Pass p : {Pass::Opaque, Pass::AlphaTest, Pass::Blend, Pass::Additive, Pass::Multiply}) {
+            if (p == Pass::Blend) {
+            // Water (water_l_sun.tech): after the opaque passes, before the blended ones. Polygon offset not applied (TODO(spec)).
+            for (const Batch& b : scene.batches) {
+                if (b.pass != Pass::Water) continue;
+                const WaterMat& wm = scene.waters[size_t(b.texture)];
+                if (!wm.cube) continue;
+                SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
+                SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                SDL_GPUTextureSamplerBinding wsb{wm.cube, clampSampler};
+                SDL_BindGPUFragmentSamplers(pass, 0, &wsb, 1);
+                FragmentUniforms fu = {
+                    {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                    {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                    {0, 0, 0, 0},
+                    {0, 0, 0, 0},
+                    {wm.color[0], wm.color[1], wm.color[2], 0}};
+                SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            }
+            }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const Batch& b : scene.batches) {
                 if (b.pass != p) continue;

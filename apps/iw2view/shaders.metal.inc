@@ -100,4 +100,34 @@ vertex SkyOut vs_sky(VertexIn in [[stage_in]], constant VertexUniforms& u [[buff
 fragment float4 fs_sky(SkyOut in [[stage_in]], texturecube<float> sky [[texture(0)]], sampler s [[sampler(0)]]) {
     return float4(sky.sample(s, in.dir).rgb, 1.0);
 }
+// water_l_sun.tech / lib/water.hlsl with a flat normalMap (R = 0.5): the parallax error is 0 and the three-octave
+// turbulence cancels in the finite differences, so localNormal = (0, 0, 1) exactly.
+// TODO(spec): the FFT-generated normalMap (ripples) and the texcoord0 scale are not implemented.
+struct WaterOut {
+    float4 position [[position]];
+    float4 color;
+    float3 eyeVector;
+};
+
+vertex WaterOut vs_water(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
+    WaterOut o;
+    o.position = u.viewProj * (u.model * float4(in.position, 1.0));
+    o.color = in.color;
+    o.eyeVector = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
+    return o;
+}
+
+fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u [[buffer(0)]],
+                         texturecube<float> cubicEnvMap [[texture(0)]], sampler s [[sampler(0)]]) {
+    float3 eyeDir = normalize(in.eyeVector);
+    float3 n = float3(0.0, 0.0, 1.0);
+    float3 r = reflect(eyeDir, n);
+    float specularDot = max(0.0, dot(r, u.sunDirection.xyz));
+    r.z = abs(r.z);
+    float4 env = cubicEnvMap.sample(s, r);
+    float3 diffuse = u.ambient.rgb * n.z; // waterColor.rgb
+    float3 lit = mix(diffuse, env.rgb, env.a);
+    lit += pow(specularDot, 64.0) * u.sunColor.rgb;
+    return float4(lit, in.color.a);
+}
 )MSL"
