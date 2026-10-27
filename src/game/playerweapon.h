@@ -25,6 +25,7 @@ public:
         bool frag = false;   // +frag held (0x10000)
         bool smoke = false;  // +smoke held (0x20000)
         std::string weapon;  // the command's weapon (cg.weaponSelect); empty = keep the current one
+        bool proneMoving = false; // prone with a forward/right command (0x4de46e: no automatic reload then)
         bool holster = false; // 0x4de880: mantling (mantleLowersWeapon), on a ladder or in a vehicle: weapon 0
     };
 

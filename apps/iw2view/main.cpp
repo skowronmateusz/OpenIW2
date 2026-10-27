@@ -4087,6 +4087,7 @@ int main(int argc, char** argv) {
                 }
                 wi.weapon = weaponSelect;
                 wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
+                wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
