@@ -203,7 +203,9 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
                 std::string name = names[std::min(names.size() - 1, size_t(frand() * float(names.size())))];
                 while (!name.empty() && name[0] == '/') name.erase(0, 1);
                 if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
-                pending_.push_back({name, pos, ax, startMs});
+                // A delay below 1 ms spawns at once (0x485e20), else the child is queued for its time (0x4855d0..0x485676).
+                if (startMs - nowMs < 1 && loader) playAxes(loader(name), pos, ax, nowMs);
+                else pending_.push_back({name, pos, ax, startMs});
                 continue;
             }
             spawnParticle(e, flags, origin, ax, startMs);
@@ -312,7 +314,7 @@ void FxSystem::runPending(int64_t nowMs) {
         due.push_back(p);
         return true;
     });
-    for (const PendingRun& p : due) playAxes(loader(p.path), p.origin, p.axes, nowMs);
+    for (const PendingRun& p : due) playAxes(loader(p.path), p.origin, p.axes, p.startMs);
 }
 
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
@@ -320,6 +322,16 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     std::erase_if(particles_, [&](const FxParticle& p) { return nowMs >= p.endMs; });
     std::vector<FxSprite> out;
     sightBlockers_.clear();
+    if (std::getenv("IW2_FX_DEBUG")) {
+        size_t waiting = 0;
+        int64_t maxWait = 0, maxLife = 0;
+        for (const FxParticle& p : particles_) {
+            if (nowMs < p.startMs) { ++waiting; maxWait = std::max(maxWait, p.startMs - nowMs); }
+            maxLife = std::max(maxLife, p.endMs - p.startMs);
+        }
+        std::fprintf(stderr, "fx: %zu particles, %zu waiting (max %lld ms), max life %lld, pending runs %zu\n", particles_.size(), waiting,
+                     (long long)maxWait, (long long)maxLife, pending_.size());
+    }
     for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
