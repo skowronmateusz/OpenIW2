@@ -255,4 +255,64 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     const float3 spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w; // lightSpecular0 = lightColor0 * r_specularColorScale (sunDirection.w, default 1)
     return float4(apply_fog(base.rgb * (lm + sunDiffuse) + spec, length(in.eyeVec), u), base.a);
 }
+// ---- glow / bloom post chain (materials/shaders/glow_setup.hlsl, filter_symmetric_N.hlsl, glow_apply_bloom/sky_bleed.hlsl) ----
+struct GlowU {
+    float4 a; // setup: xy = dest texel size (inv width/height), blur: xy = step in uv, z = radius, apply: x = bloom intensity, y = sky bleed intensity
+    float4 b; // setup: x = cutoff, y = cutoff rescale, z = desaturation, apply: xyz = nearPlaneOrg
+    float4 c; // apply: xyz = nearPlaneDx
+    float4 d; // apply: xyz = nearPlaneDy
+};
+struct GlowVOut {
+    float4 position [[position]];
+    float2 uv;
+};
+vertex GlowVOut vs_fs(uint vid [[vertex_id]]) {
+    GlowVOut o;
+    const float2 p = float2(float((vid << 1) & 2u), float(vid & 2u));
+    o.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(p.x, 1.0 - p.y);
+    return o;
+}
+fragment float4 fs_copy(GlowVOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+    return float4(src.sample(s, in.uv).rgb, 1.0);
+}
+float4 glowSample(texture2d<float> scene, sampler s, float2 uv, constant GlowU& u) {
+    const float4 px = scene.sample(s, uv);
+    const float intensity = dot(px.rgb, float3(0.299, 0.587, 0.114));
+    float3 rgb = intensity >= u.b.x ? 1.0 + (px.rgb - 1.0) * u.b.y : float3(0.0);
+    const float nonSky = saturate(4.0 * px.a); // TODO(spec): max with the post-sun copy's alpha (colorMapPostSunSampler)
+    return float4(rgb * nonSky, 1.0 - nonSky);
+}
+fragment float4 fs_glow_setup(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> scene [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float2 h = 0.5 * u.a.xy;
+    float4 c = glowSample(scene, s, in.uv + float2(-h.x, -h.y), u) + glowSample(scene, s, in.uv + float2(-h.x, h.y), u) +
+               glowSample(scene, s, in.uv + float2(h.x, h.y), u) + glowSample(scene, s, in.uv + float2(h.x, -h.y), u);
+    c *= 0.25;
+    const float intensity = dot(c.rgb, float3(0.299, 0.587, 0.114));
+    c.rgb = mix(c.rgb, float3(intensity), u.b.z);
+    return c;
+}
+// TODO(spec): the kernel weights (filterTap constants) are computed by the DLL; a normalised Gaussian with sigma = radius / 2 is used here.
+fragment float4 fs_glow_blur(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float radius = max(u.a.z, 0.5);
+    const float sigma = max(radius * 0.5, 0.5);
+    float4 sum = float4(0.0);
+    float wsum = 0.0;
+    for (int i = -16; i <= 16; ++i) {
+        if (abs(float(i)) > radius) continue;
+        const float w = exp(-float(i * i) / (2.0 * sigma * sigma));
+        sum += w * src.sample(s, in.uv + u.a.xy * float(i));
+        wsum += w;
+    }
+    return sum / wsum;
+}
+// out.a = bleed * skyBleedIntensity, out.rgb = sky * out.a + blurred.rgb * bloomIntensity; blended ONE, ONE_MINUS_SRC_ALPHA (TODO(spec): blend state).
+fragment float4 fs_glow_apply(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> glow [[texture(0)]], texturecube<float> sky [[texture(1)]],
+                              sampler s [[sampler(0)]], sampler cs [[sampler(1)]]) {
+    const float4 blurred = glow.sample(s, in.uv);
+    const float3 dir = u.b.xyz + (in.uv.x - 0.5) * u.c.xyz + (in.uv.y - 0.5) * u.d.xyz;
+    const float3 skyRgb = sky.sample(cs, dir).rgb;
+    const float a = saturate(blurred.a * 2.0) * u.a.y;
+    return float4(skyRgb * a + blurred.rgb * u.a.x, a);
+}
 )MSL"

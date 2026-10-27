@@ -12,6 +12,7 @@ described in the code that reads them.
 | `IW2_COS_SHIFT=x` | iw2view | r_cosinePowerMapShift (DLL dvar 0x101ce680, default 0, clamped -1..1): shifts the `$specularity` power ramp (t = clamp(x/30 + shift)). |
 | `IW2_NO_SPEC=1` | iw2view | Disables the lmap_s specular path (world batches of `phong_*_spec*` materials fall back to the plain lightmap shader, no normal map). For A/B comparison. |
 | `IW2_NO_DETAIL=1` | iw2view | Disables detail-map blending (lib/shade.hlsl USE_DETAIL) on the non-spec lightmap/model path (`phong_*_detail`: lmap_dtl, lmap_a_dtl, lprobe_dtl). For A/B comparison. |
+| `IW2_NO_GLOW=1` | iw2view | Disables the glow/bloom post chain (glow_setup, two blur layers, glow_apply_bloom/sky_bleed); the scene then goes straight to the swapchain. For A/B comparison. |
 | `IW2_PROF=N` | iw2view | Prints average per-frame CPU timings every N frames and quits after two reports. |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
