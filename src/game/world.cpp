@@ -252,6 +252,7 @@ void World::spawnMapEntities() {
     } catch (const std::exception& e) {
         print(std::string("path data: ") + e.what());
     }
+    buildFriendlyChains(); // 0x52d630; its errors are fatal
 
     Entity& p = spawnEntity("player");
     p.isPlayer = true;
@@ -798,6 +799,7 @@ void World::runTriggers() {
     }
     for (Entity* e : fired) {
         if (e->obj->removed) continue;
+        if (e->classname == "trigger_friendlychain") touchFriendlyChain(*e, *player_); // touch 0x529140
         vm_.notify(e->obj, "trigger", {Value(player_->obj)});
         if (e->classname == "trigger_once") e->obj->removed = true;
     }
@@ -987,12 +989,14 @@ void World::registerBuiltins() {
         auto o = c.self.asObject();
         if (c.arg(0).isObject()) {
             o->set("$goalpos", c.arg(0).asObject()->get("origin"));
+            o->set("$goalent", Value()); // 0x540880 clears the goal entity (+0x77c)
             o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
         }
         return Value();
     });
     vm_.registerBuiltin("setgoalpos", [](CallContext& c) {
         c.self.asObject()->set("$goalpos", c.arg(0));
+        c.self.asObject()->set("$goalent", Value());
         c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });

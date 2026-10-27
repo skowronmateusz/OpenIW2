@@ -34,6 +34,11 @@ struct SoundAlias {
     float distMin = 120, distMax = 0; // distMax 0: not given
     std::string channel;       // "local" plays without position
     bool loop = false;
+    bool master = false;       // masterslave column "master" (alias flag 0x2)
+    float slavePct = -1;       // masterslave column number 0..1 (alias flag 0x4, +0x30); -1 = not a slave
+    // volumefalloffcurve (soundaliases/<name>.vfcurve, alias +0x40): knots (x = normalised distance 0..1, y = gain); an empty
+    // column keeps the built-in default curve (0,1)-(1,0) (0x428d22).
+    std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
     std::string secondary;     // secondaryaliasname
     std::string subtitle;      // `subtitle` column: localised caption key (e.g. SUBTITLE_MOSCOW_RS1_PICKUPRIFLE), original case
 };
@@ -68,6 +73,7 @@ public:
     const std::string& lastSubtitle() const { return lastSubtitle_; }
     void stop(int handle);
     void fadeOut(int handle, int ms);
+    void fadeIn(int handle, int ms);
     // A looping low/high alias pair blended by fraction f (vehicle engine, cgame 0x4ac8a0 -> 0x4423d0): volume =
     // lerp(low.volMin, high.volMin, f), pitch lerped only at the start; plays the high alias' file (identical to the
     // low one for the shipped vehicle pairs). Returns a handle (0 = nothing).
@@ -78,7 +84,9 @@ public:
     void mix(float* out, int frames);
 
     int active() const;
-    float masterVolume = 0.8f;
+    // snd_slaveFadeTime (default 500 ms, 0..5000): how long the duck of slave aliases takes to build up / release (0x443bb0).
+    int slaveFadeMs = 500;
+    float masterVolume = 0.75f; // snd_volume (default 1.0, 0..1) * 0.75 (0x443ab3 -> 0x793a24)
     // Per-channel volume scales in the order auto, auto2d, menu, body, item, weapon, voice, local, music, announcer,
     // shellshock (the shell shock channel volumes, shellshock.h); 1 = unchanged.
     float channelScale[11] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
@@ -99,12 +107,16 @@ private:
         float distMin = 0, distMax = 0;
         bool loop = false;
         bool blend = false;
-        float gain = 1, fadeRate = 0; // per-voice fade-out (fadeRate = gain lost per output frame)
+        float gain = 1, fadeRate = 0; // per-voice fade (fadeRate = gain lost per output frame, negative = fade in)
+        bool master = false;
+        float slavePct = -1;
         int chan = -1; // index into kChannels (the alias `channel` column), -1 = unknown
         float volLow = 0, volHigh = 0;
+        std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
     };
     std::shared_ptr<const Wav> load(const std::string& file);
     void gains(const Voice& v, float& left, float& right) const;
+    static float falloff(const Voice& v, float dist);
 
     const fs::Vfs& vfs_;
     const SoundAliases& aliases_;
@@ -115,6 +127,7 @@ private:
     std::vector<Voice> voices_;
     Vec3 listener_{0, 0, 0}, forward_{1, 0, 0}, right_{0, -1, 0};
     int nextHandle_ = 1;
+    float duck_ = 0; // 0x793cfc: 0..1, rises while a master voice plays
 };
 
 } // namespace iw2::audio

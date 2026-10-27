@@ -774,14 +774,20 @@ void World::registerCombatBuiltins() {
         const TraceResult tr = collision_->trace(add(from, {0, 0, 18}), add(to, {0, 0, 18}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
         return Value(tr.fraction >= 0.999f && !tr.startSolid);
     });
-    vm_.registerBuiltin("isingoal", [](CallContext& c) {
-        const auto o = c.self.asObject();
-        const Value g = o->get("$goalpos");
-        if (!g.isVector() || !c.arg(0).isVector()) return Value(true);
-        const Value r = o->get("goalradius");
-        const float radius = r.isNumber() ? r.asFloat() : 64.0f;
-        const Vec3 d = sub(c.arg(0).asVector(), g.asVector());
-        return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
+    // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).
+    // TODO(spec): the goal volume test (0x447830) when the goal has a volume (+0x75c).
+    vm_.registerBuiltin("isingoal", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (c.argc() != 1) throw std::runtime_error("isingoal: one argument");
+        if (!e || !e->isActor || !c.arg(0).isVector()) return Value(true);
+        Vec3 g{};
+        float r = 0, h = 0;
+        if (!actorGoal(*e, g, r, h)) return Value(true);
+        const Vec3 p = c.arg(0).asVector();
+        const float dz = p[2] - g[2];
+        if (h * h < dz * dz) return Value(false);
+        const float dx = g[0] - p[0], dy = g[1] - p[1];
+        return Value(!(r * r < dx * dx + dy * dy));
     });
     // Player-only builtins (0x590ab8 "entity %i is not a player" otherwise).
     auto playerSelf = [this](CallContext& c) -> Entity& {
@@ -943,12 +949,16 @@ void World::registerCombatBuiltins() {
     });
     // issavesuccessful (0x4f3d80): true unless the save-failed byte (+0xd of the save state) is set; savegame is a stub.
     vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(true); });
-    // setfriendlychain (0x4eeb10): the entity must be a player ("Entity must be a player", 0x5872e0); the node goes into the
-    // client's chain slot. TODO(spec): the "not a friendly chain node" test (node +0x34 < 1) and the chain's consumers.
+    // setfriendlychain (0x4eeb10): src/game/friendlychain.cpp.
     vm_.registerBuiltin("setfriendlychain", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("Entity must be a player");
-        e->obj->set("$friendlychain", c.arg(0));
+        if (c.argc() != 1) throw std::runtime_error("sentient SetFriendlyChain <node>, where <none> is on a friendly chain.");
+        int node = -1;
+        for (size_t i = 0; i < nodes_.size(); ++i)
+            if (c.arg(0).isObject() && nodes_[i].obj == c.arg(0).asObject()) node = int(i);
+        if (node < 0) throw std::runtime_error("setfriendlychain: not a pathnode");
+        setFriendlyChain(*e, node);
         return Value();
     });
     // bulletspread (start, end, degrees) (0x4ee760 → 0x531210): the point 8192 units along end-start with a random

@@ -764,6 +764,12 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
                 corners[2] = a + w * -s->widthA; corners[3] = a + w * s->widthA;
                 const float tuv[4][2] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
                 std::memcpy(uv, tuv, sizeof uv);
+                if (s->beamTail) { // 0x100409c0: A + w (s0,t0), A - w (s1,t0), B - w (s1,t1), B + w (s0,t1)
+                    corners[0] = a + w * s->widthA; corners[1] = a + w * -s->widthA;
+                    corners[2] = bb + w * -s->widthB; corners[3] = bb + w * s->widthB;
+                    const float t2[4][2] = {{s->uv[0], s->uv[1]}, {s->uv[2], s->uv[1]}, {s->uv[2], s->uv[3]}, {s->uv[0], s->uv[3]}};
+                    std::memcpy(uv, t2, sizeof uv);
+                }
             }
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
@@ -2374,7 +2380,8 @@ int main(int argc, char** argv) {
             uiCvars = ui::parseConfig(cfgText);
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
-        mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) : mixer.masterVolume;
+        for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
+        mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
@@ -2416,7 +2423,8 @@ int main(int argc, char** argv) {
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
-        int musicHandle = 0; // mu_play voice (cgame music slot)
+        int musicHandle = 0, ambientHandle = 0; // mu_play voice (cgame music slot 0); ambient voice (slots 1/2, 0x443080)
+        std::string ambientAlias;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
         game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         game::FogState fogState; // "fog" server command (client 0x4a5770)
@@ -4373,6 +4381,30 @@ int main(int argc, char** argv) {
                 std::vector<ShotMsg> shotMsgs; // game messages with their world time
                 bool killedVehicles = false;
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
+                    // Debug: IW2_DEBUG_ITEM=name[@seconds] drops a weapon item on the player (touch pickup, owned or not).
+                    if (const char* di = std::getenv("IW2_DEBUG_ITEM")) {
+                        std::string spec = di;
+                        const auto at = spec.find('@');
+                        const float when = at == std::string::npos ? 0.0f : std::stof(spec.substr(at + 1));
+                        if (f == int(when * 20) && world->player()) {
+                            for (auto& kv : world->inventory(*world->player()).ammo) kv.second = 0; // so the item has room
+                            for (auto& kv : world->inventory(*world->player()).clip) kv.second = 0;
+                            world->debugSpawnWeaponItem(spec.substr(0, at));
+                            std::cout << "debug-item " << spec.substr(0, at) << " at frame " << f << "\n";
+                        }
+                        if (f == int(when * 20) + 20 && world->player()) {
+                            const game::Inventory& inv = world->inventory(*world->player());
+                            std::cout << "debug-item owned:";
+                            for (const auto& o : inv.owned) std::cout << " " << o;
+                            std::cout << " | slots " << inv.slot[1] << "," << inv.slot[2];
+                            for (const auto& [a, n] : inv.ammo) std::cout << " ammo[" << a << "]=" << n;
+                            for (const auto& [a, n] : inv.clip) std::cout << " clip[" << a << "]=" << n;
+                            int items = 0;
+                            for (const auto& e : world->entities())
+                                if (e->classname.rfind("weapon_", 0) == 0 && !e->obj->removed) ++items;
+                            std::cout << " items-left " << items << "\n";
+                        }
+                    }
                     const bool rideNow = (world->playerPmFlags() & 0x20000) != 0;
                     if (!world->playerLinked() && !rideNow) world->setPlayerOrigin({cam.pos.x, cam.pos.y, cam.pos.z - 60.0f}, {0, cam.yaw, 0});
                     {
@@ -4631,6 +4663,7 @@ int main(int argc, char** argv) {
             }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
+            for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
@@ -5404,6 +5437,23 @@ int main(int argc, char** argv) {
                     } else if (cmd.name == "mu_play") { // mu_play <alias> (0x4a6e2b -> 0x443030): the music slot; a new one replaces it
                         if (musicHandle) mixer.stop(musicHandle);
                         musicHandle = mixer.play(cmd.arg);
+                    } else if (cmd.name == "ambient_play") { // ambient_play <alias> <fade ms> (client side of configstring 3, 0x443080)
+                        std::string alias;
+                        int ms = 0;
+                        a >> alias >> ms;
+                        // The same alias keeps playing; a different one fades the old track out and its own in over the fade time.
+                        if (!(ambientHandle && alias == ambientAlias)) {
+                            if (ambientHandle) mixer.fadeOut(ambientHandle, ms);
+                            ambientHandle = mixer.play(alias);
+                            ambientAlias = alias;
+                            if (ambientHandle) mixer.fadeIn(ambientHandle, ms);
+                        }
+                    } else if (cmd.name == "ambient_stop") { // ambient_stop <fade ms>
+                        int ms = 0;
+                        a >> ms;
+                        if (ambientHandle) mixer.fadeOut(ambientHandle, ms);
+                        ambientHandle = 0;
+                        ambientAlias.clear();
                     } else if (cmd.name == "mu_stop") { // mu_stop <ms> (0x4a6e60 -> 0x442fb0): stop at once or fade out over ms
                         int ms = 0;
                         a >> ms;
@@ -5548,7 +5598,7 @@ int main(int argc, char** argv) {
                 std::filesystem::create_directories(profileCfg.parent_path(), ec);
                 if (std::ofstream of(profileCfg); of) of << ui::formatConfig(uiCvars) << input.formatBindings();
             }
-            if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f);
+            if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f) * 0.75f;
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();

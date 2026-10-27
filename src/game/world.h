@@ -11,6 +11,7 @@
 #include "game/campaign.h"
 #include "game/fx.h"
 #include "game/collision.h"
+#include "game/friendlychain.h"
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
@@ -213,6 +214,21 @@ struct Entity {
     std::unique_ptr<GrenadeState> grenade; // grenade missile (src/game/grenades.cpp)
     std::unique_ptr<RocketState> rocket;   // rocket missile (src/game/rockets.cpp)
     int claimedNode = -1;                  // sentient +0x2c: claimed path node (script field "node")
+    // Friendly chain (src/game/friendlychain.cpp): the sentient's chain node (+0x30, set by setfriendlychain / a chain
+    // trigger, advanced to the nearest chain node once a frame while followed), the time of that advance (+0x34), and
+    // the actor's own chain node (actor +0x78c, script field "chainnode").
+    int friendlyChain = -1;
+    int64_t friendlyChainMs = -1;
+    int chainNode = -1;
+    // The working goal (actor +0x748 pos, +0x754 radius, +0x758 height, +0x760 mode), computed by 0x505f70 each path update
+    // (src/game/friendlychainworld.cpp). Until then (and for goals the script set without a path update) the script
+    // fields $goalpos / goalradius / goalheight stand in. Modes: 0 fixed, 1 entity, 2 friendly leader, 3 enemy.
+    struct WorkGoal {
+        bool set = false;
+        Vec3 pos{};
+        float radius = 0, height = 0;
+        int mode = 0;
+    } workGoal;
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
     std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
@@ -309,6 +325,32 @@ public:
         syncEntityClips(); // the clips are rebuilt once per frame; the scene shoots in the same frame
     }
     // IW2_COMBAT_SCENE: one rifle bullet from a's muzzle height to b's chest, credited to a.
+    // IW2_COMBAT_SCENE with IW2_SCENE_COVER=1: finds a cover node (types 2..9, not spawnflag 1) and puts b 150 units to its
+    // side (in the open, node nearby) and a 300 units in front of the node facing it, with a clear shot a -> b. Returns
+    // the node index or -1.
+    int debugCoverSetup(Entity& a, Entity& b) {
+        for (size_t i = 0; i < nodes_.size(); ++i) {
+            const PathNode& n = nodes_[i];
+            if (n.typeNum < 2 || n.typeNum > 9 || (n.spawnflags & 1)) continue;
+            const Vec3 no = n.obj->get("origin").asVector();
+            const float yaw = n.obj->get("angles").asVector()[1] * 3.14159265f / 180.0f;
+            const float fx = std::cos(yaw), fy = std::sin(yaw);
+            for (float side : {150.0f, -150.0f}) {
+                Vec3 bp = {no[0] - fy * side, no[1] + fx * side, no[2]};
+                Vec3 ap = {no[0] + fx * 300.0f, no[1] + fy * 300.0f, no[2]};
+                b.obj->set("origin", Value(bp));
+                a.obj->set("origin", Value(ap));
+                a.obj->set("angles", Value(Vec3{0, n.obj->get("angles").asVector()[1] + 180.0f, 0}));
+                syncEntityClips();
+                if (debugClearShot(a, b)) {
+                    b.obj->set("$goalpos", Value(bp)); // the cover search stays inside the goal volume around this point
+                    b.obj->set("goalradius", Value(512.0f));
+                    return int(i);
+                }
+            }
+        }
+        return -1;
+    }
     // IW2_COMBAT_SCENE: true when a bullet from a reaches b (hit boxes, no damage).
     bool debugClearShot(Entity& a, Entity& b) {
         Vec3 s = a.obj->get("origin").asVector(), t = b.obj->get("origin").asVector();
@@ -484,6 +526,8 @@ public:
     // The player's weapon inventory (throws for non-players).
     // Out-of-ammo weapon switch (cgame 0x4b7090): the weapon to select, or empty to keep the current one.
     std::string outOfAmmoSwitch(const Inventory& inv, const std::string& current);
+    // Debug: spawns a weapon_<name> item at the player (iw2view IW2_DEBUG_ITEM, to exercise the touch pickup live).
+    void debugSpawnWeaponItem(const std::string& name);
     Inventory& inventory(Entity& player);
 
     // Dvar names compare case-insensitively (dvar lookup 0x431260 -> 0x43f6d0, the same compare dvarStrList uses): scripts read
@@ -634,7 +678,7 @@ private:
     int startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj = nullptr, const std::string& notify = {});
     struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
     std::vector<PendingNotify> pendingNotifies_;
-    int ambientHandle_ = 0;
+
     int nearestNode(const std::array<float, 3>& p) const;
 
     // Script menus (src/game/menus.cpp)
@@ -703,6 +747,13 @@ private:
     void releaseNode(Entity& e);
     void giveUpClaimedNode(Entity& e);
     void blockNodeForTeam(int node, Entity& e);
+    // Friendly chains (src/game/friendlychain.cpp)
+    void buildFriendlyChains();
+    void setFriendlyChain(Entity& sentient, int node);
+    void touchFriendlyChain(Entity& trigger, Entity& other);
+    void followFriendlyChain(Entity& e);
+    void updateWorkingGoal(Entity& e);                                  // 0x505f70
+    bool actorGoal(Entity& e, Vec3& pos, float& radius, float& height); // the goal the movement code reads
     bool coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& script);
     bool nodeFacesEnemy(Entity& e, int node);
     bool claimedNodeGood(Entity& e, int node);
@@ -930,6 +981,7 @@ private:
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;
     std::vector<PathNode> nodes_;
+    FriendlyChains chains_;
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;

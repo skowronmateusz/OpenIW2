@@ -39,6 +39,12 @@ int World::weaponRoom(Inventory& inv, const std::string& w) {
     return room;
 }
 
+void World::debugSpawnWeaponItem(const std::string& name) {
+    if (!player_) return;
+    Entity& item = spawnEntity("weapon_" + lower(name));
+    item.obj->set("origin", player_->obj->get("origin"));
+}
+
 void World::touchItems() {
     if (!autoPickup_ || !player_ || !isAlive(*player_)) return;
     const Value po = player_->obj->get("origin");
@@ -47,7 +53,7 @@ void World::touchItems() {
         Entity& e = *entities_[i];
         if (e.obj->removed || e.classname.compare(0, 7, "weapon_") != 0 || !weapon(lower(e.classname.substr(7)))) continue;
         const Value io = e.obj->get("origin");
-        if (!io.isVector() || !playerTouchesItem(po.asVector(), io.asVector())) continue;
+            if (!io.isVector() || !playerTouchesItem(po.asVector(), io.asVector())) continue;
         if (touchWeaponItem(e)) e.obj->removed = true;
     }
 }

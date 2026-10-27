@@ -328,9 +328,9 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
         (!coverScriptAt(e, better, true, script) || !script.empty()) &&
         inActorGoal(e, vecField(nodes_[size_t(better)].obj, "origin")))
         minScore = coverScore(e, better) + 1.25e-5f;
-    const Value gv = e.obj->get("$goalpos");
-    const Vec3 goal = gv.isVector() ? gv.asVector() : vecField(e.obj, "origin");
-    const float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
+    Vec3 goal = vecField(e.obj, "origin");
+    float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
+    actorGoal(e, goal, r, h);
     std::vector<std::pair<int, float>> list;
     // TODO(spec): the original walks a node tree (0x516820), so which 256 nodes are taken when more qualify differs.
     for (size_t i = 0; i < nodes_.size() && list.size() < 256; ++i) {
@@ -418,8 +418,9 @@ bool World::pathToGoal(Entity& e) {
         if (inActorGoal(e, pathEnd(e))) return true;
         clearActorPath(e);
     }
-    const Value gv = e.obj->get("$goalpos");
-    const bool ok = gv.isVector() && pathToPoint(e, gv.asVector());
+    Vec3 gp{};
+    float gr = 0, gh = 0;
+    const bool ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
     if (!ok) {
         clearActorPath(e);
         e.ai.planTimeMs = timeMs_ + 500;
@@ -441,7 +442,7 @@ void World::updateActorPath(Entity& e) {
         ai.planTimeMs = timeMs_ + 500;
         return;
     }
-    // TODO(spec): 0x505ed0 (goal entity and follow distances) and 0x505f70 (the goal while pathing to the enemy).
+    followFriendlyChain(e); // 0x505ed0
     // 0x503080: fighting = an enemy known within 5 s, or (without a path) one whose node the claimed node sees.
     bool fighting = false;
     if (Entity* enemy = entityOf(e.obj->get("enemy"))) {
@@ -449,6 +450,7 @@ void World::updateActorPath(Entity& e) {
         fighting = it != e.sentientInfo.end() && it->second.lastKnownMs != 0 && timeMs_ - it->second.lastKnownMs < 5000;
     }
     if (!fighting) ai.pathToEnemy = false;
+    updateWorkingGoal(e); // 0x505f70
     int node = -1;
     const int claimed = e.claimedNode;
     const bool claimedInGoal = claimed >= 0 && inActorGoal(e, vecField(nodes_[size_t(claimed)].obj, "origin"));
@@ -505,6 +507,7 @@ void World::registerCoverBuiltins() {
         Entity& e = actor(c);
         e.ai.coverNodes.clear();
         if (hasEnemy(e) && exposed(e)) e.ai.coverNodes = findCoverNodes(e, -1, -1, -1, 1000);
+        if (std::getenv("IW2_COVER_LOG")) std::fprintf(stderr, "[cover %lld] #%d findcovernode enemy %d exposed %d -> %zu nodes\n", (long long)timeMs_, e.number, int(hasEnemy(e)), int(exposed(e)), e.ai.coverNodes.size());
         return Value();
     });
     // findbestcovernode(["prefer" | "ignore" | "better", node]) (0x53c730): the best cover node, or undefined.
@@ -521,6 +524,7 @@ void World::registerCoverBuiltins() {
             throw std::runtime_error("findbestcovernode: wrong number of parameters");
         }
         const auto best = findCoverNodes(e, better, ignore, prefer, 1);
+        if (std::getenv("IW2_COVER_LOG")) std::fprintf(stderr, "[cover %lld] #%d findbestcovernode(prefer %d ignore %d better %d) -> %d\n", (long long)timeMs_, e.number, prefer, ignore, better, best.empty() ? -1 : best.back());
         return best.empty() ? Value() : nodeValue(best.back());
     });
     // getcovernode (0x54c580): the next node of findcovernode while there is a path or the plan time has passed.
@@ -547,6 +551,7 @@ void World::registerCoverBuiltins() {
         }
         const int node = nodeIndex(c.arg(0));
         const int state = e.ai.stack[size_t(e.ai.depth)];
+        if (std::getenv("IW2_COVER_LOG")) std::fprintf(stderr, "[cover %lld] #%d usecovernode(%d) state %d usable %d facesEnemy %d\n", (long long)timeMs_, e.number, node, state, node >= 0 ? int(nodeUsable(e, node)) : -1, node >= 0 ? int(nodeFacesEnemy(e, node)) : -1);
         if (state != AiExposed && state != AiTurret) return Value(0);
         if (!nodeUsable(e, node) || !nodeFacesEnemy(e, node)) return Value(0);
         claimNode(e, node);

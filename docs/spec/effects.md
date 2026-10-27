@@ -50,7 +50,7 @@ Particles and oriented particles are spawned by `playfx`, `playfxontag` and `pla
 camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
 the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
 the per-particle velocity scale, sprite size meaning (half width),
-other element types (Tail, Emitter, FxRunner, Decal, Light, Cloud, CameraShake, Line), and the argument order of
+other element types (Emitter, FxRunner, Decal, Light, Cloud, CameraShake, Line), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
 
 ## Visibility through effects

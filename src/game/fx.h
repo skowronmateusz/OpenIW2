@@ -39,6 +39,10 @@ struct FxParticle {
     // Emitter element (type 5, class vtable 0x57c760, created by 0x48d7d0). The instance is stepped per frame
     // (0x480bd0): pos += velocity(u) * dt, with a bounce offset `bounceOff` (+0xc4) added to the velocity.
     bool emitter = false;
+    // Tail element (class vtable 0x57c6b0): stepped like an Emitter (0x480bd0), drawn as a quad from pos to tailB; prev is the
+    // position at the start of the update (+0x24c), tailB the end point (+0x9c, 0x483160).
+    bool tail = false;
+    FVec prev{}, tailB{};
     std::string model;                  // chosen from `models` at random when useModel (0x10) is set
     FVec pos{};                         // current position (+0x4)
     FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
@@ -54,6 +58,15 @@ struct FxModelInst {
     float scale = 1.0f;
 };
 
+// A Light element (class vtable 0x57c734, created by 0x48dbc0) as submitted to the renderer every frame: draw slot 0x4841b0
+// calls refexport 0x617b1c (DLL AddLightToScene 0x10024420) with the origin (+0x7c), radius = the size channel (+0x88) and
+// r, g, b = the rgb channel (+0x6c..0x74, not clamped; alpha is unused).
+struct FxLight {
+    FVec origin{};
+    float radius = 0;
+    float rgb[3]{};
+};
+
 struct FxSprite {
     FVec position{};
     float rgba[4]{};
@@ -63,6 +76,9 @@ struct FxSprite {
     // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
     // `position` / `size` are unused.
     bool beam = false;
+    // Tail element (renderer type 8, 0x10041470 / quad builder 0x100409c0): the perpendicular is normalize((A - cam) x (B - cam)),
+    // both ends are widened by widthA, and the atlas rectangle uv runs s across the width, t from A to B.
+    bool beamTail = false;
     FVec beamA{}, beamB{}, beamPerp{};
     float widthA = 0, widthB = 0;
 };
@@ -124,6 +140,9 @@ public:
     std::function<bool(const FVec& a, const FVec& b, float& frac, FVec& normal)> trace;
     // Emitter models at the time of the last sprites() call.
     const std::vector<FxModelInst>& models() const { return models_; }
+    // Light elements alive at the last sprites() call (DLL keeps at most r_dlightLimit = 4 of them, TODO(spec): the order
+    // 0x10015180 chooses when there are more).
+    const std::vector<FxLight>& lights() const { return lights_; }
     size_t count() const { return particles_.size(); }
     // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
@@ -160,6 +179,7 @@ private:
     void runPending(int64_t nowMs);
     std::vector<FxSightBlocker> sightBlockers_;
     std::vector<FxModelInst> models_;
+    std::vector<FxLight> lights_;
     FVec velocityAt(const FxParticle& p, float u) const;
     void stepEmitter(FxParticle& p, int64_t nowMs);
 };
