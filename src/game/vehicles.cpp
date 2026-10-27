@@ -1276,6 +1276,8 @@ void World::registerVehicleBuiltins() {
         e->vehicle.reset();
         e->classname = "script_vehicle_corpse";
         e->obj->set("classname", Value("script_vehicle_corpse"));
+        e->obj->set("$takedamage", Value(false)); // 0x511d1e: ent+0x111 = 0 and health (+0x13c) = 0 (0x511c85)
+        e->obj->set("health", Value(int32_t(0)));
         vm_.notify(e->obj, "death");
         return Value();
     });

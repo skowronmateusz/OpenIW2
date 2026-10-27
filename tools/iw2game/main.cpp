@@ -530,6 +530,7 @@ int main(int argc, char** argv) {
         bool moveStats = false;
         std::vector<std::string> menuAnswers; // --answer-menus a,b: respond to the script menus that open, in order (headless test)
         size_t menuAnswered = 0;
+        float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -779,6 +780,16 @@ int main(int argc, char** argv) {
                     ++t;
                 }
                 world.setPlayerCommand(cmd);
+            }
+            if (killVehiclesAt >= 0 && f * 0.05f >= killVehiclesAt) { // IW2_KILL_VEHICLES=<s>: 100000 damage to every vehicle
+                killVehiclesAt = -1;
+                int n = 0;
+                for (const auto& ep : world.entities())
+                    if (ep->vehicle && !ep->obj->removed) {
+                        world.debugDamage(*ep, 100000);
+                        ++n;
+                    }
+                std::printf("killed %d vehicles at %.1f s\n", n, f * 0.05f);
             }
             for (auto it = levelNotifies.begin(); it != levelNotifies.end();)
                 if (f * 0.05f >= it->first) {

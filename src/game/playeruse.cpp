@@ -507,6 +507,8 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
     return out;
 }
 
+void World::debugDamage(Entity& e, int amount) { damage(e, player_, amount, {0, 0, 1}, e.obj->get("origin").asVector(), "MOD_EXPLOSIVE"); }
+
 std::vector<World::CompassMarker> World::compassVehicles() const {
     std::vector<CompassMarker> out;
     for (const auto& e : entities_) {
