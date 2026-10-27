@@ -59,6 +59,10 @@ struct PlayerState {
     int landDamage = 0;          // the last landing's fall damage 0..100 (not applied to health yet)
     float aimSpread = 255;       // ps+0x5b0: aim spread scale 0..255 (0x4de540)
     int bobCycle = 0;            // ps+8: 0..255 (PM_Footsteps 0x50a850)
+    // Entity events of the move (ps+0x80 eventSequence, ps+0x84 events[4], PM_AddEvent 0x507ba0): footsteps and
+    // landings that the server turns into AI events (G_ClientEvents 0x4e75f0); a ring of 4 like the original.
+    int eventSeq = 0;
+    int events[4] = {0, 0, 0, 0};
     float prevCmdPitch = 0, prevCmdYaw = 0; // the previous command's angles (pm+0x40)
     bool havePrevCmd = false;
 };
@@ -114,6 +118,13 @@ struct MoveParams {
     float jumpSpreadAdd = 64.0f;      // jump_spreadAdd (0x541240)
     float moveThreshold = 10.0f;      // player_moveThreshhold (0x4fab25)
 };
+
+// PM_AddEvent (0x507ba0): event 0 is ignored; the ring keeps the last 4.
+inline void addPmEvent(PlayerState& ps, int ev) {
+    if (ev == 0) return;
+    ps.events[ps.eventSeq & 3] = ev & 0xff;
+    ++ps.eventSeq;
+}
 
 // Advances the player by dt seconds (split into steps of at most 66 ms like the original).
 void playerMove(const CollisionWorld& world, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp = {});
