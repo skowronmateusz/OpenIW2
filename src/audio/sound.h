@@ -63,6 +63,12 @@ public:
     // The subtitle key of the alias started by the last play() call (empty when none).
     const std::string& lastSubtitle() const { return lastSubtitle_; }
     void stop(int handle);
+    // A looping low/high alias pair blended by fraction f (vehicle engine, cgame 0x4ac8a0 -> 0x4423d0): volume =
+    // lerp(low.volMin, high.volMin, f), pitch lerped only at the start; plays the high alias' file (identical to the
+    // low one for the shipped vehicle pairs). Returns a handle (0 = nothing).
+    int playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin);
+    // Updates a live blend voice (0x441f80 / SetVolume 0x442114) and its position.
+    void setBlend(int handle, float f, const Vec3& origin);
     void setListener(const Vec3& origin, const Vec3& forward, const Vec3& right);
     void mix(float* out, int frames);
 
@@ -84,6 +90,8 @@ private:
         std::optional<Vec3> origin;
         float distMin = 0, distMax = 0;
         bool loop = false;
+        bool blend = false;
+        float volLow = 0, volHigh = 0;
     };
     std::shared_ptr<const Wav> load(const std::string& file);
     void gains(const Voice& v, float& left, float& right) const;

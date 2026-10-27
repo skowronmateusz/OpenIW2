@@ -301,6 +301,9 @@ public:
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
     bool playerTurretEye(Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
+    // The turretWeapon of the vehicle the player rides ("" when none). TODO(spec): the original reads the weapon index from
+    // cg_entities[0xf70e50]+0xa2 (0x4bd000); that it is the vehicle's turret weapon is a hypothesis.
+    std::string playerVehicleTurretWeapon();
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
     // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).
@@ -325,6 +328,7 @@ public:
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
     std::string vehicleCollmap(Entity& vehicle);
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
+    void updateVehicleEngineSound(Entity& e);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
@@ -335,6 +339,10 @@ public:
     // returns a handle (0 = nothing played); stopSound(handle).
     std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
     std::function<void(int)> stopSound = [](int) {};
+    // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
+    std::function<int(const std::string&, const std::string&, float, const Vec3&)> playBlendSound =
+        [](const std::string&, const std::string&, float, const Vec3&) { return 0; };
+    std::function<void(int, float, const Vec3&)> setBlendSound = [](int, float, const Vec3&) {};
 
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }

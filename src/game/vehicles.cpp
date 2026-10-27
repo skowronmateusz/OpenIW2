@@ -416,6 +416,12 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "turretvertspanup") info->turretVertSpanUp = f;
                 else if (k == "turretvertspandown") info->turretVertSpanDown = f;
                 else if (k == "turretrotrate") info->turretRotRate = f;
+                else if (k == "lowidlesnd") info->lowIdleSnd = v;
+                else if (k == "highidlesnd") info->highIdleSnd = v;
+                else if (k == "lowenginesnd") info->lowEngineSnd = v;
+                else if (k == "highenginesnd") info->highEngineSnd = v;
+                else if (k == "texurescroll") info->texScroll = std::atoi(v.c_str());
+                else if (k == "texurescrollscale") info->texScrollScale = f;
                 else if (k == "quadbarrel") info->quadBarrel = std::atoi(v.c_str()) != 0;
             }
         }
@@ -685,7 +691,14 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     v.forwardSpeed = std::fabs(b.localVelocity[0]);
     e.obj->set("origin", Value(origin));
     e.obj->set("angles", Value(angles));
-    // TODO(spec): the engine sound blend (+0x1f8 / +0x1fc, approached at 4 per second from the forward command).
+    // Engine sound fractions (0x510fe6): DiffTrack at rate 4 per second towards idle 1 / engine 0 while the driver's forward
+    // command is 0, else idle 0 / engine 1 (the step size is the 0x40800000 = 4 argument times the frame time).
+    {
+        const float step = 4.0f * kFrameTime;
+        const float ti = cmd.forward == 0 ? 1.0f : 0.0f, te = 1.0f - ti;
+        v.idleFrac += std::clamp(ti - v.idleFrac, -step, step);
+        v.engFrac += std::clamp(te - v.engFrac, -step, step);
+    }
 }
 
 // Aim of a player-driven vehicle (0x5108e0): the turret target becomes the point the player looks at (eye + view
@@ -804,6 +817,37 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
     }
 }
 
+// Path vehicles (0x511513): f = clamp(|speed| / engineSndSpeed); engine = f, idle = 1 - f.
+// Every think (0x510be0): a dead vehicle or one with the engine off silences both pairs; otherwise the loops follow
+// the fractions. The original culls by the listener distance (0x44247b) and keeps the pitch chosen at the loop start.
+// TODO(spec): the turret spin / stop sounds (turretSpinSnd es+6 loop, turretStopSnd event 0xb3).
+void World::updateVehicleEngineSound(Entity& e) {
+    VehicleState& v = *e.vehicle;
+    if (!v.info) return;
+    if (v.started && v.info->engineSndSpeed > 0.0f) {
+        v.engFrac = std::clamp(std::fabs(v.speed) / v.info->engineSndSpeed, 0.0f, 1.0f);
+        v.idleFrac = 1.0f - v.engFrac;
+    }
+    const Value h = e.obj->get("health");
+    const bool alive = !h.isNumber() || h.asInt() >= 1;
+    const Vec3 origin = e.obj->get("origin").asVector();
+    auto pair = [&](int& handle, const std::string& lo, const std::string& hi, float f) {
+        const bool want = alive && v.engineOn && !lo.empty() && !hi.empty();
+        if (!want) {
+            if (handle) stopSound(handle);
+            handle = 0;
+        } else if (!handle) handle = playBlendSound(lo, hi, f, origin);
+        else setBlendSound(handle, f, origin);
+    };
+    pair(v.idleHandle, v.info->lowIdleSnd, v.info->highIdleSnd, v.idleFrac);
+    pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac);
+}
+
+std::string World::playerVehicleTurretWeapon() {
+    const Entity* v = player_ && player_->usingVehicle >= 0 ? entityByNumber(player_->usingVehicle) : nullptr;
+    return v && v->vehicle && v->vehicle->info ? v->vehicle->info->turretWeapon : std::string();
+}
+
 void World::thinkVehicles() {
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
@@ -826,6 +870,13 @@ void World::thinkVehicles() {
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
         updateVehicleTurret(e);
+        // 0x510870 (after the turret/aim calls, before 0x510be0): tread texture scroll accumulator.
+        if (v.info) {
+            const auto dv = cvars.find("g_vehicleTexScrollScale");
+            const float dvar = dv == cvars.end() ? 0.0f : float(std::atof(dv->second.c_str()));
+            v.texScroll = vehicleTexScrollStep(v.info->texScroll, v.texScroll, v.forwardSpeed, dvar, v.info->texScrollScale);
+        }
+        updateVehicleEngineSound(e);
         // The driver rides at tag_player (linked in VEH_LinkPlayer).
         if (Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr) {
             bool found = false;
@@ -1083,6 +1134,14 @@ void World::registerVehicleBuiltins() {
         if (v.waitSpeed < 0.0f) throw std::runtime_error("Cannot have a negative wait speed on a vehicle");
         return Value();
     });
+    vm_.registerBuiltin("startenginesound", [this](CallContext& c) {
+        vehicleState(c.self).engineOn = true; // 0x513e80: +0x1ec = 1
+        return Value();
+    });
+    vm_.registerBuiltin("stopenginesound", [this](CallContext& c) {
+        vehicleState(c.self).engineOn = false; // 0x513ee0: +0x1ec = 0
+        return Value();
+    });
     vm_.registerBuiltin("setspeed", [this](CallContext& c) {
         VehicleState& v = vehicleState(c.self);
         v.speedMode = 1;
@@ -1112,7 +1171,9 @@ void World::registerVehicleBuiltins() {
     });
     // freevehicle turns the vehicle into a script_vehicle_corpse and notifies "death" (0x513850).
     vm_.registerBuiltin("freevehicle", [this](CallContext& c) {
-        vehicleState(c.self);
+        VehicleState& fv = vehicleState(c.self);
+        if (fv.idleHandle) stopSound(fv.idleHandle);
+        if (fv.engHandle) stopSound(fv.engHandle);
         Entity* e = entityOf(c.self);
         e->vehicle.reset();
         e->classname = "script_vehicle_corpse";

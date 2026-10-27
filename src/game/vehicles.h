@@ -48,7 +48,12 @@ struct VehicleInfo {
     float suspensionTravel = 0, maxBodyPitch = 0, maxBodyRoll = 0;
     float turretHorizSpanLeft = 0, turretHorizSpanRight = 0, turretVertSpanUp = 0, turretVertSpanDown = 0, turretRotRate = 0;
     bool quadBarrel = false;
+    // texureScroll (sic, +0x48) / texureScrollScale (+0x64): tread texture scrolling (0x510870).
+    int texScroll = 0;
+    float texScrollScale = 0;
     std::string turretWeapon;
+    // lowIdleSnd / highIdleSnd / lowEngineSnd / highEngineSnd (info slots +0x260..+0x266), turretSpinSnd / turretStopSnd.
+    std::string lowIdleSnd, highIdleSnd, lowEngineSnd, highEngineSnd;
 };
 
 struct VehicleState {
@@ -82,7 +87,28 @@ struct VehicleState {
     bool altBarrel = false;
     int team = 0;              // 0 none, 1 axis, 2 allies
     bool usable = false;       // contents 0x200000; initially spawnflags & 1 (0x50dcd5)
+    // Tread scroll accumulator (entity +0x5c, 0x510870): -1 = no scroll; the cgame reads it (0x4ac839).
+    int texScroll = 0;
+    // Engine sound (0x50dbb7, 0x510be0): engineOn (+0x1ec) is set at spawn when both aliases of a pair exist and by
+    // startenginesound / stopenginesound (0x513e80 / 0x513ee0); idleFrac / engFrac (+0x1f8 / +0x1fc); live voices.
+    bool engineOn = true;
+    float idleFrac = 0, engFrac = 0;
+    int idleHandle = 0, engHandle = 0;
     int owner = -1;            // entity number of the player using it (entity +0xf4, 0x7ff = none)
 };
+
+// One think of 0x510870: flag 0 -> -1; else acc += (int)(speed * (1/176) * (dvar > 0 ? dvar : scale) * 0.05 * 1000).
+// speed is vehicle +0x1b0 (|forward speed|, inches per second). dvar = g_vehicleTexScrollScale (default 0).
+inline int vehicleTexScrollStep(int flag, int acc, float speed, float dvar, float scale) {
+    if (flag == 0) return -1;
+    const float s = speed * 0.0056818f * (dvar > 0.0f ? dvar : scale) * 0.05f * 1000.0f;
+    return acc + int(s);
+}
+
+// The V offset the renderer subtracts from tread texture coordinates (cgame 0x4ac839): accumulator * 0.001 (0x591e30);
+// the cgame skips a negative accumulator (offset 0). TODO(spec): the gfx DLL step that turns the entity's
+// (cg.time - value) * 0.001 into gameTime.z (assumed to cancel the time part), and the per-frame interpolation
+// ((next - cur) * frameInterp) of the accumulator.
+inline float vehicleTexScrollOffset(int acc) { return acc < 0 ? 0.0f : float(acc) * 0.001f; }
 
 } // namespace iw2::game

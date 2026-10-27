@@ -182,3 +182,7 @@ add_test(NAME pmove COMMAND test_pmove)
 add_executable(test_vehicledrive tests/test_vehicledrive.cpp)
 target_link_libraries(test_vehicledrive PRIVATE iw2_game)
 add_test(NAME vehicledrive COMMAND test_vehicledrive)
+
+add_executable(test_texscroll tests/test_texscroll.cpp)
+target_link_libraries(test_texscroll PRIVATE iw2_game)
+add_test(NAME texscroll COMMAND test_texscroll)

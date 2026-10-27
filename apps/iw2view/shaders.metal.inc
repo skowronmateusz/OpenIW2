@@ -45,6 +45,7 @@ struct FragmentUniforms {
     float4 lmWeights;      // weights applied to the four lightmap coefficients
     float4 params;
     float4 ambient;        // entity light: rgb ambient from the light grid, w = sun visibility         // x: alpha test (1 = on), y: 1 = lightmap, 2 = vertex light, 3 = entity light, z: lightmap scale, w: fullbright
+    float4 scroll;         // x: V offset subtracted from uv (the scroll technique subtracts the game-time value from the V coordinate)
 };
 
 fragment float4 fs_main(VertexOut in [[stage_in]],
@@ -55,7 +56,8 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
                         sampler colorSampler [[sampler(0)]],
                         sampler lmSampler [[sampler(1)]],
                         sampler sunSampler [[sampler(2)]]) {
-    float4 base = colorMap.sample(colorSampler, in.uv) * in.color;
+    const float2 uv = in.uv - float2(0.0, u.scroll.x);
+    float4 base = colorMap.sample(colorSampler, uv) * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
 
     if (u.params.y > 3.5) { // effect_multiply: blends the texture towards white by the vertex alpha, no light

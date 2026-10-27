@@ -232,6 +232,7 @@ struct Batch {
     int polygonOffset = 0; // mtlPolygonOffset level 0..2 (material state bits)
     int cull = 0;          // mtlCullFace: 0 none, 1 back, 2 front
     uint32_t firstIndex = 0, indexCount = 0;
+    bool scroll = false; // see MatInfo::scroll
 };
 
 struct Lightmap {
@@ -250,6 +251,7 @@ struct MatInfo {
     // 0x1003cb13). Here 0 none, 1 back (D3DCULL_CCW), 2 front (D3DCULL_CW).
     int cull = 0;
     // For Pass::Water `texture` indexes Scene::waters.
+    bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
 };
 
@@ -411,6 +413,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 scene.matCache.emplace(name, mi);
                 return mi;
             }
+            mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             const std::string& img = m.colorImage();
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
@@ -471,6 +474,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             b.lightmap = -3;
             b.polygonOffset = mi.polygonOffset;
             b.cull = mi.cull;
+        b.scroll = mi.scroll;
             b.firstIndex = uint32_t(indices.size());
             for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
             b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -551,6 +555,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.lightmap = -3;
         b.polygonOffset = mi.polygonOffset;
         b.cull = mi.cull;
+        b.scroll = mi.scroll;
         b.firstIndex = uint32_t(indices.size());
         for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -1013,6 +1018,7 @@ struct FragmentUniforms {
     float lmWeights[4];
     float params[4];
     float ambient[4];
+    float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
 };
 
 // An entity model to draw this frame.
@@ -1021,6 +1027,7 @@ struct DrawItem {
     Mat4 transform{};
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
+    float scrollV = 0.0f; // vehicle tread scroll
 };
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -1477,7 +1484,8 @@ struct Renderer {
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
-                        {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility}};
+                        {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
+                        {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
@@ -1794,6 +1802,10 @@ int main(int argc, char** argv) {
                 return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
+            w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
+                return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
+            };
+            w->setBlendSound = [&mixer](int h, float f, const game::Vec3& o) { mixer.setBlend(h, f, audio::Vec3{o[0], o[1], o[2]}); };
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             // The bindings from default.cfg, reported to scripts through getkeybinding.
@@ -1911,12 +1923,36 @@ int main(int argc, char** argv) {
                 }
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                if (e->vehicle) base.scrollV = game::vehicleTexScrollOffset(e->vehicle->texScroll); // TODO(spec): accumulator interpolation
                 assets::LightGridCoeffs c;
                 float sun = 1.0f;
                 if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
                     const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
                     base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                     base.sunVisibility = sun;
+                }
+                if (e->vehicle && e->vehicle->info) {
+                    // Vehicle turret (cgame 0x4ac2b0 bone controls on tag_turret / tag_barrel; es+0x70 pitch, es+0x74 yaw, lerped).
+                    // TODO(spec): which control gets the pitch and which the yaw is a hypothesis (yaw on tag_turret, pitch on tag_barrel).
+                    const Scene::CpuModel* vm = sceneCpuModel(scene, dev, vfs, m.asString());
+                    if (!vm) continue;
+                    float tp = e->vehicle->turretPitch, ty = e->vehicle->turretYaw;
+                    if (auto pt = prevTurret.find(e->number); pt != prevTurret.end()) {
+                        tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
+                        ty = pt->second.second + angleDelta(ty, pt->second.second) * lerpFrac;
+                    }
+                    std::vector<std::pair<int, assets::Quat>> ctl;
+                    for (size_t bi = 0; bi < vm->parts.bones.size(); ++bi) {
+                        std::string n = vm->parts.bones[bi].name;
+                        for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0)});
+                        else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0)});
+                    }
+                    assets::XPose vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
+                    DrawItem it = base;
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, assets::applyControls(vm->parts, vpose, ctl));
+                    if (it.model) items.push_back(it);
+                    continue;
                 }
                 // Actors and animated script_models (drones: spawn("script_model") + useanimtree + attach head/gun, maps/_drones.gsc) are
                 // skinned with the blended pose and carry their attachments.
@@ -2563,15 +2599,16 @@ int main(int argc, char** argv) {
             }
             // Crosshair (cgame 0x4bd760). On a turret (eFlags & 0x300) only the turret's: with cg_drawTurretCrosshair (1)
             // and cg_crosshairAlpha (1) ≥ 0.01, its weapon's reticleCenter, reticleCenterSize virtual units square,
-            // centred (0x4bcef0). In a vehicle the vehicle's (0x4bd000, not drawn yet). Otherwise the hand weapon's
+            // centred (0x4bcef0). In a vehicle the vehicle's turret weapon (0x4bd000). Otherwise the hand weapon's
             // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
             // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
             // TODO(spec): the friend / enemy colours (ps flags 0x100000 / 0x200000), the reticleCenter +
             // four reticleSide drawing with the spread (0x4bd2c0, 0x4bd520) and the sway offset (0x4bc6e0).
             const bool onTurretHud = world && world->playerOnTurret();
             const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
-            if (onTurretHud) {
-                const std::string tw = world->playerTurretWeapon();
+            if (onTurretHud || inVehicleHud) {
+                // 0x4bd000: the vehicle's weapon reticle, drawn unconditionally (the 0x4bd110 conditions are not checked there).
+                const std::string tw = onTurretHud ? world->playerTurretWeapon() : world->playerVehicleTurretWeapon();
                 const auto* td = tw.empty() ? nullptr : world->weapon(tw);
                 const std::string reticle = td && td->count("reticlecenter") ? td->at("reticlecenter") : std::string();
                 const float size = td && td->count("reticlecentersize") ? float(std::atof(td->at("reticlecentersize").c_str())) : 0.0f;
@@ -3199,6 +3236,7 @@ int main(int argc, char** argv) {
                     }
                     for (const auto& e : world->entities()) {
                         if (e->turret) prevTurret[e->number] = {e->turret->pitch, e->turret->yaw};
+                        if (e->vehicle) prevTurret[e->number] = {e->vehicle->turretPitch, e->vehicle->turretYaw};
                         if (!e->anim) continue;
                         prevAnim.erase(e->number);
                         prevAnim.emplace(e->number, *e->anim);
