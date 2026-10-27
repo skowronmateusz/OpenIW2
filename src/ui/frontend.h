@@ -53,6 +53,7 @@ public:
     float valueTextX(const Menu& m, const Item& it) const;
     // The value text key of YESNO ("EXE_YES"/"EXE_NO") and MULTI (the list label of the current value) items.
     std::string valueLabel(const Item& it) const;
+    size_t strIndex(const Item& it) const;
     // Items that can take focus in a menu, in file order.
     std::vector<const Item*> selectable(const Menu& m) const;
 

@@ -2783,6 +2783,7 @@ int main(int argc, char** argv) {
         float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
         SDL_Window* menuWindow = nullptr; // set once the window exists
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
+        bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
@@ -2823,7 +2824,19 @@ int main(int argc, char** argv) {
                 in >> c >> a1;
                 std::getline(in >> std::ws, a2);
                 for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                while (!a2.empty() && std::isspace(static_cast<unsigned char>(a2.back()))) a2.pop_back();
                 if (c == "vstr") execText(menuEnv.getCvar(a1));
+                // "setfromdvar dst src" (console command, ui/options_graphics.cfg) copies the value of src (registered default if unset).
+                // TODO(spec): exe address of the command and its behaviour for an unknown src.
+                else if (c == "setfromdvar") menuEnv.setCvar(a1, menuEnv.getCvar(a2));
+                // "exec <file>" runs a shipped cfg (menu onOpen of options_graphics: ui/options_graphics.cfg), one command per line.
+                else if (c == "exec" && !a1.empty()) {
+                    if (const auto cfg = vfs.read(a1)) {
+                        std::string t(cfg->begin(), cfg->end());
+                        for (auto& ch : t) if (ch == '\r' || ch == '\n') ch = ';';
+                        execText(t);
+                    }
+                }
                 else if (c == "set" || c == "seta" || c == "sets") menuEnv.setCvar(a1, a2);
                 else if (c == "map") pendingLevel = std::make_pair(a1, false);
                 // Exe commands 0x446860..0x4468c0 (difficultyEasy/Medium/Hard/Fu) call 0x432570 with 0/1/2/3 and then re-apply the skill.
@@ -2831,7 +2844,8 @@ int main(int argc, char** argv) {
                 else if (c == "difficultymedium") menuEnv.setCvar("g_gameskill", "1");
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
-                else if (c == "disconnect" || c == "quit") { /* handled below */ if (c == "quit") std::exit(0); }
+                else if (c == "disconnect") pendingDisconnect = world != nullptr;
+                else if (c == "quit") std::exit(0);
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
                 // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
@@ -5071,6 +5085,18 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (auto change = world->dueLevelChange()) pendingLevel = std::make_pair(change->map, change->failed);
+            }
+            if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
+                // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
+                pendingDisconnect = false;
+                pendingLevel.reset();
+                world.reset();
+                releaseScene(dev, scene);
+                scene = emptyScene(dev);
+                currentMap.clear();
+                menuEnv.setCvar("cl_paused", "0");
+                frontStack.closeAll();
+                frontStack.open("main");
             }
             if (pendingLevel) {
                     // Level change or restart: rebuild the world and the scene for the next map.
