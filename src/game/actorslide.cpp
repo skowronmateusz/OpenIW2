@@ -248,6 +248,8 @@ void groundProbe(ActorSlide& pm, const SlideTraceFn& trace) {
         pm.groundTrace[1] = t.normal[0];
         pm.groundTrace[2] = t.normal[1];
         pm.groundTrace[3] = t.normal[2];
+        pm.groundSurfFlags = t.surfFlags;
+        for (int a = 0; a < 3; ++a) pm.groundNormal[a] = t.normal[a]; // 0x1cbac68 is the same memory
         pm.flag87 = t.allSolid;
     };
     SlideTrace r = trace(start, end);
@@ -306,6 +308,62 @@ void groundProbe(ActorSlide& pm, const SlideTraceFn& trace) {
     pm.groundPlane = true;
     pm.groundEntValid = true;
     addTouch(pm, r.entity);
+}
+
+int moveBlock(ActorSlide& pm, const SlideTraceFn& trace) {
+    pm.hitEnt = 0x7ff;
+    pm.touchCount = 0;
+    pm.blocked = false;
+    if (pm.groundEnt == 0x7fe && pm.moveDelta[0] == 0.0f && pm.moveDelta[1] == 0.0f && pm.moveDelta[2] == 0.0f) {
+        pm.velocity[0] = pm.velocity[1] = pm.velocity[2] = 0.0f;
+        return 1;
+    }
+    pm.stepHeight = pm.lowStep ? 10.0f : 18.0f;
+    pm.contact = false;
+    pm.contactNormalZ = 0;
+    if (pm.mode == 3) {
+        for (int a = 0; a < 3; ++a) pm.origin[a] += pm.moveDelta[a];
+        return 1;
+    }
+    const float inv = pm.dt > 0.0f ? 1.0f / pm.dt : 0.0f; // TODO(spec): the exe divides by dt unguarded
+    if (pm.mode == 4) {
+        for (int a = 0; a < 3; ++a) pm.velocity[a] = pm.moveDelta[a] * inv;
+        slideMove(pm, false, trace);
+        return 1;
+    }
+    groundProbe(pm, trace);
+    int r;
+    if (pm.mode == 5) {
+        pm.velocity[0] = pm.moveDelta[0] * inv;
+        pm.velocity[1] = pm.moveDelta[1] * inv;
+        pm.velocity[2] = 0.0f;
+        r = stepSlideMove(pm, true, trace);
+    } else if (pm.groundEntValid) {
+        pm.velocity[0] = pm.moveDelta[0] * inv;
+        pm.velocity[1] = pm.moveDelta[1] * inv;
+        pm.velocity[2] = 0.0f;
+        const float ox = pm.velocity[0], oy = pm.velocity[1];
+        const float len = std::sqrt(ox * ox + oy * oy);
+        clipVelocity(pm.velocity, &pm.groundTrace[1], pm.velocity, kOverclip);
+        if (oy * pm.velocity[1] + ox * pm.velocity[0] > 0.0f) {
+            const float l = std::sqrt(pm.velocity[0] * pm.velocity[0] + pm.velocity[1] * pm.velocity[1] + pm.velocity[2] * pm.velocity[2]);
+            if (l > 0.0f)
+                for (int a = 0; a < 3; ++a) pm.velocity[a] = pm.velocity[a] / l * len;
+        }
+        if (pm.velocity[0] == 0.0f && pm.velocity[1] == 0.0f && pm.groundPlane) return 1;
+        r = stepSlideMove(pm, false, trace);
+    } else {
+        if (pm.groundPlane) clipVelocity(pm.velocity, &pm.groundTrace[1], pm.velocity, kOverclip);
+        r = stepSlideMove(pm, true, trace);
+    }
+    if (pm.groundPlane && pm.groundTrace[3] >= 0.3f) { // 0x592018
+        pm.contact = true;
+        pm.contactNormalZ = pm.groundTrace[3];
+        pm.surfaceType = int((pm.groundSurfFlags >> 20) & 0x1f);
+    } else {
+        pm.surfaceType = 0;
+    }
+    return r;
 }
 
 } // namespace iw2::game

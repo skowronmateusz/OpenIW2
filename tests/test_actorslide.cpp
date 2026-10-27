@@ -180,6 +180,33 @@ int main() {
         groundProbe(d, floorAt(0.0f, 1.0f));
         CHECK(!d.groundPlane); // moving up away from the floor: dot > 10 -> no ground
     }
+    { // move block: walking on a floor
+        auto floor0 = [](const float st[3], const float en[3]) {
+            SlideTrace t;
+            if (en[2] < 0.0f && st[2] >= 0.0f) {
+                t.fraction = st[2] / (st[2] - en[2]);
+                t.normal[2] = 1;
+                t.entity = 0x7fe;
+            }
+            return t;
+        };
+        ActorSlide a;
+        a.dt = 0.05f;
+        a.timeMs = 50;
+        a.origin[2] = 0.0f;
+        a.groundEnt = 0x7fe;
+        a.moveDelta[0] = 5.0f;
+        const int r = moveBlock(a, floor0);
+        CHECK(r == 1);
+        CHECK(a.origin[0] > 4.9f && a.origin[0] < 5.1f);
+        CHECK(a.groundPlane && a.groundEntValid && a.contact);
+        ActorSlide b;
+        b.dt = 0.05f;
+        b.groundEnt = 0x7fe;
+        b.velocity[0] = 9;
+        moveBlock(b, floor0);
+        CHECK(b.velocity[0] == 0.0f && b.origin[0] == 0.0f);
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }
