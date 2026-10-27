@@ -113,13 +113,13 @@ struct Camera {
     }
     Vec3 right() const { return normalize(cross(forward(), {0, 0, 1})); }
 
-    Mat4 viewProj(float aspect) const {
+    Mat4 viewProj(float aspect, float zNear = 4.0f) const {
         const Vec3 f = forward(), r0 = right(), u0 = cross(r0, f);
         const float cr = std::cos(roll * float(M_PI) / 180), sr = std::sin(roll * float(M_PI) / 180);
         const Vec3 r = r0 * cr + u0 * -sr, u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
-        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = 4.0f, fa = 40000.0f;
+        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = zNear, fa = 40000.0f;
         const float t = 1.0f / std::tan(fovY / 2);
         const Mat4 proj = {t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, fa / (n - fa), -1, 0, 0, n * fa / (n - fa), 0};
         return mul(proj, view);
@@ -1143,6 +1143,13 @@ struct DrawItem {
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
     float scrollV = 0.0f; // vehicle tread scroll
+    // Viewport depth range maximum (the minimum is 0): the renderer draws groups with the 0x8 class in 0 .. 0.2 and the 0x10
+    // class in 0 .. 0.5 of the depth buffer (D3D SetViewport MinZ/MaxZ via 0x1003ec50, called at 0x1002fafc..0x1002fc85;
+    // class = group flags & 0x18, table at 0x1002fcd8), so the view weapon never goes through walls.
+    float depthMax = 1.0f;
+    // Near plane of the depth-hack projection: the dvar r_znear_depthhack (default 0.1, registered at 0x1000ad62 / 0x10192e24)
+    // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
+    float zNear = 4.0f;
 };
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -1590,6 +1597,10 @@ struct Renderer {
             // Entity models of this pass.
             for (const DrawItem& it : items) {
                 bool bound = false;
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                    SDL_SetGPUViewport(pass, &vpDepth);
+                }
                 for (const Batch& b : it.model->batches) {
                     if (b.pass != p) continue;
                     if (!bound) {
@@ -1599,6 +1610,7 @@ struct Renderer {
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         bound = true;
                     }
@@ -1618,14 +1630,20 @@ struct Renderer {
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         bindOffset(p, 0, 0, mu);
                     }
+                }
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                    SDL_SetGPUViewport(pass, &vpFull);
                 }
                 if (bound) {
                     // Restore world buffers for the next pass's world batches.
@@ -2322,6 +2340,7 @@ int main(int argc, char** argv) {
                 }
             }
             DrawItem base;
+            if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
             auto rt = vmMotion.rot();
