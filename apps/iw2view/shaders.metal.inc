@@ -25,6 +25,7 @@ struct VertexOut {
     float2 uv;
     float2 lmUv;
     float3 light;
+    float3 eyeVec;
 };
 
 vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
@@ -36,6 +37,7 @@ vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[
     o.uv = in.uv;
     o.lmUv = in.lmUv;
     o.light = in.light;
+    o.eyeVec = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
     return o;
 }
 
@@ -46,7 +48,14 @@ struct FragmentUniforms {
     float4 params;
     float4 ambient;        // entity light: rgb ambient from the light grid, w = sun visibility         // x: alpha test (1 = on), y: 1 = lightmap, 2 = vertex light, 3 = entity light, z: lightmap scale, w: fullbright
     float4 scroll;         // x: V offset subtracted from uv (the scroll technique subtracts the game-time value from the V coordinate)
+    float4 fogParams;      // x: 1 = fog on, y: scale, z: shift (linear factor = dist * scale + shift, lib/fogcalc.hlsl)
+    float4 fogColor;       // rgb
 };
+
+static float3 apply_fog(float3 rgb, float dist, constant FragmentUniforms& u) {
+    if (u.fogParams.x < 0.5) return rgb;
+    return mix(u.fogColor.rgb, rgb, clamp(dist * u.fogParams.y + u.fogParams.z, 0.0, 1.0)); // Fog_PixelCalc
+}
 
 fragment float4 fs_main(VertexOut in [[stage_in]],
                         constant FragmentUniforms& u [[buffer(0)]],
@@ -84,7 +93,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
         light = float3(0.45) + ndl * u.sunColor.rgb * 0.6;
     }
-    return float4(base.rgb * light, base.a);
+    return float4(apply_fog(base.rgb * light, length(in.eyeVec), u), base.a);
 }
 
 struct SkyOut {
@@ -149,6 +158,6 @@ fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u 
     float3 diffuse = u.ambient.rgb * n.z; // waterColor.rgb
     float3 lit = mix(diffuse, env.rgb, env.a);
     lit += pow(specularDot, 64.0) * u.sunColor.rgb;
-    return float4(lit, in.color.a);
+    return float4(apply_fog(lit, length(in.eyeVector), u), in.color.a);
 }
 )MSL"

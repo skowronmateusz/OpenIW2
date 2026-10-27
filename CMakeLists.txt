@@ -193,3 +193,7 @@ add_test(NAME texscroll COMMAND test_texscroll)
 add_executable(test_watersim tests/test_watersim.cpp)
 target_link_libraries(test_watersim PRIVATE iw2_game)
 add_test(NAME watersim COMMAND test_watersim)
+
+add_executable(test_fog tests/test_fog.cpp)
+target_link_libraries(test_fog PRIVATE iw2_game)
+add_test(NAME fog COMMAND test_fog)
