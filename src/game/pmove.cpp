@@ -457,7 +457,8 @@ void accelerate(PlayerState& ps, const Vec& wishDir, float wishSpeed, float acce
 // Lean (0x50ade0): the target is −1 (left), +1 (right) or 0; only on the ground. The limit is 0.5, 0.25 at
 // view height 11. The value moves towards the target by ms · max/350 and back to 0 by ms · max/280. A 16-unit cube
 // traced from the eye to the leaned eye limits it to 1 − sqrt(1 − fraction).
-// TODO(spec): the disabling ps flags (0x8000, 0x2000000/0x4000000 for allowleanleft/right, 0x20300 in ps+0x7c).
+// The allowleanleft/right flags (0x2000000/0x4000000, 0x50ae13) cancel the input in the callers.
+// TODO(spec): ps flag 0x8000 and 0x20300 in ps+0x7c.
 void updateLean(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float ms, float yaw) {
     int dir = 0;
     if (ps.onGround) {
