@@ -439,6 +439,9 @@ public:
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
+    // The tank direction ownerdraws' (90 / 91, cgame 0x4aa1b0 / 0x4aa360) world yaws: the ridden vehicle's angles[1] (centity +0x158)
+    // and the yaw of its tag_barrel forward (0x4ab9e0 + axis to angles 0x424b70); false when not in a vehicle.
+    bool playerVehicleHudYaws(float& bodyYaw, float& barrelYaw, bool& hasBarrel);
 
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;

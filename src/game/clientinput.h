@@ -65,9 +65,11 @@ private:
         leanRight_, prone_, stanceKey_, jump_, goStand_, moveDown_, speed_, forward_, back_, moveLeft_, moveRight_;
     int stance_ = 0;
     bool adsToggle_ = false;
+    bool objectivesHeld_ = false; // +scores held (cgame 0xf791fc): shows the objectives screen
     int cycle_ = 0;
 
 public:
+    bool objectivesHeld() const { return objectivesHeld_; }
     // Movement keys held (W/S/A/D): forward and right command values.
     int forwardMove() const { return (forward_.active ? 127 : 0) - (back_.active ? 127 : 0); }
     int rightMove() const { return (moveRight_.active ? 127 : 0) - (moveLeft_.active ? 127 : 0); }

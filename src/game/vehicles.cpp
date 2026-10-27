@@ -1145,6 +1145,20 @@ bool World::playerVehicleBodyAxis(std::array<Vec3, 3>& axis) {
     return true;
 }
 
+// Yaws for the tank status ownerdraws (cgame 0x4aa1b0 body: centity +0x158 = the vehicle's angles[1]; 0x4aa360 barrel: yaw of the
+// tag_barrel forward). TODO(spec): the barrel yaw uses the controlled forward (like linkPlayerToVehicle), not the full tag axis of 0x4ab9e0;
+// the centity eFlags test (+0xb0 & 0x10000) is not modelled.
+bool World::playerVehicleHudYaws(float& bodyYaw, float& barrelYaw, bool& hasBarrel) {
+    if (!player_ || player_->usingVehicle < 0 || !(pmFlags_ & 0x20000)) return false;
+    Entity* e = entityByNumber(player_->usingVehicle);
+    if (!e || e->obj->removed || !e->vehicle) return false;
+    bodyYaw = e->obj->get("angles").asVector()[1];
+    Vec3 fwd{};
+    vehicleTagPosition(*e, "tag_barrel", hasBarrel, &fwd);
+    barrelYaw = hasBarrel ? vectorToAngles(fwd)[1] : bodyYaw;
+    return true;
+}
+
 // Delta of an animation at normalized time 0 (0x478740 → 0x475aa0 with weight 1): the yaw quaternion (z, w) and the
 // translation of its delta tracks; (0, 1) and zero for an animation without delta.
 static void animStartDelta(const assets::XAnim* a, float& qz, float& qw, Vec3& t) {

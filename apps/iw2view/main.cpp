@@ -2494,7 +2494,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -3057,6 +3057,19 @@ int main(int argc, char** argv) {
         auto setInvalidCmd = [&](int state, int64_t nowMs) { // 0x4ba860: restarts only when the state changes
             if (invalidCmdState != state) invalidCmdState = state, invalidCmdStartMs = nowMs;
         };
+        // Objectives screen (menu "objectiveinfo", ui/objective_info.menu): ownerdraw 97 CG_MISSION_OBJECTIVE_LIST (item
+        // "objectivecheckbox") and 96 CG_MISSION_OBJECTIVE_HEADER (item "objectiveheader"). The menu rect (-2, -2) is added to the
+        // item rects (LEFT / TOP aligned).
+        const ui::Item* objListItem = nullptr;
+        const ui::Item* objHeaderItem = nullptr;
+        float objMenuX = 0, objMenuY = 0;
+        if (const ui::Menu* m = hudMenus.find("objectiveinfo")) {
+            objMenuX = m->rect.x, objMenuY = m->rect.y;
+            for (const auto& it : m->items) {
+                if (it->name == "objectivecheckbox") objListItem = it.get();
+                if (it->name == "objectiveheader") objHeaderItem = it.get();
+            }
+        }
         const ui::Item* holdBreathItem = nullptr; // menu "HoldBreathHint" (ownerdraw 71)
         if (const ui::Menu* m = hudMenus.find("HoldBreathHint"))
             for (const auto& it : m->items)
@@ -3882,6 +3895,125 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Objectives screen (menu "objectiveinfo"; ownerdraws 97 list 0x4c0400 and 96 header 0x4bfdd0). Shown while +scores
+            // is held (cgame 0xf791fc, set by 0x4a4d40, cleared by 0x4a4d20; both stamp the touch time 0xf79200 = cg.time); after
+            // the release the alpha is (300 - elapsed) / 300 (0x4b0900 with 300 ms), nothing once elapsed >= 300 or without a touch.
+            // Both menu items are LEFT / TOP aligned (0x440e60 code 1: x * sx, y * sy). TODO(spec): the 2D hud dvar gate
+            // (0x1040c4c); the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
+            if (world && objListItem && objHeaderItem) {
+                float objAlpha = 0.0f;
+                if (hudFade.objectivesHeld) objAlpha = 1.0f;
+                else if (hudFade.objectives != 0) {
+                    const int64_t el = world->timeMs() - hudFade.objectives;
+                    if (el < 300) objAlpha = el <= 0 ? 1.0f : float(300 - el) / 300.0f;
+                }
+                if (objAlpha > 0.0f) {
+                    auto b8 = [](float v) { return uint8_t(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
+                    auto rnd = [](float v) { return std::nearbyint(v + 9.3e-10f); }; // fistp of (v + 2^-31), 0x591f20
+                    const float sr = rnd(sc);
+                    const auto fontFor = [&](float ts) -> const assets::Font* {
+                        const float fs = ts * float(h) / 480.0f;
+                        return font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
+                    };
+                    // List (0x4c0400): the rows run down from the item's y (a baseline); icon 16 x 16 above it.
+                    {
+                        const ui::Item& it = *objListItem;
+                        const float rx = objMenuX + it.rect.x, ry = objMenuY + it.rect.y, rw = it.rect.w, rh = it.rect.h;
+                        if (const assets::Font* f = fontFor(it.textScale)) {
+                            const float gs = it.textScale * 48.0f / float(f->pixelHeight);
+                            const float fontH = rnd(it.textScale * 48.0f);
+                            const float rowH = std::max(fontH, rh);
+                            const int wrapPx = float(w) / float(h) <= 4.0f / 3.0f + 1e-4f ? 600 : 530; // cg_objectiveListWrapCountStandard / Widescreen
+                            const auto textW = [&](const std::string& t) {
+                                float tw = 0;
+                                for (unsigned char ch : t)
+                                    if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                                return int(rnd(tw));
+                            };
+                            float y = ry, lastIconTop = 0;
+                            std::array<uint8_t, 4> lastCol{255, 255, 255, 255};
+                            for (const auto& ob : world->objectives()) {
+                                if (ob.state < 1 || ob.state > 5) continue;
+                                if (ob.state == 2) { y += rowH + 4.0f; continue; } // invisible: only the row step (0x4c0733)
+                                std::array<uint8_t, 4> col{};
+                                std::string mat;
+                                switch (ob.state) {
+                                case 1: col = {b8(0.6f), b8(0.6f), b8(0.6f), b8(objAlpha)}; mat = ob.icon.empty() ? "checkbox_active" : ob.icon; break;
+                                case 3: col = {b8(0.35f), b8(0.35f), b8(0.35f), b8(objAlpha)}; mat = "checkbox_done"; break;
+                                case 4: col = {255, 255, 255, b8(objAlpha)}; mat = ob.icon.empty() ? "checkbox_current" : ob.icon; break;
+                                default: col = {b8(0.4f), b8(0.3f), b8(0.3f), b8(objAlpha)}; mat = "ui/assets/checkbox_fail"; break;
+                                }
+                                lastCol = col;
+                                {
+                                    Quad2D q{rx * sc, (y - rh) * sc, (rx + rw) * sc, (y - rh) * sc + rh * sc};
+                                    std::memcpy(q.rgba, col.data(), 4);
+                                    q.texture = materialTexture(mat);
+                                    out.push_back(q);
+                                    lastIconTop = (y - rh) * sc;
+                                }
+                                // Text: the localized reference with its "&&N" arguments (after \x1f, see objective_string).
+                                std::string text = ob.text.substr(0, ob.text.find('\x1f'));
+                                if (const std::string* t = loc.find(text)) text = *t;
+                                for (size_t at = ob.text.find('\x1f'), n = 1; at != std::string::npos; ++n) {
+                                    const size_t next = ob.text.find('\x1f', at + 1);
+                                    const std::string mark = "&&" + std::to_string(n);
+                                    if (const size_t k = text.find(mark); k != std::string::npos)
+                                        text.replace(k, mark.size(), ob.text.substr(at + 1, next == std::string::npos ? next : next - at - 1));
+                                    at = next;
+                                }
+                                const float tx = rnd((rx + rw + 12.0f) * sc);
+                                const auto drawLine = [&](const std::string& ln) {
+                                    hudText(out, ln, tx, rnd(((rowH - rh) * 0.5f + y) * sc), gs * sc, *f, col.data(), 0.0f, 1.0f, it.textStyle);
+                                    y += rowH + 4.0f;
+                                };
+                                // 0x4bffb0: while the width exceeds the wrap count, break at the last space whose prefix fits
+                                // (scanning back from the end); no fitting space leaves the text as it is.
+                                while (textW(text) > wrapPx) {
+                                    size_t cut = std::string::npos;
+                                    for (size_t n = text.size(); n-- > 1;)
+                                        if (text[n] == ' ' && textW(text.substr(0, n)) <= wrapPx) { cut = n; break; }
+                                    if (cut == std::string::npos) break;
+                                    drawLine(text.substr(0, cut));
+                                    text = text.substr(cut + 1);
+                                }
+                                drawLine(text);
+                            }
+                            // Connector line (0x4d4990 twice; horizontal code 5 = already screen pixels, vertical code 1):
+                            // from the first row's top down to the last icon's top, in the gap between the icons and the text.
+                            const float yTop = ry - fontH;
+                            const float D = lastIconTop - yTop;
+                            if (lastIconTop != 0.0f && D != 0.0f) {
+                                const float X = ((12.0f - sr) * 0.5f + rw + rx) * sc;
+                                Quad2D sh{X + sr, (yTop + 1.0f) * sc, X + sr + 1.0f, (yTop + 1.0f) * sc + D * sc};
+                                sh.rgba[0] = sh.rgba[1] = sh.rgba[2] = 0, sh.rgba[3] = b8(objAlpha);
+                                out.push_back(sh);
+                                Quad2D ln{X, yTop * sc, X + sr, yTop * sc + D * sc};
+                                std::memcpy(ln.rgba, lastCol.data(), 4);
+                                out.push_back(ln);
+                            }
+                        }
+                    }
+                    // Header (0x4bfdd0): CGAME_MISSIONOBJECTIVES at the item's x / baseline y, the item colour; below it a one pixel
+                    // underline (thickness round(sy)) from x to the mirrored right margin with a black copy one pixel right / down.
+                    {
+                        const ui::Item& it = *objHeaderItem;
+                        const float rx = objMenuX + it.rect.x, ry = objMenuY + it.rect.y;
+                        if (const assets::Font* f = fontFor(it.textScale)) {
+                            const std::string* t = loc.find("CGAME_MISSIONOBJECTIVES");
+                            const uint8_t col[4] = {b8(it.foreColor[0]), b8(it.foreColor[1]), b8(it.foreColor[2]), b8(objAlpha)};
+                            hudText(out, t ? *t : std::string("CGAME_MISSIONOBJECTIVES"), rnd(rx * sc), rnd(ry * sc),
+                                    it.textScale * 48.0f / float(f->pixelHeight) * sc, *f, col, 0.0f, 1.0f, it.textStyle);
+                            const float t0 = rx * sc, W = -rx * sc + float(w) - t0, y0 = ry * sc;
+                            Quad2D sh{t0 + sr, y0 + 2.0f * sr, t0 + sr + W, y0 + 2.0f * sr + 1.0f};
+                            sh.rgba[0] = sh.rgba[1] = sh.rgba[2] = 0, sh.rgba[3] = b8(objAlpha);
+                            out.push_back(sh);
+                            Quad2D ln{t0, y0 + sr, t0 + W, y0 + sr + sr};
+                            std::memcpy(ln.rgba, col, 4);
+                            out.push_back(ln);
+                        }
+                    }
+                }
+            }
             // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
             // skipped, localized) fades in over hud_deathQuoteFadeTime ms (default 1000) of client time. 0x4cc6a0 wraps
             // it at spaces to the item width, centres each line on rect x + textalignx, line step text height + 5;
@@ -4336,6 +4468,43 @@ int main(int argc, char** argv) {
                         }
                     }
             }
+            // Tank status (menu "tankstatus", ownerdraws 90 body 0x4aa1b0 / 91 barrel 0x4aa360): only in a vehicle (pm_flags 0x20000, not
+            // 0x80000). Both are LEFT / BOTTOM aligned like the stance icon. angle = wrap180(view yaw (0xf79194) - yaw), yaw = the
+            // vehicle's angles[1] (centity +0x158) for the body, the tag_barrel forward yaw (0x4ab9e0) for the barrel. The body quad
+            // turns about its centre (0x4b0310); the barrel quad (x ± w/2, y - 0.75 h .. y + 0.25 h; constants 0x591e38, 0x591fe0) turns
+            // about the item's top-left corner (0x4b0490), which is the body's centre. The x offset (cg_hudCompassSize - 1) * 0xf5bcc8 * 0.7
+            // is 0 at the default size 1. TODO(spec): the centity flag test (+0xb0 & 0x10000), the corner-to-UV order of 0x617b68
+            // (taken as (0,0) (1,0) (1,1) (0,1) like the damage indicator).
+            if (const ui::Menu* tm = hudMenus.find("tankstatus"); tm && world) {
+                float bodyYaw = 0, barrelYaw = 0;
+                bool hasBarrel = false;
+                if (!(world->playerPmFlags() & 0x80000) && world->playerVehicleHudYaws(bodyYaw, barrelYaw, hasBarrel))
+                    for (const auto& itp : tm->items) {
+                        if (itp->ownerDraw != 90 && itp->ownerDraw != 91) continue;
+                        if (itp->ownerDraw == 91 && !hasBarrel) continue;
+                        const auto& r = itp->rect;
+                        float dlt = c.yaw - (itp->ownerDraw == 90 ? bodyYaw : barrelYaw);
+                        while (dlt > 180.0f) dlt -= 360.0f;
+                        while (dlt < -180.0f) dlt += 360.0f;
+                        const float x = (tm->rect.x + r.x) * sc, y = float(h) + (tm->rect.y + r.y) * sc, rw = r.w * sc, rh = r.h * sc;
+                        Quad2D q{x, y, x + rw, y + rh};
+                        for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture(itp->background);
+                        if (itp->ownerDraw == 90) {
+                            q.rotDeg = dlt;
+                        } else {
+                            const float px[4] = {rw * 0.5f, -rw * 0.5f, -rw * 0.5f, rw * 0.5f};
+                            const float py[4] = {-rh * 0.75f, -rh * 0.75f, rh * 0.25f, rh * 0.25f};
+                            const float ang = dlt * float(M_PI) / 180.0f, cs = std::cos(ang), sn = std::sin(ang);
+                            q.free = true;
+                            for (int k = 0; k < 4; ++k) {
+                                q.qx[k] = cs * px[k] - sn * py[k] + x;
+                                q.qy[k] = sn * px[k] + cs * py[k] + y;
+                            }
+                        }
+                        out.push_back(q);
+                    }
+            }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
             // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
             // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
@@ -4784,6 +4953,8 @@ int main(int argc, char** argv) {
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // Debug: IW2_SHOT_HINT=<state> shows an invalid-command hint state 300 ms into its blink cycle.
                 if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), world->timeMs() - 300);
+                // Debug: IW2_SHOT_OBJECTIVES=1 shows the objectives screen as if +scores were held.
+                if (std::getenv("IW2_SHOT_OBJECTIVES")) hudFade.objectivesHeld = true;
                 // Debug: IW2_SHOT_HEALTH=<hp or fraction of maxhealth when <= 1>[,<trail fraction>[,<pulse phase ms>]] sets the player health, the red trail of the health bar
                 // (the fraction it just fell from) and how far into its pulse period the health background is.
                 if (const char* hs = std::getenv("IW2_SHOT_HEALTH"); hs && world->player()) {
@@ -5567,6 +5738,8 @@ int main(int argc, char** argv) {
                         (changed & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
                         hudFade.compass = nowMs;
                     hudFade.buttons = buttons;
+                    // +scores / -scores (0x4a4d40 / 0x4a4d20): each change of the objectives key stamps the touch time 0xf79200.
+                    if (!std::getenv("IW2_SHOT_OBJECTIVES") && input.objectivesHeld() != hudFade.objectivesHeld) hudFade.objectivesHeld = input.objectivesHeld(), hudFade.objectives = nowMs;
                 }
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};

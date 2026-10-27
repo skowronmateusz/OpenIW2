@@ -71,7 +71,10 @@ void World::registerCampaignBuiltins() {
     });
     // TODO(spec): objective_string's message (FUN_004f18c0) is not decompiled; the text is stored only.
     auto setString = [this, index, setState](CallContext& c) {
-        objectives_[size_t(index(c.arg(0)))].text = textOf(c.arg(1));
+        // The further arguments (the "&&N" values, formatted by 0x4eb9b0 like iprintln's) follow after \x1f.
+        std::string text = textOf(c.arg(1));
+        for (size_t i = 2; i < c.args.size(); ++i) text += "\x1f" + c.arg(i).toString();
+        objectives_[size_t(index(c.arg(0)))].text = text;
         return Value();
     };
     vm_.registerBuiltin("objective_string", setString);

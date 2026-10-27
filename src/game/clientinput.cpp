@@ -125,6 +125,7 @@ void ClientInput::command(const std::string& cmdIn, bool down, const std::string
             {"forward", &forward_},     {"back", &back_},           {"moveleft", &moveLeft_},
             {"moveright", &moveRight_}};
         auto act = [&](KButton& b) { down ? press(b, keyName) : release(b, keyName); };
+        if (name == "scores") { objectivesHeld_ = down; return; } // cgame 0x4a4d40 (+scores) / 0x4a4d20 (-scores): the objectives screen
         if (auto it = buttons.find(name); it != buttons.end()) return act(*it->second);
         if (name == "melee_breath") { act(melee_); act(holdBreath_); return; }          // 0x408f70
         if (name == "breath_binoculars") { act(holdBreath_); act(binoculars_); return; } // 0x409010
