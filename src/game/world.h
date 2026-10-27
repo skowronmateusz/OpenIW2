@@ -103,6 +103,7 @@ struct ActorAi {
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
     bool animDeltaGoalWeights = false;        // +0x220 anim deltas weigh by goal weights (TODO(spec): the states that set it)
     script::Value customScript;               // +0x208 animcustom function
+    std::string negotiationScript;            // +0x208 for state 9: the begin node's animscript key (animscripts/traverse/<key>, 0x543760)
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
@@ -312,6 +313,43 @@ public:
         p[1] += std::sin(yaw) * 120.0f;
         b.obj->set("origin", Value(p));
         syncEntityClips(); // the clips are rebuilt once per frame; the scene shoots in the same frame
+    }
+    // IW2_TRAVERSE_SCENE: the `which`-th negotiation pair (begin node with target == an end node's targetname, both linked in
+    // the graph) that has a node linked on each outer side. Puts `a` on the begin side's node and gives it the goal on the end
+    // side. Returns the begin node (the end node in `endNode`) or -1.
+    int debugTraversalSetup(Entity& a, int which, int& endNode) {
+        int seen = 0;
+        for (size_t i = 0; i < nodes_.size(); ++i) {
+            if (nodes_[i].typeNum != 16) continue;
+            const Value tg = nodes_[i].obj->get("target");
+            if (!tg.isString()) continue;
+            for (size_t j = 0; j < nodes_.size(); ++j) {
+                if (nodes_[j].typeNum != 17) continue;
+                const Value tn = nodes_[j].obj->get("targetname");
+                if (!tn.isString() || tn.asString() != tg.asString()) continue;
+                int from = -1, to = -1;
+                for (const auto& l : paths_.links(i)) if (l.target != j && from < 0) from = l.target;
+                for (const auto& l : paths_.links(j)) if (l.target != i && to < 0) to = l.target;
+                if (from < 0 || to < 0) continue;
+                const std::vector<int> route = paths_.findPath(from, to); // only pairs the shortest route really uses
+                if (std::find(route.begin(), route.end(), int(i)) == route.end() || std::find(route.begin(), route.end(), int(j)) == route.end()) continue;
+                if (seen++ != which) continue;
+                a.obj->set("origin", nodes_[size_t(from)].obj->get("origin"));
+                a.obj->set("$goalpos", nodes_[size_t(to)].obj->get("origin"));
+                a.obj->set("$goalnodeangles", Value());
+                a.obj->set("$goalfrozen", Value(true));
+                a.nodeCached = false;
+                clearActorPath(a);
+                a.ai.stopSoonMs = 0;
+                a.obj->set("keepclaimednode", Value(int32_t(0)));
+                a.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+                if (a.claimedNode >= 0) releaseNode(a);
+                a.obj->set("team", Value(std::string("neutral"))); // no enemies: the actor stays on the goal path
+                endNode = int(j);
+                return int(i);
+            }
+        }
+        return -1;
     }
     // IW2_COMBAT_SCENE: one rifle bullet from a's muzzle height to b's chest, credited to a.
     // IW2_COMBAT_SCENE with IW2_SCENE_COVER=1: finds a cover node (types 2..9, not spawnflag 1) and puts b 150 units to its
@@ -729,6 +767,9 @@ private:
     int painThink(Entity& e);
     int deathThink(Entity& e);
     int customThink(Entity& e);
+    int negotiationThink(Entity& e);               // 0x54b760
+    void replanFromSentient(Entity& e);            // 0x5037e0
+    bool negotiationTrigger(Entity& e, const Vec3& o, bool grounded); // the state 9 branch of 0x503ec0
     void registerActorStateBuiltins();
     // Cover nodes and claiming (src/game/actorcover.cpp)
     bool nodeUsable(Entity& e, int node);

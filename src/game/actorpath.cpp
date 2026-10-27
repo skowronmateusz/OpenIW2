@@ -311,8 +311,12 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
 // start and mark the path truncated (+0x6e8 |= 4). Each point gets the unit 2D direction and length of the segment
 // from the next point to it; the start (+0x6f8) is the last point. The budget (from 0x541780) carries over, and the
 // lookahead is re-aimed (0x541a70; with flag 0x80 reset instead). TODO(spec): +0x3d4, cleared when the goal moves.
-// TODO(spec): the negotiation pairs (node types 16 → 17 with matching link ids) that set the traversal index +0x386
-// and fail the path when traversals are not allowed, and the plan argument +0x3c0.
+// The negotiation pair (0x541da0): walking from the goal end, a point of node type 17 (node_negotiation_end) whose
+// next point toward the start is type 16 (node_negotiation_begin) with target == the end node's targetname; the last
+// match (nearest the start) sets the traversal index +0x386 to the begin point (the follower stops there and the
+// negotiation state 9 takes over). Flag 0x10 (traversals allowed) is the
+// 0x541da0 argument; every actor-goal path passes 1. TODO(spec): the refusal when it is 0 (callers not read) and the
+// plan argument +0x3c0.
 void World::buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos) {
     ActorPath& p = e.path;
     const Vec3 o = originOf(e.obj);
@@ -335,7 +339,17 @@ void World::buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3&
         p.pts[size_t(i)] = {originOf(nodes_[size_t(node)].obj), {}, 0, node};
     }
     if (truncated) p.pts[0] = {originOf(nodes_[size_t(chain[size_t(n - 1)])].obj), {}, 0, chain[size_t(n - 1)]};
+    p.flags |= 0x10;
     p.traversal = 0;
+    for (int i = 0; i + 1 < n; ++i) {
+        const int endNode = p.pts[size_t(i)].node, beginNode = p.pts[size_t(i + 1)].node;
+        if (endNode < 0 || beginNode < 0) continue;
+        const PathNode& en = nodes_[size_t(endNode)];
+        const PathNode& bn = nodes_[size_t(beginNode)];
+        if (en.typeNum != 17 || bn.typeNum != 16) continue;
+        const Value tn = en.obj->get("targetname"), tg = bn.obj->get("target");
+        if (tn.isString() && tg.isString() && tn.asString() == tg.asString()) p.traversal = i + 1;
+    }
     PathPoint& end = p.pts[size_t(n - 1)];
     end.dir = {0, 0};
     end.len = 0;
@@ -796,6 +810,29 @@ bool World::replanActorPath(Entity& e, const Vec3& o) {
     if (!searchNodes(teamOf(e), s, g, goal, {}, chain)) return false;
     buildActorPath(e, chain, goal);
     return true;
+}
+
+// 0x5037e0: with a path, the area to the budget, no points (+0x6b0 / +0x6b2, +0x724), flag 0x80 and the node cache flag
+// cleared; the sentient node (0x515040) to the node around the path's goal as in 0x5424d0 (traversals allowed kept).
+void World::replanFromSentient(Entity& e) {
+    ActorPath& p = e.path;
+    if (p.count <= 0) return;
+    const Vec3 o = originOf(e.obj);
+    const Vec3 goal = p.goal;
+    pathClearBudget(p, o);
+    p.count = p.planned = 0;
+    e.ai.detourMs = 0;
+    p.flags |= 0x80;
+    e.nodeCached = false;
+    e.nodeCacheMs = timeMs_;
+    const int s = sentientNode(e);
+    if (s < 0) return;
+    const int g = queryNode(goal, 192.0f, true, 0xfffffffe, {}, nullptr);
+    if (g < 0) return;
+    std::vector<int> chain;
+    if (!searchNodes(teamOf(e), s, g, goal, {}, chain)) return;
+    buildActorPath(e, chain, goal);
+    p.flags |= 0x80;
 }
 
 } // namespace iw2::game
