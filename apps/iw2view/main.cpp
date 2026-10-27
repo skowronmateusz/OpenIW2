@@ -3453,7 +3453,13 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
-                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
+                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) {
+                    if (world && frontStack.empty()) { // CL_KeyEvent 0x40c216: ESC in a running level -> UI_SetActiveMenu(2)
+                        menuEnv.setCvar("cl_paused", "1");
+                        menuMx = 320.0f, menuMy = 240.0f;
+                        frontStack.open("main");
+                    } else running = false;
+                }
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
                     godMode = !godMode;
@@ -3771,7 +3777,7 @@ int main(int argc, char** argv) {
                 }
                 mixer.fadeStep(dt * 1000.0f);
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
-                gameClock += std::min(dt, 0.25f) * slowmo;
+                if (menuEnv.getCvar("cl_paused") != "1") gameClock += std::min(dt, 0.25f) * slowmo; // cl_paused freezes the simulation
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
@@ -3916,11 +3922,18 @@ int main(int argc, char** argv) {
                     rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
                     using K = ui::MenuStack::Key;
                     std::cout << "menu key " << k << "\n";
+                    if (k == "pause" && world && frontStack.empty()) {
+                        menuEnv.setCvar("cl_paused", "1");
+                        frontStack.open("main");
+                    } else if (k == "wait") {
+                    } else
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
+                    std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
                     nextKey = SDL_GetTicksNS() + 2000000000ull;
                 }
             }
+            if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();
                 if (wantCursor == SDL_GetWindowRelativeMouseMode(window)) SDL_SetWindowRelativeMouseMode(window, !wantCursor);

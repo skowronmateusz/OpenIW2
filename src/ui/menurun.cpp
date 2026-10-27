@@ -49,6 +49,13 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         if (cmd.empty()) continue;
         const std::string name = lowerStr(cmd[0]);
         if (name == "play" && cmd.size() > 1) { if (env.play) env.play(cmd[1]); }
+        else if (name == "ingameclose") { // UI_SetActiveMenu(0) 0x4c6520: clear the catcher and the paused state, close every menu
+            env.setCvar("cl_paused", "0");
+            if (env.closeAll) env.closeAll();
+        } else if (name == "ingameopen" && cmd.size() > 1) { // UI_SetActiveMenu(2): cl_paused 1, open the menu
+            env.setCvar("cl_paused", "1");
+            if (env.open) env.open(cmd[1]);
+        }
         else if (name == "open" && cmd.size() > 1) { if (env.open) env.open(cmd[1]); }
         else if (name == "setfocus" && cmd.size() > 1) { if (env.setFocus) env.setFocus(cmd[1]); }
         else if (name == "setfocusbydvar" && cmd.size() > 1) { if (env.setFocusByDvar) env.setFocusByDvar(cmd[1]); }

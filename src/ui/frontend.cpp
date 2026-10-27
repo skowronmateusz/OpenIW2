@@ -21,6 +21,7 @@ constexpr size_t kMaxOpenMenus = 16; // TODO(spec): the limit behind the "Too ma
 MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
     env_.open = [this](const std::string& n) { open(n); };
     env_.close = [this](const std::string& n) { close(n); };
+    env_.closeAll = [this] { closeAll(); };
     env_.setFocus = [this](const std::string& n) {
         // TODO(spec): exe error "setFocus: could not find widget named '%s'" when missing.
         if (Menu* m = top())
