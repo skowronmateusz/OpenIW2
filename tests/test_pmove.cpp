@@ -84,6 +84,17 @@ int main() {
         for (int i = 0; i < 60; ++i) playerMove(cw, in0, {}, 1.0f / 60.0f);
         std::cout << "from 0.5 below the floor: z " << in0.origin[2] - floor[2] << " relative to the floor\n";
         CHECK(in0.origin[2] > floor[2] - 1.0f);
+
+        // Jumping with pm_flags 0x20 (ladder) adds event 0x5b (0x541640 -> 0x54164f).
+        PlayerState lad;
+        lad.origin = {floor[0], floor[1], floor[2] + 1};
+        for (int i = 0; i < 40; ++i) playerMove(cw, lad, {}, 0.05f);
+        lad.onLadder = true;
+        PlayerInput jin;
+        jin.jump = true;
+        const int before = lad.eventSeq;
+        playerMove(cw, lad, jin, 1.0f / 60.0f);
+        CHECK(lad.eventSeq == before + 1 && lad.events[before & 3] == 0x5b);
     }
 
     if (failures) std::cerr << failures << " failures\n";

@@ -480,6 +480,8 @@ public:
     float fxVisibility(const Vec3& start, const Vec3& end) const;
 
     // The player's weapon inventory (throws for non-players).
+    // Out-of-ammo weapon switch (cgame 0x4b7090): the weapon to select, or empty to keep the current one.
+    std::string outOfAmmoSwitch(const Inventory& inv, const std::string& current);
     Inventory& inventory(Entity& player);
 
     // Dvar names compare case-insensitively (dvar lookup 0x431260 -> 0x43f6d0, the same compare dvarStrList uses): scripts read

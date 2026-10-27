@@ -39,6 +39,23 @@ std::string World::weaponField(const std::string& weaponName, const char* key) {
 
 int World::weaponInt(const std::string& weaponName, const char* key) { return std::atoi(weaponField(weaponName, key).c_str()); }
 
+// 0x4b7090: another owned weapon of the same weaponSlot (+0x80) that is slotStackable (+0x88) and has clip + stock
+// rounds is selected (0x4b8360); otherwise one of the two stored slots with ammo is cycled to (0x4b7410).
+// TODO(spec): the exact scan order over the owned weapons (the bitmask at 0xf70e00) and which slot is tried first.
+std::string World::outOfAmmoSwitch(const Inventory& inv, const std::string& current) {
+    auto rounds = [&](const std::string& w) {
+        auto a = inv.ammo.find(weaponField(w, "ammoName")), c = inv.clip.find(weaponField(w, "clipName"));
+        return (a == inv.ammo.end() ? 0 : a->second) + (c == inv.clip.end() ? 0 : c->second);
+    };
+    for (const auto& w : inv.owned)
+        if (w != current && weaponField(w, "weaponSlot") == weaponField(current, "weaponSlot") && weaponInt(w, "slotStackable") != 0 &&
+            rounds(w) > 0)
+            return w;
+    for (int s = 1; s <= 2; ++s)
+        if (!inv.slot[s].empty() && inv.slot[s] != current && rounds(inv.slot[s]) > 0) return inv.slot[s];
+    return {};
+}
+
 Inventory& World::inventory(Entity& player) {
     if (!player.isPlayer) throw std::runtime_error("entity " + std::to_string(player.number) + " is not a player");
     return inventories_[player.number];

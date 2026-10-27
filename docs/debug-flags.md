@@ -15,6 +15,8 @@ described in the code that reads them.
 | `IW2_NO_GLOW=1` | iw2view | Disables the glow/bloom post chain (glow_setup, two blur layers, glow_apply_bloom/sky_bleed); the scene then goes straight to the swapchain. For A/B comparison. |
 | `IW2_NO_PROBE=1` | iw2view | Entities and the view model use the old single up-normal light-grid colour instead of per-pixel ProbeLighting(N). For A/B comparison. |
 | `IW2_PROF=N` | iw2view | Prints average per-frame CPU timings every N frames and quits after two reports. |
+| `IW2_SHOT_SCRIPT=t:action,...` | iw2view `--shot` | Scripted weapon input before the shot (actions `reload+/-`, `fire+/-`, `ads+/-`, `frag+/-`, `smoke+/-`, `melee+/-`, `weapon=name`; times in seconds) for `IW2_SHOT_SECONDS` (default 3); logs `shot-script` lines (state, anim, clip, stock, ads every 0.26 s, events). Melee and throw events act on the world. |
+| `IW2_VM_TRACE=1` | iw2view | Prints the view model anim, frame, time and hand/gun models each time it is added. |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
 | `IW2_TRACER_TEST=N` | iw2view | With `--shot`, N tracer attempts (the 0.4 chance applies) from beside the view to 1500 units ahead, aged `IW2_FX_MS` (default 100). |

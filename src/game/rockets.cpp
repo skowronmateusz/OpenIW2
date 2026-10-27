@@ -96,6 +96,10 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
         dir = l != 0.0f ? Vec3{dir[0] / l, dir[1] / l, dir[2] / l} : Vec3{0, 0, 1};
         World::damage(*hit, r.parent, damage, dir, tr.endPos, "MOD_PROJECTILE", "none");
     }
+    // 0x526484: with a direct damage the impact also runs the trigger_damage segment test (0x5295f0) from the missile
+    // origin (the trace end point was stored there at 0x526e7b), MOD_PROJECTILE, for the parent.
+    // TODO(spec): the segment's end argument is a local of G_RunMissile (the stack slot 0x24); the origin is used for both ends.
+    if (damage != 0) triggerDamageSegment(r.parent, tr.endPos, tr.endPos, damage, 5);
     if (std::atoi(weaponField(r.weapon, "projImpactExplode").c_str()) == 0) {
         e.obj->removed = true;
         return;
