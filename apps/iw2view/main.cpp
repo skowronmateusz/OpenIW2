@@ -2796,7 +2796,19 @@ int main(int argc, char** argv) {
                 in >> c >> a1;
                 std::getline(in >> std::ws, a2);
                 for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                while (!a2.empty() && std::isspace(static_cast<unsigned char>(a2.back()))) a2.pop_back();
                 if (c == "vstr") execText(menuEnv.getCvar(a1));
+                // "setfromdvar dst src" (console command, ui/options_graphics.cfg) copies the value of src (registered default if unset).
+                // TODO(spec): exe address of the command and its behaviour for an unknown src.
+                else if (c == "setfromdvar") menuEnv.setCvar(a1, menuEnv.getCvar(a2));
+                // "exec <file>" runs a shipped cfg (menu onOpen of options_graphics: ui/options_graphics.cfg), one command per line.
+                else if (c == "exec" && !a1.empty()) {
+                    if (const auto cfg = vfs.read(a1)) {
+                        std::string t(cfg->begin(), cfg->end());
+                        for (auto& ch : t) if (ch == '\r' || ch == '\n') ch = ';';
+                        execText(t);
+                    }
+                }
                 else if (c == "set" || c == "seta" || c == "sets") menuEnv.setCvar(a1, a2);
                 else if (c == "map") pendingLevel = std::make_pair(a1, false);
                 // Exe commands 0x446860..0x4468c0 (difficultyEasy/Medium/Hard/Fu) call 0x432570 with 0/1/2/3 and then re-apply the skill.

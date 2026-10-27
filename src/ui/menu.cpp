@@ -313,6 +313,9 @@ private:
             } else if (k == "dvarfloatlist") {
                 const auto v = strings(blk);
                 for (size_t i = 0; i + 1 < v.size(); i += 2) it.floatList.emplace_back(v[i], std::strtof(v[i + 1].c_str(), nullptr));
+            } else if (k == "dvarstrlist") {
+                const auto v = strings(blk);
+                for (size_t i = 0; i + 1 < v.size(); i += 2) it.strList.emplace_back(v[i], v[i + 1]);
             } else if (k == "dvarenumlist" && !a.empty()) it.enumList = a[0];
             else if (k == "focusdvar") it.focusDvar = strings(blk);
             else if (k == "showdvar") it.showDvar = strings(blk);
