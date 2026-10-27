@@ -122,6 +122,7 @@ int main() {
                                 for (int i = 0; i < 20; ++i) playerMove(cw, cl, ci, 1.0f / 60.0f);
                                 CHECK(cl.onLadder);
                                 CHECK(cl.origin[2] > z0 + 20.0f);
+                                CHECK(cl.eventSeq > 0); // ladder footsteps (PM_Footsteps ladder branch 0x50a8c5)
                                 // Jumping off the ladder gives the ladder jump event 0x5b (checkJump).
                                 cl.lastJumpMs = -100000;
                                 PlayerInput ji = ci;
