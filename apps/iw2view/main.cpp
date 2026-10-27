@@ -1594,6 +1594,9 @@ int main(int argc, char** argv) {
         // Client interpolation state: entity origin/angles before the latest server frame and the fraction of the
         // next frame already elapsed (cg.frameInterpolation).
         std::map<int, std::pair<script::Vec3, script::Vec3>> lerpPrev;
+        // Anim state before the last server frame: the drawn pose is that state advanced by the interpolation fraction, so poses move
+        // smoothly with the lerped origin instead of stepping at 20 Hz (the original advances anim time per client frame, 0x4afb70).
+        std::map<int, game::AnimState> prevAnim;
         float lerpFrac = 1.0f;
         auto gatherItems = [&](const Camera& view) {
             std::vector<DrawItem> items;
@@ -1656,7 +1659,14 @@ int main(int argc, char** argv) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
                     const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!body) continue;
-                    const assets::XPose pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
+                    assets::XPose pose;
+                    if (auto pa = prevAnim.find(e->number); e->anim && pa != prevAnim.end() && lerpFrac < 1.0f) {
+                        game::AnimState tmp(pa->second); // no notifies: they already fired in the server frame
+                        tmp.update(lerpFrac * 0.05f, [](const std::string&, const std::string&) {});
+                        pose = tmp.pose(body->parts);
+                    } else {
+                        pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
+                    }
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *body, pose);
                     if (it.model) items.push_back(it);
@@ -2766,6 +2776,11 @@ int main(int argc, char** argv) {
                         if (o.isVector())
                             lerpPrev[e->number] = {o.asVector(), a.isVector() ? a.asVector() : script::Vec3{0, 0, 0}};
                     }
+                    for (const auto& e : world->entities()) {
+                        if (!e->isActor || !e->anim) continue;
+                        prevAnim.erase(e->number);
+                        prevAnim.emplace(e->number, *e->anim);
+                    }
                     world->frame();
                     gameClock -= 0.05f;
                 }
@@ -2839,6 +2854,7 @@ int main(int argc, char** argv) {
                     prevSelect.clear();
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
                     lerpPrev.clear();
+                    prevAnim.clear();
                     gameClock = 0;
                     // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
                     // original's reset on load is not read).
