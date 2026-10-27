@@ -78,4 +78,7 @@ int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace);
 // just zeroes the velocity. Returns the step slide result (1 for the early outs).
 int moveBlock(ActorSlide& pm, const SlideTraceFn& trace);
 
+// Default on; IW2_ACTOR_SLIDE=0 switches World::moveActor back to the plain ground snap.
+bool actorSlideEnabled();
+
 } // namespace iw2::game
