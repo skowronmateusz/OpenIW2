@@ -2210,7 +2210,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -3668,6 +3668,73 @@ int main(int argc, char** argv) {
                     out.push_back(q);
                 }
             }
+            // Health bar (menu "Health": back + cross = ownerdraw 95 (0x4a8ab0), bar = ownerdraw 79 (0x4a8800)). Fade: hud_fade_healthbar
+            // (2 s, touch 0xf79a3c, touched by a damage event 0x4ba537). Fraction (0x4a8790) = health / maxhealth clamped to 0..1 (1 when
+            // either is 0). Bar: item rect with width * fraction, texcoords s 0..fraction, item colour with alpha = fade, adjusted by
+            // the fraction c: c > 0.5 -> r and b scaled by 2 * (1 - c); else g = (c + 0.2) * g + 0.3. A red (1 0 0) trail (0xf796a8)
+            // covers fraction..trail: it follows the fraction up at once and falls by 0.0012 per ms (0x592080) after a damage frame.
+            // Back (95): background drawn with the item colour and the fade alpha; below hud_health_startpulse_injured (1.0) the same
+            // background is drawn again in (0.89 0.18 0.01) with alpha (timer - now + period) / period, capped by the fade, period =
+            // hud_health_pulserate_injured (1.0 s), below hud_health_startpulse_critical (0.33) pulserate_critical (0.5 s).
+            // TODO(spec): the pm_type == 4 case of 0x4a8790, other health touches, the cg_drawHealth-style dvar 0xf48cf8 (assumed on),
+            // the texcoords of the trail (assumed fraction..trail), the hud_health_pulserate dvar flags.
+            if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player()) {
+                const int64_t now = world->timeMs();
+                const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
+                hudFade.lastHudMs = now;
+                const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
+                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // TODO(spec): player maxhealth source
+                float frac = 1.0f;
+                if (hp != 0 && maxHp != 0) frac = std::clamp(float(hp) / float(maxHp), 0.0f, 1.0f);
+                const float fa = fadeAlpha(hudFade.health, 2.0f, 2000);
+                if (fa > 0.0f) {
+                    // trail state machine (0x4a8988..0x4a8a00)
+                    if (frac >= hudFade.healthTrail) {
+                        hudFade.healthTrail = frac;
+                        hudFade.healthTrailTimer = 1;
+                    } else if (hudFade.healthTrailTimer != 0) {
+                        hudFade.healthTrailTimer -= dtMs;
+                        if (hudFade.healthTrailTimer < 0) hudFade.healthTrailTimer = 0;
+                    } else {
+                        hudFade.healthTrail = std::max(frac, hudFade.healthTrail - float(dtMs) * 0.0012f);
+                    }
+                    for (const auto& itp : hm->items) {
+                        const ui::Item& it = *itp;
+                        if (it.ownerDraw != 79 && it.ownerDraw != 95) continue;
+                        const float rx = float(w) + (hm->rect.x + it.rect.x) * sc, ry = float(h) + (hm->rect.y + it.rect.y) * sc;
+                        const float rw = it.rect.w * sc, rh = it.rect.h * sc;
+                        float col[4] = {it.foreColor[0], it.foreColor[1], it.foreColor[2], fa};
+                        auto put = [&](float x0, float x1, float s0, float s1, const float* cl, const std::string& mat) {
+                            Quad2D q{x0, ry, x1, ry + rh};
+                            q.s0 = s0, q.s1 = s1;
+                            for (int k = 0; k < 4; ++k) q.rgba[k] = uint8_t(std::clamp(cl[k], 0.0f, 1.0f) * 255.0f);
+                            q.texture = materialTexture(mat);
+                            out.push_back(q);
+                        };
+                        if (it.ownerDraw == 95) {
+                            if (it.background.empty()) continue;
+                            put(rx, rx + rw, 0, 1, col, it.background);
+                            if (frac == 0.0f) continue;
+                            int period = 0;
+                            if (frac < 0.33f) period = int(0.5f * 1000.0f + 0.5f);       // hud_health_startpulse_critical / pulserate_critical
+                            else if (frac < 1.0f) period = int(1.0f * 1000.0f + 0.5f);   // hud_health_startpulse_injured / pulserate_injured
+                            if (period == 0) continue;
+                            if (hudFade.healthPulse > now || hudFade.healthPulse + period < now) hudFade.healthPulse = now;
+                            const float pa = float(hudFade.healthPulse - now + period) / float(period);
+                            const float pc[4] = {0.89f, 0.18f, 0.01f, std::min(pa, fa)};
+                            put(rx, rx + rw, 0, 1, pc, it.background);
+                        } else if (frac > 0.0f && !it.background.empty()) {
+                            if (frac > 0.5f) { col[0] = 2.0f * (1.0f - frac) * col[0]; col[2] = 2.0f * (1.0f - frac) * col[2]; }
+                            else col[1] = (frac + 0.2f) * col[1] + 0.3f;
+                            put(rx, rx + rw * frac, 0, frac, col, it.background);
+                            if (hudFade.healthTrail > frac) {
+                                const float tc[4] = {1.0f, 0.0f, 0.0f, fa};
+                                put(rx + rw * frac, rx + rw * hudFade.healthTrail, frac, hudFade.healthTrail, tc, it.background);
+                            }
+                        }
+                    }
+                }
+            }
             // Stance (menu "stance", ownerdraw 20, 0x4a81e0): alpha = fade of hud_fade_stance (default 1.7 s, 0x10438e4, ticks = dvar * 1000,
             // touch 0xf79a44); nothing while the alpha is 0, nor in a vehicle (pm_flags 0x20000 without 0x80000). The stance change
             // time (0xf796c8) is set to now when it lies in the future or the stance (pm_flags & 3) differs from the stored one
@@ -4061,7 +4128,7 @@ int main(int argc, char** argv) {
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
@@ -4880,6 +4947,7 @@ int main(int argc, char** argv) {
                 // angle. TODO(spec): the view kick (0xf7979c / 0xf797a0) and the "Health" menu flag.
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
+                    if (hudFade.health < world->timeMs()) hudFade.health = world->timeMs(); // 0x4ba537: damage touches the health bar
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
                     if (df.count != 0) { // 0x4ba1c3: only with a damage count
                         const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
