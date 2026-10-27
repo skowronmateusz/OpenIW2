@@ -774,14 +774,20 @@ void World::registerCombatBuiltins() {
         const TraceResult tr = collision_->trace(add(from, {0, 0, 18}), add(to, {0, 0, 18}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
         return Value(tr.fraction >= 0.999f && !tr.startSolid);
     });
-    vm_.registerBuiltin("isingoal", [](CallContext& c) {
-        const auto o = c.self.asObject();
-        const Value g = o->get("$goalpos");
-        if (!g.isVector() || !c.arg(0).isVector()) return Value(true);
-        const Value r = o->get("goalradius");
-        const float radius = r.isNumber() ? r.asFloat() : 64.0f;
-        const Vec3 d = sub(c.arg(0).asVector(), g.asVector());
-        return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
+    // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).
+    // TODO(spec): the goal volume test (0x447830) when the goal has a volume (+0x75c).
+    vm_.registerBuiltin("isingoal", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (c.argc() != 1) throw std::runtime_error("isingoal: one argument");
+        if (!e || !e->isActor || !c.arg(0).isVector()) return Value(true);
+        Vec3 g{};
+        float r = 0, h = 0;
+        if (!actorGoal(*e, g, r, h)) return Value(true);
+        const Vec3 p = c.arg(0).asVector();
+        const float dz = p[2] - g[2];
+        if (h * h < dz * dz) return Value(false);
+        const float dx = g[0] - p[0], dy = g[1] - p[1];
+        return Value(!(r * r < dx * dx + dy * dy));
     });
     // Player-only builtins (0x590ab8 "entity %i is not a player" otherwise).
     auto playerSelf = [this](CallContext& c) -> Entity& {
