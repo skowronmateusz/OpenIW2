@@ -684,6 +684,15 @@ std::string lowerName(std::string s) {
     return s;
 }
 
+// Sun colour from the worldspawn keys (gfx DLL derive step 0x10004e00, 0x10004ef6..0x10004f2b): (sunlight − ambient) · (1 −
+// diffuseFraction) · suncolor with suncolor normalised so its largest component is 1 (0x1005e300). Absent keys: ambient 0,
+// diffuseFraction 0.5 (r_lightTweakDiffuseFraction), sunlight 1. TODO(spec): that this RGB is exactly the shader's lightColor0.
+static Vec3 worldSunColor(const Vec3& suncolor, float sunlight, float ambient, float diffuseFraction) {
+    const float mx = std::max({suncolor.x, suncolor.y, suncolor.z});
+    const float k = mx > 0 ? 1.0f / mx : 1.0f;
+    return suncolor * (k * (sunlight - ambient) * (1.0f - diffuseFraction));
+}
+
 void addBones(BoneMap& map, const assets::XModelParts& parts, const assets::XPose& pose) {
     for (size_t i = 0; i < parts.bones.size(); ++i) map.emplace(lowerName(parts.bones[i].name), std::make_pair(pose.position[i], pose.rotation[i]));
 }
@@ -818,9 +827,10 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     for (const auto& e : bsp.entities()) {
         const std::string* cls = e.get("classname");
         if (!cls || *cls != "worldspawn") continue;
-        float light = 1.0f;
+        float light = 1.0f, ambient = 0.0f, diffuseFraction = 0.5f;
         if (auto sl = e.get("sunlight")) light = std::stof(*sl);
-        if (auto c = e.get("suncolor")) scene.sunColor = parseVec3(*c) * light;
+        if (auto am = e.get("ambient")) ambient = std::stof(*am);
+        if (auto c = e.get("suncolor")) scene.sunColor = worldSunColor(parseVec3(*c), light, ambient, diffuseFraction);
         if (auto d = e.get("sundirection")) {
             const Vec3 a = parseVec3(*d);
             Camera c;
@@ -943,9 +953,10 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         const std::string* cls = e.get("classname");
         if (!cls) continue;
         if (*cls == "worldspawn") {
-            float light = 1.0f;
+            float light = 1.0f, ambient = 0.0f, diffuseFraction = 0.5f;
             if (auto s = e.get("sunlight")) light = std::stof(*s);
-            if (auto c = e.get("suncolor")) scene.sunColor = parseVec3(*c) * light;
+            if (auto am = e.get("ambient")) ambient = std::stof(*am);
+            if (auto c = e.get("suncolor")) scene.sunColor = worldSunColor(parseVec3(*c), light, ambient, diffuseFraction);
             if (auto d = e.get("sundirection")) {
                 const Vec3 a = parseVec3(*d); // pitch yaw roll; the resulting forward vector points towards the sun
                 Camera c;
@@ -1608,6 +1619,7 @@ int main(int argc, char** argv) {
         // Anim state before the last server frame: the drawn pose is that state advanced by the interpolation fraction, so poses move
         // smoothly with the lerped origin instead of stepping at 20 Hz (the original advances anim time per client frame, 0x4afb70).
         std::map<int, game::AnimState> prevAnim;
+        std::map<int, std::pair<float, float>> prevTurret; // turret pitch/yaw before the last server frame (drawn interpolated)
         float lerpFrac = 1.0f;
         auto gatherItems = [&](const Camera& view) {
             std::vector<DrawItem> items;
@@ -1628,7 +1640,10 @@ int main(int argc, char** argv) {
                 items.push_back(it);
                 scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
             }
-            const auto fxSprites = fxSystem.sprites(world->timeMs());
+            // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
+            // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
+            const int64_t fxNow = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
+            const auto fxSprites = fxSystem.sprites(fxNow);
             world->setFxSightBlockers(fxSystem.sightBlockers());
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
@@ -1707,6 +1722,10 @@ int main(int argc, char** argv) {
                     const Scene::CpuModel* tm = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!tm) continue;
                     float tp = e->turret->pitch, ty = e->turret->yaw;
+                    if (auto pt = prevTurret.find(e->number); pt != prevTurret.end()) { // CG_CalcEntityLerpPositions-style smoothing
+                        tp = pt->second.first + angleDelta(tp, pt->second.first) * -1.0f * lerpFrac;
+                        ty = pt->second.second + angleDelta(ty, pt->second.second) * -1.0f * lerpFrac;
+                    }
                     if (world->playerOnTurret() && e->turret->owner == world->player()->obj) {
                         tp = angleDelta(view.pitch, av[0]);
                         ty = angleDelta(view.yaw, av[1]);
@@ -2520,8 +2539,12 @@ int main(int argc, char** argv) {
                 else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0)
                     input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", true), input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", false);
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
-                    cam.yaw -= ev.motion.xrel * 0.15f;
-                    cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f, -89.0f, 89.0f);
+                    // CG_CalcFov 0x4ae8c0: look sensitivity is scaled by zoomSens = fovX / cg_fov (80), linear in degrees (0xf791c8, applied in
+                    // CL_MouseMove 0x409720). The base 0.15 deg per count is kept (exe default sensitivity 5 · m_yaw 0.022 = 0.11, TODO(spec):
+                    // SDL xrel units).
+                    const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
+                    cam.yaw -= ev.motion.xrel * 0.15f * zoomSens;
+                    cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * zoomSens, -89.0f, 89.0f);
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
                 if (ev.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
@@ -2809,6 +2832,7 @@ int main(int argc, char** argv) {
                             lerpPrev[e->number] = {o.asVector(), a.isVector() ? a.asVector() : script::Vec3{0, 0, 0}};
                     }
                     for (const auto& e : world->entities()) {
+                        if (e->turret) prevTurret[e->number] = {e->turret->pitch, e->turret->yaw};
                         if (!e->isActor || !e->anim) continue;
                         prevAnim.erase(e->number);
                         prevAnim.emplace(e->number, *e->anim);
@@ -2887,6 +2911,7 @@ int main(int argc, char** argv) {
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
                     lerpPrev.clear();
                     prevAnim.clear();
+                    prevTurret.clear();
                     gameClock = 0;
                     // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
                     // original's reset on load is not read).

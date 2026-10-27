@@ -568,12 +568,19 @@ void World::registerCombatBuiltins() {
             if (n < 0) return;
             AnimState::SetArgs args;
             args.weight = w;
-            args.blendTime = 0.2f;
+            args.blendTime = 0.1f; // 0x3dcccccd in all six calls of 0x53cf00
             e->anim->set(n, args);
         };
         setW("$aim_up", up);
         setW("$aim_straight", straight);
         setW("$aim_down", down);
+        // 0x53cf00 sets SIX nodes: the three aim nodes (0x4795e0) and the three shoot nodes (0x478f10 + 0x4794b0) with the same
+        // three weights (a weight ≤ 0.001 becomes 0), all with blend time 0.1. Without the shoot weights a shooting actor has no
+        // weighted leaf under %stand_shoot and shows the bind pose (T-pose). TODO(spec): the pitch → weight scale (0x4210d0).
+        auto thin = [](float w) { return w > 0.001f ? w : 0.0f; };
+        setW("$shoot_up", thin(up));
+        setW("$shoot_straight", thin(straight));
+        setW("$shoot_down", thin(down));
         // Face the target.
         const float yaw = std::atan2(d[1], d[0]) * 180.0f / float(M_PI);
         e->obj->set("angles", Value(Vec3{0, yaw, 0}));
