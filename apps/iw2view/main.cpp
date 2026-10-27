@@ -22,6 +22,7 @@
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
+#include "game/shellshock.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
 #include "game/watersim.h"
@@ -114,13 +115,13 @@ struct Camera {
     }
     Vec3 right() const { return normalize(cross(forward(), {0, 0, 1})); }
 
-    Mat4 viewProj(float aspect) const {
+    Mat4 viewProj(float aspect, float zNear = 4.0f) const {
         const Vec3 f = forward(), r0 = right(), u0 = cross(r0, f);
         const float cr = std::cos(roll * float(M_PI) / 180), sr = std::sin(roll * float(M_PI) / 180);
         const Vec3 r = r0 * cr + u0 * -sr, u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
-        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = 4.0f, fa = 40000.0f;
+        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = zNear, fa = 40000.0f;
         const float t = 1.0f / std::tan(fovY / 2);
         const Mat4 proj = {t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, fa / (n - fa), -1, 0, 0, n * fa / (n - fa), 0};
         return mul(proj, view);
@@ -1236,6 +1237,13 @@ struct DrawItem {
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
     float scrollV = 0.0f; // vehicle tread scroll
+    // Viewport depth range maximum (the minimum is 0): the renderer draws groups with the 0x8 class in 0 .. 0.2 and the 0x10
+    // class in 0 .. 0.5 of the depth buffer (D3D SetViewport MinZ/MaxZ via 0x1003ec50, called at 0x1002fafc..0x1002fc85;
+    // class = group flags & 0x18, table at 0x1002fcd8), so the view weapon never goes through walls.
+    float depthMax = 1.0f;
+    // Near plane of the depth-hack projection: the dvar r_znear_depthhack (default 0.1, registered at 0x1000ad62 / 0x10192e24)
+    // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
+    float zNear = 4.0f;
 };
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -1757,6 +1765,10 @@ struct Renderer {
             // Entity models of this pass.
             for (const DrawItem& it : items) {
                 bool bound = false;
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                    SDL_SetGPUViewport(pass, &vpDepth);
+                }
                 for (const Batch& b : it.model->batches) {
                     if (b.pass != p) continue;
                     if (!bound) {
@@ -1766,6 +1778,7 @@ struct Renderer {
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         bound = true;
                     }
@@ -1785,14 +1798,20 @@ struct Renderer {
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
                         bindOffset(p, 0, 0, mu);
                     }
+                }
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                    SDL_SetGPUViewport(pass, &vpFull);
                 }
                 if (bound) {
                     // Restore world buffers for the next pass's world batches.
@@ -2453,6 +2472,7 @@ int main(int argc, char** argv) {
         std::string aimBlendWeapon;
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
+        int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -2517,6 +2537,7 @@ int main(int argc, char** argv) {
                 }
             }
             DrawItem base;
+            if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
             auto rt = vmMotion.rot();
@@ -4121,6 +4142,9 @@ int main(int argc, char** argv) {
             SDL_PumpEvents();
         };
         if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) playCinematic(mv); // debug: play video/<name>.roq before the level
+        int shockLoop = 0, shockSeenStart = -1;
+        bool shockEndPlayed = true;
+        float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
         // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
         const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
@@ -4202,8 +4226,18 @@ int main(int argc, char** argv) {
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
-                        cam.yaw -= ev.motion.xrel * 0.15f * lookSens * zoomSens;
-                        cam.pitch = std::clamp(cam.pitch + ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale, -89.0f, 89.0f);
+                        float dyaw = ev.motion.xrel * 0.15f * lookSens * zoomSens, dpitch = ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale;
+                        // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
+                        if (world)
+                            if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
+                                const auto& ss = world->shellShock();
+                                const game::ShockMouse m = game::shockMouse(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                                dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
+                                if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
+                                if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
+                            }
+                        cam.yaw -= dyaw;
+                        cam.pitch = std::clamp(cam.pitch + dpitch, -89.0f, 89.0f);
                     }
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
@@ -4230,6 +4264,7 @@ int main(int argc, char** argv) {
             }
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
+            frameDt = std::min(dt, 0.1f);
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
             const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
@@ -4364,6 +4399,12 @@ int main(int argc, char** argv) {
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
                 }
+                // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
+                if (world) {
+                    if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
+                    for (; lastEventSeq < ps.eventSeq; ++lastEventSeq)
+                        world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
+                }
                 // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
                 if (!fellOut && (world || scene.collision)) {
                     const game::TraceResult under = pcw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 4000}, {0, 0, 0},
@@ -4453,6 +4494,7 @@ int main(int argc, char** argv) {
                 }
                 wi.weapon = weaponSelect;
                 wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
+                wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
@@ -4498,6 +4540,34 @@ int main(int argc, char** argv) {
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
                 }
+                float shockRatio = 0;
+                if (world)
+                    if (const game::ShockRecord* rec = world->shellShockRecord()) {
+                        const auto& ss = world->shellShock();
+                        shockRatio = game::shellShockRatio(int(ss.startMs + ss.durationMs - world->timeMs()), rec->viewKickFadeMs);
+                    }
+                // Shell shock sounds (0x4b1f90): the loop (blended to its silent twin over the last loopFade ms) and the end sound.
+                if (world) {
+                    const game::ShockRecord* rec = world->shellShockRecord();
+                    const auto& ss = world->shellShock();
+                    if (!rec || int(ss.startMs) != shockSeenStart) {
+                        if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        shockSeenStart = rec ? int(ss.startMs) : -1;
+                        shockEndPlayed = !rec;
+                    }
+                    if (rec && rec->sound) {
+                        const int el = int(world->timeMs() - ss.startMs);
+                        const float b = game::shockLoopBlend(*rec, el, ss.durationMs);
+                        const audio::Vec3 at{cam.pos.x, cam.pos.y, cam.pos.z};
+                        if (b >= 0 && !shockLoop) shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
+                        else if (b >= 0) mixer.setBlend(shockLoop, b, at);
+                        else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        if (!shockEndPlayed && el >= game::shockEndSoundMs(*rec, ss.durationMs)) {
+                            mixer.play("shellshock_end"); // TODO(spec): when the exe plays shellshock_end_abort instead
+                            shockEndPlayed = true;
+                        }
+                    }
+                } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -4505,7 +4575,7 @@ int main(int argc, char** argv) {
                     const std::string ret = pweapon.field("adsOverlayReticle");
                     vmMotion.sway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), cam.pitch, cam.yaw,
                                   pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
-                                  !ret.empty() && ret != "none");
+                                  !ret.empty() && ret != "none", shockRatio);
                 }
                 {
                     const std::string ret = pweapon.field("adsOverlayReticle");
@@ -4553,6 +4623,7 @@ int main(int argc, char** argv) {
                     lerpPrev.clear();
                     lastDamageEvent = 0;
                     lastLandSeq = 0;
+                    lastEventSeq = 0;
                     viewImp.reset(); // 0x4ba570
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
@@ -4742,6 +4813,13 @@ int main(int argc, char** argv) {
             const Camera camBase = cam;
             cam.pitch += recoil.viewKick()[0]; // view kick spring (0x4ae327)
             cam.yaw += recoil.viewKick()[1];
+            if (world)
+                if (const game::ShockRecord* rec = world->shellShockRecord()) { // shell shock view kick (0x4b2380), render only
+                    const auto& ss = world->shellShock();
+                    const game::ShockKick k = game::shockViewKick(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                    cam.yaw += std::atan(k.x) * 57.29578f;
+                    cam.pitch -= std::atan(k.y) * 57.29578f;
+                }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
             if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll

@@ -39,6 +39,17 @@ void boltAction() {
     CHECK(w.clip() == 3);
 }
 
+// The clip emptied by the last shot reloads by itself once the shot is over (PM_Weapon 0x4de370), without a new press.
+void autoReload() {
+    PlayerWeapon w;
+    w.equip("rifle", {{"semiauto", "1"}, {"firetime", "0.1"}, {"clipsize", "1"}, {"startammo", "5"},
+                      {"raisetime", "0"}, {"reloadtime", "1"}, {"reloademptytime", "1"}});
+    CHECK(run(w, 0.05f, true) == 1);
+    CHECK(w.clip() == 0);
+    run(w, 1.5f, false);
+    CHECK(w.clip() == 1 && w.stock() == 3);
+}
+
 void automatic() {
     PlayerWeapon w;
     w.equip("smg", {{"semiauto", "0"}, {"firetime", "0.1"}, {"clipsize", "20"}, {"startammo", "40"},
@@ -149,6 +160,7 @@ void offhand() {
 int main() {
     boltAction();
     automatic();
+    autoReload();
     weaponChange();
     melee();
     offhand();

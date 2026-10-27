@@ -29,6 +29,8 @@
 
 namespace iw2::game {
 
+struct ShockRecord;
+
 using script::ObjectPtr;
 using script::Value;
 using script::Vec3;
@@ -299,6 +301,18 @@ public:
     // max health). The aim spread scale also grows by count (ps+0x5b0).
     struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
+    // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
+    void applyPlayerEvent(int ev, int parm);
+    // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
+    // name index (1-based, 0 = none), the start time and the duration; shellShockRecord() is the loaded record, null
+    // without an active shock. The shock is over once timeMs() >= startMs + durationMs.
+    struct ShellShockState {
+        int index = 0;
+        int64_t startMs = 0;
+        int durationMs = 0;
+    };
+    const ShellShockState& shellShock() const { return shellShock_; }
+    const ShockRecord* shellShockRecord() const;
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
@@ -371,6 +385,10 @@ public:
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
+    // Debug (iw2game --item-test): a weapon item at the player's origin and the player's stock / clip of a weapon.
+    void debugSpawnItem(const std::string& weapon);
+    void debugSetClip(const std::string& weapon, int rounds);
+    std::pair<int, int> debugAmmo(const std::string& weapon);
     void debugDamage(Entity& e, int amount);
     // Test hooks (iw2game IW2_TOUCH_TEST / IW2_ROCKET_TEST): the vehicle touch callback with the vehicle placed 100 units
     // behind `t` moving at 400 units/s towards it; a vehicle rocket fired from 300 units away at `t`.
@@ -496,6 +514,7 @@ private:
     int nearestNodeWithin(const Vec3& p, float radius) const;
     void registerCombatBuiltins();
     void registerSoundBuiltins();
+    void registerShellShockBuiltins();
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();
@@ -515,6 +534,9 @@ private:
     void objectiveMessage(int state, const std::string& text);
     std::array<Objective, 16> objectives_{};
     std::vector<ClientCommand> clientCommands_;
+    std::vector<std::string> shockNames_;                 // precacheshellshock names (index - 1)
+    std::vector<std::shared_ptr<const ShockRecord>> shockRecords_; // parallel to shockNames_
+    ShellShockState shellShock_;
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
     std::string cinematic_; // pending cinematic name (video/<name>.roq)
@@ -531,6 +553,10 @@ private:
     std::map<int, MoverState> movers_;
     std::map<int, Link> links_;
     std::map<int, Inventory> inventories_;
+    bool autoPickup_ = true;          // setautopickup (client +0x86ac == 0)
+    void touchItems();                // G_TouchTriggers for weapon items (0x4e7320 -> Touch_Item 0x521a90)
+    bool touchWeaponItem(Entity& item); // Pickup_Weapon (0x521170) by touch; true when the item was used up
+    int weaponRoom(Inventory& inv, const std::string& weapon); // 0x4dcc00
     uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);

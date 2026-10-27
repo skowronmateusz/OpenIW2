@@ -126,6 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerAnimBuiltins();
     registerCombatBuiltins();
     registerSoundBuiltins();
+    registerShellShockBuiltins();
     registerMenuBuiltins();
     registerHudBuiltins();
     registerInventoryBuiltins();
@@ -436,6 +437,7 @@ void World::frame(bool advanceTime) {
         });
     }
     runTriggers();
+    touchItems();
     for (size_t i = 0; i < pendingNotifies_.size();) {
         if (pendingNotifies_[i].atMs <= timeMs_) {
             const auto p = pendingNotifies_[i];
@@ -936,7 +938,7 @@ void World::registerBuiltins() {
         return Value(e.obj);
     });
     // Load-time hints and profiling markers have no effect on the simulation.
-    for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret", "precacheshellshock",
+    for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret",
                              "precacherumble", "precachestring", "precachevehicle", "prof_begin", "prof_end"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // setviewmodel(model): the player's first-person hands model (read by the front end).

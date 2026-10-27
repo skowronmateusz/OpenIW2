@@ -36,6 +36,27 @@ int main(int argc, char** argv) {
         vfs.mountDirectory(argv[1]);
         if (const char* overlay = std::getenv("IW2_OVERLAY")) vfs.mountDirectory(overlay); // debug: loose test scripts override the game files
         iw2::game::World world(vfs, argv[2]);
+        if (argc > 3 && std::string(argv[3]) == "--item-test") {
+            // Touch pickup of weapon items: items are spawned at the player's origin one after another.
+            world.start();
+            for (int i = 4; i < argc; ++i) {
+                std::string w = argv[i];
+                if (const size_t eq = w.find('='); eq != std::string::npos) { // name=N: set the clip first
+                    world.debugSetClip(w.substr(0, eq), std::stoi(w.substr(eq + 1)));
+                    w.resize(eq);
+                    std::cout << w << " clip set to " << world.debugAmmo(w).second << "\n";
+                    continue;
+                }
+                world.debugSpawnItem(w);
+                world.frame();
+                int left = 0;
+                for (const auto& e : world.entities())
+                    if (!e->obj->removed && e->classname == "weapon_" + w) ++left;
+                const auto a = world.debugAmmo(w);
+                std::cout << w << ": stock " << a.first << " clip " << a.second << ", items left " << left << "\n";
+            }
+            return 0;
+        }
         if (argc > 3 && std::string(argv[3]) == "--walk-test") {
             const auto t0 = std::chrono::steady_clock::now();
             iw2::game::CollisionWorld cw(world.bsp());
