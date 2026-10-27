@@ -33,3 +33,4 @@ described in the code that reads them.
 | `IW2_EXIT_AFTER=N` | Exits iw2view after N seconds. |
 
 
+| `IW2_SHOT_KEYS=a,b,...` | Applied before the screenshot of a `--shot` run when `--menu` or `IW2_SHOT_MENU` is set. Tokens: `open:name`, `click:X/Y`, `hover:X/Y`, `up`, `down`, `esc`, `left`, `right`, `enter`. |

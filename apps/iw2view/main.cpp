@@ -2482,7 +2482,10 @@ int main(int argc, char** argv) {
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
                 else if (c == "disconnect" || c == "quit") { /* handled below */ if (c == "quit") std::exit(0); }
-                // TODO(spec): other console commands (closemenu, loadgame_continue, ...).
+                // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
+                else if (c == "closemenu") menuEnv.close(a1);
+                // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
+                else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
             }
         };
         int menuLoopHandle = 0;
@@ -3478,7 +3481,7 @@ int main(int argc, char** argv) {
         if (yaw) cam.yaw = *yaw;
         if (pitch) cam.pitch = *pitch;
 
-        if (!shot.empty() && menuMode) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
+        if (!shot.empty() && (menuMode || std::getenv("IW2_SHOT_MENU"))) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
             if (const char* sets = std::getenv("IW2_SHOT_SET")) {
                 std::string rest = sets;
                 while (!rest.empty()) {
@@ -3495,6 +3498,27 @@ int main(int argc, char** argv) {
                 rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
             }
             menuMx = 320.0f, menuMy = 240.0f;
+            if (const char* keys = std::getenv("IW2_SHOT_KEYS")) { // debug: the IW2_MENU_KEYS tokens (open:, click:X/Y, up, down, enter, esc, left, right) run before the shot
+                std::string kr = keys;
+                while (!kr.empty()) {
+                    const size_t comma = kr.find(',');
+                    const std::string k = kr.substr(0, comma);
+                    kr = comma == std::string::npos ? std::string() : kr.substr(comma + 1);
+                    using K = ui::MenuStack::Key;
+                    if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
+                    else if (k.rfind("click:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                        frontStack.click(menuMx, menuMy);
+                        frontStack.release();
+                    } else if (k.rfind("hover:", 0) == 0) {
+                        const size_t sl = k.find('/');
+                        menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
+                        frontStack.mouseMove(menuMx, menuMy);
+                    } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
+                }
+            }
         }
         if (!shot.empty()) {
             if (walkSeconds > 0) {
