@@ -19,6 +19,7 @@ described in the code that reads them.
 | `IW2_VM_TRACE=1` | iw2view | Prints the view model anim, frame, time and hand/gun models each time it is added. |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
+| `IW2_FX_TEST=<efx>` | iw2view `--shot` | Plays the effect 150 units ahead of the camera, aged `IW2_FX_MS` ms (use with `IW2_NO_HUD=1`, otherwise the script fade-in can make the shot black). |
 | `IW2_TRACER_TEST=N` | iw2view | With `--shot`, N tracer attempts (the 0.4 chance applies) from beside the view to 1500 units ahead, aged `IW2_FX_MS` (default 100). |
 | `IW2_FIRE_TURRETS=N` | iw2view | With `--shot`, fires every turret entity (`World::debugFireTurrets`, prints each) in the last 3 simulation frames and puts the camera 150 units beside and 60 above turret N (toujane: 4 is a ground MG42); use `IW2_FX_MS=40` so the 100 ms muzzle flash has grown. |
 | `IW2_FIRE_VEHICLES=1` | iw2view | With `--shot`, sends the script notify `turret_fire` to every vehicle in the last 3 simulation frames (combine with `--follow-vehicle N --follow-dist D`; elalamein 2 is a flak88). The iw2game variant takes a time in seconds. |

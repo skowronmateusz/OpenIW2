@@ -764,6 +764,12 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
                 corners[2] = a + w * -s->widthA; corners[3] = a + w * s->widthA;
                 const float tuv[4][2] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
                 std::memcpy(uv, tuv, sizeof uv);
+                if (s->beamTail) { // 0x100409c0: A + w (s0,t0), A - w (s1,t0), B - w (s1,t1), B + w (s0,t1)
+                    corners[0] = a + w * s->widthA; corners[1] = a + w * -s->widthA;
+                    corners[2] = bb + w * -s->widthB; corners[3] = bb + w * s->widthB;
+                    const float t2[4][2] = {{s->uv[0], s->uv[1]}, {s->uv[2], s->uv[1]}, {s->uv[2], s->uv[3]}, {s->uv[0], s->uv[3]}};
+                    std::memcpy(uv, t2, sizeof uv);
+                }
             }
             for (int k = 0; k < 4; ++k) {
                 GpuVertex g{};
