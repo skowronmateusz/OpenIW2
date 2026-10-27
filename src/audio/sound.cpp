@@ -251,6 +251,14 @@ void Mixer::stop(int handle) {
     std::erase_if(voices_, [&](const Voice& v) { return v.handle == handle; });
 }
 
+// mu_stop <ms> (0x442fb0): ms 0 stops the voice at once, otherwise its volume falls linearly to zero over `ms`.
+void Mixer::fadeOut(int handle, int ms) {
+    if (ms <= 0) { stop(handle); return; }
+    std::lock_guard lock(mutex_);
+    for (Voice& v : voices_)
+        if (v.handle == handle) v.fadeRate = 1.0f / (float(ms) * 0.001f * float(rate_));
+}
+
 void Mixer::setListener(const Vec3& origin, const Vec3& forward, const Vec3& right) {
     std::lock_guard lock(mutex_);
     listener_ = origin;
@@ -306,9 +314,16 @@ void Mixer::mix(float* out, int frames) {
         gains(v, gl, gr);
         gl *= masterVolume * fadeVolume;
         gr *= masterVolume * fadeVolume;
+        const float baseL = gl, baseR = gr;
         const Wav& w = *v.wav;
         const size_t n = w.frames();
         for (int i = 0; i < frames; ++i) {
+            if (v.fadeRate > 0) { // mu_stop fade: linear to silence, then the voice ends
+                v.gain = std::max(0.0f, v.gain - v.fadeRate);
+                if (v.gain <= 0) { v.pos = double(n); v.loop = false; break; }
+                gl = baseL * v.gain;
+                gr = baseR * v.gain;
+            }
             if (v.pos >= double(n)) {
                 if (!v.loop) break;
                 v.pos = std::fmod(v.pos, double(n));

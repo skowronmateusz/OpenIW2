@@ -115,24 +115,45 @@ void World::registerSoundBuiltins() {
         obj->set("$loopsound", Value());
         return Value();
     });
+    // ambientplay(alias [, fade]) (0x4f3800): 1 or 2 arguments; errors for an empty alias, a negative fade and an unknown
+    // alias. The original publishes configstring 3 "n\<alias>\t\<levelTime + fade ms>" and the client starts the ambient
+    // loop. TODO(spec): the client-side fade-in of that configstring is not decoded, so the fade time is only validated.
     vm_.registerBuiltin("ambientplay", [this](CallContext& c) {
+        if (c.args.size() < 1 || c.args.size() > 2) throw std::runtime_error("Incorrect number of parameters\n");
+        const std::string alias = c.arg(0).toString();
+        if (alias.empty())
+            throw std::runtime_error("ambientPlay: alias name cannot be the empty string... use stop or fade version\n");
+        if (c.args.size() == 2 && c.arg(1).asFloat() < 0) throw std::runtime_error("ambientPlay: fade time must be >= 0\n");
+        if (!soundExists(alias)) throw std::runtime_error("unknown sound alias '" + alias + "'");
         if (ambientHandle_) stopSound(ambientHandle_);
-        ambientHandle_ = startSound(c.arg(0).toString(), nullptr);
+        ambientHandle_ = startSound(alias, nullptr);
         return Value();
     });
-    vm_.registerBuiltin("ambientstop", [this](CallContext&) {
+    // ambientstop([fade]) (0x4f3930): negative fade is an error; configstring 3 "t\<levelTime + fade ms>".
+    vm_.registerBuiltin("ambientstop", [this](CallContext& c) {
+        if (c.args.size() > 1) throw std::runtime_error("Incorrect number of parameters\n");
+        if (c.args.size() == 1 && c.arg(0).asFloat() < 0) throw std::runtime_error("ambientStop: fade time must be >= 0\n");
         if (ambientHandle_) stopSound(ambientHandle_);
         ambientHandle_ = 0;
         return Value();
     });
+    // musicplay(alias) (0x4f3400): unknown alias is a script error; sends the client "mu_play <alias>".
     vm_.registerBuiltin("musicplay", [this](CallContext& c) {
-        if (musicHandle_) stopSound(musicHandle_);
-        musicHandle_ = startSound(c.arg(0).toString(), nullptr);
+        const std::string alias = c.arg(0).toString();
+        if (!soundExists(alias)) throw std::runtime_error("unknown sound alias '" + alias + "'");
+        clientCommands_.push_back({"mu_play", alias});
         return Value();
     });
-    vm_.registerBuiltin("musicstop", [this](CallContext&) {
-        if (musicHandle_) stopSound(musicHandle_);
-        musicHandle_ = 0;
+    // musicstop([fade seconds]) (0x4f3470): sends the client "mu_stop <ms>" with ms = int(fade * 1000 + 0.5); negative is an error.
+    vm_.registerBuiltin("musicstop", [this](CallContext& c) {
+        if (c.args.size() > 1) throw std::runtime_error("Incorrect number of parameters\n");
+        int ms = 0;
+        if (c.args.size() == 1) {
+            const float f = c.arg(0).asFloat() * 1000.0f;
+            ms = int(f + 0.5f);
+            if (ms < 0) throw std::runtime_error("musicStop: fade time must be >= 0\n");
+        }
+        clientCommands_.push_back({"mu_stop", std::to_string(ms)});
         return Value();
     });
 }
