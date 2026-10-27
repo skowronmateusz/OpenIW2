@@ -994,7 +994,7 @@ void World::registerBuiltins() {
     // isfiring / isthrowinggrenade / ismeleeing (0x539aa0 / 0x539b60 / 0x539c10): player-only (error 0x590ab8 for a non-client);
     // an int from the weapon state ps+0xb4: firing 3, 4, 10, 11; throwing a grenade 12..16 (0xc..0x10); meleeing 10, 11.
     // The value of playerCmd_.weaponState is the front end's copy of ps+0xb4 (world.h).
-    auto weaponStateQuery = [this](const char* name, int lo, int hi, std::initializer_list<int> extra) {
+    auto weaponStateQuery = [this](const char* name, int lo, int hi, std::vector<int> extra) {
         vm_.registerBuiltin(name, [this, lo, hi, extra, name](CallContext& c) {
             Entity* e = entityOf(c.self);
             if (!e || !e->isPlayer) throw std::runtime_error(std::string(name) + ": entity is not a player");
