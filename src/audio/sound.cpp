@@ -263,6 +263,14 @@ void Mixer::fadeOut(int handle, int ms) {
         if (v.handle == handle) v.fadeRate = 1.0f / (float(ms) * 0.001f * float(rate_));
 }
 
+// Fade-in of a freshly started voice (ambient track, 0x442df0): gain 0 rising linearly to full over `ms`.
+void Mixer::fadeIn(int handle, int ms) {
+    if (ms <= 0) return;
+    std::lock_guard lock(mutex_);
+    for (Voice& v : voices_)
+        if (v.handle == handle) v.gain = 0, v.fadeRate = -1.0f / (float(ms) * 0.001f * float(rate_));
+}
+
 void Mixer::setListener(const Vec3& origin, const Vec3& forward, const Vec3& right) {
     std::lock_guard lock(mutex_);
     listener_ = origin;
@@ -322,9 +330,12 @@ void Mixer::mix(float* out, int frames) {
         const Wav& w = *v.wav;
         const size_t n = w.frames();
         for (int i = 0; i < frames; ++i) {
-            if (v.fadeRate > 0) { // mu_stop fade: linear to silence, then the voice ends
-                v.gain = std::max(0.0f, v.gain - v.fadeRate);
+            if (v.fadeRate != 0) { // fade out (rate > 0): linear to silence, then the voice ends; fade in (rate < 0): up to full
+                v.gain -= v.fadeRate;
+                if (v.fadeRate < 0 && v.gain >= 1) v.gain = 1, v.fadeRate = 0;
                 if (v.gain <= 0) { v.pos = double(n); v.loop = false; break; }
+            }
+            if (v.gain != 1) {
                 gl = baseL * v.gain;
                 gr = baseR * v.gain;
             }

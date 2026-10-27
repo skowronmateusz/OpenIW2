@@ -115,26 +115,33 @@ void World::registerSoundBuiltins() {
         obj->set("$loopsound", Value());
         return Value();
     });
+    // Fade seconds (argument `i`, default 0) as milliseconds, truncated like the configstring time (0x4f3800: x1000 via 0x565994).
+    auto fadeMs = [](const CallContext& c, size_t i) { return c.args.size() > i ? int(c.arg(i).asFloat() * 1000.0f) : 0; };
+    // soundfade(volume [, time]) (0x4f3520): sends every client "snd_fade <volume> <ms>"; ms is 0 without the time argument.
+    vm_.registerBuiltin("soundfade", [this, fadeMs](CallContext& c) {
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "%f %i", double(c.arg(0).asFloat()), fadeMs(c, 1));
+        clientCommands_.push_back({"snd_fade", buf});
+        return Value();
+    });
     // ambientplay(alias [, fade]) (0x4f3800): 1 or 2 arguments; errors for an empty alias, a negative fade and an unknown
     // alias. The original publishes configstring 3 "n\<alias>\t\<levelTime + fade ms>" and the client starts the ambient
-    // loop. TODO(spec): the client-side fade-in of that configstring is not decoded, so the fade time is only validated.
-    vm_.registerBuiltin("ambientplay", [this](CallContext& c) {
+    // loop. The configstring is modelled as client commands ambient_play <alias> <fade ms> and ambient_stop <fade ms> (client 0x443080: a new alias fades the old track out and itself in, the same alias is kept).
+    vm_.registerBuiltin("ambientplay", [this, fadeMs](CallContext& c) {
         if (c.args.size() < 1 || c.args.size() > 2) throw std::runtime_error("Incorrect number of parameters\n");
         const std::string alias = c.arg(0).toString();
         if (alias.empty())
             throw std::runtime_error("ambientPlay: alias name cannot be the empty string... use stop or fade version\n");
         if (c.args.size() == 2 && c.arg(1).asFloat() < 0) throw std::runtime_error("ambientPlay: fade time must be >= 0\n");
         if (!soundExists(alias)) throw std::runtime_error("unknown sound alias '" + alias + "'");
-        if (ambientHandle_) stopSound(ambientHandle_);
-        ambientHandle_ = startSound(alias, nullptr);
+        clientCommands_.push_back({"ambient_play", alias + " " + std::to_string(fadeMs(c, 1))});
         return Value();
     });
     // ambientstop([fade]) (0x4f3930): negative fade is an error; configstring 3 "t\<levelTime + fade ms>".
-    vm_.registerBuiltin("ambientstop", [this](CallContext& c) {
+    vm_.registerBuiltin("ambientstop", [this, fadeMs](CallContext& c) {
         if (c.args.size() > 1) throw std::runtime_error("Incorrect number of parameters\n");
         if (c.args.size() == 1 && c.arg(0).asFloat() < 0) throw std::runtime_error("ambientStop: fade time must be >= 0\n");
-        if (ambientHandle_) stopSound(ambientHandle_);
-        ambientHandle_ = 0;
+        clientCommands_.push_back({"ambient_stop", std::to_string(fadeMs(c, 0))});
         return Value();
     });
     // musicplay(alias) (0x4f3400): unknown alias is a script error; sends the client "mu_play <alias>".
