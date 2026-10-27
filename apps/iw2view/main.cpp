@@ -1998,6 +1998,10 @@ int main(int argc, char** argv) {
         };
         fxSystem.loader = efx;
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
+        // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
+        // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; };
+        auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
         // Client interpolation state: entity origin/angles before the latest server frame and the fraction of the
@@ -2307,6 +2311,30 @@ int main(int argc, char** argv) {
                 DrawItem it = base;
                 it.model = skinModel(scene, dev, up, -1, pweapon.gunModel(), *gun, gp);
                 if (it.model) items.push_back(it);
+                {
+                    BoneMap gunBones;
+                    addBones(gunBones, gun->parts, gp);
+                    const auto tf = gunBones.find("tag_flash");
+                    viewFlash->valid = tf != gunBones.end();
+                    if (viewFlash->valid) {
+                        const auto& m = base.transform; // columns: forward, left, up, origin (entityTransform)
+                        const auto& q = tf->second.first;
+                        for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        if (viewFlash->pending && world) {
+                            viewFlash->pending = false;
+                            const std::string path = pweapon.field("viewFlashEffect");
+                            if (!path.empty()) {
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
+                                    o = vf->pos;
+                                    return vf->valid;
+                                });
+                                const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
+                            }
+                        }
+                    }
+                }
             }
             up.flush();
         };
@@ -3340,7 +3368,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            pweapon.update(fireSeconds, shotIn);
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = true;
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             for (int i = 0; i < 100; ++i) {
@@ -3370,6 +3398,10 @@ int main(int argc, char** argv) {
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
+            if (viewFlash->pending && !(world && world->playerOnTurret())) {
+                std::vector<DrawItem> scratch;
+                addViewModel(scratch, cam); // plays the view flash (the live loop shows it one frame later)
+            }
             auto shotItems = gatherItems(cam);
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
@@ -3796,6 +3828,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
+                if (shots) viewFlash->pending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z});
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});
