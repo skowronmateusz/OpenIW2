@@ -171,6 +171,32 @@ XPose controlledPose(const XModelParts& parts, const std::vector<std::pair<int, 
     return p;
 }
 
+XPose applyControls(const XModelParts& parts, const XPose& base, const std::vector<std::pair<int, Quat>>& controls) {
+    XPose p = base;
+    if (controls.empty() || base.rotation.size() != parts.bones.size()) return p;
+    std::vector<Quat> delta(parts.bones.size(), Quat{0, 0, 0, 1}); // world-frame rotation added to each bone
+    for (size_t i = 0; i < parts.bones.size(); ++i) {
+        const int par = parts.bones[i].parent;
+        Quat d{0, 0, 0, 1};
+        if (par >= 0) {
+            const size_t pi = size_t(par);
+            d = delta[pi];
+            const auto o = rotate(d, {base.position[i][0] - base.position[pi][0], base.position[i][1] - base.position[pi][1],
+                                      base.position[i][2] - base.position[pi][2]});
+            for (size_t a = 0; a < 3; ++a) p.position[i][a] = p.position[pi][a] + o[a];
+            p.rotation[i] = multiply(d, base.rotation[i]);
+        }
+        for (const auto& c : controls)
+            if (c.first == int(i)) {
+                p.rotation[i] = multiply(p.rotation[i], c.second);
+                const Quat& r = base.rotation[i];
+                d = multiply(p.rotation[i], Quat{-r.x, -r.y, -r.z, r.w});
+            }
+        delta[i] = d;
+    }
+    return p;
+}
+
 Quat anglesQuat(float pitch, float yaw, float roll) {
     const float k = 0.00872664626f; // degrees to half-angle radians (0x591fa4)
     const float sy = std::sin(yaw * k), cy = std::cos(yaw * k), sp = std::sin(pitch * k), cp = std::cos(pitch * k),

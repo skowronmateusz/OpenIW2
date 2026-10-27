@@ -1700,6 +1700,29 @@ int main(int argc, char** argv) {
                     base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                     base.sunVisibility = sun;
                 }
+                if (e->vehicle && e->vehicle->info) {
+                    // Vehicle turret (cgame 0x4ac2b0 bone controls on tag_turret / tag_barrel; es+0x70 pitch, es+0x74 yaw, lerped).
+                    // TODO(spec): which control gets the pitch and which the yaw is a hypothesis (yaw on tag_turret, pitch on tag_barrel).
+                    const Scene::CpuModel* vm = sceneCpuModel(scene, dev, vfs, m.asString());
+                    if (!vm) continue;
+                    float tp = e->vehicle->turretPitch, ty = e->vehicle->turretYaw;
+                    if (auto pt = prevTurret.find(e->number); pt != prevTurret.end()) {
+                        tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
+                        ty = pt->second.second + angleDelta(ty, pt->second.second) * lerpFrac;
+                    }
+                    std::vector<std::pair<int, assets::Quat>> ctl;
+                    for (size_t bi = 0; bi < vm->parts.bones.size(); ++bi) {
+                        std::string n = vm->parts.bones[bi].name;
+                        for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0)});
+                        else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0)});
+                    }
+                    assets::XPose vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
+                    DrawItem it = base;
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, assets::applyControls(vm->parts, vpose, ctl));
+                    if (it.model) items.push_back(it);
+                    continue;
+                }
                 // Actors and animated script_models (drones: spawn("script_model") + useanimtree + attach head/gun, maps/_drones.gsc) are
                 // skinned with the blended pose and carry their attachments.
                 if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
@@ -2923,6 +2946,7 @@ int main(int argc, char** argv) {
                     }
                     for (const auto& e : world->entities()) {
                         if (e->turret) prevTurret[e->number] = {e->turret->pitch, e->turret->yaw};
+                        if (e->vehicle) prevTurret[e->number] = {e->vehicle->turretPitch, e->vehicle->turretYaw};
                         if (!e->anim) continue;
                         prevAnim.erase(e->number);
                         prevAnim.emplace(e->number, *e->anim);
