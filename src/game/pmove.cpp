@@ -923,7 +923,7 @@ void updateBobCycle(const CollisionWorld& w, PlayerState& ps, const Pml& pml, fl
     float k;
     if (ps.viewHeightTarget == 11) { s *= 0.15f; k = slow ? 0.24f : 0.25f; }
     else if (ps.viewHeightTarget == 40) { s *= 0.65f; k = slow ? 0.315f : 0.34f; }
-    else k = slow ? 0.305f : 0.335f;
+    else k = ps.movingBack ? (slow ? 0.32499998807907104f : 0.36000001430511475f) : (slow ? 0.305f : 0.335f);
     const float bobmove = xy / s * k;
     const int oldCycle = ps.bobCycle;
     ps.bobCycle = int(bobmove * float(ms) + float(ps.bobCycle)) & 0xff;
@@ -1130,7 +1130,10 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
 
     // pm_time runs down; when it expires pm_flags 0x80000, 0x400 and 0x200 are cleared.
     {
-        // PM_CheckLadderMove runs before the pm_time countdown (0x50ca83).
+        // pm_flags 0x80 (0x50c70e / 0x50c728): set by a backward command, cleared by a forward one or sideways-only.
+    if (fwdMove < 0) ps.movingBack = true;
+    else if (fwdMove > 0 || rightMove != 0) ps.movingBack = false;
+    // PM_CheckLadderMove runs before the pm_time countdown (0x50ca83).
         const Vec cf{std::cos(in.yaw * float(M_PI) / 180.0f), std::sin(in.yaw * float(M_PI) / 180.0f), 0};
         checkLadder(w, ps, pml, in, fwdMove * 127.0f, cf);
     }
