@@ -1216,14 +1216,16 @@ int main(int argc, char** argv) {
         }
         if (const char* tp = std::getenv("IW2_TRIGGER_DUMP"); tp) { // debug: bounds of the brush entities whose targetname starts with tp
             for (const auto& e : world.entities()) {
-                const auto tn = e->obj->get("targetname");
+                const auto tn = e->obj->get("targetname"), tg = e->obj->get("target");
                 iw2::game::Vec3 mn{}, mx{};
-                if (e->obj->removed || !tn.isString() || tn.asString().rfind(tp, 0) != 0) continue;
+                const auto has = [&](const iw2::script::Value& v) { return v.isString() && v.asString().rfind(tp, 0) == 0; };
+                if (e->obj->removed || !(has(tn) || has(tg))) continue; // triggers are often found by `target` (getent(name, "target"))
                 const auto m = e->obj->get("model");
                 if (m.isString() && world.submodelBounds(m.asString(), mn, mx)) {
                     const auto o = e->obj->get("origin");
                     const iw2::game::Vec3 ov = o.isVector() ? o.asVector() : iw2::game::Vec3{0, 0, 0};
-                    std::printf("trigger %s %s mins %.0f,%.0f,%.0f maxs %.0f,%.0f,%.0f\n", e->classname.c_str(), tn.asString().c_str(), mn[0] + ov[0],
+                    std::printf("trigger %s %s -> %s mins %.0f,%.0f,%.0f maxs %.0f,%.0f,%.0f\n", e->classname.c_str(), tn.isString() ? tn.asString().c_str() : "-",
+                                tg.isString() ? tg.asString().c_str() : "-", mn[0] + ov[0],
                                 mn[1] + ov[1], mn[2] + ov[2], mx[0] + ov[0], mx[1] + ov[1], mx[2] + ov[2]);
                 }
             }

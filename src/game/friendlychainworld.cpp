@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace iw2::game {
@@ -79,6 +80,8 @@ void World::touchFriendlyChain(Entity& trigger, Entity& other) {
     if (other.friendlyChain >= 0 && strField(nodes_[size_t(other.friendlyChain)].obj, "targetname") == id) return;
     const int node = chains_.findByName(id);
     if (node >= 0) {
+        if (std::getenv("IW2_CHAIN_LOG") && other.friendlyChain != node)
+            print("friendlychain: trigger #" + std::to_string(trigger.number) + " sets node " + id + " at " + std::to_string(timeMs_) + " ms");
         other.friendlyChain = node;
         return;
     }
