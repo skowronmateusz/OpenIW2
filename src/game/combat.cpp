@@ -546,25 +546,35 @@ void World::registerCombatBuiltins() {
         else if (enemy) target = add(enemy->obj->get("origin").asVector(), {0, 0, 40});
         else return Value();
         // Hit or miss (0x550a70 → 0x54fde0): the shot hits when graph(distance) · accuracy · accMod (clamped to 0..1)
-        // beats a random number; otherwise 0x550390 aims it beside the target. TODO(spec): the miss direction
-        // (0x550390: offsets along the sight line's perpendicular axes by random terms and globals 0x5a5be8 / 0x5a5bf0 /
-        // 0x5a9928, scales 8 and 44) is not decoded, so a flat offset stands in. The shot itself has spread 0 (0x550bee
-        // passes 0 to 0x5312b0).
-        const Value accV = a->obj->get("accuracy");
-        const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
-        const Value wnv = a->obj->get("weapon");
-        const AccuracyGraph* graph = enemy && wnv.isString() ? accuracyGraph(wnv.asString(), enemy->isPlayer) : nullptr;
-        float accuracy;
-        if (graph) {
-            const Vec3 ao = a->obj->get("origin").asVector(), eo = enemy->obj->get("origin").asVector();
-            accuracy = aiHitChance(*graph, len(sub(eo, ao)), actorAcc, accMod);
-        } else {
-            accuracy = std::clamp(actorAcc * accMod, 0.0f, 1.0f); // no graph: previous model
-        }
-        std::uniform_real_distribution<float> u(0.0f, 1.0f);
-        if (!(accuracy > u(rng_))) {
-            std::uniform_real_distribution<float> off(-40.0f, 40.0f);
-            target = add(target, {off(rng_), off(rng_), off(rng_) * 0.5f});
+        // beats a random number; then 0x54ff90 aims at a random point of the target's body box, else 0x550390 beside it
+        // A shoot() with an explicit position fires straight at it (0x550af6). The shot
+        // has spread 0 (0x550bee passes 0 to 0x5312b0). TODO(spec): the actor target point (exe: actor +0x174 from
+        // 0x500910; here the origin + 40), the shooter's up axis (ctx +0xf8, world up here).
+        if (!c.arg(1).isVector()) {
+            const Value accV = a->obj->get("accuracy");
+            const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
+            const Value wnv = a->obj->get("weapon");
+            const AccuracyGraph* graph = wnv.isString() ? accuracyGraph(wnv.asString(), enemy->isPlayer) : nullptr;
+            float accuracy;
+            if (graph) {
+                const Vec3 ao = a->obj->get("origin").asVector(), eo = enemy->obj->get("origin").asVector();
+                accuracy = aiHitChance(*graph, len(sub(eo, ao)), actorAcc, accMod);
+            } else {
+                accuracy = std::clamp(actorAcc * accMod, 0.0f, 1.0f); // no graph: previous model
+            }
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            const bool hitRoll = accuracy > u(rng_);
+            Vec3 T = target;
+            if (enemy->isPlayer) T = eyePosition(*enemy); // the player's eye (0x4e8b70)
+            Vec3 v = sub(T, start);
+            const float vl = len(v);
+            if (vl > 0) v = scale(v, 1.0f / vl);
+            const Vec3f up{0, 0, 1};
+            const Vec3f cs = aiSideAxis({v[0], v[1], v[2]}, up);
+            const Vec3f Tf{T[0], T[1], T[2]};
+            const Vec3f p = hitRoll ? aiHitPoint(Tf, cs, up, enemy->isPlayer, accuracy, u(rng_), u(rng_))
+                                    : aiMissPoint(Tf, {v[0], v[1], v[2]}, cs, up, enemy->isPlayer, u(rng_), u(rng_), u(rng_));
+            target = {p.x, p.y, p.z};
         }
         const Vec3 dir = sub(target, start);
         // 0x550a70: firing with a current enemy is an AI event (type 4) at the actor's origin: the actors around
