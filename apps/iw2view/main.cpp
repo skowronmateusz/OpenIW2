@@ -337,6 +337,7 @@ struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* tbn = nullptr;           // world vertices' tangent + binormal (6 floats each), parallel to `vertices`
+    SDL_GPUTexture* lmWeightTex = nullptr;  // "$lightmapweights" (32 x 32 RGBA8): (alpha, green) of the normal map -> 4 lightmap coefficient weights
     SDL_GPUTexture* specularity = nullptr;  // "$specularity" lookup (32 x 256 L8): U = specular power, V = N.H
     std::vector<SDL_GPUTexture*> textures; // [0] = white
     std::vector<Lightmap> lightmaps;
@@ -902,6 +903,7 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
     buf(scene.indices);
     buf(scene.tbn);
     tex(scene.specularity);
+    tex(scene.lmWeightTex);
     for (size_t i = 1; i < scene.textures.size(); ++i) tex(scene.textures[i]); // [0] is the shared white texture
     for (auto& lm : scene.lightmaps) { tex(lm.coeffs); tex(lm.sun); }
     tex(scene.sky);
@@ -932,6 +934,41 @@ float cosinePowerShiftDvar() {
         return e ? std::clamp(float(std::atof(e)), -1.0f, 1.0f) : 0.0f;
     }();
     return v;
+}
+
+// "$lightmapweights" (gfx 0x1000ff10 -> basis 0x1000fdf0): 32 x 32 A8R8G8B8. Texel (row i, column j) holds the weights of the direction
+// v = (2(j+.5)/32 - 1, 2(i+.5)/32 - 1, sqrt(1 - x^2 - y^2)) (outside the unit disc: x, y normalised, z = 0); w0 = clamp(1 - acos(z) / acos(1/sqrt 3)),
+// azimuth a = atan2(y, x) * 3 / 2pi - 0.75 wrapped into [0, 3): a < 1: w1 = 1 - a, w2 = a; a < 2: w2 = 2 - a, w3 = a - 1; else w1 = a - 2, w3 = 3 - a;
+// w1..w3 are scaled by 1 - w0. Bytes are B,G,R,A = w0,w1,w2,w3, so the sampled rgba is (w2, w1, w0, w3) and a flat normal gives (0, 0, 1, 0).
+// Rounded as the DLL does: byte = (int)(w * 255 + 2^-30) (0x1019be00).
+std::vector<uint8_t> lightmapWeightsTable() {
+    std::vector<uint8_t> t(32 * 32 * 4);
+    for (int i = 0; i < 32; ++i)
+        for (int j = 0; j < 32; ++j) {
+            float x = (float(j) + 0.5f) / 32.0f * 2.0f - 1.0f, y = (float(i) + 0.5f) / 32.0f * 2.0f - 1.0f;
+            float z2 = 1.0f - (x * x + y * y);
+            if (!(z2 > 0.0f)) {
+                const float len = std::sqrt(x * x + y * y);
+                if (len != 0.0f) { x /= len; y /= len; }
+                z2 = 0.0f;
+            }
+            const float z = std::sqrt(z2);
+            float a = std::atan2(y, x) * 0.47746482f - 0.75f;
+            if (a < 0.0f) a += 3.0f;
+            else if (a > 3.0f) a -= 3.0f;
+            float w[4];
+            if (a < 1.0f) { w[3] = 0; w[1] = 1.0f - a; w[2] = a; }
+            else if (a < 2.0f) { a -= 1.0f; w[1] = 0; w[2] = 1.0f - a; w[3] = a; }
+            else { a -= 2.0f; w[2] = 0; w[1] = a; w[3] = 1.0f - a; }
+            w[0] = std::clamp(1.0f - std::acos(z) * 1.0467734f, 0.0f, 1.0f);
+            for (int k = 1; k < 4; ++k) w[k] *= 1.0f - w[0];
+            uint8_t* px = &t[(size_t(i) * 32 + size_t(j)) * 4];
+            px[0] = uint8_t(int(w[2] * 255.0f + 9.313225746154785e-10f)); // R = w2
+            px[1] = uint8_t(int(w[1] * 255.0f + 9.313225746154785e-10f)); // G = w1
+            px[2] = uint8_t(int(w[0] * 255.0f + 9.313225746154785e-10f)); // B = w0
+            px[3] = uint8_t(int(w[3] * 255.0f + 9.313225746154785e-10f)); // A = w3
+        }
+    return t;
 }
 
 std::vector<uint8_t> specularityTable(float shift) {
@@ -1161,6 +1198,9 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         const auto lut = specularityTable(cosinePowerShiftDvar());
         scene.specularity = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8_UNORM, 32, 256, 1);
         up.texture(scene.specularity, 0, 0, 32, 256, lut.data(), uint32_t(lut.size()));
+        const auto wl = lightmapWeightsTable();
+        scene.lmWeightTex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 32, 32, 1);
+        up.texture(scene.lmWeightTex, 0, 0, 32, 32, wl.data(), uint32_t(wl.size()));
     }
     up.flush();
 
@@ -1361,7 +1401,7 @@ struct Renderer {
         svsi.entrypoint = "vs_spec";
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
-        sfsi.num_samplers = 6;
+        sfsi.num_samplers = 7;
         SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
         SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
         if (!specVsh || !specFsh) sdlFail("spec shaders");
@@ -1748,7 +1788,7 @@ struct Renderer {
             if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
                 bool any = false;
                 for (const Batch& b : scene.batches) {
-                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity) continue;
+                    if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
                     if (!any) {
                         SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
                         SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
@@ -1760,10 +1800,10 @@ struct Renderer {
                     svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                     SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
                     const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
-                    SDL_GPUTextureSamplerBinding tex[6] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
+                    SDL_GPUTextureSamplerBinding tex[7] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
                                                            {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], matSampler(b.normalState)},
-                                                           {scene.textures[size_t(b.specTex)], matSampler(b.specState)}, {scene.specularity, clampSampler}};
-                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 6);
+                                                           {scene.textures[size_t(b.specTex)], matSampler(b.specState)}, {scene.specularity, clampSampler}, {scene.lmWeightTex, clampSampler}};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 7);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},

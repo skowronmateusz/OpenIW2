@@ -216,12 +216,14 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
                         texture2d<float> normalMap [[texture(3)]],
                         texture2d<float> specularMap [[texture(4)]],
                         texture2d<float> specularity [[texture(5)]],
+                        texture2d<float> lmWeightMap [[texture(6)]],
                         sampler colorSampler [[sampler(0)]],
                         sampler lmSampler [[sampler(1)]],
                         sampler sunSampler [[sampler(2)]],
                         sampler normalSampler [[sampler(3)]],
                         sampler specSampler [[sampler(4)]],
-                        sampler specularitySampler [[sampler(5)]]) {
+                        sampler specularitySampler [[sampler(5)]],
+                        sampler lmWeightSampler [[sampler(6)]]) {
     float4 base = colorMap.sample(colorSampler, in.uv) * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), base.a);
@@ -231,7 +233,9 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     float4 r = lmCoeffs.sample(lmSampler, in.lmUv, 0);
     float4 g = lmCoeffs.sample(lmSampler, in.lmUv, 1);
     float4 b = lmCoeffs.sample(lmSampler, in.lmUv, 2);
-    const float3 lm = float3(dot(r, u.lmWeights), dot(g, u.lmWeights), dot(b, u.lmWeights)) * u.params.z;
+    // The three lightmap coefficient weights come from sampling the lightmap-weights texture ($lightmapweights, gfx 0x1000ff10) with the normal-map sample
+    const float4 cw = lmWeightMap.sample(lmWeightSampler, float2(ns.a, ns.g));
+    const float3 lm = float3(dot(r, cw), dot(g, cw), dot(b, cw)) * u.params.z;
     const float vis = lmSun.sample(sunSampler, in.lmUv).r; // * dynamicShadowSampler (no dynamic shadows: 1)
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     // Phong_SpecularLighting / Phong_SpecularVisibility.
