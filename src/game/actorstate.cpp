@@ -699,7 +699,53 @@ void World::registerActorStateBuiltins() {
     // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and
     // clears the override. TODO(spec): "face current" takes desiredangle (+0x124), which only follows the turn target here
     // when this turn code ran, so the current yaw is used; 0x504aa0 (animation yaw delta into the pairs) is not modelled.
-    vm_.registerBuiltin("melee", [this](CallContext& c) {
+    // teleport(origin[, angles]) (0x53dfb0, actor only). Once the level runs: a move of more than 10 units fails (prints,
+    // returns false) when the player could see the goal or the actor (0x532100: 11 probe points around the target,
+    // box +-15 x +-15 x 0..72, traced from the player's eye, mask 0x801; unlimited distance here since 0x1c61038 is
+    // FLT_MAX by default); a smaller move fails while the actor is stopping (+0x6b0 > 0 and +0x704). Otherwise
+    // origin and (with a second argument) angles are set, motion and path cleared, true returned.
+    // TODO(spec): the level state 0x1c61048 gating the sight checks (taken as "time > 0"), the teleport bit
+    // (eFlags 2, moves over 128 units), the mid-stopping check, the facing setters 0x504950 / 0x5049a0 (angles only).
+    vm_.registerBuiltin("teleport", [this](CallContext& c) {
+        Entity* a = entityOf(c.self);
+        if (!a || !a->isActor) throw std::runtime_error("not an actor");
+        const Vec3 goal = c.arg(0).asVector();
+        const Vec3 cur = vecField(a->obj, "origin");
+        const float dx = cur[0] - goal[0], dy = cur[1] - goal[1], dz = cur[2] - goal[2];
+        const float dist2 = dx * dx + dy * dy + dz * dz;
+        if (timeMs_ > 0) {
+            if (dist2 > 100.0f) {
+                if (player_) {
+                    const Value eyeV = Value(eyePosition(*player_));
+                    const Vec3 eye = eyeV.asVector();
+                    static const float probe[11][3] = {{0.5f, 0.5f, 0.8f}, {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.2f}, {0, 0, 1}, {0, 1, 1}, {1, 1, 1},
+                                                       {1, 0, 1}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 0}};
+                    auto seen = [&](const Vec3& t) {
+                        for (const auto& pr : probe) {
+                            const Vec3 q{t[0] + pr[0] * 30.0f - 15.0f, t[1] + pr[1] * 30.0f - 15.0f, t[2] + pr[2] * 72.0f};
+                            if (collision_->trace(eye, q, {0, 0, 0}, {0, 0, 0}, 0x801).fraction >= 0.999f) return true;
+                        }
+                        return false;
+                    };
+                    if (seen(goal)) { print("Teleport failed because player could see goal pos.\n"); return Value(false); }
+                    if (seen(cur)) { print("Teleport failed because player could see actor.\n"); return Value(false); }
+                }
+            } else if (a->path.count > 0 && a->ai.stopSoonMs != 0) {
+                print("Teleport failed because actor in mid-stopping.\n");
+                return Value(false);
+            }
+        }
+        a->obj->set("origin", Value(goal));
+        if (c.argc() > 1 && c.arg(1).isVector()) {
+            const float yaw = quantYaw(c.arg(1).asVector()[1]);
+            a->obj->set("angles", Value(Vec3{0, yaw, 0}));
+            a->obj->set("desiredangle", Value(yaw));
+        }
+        clearActorPath(*a);
+        a->ai.detourMs = 0; // +0x724
+        return Value(true);
+    });
+    vm_.registerBuiltin("melee",[this](CallContext& c) {
         Entity* a = entityOf(c.self);
         if (!a || !a->obj || !isAlive(*a)) return Value();
         if (a->ai.meleeFrameMs == timeMs_) return Value(); // 0x550c7a: once per frame
