@@ -464,6 +464,24 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     ++stats.bulletImpacts;
 }
 
+const AccuracyGraph* World::accuracyGraph(const std::string& weaponName, bool targetClient) {
+    const auto* def = weapon(weaponName);
+    if (!def) return nullptr;
+    auto f = def->find(targetClient ? "aivsplayeraccuracygraph" : "aivsaiaccuracygraph");
+    if (f == def->end() || f->second.empty()) return nullptr;
+    const std::string path = std::string("accuracy/") + (targetClient ? "aivsplayer/" : "aivsai/") + f->second;
+    auto it = accuracyGraphs_.find(path);
+    if (it == accuracyGraphs_.end()) {
+        std::optional<AccuracyGraph> g;
+        if (auto d = vfs_.read(path)) {
+            AccuracyGraph parsed;
+            if (parseAccuracyGraph(std::string(d->begin(), d->end()), parsed)) g = std::move(parsed);
+        }
+        it = accuracyGraphs_.emplace(path, std::move(g)).first;
+    }
+    return it->second ? &*it->second : nullptr;
+}
+
 int World::weaponDamage(const std::string& weaponName) {
     const auto* w = weapon(weaponName);
     if (!w) return 35;
@@ -527,13 +545,24 @@ void World::registerCombatBuiltins() {
         if (c.arg(1).isVector()) target = c.arg(1).asVector();
         else if (enemy) target = add(enemy->obj->get("origin").asVector(), {0, 0, 40});
         else return Value();
+        // Hit or miss (0x550a70 → 0x54fde0): the shot hits when graph(distance) · accuracy · accMod (clamped to 0..1)
+        // beats a random number; otherwise 0x550390 aims it beside the target. TODO(spec): the miss direction
+        // (0x550390: offsets along the sight line's perpendicular axes by random terms and globals 0x5a5be8 / 0x5a5bf0 /
+        // 0x5a9928, scales 8 and 44) is not decoded, so a flat offset stands in. The shot itself has spread 0 (0x550bee
+        // passes 0 to 0x5312b0).
         const Value accV = a->obj->get("accuracy");
-        const float accuracy = std::clamp((accV.isNumber() ? accV.asFloat() : 0.5f) * accMod, 0.0f, 1.0f);
+        const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
+        const Value wnv = a->obj->get("weapon");
+        const AccuracyGraph* graph = enemy && wnv.isString() ? accuracyGraph(wnv.asString(), enemy->isPlayer) : nullptr;
+        float accuracy;
+        if (graph) {
+            const Vec3 ao = a->obj->get("origin").asVector(), eo = enemy->obj->get("origin").asVector();
+            accuracy = aiHitChance(*graph, len(sub(eo, ao)), actorAcc, accMod);
+        } else {
+            accuracy = std::clamp(actorAcc * accMod, 0.0f, 1.0f); // no graph: previous model
+        }
         std::uniform_real_distribution<float> u(0.0f, 1.0f);
-        if (u(rng_) > accuracy) {
-            // Miss: aim off to the side by up to 40 units (inferred spread). TODO(spec): the exe fires a spread cone
-            // (0x531210: random angle within tan(spread°)·8192, called by 0x5312b0 with damage factor 1.0); the AI
-            // accuracy → spread mapping (0x550a70) is not read, so the hit rate here is a model (too high at range).
+        if (!(accuracy > u(rng_))) {
             std::uniform_real_distribution<float> off(-40.0f, 40.0f);
             target = add(target, {off(rng_), off(rng_), off(rng_) * 0.5f});
         }
