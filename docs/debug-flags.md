@@ -64,6 +64,7 @@ described in the code that reads them.
 
 
 - Env `IW2_ACC_DEBUG=1` (iw2game/iw2view): prints one `ACC <weapon> <ai|player> dist <d> chance <c> hit|miss` line per AI/player shot (combat.cpp).
+- Env `IW2_NO_DLIGHT=1` (iw2view): disables the dynamic point-light (l_point) pass, for before/after comparisons of explosion lighting. The count is the `r_dlightLimit` cvar (default 4, max 32).
 - Env `IW2_PMOVE_FORWARD=1` (iw2game `--pmove` / fall test): the test pmove holds forward, so footstep events reach the AI (stats line "player noise events").
 - iw2game stats line also prints "actor noise events" (the 500 ms movement noise of actors, 0x5485a0).
 | `IW2_SHOT_KEYS=a,b,...` | Applied before the screenshot of a `--shot` run when `--menu` or `IW2_SHOT_MENU` is set. Tokens: `open:name`, `click:X/Y`, `hover:X/Y`, `up`, `down`, `esc`, `left`, `right`, `enter`, `bindkey:NAME` (feeds the key to a BIND item that waits for one, e.g. `bindkey:PGUP`; also valid in `IW2_MENU_KEYS`). |
@@ -78,4 +79,3 @@ described in the code that reads them.
 - Env `IW2_COMBAT_SCENE=<s>` (iw2game): at sim time `<s>` takes the closest living axis actor and allied actor (not in the scripted state 7), re-places the allied one 120 units in front of an axis actor with a clear shot line (hit boxes, before every shot, because scripted animation moves it back; entity clips are resynced), sets its health to 1000 (`IW2_SCENE_LETHAL=1` keeps it) and makes them enemies. Rifle bullets through the real `fireBullet` path (events 10 and 16, danger planes, damage, pain) every 0.3 s for 3 s; prints `[scene t] #n state sub hp planes pain` for both actors for 8 s and `shot hit entity` per shot. Debug only.
 - Env `IW2_ACTOR_SLIDE=1` (iw2game/iw2view): path-walking actors move with the ported actor slide move (actorslide.cpp, exe 0x5487c0: ground probe, step slide move, wall clipping) instead of the ground snap, and track the bumped entity (+0x318) for `gethitenttype`. Default off.
 - Env `IW2_SCENE_COVER=1` (with `IW2_COMBAT_SCENE`): the scene is built around a cover node (victim beside it with the goal volume set, shooter in front) and logs the distance to the node. Env `IW2_COVER_LOG=1`: stderr `[cover ms] #n ...` lines for findcovernode / findbestcovernode / usecovernode, and the scene log adds the victim's animscript thread wait site and animation nodes. Debug only.
-| `IW2_NO_DLIGHT=1` | iw2view | Disables the dynamic point-light (l_point) pass; for before/after comparisons of explosion lighting. |

@@ -1289,13 +1289,20 @@ Scene emptyScene(SDL_GPUDevice* dev) {
 
 // r_dlightLimit (default 4): of the submitted lights the DLL keeps the ones with the smallest distSq / radius^2 to the view
 // origin (quick-select with comparator 0x100150a0 in 0x10015180, called from 0x10015210); order inside the kept set is not defined.
-static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::FxLight>& in, const Vec3& eye, size_t limit = 4) {
+static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::FxLight>& in, const Vec3& eye, size_t limit = 4,
+                                                           const std::vector<std::array<float, 4>>& planes = {}) {
     static const bool off = std::getenv("IW2_NO_DLIGHT") != nullptr;
     std::vector<std::array<float, 7>> out;
     if (off) return out;
     std::vector<std::pair<float, const game::FxLight*>> v;
     for (const auto& l : in) {
         if (!(l.radius > 0.0f)) continue; // AddLightToScene drops radius <= 0 (0x1019bd04)
+        // The per-light flag array 0x10657098 is written by 0x1000a880: 1 when n.origin - d < -radius for any view plane (sphere fully
+        // outside the frustum); 0x10015210 only considers lights whose flag is 0. TODO(spec): the plane set (the effect gate's four sides here).
+        bool outside = false;
+        for (const auto& pl : planes)
+            if (pl[0] * l.origin[0] + pl[1] * l.origin[1] + pl[2] * l.origin[2] - pl[3] < -l.radius) outside = true;
+        if (outside) continue;
         const float dx = eye.x - l.origin[0], dy = eye.y - l.origin[1], dz = eye.z - l.origin[2];
         v.push_back({(dx * dx + dy * dy + dz * dz) / (l.radius * l.radius), &l});
     }
@@ -1305,6 +1312,15 @@ static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::F
         out.push_back({l.origin[0], l.origin[1], l.origin[2], l.radius, l.rgb[0], l.rgb[1], l.rgb[2]});
     }
     return out;
+}
+
+// r_dlightLimit dvar (int 0..32, registered at DLL 0x1000b318 with default 4): the menu cvar store, else the registered default.
+static size_t dlightLimitFrom(const std::map<std::string, std::string>& cvars) {
+    for (const char* k : {"r_dlightLimit", "r_dlightlimit"}) {
+        const auto it = cvars.find(k);
+        if (it != cvars.end()) return size_t(std::clamp(std::atoi(it->second.c_str()), 0, 32));
+    }
+    return size_t(std::clamp(std::atoi(ui::registeredDefault("r_dlightLimit").c_str()), 0, 32));
 }
 
 struct FragmentUniforms {
@@ -1933,6 +1949,44 @@ struct Renderer {
                             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                             SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                         }
+                // Entity models (the sort list holds every entity type; 0x10014fe0 asks the per-type bounds getter), same state.
+                for (const DLight& dl : dlights)
+                    for (const DrawItem& it : items) {
+                        if (it.depthMax < 1.0f) {
+                            const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                            SDL_SetGPUViewport(pass, &vpDepth);
+                        }
+                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                        SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
+                        SDL_GPUBufferBinding mib{it.model->indices, 0};
+                        SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        for (const Batch& b : it.model->batches) {
+                            if ((b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) || b.lightmap == -3) continue;
+                            SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
+                            VU mu = vu;
+                            mu.model = it.transform;
+                            if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                            mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                            SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
+                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                            SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
+                            struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
+                            std::memcpy(fu.light, dl.pos, 12);
+                            fu.light[3] = dl.radius;
+                            std::memcpy(fu.color, dl.rgb, 12);
+                            fu.params[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                            fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
+                            for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
+                            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                        }
+                        if (it.depthMax < 1.0f) {
+                            const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                            SDL_SetGPUViewport(pass, &vpFull);
+                        }
+                    }
+                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
             if (p == Pass::Blend) {
@@ -4740,7 +4794,7 @@ int main(int argc, char** argv) {
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             renderer.fog = fogState.consts(world ? world->timeMs() : 0);
-            renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
+            renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
@@ -5719,7 +5773,7 @@ int main(int argc, char** argv) {
             if (gotSwap && swap)
             {
                 renderer.fog = fogState.consts(world ? world->timeMs() : 0);
-                renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
+                renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
                 const uint64_t profB = SDL_GetTicksNS();
