@@ -61,6 +61,20 @@ int main() {
 			showDvar { "1" }
 			action { play "mouse_click"; close main; }
 		}
+		itemDef
+		{
+			name "lst"
+			type 6
+			rect 24 150 319 200
+			elementwidth 120
+			elementheight 14
+			elementtype 0
+			feeder 16
+			columns 2  2 65 22  162 40 21
+			doubleclick { play "mouse_click"; open x; }
+			maxchars 14
+			maxPaintChars 9
+		}
 	}
 }
 )");
@@ -77,7 +91,14 @@ int main() {
         CHECK(m->rect.horzAlign == 1 && m->rect.vertAlign == 3);
         CHECK(m->onOpen.size() == 2);
         CHECK(m->onOpen.size() == 2 && m->onOpen[1] == (iw2::ui::Command{"setdvar", "ui_x", "1"}));
-        CHECK(m->items.size() == 1);
+        CHECK(m->items.size() == 2);
+        if (m->items.size() == 2) {
+            const auto& l = *m->items[1];
+            CHECK(l.type == 6 && l.feeder == 16 && l.elementWidth == 120 && l.elementHeight == 14 && l.elementType == 0);
+            CHECK(l.columns.size() == 2 && l.columns[0].pos == 2 && l.columns[0].width == 65 && l.columns[0].maxChars == 22);
+            CHECK(l.columns.size() == 2 && l.columns[1].pos == 162 && l.columns[1].width == 40 && l.columns[1].maxChars == 21);
+            CHECK(l.doubleClick.size() == 2 && l.maxChars == 14 && l.maxPaintChars == 9);
+        }
         if (!m->items.empty()) {
             const auto& it = *m->items[0];
             CHECK(it.name == "face");
