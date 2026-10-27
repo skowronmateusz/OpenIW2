@@ -50,7 +50,22 @@ struct FragmentUniforms {
     float4 scroll;         // x: V offset subtracted from uv (the scroll technique subtracts the game-time value from the V coordinate)
     float4 fogParams;      // x: 1 = fog on, y: scale, z: shift (linear factor = dist * scale + shift, lib/fogcalc.hlsl)
     float4 fogColor;       // rgb
+    float4 probe[6];       // light-grid coefficients R0,R1,G0,G1,B0,B1; used when sunDirection.w > 0.5
 };
+
+static float probe_smooth(float t) { return (3.0 - 2.0 * t) * t * t; }
+// lightprobe.hlsl ProbeLighting(N): cube-weight the eight light-grid corner colours (mirrors assets::LightGrid::weights).
+static float3 probe_lighting(float3 n, constant FragmentUniforms& u) {
+    const float t0 = n.x * 0.81649655 + n.z * 0.57735026;
+    const float t1 = n.x * -0.40824828 + n.y * 0.70710677 + n.z * 0.57735026;
+    const float t2 = n.x * -0.40824828 - n.y * 0.70710677 + n.z * 0.57735026;
+    const float m = max(max(abs(t0), abs(t1)), max(abs(t2), 1e-6));
+    const float a = probe_smooth((t0 / m + 1.0) * 0.5), b = probe_smooth((t1 / m + 1.0) * 0.5);
+    const float s0 = probe_smooth(0.5 - t2 / m * 0.5), s1 = probe_smooth((t2 / m + 1.0) * 0.5);
+    const float4 w0 = float4((1 - a) * (1 - b), (1 - b) * a, (1 - a) * b, b * a) * s0;
+    const float4 w1 = float4((1 - a) * (1 - b), (1 - b) * a, (1 - a) * b, b * a) * s1;
+    return float3(dot(w0, u.probe[0]) + dot(w1, u.probe[1]), dot(w0, u.probe[2]) + dot(w1, u.probe[3]), dot(w0, u.probe[4]) + dot(w1, u.probe[5]));
+}
 
 static float3 apply_fog(float3 rgb, float dist, constant FragmentUniforms& u) {
     if (u.fogParams.x < 0.5) return rgb;
@@ -84,7 +99,8 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         light = float3(1.0);
     } else if (u.params.y > 2.5) {
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
-        light = u.ambient.rgb + u.ambient.w * ndl * u.sunColor.rgb;
+        const float3 amb = u.sunDirection.w > 0.5 ? probe_lighting(normalize(in.normal), u) : u.ambient.rgb;
+        light = amb + u.ambient.w * ndl * u.sunColor.rgb;
     } else if (u.params.y > 1.5) {
         light = in.light; // baked per vertex from the light grid
     } else if (u.params.y > 0.5) {

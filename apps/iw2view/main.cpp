@@ -1290,6 +1290,7 @@ struct FragmentUniforms {
     float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
     float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
     float fogColor[4];
+    float probe[6][4]; // light-grid coefficients R0,R1,G0,G1,B0,B1 (lightprobe.hlsl lightGridColors); used when sunDirection.w == 1
 };
 
 // An entity model to draw this frame.
@@ -1298,6 +1299,8 @@ struct DrawItem {
     Mat4 transform{};
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
+    bool hasProbe = false;
+    float probe[6][4] = {}; // light-grid coefficients for per-pixel ProbeLighting(N)
     float scrollV = 0.0f; // vehicle tread scroll
     // Viewport depth range maximum (the minimum is 0): the renderer draws groups with the 0x8 class in 0 .. 0.2 and the 0x10
     // class in 0 .. 0.5 of the depth buffer (D3D SetViewport MinZ/MaxZ via 0x1003ec50, called at 0x1002fafc..0x1002fc85;
@@ -1307,6 +1310,14 @@ struct DrawItem {
     // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
     float zNear = 4.0f;
 };
+
+// Packs the light-grid coefficients as the lightprobe.hlsl lightGridColors{R,G,B}{0,1} constants (corner order 0..3, 4..7).
+static void storeProbe(DrawItem& it, const assets::LightGridCoeffs& c) {
+    it.hasProbe = !std::getenv("IW2_NO_PROBE");
+    for (int ch = 0; ch < 3; ++ch)
+        for (int h = 0; h < 2; ++h)
+            for (int k = 0; k < 4; ++k) it.probe[ch * 2 + h][k] = c[size_t(ch)][size_t(h * 4 + k)];
+}
 
 const Mat4 kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
@@ -1951,12 +1962,13 @@ struct Renderer {
                         {scene.textures[size_t(b.texture)], repeatSampler}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                     FragmentUniforms fu = {
-                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
                         {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
+                    std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
                     detailUniforms(fu, b.detail);
                     if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -2593,6 +2605,7 @@ int main(int argc, char** argv) {
                     const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
                     base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                     base.sunVisibility = sun;
+                    storeProbe(base, c);
                 }
                 if (e->vehicle && e->vehicle->info) {
                     // Vehicle turret (cgame 0x4ac2b0 bone controls on tag_turret / tag_barrel; es+0x70 pitch, es+0x74 yaw, lerped).
@@ -2782,6 +2795,7 @@ int main(int argc, char** argv) {
                 const auto l = assets::LightGrid::evaluate(lc, {0, 0, 1});
                 base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                 base.sunVisibility = sun;
+                storeProbe(base, lc);
             }
             Uploader up(dev, false);
             BoneMap bones;
