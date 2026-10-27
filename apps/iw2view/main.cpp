@@ -1766,6 +1766,10 @@ int main(int argc, char** argv) {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
+            if (world->player()->obj->get("$weapontaken").truthy()) {
+                world->player()->obj->set("$weapontaken", script::Value());
+                pweapon.weaponTaken();
+            }
             const script::Value w = world->player()->obj->get("$weapon");
             // No weapon ("none", ps weapon 0) means nothing in hand, as at the start of moscow (only the potato).
             std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : std::string();

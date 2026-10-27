@@ -438,6 +438,8 @@ void World::pickUpWeaponItem(Entity& item) {
             launchItem(dropped, *player_); // 0x5220f0 → 0x521f70
             const int slot = inv.slot[1] == cur ? 1 : 2;
             takeWeapon(inv, cur);
+            // 0x4dc8a0: taking the held weapon clears ps weapon at once, so the swap has no putaway.
+            player_->obj->set("$weapontaken", Value(true));
             giveWeapon(inv, w);
             if (inv.slot[slot] != w) {
                 for (auto& sname : inv.slot)

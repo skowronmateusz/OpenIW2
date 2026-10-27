@@ -56,6 +56,9 @@ public:
     bool equipped() const { return !name_.empty(); }
     // Put away by a holster (weapon 0) and waiting to raise the command's weapon again.
     bool holstered() const { return holstered_; }
+    // The held weapon was taken away (swap with a weapon on the ground, 0x4dc8a0 sets ps weapon 0 at once): nothing is in hand, so
+    // the next weapon is raised without a putaway (PM_BeginWeaponChange with weapon 0 → state 2 with timer 0).
+    void weaponTaken() { name_.clear(); holstered_ = true; }
     int clip() const { return clip_; }
     int stock() const { return stock_; }
     // PM_Weapon's weapon state number (0 ready, 1 raising, 2 dropping, 10/11 melee, 12–16 offhand, …).
