@@ -65,6 +65,11 @@ void PlayerWeapon::enterWith(const Def& d, State s, const char* animKey, float d
     anim_ = a.empty() ? defValue(d, "idleAnim") : a;
     animTime_ = 0;
     pendingIdle_ = false;
+    // Entering state 13 adds event 0xa5 (0x4df1b4, param = the offhand weapon) and state 15 event 0xa6 (0x4df2a4); cgame plays
+    // the weapon info's +0xdc / +0xe0 sound (0x4b8ae0, 0x4b8b10), which the loader fills from the def's pullbackSound (+0xa4)
+    // and fireSound (+0xa8) (0x4b3566-0x4b35db).
+    const char* soundKey = s == State::OffhandPrepare ? "pullbackSound" : s == State::OffhandThrow ? "fireSound" : nullptr;
+    if (soundKey && !defValue(d, soundKey).empty()) sounds_.push_back(defValue(d, soundKey));
 }
 
 void PlayerWeapon::equip(const std::string& name, const Def& def) {

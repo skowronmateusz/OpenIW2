@@ -115,7 +115,8 @@ void melee() {
 void offhand() {
     const Def a{{"quickdroptime", "0.1"}, {"quickraisetime", "0.1"}, {"raisetime", "0"}, {"quickdropanim", "qd"}};
     const Def g{{"weapontype", "grenade"}, {"holdfiretime", "0.3"}, {"firetime", "0.2"}, {"fusetime", "3"},
-                {"holdfireanim", "pullpin"}, {"fireanim", "throw"}, {"gunmodel", "grenade"}};
+                {"holdfireanim", "pullpin"}, {"fireanim", "throw"}, {"gunmodel", "grenade"}, {"pullbacksound", "pin"},
+                {"firesound", "toss"}};
     PlayerWeapon w;
     w.lookup = [&](const std::string& n) -> const Def* { return n == "frag" ? &g : &a; };
     w.findOffhand = [](const std::string& cls) { return cls == "Frag Grenade" ? std::string("frag") : std::string(); };
@@ -128,6 +129,7 @@ void offhand() {
     CHECK(w.stateNumber() == 12 && w.anim() == "qd");
     for (int i = 0; i < 11; ++i) w.update(0.01f, in);
     CHECK(w.stateNumber() == 13 && w.anim() == "pullpin" && w.gunModel() == "xmodel/grenade");
+    CHECK(w.takeSounds() == std::vector<std::string>{"pin"}); // event 0xa5 on entering state 13
     for (int i = 0; i < 60; ++i) w.update(0.01f, in);
     CHECK(w.stateNumber() == 14); // held
     int throws = 0;
@@ -137,6 +139,7 @@ void offhand() {
         for (const auto& e : w.takeEvents()) throws += e.kind == PlayerWeapon::Event::OffhandThrow && e.weapon == "frag";
     }
     CHECK(throws == 1 && w.stateNumber() == 15 && w.anim() == "throw");
+    CHECK(w.takeSounds() == std::vector<std::string>{"toss"}); // event 0xa6 on entering state 15
     for (int i = 0; i < 40; ++i) w.update(0.01f, in);
     CHECK(w.stateNumber() == 0 && w.name() == "a");
 }
