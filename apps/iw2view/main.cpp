@@ -1181,6 +1181,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
+    SDL_GPUSampler* waterMapSampler = nullptr;
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
@@ -1377,6 +1378,9 @@ struct Renderer {
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         si.enable_anisotropy = false;
         clampSampler = SDL_CreateGPUSampler(dev, &si);
+        si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        waterMapSampler = SDL_CreateGPUSampler(dev, &si);
     }
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
@@ -1549,8 +1553,9 @@ struct Renderer {
                 if (!wm.cube || !wm.normalMap) continue;
                 SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
-                SDL_GPUTextureSamplerBinding wsb{wm.cube, clampSampler};
-                SDL_BindGPUFragmentSamplers(pass, 0, &wsb, 1);
+                // cubicEnvMap: sampler state 0x30 (clamp U/V); normalMap: 0x6 = linear min/mag, point mip filter, repeat (0x1003dd..e1b1).
+                SDL_GPUTextureSamplerBinding wsb[2] = {{wm.cube, clampSampler}, {wm.normalMap, waterMapSampler}};
+                SDL_BindGPUFragmentSamplers(pass, 0, wsb, 2);
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
