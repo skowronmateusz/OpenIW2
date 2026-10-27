@@ -2751,6 +2751,10 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("MantleHint"))
             for (const auto& it : m->items)
                 if (it->name == "chRect") mantleHintItem = it.get();
+        const ui::Item* holdBreathItem = nullptr; // menu "HoldBreathHint" (ownerdraw 71)
+        if (const ui::Menu* m = hudMenus.find("HoldBreathHint"))
+            for (const auto& it : m->items)
+                if (it->name == "chRect") holdBreathItem = it.get();
         // Script menus (openmenu, docs/spec/ui.md): loaded from "ui/scriptmenus/<name>.menu" on the first "popupopen" (0x4c3ad0).
         ui::MenuLibrary scriptMenus(vfs);
         float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
@@ -3374,6 +3378,37 @@ int main(int argc, char** argv) {
                     std::memcpy(q.rgba, white, 4);
                     q.texture = materialTexture("hint_mantle");
                     out.push_back(q);
+                }
+            }
+            // Hold-breath hint (ownerdraw CG_HOLD_BREATH_HINT 71, 0x4a9e30; menu "HoldBreathHint" "0 -130 0 0" centred =
+            // (320, 110) virtual): shown with cg_drawBreathHint (default 1), the 2D hud on, no objectives screen, not paused,
+            // pm_flags 0x4000 clear, the current weapon's weaponClass != item (9) with an adsOverlayReticle (def +0x278 != 0)
+            // and the aim fraction (0xf709a0) exactly 1.0. Text PLATFORM_HOLD_BREATH with &&1 = the key bound to +holdbreath,
+            // else +melee_breath, else +breath_binoculars (0x4cdbf0), white, the item's textscale / textstyle; x = rect.x −
+            // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
+            // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). TODO(spec): pm_flags 0x4000 is
+            // set by 0x4dd290 (disableweapon, cleared by 0x4dd2a0; the builtin is not implemented, so never set here).
+            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && pweapon.adsFrac() == 1.0f) {
+                const std::string reticle = pweapon.field("adsOverlayReticle");
+                if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
+                    const float ts = holdBreathItem->textScale;
+                    const float fs = ts * float(h) / 480.0f;
+                    if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                        const std::string* t = loc.find("PLATFORM_HOLD_BREATH");
+                        std::string text = t ? *t : "PLATFORM_HOLD_BREATH";
+                        auto keys = input.keysFor("+holdbreath");
+                        if (keys.empty()) keys = input.keysFor("+melee_breath");
+                        if (keys.empty()) keys = input.keysFor("+breath_binoculars");
+                        if (const auto at = text.find("&&1"); at != std::string::npos)
+                            text = text.substr(0, at) + (keys.empty() ? std::string() : keys.front()) + text.substr(at + 3);
+                        const float gs = ts * 48.0f / float(f->pixelHeight);
+                        float tw = 0;
+                        for (unsigned char ch : text)
+                            if (const auto* g = f->find(ch)) tw += float(g->dx) * gs;
+                        const uint8_t white[4] = {255, 255, 255, 255};
+                        hudText(out, text, left43 + (320.0f - float(int(tw * 0.5f))) * sc, 110.0f * sc, gs * sc, *f, white, 0.0f, 1.0f,
+                                holdBreathItem->textStyle);
+                    }
                 }
             }
             // Dead quote (ownerdraw CG_DEADQUOTE, 0x4aa2a0): after opendeadscreen the ui_deadquote dvar (a leading '@'
