@@ -481,3 +481,13 @@ untouched for a zero vector.
 Tested in tests/test_actorslide.cpp. Not wired into World::moveActor yet: the callers 0x547db0 (the step / ground wrapper),
 0x548290 (ground probe), 0x5485a0 / 0x548650 and the mode dispatch of 0x5487c0 are still TODO(spec); the +0x318 copy in the
 0x500dc0 step reads the block's +0xf4 after 0x5487c0.
+
+0x547db0 (the actor StepSlideMove, arg = gravity flag) structure, not yet ported: saves the block (0x43 dwords) and the
+0x15-dword frame scratch at 0x1cbac58, runs 0x5475e0; result 0 returns 0 (the +0xf4 of the scratch...), 2 returns 0 (all-solid exit);
+otherwise (step height 0x1cbaca8 = 10, or 18 when the byte +0x64 of the block is 0) it traces straight down with 0x4db7f0 from the
+post-move origin and, when that trace is not a full-fraction (1.0) clear or the normal.z >= 0.7, it skips the step-up; otherwise it
+restores the saved block, clears the ground plane flag (0x1cbac60), re-runs the slide move from origin + step height (lerp
+with the 0.0 constant 0x591e00 so the origin is kept), traces down by the step height again (0x4db7f0), snaps to the ground via
+0x47f390 and accepts the stepped move when the down trace fraction passes 0x591e78 and normal.z passes 0x592018 (then
+0x547540 clips the velocity and 0x408ad0 (two args) compared against origin z + 0x59202c decides to store the hit entity in
++0xf4). Helpers 0x4db7f0, 0x47f390, 0x408ad0 and the constants 0x591e78, 0x592018, 0x59202c are not decoded: TODO(spec).
