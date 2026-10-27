@@ -3130,7 +3130,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < 2; ++i) { frontStack.tick(int(SDL_GetTicks())); frontStack.click(menuMx, menuMy); frontStack.release(); }
                 return true;
             }
-            if (k.rfind("uiscript:", 0) == 0) { menuEnv.uiScript(k.substr(9), ui::Command{}); return true; }
+            if (k.rfind("uiscript:", 0) == 0) { std::string n = k.substr(9); for (auto& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch))); menuEnv.uiScript(n, ui::Command{}); return true; }
             return false;
         };
         { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
