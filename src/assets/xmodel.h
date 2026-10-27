@@ -114,6 +114,12 @@ XPose controlledPose(const XModelParts& parts, const std::vector<std::pair<int, 
 // Applies bone controls on top of an already animated pose: a controlled bone's rotation is followed by the control
 // rotation (as controlledPose) and its descendants rotate with it about the bone. Parents precede children.
 XPose applyControls(const XModelParts& parts, const XPose& base, const std::vector<std::pair<int, Quat>>& controls);
+struct BoneControl {
+    int bone;
+    Quat rotation;
+    std::array<float, 3> translation; // added to the bone's local offset, in the parent bone's frame
+};
+XPose applyControls(const XModelParts& parts, const XPose& base, const std::vector<BoneControl>& controls);
 
 // Control quaternion of angles in degrees (pitch, yaw, roll) as 0x4746e0 builds it: yaw about z, pitch about y,
 // roll about x.

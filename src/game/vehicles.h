@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 
+#include "assets/xmodel.h"
 #include "script/value.h"
 
 #include <string>
@@ -47,6 +48,7 @@ struct VehicleInfo {
     float maxSpeed = 0, accel = 0, collisionSpeed = 0, engineSndSpeed = 0, collisionDamage = 0; // collisionDamage: info +0x80
     float rotRate = 0, rotAccel = 0; // degrees per second (and per second²), not scaled at load
     float suspensionTravel = 0, maxBodyPitch = 0, maxBodyRoll = 0;
+    bool steerWheels = false; // info +0x44: front wheels turn with the yaw rate (0x5107e0)
     float turretHorizSpanLeft = 0, turretHorizSpanRight = 0, turretVertSpanUp = 0, turretVertSpanDown = 0, turretRotRate = 0;
     bool quadBarrel = false;
     // texureScroll (sic, +0x48) / texureScrollScale (+0x64): tread texture scrolling (0x510870).
@@ -86,6 +88,7 @@ struct VehicleState {
     ObjectPtr targetEnt;
     Vec3 targetVec{}, targetOffset{};
     float turretPitch = 0, turretYaw = 0;
+    float steerAngle = 0;      // entity +0x94 (0x5107e0), degrees, read by the cgame wheel controls (0x4ac2b0)
     bool altBarrel = false;
     int team = 0;              // 0 none, 1 axis, 2 allies
     bool usable = false;       // contents 0x200000; initially spawnflags & 1 (0x50dcd5)
@@ -135,4 +138,16 @@ inline int vehicleTexScrollStep(int flag, int acc, float speed, float dvar, floa
 // ((next - cur) * frameInterp) of the accumulator.
 inline float vehicleTexScrollOffset(int acc) { return acc < 0 ? 0.0f : float(acc) * 0.001f; }
 
+
+class CollisionWorld;
+
+// Per-wheel bone controls of the cgame vehicle code (0x4ac2b0). For each wheel tag found (front_left, front_right,
+// back_left, back_right, middle_left, middle_right; `pose` is the model-space pose, P the tag position): the wheel
+// point w = forward*Px + left*Py + up*Pz + origin is traced as a point from w + up*40 to w - up*travel (mask 0x211, the
+// vehicle skipped); d = max((travel + 40) * fraction, 40 - travel); the control translation is the model-space
+// coordinates of (start - up*d) minus P, i.e. up*(40 - d) in the vehicle frame for a hit above the tag. The first two
+// wheels also turn about the yaw axis by `steer` degrees when it is not 0. Nothing is produced for travel <= 0.
+std::vector<assets::BoneControl> vehicleWheelControls(const CollisionWorld& cw, const assets::XModelParts& parts,
+                                                      const assets::XPose& pose, const Vec3& origin, const Vec3& angles,
+                                                      float travel, float steer, int passEntity);
 } // namespace iw2::game

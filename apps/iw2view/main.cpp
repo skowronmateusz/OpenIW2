@@ -2487,15 +2487,21 @@ int main(int argc, char** argv) {
                         tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
                         ty = pt->second.second + angleDelta(ty, pt->second.second) * lerpFrac;
                     }
-                    std::vector<std::pair<int, assets::Quat>> ctl;
+                    std::vector<assets::BoneControl> ctl;
                     for (size_t bi = 0; bi < vm->parts.bones.size(); ++bi) {
                         std::string n = vm->parts.bones[bi].name;
                         for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                        if (n == "tag_body") ctl.push_back({int(bi), assets::anglesQuat(e->vehicle->joltPitch, 0, e->vehicle->joltRoll)});
-                        else if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0)});
-                        else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0)});
+                        if (n == "tag_body") ctl.push_back({int(bi), assets::anglesQuat(e->vehicle->joltPitch, 0, e->vehicle->joltRoll), {0, 0, 0}});
+                        else if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0), {0, 0, 0}});
+                        else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0), {0, 0, 0}});
                     }
                     assets::XPose vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
+                    // Wheel suspension (cgame 0x4ac2b0): each wheel bone is moved to the ground under it.
+                    if (world)
+                        for (const auto& wc : game::vehicleWheelControls(world->collision(), vm->parts, vpose, {ov[0], ov[1], ov[2]},
+                                                                         {av[0], av[1], av[2]}, e->vehicle->info->suspensionTravel,
+                                                                         e->vehicle->steerAngle, e->number))
+                            ctl.push_back(wc);
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, assets::applyControls(vm->parts, vpose, ctl));
                     if (it.model) items.push_back(it);
