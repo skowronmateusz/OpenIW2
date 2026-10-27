@@ -166,8 +166,12 @@ bool World::aiStart(Entity& e, int state) {
         return true;
     case AiTurret:
         return turretStateStart(e); // 0x549960
-    case AiDeath: // 0x548980. TODO(spec): the claimed node release (0x5191a0) and the head look-at hand-over
-                  // (0x514970, 0x4fd9e0) are not modelled.
+    case AiDeath: // 0x548980: +0x740 / +0x741 cleared and the claimed node released at once (0x548995..0x54899a).
+                  // TODO(spec): the head look-at hand-over (0x514970, 0x4fd9e0; 500 ms override-angle gate) and sentient +0x28 = 200
+                  // (0x548a02) are not modelled.
+        e.obj->set("keepclaimednode", Value(int32_t(0)));
+        e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+        if (e.claimedNode >= 0) releaseNode(e);
         e.ai.substate = kSubDeath;
         return true;
     case AiPain: // 0x54d2a0
@@ -407,6 +411,10 @@ int World::deathThink(Entity& e) {
 // animcustom think (0x54b240): the custom function runs as the animscript (anim mode override or 4); when it has
 // finished the state is popped.
 int World::customThink(Entity& e) {
+    // 0x54b240..0x54b26c: keepclaimednode (+0x740) / keepclaimednodeingoal (+0x741) cleared, claimed node released.
+    e.obj->set("keepclaimednode", Value(int32_t(0)));
+    e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+    if (e.claimedNode >= 0) releaseNode(e);
     clearActorPath(e);
     setActorAnimScript(e, "<custom>", 0, 4);
     if (!actorAnimScriptDone(e)) {

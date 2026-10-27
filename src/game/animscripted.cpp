@@ -230,7 +230,8 @@ int World::scriptedThink(Entity& e) {
         if (e.ai.predicted[size_t(e.ai.predictedDepth)] == AiScripted) aiPopState(e);
         return 1;
     };
-    // TODO(spec): actor bytes +0x740 / +0x741 are cleared; their meaning is not read.
+    e.obj->set("keepclaimednode", Value(int32_t(0)));       // actor bytes +0x740 / +0x741 (usecovernode 0x53c900 reads them)
+    e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
     if (e.claimedNode >= 0) releaseNode(e); // 0x5191a0
     clearActorPath(e);                     // 0x541780, +0x6b0 / +0x6b2 / +0x724
     setActorAnimScript(e, "scripted", 0, 4);
