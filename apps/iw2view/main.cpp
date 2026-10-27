@@ -1897,7 +1897,10 @@ int main(int argc, char** argv) {
         std::map<int, game::AnimState> prevAnim;
         std::map<int, std::pair<float, float>> prevTurret; // turret pitch/yaw before the last server frame (drawn interpolated)
         float lerpFrac = 1.0f;
-        auto gatherItems = [&](const Camera& view) {
+        // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
+        // the eye (tag_player) is taken at the same pair.
+        std::optional<std::pair<float, float>> playerTurretPose;
+        auto gatherItems = [&](const Camera&) {
             std::vector<DrawItem> items;
             if (!world) return items;
             Uploader up(dev);
@@ -2028,9 +2031,9 @@ int main(int argc, char** argv) {
                         tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
                         ty = pt->second.second + angleDelta(ty, pt->second.second) * lerpFrac;
                     }
-                    if (world->playerOnTurret() && e->turret->owner == world->player()->obj) {
-                        tp = angleDelta(view.pitch, av[0]);
-                        ty = angleDelta(view.yaw, av[1]);
+                    if (world->playerOnTurret() && e->turret->owner == world->player()->obj && playerTurretPose) {
+                        tp = playerTurretPose->first;
+                        ty = playerTurretPose->second;
                     }
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm,
@@ -2867,7 +2870,11 @@ int main(int argc, char** argv) {
                         world->setPlayerCommand(pc);
                         world->frame();
                         game::Vec3 eye;
-                        if (world->playerTurretEye(eye)) cam.pos = {eye[0], eye[1], eye[2] + 60.0f - shotViewHeight};
+                        float tp = 0, ty = 0;
+                        if (world->playerTurretAnglesFor({cam.pitch, cam.yaw, 0}, tp, ty)) {
+                            playerTurretPose = std::make_pair(tp, ty);
+                            if (world->playerTurretEyeAt(tp, ty, eye)) cam.pos = {eye[0], eye[1], eye[2] + 60.0f - shotViewHeight};
+                        }
                     }
                     std::cout << "use: on turret " << world->playerOnTurret() << "\n";
                 }
@@ -3022,7 +3029,14 @@ int main(int argc, char** argv) {
                 // The eye is the turret's tag_player (0x4e8b70); the turret code places the player behind it.
                 game::Vec3 eye;
                 const script::Vec3 po = world->player()->obj->get("origin").asVector();
-                if (world->playerTurretEye(eye)) cam.pos = {eye[0], eye[1], eye[2]};
+                float tp = 0, ty = 0;
+                playerTurretPose.reset();
+                if (world->playerTurretAnglesFor({cam.pitch, cam.yaw, 0}, tp, ty)) {
+                    playerTurretPose = std::make_pair(tp, ty);
+                    if (world->playerTurretEyeAt(tp, ty, eye)) cam.pos = {eye[0], eye[1], eye[2]};
+                } else if (world->playerTurretEye(eye)) {
+                    cam.pos = {eye[0], eye[1], eye[2]};
+                }
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
             } else if (inVehicle) {
