@@ -407,6 +407,7 @@ bool World::pathToNodeDirect(Entity& e, int node, bool withPlanes) {
 }
 
 bool World::linkBlocked(size_t node, size_t link, int team) const {
+    if (node < linkOff_.size() && link < linkOff_[node].size() && linkOff_[node][link] != 0) return true;
     if (team < 0 || team > 3 || node >= linkBlock_.size() || link >= linkBlock_[node].size()) return false;
     return linkBlock_[node][link][size_t(team)] != 0;
 }

@@ -588,6 +588,7 @@ int main(int argc, char** argv) {
         std::unique_ptr<iw2::audio::Mixer> mixer;
         for (int i = 3; i < argc; ++i)
             if (std::string(argv[i]) == "--mixer") mixer = std::make_unique<iw2::audio::Mixer>(vfs, aliases, 44100);
+        world.soundExists = [&](const std::string& n) { return aliases.exists(n); };
         world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration) {
             if (mixer) return mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration);
             if (aliases.pick(alias, soundRng)) ++soundsPlayed[alias];
