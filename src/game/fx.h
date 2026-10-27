@@ -39,6 +39,10 @@ struct FxParticle {
     // Emitter element (type 5, class vtable 0x57c760, created by 0x48d7d0). The instance is stepped per frame
     // (0x480bd0): pos += velocity(u) * dt, with a bounce offset `bounceOff` (+0xc4) added to the velocity.
     bool emitter = false;
+    // Tail element (class vtable 0x57c6b0): stepped like an Emitter (0x480bd0), drawn as a quad from pos to tailB; prev is the
+    // position at the start of the update (+0x24c), tailB the end point (+0x9c, 0x483160).
+    bool tail = false;
+    FVec prev{}, tailB{};
     std::string model;                  // chosen from `models` at random when useModel (0x10) is set
     FVec pos{};                         // current position (+0x4)
     FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
@@ -63,6 +67,9 @@ struct FxSprite {
     // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
     // `position` / `size` are unused.
     bool beam = false;
+    // Tail element (renderer type 8, 0x10041470 / quad builder 0x100409c0): the perpendicular is normalize((A - cam) x (B - cam)),
+    // both ends are widened by widthA, and the atlas rectangle uv runs s across the width, t from A to B.
+    bool beamTail = false;
     FVec beamA{}, beamB{}, beamPerp{};
     float widthA = 0, widthB = 0;
 };

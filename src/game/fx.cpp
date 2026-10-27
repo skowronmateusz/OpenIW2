@@ -199,7 +199,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             FVec t{};
             if (!(*bolt)(t)) continue;
         }
-        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter";
+        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" || e.type == "Tail";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -291,13 +291,14 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
     }
-    if (e.type == "Emitter") {
+    if (e.type == "Emitter" || e.type == "Tail") {
         // 0x48d7d0: start position from the spawn shape; the angles are the effect axes' angles plus a random draw in
         // `angle` (z, y, x order), the spin rates a draw in `angleDelta` (z, y, x), then the model at random
         // ((seed >> 17)·count >> 15; without models useModel is cleared). Both keys hold 3 values (fixed, min = max,
         // 0x4879b0) or 6 (min x y z, max x y z). The bounce offset (+0xc4) starts at zero.
         p.emitter = true;
-        p.pos = p.origin;
+        p.tail = e.type == "Tail";
+        p.pos = p.prev = p.tailB = p.origin;
         p.lastMs = startMs;
         auto axisRange = [&](const std::vector<float>& v, int k) -> std::vector<float> {
             if (v.size() >= 6) return {v[size_t(k)], v[size_t(k) + 3]};
@@ -515,13 +516,15 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
         if (p.emitter) {
+            p.prev = p.pos; // 0x483010 saves the position (+0x4 -> +0x24c) before the step
             stepEmitter(p, nowMs);
-            if (!p.model.empty()) {
+            if (p.tail) {} // drawn below
+            else if (!p.model.empty()) {
                 const float u = std::min(1.0f, float(nowMs - p.startMs) / float(p.endMs - p.startMs));
                 // TODO(spec): the model draw path (size channel as uniform scale is inferred; rgb / alpha are not applied).
                 models_.push_back({p.model, p.pos, p.ang, channel(e, "size", "sizerand", e.flagBits() & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2]});
             }
-            continue;
+            if (!p.tail) continue;
         }
         const uint32_t flags = e.flagBits();
         const float life = float(p.endMs - p.startMs);
@@ -550,6 +553,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             FVec now{};
             if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
         }
+        if (p.tail) pos = p.pos;
         FxSprite s;
         s.position = pos;
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
@@ -592,6 +596,24 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Alpha byte (0x481a40): the clamped alpha · 255 truncated (_ftol) with useAlpha (0x80), else 255.
             const int alphaByte = flags & 0x80 ? int(s.rgba[3] * 255.0f) : 255;
             sightBlockers_.push_back({pos, s.size * s.size, 1.0f - float(alphaByte) * (1.0f / 255.0f)});
+        }
+        if (p.tail) {
+            // 0x4830d0 length channel (graph "length", random lerp 0x20000, scale +0x1d4), 0x483160 end point: while the
+            // position changed (length > 0) B = pos + normalize(prev - pos) * length, else B keeps its last value.
+            const float length = channel(e, "length", "lengthrand", flags & 0x20000, p.rnd[4], u, 0, 1.0f) * p.scale[4];
+            const FVec d = sub(p.prev, p.pos);
+            const float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (dl > 0) p.tailB = add(p.pos, mul(d, length / dl));
+            s.beam = s.beamTail = true;
+            s.beamA = p.pos;
+            s.beamB = p.tailB;
+            s.widthA = s.widthB = s.size;
+            if (!viewValid) continue;
+            const FVec a = sub(s.beamA, viewOrigin), b = sub(s.beamB, viewOrigin);
+            const FVec c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+            const float cl = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+            if (!(cl > 0)) continue;
+            s.beamPerp = mul(c, 1.0f / cl);
         }
         out.push_back(s);
     }
