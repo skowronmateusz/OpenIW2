@@ -1952,7 +1952,7 @@ int main(int argc, char** argv) {
         }
         Scene scene = menuMode ? emptyScene(dev) : loadScene(dev, vfs, args[1], !world);
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
-        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; };
+        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; uint64_t startNs = 0, endNs = 0; };
         std::vector<ScreenMessage> screenMessages;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -2627,11 +2627,12 @@ int main(int argc, char** argv) {
                 // with x 6, y 100, character height 12, horizontal code 1 (LEFT edge of the window, 0x440ff4[1]) and vertical
                 // code 1 (TOP of the window, 0x441014[1]), style 3: the rows of the window go bottom-up, the newest row's top
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
-                // TODO(spec): the fade-out of old rows (window fields +0x18/+0x1c, 0x406758), the exact message text for
+                // TODO(spec): the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
                 // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                struct WindowRow { std::string text; uint64_t startNs, endNs; };
                 auto windowRows = [&](bool bold, size_t width, size_t lines) {
-                    std::vector<std::string> rows;
+                    std::vector<WindowRow> rows;
                     for (const auto& m : screenMessages) {
                         if (m.bold != bold) continue;
                         std::string raw = m.text.substr(0, m.text.find('\x1f'));
@@ -2647,37 +2648,58 @@ int main(int argc, char** argv) {
                         std::string cur;
                         std::istringstream words(text);
                         for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back(cur); cur.clear(); }
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back({cur, m.startNs, m.endNs}); cur.clear(); }
                             cur += (cur.empty() ? "" : " ") + wd;
                         }
-                        if (!cur.empty()) rows.push_back(cur);
+                        if (!cur.empty()) rows.push_back({cur, m.startNs, m.endNs});
                     }
                     if (rows.size() > lines) rows.erase(rows.begin(), rows.end() - std::ptrdiff_t(lines));
                     return rows;
                 };
+                // Window row drawing (0x4065e0): each row has a start and an end time (row fields [8] and [4]). Fade: alpha ×
+                // age / fadeIn while age < window +0x1c (250 ms), else × remaining / fadeOut while remaining < +0x20 (500 ms)
+                // (0x406758 / 0x40677b); no row is drawn before its start or after its end. Scroll (first loop 0x406628): every
+                // row younger than +0x18 (250 ms) moves the whole window down by (1 − age / 250) × the row pitch, so the
+                // rows slide up when a new row is added.
+                auto drawWindow = [&](const std::vector<WindowRow>& rows, float x, float yBottom, float pitch, const assets::Font& f,
+                                      const uint8_t base[4], float alignX) {
+                    auto ms = [&](uint64_t a, uint64_t b) { return a >= b ? 0.0f : float(b - a) / 1.0e6f; };
+                    float shift = 0;
+                    for (const auto& r : rows) {
+                        const float age = r.startNs ? ms(r.startNs, now) : 1e9f;
+                        if (age < 250.0f) shift += (1.0f - age / 250.0f) * pitch;
+                    }
+                    float ry = yBottom - pitch + std::floor(shift + 0.5f);
+                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= pitch) {
+                        float a = 1.0f;
+                        if (it->startNs) {
+                            if (it->startNs > now || it->endNs <= now) continue;
+                            const float age = ms(it->startNs, now), left = ms(now, it->endNs);
+                            if (age < 250.0f) a = age / 250.0f;
+                            else if (left < 500.0f) a = left / 500.0f;
+                        }
+                        const uint8_t col[4] = {base[0], base[1], base[2], uint8_t(base[3] * a)};
+                        hudText(out, it->text, x, ry * sc, 12.0f / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
+                    }
+                };
                 const uint8_t green[4] = {0, 255, 0, 255};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    const std::vector<std::string> rows = windowRows(false, 70, 9);
-                    float ry = 100.0f - 12.0f;
-                    for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 12.0f)
-                        hudText(out, *it, 6.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, green, 0, 0, 3);
+                    drawWindow(windowRows(false, 70, 9), 6.0f * sc, 100.0f, 12.0f, *f, green, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
                 // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
                 // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
                 // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
                 // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
-                // TODO(spec): the drawing starts at the centre point (no centring of the text was found in 0x4062d0 /
-                // 0x4065e0 / 0x403b90); here rows are centred on it because a start at the screen centre looks wrong.
+                // Re-checked: 0x4bf210 passes only the horizontal code 7 and x 0; 0x440e60 code 7 gives (0x79397c + 0x793974) / 2
+                // + x·scale and 0x4062d0 draws the text from that point (0x617bf0), so each row STARTS at the centre of the box
+                // (no centring in 0x4062d0 / 0x4065e0 / 0x403b90).
                 {
                     const float scale = 12.0f / 48.0f * float(h) / 480.0f;
                     if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
-                        const std::vector<std::string> rows = windowRows(true, 60, 10);
                         const uint8_t white[4] = {255, 255, 255, 255};
-                        float ry = 180.0f - 16.0f;
-                        for (auto it = rows.rbegin(); it != rows.rend(); ++it, ry -= 16.0f)
-                            hudText(out, *it, left43 + 320.0f * sc, ry * sc, 12.0f / float(f->pixelHeight) * sc, *f, white, 0.5f, 0, 3);
+                        drawWindow(windowRows(true, 60, 10), left43 + 320.0f * sc, 180.0f, 16.0f, *f, white, 0);
                     }
                 }
             }
@@ -3333,9 +3355,10 @@ int main(int argc, char** argv) {
                 }
                 // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
                 for (const auto& m : shotMsgs)
-                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) screenMessages.push_back({m.text, SDL_GetTicksNS() + 600000000000ull, m.bold});
+                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(world->timeMs() - m.at) * 1000000ull;
+                        screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
-                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true});
+                if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = world->timeMs();
                 if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
@@ -3947,9 +3970,9 @@ int main(int argc, char** argv) {
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull, false, SDL_GetTicksNS(), SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
                     else if (cmd.name == "gmb")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true}); // con_boldgamemessagetime 8 s (0x571100)
+                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true, SDL_GetTicksNS(), SDL_GetTicksNS() + 8000000000ull}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
                         deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
