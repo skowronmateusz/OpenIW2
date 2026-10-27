@@ -31,6 +31,7 @@ described in the code that reads them.
 | `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). |
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
 | `IW2_DEV_SNAP_GOAL_YAW=1` | iw2game/iw2view | DEV-ONLY BYPASS, not original behaviour: an actor whose goal was set with `setgoalnode` is turned to that node's angles right before it is notified "goal". Lets moscow's `letlev.angles != node.angles` loop (moscow.gsc:5031, the commissar yaw stall) pass so later stages can be walked. |
+| `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname starts with the prefix (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
 | `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
 | `IW2_BOLD_MESSAGE=<text>` | iw2view `--shot` | Shows a bold game message (iprintlnbold window). |
