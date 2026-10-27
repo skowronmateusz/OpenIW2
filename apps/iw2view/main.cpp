@@ -1019,6 +1019,7 @@ struct Quad2D {
     uint8_t rgba[4] = {255, 255, 255, 255};
     int texture = 0; // index into Scene::textures
     int rot = 0;     // quarter turns of the image, clockwise on screen (0x4b0310 with 90 · rot degrees)
+    float rotDeg = 0;  // free rotation about the quad centre, degrees clockwise on screen (0x4b0310); 0 = none
     bool free = false; // corners qx/qy (screen pixels) in vertex order instead of the x0..y1 box
     float qx[4] = {}, qy[4] = {};
 };
@@ -1216,6 +1217,15 @@ struct Renderer {
                 float xs[4] = {q.x0, q.x1, q.x1, q.x0}, ys[4] = {q.y0, q.y0, q.y1, q.y1};
                 if (q.free)
                     for (int k = 0; k < 4; ++k) { xs[k] = q.qx[k]; ys[k] = q.qy[k]; }
+                if (q.rotDeg != 0) { // rotate the corners about the box (or free-corner) centre, clockwise on screen (y down)
+                    const float cx = (xs[0] + xs[2]) * 0.5f, cy = (ys[0] + ys[2]) * 0.5f;
+                    const float a = q.rotDeg * 0.0174532925f, ca = std::cos(a), sa = std::sin(a);
+                    for (int k = 0; k < 4; ++k) {
+                        const float dx = xs[k] - cx, dy = ys[k] - cy;
+                        xs[k] = cx + dx * ca - dy * sa;
+                        ys[k] = cy + dx * sa + dy * ca;
+                    }
+                }
                 const float s4[4] = {q.s0, q.s1, q.s1, q.s0}, t4[4] = {q.t0, q.t0, q.t1, q.t1};
                 // 0x4b0310: the corner the image's corner i lands on is i + rot (TL, TR, BR, BL order).
                 float ss[4], ts[4];
@@ -1927,6 +1937,9 @@ int main(int argc, char** argv) {
         if (const ui::Menu* m = hudMenus.find("Cursorhints"))
             for (const auto& it : m->items)
                 if (it->name == "chRect") cursorHintItem = it.get();
+        // Menu "Compass" (hud.menu:315): rect -20 -140 160 160 LEFT/BOTTOM; items compassback/compasshighlight (ownerdraw 85),
+        // compassface (84), compasspointers (86). 87/88 (friendly actors, tanks) are not drawn.
+        const ui::Menu* compassMenu = hudMenus.find("Compass");
         // Scope overlay (cgame 0x4bc8a0): the weapon has an adsOverlayShader or adsOverlayReticle and the aim fraction
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
@@ -2465,6 +2478,57 @@ int main(int argc, char** argv) {
                         hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
                         hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col, 0.0f, 1.0f, st);
                         hudText(out, stock, x0 + w0, y0, gs, *f, col, 1.0f, 1.0f, st);
+                    }
+                }
+            }
+            // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
+            // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
+            // 4a6130 case 2; alpha 1 for now), the damped angle spring (4b09a0), objective ring pulses (no ring start time is
+            // tracked), the default pointer material when an objective has no icon, ownerdraw 87/88.
+            if (compassMenu && world) {
+                const float csize = 1.0f; // cg_hudCompassSize
+                const float cyaw = c.yaw, north = world->northYaw();
+                auto wrap360 = [](float a) { a = std::fmod(a, 360.0f); return a < 0 ? a + 360.0f : a; };
+                const auto& mr = compassMenu->rect;
+                for (const auto& itp : compassMenu->items) {
+                    const ui::Item& it = *itp;
+                    if (it.ownerDraw != 84 && it.ownerDraw != 85 && it.ownerDraw != 86) continue;
+                    const float rx = mr.x + it.rect.x, ry = mr.y + it.rect.y, rw = it.rect.w, rh = it.rect.h;
+                    const float bx = rx * sc;                                  // LEFT: window left edge
+                    const float by = float(h) + (ry - (csize - 1.0f) * rh) * sc; // BOTTOM: window bottom edge
+                    const float qw = rw * csize * sc, qh = rh * csize * sc;
+                    uint8_t col[4];
+                    for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                    if (it.ownerDraw != 86) {
+                        if (it.background.empty()) continue;
+                        Quad2D q{bx, by, bx + qw, by + qh};
+                        std::memcpy(q.rgba, col, 4);
+                        q.texture = materialTexture(it.background);
+                        if (it.ownerDraw == 84) q.rotDeg = wrap360(cyaw - north);
+                        out.push_back(q);
+                        continue;
+                    }
+                    // Pointers: centre (x + w*size/2, y + h*size/2 - (size-1)*h); K = 43.75 (double @0x591e90); icon 16*size.
+                    const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f;
+                    const float maxR = 1500.0f, minR = 0.0f, minRad = 0.0f, objMax = 2048.0f, minAlpha = 1.0f;
+                    const float icon = 16.0f * csize * sc;
+                    for (const auto& ob : world->objectives()) {
+                        if (ob.state != 4 || ob.icon.empty()) continue;
+                        for (const auto& p : ob.positions) {
+                            if (p[0] == 0 && p[1] == 0 && p[2] == 0) continue;
+                            const float dx = p[0] - c.pos.x, dy = p[1] - c.pos.y, d = std::sqrt(dx * dx + dy * dy);
+                            const float a = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
+                            float alpha = 1.0f;
+                            if (objMax > maxR) alpha = (minAlpha - 1.0f) * (std::clamp(d, maxR, objMax) - maxR) / (objMax - maxR) + 1.0f;
+                            const float t = (std::clamp(d, minR, maxR) - minR) / (maxR - minR);
+                            const float rad = csize * ((1.0f - minRad) * t + minRad) * 43.75f * sc;
+                            const float ix = ccx - icon * 0.5f - std::sin(a) * rad, iy = ccy - icon * 0.5f - std::cos(a) * rad;
+                            Quad2D q{ix, iy, ix + icon, iy + icon};
+                            std::memcpy(q.rgba, col, 4);
+                            q.rgba[3] = uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+                            q.texture = materialTexture(ob.icon);
+                            out.push_back(q);
+                        }
                     }
                 }
             }
