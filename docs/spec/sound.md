@@ -44,3 +44,18 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
 `stoploopsound`, `ambientplay`, `ambientstop`, `musicplay`, `musicstop`. Weapon shots play the weapon's
 `fireSoundPlayer` (player) or `fireSound` (others); reloading and rechambering play `reloadSound` and
 `rechamberSound`.
+
+## Music, ambient and loadspec (audio survey, exe evidence)
+
+- `musicplay(alias)` (0x4f3400): unknown alias raises "unknown sound alias '%s'"; otherwise the server sends the client command
+  `mu_play <alias>` (0x4a6e2b -> 0x443030: starts the alias in the dedicated music slot, replacing the previous one).
+- `musicstop([fade])` (0x4f3470): fade seconds * 1000 rounded (+0.5), negative is an error; sends `mu_stop <ms>`
+  (0x4a6e60 -> 0x442fb0): ms 0 stops the music slot at once, otherwise its volume falls linearly to zero over ms.
+- `ambientplay(alias [, fade])` (0x4f3800) / `ambientstop([fade])` (0x4f3930): argument validation as in the exe; the state goes
+  out as configstring 3 (`n\<alias>\t\<levelTime + fade ms>` / `t\<levelTime + fade ms>`). TODO(spec): the client-side
+  consumer of configstring 3 (ambient fade-in/out) is not decoded; the engine starts/stops the loop at once.
+- `snd_fade <vol> <ms>` is emitted by 0x4f3520 (soundfade-like builtin, format "snd_fade %f %i\n").
+- `setsoundblend` and `setreverb` are not called by any shipped script (survey of all .gsc), so their client side stays TODO(spec).
+- Alias loadspec (0x428f40): a row whose loadspec equals the mode tag `all_sp` loads in every single-player level
+  (the fallback compare of the whole spec with the tag); "menu" and "!list" cases follow the same function.
+  Effect: bullet_small_flesh (and every other `all_sp` row) was previously dropped.
