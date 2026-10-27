@@ -126,16 +126,21 @@ struct Camera {
 
 class Uploader {
 public:
-    explicit Uploader(SDL_GPUDevice* dev) : dev_(dev) {
-        SDL_GPUTransferBufferCreateInfo info{};
-        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        info.size = kSize;
-        tb_ = SDL_CreateGPUTransferBuffer(dev_, &info);
-        if (!tb_) sdlFail("SDL_CreateGPUTransferBuffer");
-    }
-    ~Uploader() {
-        flush();
-        SDL_ReleaseGPUTransferBuffer(dev_, tb_);
+    // wait = false: per-frame uploads. The copy pass is submitted without waiting for its fence (the queue runs
+    // command buffers in submission order, and the staging buffer is cycled by the map call).
+    explicit Uploader(SDL_GPUDevice* dev, bool wait = true) : dev_(dev), wait_(wait) {}
+    ~Uploader() { flush(); }
+
+    // Releases the pooled staging buffers (before the device is destroyed).
+    static void releasePool(SDL_GPUDevice* dev) {
+        auto& pool = freeBuffers();
+        for (auto it = pool.begin(); it != pool.end();) {
+            if (it->first == dev) {
+                SDL_ReleaseGPUTransferBuffer(dev, it->second);
+                it = pool.erase(it);
+            } else
+                ++it;
+        }
     }
 
     void buffer(SDL_GPUBuffer* dst, const void* data, uint32_t size) {
@@ -172,9 +177,15 @@ public:
         if (!cmd_) return;
         SDL_UnmapGPUTransferBuffer(dev_, tb_);
         SDL_EndGPUCopyPass(copy_);
-        SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_);
-        SDL_WaitForGPUFences(dev_, true, &fence, 1);
-        SDL_ReleaseGPUFence(dev_, fence);
+        if (wait_) {
+            SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_);
+            SDL_WaitForGPUFences(dev_, true, &fence, 1);
+            SDL_ReleaseGPUFence(dev_, fence);
+        } else {
+            SDL_SubmitGPUCommandBuffer(cmd_);
+        }
+        freeBuffers().emplace_back(dev_, tb_);
+        tb_ = nullptr;
         cmd_ = nullptr;
         copy_ = nullptr;
         mapped_ = nullptr;
@@ -184,6 +195,26 @@ public:
 private:
     static constexpr uint32_t kSize = 64u << 20;
 
+    // Staging buffers are pooled per device: creating a 64 MB buffer for every Uploader (several per frame) was costly.
+    static std::vector<std::pair<SDL_GPUDevice*, SDL_GPUTransferBuffer*>>& freeBuffers() {
+        static std::vector<std::pair<SDL_GPUDevice*, SDL_GPUTransferBuffer*>> pool;
+        return pool;
+    }
+    void acquireBuffer() {
+        auto& pool = freeBuffers();
+        for (auto it = pool.begin(); it != pool.end(); ++it)
+            if (it->first == dev_) {
+                tb_ = it->second;
+                pool.erase(it);
+                return;
+            }
+        SDL_GPUTransferBufferCreateInfo info{};
+        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        info.size = kSize;
+        tb_ = SDL_CreateGPUTransferBuffer(dev_, &info);
+        if (!tb_) sdlFail("SDL_CreateGPUTransferBuffer");
+    }
+
     uint32_t reserve(uint32_t size) {
         uint32_t aligned = (used_ + 255u) & ~255u;
         if (cmd_ && aligned + size > kSize) {
@@ -191,6 +222,7 @@ private:
             aligned = 0;
         }
         if (!cmd_) {
+            acquireBuffer();
             mapped_ = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(dev_, tb_, true));
             cmd_ = SDL_AcquireGPUCommandBuffer(dev_);
             copy_ = SDL_BeginGPUCopyPass(cmd_);
@@ -201,6 +233,7 @@ private:
     SDL_GPUCopyPass* pass() { return copy_; }
 
     SDL_GPUDevice* dev_;
+    bool wait_ = true;
     SDL_GPUTransferBuffer* tb_ = nullptr;
     SDL_GPUCommandBuffer* cmd_ = nullptr;
     SDL_GPUCopyPass* copy_ = nullptr;
@@ -315,7 +348,7 @@ void uploadWaterMap(Uploader& up, WaterMat& w, float seconds) {
 // Regenerates every water normal map for the given time in seconds (1002cd30: once per frame, r_drawWater on).
 void updateWaterMaps(Scene& scene, SDL_GPUDevice* dev, float seconds) {
     if (scene.waters.empty()) return;
-    Uploader up(dev);
+    Uploader up(dev, false);
     for (auto& w : scene.waters)
         if (w.sim && w.normalMap) uploadWaterMap(up, w, seconds);
 }
@@ -1369,7 +1402,7 @@ struct Renderer {
                     g.uv[0] = us[k];
                     g.uv[1] = vs[k];
                 }
-            Uploader up(dev);
+            Uploader up(dev, false);
             up.buffer(blurVerts, bv, sizeof(bv));
         }
         // HUD quads go to their own buffers before the render pass (alpha-blended, no lighting, at the near plane).
@@ -1425,7 +1458,7 @@ struct Renderer {
                     verts.push_back(g);
                 }
             }
-            Uploader up(dev);
+            Uploader up(dev, false);
             up.buffer(overlayVerts, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
         }
         SDL_GPUColorTargetInfo color{};
@@ -1934,7 +1967,7 @@ int main(int argc, char** argv) {
         auto gatherItems = [&](const Camera&) {
             std::vector<DrawItem> items;
             if (!world) return items;
-            Uploader up(dev);
+            Uploader up(dev, false);
             for (const auto& ev : world->takeFxEvents()) {
                 if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
@@ -2178,7 +2211,7 @@ int main(int argc, char** argv) {
                 base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
                 base.sunVisibility = sun;
             }
-            Uploader up(dev);
+            Uploader up(dev, false);
             BoneMap bones;
             if (hands) {
                 const assets::XPose hp = an ? assets::blendPose(hands->parts, layers) : assets::bindPose(hands->parts);
@@ -3200,7 +3233,8 @@ int main(int argc, char** argv) {
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             renderer.fog = fogState.consts(world ? world->timeMs() : 0);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, buildHud(width, height, cam), forcedBlur);
-            SDL_DestroyGPUDevice(dev);
+            Uploader::releasePool(dev);
+        SDL_DestroyGPUDevice(dev);
             SDL_Quit();
             return 0;
         }
@@ -3244,7 +3278,20 @@ int main(int argc, char** argv) {
             const float left = (float(pw) - 640.0f * sc) * 0.5f;
             return std::array<float, 2>{(wx * float(pw) / float(std::max(ww, 1)) - left) / sc, wy * float(ph) / float(std::max(wh, 1)) / sc};
         };
+        // IW2_PROF=N: print per-frame CPU timings (ms) every N frames and quit after the second report.
+        const int profEvery = std::getenv("IW2_PROF") ? std::atoi(std::getenv("IW2_PROF")) : 0;
+        double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
+        int profFrames = 0, profReports = 0;
+        uint64_t profT0 = SDL_GetTicksNS();
         while (running) {
+            if (profEvery > 0 && ++profFrames > profEvery) {
+                const double n = double(profFrames - 1);
+                std::cout << "prof: frame " << profFrame / n << " ms, waterUpdate " << profWater / n << ", draw " << profDraw / n
+                          << ", swapchainWait " << profWait / n << ", wall " << double(SDL_GetTicksNS() - profT0) * 1e-6 / n << " ms/frame\n";
+                profFrames = 1; profWater = profDraw = profFrame = profWait = 0; profT0 = SDL_GetTicksNS();
+                if (++profReports >= 2) running = false;
+            }
+            const uint64_t profFrameStart = SDL_GetTicksNS();
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
                 if (activeMenu) {
@@ -3767,15 +3814,23 @@ int main(int argc, char** argv) {
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
-            if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h) && swap)
+            const uint64_t profA = SDL_GetTicksNS();
+            const bool gotSwap = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h);
+            profWait += double(SDL_GetTicksNS() - profA) * 1e-6;
+            if (gotSwap && swap)
             {
                 renderer.fog = fogState.consts(world ? world->timeMs() : 0);
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
+                const uint64_t profB = SDL_GetTicksNS();
                 updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
+                const uint64_t profC = SDL_GetTicksNS();
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
+                profWater += double(profC - profB) * 1e-6;
+                profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;
             }
             SDL_SubmitGPUCommandBuffer(cmd);
+            profFrame += double(SDL_GetTicksNS() - profFrameStart) * 1e-6;
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
             cam.yaw = camBase.yaw;
             cam.roll = camBase.roll;
@@ -3783,6 +3838,7 @@ int main(int argc, char** argv) {
         if (audioStream) SDL_DestroyAudioStream(audioStream);
         SDL_ReleaseWindowFromGPUDevice(dev, window);
         SDL_DestroyWindow(window);
+        Uploader::releasePool(dev);
         SDL_DestroyGPUDevice(dev);
         SDL_Quit();
     } catch (const std::exception& e) {
