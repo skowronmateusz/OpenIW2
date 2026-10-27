@@ -614,7 +614,7 @@ void World::registerCombatBuiltins() {
         // effect axes come from the tag, here the shot direction.
         if (wpn.isString()) {
             const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
-            if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir});
+            if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir, a->number, "tag_flash"});
         }
         vm_.notify(a->obj, "weapon_fired");
         return Value();

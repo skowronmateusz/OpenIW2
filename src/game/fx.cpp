@@ -170,12 +170,33 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
     playAxes(fx, origin, FxAxes{f, r, up}, nowMs);
 }
 
+void FxSystem::playBolted(const std::shared_ptr<const assets::EfxEffect>& fx, std::shared_ptr<FxBolt> bolt, const FxAxes& axes, int64_t nowMs) {
+    FVec at{};
+    if (!bolt || !(*bolt)(at)) return; // 0x4853f0: an invalid attachment plays nothing
+    curBolt_ = std::move(bolt);
+    playAxes(fx, at, axes, nowMs);
+    curBolt_.reset();
+}
+
 void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FxAxes& axes, int64_t nowMs) {
     if (!fx) return;
+    const std::shared_ptr<FxBolt> bolt = curBolt_;
     keep_.push_back(fx);
     for (const auto& e : fx->elements) {
         if (!inRange(e, origin)) continue;
+        if (e.spawnFlagBits() & 0x400) { // 0x4854f9: frustumCull -> 0x486e90 (true = outside, element skipped)
+            const auto cr = e.numbers("spawnfrustumcullradius");
+            const float radius = cr.empty() ? 0.0f : cr[0];
+            bool outside = false;
+            for (const auto& pl : viewPlanes)
+                if (pl[0] * origin[0] + pl[1] * origin[1] + pl[2] * origin[2] - pl[3] < -radius) outside = true;
+            if (outside) continue;
+        }
         const uint32_t flags = e.flagBits();
+        if (bolt && (flags & 0x2)) { // 0x485bf0: a relative element needs a valid attachment
+            FVec t{};
+            if (!(*bolt)(t)) continue;
+        }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle";
         if (!known) continue; // TODO(spec): other element types
         // 0x4853f0: count = trunc(random(count) + 0.5) (default 1), the element is skipped when 0.
@@ -204,8 +225,12 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
                 while (!name.empty() && name[0] == '/') name.erase(0, 1);
                 if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
                 // A delay below 1 ms spawns at once (0x485e20), else the child is queued for its time (0x4855d0..0x485676).
-                if (startMs - nowMs < 1 && loader) playAxes(loader(name), pos, ax, nowMs);
-                else pending_.push_back({name, pos, ax, startMs});
+                if (startMs - nowMs < 1 && loader) {
+                    curBolt_ = bolt;
+                    playAxes(loader(name), pos, ax, nowMs);
+                    curBolt_ = bolt;
+                }
+                else pending_.push_back({name, pos, ax, startMs, bolt});
                 continue;
             }
             spawnParticle(e, flags, origin, ax, startMs);
@@ -219,6 +244,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     p.startMs = startMs;
     p.endMs = p.startMs + std::max<int64_t>(1, int64_t(range(e.numbers("life"), 1000)));
     p.origin = spawnPoint(e, origin, ax);
+    if (curBolt_ && (flags & 0x2) && (*curBolt_)(p.bolt0)) p.bolt = curBolt_; // relative: follows the tag
     p.axis[0] = ax[0];
     p.axis[1] = ax[1];
     p.axis[2] = ax[2];
@@ -314,7 +340,11 @@ void FxSystem::runPending(int64_t nowMs) {
         due.push_back(p);
         return true;
     });
-    for (const PendingRun& p : due) playAxes(loader(p.path), p.origin, p.axes, p.startMs);
+    for (const PendingRun& p : due) {
+        curBolt_ = p.bolt;
+        playAxes(loader(p.path), p.origin, p.axes, p.startMs);
+        curBolt_.reset();
+    }
 }
 
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
@@ -358,6 +388,10 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         };
         FVec pos = add(p.origin, add(mul(toWorld(v1, flags & 0x200000), lifeS), mul(toWorld(v2, flags & 0x400000), lifeS)));
         pos[2] += p.gravity * (t * 0.001f) * (t * 0.001f);
+        if (p.bolt) { // relative: keep the offset from the tag (TODO(spec): the tag's rotation is not applied)
+            FVec now{};
+            if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
+        }
         FxSprite s;
         s.position = pos;
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
