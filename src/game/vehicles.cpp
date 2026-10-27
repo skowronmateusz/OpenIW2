@@ -321,6 +321,39 @@ bool stepPath(std::vector<VehicleNode>& nodes, VehiclePathPos& p, int waitNode) 
 
 } // namespace
 
+std::vector<assets::BoneControl> vehicleWheelControls(const CollisionWorld& cw, const assets::XModelParts& parts,
+                                                      const assets::XPose& pose, const Vec3& origin, const Vec3& angles,
+                                                      float travel, float steer, int passEntity) {
+    std::vector<assets::BoneControl> out;
+    if (!(travel > 0.0f) || pose.position.size() != parts.bones.size()) return out;
+    Vec3 fwd, right, up;
+    anglesToAxis(angles, fwd, right, up);
+    const Vec3 left{-right[0], -right[1], -right[2]};
+    for (int w = 0; w < 6; ++w) {
+        int bone = -1;
+        for (size_t b = 0; b < parts.bones.size(); ++b)
+            if (lowerCopy(parts.bones[b].name) == kWheelTags[w]) { bone = int(b); break; }
+        if (bone < 0) continue;
+        const Vec3& P = pose.position[size_t(bone)];
+        Vec3 wp, start, end;
+        for (size_t i = 0; i < 3; ++i) {
+            wp[i] = fwd[i] * P[0] + left[i] * P[1] + up[i] * P[2] + origin[i];
+            start[i] = wp[i] + up[i] * 40.0f;
+            end[i] = wp[i] - up[i] * travel;
+        }
+        const TraceResult tr = cw.trace(start, end, {0, 0, 0}, {0, 0, 0}, 0x211u, passEntity);
+        const float d = std::max((travel + 40.0f) * tr.fraction, 40.0f - travel);
+        Vec3 hit;
+        for (size_t i = 0; i < 3; ++i) hit[i] = start[i] - up[i] * d - origin[i];
+        // World to model (0x423480): rows forward, left, up.
+        const std::array<float, 3> local{dot(fwd, hit), dot(left, hit), dot(up, hit)};
+        assets::BoneControl c{bone, assets::Quat{0, 0, 0, 1}, {local[0] - P[0], local[1] - P[1], local[2] - P[2]}};
+        if (w < 2 && steer != 0.0f) c.rotation = assets::anglesQuat(0, steer, 0);
+        out.push_back(c);
+    }
+    return out;
+}
+
 // Links vehicle nodes by targetname/target and resolves directions, lengths, speeds, lookaheads and angles
 // (spawn 0x52b490, linking 0x52ada0).
 void World::linkVehicleNodes() {
@@ -409,6 +442,7 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "collisionspeed") info->collisionSpeed = f * kMphToIps;
                 else if (k == "enginesndspeed") info->engineSndSpeed = f * kMphToIps;
                 else if (k == "suspensiontravel") info->suspensionTravel = f;
+                else if (k == "steerwheels") info->steerWheels = f != 0.0f;
                 else if (k == "maxbodypitch") info->maxBodyPitch = f;
                 else if (k == "maxbodyroll") info->maxBodyRoll = f;
                 else if (k == "turretweapon") info->turretWeapon = v;
@@ -776,7 +810,7 @@ void World::vehiclePlayerAim(Entity& e) {
 // move along their path or freely; a driven vehicle aims where the player looks; then the turret.
 // The think calls: 0x510770 body jolt step, 0x510870 tread scroll and 0x510be0 sounds are implemented; 0x5107e0 stores the
 // steering angle ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45) (0 without steerWheels), which only the
-// cgame wheel code (0x4ac6b0 -> 0x17c) reads. TODO(spec): the cgame per-wheel suspension traces (0x4ac2b0).
+// cgame wheel code (0x4ac6b0 -> 0x17c) reads. The cgame per-wheel suspension is vehicleWheelControls.
 
 // G_TryPushingEntity (0x52be60): the entity is moved by the pusher's move and turned about the pusher's origin by its
 // turn; if that box position (entity clip mask, 0x811 without one; the entity passes) is blocked (0x52bd20) offsets
@@ -961,6 +995,10 @@ void World::thinkVehicles() {
         }
         // Path notifies run scripts at once; freevehicle there drops the vehicle state.
         if (!e.vehicle || e.obj->removed) continue;
+        // 0x5107e0: steering angle from the yaw change of this frame.
+        v.steerAngle = v.info && v.info->steerWheels
+                           ? std::clamp(angleDelta(e.obj->get("angles").asVector()[1], prevAngles[1]) * 10.0f, -45.0f, 45.0f)
+                           : 0.0f;
         vehicleTouch(e, prevOrigin, prevAngles);
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer

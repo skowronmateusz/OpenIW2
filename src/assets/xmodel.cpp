@@ -172,6 +172,15 @@ XPose controlledPose(const XModelParts& parts, const std::vector<std::pair<int, 
 }
 
 XPose applyControls(const XModelParts& parts, const XPose& base, const std::vector<std::pair<int, Quat>>& controls) {
+    std::vector<BoneControl> c;
+    c.reserve(controls.size());
+    for (const auto& q : controls) c.push_back({q.first, q.second, {0, 0, 0}});
+    return applyControls(parts, base, c);
+}
+
+// Bone control entries carry a rotation and a translation (0x4746e0: {quat, translation}); the translation is an
+// additive delta to the bone's local offset in the parent's frame.
+XPose applyControls(const XModelParts& parts, const XPose& base, const std::vector<BoneControl>& controls) {
     XPose p = base;
     if (controls.empty() || base.rotation.size() != parts.bones.size()) return p;
     std::vector<Quat> delta(parts.bones.size(), Quat{0, 0, 0, 1}); // world-frame rotation added to each bone
@@ -187,10 +196,14 @@ XPose applyControls(const XModelParts& parts, const XPose& base, const std::vect
             p.rotation[i] = multiply(d, base.rotation[i]);
         }
         for (const auto& c : controls)
-            if (c.first == int(i)) {
-                p.rotation[i] = multiply(p.rotation[i], c.second);
+            if (c.bone == int(i)) {
+                p.rotation[i] = multiply(p.rotation[i], c.rotation);
                 const Quat& r = base.rotation[i];
                 d = multiply(p.rotation[i], Quat{-r.x, -r.y, -r.z, r.w});
+                if (par >= 0) {
+                    const auto t = rotate(p.rotation[size_t(par)], {c.translation[0], c.translation[1], c.translation[2]});
+                    for (size_t a = 0; a < 3; ++a) p.position[i][a] += t[a];
+                }
             }
         delta[i] = d;
     }
