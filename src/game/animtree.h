@@ -49,12 +49,14 @@ public:
     explicit AnimLibrary(const fs::Vfs& vfs) : vfs_(vfs) {}
     const AnimTree* tree(const std::string& name);
     const assets::XAnim* anim(const std::string& name); // nullptr for blend nodes without an xanim file
+    const assets::XAnim* animUncached(const std::string& name);
 
 private:
     const fs::Vfs& vfs_;
     std::map<std::string, std::unique_ptr<AnimTree>> trees_;
     std::map<std::string, std::unique_ptr<assets::XAnim>> anims_;
     std::map<std::string, bool> missing_;
+    std::unordered_map<std::string, const assets::XAnim*> memo_; // exact name (any case) -> result; anims_ nodes are stable
 };
 
 // One node's state (the exe's 0x28-byte entries at 0xa0a200: +0xc time, +0x10 old time, +0x14 / +0x16 cycle and
