@@ -746,6 +746,73 @@ void World::registerCombatBuiltins() {
         const Vec3 d = sub(c.arg(0).asVector(), g.asVector());
         return Value(d[0] * d[0] + d[1] * d[1] <= radius * radius);
     });
+    // Player-only builtins (0x590ab8 "entity %i is not a player" otherwise).
+    auto playerSelf = [this](CallContext& c) -> Entity& {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
+        return *e;
+    };
+    // allowstand/crouch/prone/leanleft/leanright (0x538c90 …): a zero argument sets the pm_flags bit that disables the
+    // stance (0x400000 stand, 0x800000 crouch, 0x1000000 prone, 0x2000000 lean left, 0x4000000 lean right), non-zero
+    // clears it. The lean bits gate updateLean (0x50ae13); TODO(spec): the stance bits force a stance change
+    // (events 0x8c..0x8e, 0x509eea / 0x50a2f3) in the front end's pmove.
+    const std::pair<const char*, uint32_t> allows[] = {{"allowstand", 0x400000u}, {"allowcrouch", 0x800000u}, {"allowprone", 0x1000000u},
+                                                      {"allowleanleft", 0x2000000u}, {"allowleanright", 0x4000000u}};
+    for (const auto& [name, bit] : allows)
+        vm_.registerBuiltin(name, [this, playerSelf, bit](CallContext& c) {
+            playerSelf(c);
+            if (c.arg(0).isNumber() && c.arg(0).asInt() != 0) pmFlags_ &= ~bit;
+            else pmFlags_ |= bit;
+            return Value();
+        });
+    // isfiring (0x539aa0) weapon state 3, 4, 10, 11; ismeleeing (0x539c10) 10, 11; isthrowinggrenade (0x539b60) 12..16.
+    vm_.registerBuiltin("isfiring", [this, playerSelf](CallContext& c) {
+        playerSelf(c);
+        const int s = playerCmd_.weaponState;
+        return Value(s == 3 || s == 4 || s == 10 || s == 11);
+    });
+    vm_.registerBuiltin("ismeleeing", [this, playerSelf](CallContext& c) {
+        playerSelf(c);
+        const int s = playerCmd_.weaponState;
+        return Value(s == 10 || s == 11);
+    });
+    vm_.registerBuiltin("isthrowinggrenade", [this, playerSelf](CallContext& c) {
+        playerSelf(c);
+        const int s = playerCmd_.weaponState;
+        return Value(s >= 12 && s <= 16);
+    });
+    // issavesuccessful (0x4f3d80): true unless the save-failed byte (+0xd of the save state) is set; savegame is a stub.
+    vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(true); });
+    // setfriendlychain (0x4eeb10): the entity must be a player ("Entity must be a player", 0x5872e0); the node goes into the
+    // client's chain slot. TODO(spec): the "not a friendly chain node" test (node +0x34 < 1) and the chain's consumers.
+    vm_.registerBuiltin("setfriendlychain", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("Entity must be a player");
+        e->obj->set("$friendlychain", c.arg(0));
+        return Value();
+    });
+    // bulletspread (start, end, degrees) (0x4ee760 → 0x531210): the point 8192 units along end-start with a random
+    // offset in the disc of radius tan(spread)*8192 (angle uniform, radius uniform = rand/32768; the exe's own LCG
+    // 0x5a56f4, seed TODO(spec)). The disc axes come from 0x4217f0 (any rotation about the direction is equivalent).
+    vm_.registerBuiltin("bulletspread", [](CallContext& c) {
+        const Vec3 s = c.arg(0).asVector(), t = c.arg(1).asVector();
+        const float deg = c.arg(2).asFloat();
+        Vec3 f = sub(t, s);
+        const float l = len(f);
+        if (l > 0) f = scale(f, 1.0f / l);
+        Vec3 right{f[1], -f[0], 0};
+        if (len(right) < 1e-4f) right = {1, 0, 0};
+        else right = scale(right, 1.0f / len(right));
+        const Vec3 up{f[1] * right[2] - f[2] * right[1], f[2] * right[0] - f[0] * right[2], f[0] * right[1] - f[1] * right[0]};
+        static uint32_t seed = 0;
+        const uint32_t r1 = (seed = seed * 0x343fdu + 0x269ec3u) >> 17;
+        const uint32_t r2 = (seed = seed * 0x343fdu + 0x269ec3u) >> 17;
+        const float ang = float(r1) * 0.010986328125f * 0.01745329238474369f, rad = float(r2) * 3.0517578125e-05f;
+        const float k = std::tan(deg * 0.01745329238474369f) * 8192.0f * rad;
+        Vec3 out = add(s, scale(f, 8192.0f));
+        out = add(out, add(scale(right, k * std::cos(ang)), scale(up, k * std::sin(ang))));
+        return Value(out);
+    });
     for (const char* noop : {"exitprone", "enterprone", "animmode", "trackscriptstate", "setproneanimnodes", "updateprone",
                              "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });

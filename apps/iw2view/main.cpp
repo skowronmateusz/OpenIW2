@@ -4288,8 +4288,9 @@ int main(int argc, char** argv) {
                 in.jump = (buttons & game::Button::Jump) != 0;
                 in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
                             : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
-                in.leanLeft = (buttons & game::Button::LeanLeft) != 0;
-                in.leanRight = (buttons & game::Button::LeanRight) != 0;
+                // allowleanleft/right(false) set pm_flags 0x2000000/0x4000000, which cancel the lean (0x50ae13).
+                in.leanLeft = (buttons & game::Button::LeanLeft) != 0 && !(world->playerPmFlags() & 0x2000000u);
+                in.leanRight = (buttons & game::Button::LeanRight) != 0 && !(world->playerPmFlags() & 0x4000000u);
                 in.yaw = cam.yaw;
                 in.dead = playerDead;
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
