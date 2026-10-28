@@ -79,8 +79,8 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   next one. World::start drains the queue and runs one game frame (matmata: the start trigger_multiple fires and spawns
   the jeep before ridein's `wait 0.05` calls getent("jeep")). Evidenced: the server spawn (0x4488b0) runs the frame start
   0x44a6a0 (level.time += 50) at 0x448985, then 0x4da470: entity spawn, main thread (0x4da50e), one full G_RunFrame(0, 0)
-  (0x4da524); only then is the level loaded (0x448aab -> 0x4da540 clears 0x1c61048). So the exe's first frame is at level
-  time 50; the port runs it at 0 (TODO(spec): the absolute 50 ms offset of gettime()).
+  (0x4da524); only then is the level loaded (0x448aab -> 0x4da540 clears 0x1c61048). So main() and the first frame run
+  at level time 50, as in the port (runLevelMain adds the 50 ms before starting main).
 - Engine-side notifies relative to the script frame: G_RunFrame stages (docs/spec/ai.md "Server frame order"): the player's
   trigger touches (stage 1) are delivered as "trigger" notifies in stage 3, the animation notetracks in stage 4, both before
   the script frame (stage 5, 0x467150).

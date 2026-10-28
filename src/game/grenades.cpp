@@ -854,28 +854,27 @@ void World::launchItem(Entity& item, const Entity& dropper) {
 // A map-placed item (FinishSpawningItem 0x5225e0, unless spawnflags 1 = suspended) is dropped 4096 down once, retried from 15
 // down when the first trace starts solid; still solid -> freed; it rests there (trType 0) with the trace's entity as ground
 // (0x52283f).
-void World::runItems() {
+void World::runItem(Entity& e) {
     const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1}; // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): other item types use z 0..2
-    for (size_t ei = 0; ei < entities_.size(); ++ei) {
-        Entity& e = *entities_[ei];
-        if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) continue;
+    {
+        if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) return;
         const Value sf = e.obj->get("spawnflags");
         const bool suspended = sf.isNumber() && (sf.asInt() & 1);
         if (!e.obj->get("$trtype").isNumber()) {
-            if (e.obj->get("$itemsettled").truthy()) continue;
+            if (e.obj->get("$itemsettled").truthy()) return;
             e.obj->set("$itemsettled", Value(true));
             e.obj->set("$trtype", Value(int32_t(0)));
-            if (suspended) continue; // groundEntityNum stays unset; the suspended flag blocks the re-base (step 1)
+            if (suspended) return; // groundEntityNum stays unset; the suspended flag blocks the re-base (step 1)
             Vec3 o = e.obj->get("origin").asVector();
             TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
             if (tr.startSolid) {
                 o[2] -= 15.0f;
                 tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
-                if (tr.startSolid) { e.obj->removed = true; continue; }
+                if (tr.startSolid) { e.obj->removed = true; return; }
             }
             e.obj->set("origin", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
             e.obj->set("$groundent", Value(int32_t(tr.fraction < 1.0f ? tr.entity : kItemNoGround)));
-            continue;
+            return;
         }
         Trajectory trj;
         trj.type = e.obj->get("$trtype").asInt();
@@ -905,7 +904,7 @@ void World::runItems() {
         // 2. Stationary or linked: think only.
         if (trj.type == 0 || trj.type == 6 || links_.count(e.number)) {
             e.obj->set("$trtype", Value(int32_t(trj.type)));
-            continue;
+            return;
         }
         // 3. The position 50 ms ahead.
         const MVec ahead = trj.evaluate(timeMs_ + 50);
@@ -942,9 +941,9 @@ void World::runItems() {
         e.obj->set("$trbase", Value(Vec3{trj.base[0], trj.base[1], trj.base[2]}));
         e.obj->set("$trdelta", Value(Vec3{trj.delta[0], trj.delta[1], trj.delta[2]}));
         // 7. Settle.
-        if (!(tr.fraction < 0.01f)) continue;
-        if (tr.normal[2] <= 0.0f) { e.obj->removed = true; continue; }
-        if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
+        if (!(tr.fraction < 0.01f)) return;
+        if (tr.normal[2] <= 0.0f) { e.obj->removed = true; return; }
+        if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; return; }
         // 0x522ea0: the item's forward vector (its pitch and yaw) is projected onto the plane of the hit normal, (n x f) x n, and
         // the angles become its vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
         // trajectory is cleared and currentAngles (+0xe8..) set.

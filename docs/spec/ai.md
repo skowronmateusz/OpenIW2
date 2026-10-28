@@ -34,7 +34,7 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   is >= level.time returns undefined (one spawn per spawner per level time; +0x158 = level.time after a success, 0x4ee0f2);
   with exactly one parameter (0xa0189c == 1) its const string (0x46e760) is passed on as the new actor's targetname.
 - Core 0x532200 (spawner, targetname, force): ai_disableSpawn prints "Attempted spawn prevented by ai_disableSpawn." (not
-  ported); count +0x148 == 0 returns undefined. Without force: the telefrag test 0x4e8500, then, only once the level is
+  default 0, registered at 0x4d89d7, dvar 0x1c14880); count +0x148 == 0 returns undefined. Without force: the telefrag test 0x4e8500, then, only once the level is
   loaded (0x1c61048 == 0), the sight test: the player (G_Find classname "player") eye 0x514f70 against 0x532100(eye,
   spawner origin, player, spawner) -> "^3couldn't spawn from %s because player can see spawnpoint" (0x58f850).
   0x1c61048 is set by G_InitGame (0x4d99cb: 1 new level, 2 savegame load) and cleared by 0x4da540 (called at 0x448aab,
@@ -61,35 +61,46 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   string 0x587ea4) and freed (0x4d7c30), like the script delete.
 - A real spawner (spawnflags 1) is never freed by a spawn (only the positive count is decremented, 0x5325ca..0x5325d8); a
   map-start placed actor is the entity itself, which the port replaces by a new entity.
-- TODO(spec): the eviction iterates actor slots; the port iterates entities (differs only for equal distances). The
-  ai_disableSpawn dvar is not ported.
+- TODO(spec): the eviction iterates actor slots; the port iterates entities (differs only for equal distances).
 
 ## Server frame order (observed; G_RunFrame 0x4da970, src/game/world.cpp World::frame)
 
 G_RunFrame is a resumable state machine (stage 0x1c6105c, jump table 0x4db27c, optional rdtsc time budget); the frame
 start 0x44a6a0 adds 50 ms to level.time and resets the stage. Stages:
-1. 0x4da99f: 0x4e8160 / 0x4e8180 on the player (0x4e8180 runs G_TouchTriggers 0x4e7320 for a player with pm_type < 4 and
-   client +0x8628 / +0x862c clear), the level change 0x4d9f90, the friendly chain error print.
-2. 0x4daa14: 0x447ec0 for every entity from 1; the queued touch records (0x1c610b4, count 0x1c628b4, filled by 0x528cb0)
-   are taken over (0x1c61cb4 / 0x1c628b8).
+1. 0x4da99f: 0x4e8160 on the player: if in use, the queued client commands and usercmds (0x409ed0 -> 0x4e7ee0 ->
+   ClientThink 0x4e7bc0) and the eye trail 0x5154b0; then 0x4e8180: the moved byte (+0x86b6, 0x4e8194..0x4e81e5) and
+   G_TouchTriggers 0x4e7320 (triggers and weapon items, Touch_Item 0x521a90) for a player with pm_type < 4 and neither
+   noclip (client +0x8628) nor ufo (+0x862c); then the level change 0x4d9f90 and the friendly chain error print.
+   The eye trail 0x5154b0: every g_playerTrailTime ms (int dvar 0x1c13f08, default 500) the player's eye and the time go
+   into a two-entry ring (0x1c8d998 / 0x1c8d9b0, index 0x1c8d994); 0x515630 reads the older entry for 0x54fa40, the target
+   motion term of the hit chance 0x54fb90, which ai_vsPlayerUseAccuGraphOnly (default 1) skips for the player
+   (0x54fbd3..0x54fbe2). Not ported (inert with the default dvar).
+2. 0x4daa14: 0x447ec0 for every entity from 1: the animation weight update 0x476960 (dt 0.05) of the entity's tree; the
+   queued touch records (0x1c610b4, count 0x1c628b4, filled by 0x528cb0) are taken over (0x1c61cb4 / 0x1c628b8).
 3. 0x4dab00: each record with valid spawn ids sends "trigger" (const 0x1c7f0e4) with the other entity; a trigger already
    notified in this pass keeps its record for the next pass; after each pass the woken threads run (0x46d560).
    0x528cb0 notifies at once when the queue is full (256).
 4. 0x4dac9c: the animation step of every entity from 1, running the notetrack-woken threads after each entity.
 5. 0x4daefc: woken threads, then the script frame 0x467150; frame counter 0x9bef20 + 1.
 6. 0x4daf94: bad places 0x523a60.
-7. 0x4dafc6: the player's queued usercmds (0x409ed0 -> 0x4e7ee0 -> ClientThink 0x4e7bc0: pmove, r.mins/maxs, use), 0x5154b0,
-   and with ps flag 0x20000 G_RunEntity of the entity at client +0xf4.
+7. 0x4dafc6: 0x409ed0 and 0x5154b0 again (usercmds that arrived since stage 1), and with ps +0x7c bit 0x20000 (in a
+   vehicle: VEH_LinkPlayer 0x511624 refuses a second vehicle on it) G_RunEntity of the vehicle at entity +0xf4.
 8. 0x4db048: G_RunEntity 0x4da7e0 (once per frame, +0x130 = frame number) of every entity in number order, its link parent
    (+0x1c8) first; 0x1c61064 holds the running entity number (-1 outside). Dispatch 0x4da720: eType 3 G_RunMissile
    0x526c30, eType 2 (or physics +0x110) G_RunItem 0x523040, eType 5 0x52ccb0, clients nothing, else the think 0x4da090.
 Then (0x4db11d) for each client in use 0x530cf0 and ClientEndFrame 0x4e7f90, then 0x4d9710, 0x517c30, 0x52b070, 0x4da2d0,
 0x4da0e0. The server frame end 0x44a900 finishes a budgeted G_RunFrame (0x44a870), processes the save queue (0x44a230) and
 builds the snapshot (0x4db2b0).
-Port: triggers (stages 1 + 3) and their threads, the animation step, script frame, bad places, player use, then the
-stage-8 kinds as groups (vehicles, turrets, missiles in entity order, items, script models, actors), link (ClientEndFrame),
-death screen, saves. TODO(spec): stage 8 per entity in number order for all kinds; 0x447ec0, 0x4e8160, 0x5154b0 and the
-item touch's stage; movers (entity thinks in the exe) still run at the frame start here.
+Port (World::frame): stage 1 = the use part of ClientThink (pmove itself runs in the front end before the frame), the
+moved byte, trigger and item touches, then the threads the trigger notifies woke (stage 3); the animation step (stages 2
+and 4, weights inside each entity's update); the script frame; bad places; the ridden vehicle (stage 7); stage 8 =
+World::runEntity for every entity in number order (once per frame, link parent first; link follow, mover, vehicle,
+turret, missile, item, script model, actor); ClientEndFrame (player link), death screen, saves.
+The first frame and the level's main run at level time 50: the server spawn runs the frame start 0x44a6a0 (0x448985)
+before 0x4da470.
+TODO(spec): the exe's G_RunEntity runs one dispatch per eType; the port runs every part that applies, in a fixed order.
+The weight update of stage 2 is done per entity inside the stage-4 update. Which parts of the entity spawn run at time 0
+(G_InitGame) and which at 50 (0x4fa5c0): the port spawns everything at 0.
 
 ## Perception (observed)
 

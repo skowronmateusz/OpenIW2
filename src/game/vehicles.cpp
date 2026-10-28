@@ -1017,10 +1017,9 @@ std::string World::playerVehicleTurretWeapon() {
     return v && v->vehicle && v->vehicle->info ? v->vehicle->info->turretWeapon : std::string();
 }
 
-void World::thinkVehicles() {
-    for (size_t i = 0; i < entities_.size(); ++i) {
-        Entity& e = *entities_[i];
-        if (e.obj->removed || e.classname != "script_vehicle") continue;
+void World::thinkVehicle(Entity& e) {
+    {
+        if (e.obj->removed || e.classname != "script_vehicle") return;
         VehicleState& v = vehicleState(Value(e.obj));
         const Vec3 prevOrigin = e.obj->get("origin").asVector(), prevAngles = e.obj->get("angles").asVector();
         if (v.owner >= 0) {
@@ -1028,13 +1027,13 @@ void World::thinkVehicles() {
             const Value h = owner ? owner->obj->get("health") : Value();
             if (owner && (!h.isNumber() || h.asInt() < 1)) unlinkPlayerFromVehicle(e, *owner);
         }
-        if (!e.vehicle || e.obj->removed) continue;
+        if (!e.vehicle || e.obj->removed) return;
         if (v.info && v.info->type != 4) {
             if (v.started) vehiclePathMove(e, prevOrigin, prevAngles);
             else vehicleFreeMove(e, prevOrigin, prevAngles);
         }
         // Path notifies run scripts at once; freevehicle there drops the vehicle state.
-        if (!e.vehicle || e.obj->removed) continue;
+        if (!e.vehicle || e.obj->removed) return;
         // 0x5107e0: steering angle from the yaw change of this frame.
         v.steerAngle = v.info && v.info->steerWheels
                            ? std::clamp(angleDelta(e.obj->get("angles").asVector()[1], prevAngles[1]) * 10.0f, -45.0f, 45.0f)

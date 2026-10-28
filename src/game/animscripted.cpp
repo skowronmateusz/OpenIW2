@@ -173,13 +173,6 @@ void World::stopScriptedAnim(Entity& e) {
     e.scripted.reset();
 }
 
-// Script models and other non-actors with a scripted block (0x52ccb0). TODO(spec): where G_RunFrame calls it.
-void World::runScriptedModels() {
-    for (size_t i = 0; i < entities_.size(); ++i) {
-        Entity& e = *entities_[i];
-        if (e.scripted && !e.isActor && !e.obj->removed) updateScriptedAnim(e);
-    }
-}
 
 // The animscripted state's think (0x54b0a0): node and path released, animscripts/scripted main as the animscript
 // (movemode stop, anim mode 4); when that script or the scripted animation has ended the state is popped.

@@ -458,9 +458,5 @@ void World::thinkTurret(Entity& t) {
     turretTurn(t, tracking);
 }
 
-void World::thinkTurrets() {
-    for (const auto& ep : entities_)
-        if (ep->turret && !ep->obj->removed) thinkTurret(*ep);
-}
 
 } // namespace iw2::game

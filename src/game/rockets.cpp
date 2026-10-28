@@ -165,18 +165,7 @@ void World::runRocket(Entity& e) {
     }
 }
 
-// G_RunFrame's entity pass (0x4db050..0x4db0c8) runs G_RunEntity (0x4da7e0) for every entity in number order; a missile
-// (eType 3) goes to G_RunMissile (0x526c30), grenades and rockets alike, so they move interleaved by entity number.
-// TODO(spec): the other entity kinds of that pass (items, vehicles, script models, actors, ...) are still run as groups.
-void World::runMissiles() {
-    std::vector<Entity*> order(grenades_);
-    order.insert(order.end(), rockets_.begin(), rockets_.end());
-    std::stable_sort(order.begin(), order.end(), [](const Entity* a, const Entity* b) { return a->number < b->number; });
-    for (Entity* e : order) {
-        if (e->obj->removed) continue;
-        if (e->grenade) runGrenade(*e);
-        else if (e->rocket) runRocket(*e);
-    }
+void World::pruneMissiles() {
     auto prune = [](std::vector<Entity*>& v) {
         v.erase(std::remove_if(v.begin(), v.end(), [](const Entity* e) { return e->obj->removed; }), v.end());
     };
