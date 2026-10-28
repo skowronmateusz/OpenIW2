@@ -817,6 +817,7 @@ private:
     Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);
     std::string stopScript(Entity& e);
+    bool enemyEyeTraceOk(Entity& e);
     bool seesEnemyRecently(Entity& e, int64_t withinMs);
     int painThink(Entity& e);
     int deathThink(Entity& e);

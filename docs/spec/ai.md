@@ -110,7 +110,9 @@ within |velocity|² · 0.0625 (a quarter second) +0x704 = now + 500; when it has
 place (+0x2128) → 4; a recorded turret (+0x2114) that is free → replace 2 (in use → forget it); then perception
 (0x4fe890) and the substate (0x548d50): no enemy → 0x65 noncombat; noncombat and the enemy seen
 (0x54ce10: the last sight check if within 250 ms, else a new one) → 100 combat; reacquire 0x66 →
-combat without a path (or with +0x728/+0x2148), or when seen and 0x54d010 passes.
+combat without a path (+0x6b0 <= 0) or with +0x728/+0x2148 set, else when the enemy was seen within 250 ms (0x54ce70) and
+0x54d010 passes (0x54cf40: a point trace, mask 0x200c861, from the enemy's eye - 16 to the actor's eye, clear or ending on a
+sentient of another team; beyond the fog limit 0x1c61038 it fails). The +0x728/+0x2148 shortcut is not modelled.
 - Combat 100: path update 0x503490; with a path and the enemy seen: clear the path when inside the goal (always with
   +0x728/+0x2148). No path → 0x548c70 (0x53b050; inside the goal, with the enemy not seen for 5 s, at a claimed
   cover node: facing 6, else 3); else facing 4 and path follow (run).
@@ -281,9 +283,9 @@ passes on its own knowledge of its enemy (copied per-sentient when the target's 
 (0x54b3b0). Types 7/12/13 print "not yet handled" in the exe, 11 does nothing, 8/9 (grenade ping) go through
 `grenadePing` instead of this dispatch. Knowledge is kept per sentient (0x500c50 learns position + own position then,
 0x54ddc0 "known within ms"). Implemented in `src/game/actorevents.cpp`; producers wired in `combat.cpp` (G_Damage,
-Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain throttle 500 ms, pain reveal, death).
-TODO(spec): the pain accumulator's +0x48 add and damage-class gate, the turret entity +0x10c field of the
-pain/death handler, the player pain events 2/3 of the client fire path (0x4e786b / 0x4e787b).
+Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain reveal, death).
+The +0x48 accumulator is not a pain accumulator: it is the movement-noise accumulator 0x5485a0 (`actorMoveNoise`). TODO(spec): the turret entity +0x10c field of the pain/death handler, the player pain events 2/3 of
+the client fire path (0x4e786b / 0x4e787b).
 
 ## Bad places (observed 0x524060 0x5199f0)
 

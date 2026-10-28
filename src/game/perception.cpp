@@ -83,11 +83,11 @@ Vec3 World::sightEye(Entity& e, Vec3* forward) {
 }
 
 // Distance and field-of-view test (0x54c840). maxDistSq 0 means unlimited; fovCos 0 means no cone.
-// TODO: the fog distance limit (0x1c61038, from the fog config string, 0x4e96e0) is not applied.
+// Like 0x54c7d0, the fog sight limit (0x1c61038, 0x4e96e0) applies only with a non-zero maxDistSq.
 bool World::sightTest(Entity&, const Vec3& eye, const Vec3& forward, const Vec3& target, float fovCos, float maxDistSq) {
     const Vec3 d = sub(target, eye);
     const float distSq = dot(d, d);
-    if (maxDistSq != 0.0f && maxDistSq < distSq) return false;
+    if (maxDistSq != 0.0f && (maxDistSq < distSq || distSq > fogSightSq_)) return false;
     if (fovCos != 0.0f) {
         const float f = dot(forward, d);
         if (f < 0.0f) return false;
