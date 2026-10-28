@@ -624,8 +624,8 @@ public:
     const std::string& storedNextMap() const { return levelChange_.map; }
     bool storedPersistent() const { return levelChange_.persistent; }
     // Player state handed over by a persistent level change (0x4d9dd1 -> 0x4e6c20 writes the client into a memory save). Set before
-    // start(); prepareStart() gives it to the new player before the level script runs. TODO(spec): the full client state of that
-    // memory save (health, stance, ...); only the weapon inventory and the current weapon are carried here.
+    // start(); prepareStart() gives it to the new player before the level script runs (stance, origin, view angles and pm_flags
+    // are not part of the save).
     // Persistent level change (writer 0x4e6c20, reader 0x4e6de0): the player entity's +0x13c health and +0x140 maxhealth (range table
     // 0x56eeb0), the client's stats words ps+0x108..+0x117 (range table 0x56eec8: +0x108 health copy, +0x10c dead yaw, +0x110 max
     // health, +0x114 a byte flag) and the weapons. TODO(spec): the +0x114 byte flag (no port counterpart).
