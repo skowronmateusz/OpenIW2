@@ -970,6 +970,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         }
         FVec lineA = p.origin, lineB = p.lineB;
         if (e.type == "Cylinder") pos = relative ? fromTagSpace(tagNow, p.local0) : p.origin; // no motion (0x483450)
+        if (e.type == "Light") pos = relative ? fromTagSpace(tagNow, p.local0) : p.origin; // update 0x4841e0: +0x7c = +0x4, no motion
         if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
             if (relative) {
                 lineA = fromTagSpace(tagNow, p.local0);

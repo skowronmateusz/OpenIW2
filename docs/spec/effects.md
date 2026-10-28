@@ -111,7 +111,8 @@ the piecewise-linear curve), used for velocities.
   (see "Emitter physics"), so usePhysics / useBBox / impactKills / impactFx apply to them as to Emitters (95 / 150 / 76 / 9
   shipped Particle elements). The analytic position 0x4816c0 is used only by 0x48caa0 for the late part of a spawn
   (pos += 0x4816c0(ms) · ms · 0.001 for ms > 0; TODO(spec): not applied, OpenIW2 steps from the scheduled spawn time).
-  Light and Line / Cylinder elements do not call 0x480bd0.
+  Light (update 0x4841e0: +0x7c = the spawn point +0x4, through the bolt for relative) and Line / Cylinder elements do not
+  move.
 - Draw slot 0x4802f0: a Particle is submitted only while size (+0x88) ≠ 0 and size2 (+0x8c) ≠ 0 (it still enters the sight
   blocker list, 0x480970).
 - OrientedParticle (vtable 0x57c7e4, spawn 0x48dc80): +0x24c = the instance axis row 0 (relative: into tag space, 0x440650 at
