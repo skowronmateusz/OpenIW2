@@ -654,7 +654,7 @@ void World::registerCombatBuiltins() {
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
             const bool hitRoll = accuracy > u(rng_);
             if (static const bool dbg = std::getenv("IW2_ACC_DEBUG") != nullptr; dbg)
-                print("ACC " + a->obj->get("weapon").toString() + " " + (enemy->isPlayer ? "player" : "ai") + " dist " +
+                print("ACC #" + std::to_string(a->number) + " " + a->obj->get("origin").toString() + " " + a->obj->get("weapon").toString() + " " + (enemy->isPlayer ? "player" : "ai") + " dist " +
                       std::to_string(int(len(sub(enemy->obj->get("origin").asVector(), a->obj->get("origin").asVector())))) + " chance " +
                       std::to_string(accuracy) + (hitRoll ? " hit" : " miss"));
             Vec3 T = target;
