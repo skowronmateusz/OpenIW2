@@ -2,6 +2,7 @@
 // bounces and fuse (G_RunMissile 0x526c30, 0x525f30, 0x526600), the radius damage (0x5289d0), the landing prediction
 // (0x527270), the throw solvers behind checkGrenadeThrowPos (0x51f490) and throwGrenade / MagicGrenade(Manual) /
 // pickUpGrenade.
+#include "game/grenadeangles.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -88,7 +89,7 @@ Vec3 World::grenadeVelocity(const GrenadeState& g, int64_t atMs) const {
 
 // The grenade entity (0x5275f0): classname "grenade", fuse now + fuseMs, thrown by `thrower` (+0x134, owner +0xf4),
 // gravity trajectory from `start` with `velocity`, bouncing (flags 0x1000000), the weapon's projectile model.
-// TODO(spec): the fuse a player cooked (client +0x3c), the angular trajectory (+0x38 … +0x58, random yaw and spin).
+// The fuse a player cooked (client +0x3c) is passed in by playerThrowGrenade as fuseMs (0x527605).
 Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, const Vec3& start, const Vec3& velocity, int fuseMs) {
     Entity& e = spawnEntity("grenade");
     e.grenade = std::make_unique<GrenadeState>();
@@ -110,10 +111,8 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
         const float pitch = -std::atan2(velocity[2], hyp) * 57.29578f;
         const float a = pitch - 120.0f;
         const float pm = (360.0f / 65536.0f) * float(int(a * (65536.0f / 360.0f)) & 65535);
-        meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
-        const float r1 = float(meleeSeed_ >> 0x11 & 0x7fff);
-        meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
-        const float r2 = float(meleeSeed_ >> 0x11 & 0x7fff);
+        const float r1 = float(nextRand());
+        const float r2 = float(nextRand());
         g.aBase = {pm, yaw, 0};
         g.aDelta = {r1 / 32768.0f * 90.0f + 675.0f, 0, r2 / 32768.0f * 90.0f + 315.0f};
         g.aTime = timeMs_;
@@ -130,13 +129,11 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
 // surface's bounce factor, interpolated from the parallel to the perpendicular factor by the impact angle. Resting on
 // ground (normal z > 0.7) slower than 20 units/s stops it; otherwise it moves 0.1 along the normal (never upwards)
 // and flies on. Returns true for a bounce that changed the velocity by more than 100 (the bounce event).
-// TODO(spec): the angular trajectory and the bounce event's sound; 0x520230 (actors re-planning when the grenade
+// Angular trajectory: grenadeRebaseAngles (0x525cb0). TODO(spec): 0x520230 (actors re-planning when the grenade
 // hits a character).
 bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
     GrenadeState& g = *e.grenade;
     const Vec3 v = grenadeVelocity(g, hitMs);
-    g.aBase = grenadeAngles(g, hitMs); // 0x525cb0: re-base the angular trajectory at the hit time (spin rescale: TODO(spec))
-    g.aTime = hitMs;
     const Vec3& n = tr.normal;
     const float d = dot(v, n);
     Vec3 nv = add(v, scale(n, -2.0f * d));
@@ -148,16 +145,26 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
         const float perp = weaponFloat(g.weapon, ("perpendicular" + std::string(name) + "Bounce").c_str());
         if (speed > 0.0f && d <= 0.0f) nv = scale(nv, -1.0f / speed * d * (perp - par) + par);
         if (n[2] > 0.7f && len(nv) < 20.0f) {
+            // Rest branch (0x5260d2): 0x525cb0 aligns the pitch with the slope; 0x4d83c0 then makes the angular trajectory
+            // stationary (type/time/duration/delta 0) with base = currentAngles = those angles.
+            const GrenadeRebase rb = grenadeRebaseAngles(grenadeAngles(g, hitMs), g.aDelta[0], n, true, [&] { return nextRand(); });
             g.trType = 0;
             g.trBase = tr.endPos;
             g.trDelta = {0, 0, 0};
             g.onGround = true;
-            g.aDelta = {0, 0, 0}; // TODO(spec): the exe's angular trajectory of a resting grenade
+            g.aBase = rb.angles;
+            g.aDelta = {0, 0, 0};
+            g.aTime = 0;
             e.obj->set("angles", Value(g.aBase));
             e.obj->set("origin", Value(tr.endPos));
             return false;
         }
     }
+    // Flying branch (0x52615e): re-base the angular trajectory at the hit angles, stamped with the current level time.
+    const GrenadeRebase rb = grenadeRebaseAngles(grenadeAngles(g, hitMs), g.aDelta[0], n, false, [&] { return nextRand(); });
+    g.aBase = rb.angles;
+    g.aDelta[0] = rb.pitchSpin;
+    g.aTime = timeMs_;
     const Vec3 p = add(tr.endPos, {n[0] * 0.1f, n[1] * 0.1f, std::min(n[2] * 0.1f, 0.0f)});
     g.trType = 5;
     g.trBase = p;

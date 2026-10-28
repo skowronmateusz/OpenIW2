@@ -723,7 +723,8 @@ public:
     void triggerDamageHit(Entity& e, Entity* attacker, int amount, const std::string& mod);
     void triggerDamageUse(Entity& e); // 0x529450
     void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod);
-    void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
+    void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity,
+                            int cookedFuseMs = 0);
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);
     // Script notify on the player entity (ClientEvents 0x4e75f0: binocular events 0xa8..0xac -> "binocular_enter", "_exit",
@@ -1048,6 +1049,7 @@ private:
     Vec3 grenadeVelocity(const GrenadeState& g, int64_t atMs) const;
     Entity& spawnGrenade(Entity& thrower, const std::string& weaponName, const Vec3& start, const Vec3& velocity, int fuseMs);
     bool bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs);
+    int nextRand() { meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3; return int(meleeSeed_ >> 0x11 & 0x7fff); } // rand() (0x5a56f4)
     void radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                       const std::string& mod);
     bool canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at = nullptr);

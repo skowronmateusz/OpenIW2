@@ -6010,7 +6010,7 @@ int main(int argc, char** argv) {
                             world->notifyPlayer(kN[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
                         }
                         else if (e.kind == game::PlayerWeapon::Event::MeleeHit && world) world->playerMelee(eye, angles);
-                        else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0});
+                        else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0}, pweapon.takeFuseMs());
                         std::cout << "shot-script t=" << tNow << " event " << int(e.kind) << " " << e.weapon << "\n";
                     }
                     if (i % 13 == 0)
@@ -6751,7 +6751,7 @@ int main(int argc, char** argv) {
                     }
                     else if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
-                        world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
+                        world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity, pweapon.takeFuseMs());
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
                     else if (e.kind == game::PlayerWeapon::Event::NoAmmo) setInvalidCmd(1, world->timeMs()); // event 0x92 (0x4baeb6)
