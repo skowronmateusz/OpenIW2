@@ -204,9 +204,10 @@ bool World::followShrink(Entity& e, int bumped) {
 void World::linkBumpedActor(Entity& e, int hit) {
     e.ai.bumpedEnt = hit;
     if (hit >= 0x7fe) return;
-    // Gated: a followed actor skips the path walk (stepActorPath) and the exe moves it along the follower trail
-    // (0x500d80 / 0x544ca0 / 0x505520 / 0x504f60), which is not ported; linking would freeze it. Opt in with IW2_ACTOR_FOLLOW=1.
-    static const bool enabled = [] { const char* v = std::getenv("IW2_ACTOR_FOLLOW"); return v && v[0] == '1'; }();
+    // On by default: a followed actor stands still in the exe too (the branch of 0x504160 without the path walk, ported in
+    // moveActor), and is released by updateFollowed. IW2_ACTOR_FOLLOW=0 disables the link. The actor clip mask (0x2820011) has
+    // no actor body bit (0x4000), so no trace hits another actor and the link is not reachable in the current scenes.
+    static const bool enabled = [] { const char* v = std::getenv("IW2_ACTOR_FOLLOW"); return !(v && v[0] == '0'); }();
     if (!enabled) return;
     Entity* o = entityByNumber(hit);
     if (o && o->isActor && o != &e && !o->ai.followed) o->ai.followed = &e, ++stats.followLinks;

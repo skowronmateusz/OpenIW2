@@ -963,6 +963,41 @@ int main(int argc, char** argv) {
                     std::printf("[trav %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f distEnd %.0f\n", f * 0.05f, tActor->ai.stack[size_t(tActor->ai.depth)], tActor->ai.substate, tActor->obj->get("$goalpos").toString().c_str(), tActor->animScript.c_str(), tActor->path.count, tActor->path.traversal, tActor->path.flags, (long long)tActor->ai.stopSoonMs, ao[0], ao[1], ao[2], std::sqrt((ao[0] - eo[0]) * (ao[0] - eo[0]) + (ao[1] - eo[1]) * (ao[1] - eo[1])));
                 }
             }
+            if (const char* fs = std::getenv("IW2_FOLLOW_SCENE")) { // IW2_FOLLOW_SCENE=<s>: a path-walking actor bumps a second one placed 20 units ahead
+                static iw2::game::Entity *fA = nullptr, *fB = nullptr;
+                static bool fDone = false;
+                static iw2::game::Vec3 fPin{};
+                const float fAt = float(std::atof(fs));
+                if (!fDone && f * 0.05f >= fAt) {
+                    for (const auto& ep : world.entities())
+                        if (!fA && ep->isActor && !ep->obj->removed && ep->obj->get("health").asInt() > 0 && ep->path.count > 1 && ep->ai.stack[size_t(ep->ai.depth)] != 7) fA = ep.get();
+                    if (fA) {
+                        for (const auto& ep : world.entities())
+                            if (!fB && ep.get() != fA && ep->isActor && !ep->obj->removed && ep->obj->get("health").asInt() > 0) fB = ep.get();
+                        if (fB) {
+                            const auto ao = fA->obj->get("origin").asVector();
+                            fB->obj->set("origin", iw2::script::Value(iw2::game::Vec3{ao[0] + fA->path.lookDir[0] * 20.0f, ao[1] + fA->path.lookDir[1] * 20.0f, ao[2]}));
+                            fDone = true;
+                            fA->ai.noPush = true; // the clip mask 0x2820011 holds the actor bodies (0x2000000), 0x820011 does not
+                            fPin = iw2::game::Vec3{ao[0] + fA->path.lookDir[0] * 20.0f, ao[1] + fA->path.lookDir[1] * 20.0f, ao[2]};
+                            std::printf("[follow] walker #%d bumps #%d placed 20 units ahead\n", fA->number, fB->number);
+                        }
+                    }
+                    if (!fDone && f * 0.05f > fAt + 30.0f) fDone = true;
+                }
+                if (fA && fB && fDone && f * 0.05f < fAt + 20.0f) { fB->obj->set("origin", iw2::script::Value(fPin)); fB->obj->set("$goalpos", iw2::script::Value()); }
+                // Actor bodies (contents 0x4000) are not in the actor clip mask 0x2820011, so no trace ever hits another actor and the
+                // bump link (0x501c8b) cannot fire here: the link is forced one second after the placement to exercise the followed branch.
+                if (fA && fB && fDone && f * 0.05f >= fAt + 1.0f && f * 0.05f < fAt + 1.0f + 0.05f) {
+                    const auto ao = fA->obj->get("origin").asVector();
+                    fPin = iw2::game::Vec3{ao[0] + fA->path.lookDir[0] * 33.0f, ao[1] + fA->path.lookDir[1] * 33.0f, ao[2]}; // between 30 and 37.5 units
+                    fA->ai.followed = fB;
+                }
+                if (fA && fB && f * 0.05f < fAt + 20.0f && f % 5 == 0) {
+                    const auto ao = fA->obj->get("origin").asVector(), bo = fB->obj->get("origin").asVector();
+                    std::printf("[follow %.2f] A#%d pos %.0f %.0f v %.0f path %d followed %d bumped %d | B#%d pos %.0f %.0f path %d followed %d | links/releases %d/%d\n", f * 0.05f, fA->number, ao[0], ao[1], std::sqrt(fA->velocity[0] * fA->velocity[0] + fA->velocity[1] * fA->velocity[1]), fA->path.count, fA->ai.followed ? fA->ai.followed->number : -1, fA->ai.bumpedEnt, fB->number, bo[0], bo[1], fB->path.count, fB->ai.followed ? fB->ai.followed->number : -1, world.stats.followLinks, world.stats.followReleases);
+                }
+            }
             if (const char* tr = std::getenv("IW2_ACTOR_TRACE")) { // IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]: state/goal/path of one actor
                 int from = 0, every = 20;
                 if (const char* c1 = std::strchr(tr, ',')) { from = std::atoi(c1 + 1); if (const char* c2 = std::strchr(c1 + 1, ',')) every = std::max(1, std::atoi(c2 + 1)); }
