@@ -1,6 +1,7 @@
 // The actor state machine (docs/spec/ai.md "AI states"): the state stack and its request queue, the per-frame
 // actor think, the exposed / pain / death / animcustom states and the engine's choice of animscript.
 #include "game/world.h"
+#include "game/pmove.h"
 
 #include <cctype>
 #include <cmath>
@@ -969,6 +970,36 @@ void World::actorMoveNoise(Entity& e) {
     ++stats.actorNoise;
     aiEventPoint(e, 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
     ai.moveNoiseMs %= 500;
+}
+
+// 0x548650 (after the movement noise, same move gate; block +0x6c the time of the last event): the actor's foliage sound,
+// the same rule as the player's PM_FoliageSounds (0x50ac30, pmove.cpp foliageSounds) with the same dvars
+// (bg_foliagesnd_minspeed 0x1c7efb4, maxspeed 0x1c7f03c, slowinterval 0x1c7f000, fastinterval 0x1c7efd0, resetinterval
+// 0x1c7eff4; registered at 0x4fa6f3..0x4fa7de): the 2D speed of the block velocity below minspeed clears the time once the
+// reset interval has passed; otherwise when slow + (fast - slow) * min((speed - min) / (max - min), 1) ms (truncated, 0x565994)
+// have passed, a box of 0.75 x the block box (maxs z 0.9 x) at the origin traced with contents mask 2 (G_LocationalTrace
+// 0x44bf00, pass entity = the actor) that starts solid (result +0x23) gives the actor event 0x8b (0x4d8020; the client plays
+// "movement_foliage" at the entity, playerevents.cpp) and the time becomes now.
+void World::actorFoliageSound(Entity& e) {
+    static const MoveParams mp; // the bg_foliagesnd_* defaults
+    ActorAi& ai = e.ai;
+    const float speed = std::sqrt(e.velocity[0] * e.velocity[0] + e.velocity[1] * e.velocity[1]);
+    if (speed < mp.foliageMinSpeed) {
+        if (ai.lastFoliageMs + mp.foliageResetInterval < timeMs_) ai.lastFoliageMs = 0;
+        return;
+    }
+    float frac = (speed - mp.foliageMinSpeed) / (mp.foliageMaxSpeed - mp.foliageMinSpeed);
+    if (!(frac <= 1.0f)) frac = 1.0f;
+    const int interval = int(float(mp.foliageFastInterval - mp.foliageSlowInterval) * frac + float(mp.foliageSlowInterval));
+    if (ai.lastFoliageMs + interval >= timeMs_) return;
+    const Value ov = e.obj->get("origin");
+    if (!ov.isVector()) return;
+    const Vec3 o = ov.asVector();
+    const TraceResult tr = collision_->trace(o, o, {-15 * 0.75f, -15 * 0.75f, 0}, {15 * 0.75f, 15 * 0.75f, 72 * 0.9f}, 2u, e.number);
+    if (!tr.startSolid) return;
+    ++stats.actorFoliage;
+    startSound("movement_foliage", &o);
+    ai.lastFoliageMs = timeMs_;
 }
 
 } // namespace iw2::game

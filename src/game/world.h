@@ -106,7 +106,7 @@ struct ActorProne {
 struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
     int depth = 0;
-    int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); IW2_ACTOR_SLIDE only
+    int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); slide move only (default on)
     int groundEnt = 0x7fe;                    // block +0x18 (ground entity of the actor slide move; 0x7fe at init, 0x500d27)
     int64_t baseStateMs = 0;                  // +0x20 time the bottom state was last set
     struct Request { int type, state; };      // 1 replace, 2 push, 3 pop
@@ -132,6 +132,7 @@ struct ActorAi {
     int trimCount = 0;     // +0x70c: set to path count + 1 by findreacquire*path (0x5492f9); consumed by trimpathtoattack
     int trimState = 0;     // +0x710: set to -2 by findreacquire*path (0x5492e7)                  // sentient +0x40: next node-facing check (0x515390), every 4950 ms
     int moveNoiseMs = 0;                      // actor +0x23c.. (0x224 struct +0x1c): the movement noise accumulator 0x5485a0
+    int64_t lastFoliageMs = 0;                // actor +0x290 (0x224 struct +0x6c): time of the last foliage sound event (0x548650)
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
@@ -640,7 +641,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -792,6 +793,7 @@ private:
     void actorPain(Entity& e, Entity* attacker);
     void actorPainNode(Entity& e, Entity* attacker, bool nodeRelease);
     void actorMoveNoise(Entity& e);
+    void actorFoliageSound(Entity& e); // 0x548650
     void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);

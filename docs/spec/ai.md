@@ -320,9 +320,9 @@ the enemy). Otherwise wait out the blocker's own wait (0x504720 chain, +0x728/+0
 off its centre (0x5451b0, corners 75 apart, stepping back to 37.5 first when closer; +0x724 = now + 1000), or stand
 blocked (+0x728 = self, 500 ms); when a detour was already tried the path is dropped every 2 s. Implemented in
 `src/game/actorfollow.cpp` and `src/game/actorpath.cpp`.
-TODO(spec): +0x318 (the bumped entity: following and 0x500d80), +0x250 move delta vs velocity, the actor clip mask
-+0x28c, +0x288, 0x504630 crowding, 0x53ade0, negotiation (+0x244, flag 0x40), the facing blend +0x2150, the
-actor physics 0x501xxx.
+The bumped entity +0x318, the clip mask +0x28c (pushplayer), +0x288 (prone tilt), negotiation (+0x244, flag 0x40) and the
+actor physics (slide move / ground probe / dispatch) are ported (sections below). TODO(spec): +0x250 move delta vs velocity,
+0x504630 crowding, 0x53ade0.
 
 ## Native actor fields (observed)
 
@@ -450,9 +450,8 @@ methods (entity from the self object, the "entity" check at 0x468ed0 error path)
 
 - `gethitenttype` 0x5400c0 (0 args, returns string): reads the actor's bumped entity number at gentity +0x318
   (init 0x7ff = none at 0x500d1d; written by the actor move code at 0x501330 and 0x501c6f). 0x7ff gives "none"; else if the
-  hit entity's contents word (+0x128) has bit 0x400 set it gives "obstacle"; otherwise "world". Not implemented: the repo
-  does not track the bumped entity (see world.cpp note on 0x500d80 and actorfollow.cpp TODO(spec) for +0x2148).
-  TODO(spec): wire +0x318 from the actor move trace, then this is a 10-line builtin.
+  hit entity's contents word (+0x128) has bit 0x400 set it gives "obstacle"; otherwise "world". Implemented (world.cpp), with
+  +0x318 written from the slide move's hit entity (`linkBumpedActor`).
 - `checkprone`: decoded and ported, see "Prone" below.
 - `beginprediction` 0x53f960 / `endprediction` 0x53fb80: snapshot / restore the actor state (the +0x218.. anim-mode words,
   the 0x43-dword AI struct, velocity/origin/angles) plus an animation-state snapshot (0x4796c0 / 0x478db0 / 0x478e10); nested
@@ -460,7 +459,7 @@ methods (entity from the self object, the "entity" check at 0x468ed0 error path)
   (tail-jumps to 0x5045c0) run an animation step inside such a snapshot and return the resulting origin/angles. They need a
   C++ copy of ActorAi plus the animation-step internals (animscripted domain), so they are not implemented.
 
-### Bumped entity +0x318: writer analysis (not wired)
+### Bumped entity +0x318: writer analysis (historical; now wired, see the slide move sections)
 
 +0x318 is written only inside the actor move-obstruction step that spans 0x500dc0..0x501359 (callers 0x504228 / 0x505255
 read it in the move code and re-call 0x500d80; init at 0x500d1d). That step copies the actor origin into the +0x224 vector, runs
@@ -501,7 +500,8 @@ TODO(spec): the near-field look of that surface (texture detail) has not been co
 - Conclusion: the +0x318 entity comes from the actor slide move result (0x547db0 / 0x44bf00 hit entity stored at block +0xf4 and
   copied by the 0x500dc0 step), i.e. from the actor physics that World::moveActor does not model (it moves along the path
   lookahead without clipping). Wiring +0x318, gethitenttype and the +0x2148 follow link therefore needs the full actor
-  physics port (0x547db0 slide move, 0x547540 clip velocity, 0x548290 ground probe) first. Not started, no guessing.
+  physics port (0x547db0 slide move, 0x547540 clip velocity, 0x548290 ground probe) first. (Superseded: that port is done, see
+  the next sections; +0x318 is written from the slide move's hit entity by `linkBumpedActor` and read by `gethitenttype`.)
 
 ### Actor slide move port (0x5475e0, 0x547540)
 
@@ -517,9 +517,9 @@ and returns 1 (2 when bump == 0 and byte 0x1cbac87). Touched entity numbers (not
 (count +0x70). ClipVelocity: normal.z >= 0.7 and vz² <= vx²+vy² gives (vx·nz, vy·nz, -(vx·nx + vy·ny)); otherwise the usual
 backoff (divide by the overbounce when moving away, multiply into the plane). Normalize (0x421270) leaves the destination
 untouched for a zero vector.
-Tested in tests/test_actorslide.cpp. Not wired into World::moveActor yet: the callers 0x547db0 (the step / ground wrapper),
-0x548290 (ground probe), 0x5485a0 / 0x548650 and the mode dispatch of 0x5487c0 are still TODO(spec); the +0x318 copy in the
-0x500dc0 step reads the block's +0xf4 after 0x5487c0.
+Tested in tests/test_actorslide.cpp. Wired into World::moveActor / moveActorKind through `moveBlock` (0x5487c0), on by
+default (`IW2_ACTOR_SLIDE=0` restores the old ground snap); the step wrapper 0x547db0, the ground probe 0x548290 and the mode
+dispatch are ported (sections below); the +0x318 copy in the 0x500dc0 step reads the block's +0xf4 after 0x5487c0.
 
 0x547db0 (the actor StepSlideMove, arg = gravity flag) structure, not yet ported: saves the block (0x43 dwords) and the
 0x15-dword frame scratch at 0x1cbac58, runs 0x5475e0; result 0 returns 0 (the +0xf4 of the scratch...), 2 returns 0 (all-solid exit);
@@ -529,7 +529,7 @@ restores the saved block, clears the ground plane flag (0x1cbac60), re-runs the 
 with the 0.0 constant 0x591e00 so the origin is kept), traces down by the step height again (0x4db7f0), snaps to the ground via
 0x47f390 and accepts the stepped move when the down trace fraction passes 0x591e78 and normal.z passes 0x592018 (then
 0x547540 clips the velocity and 0x408ad0 (two args) compared against origin z + 0x59202c decides to store the hit entity in
-+0xf4). Helpers 0x4db7f0, 0x47f390, 0x408ad0 and the constants 0x591e78, 0x592018, 0x59202c are not decoded: TODO(spec).
++0xf4). Helpers and constants: decoded right below.
 
 Helpers of 0x547db0, decoded:
 - 0x4db7f0: a thin wrapper of G_LocationalTrace 0x44bf00 (pushes 0, 0, 0 for the three trailing arguments, no other work).
@@ -540,9 +540,7 @@ Helpers of 0x547db0, decoded:
 In the step wrapper: the up-step test compares the down-trace normal.z against 0.3 (0x592018) and the fraction against 0.0
 (0x591e78), the final hit-entity rule is max(lerp-corrected z delta, ...) + 0.1 compared against the block origin z. The exact
 stack offsets of the two scratch trace results inside 0x547db0 (0x44 / 0x60 / 0x82 relative to esp after the pushes) have not been
-mapped to trace_t fields yet, so the wrapper is not ported: TODO(spec). The ground probe 0x548290, 0x5485a0, 0x548650
-and the 0x5487c0 mode dispatch are also still undecoded in detail, and World::moveActor, +0x318, gethitenttype and the
-follow link stay as documented above.
+mapped to trace_t fields in this pass; the mapping and the port follow in the next section.
 
 ### Actor step slide port (0x547db0), stack offsets mapped
 
@@ -562,14 +560,22 @@ section (0x4db7f0 trace wrapper, 0x47f390 lerp, 0x408ad0 max; 0x591e78 is the do
 `groundProbe` in `src/game/actorslide.cpp`: trace from origin+0.25 to origin-D (D = step height when vz<=0 and a ground entity exists, else 0.25).
 All-solid: touch-add the entity and retry without content bit 0x2000000 if set, then retrace from the origin; still all-solid -> ground entity = hit entity, groundPlane=0.
 Fraction 1 -> no ground. vz>0 and dot(normal, vel)>10 (0x591e8c) -> no ground. Normal z<0.7 -> groundPlane=1, no ground entity, hit record if none yet (normal.x stored in both slots, as at 0x548521/0x54852c).
-Walkable: z snaps to the trace end only if lower than the origin or mode==5; ground entity = trace entity, touch-add. Mode dispatch (0x5487c0 callees 0x548260/0x548200/0x548110/0x5480d0/0x5485a0/0x548650) is not yet ported: TODO(spec).
+Walkable: z snaps to the trace end only if lower than the origin or mode==5; ground entity = trace entity, touch-add. The mode dispatch (0x548260/0x548200/0x548110/0x5480d0) is `moveBlock`, next section.
 
 ### Actor move dispatch (0x5487c0), ported as moveBlock
 
 Block fields: +0x18 ground entity, +0x20 contact flag, +0x24 ground normal.z, +0x28 surface type ((trace +0x10 >> 20) & 0x1f), +0x2c desired displacement, +0x40 mode, +0x48 time ms (dt = ms * 0.001), +0x64 byte (step height 10 if set, else 18), +0x68 trace mask.
 Early out: ground entity 0x7fe and zero displacement -> velocity zeroed. Mode 3 adds the displacement; mode 4 (0x548260) sets velocity = displacement/dt and slide-moves without gravity; otherwise the ground probe runs and then mode 5 (0x548200), ground-entity walking (0x548110) or airborne (0x5480d0), see the header comment of moveBlock.
 After the move, the contact flag, normal.z and surface type are set when a ground plane exists with normal.z at least 0.3 (0x592018).
-Not ported: 0x5485a0 (footstep timer: +0x1c/+0x48 accumulates to 500 ms and plays a sound via 0x535770) and the world wiring. TODO(spec) for the sound call.
+0x5485a0 is not a sound: it is the movement noise (block +0x1c accumulates the step +0x48 to 500 ms, then AI event 2 through
+0x535770), ported as `World::actorMoveNoise`. 0x548650 is the actor foliage sound (`World::actorFoliageSound`): the player's
+PM_FoliageSounds rule with the same bg_foliagesnd_* dvars (0x1c7efb4 minspeed 40, 0x1c7f03c maxspeed 180, 0x1c7f000
+slowinterval 1500, 0x1c7efd0 fastinterval 500, 0x1c7eff4 resetinterval 500; registered at 0x4fa6f3..0x4fa7de), block +0x6c the last
+event time, box 0.75 x the actor box (maxs z 0.9 x), contents mask 2, start solid -> event 0x8b on the actor ("movement_foliage").
+Both run from the think (0x4ff1b3 / 0x4ff1b8) only when the origin differs from the one stored at the previous think (sentient
++0x10, compared at 0x4ff0b5..0x4ff0f3; the noise additionally needs +0x25c alive). An actor that stands still makes neither, and
+its noise sum is kept. Before this gate the port added noise every frame for standing actors (beltot 30 s --spawn-all: 1514 noise
+events before, 296 after).
 
 ### Actor trace box, followed actor (+0x2148) and 0x500d80: decode status
 

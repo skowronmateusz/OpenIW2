@@ -530,7 +530,14 @@ void World::thinkActors() {
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
         actorThink(e);
         if (!e.ai.corpse) actorFacing(e);
-        if (!e.ai.corpse) actorMoveNoise(e);
+        // 0x4ff0b5..0x4ff1b8: when the origin differs from the one stored at the previous think (sentient +0x10), the entity
+        // is relinked and the move block runs the movement noise 0x5485a0 (alive actors, +0x25c) and the foliage sound
+        // 0x548650; an actor that did not move runs neither (its noise sum is kept, not cleared).
+        const Value ov = e.obj->get("origin");
+        if (!e.ai.corpse && e.ai.prone.haveLast && ov.isVector() && ov.asVector() != e.ai.prone.lastOrigin) {
+            actorMoveNoise(e);
+            actorFoliageSound(e);
+        }
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
     }
@@ -1058,7 +1065,7 @@ void World::registerBuiltins() {
         return Value(int32_t(e->number));
     });
     // gethitenttype 0x5400c0: "none" for 0x7ff, "obstacle" when the bumped entity's r.contents (ent +0x128) has bit 0x400, else "world".
-    // The bumped entity (+0x318) is only tracked with IW2_ACTOR_SLIDE (World::moveActor), so it is "none" otherwise.
+    // The bumped entity (+0x318) is written by the actor slide move (World::moveActor; off only with IW2_ACTOR_SLIDE=0).
     vm_.registerBuiltin("gethitenttype", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("gethitenttype on a non-actor");
