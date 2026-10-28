@@ -315,12 +315,14 @@ bool World::grenadeAcquire(Entity& e) {
     return true;
 }
 
-// 0x51fff0: give up the throw back: a grenade more than 96 units away (2D) is acquired again when possible; holding
-// it in a safe place, the actor forgets it and returns to exposed; otherwise it reacts (0x51f900 with keepPath).
-bool World::grenadeGiveUp(Entity& e) {
+// 0x51fff0 (eax = skipAcquire): give up the throw back. With skipAcquire 0, a grenade within 96 units (2D, d^2 <= 9216
+// 0x59239c; `jp` at 0x520041 skips the acquire when d^2 > 9216) is acquired again when possible (0x51fb20, then false);
+// holding it in a safe place, the actor forgets it and returns to exposed (true); otherwise it reacts (0x51f900 with
+// keepPath, false). The acquire think's two give-ups (0x520b1e / 0x520b5b) pass skipAcquire 1.
+bool World::grenadeGiveUp(Entity& e, bool skipAcquire) {
     ActorAi& ai = e.ai;
     GrenadeState& g = *ai.grenade->grenade;
-    if (dist2dSq(originOf(ai.grenade->obj), originOf(e.obj)) > 9216.0f && grenadeAcquire(e)) return false;
+    if (!skipAcquire && dist2dSq(originOf(ai.grenade->obj), originOf(e.obj)) <= 9216.0f && grenadeAcquire(e)) return false;
     if (g.holder == &e && safeFromGrenade(e, *ai.grenade, originOf(e.obj))) {
         g.holder = nullptr;
         setActorGrenade(e, nullptr);
@@ -342,8 +344,8 @@ int World::grenadeAcquireThink(Entity& e) {
         return 0;
     }
     const Vec3 o = originOf(e.obj);
-    if (dist2dSq(e.path.goal, o) > 256.0f && grenadeGiveUp(e)) return 1;
-    if (std::fabs(o[2] - e.path.goal[2]) > 32.0f && grenadeGiveUp(e)) return 1;
+    if (dist2dSq(e.path.goal, o) > 256.0f && grenadeGiveUp(e, true)) return 1;
+    if (std::fabs(o[2] - e.path.goal[2]) > 32.0f && grenadeGiveUp(e, true)) return 1;
     if (ai.substate != kAcquire) return 0;
     ai.facing = 1;
     if (ai.grenade->grenade->landingMs <= timeMs_) {
@@ -456,6 +458,23 @@ int World::grenadeStateThink(Entity& e) {
     }
     updateClaimedNode(e);
     return 0;
+}
+
+// 0x520230 (from the flying bounce 0x526198, eax = g_entities[trace entity], ebx = the grenade): a grenade bouncing off an
+// entity whose contents (+0xc0) have a bit of 0x200c000 (a character) loses its predicted landing (+0x154..+0x15c = 0) and
+// predicts it again (0x51f7c0); then every actor (0x4fe2c0 / 0x4fe310) in the grenade state (+0x8c == 3) handling this
+// grenade (+0x20c4) runs the inlined give-up 0x51fff0 with skipAcquire 0.
+void World::grenadeHitCharacter(Entity& ge, Entity* hit) {
+    if (!hit) return;
+    const uint32_t contents = hit->isActor && hit->ai.dyingContents ? hit->ai.dyingContents : entityContents(*hit);
+    if (!(contents & 0x200c000u)) return;
+    ge.grenade->landing = {0, 0, 0};
+    predictGrenadeLanding(ge);
+    for (size_t i = 0; i < entities_.size(); ++i) {
+        Entity& a = *entities_[i];
+        if (!a.isActor || a.obj->removed || a.ai.grenade != &ge || a.ai.stack[size_t(a.ai.depth)] != AiGrenade) continue;
+        grenadeGiveUp(a, false);
+    }
 }
 
 } // namespace iw2::game
