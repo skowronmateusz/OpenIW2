@@ -30,6 +30,7 @@
 #include "game/fx.h"
 #include "game/fog.h"
 #include "game/marks.h"
+#include "game/outdoor.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
 #include "game/turrets.h"
@@ -358,6 +359,7 @@ struct Scene {
     std::vector<WaterMat> waters;
     std::unique_ptr<game::CollisionWorld> collision;
     game::MarkSystem marks;
+    game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
@@ -757,8 +759,58 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         b.firstIndex = uint32_t(verts.size() / 4 * 6);
         for (const auto* s : list) {
             if (verts.size() / 4 >= kMax) break;
+            if (s->cylinder) {
+                // 1.3 DLL 0x100401f0: d = normalize(A − B); p1 = (d.z, −d.x, d.y) minus its d part, normalised; p2 = p1 × d
+                // (0x10059bd0). Ring k (k = 0..n−1, (cos, sin) turned by 2π/n each step from (1, 0)): A + (p1·sin + p2·cos)·rA with
+                // texcoord (t, 1) and B + (p1·sin + p2·cos)·rB with (t, 0), t += 1/n; a closing copy of pair 0 with t = 1;
+                // triangles (b, b+1, b+3), (b+3, b+2, b) per step (drawn here as the quad b, b+1, b+3, b+2). Colour = the bytes.
+                const Vec3 A{s->beamA[0], s->beamA[1], s->beamA[2]}, B{s->beamB[0], s->beamB[1], s->beamB[2]};
+                Vec3 d = A + B * -1.0f;
+                const float dl = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                if (dl != 0.0f) d = d * (1.0f / dl);
+                Vec3 p1{d.z, -d.x, d.y};
+                const float pd = -(d.x * p1.x + d.z * p1.z + p1.y * d.y);
+                p1 = p1 + d * pd;
+                const float pl = std::sqrt(p1.x * p1.x + p1.y * p1.y + p1.z * p1.z);
+                if (pl != 0.0f) p1 = p1 * (1.0f / pl);
+                const Vec3 p2{p1.y * d.z - p1.z * d.y, p1.z * d.x - d.z * p1.x, d.y * p1.x - p1.y * d.x};
+                const int n = std::max(1, s->segments);
+                const float stepT = 1.0f / float(n), ang = stepT * 6.2831855f;
+                const float C = std::cos(ang), S = std::sin(ang);
+                std::vector<std::pair<Vec3, Vec3>> ring; // (A side, B side)
+                std::vector<float> ts;
+                float co = 1.0f, si = 0.0f, t = 0.0f;
+                for (int k = 0; k < n; ++k) {
+                    ring.push_back({A + p1 * (si * s->widthA) + p2 * (co * s->widthA), B + p1 * (si * s->widthB) + p2 * (co * s->widthB)});
+                    ts.push_back(t);
+                    t += stepT;
+                    const float ns = si * C + co * S, nc = co * C - si * S;
+                    si = ns, co = nc;
+                }
+                ring.push_back(ring[0]);
+                ts.push_back(1.0f);
+                for (int k = 0; k < n && verts.size() / 4 < kMax; ++k) {
+                    const Vec3 q[4] = {ring[size_t(k)].first, ring[size_t(k)].second, ring[size_t(k) + 1].second, ring[size_t(k) + 1].first};
+                    const float quv[4][2] = {{ts[size_t(k)], 1}, {ts[size_t(k)], 0}, {ts[size_t(k) + 1], 0}, {ts[size_t(k) + 1], 1}};
+                    for (int v = 0; v < 4; ++v) {
+                        GpuVertex g{};
+                        g.pos[0] = q[v].x; g.pos[1] = q[v].y; g.pos[2] = q[v].z;
+                        g.normal[2] = 1;
+                        for (int ch = 0; ch < 4; ++ch) g.color[ch] = uint8_t(std::clamp(s->rgba[ch], 0.0f, 1.0f) * 255.0f);
+                        g.uv[0] = quv[v][0];
+                        g.uv[1] = quv[v][1];
+                        verts.push_back(g);
+                    }
+                }
+                continue;
+            }
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
-            const Vec3 r = right * s->size, u = upv * s->size;
+            // 1.3 DLL 0x1003fb00: with L / U the view's left / up axes (view +0x18 / +0x24) and angle a: R = w(cos a · L − sin a · U),
+            // V = h(cos a · U + sin a · L); corners C + R + V (u0, v0), C − R + V (u1, v0), C − R − V (u1, v1), C + R − V (u0, v1).
+            // Here right = −L, so r = −R = w(cos a · right + sin a · up), u = V = h(cos a · up − sin a · right).
+            const float hw = s->size, hh = s->size2 >= 0 ? s->size2 : s->size;
+            const float ra = s->rotation * 0.017453292f, rc = std::cos(ra), rs = std::sin(ra);
+            const Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
             Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
             float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
@@ -844,10 +896,15 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
     for (const auto& c : clouds) byShader[c.shader].push_back(&c);
     std::vector<GpuVertex> verts;
     std::vector<Batch> batches;
-    size_t drawn = 0;
+    size_t drawn = 0, coveredFlakes = 0;
     for (const auto& [shader, list] : byShader) {
         const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
         if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        bool outdoorTest = false; // technique set particle_cloud_outdoor -> particle_cloud_outdoor.hlsl (OUTDOOR 1)
+        if (const auto md = vfs.read("materials/" + shader)) {
+            try { outdoorTest = assets::parseMaterial(*md).techniqueSet == "particle_cloud_outdoor"; } catch (...) {}
+        }
+        const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
         b.texture = mi.texture;
@@ -888,6 +945,9 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
             }
             for (const auto& pt : points) {
                 const Vec3 ctr = A + ax0 * pt[0] + ax1 * pt[1] + ax2 * pt[2];
+                // The outdoor map coordinate comes from the point alone (all four vertices share it), so a covered flake has
+                // alpha 0 over its whole quad: it is left out.
+                if (useOutdoor && scene.outdoor.covered({ctr.x, ctr.y, ctr.z})) { ++coveredFlakes; continue; }
                 for (int k = 0; k < 4; ++k) {
                     GpuVertex g{};
                     const Vec3 w = ctr + off[k];
@@ -903,6 +963,7 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         b.indexCount = uint32_t(verts.size() / 4 * 6) - b.firstIndex;
         if (b.indexCount) batches.push_back(b);
     }
+    if (std::getenv("IW2_FX_DEBUG")) std::cerr << "fx clouds " << drawn << " flakes drawn " << verts.size() / 4 << " covered " << coveredFlakes << "\n";
     if (verts.empty()) return nullptr;
     up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
     it->second.batches = batches;
@@ -1138,6 +1199,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     const assets::D3dBsp bsp(*data);
     scene.collision = std::make_unique<game::CollisionWorld>(bsp);
     scene.marks.setWorld(bsp, vfs);
+    scene.outdoor.setBounds(bsp, vfs);
     Uploader up(dev);
 
     // White fallback texture.
@@ -2700,7 +2762,11 @@ int main(int argc, char** argv) {
             auto [it, inserted] = efxCache.try_emplace(path);
             if (inserted) {
                 try {
-                    if (const auto d = vfs.read(path))
+                    if (path.rfind("file:", 0) == 0) { // IW2_FX_TEST=file:<local path>: a test effect from disk (debug only)
+                        std::ifstream in(path.substr(5), std::ios::binary);
+                        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                        if (!text.empty()) it->second = std::make_shared<assets::EfxEffect>(assets::parseEfx(text));
+                    } else if (const auto d = vfs.read(path))
                         it->second = std::make_shared<assets::EfxEffect>(
                             assets::parseEfx(std::string_view(reinterpret_cast<const char*>(d->data()), d->size())));
                 } catch (const std::exception& e) {
@@ -2828,6 +2894,24 @@ int main(int argc, char** argv) {
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
                 items.push_back(it);
+            }
+            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
+                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
+                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
+                scene.outdoor.build([&](float x, float y, float top, float bottom) {
+                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
+                    return top + (bottom - top) * tr.fraction;
+                });
+                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
+                    if (FILE* f = std::fopen(dump, "wb")) {
+                        std::fprintf(f, "P5 512 512 255\n");
+                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
+                        std::fclose(f);
+                    }
+                }
+                if (std::getenv("IW2_FX_DEBUG"))
+                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
+                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
             }
             if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
                 DrawItem it;

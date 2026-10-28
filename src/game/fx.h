@@ -28,6 +28,7 @@ struct FxParticle {
     float rnd[8]{};                     // per-channel lerp randoms: rgb, alpha, size, size2, length, rotation, vel, vel2
     float velRnd[3]{}, vel2Rnd[3]{};
     float gravity = 0;
+    float rot0 = 0;                     // Particle start angle (+0x44, drawn from `rotation` by 0x48ce70)
     std::shared_ptr<FxBolt> bolt;       // relative (0x2) particle of a bolted effect: follows the tag
     FVec bolt0{};                       // the tag position at spawn
     float scale[8]{};                   // per-channel scale picked from the scale range
@@ -84,6 +85,10 @@ struct FxSprite {
     float size = 0;
     std::string shader;
     float uv[4]{0, 0, 1, 1}; // atlas frame rectangle u0, v0, u1, v1 (renderer 0x1003fa60)
+    // Particle quad (renderer type 4, 1.3 DLL 0x1003ff20 -> 0x1003fb00): half width `size` (+0x64), half height `size2`
+    // (+0x68; < 0 = size) and the angle in degrees (+0x6c, element +0x44).
+    float size2 = -1;
+    float rotation = 0;
     // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
     // `position` / `size` are unused.
     bool beam = false;
@@ -92,6 +97,10 @@ struct FxSprite {
     bool beamTail = false;
     FVec beamA{}, beamB{}, beamPerp{};
     float widthA = 0, widthB = 0;
+    // Cylinder element (renderer type 9, 1.3 DLL 0x100401f0): a tube of `segments` quads from beamA (radius widthA = size2
+    // result, refEntity +0x68) to beamB (radius widthB = size, +0x64); see iw2view spriteModel for the ring build.
+    bool cylinder = false;
+    int segments = 0;
 };
 
 // A Cloud element as handed to the renderer (draw slot 0x482960 -> 0x480010 with renderer type 6 -> 1.3 DLL 0x10041370):
@@ -173,7 +182,7 @@ public:
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
 
 private:
-    uint32_t seed_ = 0x13579bdf;
+    uint32_t& seed_ = assets::fxGeneratorSeed(); // the exe's single effect generator (0x59b2a8)
     float frand();
     float range(const std::vector<float>& v, float fallback);
     void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);
@@ -195,6 +204,12 @@ private:
     };
     std::shared_ptr<FxBolt> curBolt_; // the attachment of the effect being played (children inherit it, 0x48dac0)
     std::vector<PendingRun> pending_;
+    struct ImpactRun {
+        std::string path;
+        FVec origin{}, dir{};
+        int64_t startMs = 0;
+    };
+    std::vector<ImpactRun> impactQueue_;
     struct Tracer {
         FVec base{}, dir{};
         float length = 0; // distance base -> impact (+0x44)

@@ -60,6 +60,51 @@ int main() {
         CHECK(std::fabs(ln.points[7][1] * 4.0f - 2.0f) < 1e-5f); // M = max(1, 3 * 4/3) = 4
     }
 
+    // Line with org2fromTrace (0x48c850): B = A + (A + row0 * 16384 - A) * fraction.
+    {
+        auto lineFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Line\n{\n\tspawnFlags org2fromTrace\n\tlife 1000\n\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n"));
+        iw2::game::FxSystem ls;
+        ls.trace = [](const iw2::game::FVec&, const iw2::game::FVec&, float& frac, iw2::game::FVec& n) { frac = 0.25f; n = {0, 0, 1}; return true; };
+        ls.viewValid = true;
+        ls.viewOrigin = {0, 500, 0};
+        ls.play(lineFx, {10, 0, 0}, {1, 0, 0}, 0);
+        const auto sp = ls.sprites(100);
+        CHECK(sp.size() == 1);
+        if (sp.size() == 1) CHECK(sp[0].beamTail && std::fabs(sp[0].beamB[0] - (10.0f + 4096.0f)) < 1e-2f && sp[0].beamA[0] == 10.0f);
+    }
+
+    // Cylinder (0x483450 / DLL 0x100401f0): B = A + length * row0, radii size2 (A) / size (B), segments from the distance.
+    {
+        auto cylFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Cylinder\n{\n\tlife 1000\n\tsize\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 5\n\t}\n"
+            "\tlength\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 100\n\t}\n\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n"));
+        iw2::game::FxSystem cs;
+        cs.viewValid = true;
+        cs.viewOrigin = {0, 0, 0};
+        cs.play(cylFx, {0, 0, 0}, {0, 0, 1}, 0);
+        const auto sp = cs.sprites(100);
+        CHECK(sp.size() == 1);
+        if (sp.size() == 1) {
+            CHECK(sp[0].cylinder && sp[0].widthA == 5.0f && sp[0].widthB == 5.0f);
+            CHECK(std::fabs(sp[0].beamB[2] - 100.0f) < 1e-4f);
+            CHECK(sp[0].segments == 30); // round((1 - 50 / 1024) * 32) = round(30.44)
+        }
+    }
+
+    // Particle angle (0x48ce70 start from `rotation`, 0x481b90 += frame ms * rotationDelta * 0.01) and half height = size2.
+    {
+        auto rotFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Particle\n{\n\tlife 1000\n\trotation 30\n\tnonUniformScale 1\n"
+            "\trotationDelta\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 10\n\t}\n"
+            "\tsize2\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 3\n\t\t]\n\t}\n}\n"));
+        iw2::game::FxSystem rs;
+        rs.play(rotFx, {0, 0, 0}, {1, 0, 0}, 0);
+        const auto sp = rs.sprites(500);
+        CHECK(sp.size() == 1);
+        if (sp.size() == 1) CHECK(std::fabs(sp[0].rotation - 80.0f) < 1e-3f && sp[0].size2 == 3.0f);
+    }
+
     // blocksSight particles become sight blockers: radius² from the size, visibility 1 − alpha byte / 255 with
     // useAlpha (alpha · 255 truncated) and 0 without it (0x481a40, 0x480970).
     const char* smoke =

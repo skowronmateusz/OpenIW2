@@ -200,7 +200,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             if (!(*bolt)(t)) continue;
         }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
-                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud";
+                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud" || e.type == "Cylinder";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -285,18 +285,44 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     if (e.type == "Line") {
         // 0x48c850 (without org2fromTrace 0x8): origin2 ranges drawn z, y, x (+0xe0, +0xd8, +0xd0; `origin2 a b c d e f` =
         // x [a, d], y [b, e], z [c, f]), taken in world axes with cheapOrg2Calc 0x80, else as x·row0 + y·row1 + z·row2 of the
-        // instance axes (0x424a70, after the spawn shape changed them), added to the effect origin. TODO(spec): org2fromTrace
-        // (trace from A along the axis, 0x592270), org2isOffset, traceImpactFx; the relative Line's bolt transform (0x440600).
+        // instance axes (0x424a70, after the spawn shape changed them), added to the effect origin. For relative Lines the spawn
+        // stores B in tag space (0x440600) and the update maps both points back through the bolt (0x4404f0); here both follow
+        // the tag's translation, like relative particles.
         p.line = true;
+        const uint32_t sf = e.spawnFlagBits();
         const auto o2 = e.numbers("origin2");
-        float x = 0, y = 0, z = 0;
-        if (o2.size() >= 6) {
-            z = range({o2[2], o2[5]}, 0);
-            y = range({o2[1], o2[4]}, 0);
-            x = range({o2[0], o2[3]}, 0);
+        auto org2 = [&] {
+            float x = 0, y = 0, z = 0;
+            if (o2.size() >= 6) {
+                z = range({o2[2], o2[5]}, 0);
+                y = range({o2[1], o2[4]}, 0);
+                x = range({o2[0], o2[3]}, 0);
+            }
+            return sf & 0x80 ? FVec{x, y, z} : add(add(mul(ax[0], x), mul(ax[1], y)), mul(ax[2], z));
+        };
+        if (!(sf & 0x8)) {
+            p.lineB = add(origin, org2());
+        } else {
+            // org2fromTrace 0x8: end = A + row0 · 16384 (0x592270), plus the origin2 sample with org2isOffset 0x20; B = A + (end − A)
+            // · fraction of the effect trace (0x486f70, zero box). With traceImpactFx 0x10 one `impactfx` entry at random
+            // ((seed >> 17) · count >> 15, none when the list is empty: entry 0 = null) plays at B along the trace normal (0x485220).
+            FVec end = add(p.origin, mul(ax[0], 16384.0f));
+            if (sf & 0x20) end = add(end, org2());
+            float frac = 1.0f;
+            FVec n{};
+            if (!(trace && trace(p.origin, end, frac, n))) frac = 1.0f;
+            p.lineB = add(p.origin, mul(sub(end, p.origin), frac));
+            if (sf & 0x10) {
+                const auto names = e.list("impactfx");
+                if (!names.empty()) {
+                    seed_ = seed_ * 0x343fd + 0x269ec3;
+                    std::string name = names[std::min(names.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * names.size()) >> 15))];
+                    while (!name.empty() && name[0] == '/') name.erase(0, 1);
+                    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
+                    if (loader) impactQueue_.push_back({name, p.lineB, n, startMs});
+                }
+            }
         }
-        const FVec off = e.spawnFlagBits() & 0x80 ? FVec{x, y, z} : add(add(mul(ax[0], x), mul(ax[1], y)), mul(ax[2], z));
-        p.lineB = add(origin, off);
     }
     // Material and sequence (0x48cd20): the material at random ((seed >> 17)·count >> 15); with a frame
     // count n > 1 the start frame by sequenceStartFrameMode (+0x288; 0 fixed: sequenceFixedFrameValue − 1,
@@ -324,8 +350,11 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
     }
+    if (e.type == "Particle") p.rot0 = range(e.numbers("rotation"), 0); // 0x48ce70 (after the material, 0x48cb00)
     if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
-        p.seqStart = 0, p.seqRate = 0; // TODO(spec): the frame (+0x94) the Line instance carries
+        // +0x94 is never written for a Line: the pool (0x47f0a0) reuses freed slots without clearing, so the frame is the value
+        // a previous element left there, 0 in never-used pool memory (0xa32380, zero-initialised data). Frame 0 here.
+        p.seqStart = 0, p.seqRate = 0;
     }
     if (p.cloud) {
         // 0x48ce70 draws the start angle +0x44 from `rotation` (+0x220); 0x48de90 then draws +0x260 = 0x426250(0, 1) and copies
@@ -488,6 +517,15 @@ std::vector<FxDecal> FxSystem::takeDecals(int64_t nowMs) {
 }
 
 void FxSystem::runPending(int64_t nowMs) {
+    if (!impactQueue_.empty() && loader) { // traceImpactFx of Line spawns (played once their spawn time has come)
+        std::vector<ImpactRun> due;
+        std::erase_if(impactQueue_, [&](const ImpactRun& r) {
+            if (r.startMs > nowMs) return false;
+            due.push_back(r);
+            return true;
+        });
+        for (const ImpactRun& r : due) play(loader(r.path), r.origin, r.dir, r.startMs);
+    }
     if (pending_.empty() || !loader) return;
     std::vector<PendingRun> due;
     std::erase_if(pending_, [&](const PendingRun& p) {
@@ -569,7 +607,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Then axis rows = rotation about +0x24c by the angle (0x423a50 quaternion, 0x423680 matrix), refEntity scale
             // (+0x98) = size, width (+0x88) = size2 result, height (+0x8c) = length with useLength else the size2 result; A (+0x7c)
             // = the position (through the bolt with relative, 0x4404f0). TODO(spec): `wind` (+0xf8) and affectedByWind 0x800000
-            // have no reader in the exe's effect code; the view cull 0x4827e0 (sphere: size + max(width, height)) is not applied.
+            // have no reader in the exe's effect code.
             const FVec before = p.pos;
             stepEmitter(p, nowMs);
             const uint32_t flags = e.flagBits();
@@ -610,7 +648,16 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             c.rgba[3] = flags & 0x80 ? uint8_t(alpha * 255.0f) : 255;
             const auto shaders = e.list("shaders");
             if (!shaders.empty()) c.shader = shaders[std::min(p.shader, shaders.size() - 1)];
-            clouds_.push_back(std::move(c));
+            // Cull slot 0x4827e0 -> 0x486e30: skipped when n·A − d < −r for a view plane (view +0x20, stride 0x10, count +0x80,
+            // at most 5 with disableFarPlaneCulling 0x2000000), r = size + max(width, height) (the larger of +0x88 / +0x8c,
+            // plus +0x98). TODO(spec): the exe's plane set; viewPlanes holds the four side planes (no far plane).
+            bool culled = false;
+            if (viewValid) {
+                const float r = (width - height < 0.0f ? height : width) + size;
+                for (const auto& pl : viewPlanes)
+                    if (pl[0] * c.origin[0] + pl[1] * c.origin[1] + pl[2] * c.origin[2] - pl[3] < -r) culled = true;
+            }
+            if (!culled) clouds_.push_back(std::move(c));
             continue;
         }
         if (p.emitter) {
@@ -652,12 +699,35 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
         }
         if (p.tail) pos = p.pos;
-        if (p.line) pos = p.origin; // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, nothing moves
+        FVec lineShift{};
+        if (e.type == "Cylinder") pos = p.origin; // no motion (0x483450)
+        if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
+            pos = p.origin;
+            FVec now{};
+            if (p.bolt && (*p.bolt)(now)) lineShift = sub(now, p.bolt0); // TODO(spec): the tag rotation (translation only, as particles)
+            pos = add(pos, lineShift);
+        }
         FxSprite s;
         s.position = pos;
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
         s.rgba[3] = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
+        if (e.type == "Particle") {
+            // Particle update 0x480330: size (0x4818b0), then (size ≠ 0) size2 (0x481940: the size2 channel with nonUniformScale,
+            // else = size) and (size2 ≠ 0) rgb, alpha, angle += frame ms · rotationDelta · 0.01 (0x481b90), frame. The per-frame
+            // sum is taken as its continuous limit: rot0 + 0.01 · life ms · ∫rotationDelta du (rand lerp 0x40000, scale).
+            const auto nus = e.numbers("nonuniformscale");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
+            s.size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
+            float rd = 0;
+            if (const auto* g = graph(e, "rotationdelta")) {
+                rd = g->integral(u);
+                if (flags & 0x40000)
+                    if (const auto* rg = graph(e, "rotationdeltarand")) rd += (rg->integral(u) - rd) * p.rnd[5];
+                rd *= p.scale[5];
+            }
+            s.rotation = p.rot0 + 0.01f * life * rd;
+        }
         if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite
             FxLight l;
             l.origin = pos;
@@ -708,8 +778,8 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Line draw 0x482d90 -> 0x480010 renderer type 8 (the Tail quad, 1.3 DLL 0x10041470 / 0x100409c0): A = +0x7c, B = +0x9c,
             // half width = the size channel (+0x88, 0x4818b0), colour bytes from rgb / alpha (0x4819b0 / 0x481a40).
             s.beam = s.beamTail = true;
-            s.beamA = p.origin;
-            s.beamB = p.lineB;
+            s.beamA = add(p.origin, lineShift);
+            s.beamB = add(p.lineB, lineShift);
             s.widthA = s.widthB = s.size;
             if (!viewValid) continue;
             const FVec a = sub(s.beamA, viewOrigin), b = sub(s.beamB, viewOrigin);
@@ -717,6 +787,38 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             const float cl = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
             if (!(cl > 0)) continue;
             s.beamPerp = mul(c, 1.0f / cl);
+        }
+        if (e.type == "Cylinder") {
+            // Spawn 0x48d6c0: position = the spawn point (0x48ce70), +0x48 = the instance axis row 0 (tag space for relative).
+            // Update 0x483450 (no motion): size -> +0x88, size2 -> +0x8c (0x481940: = size without nonUniformScale), length ->
+            // +0x258 (0x4830d0), rgb, alpha; A = position, B = position + length · row0 (both through the bolt). Draw 0x483440:
+            // renderer type 9 (A = +0x3c, B = +0x48, +0x64 = size, +0x68 = size2 result).
+            // DLL 0x100401f0: n = clamp(round((1 − (|(A + B)/2 − view| · lodScale + lodBias) / 1024) · 32), 8, 32) (0x1019bf58,
+            // 0x1019bf20; lodScale / lodBias = r_lodScale (1) / r_lodBias (0) · tan(40°) / tan(fovX / 2), 0x10025b76).
+            // TODO(spec): r_lodScale / r_lodBias other than their defaults; the mode-2 builder 0x100405e0 (dvar 0x101ce710 = 2).
+            FVec shift{};
+            FVec now{};
+            if (p.bolt && (*p.bolt)(now)) shift = sub(now, p.bolt0); // TODO(spec): the tag rotation
+            const auto nus = e.numbers("nonuniformscale");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
+            const float size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
+            const float length = channel(e, "length", "lengthrand", flags & 0x20000, p.rnd[4], u, 0, 1.0f) * p.scale[4];
+            s.cylinder = true;
+            s.beamA = add(p.origin, shift);
+            s.beamB = add(add(p.origin, mul(p.axis[0], length)), shift);
+            s.widthA = size2;
+            s.widthB = s.size;
+            s.position = s.beamA;
+            int n = 8;
+            if (viewValid) {
+                const FVec m = sub(mul(add(s.beamA, s.beamB), 0.5f), viewOrigin);
+                const float dist = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+                const float lodScale = viewScale != 0 ? 1.0f / viewScale : 1.0f, lodBias = 0.0f;
+                const double x = double((1.0f - (dist * lodScale + lodBias) * 0.0009765625f) * 32.0f) + 9.313225746154785e-10;
+                n = int(std::nearbyint(x));
+                n = n < 8 ? 8 : n > 32 ? 32 : n;
+            }
+            s.segments = n;
         }
         if (p.tail) {
             // 0x4830d0 length channel (graph "length", random lerp 0x20000, scale +0x1d4), 0x483160 end point: while the

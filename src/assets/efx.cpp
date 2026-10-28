@@ -80,8 +80,7 @@ float mid(const float r[2]) { return (r[1] - r[0]) * 0.5f + r[0]; } // (max - mi
 // - otherwise (0x47e870): 16 rows at t = 0, 1/15, ... (0x5920a4, t clamped to 1). f = 1, or 1 - t with linear; nonlinear:
 //   g = t > p ? 1 - (t - p) / (1 - p) : 1; clamp: g = t < p ? (p - t) / p : 0; with linear f = (f + g) / 2 else f = g; wave:
 //   f *= cos(t * w) (0x566090). Value = (1 - f) * end + f * start, set to 0 when negative and to 1 when f > 1; random (0x2)
-//   multiplies it by a draw of the game's generator (seed 0x59b2a8 at load time; TODO(spec): that seed state, here a fixed
-//   start).
+//   multiplies it by a draw of the shared effect generator (0x59b2a8, fxGeneratorSeed).
 EfxGraph legacyGraph(const LegacyChannel& r, int dims, bool alpha, float meanLife) {
     float M = 1.0f;
     if (!alpha) {
@@ -110,7 +109,7 @@ EfxGraph legacyGraph(const LegacyChannel& r, int dims, bool alpha, float meanLif
     } else if (!(f & 1) && (f & 0xc) == 4) {
         row(0, s), row(p, s), row(1, e);
     } else {
-        static uint32_t seed = 0x13579bdf; // TODO(spec): the game's generator state at load time
+        uint32_t& seed = fxGeneratorSeed(); // the shared generator; its state at load depends on all earlier draws
         float t = 0;
         for (int i = 0; i < 16; ++i) {
             if (!(t <= 1.0f)) t = 1.0f;
@@ -141,6 +140,11 @@ EfxGraph legacyGraph(const LegacyChannel& r, int dims, bool alpha, float meanLif
 }
 
 } // namespace
+
+uint32_t& fxGeneratorSeed() {
+    static uint32_t seed = 0x89abcdef;
+    return seed;
+}
 
 uint32_t EfxElement::flagBits() const {
     if (flagBitsCache_ < 0) flagBitsCache_ = bitsOf(list("flags"), false);
@@ -318,7 +322,8 @@ EfxEffect parseEfx(std::string_view text) {
             el.keys[key] = std::vector<std::string>(l.begin() + 1, l.end());
         }
         // 0x487910: legacy records become graphs once the element is complete (mean life from `life`, element +0x58/+0x5c).
-        // TODO(spec): rgbRand (index 1) is converted with one component there; left as parsed here.
+        // rgbRand (index 1) gets one component there, which the rgb updater (0x47f4a0, fixed 16-byte rows) reads out of bounds:
+        // undefined in the original, no shipped file has it; left as parsed here.
         if (!legacy.empty()) {
             const auto life = el.numbers("life");
             float lr[2] = {life.empty() ? 0.0f : life[0], life.size() > 1 ? life[1] : (life.empty() ? 0.0f : life[0])};
