@@ -169,7 +169,9 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   +0x00c save id, +0x020 map, +0x120 `openiw2`, +0x220 `ui_campaign`, +0x320 image, +0x360 description, +0x460 name, +0x4a0 health percent
   as above, +0x4a4 `g_gameskill`, +0x4a8 type == 0, +0x4ac local time, +0x4d0 / +0x4d4 sizes. The fingerprint dwords +0x14..+0x1c are 0.
 - Body: zlib deflate of an openiw2 stream that starts with the magic `OIW2SAVE` and a format version (src/game/savestate.h); an original
-  body does not start with it after inflating, and the loader refuses such a file with "not an openiw2 save".
+  body does not start with it after inflating, and the loader refuses such a file with "not an openiw2 save". Size limits: the
+  compressed size keeps G_LoadGame's 0x280000; the uncompressed openiw2 stream is allowed up to 64 MB (our stream is more verbose than
+  the original's raw images, e.g. toujane after 5 s is about 3 MB raw / 0.2 MB compressed).
 - Contents (src/game/savestate.cpp): the script VM (objects, arrays, threads with frames, locals, stacks, references, wait/endon state,
   the woken-thread queue, time and id counters; functions by file + name) and the World state listed there. Per-entity runtime that is
   rebuilt rather than restored (animation playback, AI state machine, paths, vehicles, turrets, missiles, perception) is listed as

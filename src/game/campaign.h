@@ -23,6 +23,7 @@ struct LevelChange {
     std::string map;
     bool persistent = false;
     int64_t atMs = 0;                      // world time when the change happens (exitTime)
+    bool loadContinue = false;             // loadgame_continue (0x4d9f90 -> 0x447190): load sv_lastSaveGame, restart if there is none
 };
 
 // Client commands the front end shows (obj_update "<text>", obj_complete "<text>", menu_show_notify "2").

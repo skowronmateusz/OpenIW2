@@ -90,3 +90,13 @@ described in the code that reads them.
 
 - `IW2_ACTOR_FOLLOW=0` (iw2game): disables the bump link (0x501c8b: a bumped actor follows the bumper, +0x2148). On by default; it cannot fire while no trace hits an actor body (contents 0x4000 is not in the actor clip mask 0x2820011).
 - Env `IW2_FOLLOW_SCENE=<s>` (iw2game): at sim time `<s>` takes a path-walking actor A and a second actor B pinned 20 units ahead, forces A.followed = B one second later (the link cannot fire naturally) and prints `[follow t]` lines: positions, speed, followed, bumped entity, link/release counters.
+
+## Savegames (docs/spec/savegame.md section 5)
+- `iw2game <main> <map> <secs> --save-dir DIR`: writes the level's saves (script `savegame` autosaves, `--save-at`) to `DIR/<name>.svg`
+  (autosaves land in `DIR/autosave/`). Without it the saves are built and only reported.
+- `iw2game ... --save-at T name`: queues a manual save (type 0, flags 6, the console-save path) at sim time T seconds.
+- `iw2game <main> <map> <secs> --load FILE`: starts from that save (map must match) instead of running the level script.
+- Env `IW2_MAIN=<game main dir>` (test_savestate): also runs the World round trip on a real map (save after 5 s, load into a
+  fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
+  `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
+- Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads).

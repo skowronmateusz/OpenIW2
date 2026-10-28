@@ -274,6 +274,26 @@ public:
 
     // Spawns map entities and the player, then runs maps/<map>.gsc::main().
     void start();
+    // start() = prepareStart() (cvars, map entities, vehicle nodes, turrets, path disconnects) + runLevelMain() (the level script's
+    // main() and the first frame). A savegame load runs prepareStart() and then loadState() instead of runLevelMain().
+    void prepareStart();
+    void runLevelMain();
+    // Savegame state (src/game/savestate.cpp, docs/spec/savegame.md section 5). saveState only between frames.
+    void saveState(script::StateWriter& w);
+    void loadState(script::StateReader& r);
+    // Debug / test: a text digest of the saved state (entities, threads, level fields, time), equal after save -> load.
+    std::string stateDigest() const;
+    // Save requests (0x44a140 queue, 0x44a230 processing; docs/spec/savegame.md section 3). queueSave returns the save id, or
+    // -1 (g_reloading), -2 (second autosave this frame), -3 (3 pending). processSaves runs at the end of each frame: flags & 6
+    // produce a file for the front end (takeSaveFiles), flags == 1 (savegamenocommit) keep the file until commitsave.
+    struct SaveFile { std::string name; std::vector<uint8_t> bytes; bool manual = false; };
+    int queueSave(const std::string& name, const std::string& description, const std::string& image, int type, int flags);
+    std::vector<SaveFile> takeSaveFiles() { return std::exchange(saveFiles_, {}); }
+    void markSaveLoaded() { saveRecentlyLoaded_ = true; } // issaverecentlyloaded (byte 0x1b15ac0)
+    void clearSaveRecentlyLoaded() { saveRecentlyLoaded_ = false; }
+    void setSaveFailed(bool f) { saveFailed_ = f; }       // issavesuccessful
+    std::vector<script::Value> stateRoots() const; // objects the world holds besides the VM's own roots
+    const std::vector<uint8_t>& bspData() const { return bspData_; }
     // Advances game time by one server frame (50 ms).
     void frame(bool advanceTime = true);
 
@@ -1077,6 +1097,18 @@ private:
     std::array<BadPlace, 32> badPlaces_{};
     std::vector<Entity*> grenades_;
     std::vector<Entity*> rockets_;
+    // save queue (src/game/savestate.cpp)
+    struct PendingSave { std::string name, description, image; int type = 0, flags = 0, saveId = 0; };
+    std::vector<PendingSave> pendingSaves_;  // 0x825538, at most 3
+    bool autosaveThisFrame_ = false;         // 0x8259e0
+    int saveCounter_ = 0;                    // 0x1b15ac4
+    bool saveRecentlyLoaded_ = false;        // 0x1b15ac0
+    bool saveFailed_ = false;
+    bool commitRequested_ = false;           // 0x1b15ac1
+    std::optional<std::pair<int, SaveFile>> uncommitted_; // savegamenocommit result waiting for commitsave
+    std::vector<SaveFile> saveFiles_;
+    void registerSaveBuiltins();
+    void processSaves();
     std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
 
