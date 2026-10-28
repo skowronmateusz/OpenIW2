@@ -5,6 +5,7 @@
 #include "fs/vfs.h"
 #include "game/pmove.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -233,6 +234,75 @@ int main() {
         CHECK(leanInputAllowed(1, false, false, false));  // linked: airborne is fine
         CHECK(!leanInputAllowed(4, false, true, false));  // pm_type >= 4
         CHECK(!leanInputAllowed(0, false, true, true));   // eFlags & 0x20300
+    }
+    {
+        // noclip (pm_type 2, 0x508a90) and ufo (3, 0x508c50) on an empty world: the first step from rest accelerates with accel 9 towards
+        // g_speed x 3 / x 6 (accelspeed = max(wishspeed, stopspeed) * 0.05 * 9, capped at the missing speed) and moves the origin by
+        // velocity * frametime; no gravity, no ground.
+        CollisionWorld empty;
+        MoveParams mp;
+        PlayerInput in;
+        in.forward = 1.0f;
+        PlayerState a;
+        a.pmType = 2;
+        playerMove(empty, a, in, 0.05f, mp);
+        CHECK(near(a.velocity[0], 570.0f * 0.05f * 9.0f, 1e-2f) && near(a.velocity[1], 0.0f, 1e-3f) && near(a.velocity[2], 0.0f, 1e-3f));
+        CHECK(near(a.origin[0], a.velocity[0] * 0.05f, 1e-3f));
+        CHECK(a.viewHeightTarget == 60);
+        PlayerState b;
+        b.pmType = 3;
+        playerMove(empty, b, in, 0.05f, mp);
+        CHECK(near(b.velocity[0], 1140.0f * 0.05f * 9.0f, 1e-2f));
+        // Looking straight down: noclip follows the view (z falls), ufo moves along the flat forward (no vertical speed).
+        PlayerInput down = in;
+        down.pitch = 90.0f;
+        PlayerState c, d;
+        c.pmType = 2;
+        d.pmType = 3;
+        playerMove(empty, c, down, 0.05f, mp);
+        playerMove(empty, d, down, 0.05f, mp);
+        CHECK(c.velocity[2] < -200.0f && near(c.velocity[0], 0.0f, 1e-2f));
+        CHECK(near(d.velocity[2], 0.0f, 1e-3f) && d.velocity[0] > 400.0f);
+        // Release the controls: ufo stops dead, noclip only rubs (friction 5.5 x 1.5, control = max(speed, stopspeed)).
+        PlayerInput none;
+        const float v0 = a.velocity[0];
+        PlayerState a2 = a;
+        playerMove(empty, a, none, 0.05f, mp);
+        playerMove(empty, b, none, 0.05f, mp);
+        CHECK(near(b.velocity[0], 0.0f, 1e-6f));
+        CHECK(near(a.velocity[0], v0 - std::max(v0, 100.0f) * 5.5f * 1.5f * 0.05f, 1e-2f));
+        // A slow drift (< 1 unit/s) stops.
+        a2.velocity = {0.5f, 0, 0};
+        playerMove(empty, a2, none, 0.05f, mp);
+        CHECK(a2.velocity[0] == 0.0f);
+        // Up / down are the lean buttons 0x80 / 0x40 (+127 / -127): ufo rises with the right lean and falls with the left one; a
+        // gravity-free vertical command is scaled to g_speed x 6 as well.
+        PlayerInput upIn;
+        upIn.leanRight = true;
+        PlayerState e;
+        e.pmType = 3;
+        playerMove(empty, e, upIn, 0.05f, mp);
+        CHECK(near(e.velocity[2], 1140.0f * 0.05f * 9.0f, 1e-2f) && near(e.velocity[0], 0.0f, 1e-3f));
+        PlayerInput dnIn;
+        dnIn.leanLeft = true;
+        PlayerState g;
+        g.pmType = 3;
+        playerMove(empty, g, dnIn, 0.05f, mp);
+        CHECK(near(g.velocity[2], -1140.0f * 0.05f * 9.0f, 1e-2f));
+        // Sideways: the right vector at yaw 0 is -y.
+        PlayerInput side;
+        side.right = 1.0f;
+        PlayerState h;
+        h.pmType = 2;
+        playerMove(empty, h, side, 0.05f, mp);
+        CHECK(h.velocity[1] < -200.0f && near(h.velocity[0], 0.0f, 1e-2f));
+        // pm_time runs down and clears the landing flags as on the walking path.
+        PlayerState k;
+        k.pmType = 2;
+        k.pmTimeMs = 40;
+        k.landTimer = true;
+        playerMove(empty, k, none, 0.05f, mp);
+        CHECK(k.pmTimeMs == 0 && !k.landTimer);
     }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;

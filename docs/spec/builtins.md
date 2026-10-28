@@ -381,7 +381,7 @@ rows start at 0x5a5c20; the method tables are read the same way.
 | `deactivatereverb` | 0x539560 | 0 | yes |
 | `setchannelvolumes` | 0x5396b0 | 0 |  |
 | `deactivatechannelvolumes` | 0x539850 | 0 |  |
-| `islookingat` | 0x5399b0 | 0 |  |
+| `islookingat` | 0x5399b0 | 0 | yes |
 | `isthrowinggrenade` | 0x539b60 | 0 | yes |
 | `isfiring` | 0x539aa0 | 0 | yes |
 | `ismeleeing` | 0x539c10 | 0 | yes |

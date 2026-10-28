@@ -646,10 +646,13 @@ std::vector<World::CompassMarker> World::compassVehicles() const {
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
 // 0x100000. The two distances are the dvars g_friendlyNameDist (0x1c1489c, registered 0x4d8a30: default 15000, range 0..15000) and
 // g_friendlyfireDist (0x1c13f30, 0x4d8a50: default 128, range 0..15000), read live (dvar +8) at 0x5352e3 / 0x53531d / 0x535455.
-// TODO(spec): ps+0x8678 as an entity reference (only its display strings are kept), the dvar out-of-range handling, non-actor hits
-// (turrets, +0x1b4), the trace surface-flag 0x10 exception.
+// ps+0x8678 is cleared at the start (0x53508c) and kept as crosshairTarget_ (entity number, -1 = none), read by the islookingat
+// builtin (0x5399b0). Writers ported: trigger_lookat (0x535210), vehicle (0x535455), actor enemy / friendly-name (0x5353b9 / 0x535317).
+// TODO(spec): the writer at 0x53554f, the dvar out-of-range handling, other non-actor hits (turrets, +0x1b4), the trace surface-flag
+// 0x10 exception.
 void World::updateCrosshairTarget() {
     crosshairFlags_ = 0;
+    crosshairTarget_ = -1; // 0x53508c
     crosshairName_.clear();
     crosshairWeaponLine_.clear();
     if (!player_ || !isAlive(*player_)) return;
@@ -664,6 +667,7 @@ void World::updateCrosshairTarget() {
     // mask 0x280e801 (without 0x20000000) for the actor logic below. TODO(spec): the notify is deferred to the flush
     // here immediate; ps+0x8678 (= the hit entity) is not kept.
     if (Entity* lk = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr; lk && lk->classname == "trigger_lookat") {
+        crosshairTarget_ = lk->number; // 0x535210: ps+0x8678 = the trigger_lookat hit
         if (!lk->obj->removed) {
             ++stats.lookatTouches;
             vm_.notify(lk->obj, "trigger", {Value(player_->obj)});
@@ -684,6 +688,7 @@ void World::updateCrosshairTarget() {
             const float dx = o[0] - eye[0], dy = o[1] - eye[1], dz = o[2] - eye[2];
             const float d2 = dx * dx + dy * dy + dz * dz;
             const float vNameDist = cvarFloat("g_friendlyNameDist", 15000.0f);
+            if (d2 < vNameDist * vNameDist && crosshairTarget_ < 0) crosshairTarget_ = hit->number; // 0x535455
             if (d2 < vNameDist * vNameDist && !hit->vehicle->lookAtText.empty()) {
                 crosshairName_ = hit->vehicle->lookAtText;
                 crosshairWeaponLine_ = hit->vehicle->lookAtText2;
@@ -729,6 +734,7 @@ void World::updateCrosshairTarget() {
     // 0x534aa0: configstring 0xb = "\x15" + the actor's name (+0xd0, script `.name`), 0xc = the display name of its weapon
     // (+0xd2, `.weapon`; weapon def +8). Nothing for an unnamed actor.
     if (std::getenv("IW2_CROSSHAIR_DEBUG")) std::fprintf(stderr, "crosshair hit %s target %d name '%s'\n", hit->classname.c_str(), int(target), hit->obj->get("name").isString() ? hit->obj->get("name").asString().c_str() : "?");
+    if (target && crosshairTarget_ < 0) crosshairTarget_ = hit->number;
     if (target) {
         const Value n = hit->obj->get("name");
         if (n.isString() && !n.asString().empty()) {
