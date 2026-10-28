@@ -398,12 +398,14 @@ void Mixer::gains(const Voice& v, float& left, float& right) const {
 
 // snd_fade <volume> <ms> (0x4431a0): the rate is (target − current) / ms; ms 0 sets the volume at once.
 void Mixer::fade(float target, int ms) {
+    std::lock_guard lock(mutex_);
     fadeTarget = target;
     if (ms > 0) fadeRate = (target - fadeVolume) / float(ms);
     else fadeVolume = target, fadeRate = 0;
 }
 
-// TODO(spec): the per-frame step of the volume (0x793a28 by 0x793a30) is not read; linear in real ms is inferred.
+// Per-frame step (0x4437a0 takes the elapsed ms as an int; 0x443a21: vol += dt * rate, then clamped at the target, rate cleared): the
+// same dt as every other fade (ambient slots, reverb), so the step is linear in elapsed milliseconds.
 void Mixer::fadeStep(float ms) {
     if (fadeRate == 0) return;
     fadeVolume += fadeRate * ms;
@@ -443,6 +445,11 @@ void Mixer::mix(float* out, int frames) {
     if (reverbMs_ >= 1.0) {
         reverb.tick(int(reverbMs_));
         reverbMs_ -= std::floor(reverbMs_);
+    }
+    fadeMs_ += double(frames) * 1000.0 / double(rate_);
+    if (fadeMs_ >= 1.0) {
+        fadeStep(float(int(fadeMs_)));
+        fadeMs_ -= std::floor(fadeMs_);
     }
     // Duck state (0x443bb0): rises while any master voice plays, falls otherwise, over snd_slaveFadeTime; 0 ms switches at once.
     {

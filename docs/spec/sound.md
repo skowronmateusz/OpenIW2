@@ -141,3 +141,11 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   alias `noWetLevel`/`fullDryLevel`, iw2view `reverb`/`deactivatereverb` client commands. TODO(spec): the reverb DSP itself is inside mss32.dll
   (EAX/software presets), so the mixer does not render a reverb tail; `fulldrylevel` (flag 0x8) has no consumer found; no shipped script calls
   `setreverb`, so nothing is audible either way.
+
+## Round 6: audit (exe evidence)
+
+- `snd_fade` per-frame step: 0x4437a0 receives the elapsed ms as an int (`fildl 4(%esp)`) and the master fade does `vol += dt * rate` (0x443a21), clamps
+  at the target (0x443a47..0x443a76, rate cleared); same dt as the ambient slots and reverb ramps. Implemented: `Mixer::mix` calls `fadeStep`
+  (it was never stepped before, so `soundfade` / the mission-end `snd_fade 0` never changed the volume).
+- Still TODO(spec): looping-alias lifetime (stamp refresh 0x441f80 / sweep 0x443550), `speakermap`, `lfe percentage`,
+  per-channel voice priority and the sample slot limits (0x4423d0), the Miles reverb DSP.
