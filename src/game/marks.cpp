@@ -104,7 +104,11 @@ void MarkSystem::setWorld(const assets::D3dBsp& bsp, const fs::Vfs& vfs) {
     }
     const auto& verts = bsp.vertices();
     const auto& idx = bsp.indices();
-    // World surfaces only: model 0's soups (lump 35). TODO(spec): marks on brush models (model-space, can move or hide).
+    // World surfaces only: model 0's soups (lump 35). As the original: MarkFragments (1.3 renderer 0x10015df0) gathers surfaces
+    // only through 0x10015990, which recurses the world node tree (world + 0xc) and at each leaf walks the cell's surface list
+    // (0x100157f0: cell +0x28 count / +0x2c indices into the world's surface bounds at +0xf0 and references at +0x14, material
+    // flag 4 skipped); there is no entity or brush-submodel path, so script_brushmodels never receive impact marks.
+    // TODO(spec): whether a cell list can ever reference a submodel soup (assumed not: submodels are drawn per entity).
     const auto [worldFirst, worldCount] = bsp.modelSoups(0);
     for (size_t s = worldFirst; s < worldFirst + worldCount; ++s) {
         const auto& soup = bsp.soups()[s];

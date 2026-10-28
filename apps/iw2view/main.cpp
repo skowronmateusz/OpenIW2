@@ -288,7 +288,7 @@ struct GpuVertex {
 };
 static_assert(sizeof(GpuVertex) == 56);
 
-enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water };
+enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -415,7 +415,19 @@ Pass classify(const std::string& techset) {
     // du/dv map that only offsets a lookup of the resolved scene (sampler.resolvedPostSun); the output is the scene sample times
     // the vertex colour, alpha = vertex alpha · map alpha. Its texels are never shown as colours (drawn as a sprite they gave the
     // green / red halo around fires, gfx_distortion_heat). TODO(spec): the scene-copy refraction pass; skipped until then.
+    // What the shipped files fix: distortion.techset maps the emissive variants to distortion.tech (stateMap nofog: the
+    // material's blend) and the feathered ones to distortion_floatz.tech; the vertex shader offsets the projected position by
+    // du·T' + dv·B' with T' = distortionScale.x · (1,-1,1,1) · clipSpaceLookupScale · clip(tangent), B' likewise with
+    // -distortionScale.y and the binormal (non-float-z: map in [0,1], start shifted by -(T' + B'), T' and B' doubled).
+    // Still missing: (a) the frame point where resolvedPostSun is copied; (b) the
+    // values of code constants clipSpaceLookupScale / clipSpaceLookupOffset (ids 0xae / 0xaf, entries 20 / 21 of the name
+    // table at 0x1018f040; the writer was not found); (c) the tangent / binormal the effects code gives sprite vertices
+    // (code.tangent / code.binormal); (d) plumbing of the material constant distortionScale (Material::constants); (e) which technique type the
+    // effect drawer selects (emissive or emissive feathered); (f) the floatZ target for distortion_floatz.
     if (techset == "distortion") return Pass::Skip;
+    // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
+    // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
+    if (techset == "objective") return Pass::Objective;
     if (techset.find("_add") != std::string::npos) return Pass::Additive;
     // effect_multiply -> vertcol_mul.tech -> mul.hlsl: multiplied into the framebuffer (DST_COLOR, ZERO), unlit.
     if (techset == "effect_multiply") return Pass::Multiply;
@@ -1308,8 +1320,11 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         const auto& s = bsp.soups()[si];
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
-        // TODO(spec): sky and water soups of brush models (none found on the shipped script_brushmodels' draw path here).
-        if (soupOwner[si] > 0 && (mi.pass == Pass::Sky || mi.pass == Pass::Water)) continue;
+        // Brush-model water soups go into the entity's batches (drawn by the water pass at its transform); a scan of every
+        // brush submodel of the 27 shipped SP maps found water only in duhoc_assault *26 / duhoc_defend *128 (water_section,
+        // material water_duhoc) and no sky soup, so sky soups of brush models are still dropped. TODO(spec): the brush-model
+        // sky path of the renderer, should a map use one.
+        if (soupOwner[si] > 0 && mi.pass == Pass::Sky) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
         // Specular only on lightmapped soups with both maps present (lmap_s); IW2_NO_SPEC disables it.
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
@@ -1643,6 +1658,8 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
+    SDL_GPUGraphicsPipeline* objectivePipelines[3] = {}; // objective.sm: [polygon offset level]; cull back
+    float gameTimeSeconds = 0.0f; // provisional gameTime.z of the objective technique (see the objective pass in draw)
     SDL_GPUGraphicsPipeline* dlightPipelines[3][3] = {}; // l_point: [polygon offset][cull]
     struct DLight { float pos[3]; float radius; float rgb[3]; };
     std::vector<DLight> dlights; // lights of this frame (already limited to r_dlightLimit)
@@ -1870,6 +1887,51 @@ struct Renderer {
             ct.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B; // alpha stays 0 for sky (scene alpha = non-sky mask for glow_setup)
             skyPipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
             if (!skyPipeline) sdlFail("sky pipeline");
+            // objective.sm: blendFunc Add, SrcAlpha, One; separateAlphaBlendFunc Disable; cullFace Back; depthTest LessEqual;
+            // depthWrite Disable; colorWrite Enable, Disable (rgb only); fog Disable; polygonOffset passthrough (the material's).
+            {
+                SDL_GPUShaderCreateInfo ofi = fs;
+                ofi.entrypoint = "fs_objective";
+                ofi.num_samplers = 1;
+                SDL_GPUShader* ofs = SDL_CreateGPUShader(dev, &ofi);
+                if (!ofs) sdlFail("objective shader");
+                SDL_GPUColorTargetDescription oct{};
+                oct.format = colorFormat;
+                oct.blend_state.enable_blend = true;
+                oct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+                oct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+                oct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+                oct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                oct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+                oct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                oct.blend_state.enable_color_write_mask = true;
+                oct.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B;
+                SDL_GPUGraphicsPipelineCreateInfo opi{};
+                opi.vertex_shader = vsh;
+                opi.fragment_shader = ofs;
+                opi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                opi.vertex_input_state.num_vertex_buffers = 1;
+                opi.vertex_input_state.vertex_attributes = attrs;
+                opi.vertex_input_state.num_vertex_attributes = 6;
+                opi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                opi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+                opi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+                opi.rasterizer_state.front_face = kFrontFace;
+                opi.depth_stencil_state.enable_depth_test = true;
+                opi.depth_stencil_state.enable_depth_write = false;
+                opi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+                opi.target_info.color_target_descriptions = &oct;
+                opi.target_info.num_color_targets = 1;
+                opi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                opi.target_info.has_depth_stencil_target = true;
+                for (int lvl = 0; lvl <= 2; ++lvl) {
+                    opi.rasterizer_state.enable_depth_bias = lvl > 0;
+                    opi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                    objectivePipelines[lvl] = SDL_CreateGPUGraphicsPipeline(dev, &opi);
+                    if (!objectivePipelines[lvl]) sdlFail("objective pipeline");
+                }
+                SDL_ReleaseGPUShader(dev, ofs);
+            }
             SDL_ReleaseGPUShader(dev, sv);
             SDL_ReleaseGPUShader(dev, sf);
         }
@@ -2247,12 +2309,16 @@ struct Renderer {
             }
             if (p == Pass::Blend) {
             // Water (water_l_sun.tech): after the opaque passes, before the blended ones. Polygon offset not applied (TODO(spec)).
-            for (const Batch& b : scene.batches) {
+            // Also the water soups of visible brush models (duhoc_assault / duhoc_defend water_section) at their entity transform.
+            for (const WorldGroup& wg : worldGroups)
+            for (const Batch& b : *wg.batches) {
                 if (b.pass != Pass::Water) continue;
                 const WaterMat& wm = scene.waters[size_t(b.texture)];
                 if (!wm.cube || !wm.normalMap) continue;
                 SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
-                SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                VU wu = vu;
+                wu.model = wg.model;
+                SDL_PushGPUVertexUniformData(cmd, 0, &wu, sizeof(wu));
                 // cubicEnvMap: sampler state 0x30 (clamp U/V); normalMap: 0x6 = linear min/mag, point mip filter, repeat (0x1003dd..e1b1).
                 SDL_GPUTextureSamplerBinding wsb[2] = {{wm.cube, clampSampler}, {wm.normalMap, waterMapSampler}};
                 SDL_BindGPUFragmentSamplers(pass, 0, wsb, 2);
@@ -2266,6 +2332,7 @@ struct Renderer {
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
             }
+            SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             for (const WorldGroup& wg : worldGroups) {
@@ -2394,6 +2461,56 @@ struct Renderer {
                     SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
                 }
             }
+        }
+        // Objective technique (Pass::Objective, shaders fs_objective) after the other passes. gameTime.z is code constant 0x82
+        // (name table 0x1018f040 entry 23); the cgame stores (cg.time - materialTime) * 0.001-style values per entity only for
+        // vehicles (0x4ac839, refEntity +0x5c, zero otherwise after the memset at 0x4ac7b0), so for these script models it is taken
+        // as the game time in seconds. TODO(spec): the DLL step that fills gameTime.z per draw, and this pass's place in the
+        // sort order (drawn last here).
+        {
+            const Vec3 fwd = cam.forward();
+            const struct { float forward[4]; } ou{{fwd.x, fwd.y, fwd.z, gameTimeSeconds}};
+            auto drawObjective = [&](const Batch& b, const VU& u) {
+                if (b.pass != Pass::Objective) return;
+                SDL_BindGPUGraphicsPipeline(pass, objectivePipelines[std::clamp(b.polygonOffset, 0, 2)]);
+                VU ov = u;
+                ov.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                SDL_PushGPUVertexUniformData(cmd, 0, &ov, sizeof(ov));
+                SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
+                SDL_PushGPUFragmentUniformData(cmd, 0, &ou, sizeof(ou));
+                SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            };
+            for (const WorldGroup& wg : worldGroups) {
+                VU gu = vu;
+                gu.model = wg.model;
+                for (const Batch& b : *wg.batches) drawObjective(b, gu);
+            }
+            for (const DrawItem& it : items) {
+                if (!it.model) continue;
+                bool any = false;
+                for (const Batch& b : it.model->batches) any = any || b.pass == Pass::Objective;
+                if (!any) continue;
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                    SDL_SetGPUViewport(pass, &vpDepth);
+                }
+                SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
+                SDL_GPUBufferBinding mib{it.model->indices, 0};
+                SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                VU mu = vu;
+                mu.model = it.transform;
+                if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                for (const Batch& b : it.model->batches) drawObjective(b, mu);
+                if (it.depthMax < 1.0f) {
+                    const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                    SDL_SetGPUViewport(pass, &vpFull);
+                }
+                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            }
+            SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         }
         if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
         SDL_EndGPURenderPass(pass);
@@ -5613,7 +5730,8 @@ int main(int argc, char** argv) {
                 }
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
                 if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = world->timeMs();
-                if (world->playerLinked()) { // a script link carries the player: shoot from there (--yaw / --pitch kept)
+                // A script link carries the player: shoot from there (--yaw / --pitch kept); IW2_SHOT_FREE_CAM=1 keeps --pos.
+                if (world->playerLinked() && !std::getenv("IW2_SHOT_FREE_CAM")) {
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
                 }
@@ -7030,6 +7148,7 @@ int main(int argc, char** argv) {
                 const uint64_t profB = SDL_GetTicksNS();
                 updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
+                renderer.gameTimeSeconds = world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f;
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
                 profWater += double(profC - profB) * 1e-6;
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;
