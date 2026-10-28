@@ -64,6 +64,33 @@ mid(r) = (max − min) · 0.5 + min:
   or update), org2fromTrace / traceImpactFx, the bolt transform of B. The only Line effect (minefield.efx) names materials
   that do not ship and is not played by any script.
 
+## Cloud elements (type 12)
+
+- Spawn 0x48de90 (vtable 0x57c78c, 0x27c bytes): random unit axis +0x24c (0x482850: up to 4 tries of x, y, z = draw·2 − 1,
+  rejected when |v|² < 0.01 or > 1, else normalised; fallback (1, 0, 0)), common init, randoms (0x48ce70: start angle +0x44
+  from `rotation`, nonUniformScale copied to +0x104, `wind` drawn into +0xf8), +0x260 = draw in [0, 1), +0x25c = useLength.
+- Update 0x482a30: B (+0x9c) = position before the step; Emitter step 0x480bd0; size → +0x88 (0x4818b0); size2 (0x481940:
+  the size2 channel with nonUniformScale, else = size); length (0x4829d0, only with useLength; useRandomLength lerps by
+  +0x260); rgb / alpha bytes; angle += frame ms · rotationDelta · 0.01 (0x481b90). Axis rows (+0x48..+0x68) = rotation of
+  the identity about +0x24c by the angle (0x423a50 quaternion (sin(a·π/360)·axis, cos), 0x423680 matrix). Then +0x98 = size,
+  +0x88 = width (size2 result), +0x8c = height (length with useLength, else width); A (+0x7c) = position (bolt-transformed).
+- Draw 0x482960: renderer type 6 → refEntity (0x480010: +0x14..+0x34 axis, +0x38 scale, +0x3c A, +0x48 B, +0x58 colour
+  bytes, +0x64 width, +0x68 height). DLL 0x1002fb5f builds the world matrix (0x1005a7a0: rows axis·scale, translation A);
+  0x10041370 → 0x10041230 sets particleCloudColor = bytes / 255 and particleCloudMatrix: (width, 0, 0, height) when
+  width == height or A ≈ B (0x1003f260, per component d² ≤ 1e-6); else d = normalize(B − A)·height turned into view space
+  (0x100410e0) and 0x10041180: (width, 0, 0, height) again when d.x < 0.001 and d.y < 0.001 (signed), else (d.y, −d.x, d.x,
+  d.y) with .xy scaled to length width and .zw scaled by the same factor when |d.xy| < width. One indexed draw of 2048
+  triangles / 4096 vertices of the static buffer 0x101d49b4 (0x10011ca0, 20-byte vertices): quad q = i·128 + j·16 + k
+  (i, j < 8, k < 16) at ((r·(1/32767) + i)·0.25 − 1, (r·(1/32767) + j)·0.25 − 1, (r·(1/32767) + k)·0.125 − 1), three CRT
+  rand() per quad (no srand anywhere in the DLL, so the sequence starts from 1), texcoords (0,0) (0,1) (1,0) (1,1), indices
+  0 1 2 2 1 3.
+- Shader (iw_07.iwd, materials/shaders/lib/particle_cloud.hlsl): the point is transformed to view space and offset by
+  (u − 0.5)·m.xy + (v − 0.5)·m.zw; colour = colorMap · particleCloudColor; the _outdoor variant zeroes alpha where the
+  point is below the outdoor map (worldOutdoorLookupMatrix, sampler.outdoor).
+- OpenIW2: `FxSystem::clouds()` and iw2view `cloudModel` (CPU expansion of the same geometry, view x / y = right / up).
+  TODO(spec): the outdoor map ("$outdoor", r_outdoorDownBias / r_outdoorAwayBias) so flakes still show indoors; `wind` and
+  affectedByWind (no reader in the exe's effect code); the view cull 0x4827e0 (sphere radius size + max(width, height)).
+
 ## Cylinder elements (type 4, no shipped effect uses one)
 
 - Update 0x483450: size → +0x88, size2 → +0x8c (= size without nonUniformScale), length → +0x258 (0x4830d0), rgb, alpha;

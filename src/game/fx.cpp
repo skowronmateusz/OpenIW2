@@ -200,7 +200,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             if (!(*bolt)(t)) continue;
         }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
-                           e.type == "Tail" || e.type == "Light" || e.type == "Line";
+                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -249,6 +249,22 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
 void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs) {
     FxParticle p;
     p.element = &e;
+    if (e.type == "Cloud") {
+        // 0x482850 (first thing the Cloud spawn 0x48de90 does): up to 4 tries of three draws x, y, z = draw · 2 − 1 (0x591efc,
+        // 0x591e20); a vector with |v|² < 0.01 (0x591ea0) or > 1 is rejected, an accepted one is normalised (0x4210d0); after
+        // 4 rejections the axis is (1, 0, 0).
+        p.cloud = true;
+        bool ok = false;
+        for (int tries = 0; tries < 4 && !ok; ++tries) {
+            FVec v;
+            for (int k = 0; k < 3; ++k) v[size_t(k)] = frand() * 2.0f - 1.0f;
+            const float l2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            if (l2 < 0.01f || l2 > 1.0f) continue;
+            p.cloudAxis = normalized(v);
+            ok = true;
+        }
+        if (!ok) p.cloudAxis = {1, 0, 0};
+    }
     p.startMs = startMs;
     p.endMs = p.startMs + std::max<int64_t>(1, int64_t(range(e.numbers("life"), 1000)));
     p.origin = spawnPoint(e, origin, ax);
@@ -310,6 +326,14 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     }
     if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
         p.seqStart = 0, p.seqRate = 0; // TODO(spec): the frame (+0x94) the Line instance carries
+    }
+    if (p.cloud) {
+        // 0x48ce70 draws the start angle +0x44 from `rotation` (+0x220); 0x48de90 then draws +0x260 = 0x426250(0, 1) and copies
+        // useLength (+0x9d) into +0x25c. The position steps like an Emitter (update 0x482a30 -> 0x480bd0).
+        p.pos = p.prev = p.origin;
+        p.lastMs = p.cloudLastMs = startMs;
+        p.cloudAngle = range(e.numbers("rotation"), 0);
+        p.lengthRnd = frand();
     }
     if (e.type == "Emitter" || e.type == "Tail") {
         // 0x48d7d0: start position from the spawn shape; the angles are the effect axes' angles plus a random draw in
@@ -533,9 +557,62 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     }
     models_.clear();
     lights_.clear();
+    clouds_.clear();
     for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
+        if (p.cloud) {
+            // Cloud update 0x482a30: B (+0x9c) = the position before the step, Emitter step (0x480bd0), then the channels:
+            // size (0x4818b0 -> +0x88), size2 (0x481940: the size2 channel with nonUniformScale (+0x104 = element +0x9c), else
+            // = size), length (0x4829d0, only with useLength: +0x258, useRandomLength 0x20000 lerps by +0x260), rgb / alpha
+            // bytes (0x4819b0 / 0x481a40), angle += frame ms · rotationDelta · 0.01 (0x481b90, useRandomRotationDelta 0x40000).
+            // Then axis rows = rotation about +0x24c by the angle (0x423a50 quaternion, 0x423680 matrix), refEntity scale
+            // (+0x98) = size, width (+0x88) = size2 result, height (+0x8c) = length with useLength else the size2 result; A (+0x7c)
+            // = the position (through the bolt with relative, 0x4404f0). TODO(spec): `wind` (+0xf8) and affectedByWind 0x800000
+            // have no reader in the exe's effect code; the view cull 0x4827e0 (sphere: size + max(width, height)) is not applied.
+            const FVec before = p.pos;
+            stepEmitter(p, nowMs);
+            const uint32_t flags = e.flagBits();
+            const float u = std::min(1.0f, float(nowMs - p.startMs) / float(p.endMs - p.startMs));
+            const float size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
+            const auto nus = e.numbers("nonuniformscale"), ul = e.numbers("uselength");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0, useLength = !ul.empty() && int(ul[0]) != 0; // _atol != 0
+            const float width = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : size;
+            const float height = useLength ? channel(e, "length", "lengthrand", flags & 0x20000, p.lengthRnd, u, 0, 1.0f) * p.scale[4] : width;
+            const float rotDelta = channel(e, "rotationdelta", "rotationdeltarand", flags & 0x40000, p.rnd[5], u, 0, 0.0f) * p.scale[5];
+            p.cloudAngle += float(nowMs - p.cloudLastMs) * rotDelta * 0.01f; // 0x591ea0
+            p.cloudLastMs = nowMs;
+            // 0x423a50: q = (sin(h) · axis, cos(h)), h = angle · pi / 360 (0x591fa4); 0x423680 with s = 2 / |q|²: rows
+            // (1 − s(y² + z²), s(xy + wz), s(xz − wy)), (s(xy − wz), 1 − s(x² + z²), s(yz + wx)), (s(xz + wy), s(yz − wx), 1 − s(x² + y²)).
+            const float h = p.cloudAngle * 0.008726646f, sn = std::sin(h);
+            const float qx = sn * p.cloudAxis[0], qy = sn * p.cloudAxis[1], qz = sn * p.cloudAxis[2], qw = std::cos(h);
+            const float sc = 2.0f / (qx * qx + qy * qy + qz * qz + qw * qw);
+            FxCloud c;
+            c.axis[0] = {1 - sc * (qy * qy + qz * qz), sc * (qx * qy + qw * qz), sc * (qx * qz - qy * qw)};
+            c.axis[1] = {sc * (qx * qy - qw * qz), 1 - sc * (qz * qz + qx * qx), sc * (qy * qz + qx * qw)};
+            c.axis[2] = {sc * (qy * qw + qx * qz), sc * (qy * qz - qx * qw), 1 - sc * (qy * qy + qx * qx)};
+            c.origin = p.pos;
+            if (p.bolt) { // relative: the bolt moves A; B stays the untransformed previous position (0x482b2d). TODO(spec): tag rotation
+                FVec now{};
+                if ((*p.bolt)(now)) c.origin = add(p.pos, sub(now, p.bolt0));
+            }
+            c.prev = before;
+            c.size = size;
+            c.width = width;
+            c.height = height;
+            // 0x4819b0 / 0x481a40: bytes = clamped channel · 255 truncated; without useAlpha (0x80) the alpha byte is 255 and
+            // rgb is scaled by the alpha channel instead (docs/spec/effects.md).
+            const float alpha = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
+            for (int k = 0; k < 3; ++k) {
+                const float v = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, k, 1.0f), 0.0f, 1.0f);
+                c.rgba[k] = uint8_t((flags & 0x80 ? v : v * alpha) * 255.0f);
+            }
+            c.rgba[3] = flags & 0x80 ? uint8_t(alpha * 255.0f) : 255;
+            const auto shaders = e.list("shaders");
+            if (!shaders.empty()) c.shader = shaders[std::min(p.shader, shaders.size() - 1)];
+            clouds_.push_back(std::move(c));
+            continue;
+        }
         if (p.emitter) {
             p.prev = p.pos; // 0x483010 saves the position (+0x4 -> +0x24c) before the step
             stepEmitter(p, nowMs);
