@@ -1399,6 +1399,25 @@ void World::registerMissingStubs() {
 } // namespace iw2::game
 
 namespace iw2::game {
+bool World::entityTagOrientation(int number, const std::string& tag, Vec3& origin, std::array<Vec3, 3>& axes, bool& hasAxes) {
+    hasAxes = false;
+    Entity* e = entityByNumber(number);
+    if (!e) return false;
+    if (e->vehicle) return entityTagPosition(number, tag, origin);
+    const auto bones = entityBones(*e);
+    const auto it = bones.find(tag);
+    if (it == bones.end()) return false;
+    origin = it->second.position;
+    for (int k = 0; k < 3; ++k) {
+        std::array<float, 3> u{0, 0, 0};
+        u[size_t(k)] = 1;
+        const auto r = assets::rotate(it->second.rotation, u);
+        axes[size_t(k)] = {r[0], r[1], r[2]};
+    }
+    hasAxes = true;
+    return true;
+}
+
 bool World::entityTagPosition(int number, const std::string& tag, Vec3& out) {
     Entity* e = entityByNumber(number);
     if (!e) return false;

@@ -63,6 +63,26 @@ FVec rotateAbout(const FVec& axis, const FVec& v, float deg) {
     const float d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
     return add(add(mul(v, c), mul(cross(axis, v), s)), mul(axis, d * (1.0f - c)));
 }
+// 0x440600: a world point into tag space, (p − origin) · row k; 0x440650: a direction, d · row k; 0x4404f0: back, origin +
+// x·row0 + y·row1 + z·row2.
+FVec toTagSpace(const FxTag& t, const FVec& p) {
+    const FVec d{p[0] - t.origin[0], p[1] - t.origin[1], p[2] - t.origin[2]};
+    FVec o;
+    for (int k = 0; k < 3; ++k) o[size_t(k)] = d[0] * t.axes[size_t(k)][0] + d[1] * t.axes[size_t(k)][1] + d[2] * t.axes[size_t(k)][2];
+    return o;
+}
+FVec dirToTagSpace(const FxTag& t, const FVec& d) {
+    FVec o;
+    for (int k = 0; k < 3; ++k) o[size_t(k)] = d[0] * t.axes[size_t(k)][0] + d[1] * t.axes[size_t(k)][1] + d[2] * t.axes[size_t(k)][2];
+    return o;
+}
+FVec fromTagSpace(const FxTag& t, const FVec& l) {
+    FVec o = t.origin;
+    for (int k = 0; k < 3; ++k)
+        for (int c = 0; c < 3; ++c) o[size_t(c)] += l[size_t(k)] * t.axes[size_t(k)][size_t(c)];
+    return o;
+}
+
 // 0x4217f0: from the forward axis d build r = (d.z, −d.x, d.y) − d · (d·r), row1 = normalise(r), row2 = row1 × d.
 void axesFromForward(FxAxes& ax) {
     const FVec& d = ax[0];
@@ -173,10 +193,12 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
 }
 
 void FxSystem::playBolted(const std::shared_ptr<const assets::EfxEffect>& fx, std::shared_ptr<FxBolt> bolt, const FxAxes& axes, int64_t nowMs) {
-    FVec at{};
+    FxTag at;
     if (!bolt || !(*bolt)(at)) return; // 0x4853f0: an invalid attachment plays nothing
     curBolt_ = std::move(bolt);
-    playAxes(fx, at, axes, nowMs);
+    // 0x485479: with an attachment the effect's origin AND axes are the tag's orientation (0x48abb0); the caller's direction
+    // is only used when the host does not know the tag axes.
+    playAxes(fx, at.origin, at.hasAxes ? at.axes : axes, nowMs);
     curBolt_.reset();
 }
 
@@ -196,7 +218,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
         }
         const uint32_t flags = e.flagBits();
         if (bolt && (flags & 0x2)) { // 0x485bf0: a relative element needs a valid attachment
-            FVec t{};
+            FxTag t;
             if (!(*bolt)(t)) continue;
         }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
@@ -268,7 +290,15 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     p.startMs = startMs;
     p.endMs = p.startMs + std::max<int64_t>(1, int64_t(range(e.numbers("life"), 1000)));
     p.origin = spawnPoint(e, origin, ax);
-    if (curBolt_ && (flags & 0x2) && (*curBolt_)(p.bolt0)) p.bolt = curBolt_; // relative: follows the tag
+    if (curBolt_ && (flags & 0x2)) { // relative: the spawn point is stored in tag space (0x48c290 end, 0x440600)
+        FxTag t0;
+        if ((*curBolt_)(t0)) {
+            p.bolt = curBolt_;
+            p.bolt0 = t0.origin;
+            p.local0 = toTagSpace(t0, p.origin);
+            p.tag0 = t0;
+        }
+    }
     p.axis[0] = ax[0];
     p.axis[1] = ax[1];
     p.axis[2] = ax[2];
@@ -630,11 +660,13 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             c.axis[1] = {sc * (qx * qy - qw * qz), 1 - sc * (qz * qz + qx * qx), sc * (qy * qz + qx * qw)};
             c.axis[2] = {sc * (qy * qw + qx * qz), sc * (qy * qz - qx * qw), 1 - sc * (qy * qy + qx * qx)};
             c.origin = p.pos;
-            if (p.bolt) { // relative: the bolt moves A; B stays the untransformed previous position (0x482b2d). TODO(spec): tag rotation
-                FVec now{};
-                if ((*p.bolt)(now)) c.origin = add(p.pos, sub(now, p.bolt0));
-            }
             c.prev = before;
+            if (p.bolt) { // relative: A = the tag-space position through the bolt (0x4404f0); B stays the tag-space value (0x482b2d)
+                FxTag now;
+                if (!(*p.bolt)(now)) continue; // 0x47fcd0 fails: the update returns false
+                c.origin = fromTagSpace(now, add(p.local0, sub(p.pos, p.origin)));
+                c.prev = add(p.local0, sub(before, p.origin));
+            }
             c.size = size;
             c.width = width;
             c.height = height;
@@ -694,18 +726,24 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         };
         FVec pos = add(p.origin, add(mul(toWorld(v1, flags & 0x200000), lifeS), mul(toWorld(v2, flags & 0x400000), lifeS)));
         pos[2] += p.gravity * (t * 0.001f) * (t * 0.001f);
-        if (p.bolt) { // relative: keep the offset from the tag (TODO(spec): the tag's rotation is not applied)
-            FVec now{};
-            if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
+        FxTag tagNow;
+        const bool relative = p.bolt && !p.tail;
+        if (relative) {
+            // Relative (0x480330): the tag-space position (spawn point in tag space + the velocity / gravity offsets, added as they
+            // are: the velocity axes +0xd0 are the effect's world axes, copied by 0x4803f0) through the current tag orientation
+            // (0x47fcd0 -> 0x48abb0, 0x4404f0). An invalid attachment ends the update.
+            if (!(*p.bolt)(tagNow)) continue;
+            pos = fromTagSpace(tagNow, add(p.local0, sub(pos, p.origin)));
         }
-        if (p.tail) pos = p.pos;
-        FVec lineShift{};
-        if (e.type == "Cylinder") pos = p.origin; // no motion (0x483450)
+        if (p.tail) pos = p.pos; // TODO(spec): relative Emitter / Tail (0x480bd0 traces through the bolt, 0x440650 normals)
+        FVec lineA = p.origin, lineB = p.lineB;
+        if (e.type == "Cylinder") pos = relative ? fromTagSpace(tagNow, p.local0) : p.origin; // no motion (0x483450)
         if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
-            pos = p.origin;
-            FVec now{};
-            if (p.bolt && (*p.bolt)(now)) lineShift = sub(now, p.bolt0); // TODO(spec): the tag rotation (translation only, as particles)
-            pos = add(pos, lineShift);
+            if (relative) {
+                lineA = fromTagSpace(tagNow, p.local0);
+                lineB = fromTagSpace(tagNow, toTagSpace(p.tag0, p.lineB)); // B stored in tag space at spawn (0x440600)
+            }
+            pos = lineA;
         }
         FxSprite s;
         s.position = pos;
@@ -778,8 +816,8 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Line draw 0x482d90 -> 0x480010 renderer type 8 (the Tail quad, 1.3 DLL 0x10041470 / 0x100409c0): A = +0x7c, B = +0x9c,
             // half width = the size channel (+0x88, 0x4818b0), colour bytes from rgb / alpha (0x4819b0 / 0x481a40).
             s.beam = s.beamTail = true;
-            s.beamA = add(p.origin, lineShift);
-            s.beamB = add(p.lineB, lineShift);
+            s.beamA = lineA;
+            s.beamB = lineB;
             s.widthA = s.widthB = s.size;
             if (!viewValid) continue;
             const FVec a = sub(s.beamA, viewOrigin), b = sub(s.beamB, viewOrigin);
@@ -796,16 +834,17 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // DLL 0x100401f0: n = clamp(round((1 − (|(A + B)/2 − view| · lodScale + lodBias) / 1024) · 32), 8, 32) (0x1019bf58,
             // 0x1019bf20; lodScale / lodBias = r_lodScale (1) / r_lodBias (0) · tan(40°) / tan(fovX / 2), 0x10025b76).
             // TODO(spec): r_lodScale / r_lodBias other than their defaults; the mode-2 builder 0x100405e0 (dvar 0x101ce710 = 2).
-            FVec shift{};
-            FVec now{};
-            if (p.bolt && (*p.bolt)(now)) shift = sub(now, p.bolt0); // TODO(spec): the tag rotation
             const auto nus = e.numbers("nonuniformscale");
             const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
             const float size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
             const float length = channel(e, "length", "lengthrand", flags & 0x20000, p.rnd[4], u, 0, 1.0f) * p.scale[4];
             s.cylinder = true;
-            s.beamA = add(p.origin, shift);
-            s.beamB = add(add(p.origin, mul(p.axis[0], length)), shift);
+            s.beamA = p.origin;
+            s.beamB = add(p.origin, mul(p.axis[0], length));
+            if (relative) { // row 0 stored in tag space (0x48d786, 0x440650); A and B through the bolt
+                s.beamA = fromTagSpace(tagNow, p.local0);
+                s.beamB = fromTagSpace(tagNow, add(p.local0, mul(dirToTagSpace(p.tag0, p.axis[0]), length)));
+            }
             s.widthA = size2;
             s.widthB = s.size;
             s.position = s.beamA;

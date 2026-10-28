@@ -605,6 +605,9 @@ public:
     struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag; }; // entity/tag: bolted (0x4853f0)
     // World position of an entity tag (lower case), false when the entity or tag is gone.
     bool entityTagPosition(int number, const std::string& tag, Vec3& out);
+    // The tag's world position and axis rows (forward, left, up = the bone rotation applied to x, y, z); hasAxes is false for
+    // vehicle tags, whose rotation the bone-control path does not provide.
+    bool entityTagOrientation(int number, const std::string& tag, Vec3& origin, std::array<Vec3, 3>& axes, bool& hasAxes);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     std::vector<FxEvent> fxEvents_;
     // Bullet tracers requested by impact events (0x4b8140): muzzle point and impact point; the host applies the
