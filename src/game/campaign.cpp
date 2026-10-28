@@ -153,7 +153,11 @@ void World::registerCampaignBuiltins() {
         if (!levelChange_.pending) return;
         levelChange_.atMs = timeMs_ + exitMs_ + 1000;
         clientCommands_.push_back({"scr_fade", "1 " + std::to_string(timeMs_ + 250) + " " + std::to_string(exitMs_ + 750)});
-        clientCommands_.push_back({"snd_fade", "0 " + std::to_string(exitMs_ + 1000)});
+        // With the movie-pending flag (0x4d9e18) the sound is not faded out: the client gets "setchannelvol 1 <index> <exit+1000>"
+        // (0x582bf4), index = the configstring of the shock file "victoryscreen" (0x4d5860 with base 0x45d, 16 entries), i.e. sound
+        // volume slot 1 takes the channel volumes of shock/victoryscreen.shock. openiw2 sends the shock name instead of the index.
+        if (moviePending_) clientCommands_.push_back({"setchannelvol", "1 victoryscreen " + std::to_string(exitMs_ + 1000)});
+        else clientCommands_.push_back({"snd_fade", "0 " + std::to_string(exitMs_ + 1000)});
     };
     // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds >= 0.
     auto change = [this, scheduleChange](CallContext& c, bool fromMissionSuccess) {
@@ -165,6 +169,7 @@ void World::registerCampaignBuiltins() {
             exitMs_ = int(exitTime * 1000.0f + 0.5f);
         }
         levelChange_ = {true, false, c.arg(0).toString().substr(0, 63), c.args.size() > 1 && c.arg(1).truthy(), 0};
+        if (fromMissionSuccess) moviePending_ = true; // 0x4f4066: set after the changelevel code, before the request is handled
         scheduleChange();
         return Value();
     };
@@ -178,6 +183,7 @@ void World::registerCampaignBuiltins() {
             exitMs_ = int(exitTime * 1000.0f + 0.5f);
         }
         cinematic_ = c.arg(0).toString().substr(0, 63);
+        moviePending_ = true; // 0x4f4220 sets 0x1c60fe4
         scheduleChange();
         return Value();
     });
@@ -194,6 +200,35 @@ void World::registerCampaignBuiltins() {
         }
         return Value();
     });
+}
+
+// 0x4d9f90, the part after the request: once the due time (0x1c60f54) has passed it is cleared, then
+//   movie-pending (0x1c60fe4, cleared): a stored cinematic name -> `cinematic <name> 0` (the movie's end loads the map, 0x49db20 ->
+//     0x4d9f00); no name -> the client command `openvictoryscreen` (0x4da008, 0x44a3b0 with "%s"); the level keeps running and the
+//     map stays in 0x1c57d88 until `nextlevel` (0x4c8e10 / 0x446fa0 -> 0x4d9f00);
+//   else the failed flag (0x1c60fe8, cleared) -> `loadgame_continue`; else 0x4d9f00 loads the map.
+std::optional<LevelChange> World::takeDueLevelChange() {
+    auto due = dueLevelChange();
+    if (!due) return std::nullopt;
+    levelChange_.pending = false;
+    if (moviePending_ && !due->loadContinue) {
+        moviePending_ = false;
+        if (cinematic_.empty()) {
+            due->victoryScreen = true;
+            clientCommands_.push_back({"openvictoryscreen", ""});
+            print("openvictoryscreen at " + std::to_string(timeMs_) + " ms, next map " + due->map);
+        }
+    }
+    return due;
+}
+
+std::optional<World::CarriedPlayer> World::carriedPlayerState() {
+    if (!player_) return std::nullopt;
+    CarriedPlayer c;
+    c.inventory = inventory(*player_);
+    const Value w = player_->obj->get("$weapon");
+    if (w.isString()) c.weapon = w.toString();
+    return c;
 }
 
 // 0x4e8e10: once per level (g_reloading set to 1), schedules loadgame_continue g_deathDelay ms (default 3000, real

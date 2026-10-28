@@ -435,6 +435,11 @@ void World::prepareStart() {
     cvars["g_player_maxhealth"] = cvars[kSkillHealthCvar[skill]];
     cvars["player_deathInvulnerableTime"] = std::to_string(kSkillDeathInvulMs[skill]);
     spawnMapEntities();
+    if (carriedPlayer_ && player_) { // persistent level change (0x4e6c20 memory save): the player keeps his weapons
+        inventory(*player_) = carriedPlayer_->inventory;
+        if (!carriedPlayer_->weapon.empty()) player_->obj->set("$weapon", Value(carriedPlayer_->weapon));
+        carriedPlayer_.reset();
+    }
     linkVehicleNodes();
     initMapTurrets();
     syncEntityClips();

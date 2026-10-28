@@ -126,11 +126,58 @@ int main() {
 		}
 	}
 })";
+    // victoryscreen-like menu: global fade assets, setfocus on a hidden first item, setitemcolor + fadeout, execOnDvarIntValue, nextlevel.
+    std::ofstream(dir / "ui/v.menu") << R"({
+	assetGlobalDef
+	{
+		fadeClamp 1
+		fadeCycle 1
+		fadeAmount 0.1
+		fadeInAmount 0.002
+	}
+	menuDef
+	{
+		name vic
+		rect 0 0 640 480
+		visible 1
+		onOpen { setitemcolor fadebox backcolor 0 0 0 1; fadeout fadebox; setfocus cont; execOnDvarIntValue ui_showpopup 1 "openmenu pop"; }
+		itemDef
+		{
+			name cont
+			type 1
+			rect 0 0 100 20
+			visible 1
+			dvartest ui_nextMission
+			showdvar { "2" }
+			action { nextlevel; }
+		}
+		itemDef
+		{
+			name cont
+			type 1
+			rect 0 30 100 20
+			visible 1
+			dvartest ui_nextMission
+			showdvar { "1" }
+			action { nextlevel; close vic; }
+		}
+		itemDef
+		{
+			name fadebox
+			style 1
+			background "white"
+			rect 0 0 640 480
+			visible 1
+			decoration
+		}
+	}
+})";
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(dir);
     iw2::ui::MenuLibrary lib(vfs);
     CHECK(lib.loadFile("ui/t.menu"));
     CHECK(lib.loadFile("ui/w.menu"));
+    CHECK(lib.loadFile("ui/v.menu"));
     std::map<std::string, std::string> cv;
     std::vector<std::string> log;
     iw2::ui::MenuEnv env;
@@ -210,6 +257,30 @@ int main() {
         CHECK(st.clickBack(15, 20 + 145));
         CHECK(cv["mode"] == "2");
         st.closeAll();
+    }
+
+    {
+        iw2::ui::MenuStack st(lib, env);
+        const iw2::ui::Menu* vm = lib.find("vic");
+        CHECK(vm && vm->fadeCycle == 1 && std::fabs(vm->fadeAmount - 0.1f) < 1e-6f && std::fabs(vm->fadeInAmount - 0.002f) < 1e-6f);
+        cv["ui_nextMission"] = "1";
+        cv["ui_showpopup"] = "1";
+        log.clear();
+        CHECK(st.open("vic"));
+        // setfocus picks the first "cont" (hidden by its dvar test): the focus falls back to the first selectable, the visible "cont"
+        CHECK(vm && st.focus() == vm->items[1].get());
+        CHECK(!log.empty() && log.back() == "exec openmenu pop");
+        const iw2::ui::Item& box = *vm->items[2];
+        CHECK(st.itemVisible(box) && std::fabs(st.backColor(box)[3] - 1.0f) < 1e-6f);
+        for (int t = 1; t <= 12; ++t) {
+            st.tick(t * 10);
+            st.paintFade(*vm, box, true);
+        }
+        CHECK(!st.itemVisible(box)); // ten 0.1 steps: alpha <= 0, the fade ends hidden
+        log.clear();
+        st.key(iw2::ui::MenuStack::Key::Enter);
+        CHECK(!log.empty() && log.front() == "exec nextlevel");
+        CHECK(st.empty());
     }
 
     if (failures) std::cerr << failures << " failure(s)\n";

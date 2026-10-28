@@ -128,3 +128,13 @@ described in the code that reads them.
   `IW2_LADDER_RAISE=targetname` first puts that entity back at its realOrigin (maps/_utility.gsc triggerOn, e.g. moscow's `regroup_ladder`),
   `IW2_LADDER_DEBUG=1` prints the probe hits and the ladder clips, `IW2_LADDER_MASK=0x..` the probe mask (default 0x2810011),
   `IW2_LADDER_SCAN=1` lists spots with headroom above. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.
+
+## Level end / victory screen
+| Flag | Tool | Effect |
+|---|---|---|
+| `IW2_SHOT_LEVEL_CALL=<s>:file.gsc:function` | iw2view `--shot` | Starts the function as a thread on level at sim time `<s>`; a level change that falls due ends the simulation (a victory screen is opened for the shot), e.g. `20:maps/_endmission.gsc:nextmission`. |
+| `IW2_SHOT_ALIASES=<map>` | iw2view `--shot` | Loads the material aliases of `maps/<map>.csv` (`$levelBriefing`, `$victoryBackdrop`) for the shot, e.g. with `--menu` and `IW2_SHOT_MENU=briefing` or `pregame`. |
+- iw2game prints `[<ms> ms] level change to <map> ...` when a change falls due (with `: openvictoryscreen, nextlevel loads it` for
+  `missionsuccess`) and `player weapons: ... ; current ..., offhand ...` at the end of every run.
+- iw2view logs `victory screen (next map X)`, `changing level to X (persistent)` and `player weapons: ...` after each load.
+- `--shot` runs open all menus with their fades already finished (`MenuStack::settleFades`).

@@ -123,6 +123,20 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         else if (name == "scriptmenuresponse" && cmd.size() > 1) { if (env.scriptMenuResponse) env.scriptMenuResponse(menuName, cmd[1]); }
         else if (name == "close" && cmd.size() > 1) { if (env.close) env.close(cmd[1]); }
         else if (name == "setdvar" && cmd.size() > 2) env.setCvar(cmd[1], cmd[2]);
+        // Menu command table 0x5a4de8 (name, handler pairs): fadein 0x4c8150 / fadeout 0x4c81a0, setitemcolor 0x4c7ba0,
+        // execOnDvarIntValue 0x4c8d00 (0x4c8bb0 with the int compare 0x4c8c70: the dvar's int value equal to the argument queues the
+        // console text), nextlevel 0x4c8e10 (jumps to 0x4d9f00, the same as the console command).
+        else if ((name == "fadein" || name == "fadeout") && cmd.size() > 1) { if (env.fadeItem) env.fadeItem(cmd[1], name == "fadeout"); }
+        else if (name == "setitemcolor" && cmd.size() > 6) {
+            if (env.setItemColor)
+                env.setItemColor(cmd[1], lowerStr(cmd[2]), Color{float(std::atof(cmd[3].c_str())), float(std::atof(cmd[4].c_str())),
+                                                                 float(std::atof(cmd[5].c_str())), float(std::atof(cmd[6].c_str()))});
+        }
+        else if (name == "execondvarintvalue" && cmd.size() > 3) {
+            const std::string v = env.getCvar ? env.getCvar(cmd[1]) : std::string();
+            if (std::atoi(v.c_str()) == std::atoi(cmd[2].c_str()) && env.exec) env.exec(cmd[3]);
+        }
+        else if (name == "nextlevel") { if (env.exec) env.exec("nextlevel"); }
         // Other commands (open, setcvar, transition, ...) are not used by the script menus; TODO(spec).
     }
 }

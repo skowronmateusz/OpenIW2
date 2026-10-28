@@ -78,7 +78,38 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
   flag. `changelevel(map [, persistent [, exitTime]])`: only with a live player;
   stores the map (63 chars) and an exit time in ms (`exitTime cannot be negative`). `missionfailed()`.
   `cinematic(name [, exitTime])`. `setsavedcvar` only for archived-flag dvars.
-- The order of levels is script logic (`maps/_endmission.gsc`), which also relies on `game[]` surviving the change.
+- The order of levels is script logic (`maps/_endmission.gsc`). `game[]` survives ONLY a persistent change: G_ShutdownGame
+  (0x4d9ce0, 0x4d9d3c) calls 0x46e1c0 with "free" unless the change is persistent (0x1c60ff0), and 0x4689e0 then frees the
+  game object (0x9bef30, pushed by the VM's `game` opcode 0x46980d, re-created by G_InitGame 0x4da481). So after
+  `missionSuccess("demolition", false)` demolition starts with an empty `game[]`: `_loadout.gsc` sees no `gaveweapons` and
+  gives the SVT40 / PPSh loadout. A persistent change also writes the client into a memory save (0x4d9dd1 -> 0x4e6c20) that
+  carries the player's weapons into the next level ("weapons carry over but are REFILLED", `_loadout.gsc`).
+- When the change falls due (0x4d9f90; due time 0x1c60f54 = now + exit + 1000 ms, set by 0x4d9da0): the movie-pending flag
+  0x1c60fe4 (set by `missionsuccess` 0x4f4066 and `cinematic` 0x4f4220) is cleared and either the stored cinematic plays
+  (`cinematic <name> 0`, its end loads the map) or, without a name, the server sends the client `openvictoryscreen`
+  (0x4da008): the level is not left. Without that flag: `loadgame_continue` when the failed flag 0x1c60fe8 is set, else
+  0x4d9f00 (`spmap <map>`, `spdevmap <map>` with sv_cheats 0x571290, `disconnect` without a stored map).
+- 0x4d9da0 with the movie-pending flag sends `setchannelvol 1 <index> <exit+1000>` (0x582bf4) instead of `snd_fade`: index
+  = configstring of the shock file "victoryscreen" (0x4d5860, base 0x45d, 16 entries), i.e. the channel volumes of
+  shock/victoryscreen.shock go into sound volume slot 1.
+
+## Victory screen and the next level
+
+- Client `openvictoryscreen` (0x4a6d6a): channel pause flags 0x793d6f = all but menu and music (0x4429e0), volume slot 1
+  cleared (0x443390(1)), then 0x4022b0("victoryscreen") -> UI_SetActiveMenu(15) (0x4c679e: no close-all, cursor (320, 448),
+  key catcher 8) — only while the client is active (state 4) and no timedemo plays. The menu (ui/victoryscreen.menu, listed in
+  ui/ingame.txt) pauses the game in onOpen (`cl_paused 1`), shows `$victoryBackdrop` (maps/<map>.csv) and the dvar
+  `ui_victoryquote` (`maps/_quotes.gsc` setVictoryQuote, a random `@VICTORYQUOTE_*`), and offers by `ui_nextMission` (set
+  by `_endmission.gsc`: 1 next level, 0 mission done, 2 campaign done) "Continue mission" / "Next mission" (menu command
+  `nextlevel` 0x4c8e10 -> 0x4d9f00), "Mission select" and "Main menu".
+- Sound pause: when cl_paused changes (0x442dc0 / 0x442df0 / 0x444690) the samples of channels whose flag is set pause
+  (0x442a30) or resume (0x442bf0); the flags reset to "all but menu" (0x793d64) on sound init and client connect.
+- Map load: 0x40ce90 loads maps/<map>.csv (0x4d0770: rows `key,material` -> material alias `$key`, lower case, 0x4d0700) and
+  sets client state 5; the cgame load progress opens the load screen (0x4a300d / 0x4b9215 -> 0x4022b0("briefing") ->
+  UI_SetActiveMenu(13) 0x4c6730: close all, open `briefing`, `$levelBriefing` + loadbar). When the load ends (0x449a2c):
+  with `ui_autoContinue` (bool, default 0, flags 0x1000, registered 0x4c32c4) or a timedemo (0x4c5530) the game starts
+  (0x4c54c0: cl_paused 0, console `fade 0 0 0 0 3`, close all), else cl_paused 1, close all, open `pregame` ("click to start
+  the mission"; the click runs uiScript `playerstart` -> 0x4c54c0).
 
 ## Death screen
 
@@ -116,7 +147,8 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
 ## Implementation status (OpenIW2)
 
 `src/game/campaign.cpp`: objective built-ins and state messages as above; `changelevel`, `missionsuccess` and
-`missionfailed` set a pending level change. `iw2view` rebuilds the world and scene for the next map when it is due
-and copies `game[]` into the new world. Inferred and marked TODO: `objective_string`'s message, how long
+`missionfailed` set a pending level change; `World::takeDueLevelChange` applies 0x4d9f90 (victory screen or load).
+`iw2view` shows the victory screen, loads the stored map on `nextlevel`, shows `briefing` for a frame before the
+synchronous load and `pregame` after it, and copies `game[]` and the player's weapons only for a persistent change. Inferred and marked TODO: `objective_string`'s message, how long
 objective messages stay on screen (4 s). Death screen as above, except: no save games (`loadgame_continue` restarts
 the level), no blur pass (`scr_blur` ignored), no text shadow, the volume step per frame is inferred.

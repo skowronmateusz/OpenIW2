@@ -25,10 +25,15 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
     env_.close = [this](const std::string& n) { close(n); };
     env_.closeAll = [this] { closeAll(); };
     env_.setFocus = [this](const std::string& n) {
-        // TODO(spec): exe error "setFocus: could not find widget named '%s'" when missing.
+        // setfocus (0x4c8880): the FIRST item of that name (0x4c7b40, case-insensitive compare 0x43f6d0; none -> "setFocus: could not
+        // find widget named '%s'"); Item_SetFocus (0x4c9100) refuses an item that is not visible (window flag 0x04, dvar test) ->
+        // "setFocus: error focusing widget '%s' (widget was found but could not accept focus)" and the focus stays.
         if (Menu* m = top())
             for (const auto& it : m->items)
-                if (it->name == n) setFocusItem(it.get());
+                if (lower(it->name) == lower(n)) {
+                    if (itemVisible(*it)) setFocusItem(it.get());
+                    break;
+                }
     };
     env_.setFocusByDvar = [this](const std::string& dvar) {
         // Items with `dvarTest <dvar>` and `focusDvar {values}` get the focus when the dvar value is in the list.
@@ -43,6 +48,69 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
             for (const auto& it : m->items)
                 if (it->name == n || (!it->group.empty() && it->group == n)) shownOverrides_.emplace_back(it.get(), show);
     };
+    // fadein / fadeout (0x4c7d80): every matching item gets visible | fading-in (0x24, fading-out cleared) or visible | fading-out
+    // (0x14, fading-in cleared).
+    env_.fadeItem = [this](const std::string& n, bool out) {
+        for (const Item* it : matching(n)) {
+            auto& r = runtime_[it];
+            r.fadingOut = out, r.fadingIn = !out;
+            shownOverrides_.emplace_back(it, true);
+        }
+    };
+    // setitemcolor (0x4c7ba0): the named colour of every matching item. TODO(spec): the handler's other effects (flag bits) are not read.
+    env_.setItemColor = [this](const std::string& n, const std::string& which, const Color& c) {
+        for (const Item* it : matching(n)) {
+            auto& r = runtime_[it];
+            if (which == "forecolor") r.hasFore = true, r.fore = c;
+            else if (which == "backcolor") r.hasBack = true, r.back = c;
+        }
+    };
+}
+
+void MenuStack::settleFades() {
+    for (auto& [it, r] : runtime_) {
+        if (r.fadingOut) shownOverrides_.emplace_back(it, false);
+        if (r.fadingIn) (r.hasFore ? r.fore : r.back)[3] = 1.0f; // TODO(spec): fadeClamp of the item's menu
+        r.fadingIn = r.fadingOut = false;
+    }
+}
+
+std::vector<const Item*> MenuStack::matching(const std::string& n) const {
+    std::vector<const Item*> out;
+    if (const Menu* m = top())
+        for (const auto& it : m->items)
+            if (lower(it->name) == lower(n) || (!it->group.empty() && lower(it->group) == lower(n))) out.push_back(it.get());
+    return out;
+}
+
+Color MenuStack::foreColor(const Item& it) const {
+    const auto r = runtime_.find(&it);
+    return r != runtime_.end() && r->second.hasFore ? r->second.fore : it.foreColor;
+}
+
+Color MenuStack::backColor(const Item& it) const {
+    const auto r = runtime_.find(&it);
+    return r != runtime_.end() && r->second.hasBack ? r->second.back : it.backColor;
+}
+
+void MenuStack::paintFade(const Menu& m, const Item& it, bool back) {
+    const auto f = runtime_.find(&it);
+    if (f == runtime_.end() || (!f->second.fadingIn && !f->second.fadingOut)) return;
+    ItemRuntime& r = f->second;
+    if (now_ <= r.nextTime) return;
+    r.nextTime = now_ + m.fadeCycle;
+    Color& c = back ? (r.hasBack ? r.back : (r.back = it.backColor)) : (r.hasFore ? r.fore : (r.fore = it.foreColor));
+    (back ? r.hasBack : r.hasFore) = true;
+    if (r.fadingOut) {
+        c[3] -= m.fadeAmount;
+        if (c[3] <= 0.0f) { // flags &= ~0x14: no longer visible, fade done (alpha is left as computed)
+            r.fadingOut = false;
+            shownOverrides_.emplace_back(&it, false);
+        }
+    } else {
+        c[3] += m.fadeInAmount;
+        if (c[3] >= m.fadeClamp) c[3] = m.fadeClamp, r.fadingIn = false;
+    }
 }
 
 bool MenuStack::open(const std::string& name) {

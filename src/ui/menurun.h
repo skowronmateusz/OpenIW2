@@ -24,6 +24,9 @@ struct MenuEnv {
     std::function<void(const std::string& item)> setFocus;             // "setfocus"
     std::function<void(const std::string& dvar)> setFocusByDvar;       // "setfocusbydvar"
     std::function<void(const std::string& item, bool show)> showItem;   // "show" / "hide"
+    std::function<void(const std::string& item, bool out)> fadeItem;     // "fadein" / "fadeout" (0x4c8150 / 0x4c81a0 -> 0x4c7d80)
+    // "setitemcolor <item> <forecolor|backcolor|bordercolor> r g b a" (0x4c7ba0).
+    std::function<void(const std::string& item, const std::string& which, const Color& c)> setItemColor;
     std::function<bool()> savegameExists;  // "savegameshow/savegamehide": TODO(spec) exact exe semantics; unset = no save
     std::function<bool()> restartAvailable; // "restarthide": unset = available
     std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle

@@ -52,7 +52,8 @@ struct Item : Window {
     float textScale = 0.55f;
     int textStyle = 0, textAlign = 0, textFont = 0;
     float textAlignX = 0, textAlignY = 0;
-    bool autoWrapped = false;
+    bool autoWrapped = false; // "autowrapped" (0x4d1f90: item flags |= 0x800000): word-wrapped to the rect width (paint 0x4cc950)
+    bool wrapped = false;     // "wrapped" (0x4d1f70: |= 0x400000): lines split only at CR (paint 0x4ccc70)
     std::string dvar;
     std::string dvarTest;
     std::vector<std::string> showDvar, hideDvar, enableDvar, disableDvar;
@@ -85,6 +86,11 @@ struct Menu : Window {
     Color focusColor{1, 1, 1, 1};
     std::string soundLoop;
     float blurWorld = 0;
+    // Item fade parameters (menu +0x230 fadeCycle ms, +0x234 fadeClamp, +0x238 fadeAmount, +0x23c fadeInAmount): Menu_Init (0x4d0e80)
+    // copies the global asset values current when the menuDef is parsed (0x1111aec..0x1111af8, set by assetGlobalDef), the menuDef
+    // keywords (0x4d1760..0x4d17c0) override them.
+    int fadeCycle = 0;
+    float fadeClamp = 0, fadeAmount = 0, fadeInAmount = 0;
     Script onOpen, onClose, onEsc;
     std::vector<std::pair<std::string, Script>> execKeys;
     std::vector<std::unique_ptr<Item>> items;
@@ -109,8 +115,12 @@ public:
     // Parses menu source text (with #include resolved through the VFS); exposed for tests.
     void parseSource(const std::string& source, const std::string& file);
 
+    // Global asset fade values (assetGlobalDef fadeClamp / fadeCycle / fadeAmount / fadeInAmount), kept across files in load order.
+    struct FadeAssets { float clamp = 0; int cycle = 0; float amount = 0, inAmount = 0; };
+
 private:
     const fs::Vfs& vfs_;
+    FadeAssets fade_;
     std::vector<std::unique_ptr<Menu>> menus_;
     std::vector<std::string> errors_, warnings_;
 };

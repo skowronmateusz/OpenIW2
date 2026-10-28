@@ -167,8 +167,8 @@ private:
 
 class Parser {
 public:
-    Parser(std::vector<Token> toks, std::string file, std::vector<std::string>& errors)
-        : t_(std::move(toks)), file_(std::move(file)), errors_(errors) {}
+    Parser(std::vector<Token> toks, std::string file, std::vector<std::string>& errors, MenuLibrary::FadeAssets& fade)
+        : t_(std::move(toks)), file_(std::move(file)), errors_(errors), fade_(fade) {}
 
     std::vector<std::string> loadMenus;
     std::vector<std::unique_ptr<Menu>> menus;
@@ -187,6 +187,7 @@ public:
             if (key == "menudef") {
                 auto m = std::make_unique<Menu>();
                 m->file = file_;
+                m->fadeClamp = fade_.clamp, m->fadeCycle = fade_.cycle, m->fadeAmount = fade_.amount, m->fadeInAmount = fade_.inAmount;
                 parseWindow(*m, [&](const std::string& kk) {
                     if (kk != "itemdef") return false;
                     auto it = std::make_unique<Item>();
@@ -200,7 +201,15 @@ public:
             } else if (key == "loadmenu") {
                 for (const auto& s : block()) loadMenus.push_back(s);
             } else if (key == "assetglobaldef") {
-                block();
+                const auto b = block();
+                for (size_t i = 0; i + 1 < b.size(); ++i) {
+                    const std::string bk = lower(b[i]);
+                    const float v = float(std::atof(b[i + 1].c_str()));
+                    if (bk == "fadeclamp") fade_.clamp = v;
+                    else if (bk == "fadecycle") fade_.cycle = int(v);
+                    else if (bk == "fadeamount") fade_.amount = v;
+                    else if (bk == "fadeinamount") fade_.inAmount = v;
+                }
             } else if (!skipped) {
                 // Files such as ui/mission_select/mission_layout.menu are meant to be #included inside a
                 // menuDef but are also listed in ui/menus.txt; the loose definitions are skipped.
@@ -303,6 +312,7 @@ private:
             else if (k == "textaligny") it.textAlignY = num(a, 0);
             else if (k == "textfont") it.textFont = int(num(a, 0));
             else if (k == "autowrapped") it.autoWrapped = true;
+            else if (k == "wrapped") it.wrapped = true;
             else if (k == "dvar" && !a.empty()) it.dvar = a[0];
             else if (k == "dvartest" && !a.empty()) it.dvarTest = a[0];
             else if (k == "dvarfloat" && args.size() >= 4) {
@@ -355,6 +365,10 @@ private:
             else if (k == "focuscolor") m.focusColor = color(a);
             else if (k == "soundloop" && !a.empty()) m.soundLoop = a[0];
             else if (k == "blurworld") m.blurWorld = num(a, 0);
+            else if (k == "fadeclamp") m.fadeClamp = num(a, 0);
+            else if (k == "fadecycle") m.fadeCycle = int(num(a, 0));
+            else if (k == "fadeamount") m.fadeAmount = num(a, 0);
+            else if (k == "fadeinamount") m.fadeInAmount = num(a, 0);
             else if (k == "onopen") m.onOpen = parseScript(blk);
             else if (k == "onclose") m.onClose = parseScript(blk);
             else if (k == "onesc") m.onEsc = parseScript(blk);
@@ -373,6 +387,7 @@ private:
     size_t pos_ = 0;
     std::string file_;
     std::vector<std::string>& errors_;
+    MenuLibrary::FadeAssets& fade_;
 };
 
 } // namespace
@@ -400,7 +415,7 @@ Script parseScript(const std::vector<std::string>& tokens) {
 void MenuLibrary::parseSource(const std::string& source, const std::string& file) {
     std::vector<Token> toks;
     Preprocessor(vfs_, errors_).run(source, file, toks);
-    Parser p(std::move(toks), file, errors_);
+    Parser p(std::move(toks), file, errors_, fade_);
     p.parseFile();
     warnings_.insert(warnings_.end(), p.warnings.begin(), p.warnings.end());
     for (auto& m : p.menus) {

@@ -93,6 +93,12 @@ public:
     // Per-channel volume scales in the order auto, auto2d, menu, body, item, weapon, voice, local, music, announcer,
     // shellshock (the shell shock channel volumes, shellshock.h); 1 = unchanged.
     float channelScale[11] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    // Pause (0x442dc0 / 0x442df0 / 0x444690: when cl_paused changes, 0x442a30 pauses and 0x442bf0 resumes the playing samples whose
+    // channel flag 0x793d6f[channel] is set). The flags are reset to the defaults 0x793d64 (every channel but menu) at sound init and
+    // client (re)connects (0x444ba5, 0x40cc80, 0x401610, 0x402940); `openvictoryscreen` (0x4a6d7f) also clears music.
+    bool channelPausable[11] = {true, true, false, true, true, true, true, true, true, true, true};
+    bool pausedChannels = false;
+    void resetPausable() { for (int c = 0; c < 11; ++c) channelPausable[c] = c != 2; }
     // snd_fade (0x4431a0): volume scale moving linearly to `fadeTarget` at `fadeRate` per ms (fadeStep advances it).
     float fadeVolume = 1.0f, fadeTarget = 1.0f, fadeRate = 0.0f;
     void fade(float target, int ms);

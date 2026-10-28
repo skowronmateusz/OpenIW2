@@ -816,6 +816,7 @@ int main(int argc, char** argv) {
             pweapon.findOffhand = [&](const std::string& cls) { return world.playerOffhandFor(cls); };
         }
         iw2::game::Vec3 playerLookAngles{};
+        std::optional<iw2::game::LevelChange> lastChange; // the last level change that fell due
         for (int f = 0; f < seconds * 20; ++f) {
             if (godMode && world.player()) world.player()->obj->set("$godmode", iw2::script::Value(1)); // --god: FL_GODMODE
             // IW2_HEALTH_LOG=1: the player's health and the low-health overlay hud element's alpha every 0.5 s.
@@ -1319,6 +1320,11 @@ int main(int argc, char** argv) {
                     it = saveAts.erase(it);
                 } else ++it;
             world.frame();
+            if (auto ch = world.takeDueLevelChange()) { // 0x4d9f90: the change falls due (iw2game does not load the next map)
+                lastChange = ch;
+                std::cout << "[" << world.timeMs() << " ms] level change to " << ch->map << (ch->persistent ? " (persistent)" : "")
+                          << (ch->victoryScreen ? ": openvictoryscreen, nextlevel loads it" : ch->failed ? " (failed)" : "") << "\n";
+            }
             writeSaves();
             if (!menuAnswers.empty())
                 for (const auto& cmd : world.takeClientCommands())
@@ -1364,7 +1370,14 @@ int main(int argc, char** argv) {
             const auto& o = world.objectives()[size_t(i)];
             if (o.state) std::cout << "objective " << i << " state " << o.state << " " << o.text << "\n";
         }
-        if (auto ch = world.dueLevelChange()) std::cout << "level change to " << ch->map << (ch->failed ? " (failed)" : "") << "\n";
+        if (auto ch = lastChange ? lastChange : world.dueLevelChange())
+            std::cout << "level change to " << ch->map << (ch->failed ? " (failed)" : "") << (ch->victoryScreen ? " (victory screen)" : "") << "\n";
+        if (world.player()) { // the player's weapons at the end of the run
+            const auto& inv = world.inventory(*world.player());
+            std::cout << "player weapons:";
+            for (const auto& w : inv.owned) std::cout << " " << w;
+            std::cout << "; current " << world.player()->obj->get("$weapon").toString() << ", offhand " << inv.offhand << "\n";
+        }
         {
             int played = 0;
             for (const auto& [k, n] : soundsPlayed) played += n;

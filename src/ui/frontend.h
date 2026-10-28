@@ -79,6 +79,18 @@ public:
     const Item* captureItem() const { return capture_; }
     void captureKey(const std::string& keyName);
 
+    // ---- Item fades and colour overrides (window flags +0xe8: 0x04 visible, 0x10 fading out, 0x20 fading in) ----
+    // Colours of an item after setitemcolor and fades.
+    Color foreColor(const Item& it) const;
+    Color backColor(const Item& it) const;
+    // One paint-time fade step (Window_Paint 0x4c7270 for FILLED items with a background: the back colour's alpha; item text paint
+    // 0x4ce990 / 0x4cc450: the fore colour's alpha). Once the menu's fadeCycle has passed since the last step (real ms, tick()), the
+    // alpha drops by fadeAmount (fading out; at <= 0 the item stops fading and is hidden) or rises by fadeInAmount (fading in; clamped
+    // to fadeClamp, where the fade ends).
+    void paintFade(const Menu& m, const Item& it, bool back);
+    // Debug (single-frame --shot): ends every running fade as if enough paints had passed.
+    void settleFades();
+
     const Item* focus() const { return focus_; }
     const Item* hover(float x, float y) const; // hit test of the top menu (TODO(spec): item vs menu alignment)
     // Widget geometry (exe 0x4c9520/0x4cafb0): x of the slider track start in virtual pixels.
@@ -136,6 +148,14 @@ private:
     const Item* focus_ = nullptr;
     std::string loopAlias_; // soundLoop currently playing
     std::vector<std::pair<const Item*, bool>> shownOverrides_; // "show"/"hide" commands
+    struct ItemRuntime {
+        bool fadingIn = false, fadingOut = false;
+        int nextTime = 0; // window +0x1c8
+        bool hasFore = false, hasBack = false;
+        Color fore{}, back{};
+    };
+    std::map<const Item*, ItemRuntime> runtime_;
+    std::vector<const Item*> matching(const std::string& nameOrGroup) const; // 0x4c77d0 / 0x4c78a0 on the top menu
 };
 
 } // namespace iw2::ui

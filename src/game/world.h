@@ -612,6 +612,20 @@ public:
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
         return std::nullopt;
     }
+    // The server frame's handling of a due change (0x4d9f90): clears the due time (0x1c60f54) and returns what happens. With the
+    // movie-pending flag (0x1c60fe4) the flag is cleared and either the stored cinematic plays (`cinematic <name> 0`, whose end
+    // loads the map) or, without a name, the client gets `openvictoryscreen` (victoryScreen set, also queued as a client command)
+    // and the map stays stored for `nextlevel`. Otherwise loadgame_continue (failed) or the map load (0x4d9f00).
+    std::optional<LevelChange> takeDueLevelChange();
+    // The stored next map (0x1c57d88) and the persistent flag of the last changelevel (0x1c60ff0), read by `nextlevel` (0x4d9f00).
+    const std::string& storedNextMap() const { return levelChange_.map; }
+    bool storedPersistent() const { return levelChange_.persistent; }
+    // Player state handed over by a persistent level change (0x4d9dd1 -> 0x4e6c20 writes the client into a memory save). Set before
+    // start(); prepareStart() gives it to the new player before the level script runs. TODO(spec): the full client state of that
+    // memory save (health, stance, ...); only the weapon inventory and the current weapon are carried here.
+    struct CarriedPlayer { Inventory inventory; std::string weapon; };
+    void setCarriedPlayer(CarriedPlayer c) { carriedPlayer_ = std::move(c); }
+    std::optional<CarriedPlayer> carriedPlayerState();
     // cinematic(name [, timeout]) (0x4f4220) only records the movie (client state 0x1c60ff4, up to 63 characters); it is played when
     // the level change falls due (0x4d9f90 runs `cinematic <name> 0`, whose end continues the level load, 0x49db20 -> 0x4d9f00).
     // The front end takes it with takeCinematic() right before it loads the next map.
@@ -772,6 +786,8 @@ private:
     int64_t lastObjectiveMessageMs_ = -1000;
     LevelChange levelChange_;
     std::string cinematic_; // pending cinematic name (video/<name>.roq)
+    bool moviePending_ = false; // 0x1c60fe4: set by missionsuccess (0x4f4066) and cinematic (0x4f4220), consumed when the change is due
+    std::optional<CarriedPlayer> carriedPlayer_;
     int exitMs_ = 0;        // level change / cinematic exit time (0x1c60fec)
     // Death screen (docs/spec/campaign.md "Death screen"): 0x4e8e10 and its timers.
     void openDeathScreen();

@@ -13,7 +13,7 @@ namespace iw2::game {
 class World;
 
 constexpr char kStateMagic[8] = {'O', 'I', 'W', '2', 'S', 'A', 'V', 'E'};
-constexpr uint32_t kStateVersion = 1;
+constexpr uint32_t kStateVersion = 2; // 2: movie-pending flag (0x1c60fe4) after the level change
 
 struct SaveRequest {
     std::string name;                // save name without "save/" and ".svg" (header +0x460)

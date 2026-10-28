@@ -453,6 +453,7 @@ void Mixer::mix(float* out, int frames) {
     }
     for (Voice& v : voices_) {
         if (v.held) continue;
+        if (pausedChannels && v.chan >= 0 && channelPausable[v.chan]) continue; // paused samples keep their position
         float gl, gr;
         gains(v, gl, gr);
         const float cs = v.chan >= 0 ? channelScale[v.chan] : 1.0f;
