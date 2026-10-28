@@ -152,6 +152,7 @@ public:
     // Debug: "file:line function (state event)" for each live thread's innermost frame.
     std::vector<std::string> describeThreads() const;
     std::string describeThread(uint64_t id) const; // debug: wait site of one thread (empty if gone)
+    std::vector<std::string> describeThreadsOf(const ObjectPtr& self) const; // debug: wait sites of the threads whose innermost self is `self`
     // Debug: " < file:line function" for each frame of a thread, outermost first.
     std::string backtrace(const Thread& t) const;
     const std::vector<std::string>& errors() const { return errors_; }

@@ -656,7 +656,7 @@ void World::registerCombatBuiltins() {
             if (static const bool dbg = std::getenv("IW2_ACC_DEBUG") != nullptr; dbg)
                 print("ACC #" + std::to_string(a->number) + " " + a->obj->get("origin").toString() + " " + a->obj->get("weapon").toString() + " " + (enemy->isPlayer ? "player" : "ai") + " dist " +
                       std::to_string(int(len(sub(enemy->obj->get("origin").asVector(), a->obj->get("origin").asVector())))) + " chance " +
-                      std::to_string(accuracy) + (hitRoll ? " hit" : " miss"));
+                      std::to_string(accuracy) + (hitRoll ? " hit" : " miss") + " clip " + a->obj->get("bulletsinclip").toString());
             Vec3 T = target;
             if (enemy->isPlayer) T = eyePosition(*enemy); // the player's eye (0x4e8b70)
             Vec3 v = sub(T, start);

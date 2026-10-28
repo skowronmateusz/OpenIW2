@@ -1078,7 +1078,7 @@ void VM::unwind(Thread& t, size_t frame) {
 
 void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args) {
     if (static const char* log = std::getenv("IW2_NOTIFY_LOG"); log && (object->kind == "level" || std::string(log) == "all")) // debug
-        print("[notify " + std::to_string(nowMs_) + "ms] " + object->kind + "#" + std::to_string(object->id) + " " + event);
+        print("[notify " + std::to_string(nowMs_) + "ms] " + object->kind + "#" + std::to_string(object->id) + " " + event + (!args.empty() && args[0].isString() ? " \"" + args[0].asString() + "\"" : ""));
     // endon: end threads first (inferred ordering). An endon registered by a called function ends that call (and
     // the calls it made); the caller continues as if it returned undefined (*inferred*, docs/spec/gsc-vm.md).
     std::vector<Thread*> resumed;
@@ -1194,6 +1194,21 @@ std::vector<std::string> VM::describeThreads() const {
     for (const auto& th : threads_) {
         if (th->state == ThreadState::Done || th->frames.empty()) continue;
         const Frame& fr = th->frames.back();
+        const CompiledFunction& f = functions_[size_t(fr.function)];
+        const int line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
+        std::string st = th->state == ThreadState::Waiting ? "wait" : th->state == ThreadState::WaitingNotify ? "waittill " + th->waitEvent
+                         : th->state == ThreadState::WaitingFrameEnd ? "frameend" : "ready";
+        out.push_back(f.file + ":" + std::to_string(line) + " " + f.name + " (" + st + ")");
+    }
+    return out;
+}
+
+std::vector<std::string> VM::describeThreadsOf(const ObjectPtr& self) const {
+    std::vector<std::string> out;
+    for (const auto& th : threads_) {
+        if (th->state == ThreadState::Done || th->frames.empty()) continue;
+        const Frame& fr = th->frames.back();
+        if (!std::holds_alternative<ObjectPtr>(fr.self.v) || std::get<ObjectPtr>(fr.self.v) != self) continue;
         const CompiledFunction& f = functions_[size_t(fr.function)];
         const int line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
         std::string st = th->state == ThreadState::Waiting ? "wait" : th->state == ThreadState::WaitingNotify ? "waittill " + th->waitEvent
