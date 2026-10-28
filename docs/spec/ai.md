@@ -434,7 +434,7 @@ entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight,
 
 The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
 
-## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype, checkprone)
+## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype; checkprone done)
 
 Sweep with `iw2game <main> <map> 40 --spawn-all` over all 28 SP maps: the only built-in still reported as unimplemented is
 `checkprone` (x4 libya, x36 matmata, up to x99 elsewhere). The matmata prediction calls are not reported any more, but there
@@ -446,12 +446,7 @@ methods (entity from the self object, the "entity" check at 0x468ed0 error path)
   hit entity's contents word (+0x128) has bit 0x400 set it gives "obstacle"; otherwise "world". Not implemented: the repo
   does not track the bumped entity (see world.cpp note on 0x500d80 and actorfollow.cpp TODO(spec) for +0x2148).
   TODO(spec): wire +0x318 from the actor move trace, then this is a 10-line builtin.
-- `checkprone` 0x5406f0 (actor method; args: vector origin (0x46ea90), float (arg1, 0x46e6d0), int (arg2, 0x46e4a0)): calls
-  0x4fb530(entnum, &origin, 15.0, 48.0, float, 0, 0, int, 1, 0, 1, 1, 66.0) and returns its bool as an int. 0x4fb530 is a
-  capsule/box clearance test: boxes of half extents -6,-6,-6 .. 6,6,6 around points offset from the origin, traced through
-  the actor's clip function (table 0x5a9190, indexed by a byte argument), with an extra step-height pass (constants
-  0x56fcc8, 0x591e1c, 0x591e20, 0x591ed0, 0x591f30, 0x591f40, 0x5921a0). Not decoded fully (about 400 instructions of x87
-  trace math with several early-outs). TODO(spec): decode 0x4fb530 before implementing; not guessed.
+- `checkprone`: decoded and ported, see "Prone" below.
 - `beginprediction` 0x53f960 / `endprediction` 0x53fb80: snapshot / restore the actor state (the +0x218.. anim-mode words,
   the 0x43-dword AI struct, velocity/origin/angles) plus an animation-state snapshot (0x4796c0 / 0x478db0 / 0x478e10); nested
   through counter 0x1c6104c and a per-depth table at 0x1c7e52c. `predictoriginandangles` 0x53ff50 and `predictanim` 0x540020
@@ -595,3 +590,49 @@ Status: stepActorPath returns early for a followed actor (as the exe skips the p
 Open: the retarget 0x4fec50, 0x504610, the scans 0x501380 and 0x504630 (0x5025f0/0x502660), the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x53ade0, 0x501e06. The link stays gated (IW2_ACTOR_FOLLOW=1): it fires 0 times in matmata/elalamein/toujane even when enabled, so no scene validates it.
 
 - groundtype (actor +0x24c = move block +0x28, written by the ground probe 0x548290 each move): getter 0x5367b0 returns undefined for 0, the table 0x5a0344 (stride 20, same names as the pmove surface aliases bark..asphalt) for 1..22, "default" otherwise. Implemented in World::moveActor (slide path only).
+
+## Prone
+
+Source: CoD2SP_s.exe 1.3, disassembly of 0x4fb530..0x4fbff6 read instruction by instruction (Ghidra pseudo-code of a carved
+image used as a guide; it drops the outputs of the register-argument helpers 0x421270, 0x47f390 and is not trusted alone).
+Port: `src/game/prone.cpp` (fit test), `src/game/proneworld.cpp` (built-ins), test `tests/test_prone.cpp`.
+
+### Fit test 0x4fb530
+
+Arguments (cdecl, 14): a1 entity number (pass entity), a2 origin, a3 radius, a4 height, a5 yaw, a6/a7/a8 optional outputs,
+a9 already prone, a10 strict, a11 optional ground normal, a12 index into the sweep table 0x5a9190 (12-byte entries, first
+dword the sweep: 0 -> 0x4b9810, 1 -> 0x4db7f0 = G_Trace 0x44bf00 with (result, start, mins, maxs, end, pass, mask)),
+a13 adds 0x10000 to the mask 0x810011, a14 body length. Constants (.rdata): 6 (0x56fcc8), 10 (0x591e8c), 0.7 (0x591f30),
+180 (0x591e1c), 1 (0x591e20), 2 (0x591ed0), 48 (0x591f40), 22 (0x5921a0), 2.5 (0x591e44), -0.75 (0x59219c), 0.5
+(0x591e10), 18 (0x591f44), -50 (0x592030), 70 (0x592198), 5 (0x591ef0). "Probe" below is the box -6..6 on all axes.
+
+1. Unless already prone: the box (-r,-r,0)..(r,r,h) swept from the origin 10 units up must not end all-solid (trace byte
+   +0x22), else false.
+2. Strict with a ground normal whose z < 0.7: false.
+3. Body direction F = AngleVectors(0, yaw - 180, 0) (forward of 0x421da0, which takes angles in edx and forward/right/up in
+   esi/edi/ebx). Probe height z0 = h - 6, reach = length - 6. Probe sweep from origin + (0,0,z0) to that + F * reach.
+   - Clear (fraction >= 1): body length D = length, not shortened.
+   - Blocked: non-strict callers get false here. D = reach * fraction + 6; D < r + 2 gives false. If D < z0 * 0.7 + 48
+     (always with checkprone's numbers: 77.4 > 66) the end is raised 22, F becomes the unit vector of (end - start)
+     (0x421270 writes it through esi, which still points at F) and the sweep is repeated: clear gives D = length and
+     "not shortened"; blocked gives D = |end - start| * fraction + 6, false when still below 77.4, else "shortened".
+   - The foot point K = start + (end - start) * fraction of the last sweep.
+4. Hip drop: from origin + F * 48 + (0,0,z0) straight down by r * 2.5 + z0 - 6. Fraction exactly 1 goes to the fallback
+   (below); hit normal z < 0.7 gives false. Hip B = hit point - (0,0,6); hip drop distance hd = drop * fraction + 6.
+5. Only when shortened: D - hd < hd * -0.75 goes to the fallback. Direction V = unit(F * 6 + (K - B) + (0,0,6)); with
+   rest = reach - 48 the sweep goes from the hip probe start S2 to (xy: midpoint of origin + F * reach and S2 + V * rest,
+   z: S2.z + V.z * rest). Blocked: start = hit point, start and end raised 18, swept again; blocked again goes to the
+   fallback. K = end point of the last of these sweeps (0x47f390 with eax = start, edx = end, ecx = out).
+6. Foot drop: from K down by (K.z - B.z) * 2 + r. Fraction exactly 1: fallback; normal z < 0.7: false. K = hit point -
+   (0,0,6).
+7. Bend: pitch(K - B) - pitch(B - origin), wrapped into -180..180 (0x423f50 = a - b, then +-360 until inside), where pitch
+   (0x421990) is -atan2(z, |xy|) in degrees plus 360 when negative (vertical: 270 up, 90 down). Outside [-50, 70] fails.
+   Point sweeps (zero box) from origin + (0,0,5) to B + (0,0,5) and from B + (0,0,5) to K + (0,0,5) must be clear.
+8. Outputs: a6 = 0 (int); a7 = pitch(origin - B), a8 = pitch(B - K), both through 0x424040 (16-bit angle grid via _ftol2
+   truncation, then -180..180). All checks passed: true. Fallback (and a failed step 7): strict gives false; non-strict
+   zeroes the outputs and returns true.
+
+`checkprone(origin, yaw, alreadyProne)` 0x5406f0: actor only ("not an actor"), reads vector / float / int, calls the test
+with (entity, origin, 15, 48, yaw, -, -, -, alreadyProne, strict 1, no normal, table 1, +0x10000, 66) and returns the int.
+Ported exactly; on toujane / moscow (`--spawn-all`, 60 s) 187 / 226 calls, 168 / 90 fit, no runtime errors. Note the
+trace pass entity is the actor itself, and our G_Trace stands in for 0x44bf00 (capsule sweep, docs/spec/collision.md).

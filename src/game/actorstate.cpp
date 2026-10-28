@@ -781,6 +781,7 @@ void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
     registerBadPlaceBuiltins();
     registerGrenadeBuiltins();
+    registerProneBuiltins();
     // orientmode(mode[, angle | vector]) (0x53f510): sets the override facing +0x114 and, for the explicit modes, the
     // override target +0x120 (16-bit quantised yaw). "face enemy" 3, "face enemy or motion" 4, "face goal" 6, "face
     // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and

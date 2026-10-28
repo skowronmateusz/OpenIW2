@@ -939,6 +939,7 @@ private:
     bool pathToGoal(Entity& e);
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
     void registerCoverBuiltins();
+    void registerProneBuiltins(); // src/game/proneworld.cpp
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void turretFireSound(Entity& t, bool playerOwner);
