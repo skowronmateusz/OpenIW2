@@ -634,6 +634,36 @@ void World::registerGrenadeBuiltins() {
         ai.throwMethod = method;
         return Value(vel);
     });
+    // checkGrenadeThrow(armOffset, method) (0x53e720): checkGrenadeThrowPos at the enemy's predicted position. Nothing
+    // without an enemy sentient or without grenade ammo; with g ≤ 0 or a grenade already handled the pending throw is
+    // dropped; otherwise the target is the enemy's origin plus its velocity (0x514ed0: actor +0x230, the player's
+    // ps velocity), kept with the re-solve-from-the-hand flag (+0x20d4 = 1) and the method, and the 0x51f490 logic
+    // (anyway = 0, from the actor's origin) decides; the velocity is returned.
+    vm_.registerBuiltin("checkgrenadethrow", [this, actorOf](CallContext& c) {
+        Entity& e = actorOf(c);
+        const Vec3 arm = c.arg(0).asVector();
+        const std::string method = c.arg(1).toString();
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (!enemy || !(enemy->isActor || enemy->isPlayer)) return Value();
+        const Value ammo = e.obj->get("grenadeammo");
+        if (!ammo.isNumber() || ammo.asInt() < 1) return Value();
+        ActorAi& ai = e.ai;
+        if (gravity() <= 0.0f || ai.grenade) {
+            ai.throwPending = false;
+            return Value();
+        }
+        const Vec3 target = add(originOf(enemy->obj), enemy->velocity);
+        ai.throwTarget = target;
+        ai.throwFromTag = true;
+        ai.throwMethod = method;
+        Vec3 start, vel;
+        const bool ok = throwSolution(e, originOf(e.obj), arm, method, target, false, start, vel);
+        ai.throwPending = ok;
+        if (!ok) return Value();
+        ai.throwStart = start;
+        ai.throwVel = vel;
+        return Value(vel);
+    });
     // throwGrenade (0x53ee10): a pending throw goes off: the held grenade thrown back from the grenade state, else a
     // new grenade of the actor's grenade weapon (5 s fuse; grenadeammo − 1). Dead actors only drop the pending throw.
     vm_.registerBuiltin("throwgrenade", [this, actorOf, grenadeWeapon](CallContext& c) {
