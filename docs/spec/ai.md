@@ -284,8 +284,8 @@ passes on its own knowledge of its enemy (copied per-sentient when the target's 
 `grenadePing` instead of this dispatch. Knowledge is kept per sentient (0x500c50 learns position + own position then,
 0x54ddc0 "known within ms"). Implemented in `src/game/actorevents.cpp`; producers wired in `combat.cpp` (G_Damage,
 Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain reveal, death).
-The +0x48 accumulator is not a pain accumulator: it is the movement-noise accumulator 0x5485a0 (`actorMoveNoise`). TODO(spec): the turret entity +0x10c field of the pain/death handler, the player pain events 2/3 of
-the client fire path (0x4e786b / 0x4e787b).
+The +0x48 accumulator is not a pain accumulator: it is the movement-noise accumulator 0x5485a0 (`actorMoveNoise`). TODO(spec): the turret entity +0x10c field of the pain/death handler. The player's events 2/3 are the footstep and
+landing events of G_ClientEvents 0x4e75f0 (`World::playerPmEvents`).
 
 ## Bad places (observed 0x524060 0x5199f0)
 
