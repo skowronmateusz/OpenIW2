@@ -157,3 +157,14 @@ and four ±15 offsets), the danger planes (+0x2050).
   currentOrigin is set to endpos at once. Settling (0x523315..0x5233a9) needs fraction < 0.01 and normal z > 0, else the item is freed;
   no-drop contents 0x80000000 at the origin free it too. Open (multi-function): the entity flag byte +0xa4 gating it, and the exe's
   per-frame gravity re-base (0x523086), which the port replaces with "settle on the first hit".
+
+## Open findings (item settle, water), not ported
+- Entity byte +0xa4 is the in-use flag (savegame and getent loops), so the "gate" in G_RunItem is always true for a live item.
+- Item settle: the exe's frame loop settles only when the trace has fraction < 0.01 and normal z > 0, but the collision spec's trace
+  leaves an epsilon of 0.125 before a surface, so with the 1-unit gravity step a fraction < 0.01 looks unreachable. The reading of the
+  fraction operand (0x24(esp) after the slide lerp) or of 0x420d90 (<0.1 -> end z -= 1) is therefore unresolved; no headless item-drop
+  harness exists, so runItems keeps "settle on the first hit".
+- Missile water entry: G_RunMissile (0x526c6c..0x526dd4) traces twice (0x526840); when the second trace's surface type
+  ((surfaceFlags & 0x1f00000) == 0x1400000, water) it calls 0x526b40, which creates a temp entity event 0xb8 (0x4d7f40) holding the
+  quantised direction (bytes at +4/+3 from 0x420c30), the surface type (+1) and the entity number (+0xa). Client handling of event 0xb8
+  is not decoded.
