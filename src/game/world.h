@@ -1043,6 +1043,13 @@ private:
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;
     std::vector<PathNode> nodes_;
+    // The node kd-tree (built once by 0x52de40): `nodeTreeOrder_` is the node array as the build permutes it, the tree
+    // nodes are {axis (-1 = leaf), split, left, right} or, for a leaf, {-1, -, count, first}.
+    struct NodeTreeEnt { int axis; float split; int a, b; };
+    mutable std::vector<int> nodeTreeOrder_;
+    mutable std::vector<NodeTreeEnt> nodeTree_;
+    mutable size_t nodeTreeFor_ = ~size_t(0);
+    int buildNodeTree(int first, int count) const;
     FriendlyChains chains_;
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;

@@ -356,16 +356,8 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
     Vec3 goal = vecField(e.obj, "origin");
     float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
     actorGoal(e, goal, r, h);
-    std::vector<std::pair<int, float>> list;
-    // TODO(spec): the original walks a node tree (0x516820), so which 256 nodes are taken when more qualify differs.
-    for (size_t i = 0; i < nodes_.size() && list.size() < 256; ++i) {
-        const PathNode& n = nodes_[i];
-        if (!(kCoverTypes >> n.typeNum & 1) || (n.spawnflags & 1)) continue;
-        const Vec3 no = vecField(n.obj, "origin");
-        const float dz = no[2] - goal[2];
-        if (dist2d(no, goal) > r * r || dz * dz > h * h) continue;
-        list.push_back({int(i), 0.0f});
-    }
+    // The node tree query (0x516950 / 0x516820), 256 nodes at most, in the tree order.
+    std::vector<std::pair<int, float>> list = nodesInRange(goal, r, h, 256, kCoverTypes & ~1u);
     std::vector<std::pair<int, float>> kept;
     for (auto [node, score] : list) {
         if (node == ignore || !nodeUsable(e, node) || !nodeFacesEnemy(e, node)) continue;

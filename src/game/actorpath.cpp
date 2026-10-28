@@ -157,20 +157,87 @@ bool World::nodeBeyondPlanes(int node, const std::vector<PathPlane>& planes) con
 
 // 0x516950 / 0x516820: nodes within `radius` (2D) of `center` whose height difference is at most `height`, of a type
 // in `typeMask` (spawnflag 1 nodes only when bit 0 is set), at most `max`, with their 2D distance². TODO(spec): the
-// original walks a node tree, so which nodes are taken when more than `max` qualify can differ.
+// original walks a node kd-tree, so the nodes taken when more than `max` qualify are the first ones in its order.
+// The tree (0x52de40, built once over the node array in index order): fewer than 4 nodes, or an extent of at most 192
+// on the wider of x / y (y when its extent is the larger), make a leaf; otherwise the array is split at the middle of
+// the extent by a two-ended partition (key < split to the left), the cut then moved towards the middle past the keys
+// equal to the split. The walk (0x516820) takes the left side unless the centre is more than the radius beyond the
+// split, then the right side unless it is more than the radius before it, and the leaf nodes in their permuted order.
+// TODO(spec): a map that ships a precomputed tree (0x52ee40) is assumed to carry the one this build gives.
+int World::buildNodeTree(int first, int count) const {
+    auto key = [&](int i, int axis) { return originOf(nodes_[size_t(nodeTreeOrder_[size_t(i)])].obj)[size_t(axis)]; };
+    if (count >= 4) {
+        double mn[2], mx[2];
+        for (int ax = 0; ax < 2; ++ax) {
+            mn[ax] = mx[ax] = key(first, ax);
+            for (int i = 1; i < count; ++i) {
+                const double v = key(first + i, ax);
+                if (v < mn[ax]) mn[ax] = v;
+                if (v > mx[ax]) mx[ax] = v;
+            }
+        }
+        const int ax = (mx[1] - mn[1]) > (mx[0] - mn[0]) ? 1 : 0;
+        if (mx[ax] - mn[ax] > 192.0) {
+            const float split = float((mn[ax] + mx[ax]) * 0.5);
+            int i = 0, j = count - 1;
+            for (;;) {
+                while (key(first + i, ax) < split) ++i;
+                while (key(first + j, ax) > split) --j;
+                if (i >= j) break;
+                std::swap(nodeTreeOrder_[size_t(first + i)], nodeTreeOrder_[size_t(first + j)]);
+                ++i;
+                --j;
+            }
+            while (2 * i < count && key(first + i, ax) == split) ++i;
+            while (2 * i > count && key(first + i - 1, ax) == split) --i;
+            if (i > 0 && i < count) {
+                const int l = buildNodeTree(first, i), r = buildNodeTree(first + i, count - i);
+                nodeTree_.push_back({ax, split, l, r});
+                return int(nodeTree_.size()) - 1;
+            }
+        }
+    }
+    nodeTree_.push_back({-1, 0.0f, count, first});
+    return int(nodeTree_.size()) - 1;
+}
+
 std::vector<std::pair<int, float>> World::nodesInRange(const Vec3& center, float radius, float height, size_t max,
                                                        uint32_t typeMask) const {
     std::vector<std::pair<int, float>> out;
-    for (size_t i = 0; i < nodes_.size() && out.size() < max; ++i) {
-        const PathNode& n = nodes_[i];
-        const Vec3 p = originOf(n.obj);
-        const float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
-        const float d2 = dx * dx + dy * dy;
-        if (d2 > radius * radius || !(typeMask >> n.typeNum & 1)) continue;
-        if ((n.spawnflags & 1) && !(typeMask & 1)) continue;
-        if (dz * dz > height * height) continue;
-        out.push_back({int(i), d2});
+    if (nodeTreeFor_ != nodes_.size()) {
+        nodeTreeOrder_.resize(nodes_.size());
+        for (size_t i = 0; i < nodes_.size(); ++i) nodeTreeOrder_[i] = int(i);
+        nodeTree_.clear();
+        if (!nodes_.empty()) buildNodeTree(0, int(nodes_.size()));
+        nodeTreeFor_ = nodes_.size();
     }
+    if (nodes_.empty()) return out;
+    const int root = int(nodeTree_.size()) - 1;
+    auto walk = [&](auto&& self, int t) -> void {
+        for (;;) {
+            const NodeTreeEnt& e = nodeTree_[size_t(t)];
+            if (e.axis < 0) {
+                for (int k = 0; k < e.a; ++k) {
+                    const int i = nodeTreeOrder_[size_t(e.b + k)];
+                    const PathNode& n = nodes_[size_t(i)];
+                    const Vec3 p = originOf(n.obj);
+                    const float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
+                    const float d2 = dx * dx + dy * dy;
+                    if (d2 > radius * radius || !(typeMask >> n.typeNum & 1)) continue;
+                    if ((n.spawnflags & 1) && !(typeMask & 1)) continue;
+                    if (dz * dz > height * height) continue;
+                    if (out.size() == max) return;
+                    out.push_back({i, d2});
+                }
+                return;
+            }
+            const float d = center[size_t(e.axis)] - e.split;
+            if (!(d > radius)) self(self, e.a);
+            if (-radius > d) return;
+            t = e.b;
+        }
+    };
+    walk(walk, root);
     return out;
 }
 
