@@ -47,6 +47,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <iomanip>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -3370,19 +3371,36 @@ int main(int argc, char** argv) {
             }
             const float lineH = float(f.pixelHeight) * scale;
             float ty = y - alignY * lineH * float(lines.size());
+            // Colour codes (renderer 0x100329a0, table 0x10197f9c): "^" + digit 0..9 is not drawn and takes no width; 0..6 select black, red, green,
+            // yellow, blue, cyan, magenta (the base alpha is kept), 7 restores the item colour. TODO(spec): 8 and 9 read two dwords set at run time
+            // (0x1070c4c4 / 0x1070c4c0, zero in the file); here they keep the current colour.
+            static const uint8_t kCodes[7][3] = {{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {0, 0, 255}, {0, 255, 255}, {255, 0, 255}};
+            auto isCode = [](const std::string& l, size_t i) { return l[i] == '^' && i + 1 < l.size() && l[i + 1] >= '0' && l[i + 1] <= '9'; };
             for (const auto& line : lines) {
                 float width = 0;
-                for (unsigned char c : line)
-                    if (const auto* g = f.find(c)) width += float(g->dx) * scale;
+                for (size_t i = 0; i < line.size(); ++i) {
+                    if (isCode(line, i)) { ++i; continue; }
+                    if (const auto* g = f.find((unsigned char)line[i])) width += float(g->dx) * scale;
+                }
                 float pen = x - alignX * width;
-                for (unsigned char c : line) {
+                uint8_t cur[4];
+                std::memcpy(cur, rgba, 4);
+                for (size_t ci = 0; ci < line.size(); ++ci) {
+                    if (isCode(line, ci)) {
+                        const int n = line[ci + 1] - '0';
+                        if (n == 7) std::memcpy(cur, rgba, 4);
+                        else if (n < 7) std::memcpy(cur, kCodes[n], 3);
+                        ++ci;
+                        continue;
+                    }
+                    const unsigned char c = (unsigned char)line[ci];
                     const auto* g = f.find(c);
                     if (!g) continue;
                     if (g->width && g->height) {
                         Quad2D q{pen + float(g->x0) * scale, ty + lineH + float(g->y0) * scale, 0, 0, g->s0, g->t0, g->s1, g->t1};
                         q.x1 = q.x0 + float(g->width) * scale;
                         q.y1 = q.y0 + float(g->height) * scale;
-                        std::memcpy(q.rgba, rgba, 4);
+                        std::memcpy(q.rgba, cur, 4);
                         q.texture = tex;
                         if (shadow > 0) {
                             Quad2D s = q;
@@ -4718,7 +4736,7 @@ int main(int argc, char** argv) {
                             }
                         } else
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
-                        if (it.type == 4 || it.type == 16) { // edit field value (exe 0x4cd0e0); TODO(spec): paint window 0x4cc170 / colour codes
+                        if (it.type == 4 || it.type == 16) { // edit field value (exe 0x4cd0e0); colour codes: hudText; TODO(spec): paint window
                             const std::string val = menuEnv.getCvar(it.dvar);
                             const int off = frontStack.editItem() == &it ? frontStack.editOffset() : 0;
                             std::string shown = off < int(val.size()) ? val.substr(size_t(off)) : std::string();
@@ -4726,7 +4744,10 @@ int main(int argc, char** argv) {
                             const float vx = frontStack.valueTextX(menu, it);
                             auto widthOf = [&](const std::string& str) {
                                 float wd = 0;
-                                for (unsigned char ch : str) if (const auto* g = f->find(ch)) wd += float(g->dx) * gs;
+                                for (size_t k = 0; k < str.size(); ++k) { // "^N" colour codes take no width (renderer 0x100329a0)
+                                    if (str[k] == '^' && k + 1 < str.size() && str[k + 1] >= '0' && str[k + 1] <= '9') { ++k; continue; }
+                                    if (const auto* g = f->find((unsigned char)str[k])) wd += float(g->dx) * gs;
+                                }
                                 return wd;
                             };
                             hudText(front, shown, x0 + vx * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
@@ -5962,6 +5983,17 @@ int main(int argc, char** argv) {
                         a >> ms;
                         if (musicHandle) mixer.fadeOut(musicHandle, ms);
                         musicHandle = 0;
+                    } else if (cmd.name == "reverb") { // reverb <prio> "<room>" <dry> <wet> <fade s> (CG_ReverbCmd 0x4a6350)
+                        int prio = 0;
+                        std::string room;
+                        float dry = 0, wet = 0, fadeS = 0;
+                        a >> prio >> std::quoted(room) >> dry >> wet >> fadeS;
+                        mixer.reverbCommand(prio, room, dry, wet, fadeS);
+                    } else if (cmd.name == "deactivatereverb") { // deactivatereverb <prio> <fade s> (0x4a6500)
+                        int prio = 0;
+                        float fadeS = 0;
+                        a >> prio >> fadeS;
+                        mixer.deactivateReverbCommand(prio, fadeS);
                     } else if (cmd.name == "snd_fade") { // snd_fade <volume> <ms> (0x4a6ec4)
                         float vol = 1;
                         int ms = 0;

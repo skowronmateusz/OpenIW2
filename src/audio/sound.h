@@ -1,6 +1,7 @@
 // Sounds: PCM .wav files, sound aliases (soundaliases/*.csv) and a small software mixer (docs/spec/sound.md).
 #pragma once
 
+#include "audio/reverb.h"
 #include "fs/vfs.h"
 
 #include <array>
@@ -36,6 +37,8 @@ struct SoundAlias {
     bool loop = false;
     bool master = false;       // masterslave column "master" (alias flag 0x2)
     float slavePct = -1;       // masterslave column number 0..1 (alias flag 0x4, +0x30); -1 = not a slave
+    bool noWetLevel = false;   // `reverb` column contains "nowetlevel" (alias flag 0x10, 0x429130): the voice gets no reverb send
+    bool fullDryLevel = false; // `reverb` column contains "fulldrylevel" (alias flag 0x8); TODO(spec): no consumer found in the exe
     // volumefalloffcurve (soundaliases/<name>.vfcurve, alias +0x40): knots (x = normalised distance 0..1, y = gain); an empty
     // column keeps the built-in default curve (0,1)-(1,0) (0x428d22).
     std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
@@ -94,6 +97,14 @@ public:
     float fadeVolume = 1.0f, fadeTarget = 1.0f, fadeRate = 0.0f;
     void fade(float target, int ms);
     void fadeStep(float ms);
+    // Environment effects (reverb) state, see audio/reverb.h. `enableReverb` is the dvar snd_enableReverb (default 1).
+    // TODO(spec): the reverb DSP is Miles' (mss32.dll), so only the state is modelled.
+    void reverbCommand(int prio, const std::string& room, float dry, float wet, float fadeSeconds);
+    void deactivateReverbCommand(int prio, float fadeSeconds);
+    // Reverb send of a voice (0 without the handle's wet level): the exe passes this to AIL_set_sample_reverb_levels.
+    float voiceWetLevel(int handle) const;
+    EnvReverb reverb;
+    bool enableReverb = true;
 
 private:
     std::string lastSubtitle_;
@@ -110,6 +121,7 @@ private:
         float gain = 1, fadeRate = 0; // per-voice fade (fadeRate = gain lost per output frame, negative = fade in)
         bool master = false;
         float slavePct = -1;
+        bool noWet = false;
         int chan = -1; // index into kChannels (the alias `channel` column), -1 = unknown
         float volLow = 0, volHigh = 0;
         std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
@@ -127,6 +139,7 @@ private:
     std::vector<Voice> voices_;
     Vec3 listener_{0, 0, 0}, forward_{1, 0, 0}, right_{0, -1, 0};
     int nextHandle_ = 1;
+    double reverbMs_ = 0;
     float duck_ = 0; // 0x793cfc: 0..1, rises while a master voice plays
 };
 

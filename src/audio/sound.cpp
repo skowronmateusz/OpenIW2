@@ -197,6 +197,12 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
                 const float pct = num(ms, -1);
                 if (pct >= 0 && pct <= 1) a.slavePct = pct;
             }
+            // reverb column (0x429130): substring "nowetlevel" sets alias flag 0x10, "fulldrylevel" flag 0x8.
+            {
+                const std::string rv = lower(get("reverb"));
+                a.fullDryLevel = rv.find("fulldrylevel") != std::string::npos;
+                a.noWetLevel = rv.find("nowetlevel") != std::string::npos;
+            }
             if (const std::string c = lower(get("volumefalloffcurve")); !c.empty()) {
                 if (const auto it = curves.find(c); it != curves.end()) a.curve = it->second;
             }
@@ -266,6 +272,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     v.chan = channelIndex(a->channel);
     v.master = a->master;
     v.slavePct = a->slavePct;
+    v.noWet = a->noWetLevel;
     int handle;
     {
         std::lock_guard lock(mutex_);
@@ -406,9 +413,30 @@ void Mixer::fadeStep(float ms) {
     }
 }
 
+void Mixer::reverbCommand(int prio, const std::string& room, float dry, float wet, float fadeSeconds) {
+    std::lock_guard lock(mutex_);
+    reverb.activateCommand(prio, room, dry, wet, fadeSeconds);
+}
+void Mixer::deactivateReverbCommand(int prio, float fadeSeconds) {
+    std::lock_guard lock(mutex_);
+    reverb.deactivateCommand(prio, fadeSeconds);
+}
+float Mixer::voiceWetLevel(int handle) const {
+    std::lock_guard lock(mutex_);
+    for (const Voice& v : voices_)
+        if (v.handle == handle) return reverb.voiceWet(v.noWet, enableReverb);
+    return 0.0f;
+}
+
 void Mixer::mix(float* out, int frames) {
     std::fill(out, out + size_t(frames) * 2, 0.0f);
     std::lock_guard lock(mutex_);
+    // Reverb ramp (0x4442xx): advances the active slot's dry/wet by whole milliseconds.
+    reverbMs_ += double(frames) * 1000.0 / double(rate_);
+    if (reverbMs_ >= 1.0) {
+        reverb.tick(int(reverbMs_));
+        reverbMs_ -= std::floor(reverbMs_);
+    }
     // Duck state (0x443bb0): rises while any master voice plays, falls otherwise, over snd_slaveFadeTime; 0 ms switches at once.
     {
         bool masterPlaying = false;
