@@ -338,6 +338,10 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     p.axis[0] = ax[0];
     p.axis[1] = ax[1];
     p.axis[2] = ax[2];
+    if (e.type == "Particle" || e.type == "OrientedParticle") { // stepped by 0x480bd0 from the spawn point (tag space for relative)
+        p.pos = p.bolt ? p.local0 : p.origin;
+        p.lastMs = startMs;
+    }
     const uint32_t randBits[6] = {0x2000, 0x4000, 0x8000, 0x10000, 0x20000, 0x40000};
     for (int k = 0; k < 6; ++k) p.rnd[k] = flags & randBits[k] ? frand() : 0.0f;
     for (int k = 0; k < 3; ++k) p.velRnd[k] = flags & 0x80000 ? frand() : 0.0f;
@@ -534,7 +538,7 @@ bool FxSystem::stepEmitter(FxParticle& p, int64_t nowMs) {
         }
         const FVec old = p.pos;
         if (!physicsStep(p, dtMs, orient)) return false;
-        if (p.cloud || p.tail) continue; // 0x482a30 / 0x483010 run their own channel updates
+        if (!p.emitter || p.tail) continue; // Particle 0x480330, OrientedParticle 0x482630, Cloud 0x482a30, Tail 0x483010: no spin
         if (p.pos[0] == old[0] && p.pos[1] == old[1] && p.pos[2] == old[2])
             for (float& x : p.angRate) x *= 0.7f;
         for (int k = 0; k < 3; ++k) p.ang[size_t(k)] += float(dtMs) * 0.01f * p.angRate[size_t(k)];
@@ -909,6 +913,13 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             }
             if (!p.tail) continue;
         }
+        // Particle (0x480330) and OrientedParticle (0x482630) move by the physics step 0x480bd0 every update (false: the element
+        // dies). The analytic position (0x4816c0) is only used by the exe for the late part of a spawn (0x48caa0, TODO(spec)).
+        const bool moving = e.type == "Particle" || e.type == "OrientedParticle";
+        if (moving && !stepEmitter(p, nowMs)) {
+            p.dead = true;
+            continue;
+        }
         const uint32_t flags = e.flagBits();
         const float life = float(p.endMs - p.startMs);
         const float t = float(nowMs - p.startMs);
@@ -941,6 +952,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!(*p.bolt)(tagNow)) continue;
             pos = fromTagSpace(tagNow, add(p.local0, sub(pos, p.origin)));
         }
+        if (moving) pos = relative ? fromTagSpace(tagNow, p.pos) : p.pos; // +0x7c (0x48037a / 0x48269c)
         FxTag tailTag;
         if (p.tail) { // +0x7c = the position, through the bolt for relative (0x483072)
             if (p.bolt && !(*p.bolt)(tailTag)) continue;

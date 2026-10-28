@@ -107,6 +107,11 @@ the piecewise-linear curve), used for velocities.
   axes (view +0x18 / +0x24, normal −forward +0xc) and a = angle · π/180: R = size(cos a · L − sin a · U), V = size2(cos a · U +
   sin a · L); corners C + R + V (u0, v0), C − R + V (u1, v0), C − R − V (u1, v1), C + R − V (u0, v1) (0x1003f560, indices 0 1 3,
   3 1 2), uv from the atlas rectangle 0x1003fa60, colour bytes. So `size` is the half width and `size2` the half height.
+- Motion: Particle (0x480330) and OrientedParticle (0x482630) positions come from the physics step 0x480bd0 every update
+  (see "Emitter physics"), so usePhysics / useBBox / impactKills / impactFx apply to them as to Emitters (95 / 150 / 76 / 9
+  shipped Particle elements). The analytic position 0x4816c0 is used only by 0x48caa0 for the late part of a spawn
+  (pos += 0x4816c0(ms) · ms · 0.001 for ms > 0; TODO(spec): not applied, OpenIW2 steps from the scheduled spawn time).
+  Light and Line / Cylinder elements do not call 0x480bd0.
 - OpenIW2: `FxSprite::size2` / `rotation`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its continuous limit
   (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the size = 0 / size2 = 0 skips; OrientedParticle (type 7, 0x1003ffe0).
 
