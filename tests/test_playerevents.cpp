@@ -1,6 +1,7 @@
 // Tests for the landing outcome (PM_CrashLand 0x508fe0) and the player-state event sounds / fall damage.
 
 #include "game/playerevents.h"
+#include "game/textmessage.h"
 #include "game/pmove.h"
 
 #include <cmath>
@@ -94,5 +95,19 @@ int main() {
     CHECK(fallDamageAmount(200, 25) == 49);
 
     if (failures == 0) std::cout << "playerevents: ok\n";
+        {
+        // Text message localization (0x496e80): the item pickup message `GAME_PICKUP_AMMO\x14<displayName>` (0x58e080).
+        auto find = [](const std::string& k) -> const std::string* {
+            static const std::string a = "Picked up ammo for the &&1", g = "Stielhandgranate", o = "Objective: &&1";
+            if (k == "GAME_PICKUP_AMMO") return &a;
+            if (k == "WEAPON_GERMANGRENADE") return &g;
+            if (k == "OBJ") return &o;
+            return nullptr;
+        };
+        CHECK(iw2::game::localizeTextMessage("GAME_PICKUP_AMMO\x14WEAPON_GERMANGRENADE", find) == "Picked up ammo for the Stielhandgranate");
+        CHECK(iw2::game::localizeTextMessage("GAME_PICKUP_AMMO\x15WEAPON_GERMANGRENADE", find) == "Picked up ammo for the WEAPON_GERMANGRENADE");
+        CHECK(iw2::game::localizeTextMessage("^2\x14OBJ\x1f" "5", find) == "^2Objective: 5");
+        CHECK(iw2::game::localizeTextMessage("plain text", find) == "plain text");
+    }
     return failures == 0 ? 0 : 1;
 }

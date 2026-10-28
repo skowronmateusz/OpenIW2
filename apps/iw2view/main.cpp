@@ -20,6 +20,7 @@
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
+#include "game/textmessage.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
@@ -3955,21 +3956,15 @@ int main(int argc, char** argv) {
                     std::vector<WindowRow> rows;
                     for (const auto& m : screenMessages) {
                         if (m.bold != bold) continue;
-                        std::string raw = m.text.substr(0, m.text.find('\x1f'));
-                        const std::string* t = loc.find(raw);
-                        std::string text = t ? *t : raw;
-                        for (size_t at = m.text.find('\x1f'), n = 1; at != std::string::npos; ++n) {
-                            const size_t next = m.text.find('\x1f', at + 1);
-                            const std::string arg = m.text.substr(at + 1, next == std::string::npos ? next : next - at - 1);
-                            const std::string mark = "&&" + std::to_string(n);
-                            if (const size_t k = text.find(mark); k != std::string::npos) text.replace(k, mark.size(), arg);
-                            at = next;
-                        }
-                        std::string cur;
+                        // SEH_LocalizeTextMessage (0x496e80): 0x14 / 0x15 segments, localized references substituted into &&N.
+                        const std::string text = game::localizeTextMessage(m.text, [&](const std::string& k) { return loc.find(k); });
+                        std::string cur, code; // the last ^N colour code carries over to the next row (rows keep per-character colours)
                         std::istringstream words(text);
                         for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back({cur, m.startNs, m.endNs}); cur.clear(); }
-                            cur += (cur.empty() ? "" : " ") + wd;
+                            if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back({cur, m.startNs, m.endNs}); cur = code; }
+                            cur += (cur.empty() || cur == code ? "" : " ") + wd;
+                            for (size_t k = 0; k + 1 < wd.size(); ++k)
+                                if (wd[k] == '^' && wd[k + 1] >= '0' && wd[k + 1] <= '9') code = wd.substr(k, 2);
                         }
                         if (!cur.empty()) rows.push_back({cur, m.startNs, m.endNs});
                     }
@@ -4002,10 +3997,12 @@ int main(int argc, char** argv) {
                         hudText(out, it->text, x, ry * sc, 12.0f / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
                     }
                 };
-                const uint8_t green[4] = {0, 255, 0, 255};
+                // The rows keep per-character colours from the ^ codes; plain text is white (only obj_update / obj_complete are
+                // formatted "^2%s" by the client handler, 0x57f6a0), so pickup and iprintln messages are white.
+                const uint8_t white[4] = {255, 255, 255, 255};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, green, 0);
+                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, white, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
                 // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
@@ -5309,7 +5306,8 @@ int main(int argc, char** argv) {
                             if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
                             else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
                         }
-                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
+                        else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
+                            shotMsgs.push_back({cmd.name == "gm" ? cmd.arg : "^2\x14" + cmd.arg, world->timeMs(), false}); // obj_*: "^2%s" (0x57f6a0)
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
                 }
                 // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
@@ -6372,7 +6370,7 @@ int main(int argc, char** argv) {
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
-                        screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull, false, SDL_GetTicksNS(), SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
+                        screenMessages.push_back({cmd.name == "gm" ? cmd.arg : "^2\x14" + cmd.arg, /* obj_*: formatted "^2%s" (0x57f6a0) */ SDL_GetTicksNS() + 5000000000ull, false, SDL_GetTicksNS(), SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
                     else if (cmd.name == "gmb")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true, SDL_GetTicksNS(), SDL_GetTicksNS() + 8000000000ull}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
