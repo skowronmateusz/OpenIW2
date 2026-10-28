@@ -32,6 +32,40 @@ using script::StateWriter;
 
 namespace {
 
+// A vehicle path node copy of a setswitchnode replacement (VehiclePathPos::switched / original). The node's script object is one of
+// the collected getallvehiclenodes objects.
+void writeVNode(StateWriter& w, const ObjectTable& t, const VehicleNode& n) {
+    w.i32(t.indexOf(n.obj));
+    w.str(n.name);
+    w.str(n.target);
+    w.b(n.rotate);
+    w.f32(n.speed);
+    w.f32(n.lookahead);
+    w.vec3(n.origin);
+    w.vec3(n.dir);
+    w.vec3(n.angles);
+    w.f32(n.length);
+    w.i32(n.next);
+    w.i32(n.prev);
+}
+
+VehicleNode readVNode(StateReader& r, const ObjectTable& t) {
+    VehicleNode n;
+    n.obj = t.object(r.i32());
+    n.name = r.str();
+    n.target = r.str();
+    n.rotate = r.b();
+    n.speed = r.f32();
+    n.lookahead = r.f32();
+    n.origin = r.vec3();
+    n.dir = r.vec3();
+    n.angles = r.vec3();
+    n.length = r.f32();
+    n.next = r.i32();
+    n.prev = r.i32();
+    return n;
+}
+
 void writeTraj(StateWriter& w, const Trajectory& t) {
     w.i32(t.type);
     w.i64(t.startMs);
@@ -385,6 +419,11 @@ void World::saveState(StateWriter& w) {
             w.vec3(p.origin);
             w.vec3(p.angles);
             w.vec3(p.lookPoint);
+            w.b(p.hasSwitch); // setswitchnode replacement in progress (VehiclePathPos::switched / original)
+            if (p.hasSwitch) {
+                writeVNode(w, t, p.switched);
+                writeVNode(w, t, p.original);
+            }
             w.b(v->started);
             w.i32(v->waitNode);
             w.f32(v->waitSpeed);
@@ -771,7 +810,11 @@ void World::loadState(StateReader& r) {
             p.origin = r.vec3();
             p.angles = r.vec3();
             p.lookPoint = r.vec3();
-            p.hasSwitch = false; // TODO(spec): setswitchnode replacement in progress is not saved
+            p.hasSwitch = r.b();
+            if (p.hasSwitch) {
+                p.switched = readVNode(r, t);
+                p.original = readVNode(r, t);
+            }
             v.started = r.b();
             v.waitNode = r.i32();
             v.waitSpeed = r.f32();
@@ -863,6 +906,12 @@ std::string World::stateDigest() const {
     for (const auto& e : entities_) {
         os << "ent " << e->number << " " << e->classname << " obj#" << e->obj->id << (e->obj->removed ? " removed" : "")
            << " tree " << e->animTree << " att " << e->attachments.size() << fields(*e->obj) << "\n";
+        if (e->vehicle) {
+            const VehiclePathPos& p = e->vehicle->path;
+            os << "vehicle " << e->number << " node " << p.node << " switch " << p.hasSwitch;
+            if (p.hasSwitch) os << " " << p.switched.name << "->" << p.switched.next << " len " << p.switched.length << " orig " << p.original.next;
+            os << "\n";
+        }
     }
     for (const auto& d : vm_.describeThreads()) os << "thread " << d << "\n";
     for (const auto& [k, v] : cvars) os << "cvar " << k << "=" << v << "\n";

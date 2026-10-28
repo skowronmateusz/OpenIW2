@@ -221,6 +221,19 @@ int main() {
         CHECK(near(stanceSpeedFactor(40, 1900, 1000, false), 0.65f, 1e-6f));
         CHECK(near(stanceSpeedFactor(40, 1200, 1000, true), 0.65f, 1e-6f));            // a downward lerp (from standing) does not blend
     }
+    {
+        // Command-scale factor of pm_type 2 / 3 (0x5080a0 / 0x508140: 0x591f8c = 3, 0x56fcc8 = 6) and the lean gates (0x50adf1..0x50ae37).
+        using iw2::game::leanInputAllowed;
+        using iw2::game::pmTypeSpeedFactor;
+        CHECK(pmTypeSpeedFactor(0) == 1.0f && pmTypeSpeedFactor(1) == 1.0f && pmTypeSpeedFactor(4) == 1.0f);
+        CHECK(pmTypeSpeedFactor(2) == 3.0f && pmTypeSpeedFactor(3) == 6.0f);
+        CHECK(leanInputAllowed(0, false, true, false));
+        CHECK(!leanInputAllowed(0, true, true, false));   // pm_flags 0x8000 (freezecontrols / absolute playerlinkto)
+        CHECK(!leanInputAllowed(0, false, false, false)); // airborne
+        CHECK(leanInputAllowed(1, false, false, false));  // linked: airborne is fine
+        CHECK(!leanInputAllowed(4, false, true, false));  // pm_type >= 4
+        CHECK(!leanInputAllowed(0, false, true, true));   // eFlags & 0x20300
+    }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;
 }

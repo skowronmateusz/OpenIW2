@@ -497,19 +497,22 @@ void updateViewHeight(PlayerState& ps) {
 // |right|·strafeSpeedScale) / (|command| · 127), then ×0.65 crouched, ×0.15 prone, × the weapon's
 // moveSpeedScale; ×0.4 once while aiming (pm_flags 0x100) or leaning; walk only: ×0.4 with command bit 0x800
 // (0x508379; the bit is the shell-shock flag, MoveParams::shellShockSlow). The stance factor blends over the crouch/prone
-// transitions (stanceSpeedFactor, 0x509760). TODO(spec): pm_type 2 (×3) and 3 (×6).
+// transitions (stanceSpeedFactor, 0x509760). pm_type 2 (×3) and 3 (×6) follow the 0.4 factor and end the walking scale (pmTypeSpeedFactor).
 float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bool walking) {
     const float fb = f < 0 && walking ? f * mp.backSpeedScale : f;
     const float rs = walking ? std::fabs(r * mp.strafeSpeedScale) : std::fabs(r);
     const float m = std::max(std::fabs(fb), rs);
     if (m == 0) return 0;
     float s = float(mp.speed) * m / (std::sqrt(f * f + r * r) * 127.0f);
+    // Exe order (0x508140): the 0.4 of pm_flags 0x100 or a nonzero leanf (ps+0x4c) first, then the pm_type 2 / 3 factor (which returns),
+    // then the stance, weapon and shell shock factors.
+    if (ps.adsSlow || ps.lean != 0) s *= 0.4f;
+    if (ps.pmType == 2 || ps.pmType == 3) return s * pmTypeSpeedFactor(ps.pmType);
     if (walking) {
         s *= stanceSpeedFactor(ps.viewHeightTarget, ps.timeMs, ps.transitionStartMs, ps.transitionDown);
         if (mp.weaponSpeedScale > 0) s *= mp.weaponSpeedScale;
         if (mp.shellShockSlow) s *= 0.4f; // 0x508379, after the weapon scale (0x508370)
     }
-    if (ps.adsSlow || ps.lean != 0) s *= 0.4f; // pm_flags 0x100 or a nonzero leanf (ps+0x4c) (0x508140, 0x5080a0)
     return s;
 }
 
@@ -544,11 +547,13 @@ void accelerate(PlayerState& ps, const Vec& wishDir, float wishSpeed, float acce
 // view height 11. The value moves towards the target by ms · max/350 and back to 0 by ms · max/280. A 16-unit cube
 // traced from the eye to the leaned eye limits it to 1 − sqrt(1 − fraction).
 // The allowleanleft/right flags (0x2000000/0x4000000, 0x50ae13) cancel the input in the callers.
-// The input is cancelled while pm_flags (ps+0x7c) has 0x100 (adsSlow) or 0x200 (landTimer) set (0x50ae2c: test 0x20300 -> target 0).
-// TODO(spec): pm_flags bit 0x20000 (not modelled) and the 0x8000 / ps+4 < 4 / ps+0x60 conditions on the ps+0xc word (0x50adf1..0x50ae0d).
+// The input is cancelled by leanInputAllowed: ps+0xc & 0x8000 (freezecontrols / absolute playerlinkto, 0x50adf1), ps+4 >= 4 (0x50adfc),
+// no ground (ps+0x60 == 0x7ff) unless ps+4 == 1 (0x50ae01), and ps+0x7c (eFlags) & 0x20300 (vehicle 0x20000, turret 0x300; 0x50ae2c).
+// (Earlier code read that last test as pm_flags 0x100 / 0x200; ps+0x7c is eFlags, the pm_flags words are ps+0xc: friction 0x507ce2
+// tests ps+0xc & 0x200 for the landing timer.)
 void updateLean(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float ms, float yaw) {
     int dir = 0;
-    if (ps.onGround && !ps.adsSlow && !ps.landTimer) {
+    if (leanInputAllowed(ps.pmType, in.controlsFrozen, ps.onGround, in.eFlagsNoLean) && !in.dead) {
         if (in.leanLeft) dir -= 1;
         if (in.leanRight) dir += 1;
     }
