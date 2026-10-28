@@ -810,7 +810,21 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             // Here right = −L, so r = −R = w(cos a · right + sin a · up), u = V = h(cos a · up − sin a · right).
             const float hw = s->size, hh = s->size2 >= 0 ? s->size2 : s->size;
             const float ra = s->rotation * 0.017453292f, rc = std::cos(ra), rs = std::sin(ra);
-            const Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
+            Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
+            if (s->oriented) {
+                // OrientedParticle (renderer type 7, 1.3 DLL 0x1003ffe0): from the axis row 0 d (refEntity +0x14), 0x10059bd0 gives
+                // p = normalize((d.z, −d.x, d.y) − d (d · that)) and q = p × d; R = w(cos a · p − sin a · q), V = h(cos a · q + sin a · p)
+                // (a = 0: R = w p, V = h q), then the particle corner builder 0x1003f560 (C + R + V (u0, v0), …). r = −R, u = V here.
+                const Vec3 d{s->orientDir[0], s->orientDir[1], s->orientDir[2]};
+                Vec3 pv{d.z, -d.x, d.y};
+                pv = pv + d * -(d.x * pv.x + d.z * pv.z + pv.y * d.y);
+                const float pl = std::sqrt(pv.x * pv.x + pv.y * pv.y + pv.z * pv.z);
+                if (pl != 0) pv = pv * (1.0f / pl);
+                const Vec3 qv{pv.y * d.z - pv.z * d.y, pv.z * d.x - pv.x * d.z, pv.x * d.y - pv.y * d.x};
+                const Vec3 R = s->rotation == 0 ? pv * hw : (pv * rc + qv * -rs) * hw;
+                u = s->rotation == 0 ? qv * hh : (qv * rc + pv * rs) * hh;
+                r = R * -1.0f;
+            }
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
             Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
             float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
@@ -2776,10 +2790,10 @@ int main(int argc, char** argv) {
             return it->second;
         };
         fxSystem.loader = efx;
-        // usePhysics Emitters (shell casings) trace the world (0x486f70). TODO(spec): the contents mask (the original passes 1).
-        fxSystem.trace = [&world](const game::FVec& a, const game::FVec& b, float& frac, game::FVec& n) {
+        // usePhysics elements trace the world (0x486f70 -> CM_BoxTrace 0x417640: model 0, contents 1, the useBBox box).
+        fxSystem.trace = [&world](const game::FVec& a, const game::FVec& b, const game::FVec& mins, const game::FVec& maxs, float& frac, game::FVec& n) {
             if (!world) return false;
-            const game::TraceResult tr = world->collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, game::Contents::Solid);
+            const game::TraceResult tr = world->collision().traceWorld(a, b, mins, maxs, game::Contents::Solid);
             if (tr.startSolid || tr.allSolid || tr.fraction >= 1.0f) return false;
             frac = tr.fraction;
             n = tr.normal;
@@ -2900,6 +2914,11 @@ int main(int argc, char** argv) {
                 DrawItem it;
                 it.model = gm;
                 it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
+                if (fm.hasAxes) { // relative Emitter: world axis rows from the tag
+                    const float k = fm.scale;
+                    it.transform = {fm.axes[0][0] * k, fm.axes[0][1] * k, fm.axes[0][2] * k, 0, fm.axes[1][0] * k, fm.axes[1][1] * k, fm.axes[1][2] * k, 0,
+                                    fm.axes[2][0] * k, fm.axes[2][1] * k, fm.axes[2][2] * k, 0, fm.pos[0], fm.pos[1], fm.pos[2], 1};
+                }
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
                 items.push_back(it);
@@ -5483,7 +5502,12 @@ int main(int argc, char** argv) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
                 const Vec3 at = cam.pos + cam.forward() * dist;
-                fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+                const int64_t t0 = world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200);
+                fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, t0);
+                // IW2_FX_STEP=<ms>: update the effects every <ms> from the play time to the shot, like client frames (element
+                // updates such as emitFx and bounces then run with that frame time instead of one large step).
+                if (const char* st = std::getenv("IW2_FX_STEP"); st && std::atoi(st) > 0)
+                    for (int64_t t = t0; t < world->timeMs(); t += std::atoi(st)) (void)fxSystem.sprites(t);
             }
             if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
                 // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.

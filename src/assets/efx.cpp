@@ -65,6 +65,9 @@ uint32_t bitsOf(const EfxElement& e, int which) {
     for (int key = 0; key < 2; ++key)
         for (const auto& n : e.list(key ? "spawnflags" : "flags"))
             if (const FlagName* f = findFlag(n, key == 1)) bits |= which ? f->spawn : f->flag;
+    // `min` / `max` (0x487be0 / 0x487c30: 3 or 6 numbers, the first three become the box corner def +0xa0 / +0xac) also OR
+    // usePhysics | useBBox (0x60) into the element flags.
+    if (which == 0 && (e.numbers("min").size() >= 3 || e.numbers("max").size() >= 3)) bits |= 0x60;
     return bits;
 }
 

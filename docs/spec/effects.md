@@ -35,17 +35,67 @@ the piecewise-linear curve), used for velocities.
   0x48abb0: origin, then rows forward / left / up). Relative elements get the attachment record (0x485bf0, element +0xc0 via
   0x48cb00) and are kept in the element array 0x5a39dc.
 - Spawn: the spawn point is converted into tag space at the end of 0x48c290 ((p − origin) · row k, the 0x440600 pattern);
-  Line B by 0x440600 (0x48d4a1), Cylinder / OrientedParticle / Emitter directions by 0x440650 (0x48d786, 0x48dd53, 0x48d964).
+  Line B by 0x440600 (0x48d4a1), Cylinder / OrientedParticle directions by 0x440650 (0x48d786, 0x48dd53); the Emitter stores the attachment origin in +0x264
+  (0x47faa0 / 0x48a870 at 0x48d964, see "Emitter physics").
   The particle velocity axes (+0xd0, 0x4803f0) are the effect's axes as given, i.e. the tag axes in world space; the
   velocity / gravity offsets are added to the tag-space position as they are.
 - Update: 0x47fcd0 returns the attachment orientation (refreshed by 0x48abb0 when the frame stamp 0x6221a8 changed; failure
   ends the element) and 0x4404f0 maps the tag-space position back: origin + x·row0 + y·row1 + z·row2 (Particle 0x48037a,
   Line 0x482dd8 / 0x482de9, Cloud A 0x482b0f (B stays tag-space), Cylinder 0x4834a9 / 0x4834df, Tail 0x483202, Emitter
   0x483719, OrientedParticle 0x48269c + axes 0x440540).
+- Relative Emitter / Tail / Cloud (0x480bd0 with the orientation): the position +0x4 and the bounce offset +0xc4 are tag space;
+  velocity components without absoluteVel / absoluteAccel are used as they are (0x481004), absolute ones go through 0x440650
+  (0x480fd5 / 0x4811a5), gravity becomes g · (row0.z, row1.z, row2.z) (0x481220); the trace runs between the two points
+  through the bolt (0x4404f0, 0x480cd1) and the hit normal is turned into tag space for the bounce (0x440650, 0x480ab0).
+  Emitter: +0x7c = bolt(position) (0x483719) and the model axis rows go through 0x440540 (x·row0 + y·row1 + z·row2, 0x483742).
+  Tail (0x483010): +0x7c = bolt(position); B = bolt(position + normalize(prev − position) · length) (0x483202); with no
+  movement +0x9c keeps its last (world) value (0x483233).
 - OpenIW2: `FxTag` (origin, axes, hasAxes) from `World::entityTagOrientation` (bone rotation; vehicle tags give the position
-  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder. TODO(spec): relative Emitter / Tail
-  (0x480bd0 traces through the bolt, 0x440650 normals) and OrientedParticle axes (0x440540); the view-weapon flash / brass
-  bolts pass the position only.
+  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder, Emitter, Tail. TODO(spec):
+  the view-weapon flash / brass bolts pass the position only.
+
+## Emitter physics (0x480bd0) and emitFx (0x483810)
+
+- Instance fields from the common init 0x48cb00: flags +0xa8 = def +0x90, spawn +0xb8 = now, end +0xbc = now + _ftol(life),
+  box +0x14 = def +0xa0 (`min`), +0x20 = def +0xac (`max`), then `deathfx` (+0x30, list def +0x78 / count +0x7c) and `impactfx`
+  (+0x2c, def +0x70 / +0x74) picked with (seed >> 17) · count >> 15, a generator draw only for a non-empty list. `min` / `max`
+  (0x487be0 / 0x487c30, "%f %f %f   %f %f %f", 3 or 6 numbers, the first three kept) also set usePhysics | useBBox (0x60).
+  0x48ce70 draws `bounce` (def +0x280) into +0x100 after gravity, wind and the spawn point.
+- Frame time (0x486b30, before the updates): frame ms +0xc = now − last clamped to 0..200 (0xc8), 0 while paused (0x617e98+8);
+  effect time +4 += frame ms. One element update per client frame.
+- Step 0x480bd0 (frame ms ≠ 0, not at rest 0x1000000): u = min((time − spawn) / life, 1) in seconds (time after this frame);
+  next = pos + velocity(u) · dt (0x481810: velocity + velocity2 + gravity + bounce offset +0xc4). Without usePhysics 0x20 the
+  position becomes next. Otherwise 0x486f70 → CM_BoxTrace 0x417640 (model 0, contents 1; box = +0x14 / +0x20 with useBBox
+  0x40, else the zero vector 0x56ce9c). Start- or all-solid (+0x22 / +0x23) or fraction 1 (0x591e20): position = next. On a hit:
+  impactFx 0x800 plays +0x2c at start + (end − start) · fraction (0x47f390) with row0 = the trace normal (0x485220 → 0x4217f0);
+  then impactKills 0x400 returns false (the update fails, the element is freed, the position is not moved); else 0x480a70
+  with uHit = min((fraction · dt + elapsed) / life, 1) (0x4809d0): rest (0x480a50: flags &= ~0x820, |= 0x1000000) when n.z > 0
+  (0x591e00) and |velocity(u)|² < 16 (0x591e84), or when the fraction is 0 (0x4809f0); else D = velocity(uHit), offset =
+  b·D − (D − offset) − 2 (b·D · n) n (b = +0x100, 0x59216c = −2). The position becomes pos + (next − pos) · fraction.
+- Emitter update 0x483630: alive check 0x47fd80, orientation 0x47fcd0, step; an unchanged position (0x415c50) multiplies the
+  spin rates +0x284 by 0.7 (0x591f30); angles += frame ms · 0.01 (0x591ea0) · rate and axes +0x48 = forward, −right, up of
+  0x421da0 (a · 0.017453292, 0x591f50) (0x483e50); size (0x4818b0); useModel: +0x7c = position, refEntity scale +0x98 = size
+  +0x88; then emitFx.
+- Spawn 0x48d7d0 also: +0x290 = one `emitfx` entry (def +0x80 / +0x84), +0x294 = `density` (def +0x260, 0x488a60 "%f %f"),
+  +0x298 = `variance` (def +0x268, 0x488ab0), +0x24c = the spawn position, +0x258 = the start velocity, +0x264 = the attachment
+  origin (0x47faa0 / 0x48a870) or 0, +0x270 = now, +0x274 = (2 · rand() / 32768 − 1) · variance + density (CRT rand 0x553d5d,
+  0x591efc = 32768).
+- emitFx 0x483810 (flag 0x100, frame ms ≠ 0): P = +0x24c moves with the velocity only (no collision). With t = +0x270, acc = 0,
+  k = 0, while t < time: k += 12 (ka = k · 0.001); u = min((time − spawn + acc) / life, 1); V = velocity(u); Q = P + V · ka
+  (+ drift · ka for relative). If |P + off − Q|² ≥ (+0x274)² (off = +0x264): play +0x290 (no attachment: at Q with row0 = V / |V|
+  completed by 0x4217f0, the element axes +0x48 when |V| ≤ 0; relative: bolted to the attachment +0xc0 + 0x3c with no axes, so
+  origin and axes come from the tag (0x485479) and bolt(Q) is only the spawnRange / cullrange position (0x4854ea)); a = 2 · ka ·
+  |V|², when a ≠ 0: n = fistp(((ka² · |V|² − d²) / a) · 1000 (0x591e50) + 2^-30 (0x591f20)), k = max(k − n, t − +0x270), ka =
+  k · 0.001, Q = P + velocity(min((ka + time − spawn + acc) / life, 1)) · ka (no drift); then +0x24c = Q, +0x258 = velocity at
+  that time, off += drift · ka (relative), acc += ka, +0x270 += k, t = +0x270, k = 0, +0x274 = a new rand() distance;
+  otherwise t += 12.
+- Relative drift (0x4836e1..0x4837c6): zero, except for useModel when +0x270 < time: (tag origin − +0x264) · (time − +0x270) ·
+  0.001 — a product, as the exe computes it (0x4837aa fmul). Shipped relative emitFx emitters: panzerfaust / panzerschreck
+  smoke, fire_airplane_emitter (no useModel) and the useModel explosion debris (silo_explode, artilleryexp_*, eldaba boat, tank
+  libya).
+- OpenIW2: `FxSystem::stepEmitter` / `physicsStep` / `emitFx` (steps of at most 200 ms between host updates; emitted and
+  impact effects play after the update loop). TODO(spec): the CRT rand() sequence (std::rand here), deathFx 0x200 (+0x30 is
+  picked but never played here).
 
 ## Particle quads (renderer type 4)
 
@@ -58,8 +108,26 @@ the piecewise-linear curve), used for velocities.
   axes (view +0x18 / +0x24, normal −forward +0xc) and a = angle · π/180: R = size(cos a · L − sin a · U), V = size2(cos a · U +
   sin a · L); corners C + R + V (u0, v0), C − R + V (u1, v0), C − R − V (u1, v1), C + R − V (u0, v1) (0x1003f560, indices 0 1 3,
   3 1 2), uv from the atlas rectangle 0x1003fa60, colour bytes. So `size` is the half width and `size2` the half height.
-- OpenIW2: `FxSprite::size2` / `rotation`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its continuous limit
-  (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the size = 0 / size2 = 0 skips; OrientedParticle (type 7, 0x1003ffe0).
+- Motion: Particle (0x480330) and OrientedParticle (0x482630) positions come from the physics step 0x480bd0 every update
+  (see "Emitter physics"), so usePhysics / useBBox / impactKills / impactFx apply to them as to Emitters (95 / 150 / 76 / 9
+  shipped Particle elements). The analytic position 0x4816c0 is used only by 0x48caa0 for the late part of a spawn
+  (pos += 0x4816c0(ms) · ms · 0.001 for ms > 0; TODO(spec): not applied, OpenIW2 steps from the scheduled spawn time).
+  Light (update 0x4841e0: +0x7c = the spawn point +0x4, through the bolt for relative) and Line / Cylinder elements do not
+  move.
+- Draw slot 0x4802f0: a Particle is submitted only while size (+0x88) ≠ 0 and size2 (+0x8c) ≠ 0 (it still enters the sight
+  blocker list, 0x480970).
+- OrientedParticle (vtable 0x57c7e4, spawn 0x48dc80): +0x24c = the instance axis row 0 (relative: into tag space, 0x440650 at
+  0x48dd53). Update 0x482630: step 0x480bd0, size, size2 (0x481940), rgb, alpha, angle (0x481b90), frame, all unconditional;
+  +0x7c = position and +0x48 = +0x24c, through the bolt (0x4404f0) / turned by the orientation (0x440540) for relative. Cull
+  0x4825e0: sphere +0x7c, radius size. Draw 0x482620: renderer type 7 (0x480010). 1.3 DLL 0x1003ffe0: with d = refEntity +0x14
+  (row 0 = +0x48), 0x10059bd0 (the 0x4217f0 construction) gives p = normalize((d.z, −d.x, d.y) − d (d · that)) and q = p × d;
+  angle 0 (0x1019bd04): R = size · p, V = size2 · q; else a = angle · π/180: R = size (cos a · p − sin a · q), V = size2
+  (cos a · q + sin a · p); corners by 0x1003f560 as the particle quad (0x1003f850 instead when the dvar at 0x101ce710 is 2).
+- OpenIW2: `FxSprite::size2` / `rotation` / `oriented`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its
+  continuous limit (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the angle sum skips frames where size or size2 is 0;
+  the OrientedParticle cull (0x4825e0) and the mode-2 corner builder 0x1003f850. Check: `IW2_NO_HUD=1
+  IW2_FX_TEST=fx/explosions/grenadeexp_water.efx IW2_FX_TEST_DIST=200 IW2_FX_MS=600 IW2_FX_STEP=16 iw2view <main> toujane
+  --sim-seconds 1 --pos 480,-600,140 --yaw 0 --pitch 30 --shot x.png` (flat ripple rings).
 
 ## Legacy channel syntax (start / end / parm / flags)
 
@@ -138,6 +206,15 @@ mid(r) = (max − min) · 0.5 + min:
   (view +0x20, stride 0x10, count +0x80, at most 5 with disableFarPlaneCulling), r = max(width, height) + size. The radius is
   smaller than the cube's half diagonal, so clouds near the screen edge disappear. OpenIW2 tests the four side planes
   (`FxSystem::viewPlanes`); TODO(spec): the exact plane set of view +0x20.
+
+## CameraShake elements (type 10)
+
+- The parser names the type `cameraShake` (0x57c920, id 10 at 0x4868b7); the spawn dispatch (0x485d10, table 0x485dec entry 9)
+  calls 0x48db80, which computes the spawn point (0x48c290) and draws `life` (def +0x58), `radius` (+0xe8) and `bounce` (+0x280)
+  with 0x48a2c0, discarding all three (fstp). No element instance is allocated, so a CameraShake element only consumes effect
+  generator draws; it shakes nothing in SP 1.3 (the only shipped one is in fx/explosions/mortarexp_dirt.efx).
+- OpenIW2: `FxSystem::playAxes` makes the same draws and spawns nothing.
+- Type 11 `flash` (0x57c918) spawns through 0x48ddb0 (0xfc-byte object, vtable 0x57d428); no shipped effect uses it (not decoded).
 
 ## Outdoor map ("$outdoor", 1.3 DLL 0x10020c80)
 

@@ -22,6 +22,7 @@ described in the code that reads them.
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
 | `IW2_FX_TEST=<efx>` | iw2view `--shot` | Plays the effect 150 units ahead of the camera, aged `IW2_FX_MS` ms (use with `IW2_NO_HUD=1`, otherwise the script fade-in can make the shot black). |
 | `IW2_FX_TEST=file:<path>` | iw2view `--shot` | As `IW2_FX_TEST`, but parses an effect file from the local disk (for element types no shipped effect uses, e.g. Cylinder). |
+| `IW2_FX_STEP=<ms>` | iw2view `--shot` | With `IW2_FX_TEST`, updates the effects every `<ms>` from the play time to the shot (client-like frames), so element updates such as emitFx trails and bounces run with that frame time. |
 | `IW2_FX_TEST_DIST=<units>` | iw2view `--shot` | Distance ahead of the camera at which `IW2_FX_TEST` plays its effect (default 150). |
 | `IW2_OUTDOOR_DUMP=<file.pgm>` | iw2view | Writes the outdoor map (game/outdoor.h, 512 x 512 heights, row 0 = world mins.y) when it is built for the first Cloud. |
 | `IW2_NO_OUTDOOR=1` | iw2view | Skips the outdoor-map test of particle_cloud_outdoor clouds (flakes also show under cover). |
