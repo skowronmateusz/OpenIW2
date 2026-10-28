@@ -63,7 +63,6 @@ int main() {
     CHECK(std::fabs(ab.up() - 0.5f) < 0.02f && std::fabs(ab.down() - 0.5f) < 0.02f);
     for (int i = 0; i < 20; ++i) ab.update(true, 0.0125f);
     CHECK(near(ab.up(), 1.0f) && ab.down() == 0);
-    if (failures == 0) std::cout << "viewimpulses tests passed\n";
     {
         // Step event 0x8f (0x4bac84 / 0x4addb0): +8 unit step, the offset decays over 100 ms; a second step carries 90% of the rest.
         ViewImpulses st;
@@ -112,5 +111,6 @@ int main() {
         CHECK(near(v[0], 0.5f) && near(v[1], 1.0f) && near(v[2], -1.5f));
         CHECK(scopedViewBob({1, 2, 3}, 1.0f, false)[0] == 0);
     }
+    if (failures == 0) std::cout << "viewimpulses tests passed\n";
     return failures ? 1 : 0;
 }

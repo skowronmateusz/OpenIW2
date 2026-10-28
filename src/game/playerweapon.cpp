@@ -213,6 +213,8 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
     // Cancel mask: attack 1, melee 4, reload 0x10, frag / smoke 0x30000; without attack in a vehicle (eFlags 0x20000).
     const bool maskHeld = in.melee || in.reload || in.frag || in.smoke || (!in.inVehicle && in.fire);
     const int st = int(state_);
+    // With the hand weapon holstered (ps weapon 0, e.g. in a vehicle) the drop / raise times are weapon 0's, i.e. 0.
+    auto handTime = [&](const char* k) { return name_.empty() ? 0.0f : time(k, 0); };
     if (!inBinoc()) {
         const std::string ret = fieldValue("adsOverlayReticle");
         if (adsFrac_ > 0 && !ret.empty() && ret != "none") return; // scoped aim (0x4df9da)
@@ -248,7 +250,7 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
         }
         if (!in.ads) { // quick-drop the hand weapon first (0x4dfbc4)
             state_ = State::BinocDrop;
-            timer_ = time("quickDropTime", 0);
+            timer_ = handTime("quickDropTime");
             delay_ = 0;
             const std::string a = fieldValue("quickDropAnim");
             anim_ = a.empty() ? fieldValue("idleAnim") : a;
@@ -259,7 +261,7 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
         // Aiming: leave the aim first (event 0x95, pm_flags &= ~0x40), wait the hand weapon's adsTransOutTime + player_adsExitDelay.
         events_.push_back({Event::ReloadBegin, std::string()});
         timer_ = 0;
-        delay_ = time("adsTransOutTime", 0) + in.adsExitDelay;
+        delay_ = handTime("adsTransOutTime") + in.adsExitDelay;
         state_ = State::BinocAdsOut;
         goto sw;
     }
@@ -269,7 +271,7 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
             state_ = State::BinocRaise;
             events_.push_back({Event::BinocularExit, std::string()});
             if (!in.weapon.empty() || !name_.empty()) {
-                timer_ = time("quickRaiseTime", 0);
+                timer_ = handTime("quickRaiseTime");
                 delay_ = 0;
                 const std::string a = fieldValue("quickRaiseAnim");
                 anim_ = a.empty() ? fieldValue("idleAnim") : a;
@@ -294,7 +296,7 @@ sw:
     switch (state_) {
     case State::BinocAdsOut: // -> quick drop
         state_ = State::BinocDrop;
-        timer_ = time("quickDropTime", 0);
+        timer_ = handTime("quickDropTime");
         delay_ = 0;
         anim_ = fieldValue("quickDropAnim").empty() ? fieldValue("idleAnim") : fieldValue("quickDropAnim");
         animTime_ = 0;
@@ -314,7 +316,7 @@ sw:
         state_ = State::BinocRaise;
         events_.push_back({Event::BinocularExit, std::string()});
         if (!in.weapon.empty() || !name_.empty()) {
-            timer_ = time("quickRaiseTime", 0);
+            timer_ = handTime("quickRaiseTime");
             delay_ = 0;
             anim_ = fieldValue("quickRaiseAnim").empty() ? fieldValue("idleAnim") : fieldValue("quickRaiseAnim");
             animTime_ = 0;
@@ -338,11 +340,12 @@ sw:
 
 int PlayerWeapon::update(float dt, const Input& in) {
     const bool binocPossible = inBinoc() || (in.binoculars && binocularDef && binocularDef());
-    if (!binocPossible && name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster))) {
+    const bool idleNoWeapon = name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster));
+    if (idleNoWeapon && !binocPossible) {
         binocPrev_ = in.binoculars, usePrev_ = in.use, prevCmdWeapon_ = in.weapon;
         return 0;
     }
-    if (name_.empty() && holstered_ && state_ == State::Ready) startDrop(in.weapon); // no weapon: raise at once
+    if (!idleNoWeapon && !inBinoc() && name_.empty() && holstered_ && state_ == State::Ready) startDrop(in.weapon); // no weapon: raise at once
     adsHeld_ = in.ads;
     const bool fireEdge = in.fire && !firePrev_; // the press against the old command (0x4de3d3)
     firePrev_ = in.fire;

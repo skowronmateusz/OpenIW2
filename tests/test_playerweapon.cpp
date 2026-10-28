@@ -375,6 +375,30 @@ void binoculars() {
     in.melee = true;
     ev = step(0.01f, in);
     CHECK(has(ev, PlayerWeapon::Event::BinocularExit) && !w.binocularsUp() && w.adsFrac() == 0);
+    // Holstered hand weapon (in a vehicle, 0x4de880 weapon 0): the press brings the binoculars up without raising the rifle.
+    {
+        PlayerWeapon v;
+        v.binocularDef = [&]() { return &binoc; };
+        const PlayerWeapon::Def rifle{{"raisetime", "0"}, {"droptime", "0"}, {"quickdroptime", "0.25"}, {"idleanim", "idle"}};
+        v.lookup = [&](const std::string&) { return &rifle; };
+        v.equip("rifle", rifle);
+        PlayerWeapon::Input vi;
+        vi.weapon = "rifle";
+        vi.holster = vi.inVehicle = true;
+        for (int i = 0; i < 20; ++i) v.update(0.01f, vi);
+        v.takeEvents();
+        CHECK(!v.equipped());
+        vi.binoculars = true;
+        std::vector<PlayerWeapon::Event> vev;
+        for (int i = 0; i < 3; ++i) {
+            vi.ads = v.stateNumber() == 0x13 || v.stateNumber() == 0x14;
+            v.update(0.01f, vi);
+            for (auto& e : v.takeEvents()) vev.push_back(e);
+            vi.binoculars = false;
+        }
+        CHECK(has(vev, PlayerWeapon::Event::BinocularEnter) && !has(vev, PlayerWeapon::Event::WeaponRaised));
+        CHECK(v.stateNumber() == 0x13 && v.binocularsUp() && !v.equipped());
+    }
 }
 
 int main() {

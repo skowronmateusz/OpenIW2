@@ -2886,7 +2886,7 @@ int main(int argc, char** argv) {
             weaponWritten = pweapon.name();
         };
         auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c) {
-            if (!pweapon.equipped()) return;
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
             const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
             const Scene::CpuModel* gun = sceneCpuModel(scene, dev, vfs, pweapon.gunModel());
             const assets::XAnim* an = viewAnim(vfs, pweapon.anim());
@@ -3346,7 +3346,7 @@ int main(int argc, char** argv) {
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
         auto scopeAlpha = [&]() -> float {
-            if (!pweapon.equipped()) return 0;
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return 0;
             const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
             if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
             const float f = pweapon.adsFrac();
@@ -5883,7 +5883,7 @@ int main(int argc, char** argv) {
                         }
                     }
                 } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
-                if (!onTurret && pweapon.equipped() && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
+                if (!onTurret && (pweapon.equipped() || pweapon.binocularsUp()) && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
                     // Hold-breath sounds (0x4b6840 from the first-person weapon pass 0x4b69b0: a weapon, eFlags & 0x300 clear, in a
                     // vehicle only in weapon states 0x11-0x16). The heartbeat loop lives while it is played every frame.
                     const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(dt, 0.1f) * 1000.0f), game::BreathSoundParams{},
@@ -6220,7 +6220,7 @@ int main(int argc, char** argv) {
                     cam.yaw += std::atan(k.x) * 57.29578f;
                     cam.pitch -= std::atan(k.y) * 57.29578f;
                 }
-            if (!onTurret && !playerDead && pweapon.equipped() && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
+            if (!onTurret && !playerDead && (pweapon.equipped() || pweapon.binocularsUp()) && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
                 const std::string ret = pweapon.field("adsOverlayReticle");
                 const auto ss = vmMotion.scopeSway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                                    pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
