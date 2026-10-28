@@ -184,8 +184,18 @@ public:
     bool viewValid = false;
     // The view frustum planes (view struct +0x90.., stride 0x10, count +0xf0; 0x486e90): normal and distance, inward
     // normals. An element with spawn flag frustumCull (0x400) is skipped when n·origin − d < −radius for any plane, radius
-    // from `spawnFrustumCullRadius` (+0x2a0, default 0). TODO(spec): the exe's plane set (we pass the four side planes).
+    // from `spawnFrustumCullRadius` (+0x2a0, default 0). The near plane is not modelled; the far plane is `farDist` below.
     std::vector<std::array<float, 4>> viewPlanes;
+    // The far plane (renderer farPlaneDistance, 0 = none): culls when forward·(p - viewOrigin) > farDist + radius. It is the sixth plane of
+    // the exe's list (the near plane is not modelled); the draw culls drop it for elements with disableFarPlaneCulling (0x2000000),
+    // the spawn gate keeps it (it uses the previous frame's set). Set by the host each frame.
+    FVec viewForward{};
+    float farDist = 0.0f;
+    bool beyondFar(const FVec& p, float radius) const {
+        if (!viewValid || farDist <= 0.0f) return false;
+        return viewForward[0] * (p[0] - viewOrigin[0]) + viewForward[1] * (p[1] - viewOrigin[1]) + viewForward[2] * (p[2] - viewOrigin[2]) >
+               farDist + radius;
+    }
     // Bullet tracers (0x4b8140 -> 0x4b7b60, entity drawn by 0x4c0d98 -> 0x4b7d90): rolls cg_tracerchance (0.4), then a
     // local entity moves from `from` towards `to` at cg_tracerSpeed (5000) for length / speed seconds and is drawn as a
     // streak of up to cg_tracerlength (300) units ahead of its position. frameMs = cg frame time (0xf708d4; the start is
