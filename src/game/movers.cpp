@@ -96,6 +96,37 @@ void startMove(MoverChannel& ch, const MVec& current, const MVec& target, int to
     ch.phase2End = plus(ch.phase1End, scaled(ch.velocity, float(ch.linearMs) * 0.001f));
 }
 
+// rotatevelocity planner (0x532e20): accel = decel = 0 gives a type 3 trajectory of the total time with delta = velocity
+// (the spin stops at the end); otherwise lin = total − accel − decel, accel > 0: type 7 up to the full speed |v|,
+// accel = 0: type 3 for lin (type 8 when lin = 0); phase2End = phase1End + v·lin; the final value is phase2End, plus
+// v·decel/2 (a type 8 ramp) when decel > 0.
+void startVelocityMove(MoverChannel& ch, const MVec& cur, const MVec& v, int totalMs, int accelMs, int decelMs, int64_t nowMs) {
+    ch = {};
+    ch.active = true;
+    ch.tr = {3, nowMs, totalMs, cur, v};
+    ch.velocity = v;
+    ch.speed = length(v);
+    ch.decelMs = decelMs;
+    if (accelMs == 0 && decelMs == 0) {
+        ch.linearMs = totalMs;
+        ch.phase1End = cur;
+        ch.phase2End = ch.target = ch.tr.evaluate(nowMs + totalMs);
+        return;
+    }
+    ch.linearMs = totalMs - accelMs - decelMs;
+    if (accelMs > 0) {
+        ch.tr.type = 7;
+        ch.tr.durationMs = accelMs;
+        ch.phase1End = ch.tr.evaluate(nowMs + accelMs);
+    } else {
+        ch.phase1End = cur;
+        ch.tr.type = ch.linearMs != 0 ? 3 : 8;
+        ch.tr.durationMs = ch.linearMs != 0 ? ch.linearMs : decelMs;
+    }
+    ch.phase2End = plus(ch.phase1End, scaled(v, float(ch.linearMs) * 0.001f));
+    ch.target = decelMs > 0 ? Trajectory{8, 0, decelMs, ch.phase2End, v}.evaluate(decelMs) : ch.phase2End;
+}
+
 bool stepMove(MoverChannel& ch, int64_t nowMs) {
     while (ch.active && ch.tr.startMs + ch.tr.durationMs <= nowMs) {
         const int64_t end = ch.tr.startMs + ch.tr.durationMs;
@@ -245,18 +276,16 @@ void World::registerMoverBuiltins() {
         rotateTo(e, target, t, a, d);
         return Value();
     });
-    // TODO(spec): rotatevelocity's accel/decel phases (0x532e20); here a linear rotation for the given time.
-    vm_.registerBuiltin("rotatevelocity", [this, mover, times](CallContext& c) {
+    // rotatevelocity (0x533db0 → planner 0x532e20, see startVelocityMove); the start is the current angles.
+    vm_.registerBuiltin("rotatevelocity", [this, mover, times, current](CallContext& c) {
         Entity& e = mover(c);
         int t, a, d;
         times(c, 1, t, a, d);
         MoverChannel& ch = movers_[e.number].apos;
-        const Vec3 cur = e.obj->get("angles").asVector(), vel = c.arg(0).asVector();
-        ch = {};
-        ch.active = true;
+        const MVec cur = current(e, ch, "angles");
+        const Vec3 vel = c.arg(0).asVector();
+        startVelocityMove(ch, cur, {vel[0], vel[1], vel[2]}, t, a, d, timeMs_);
         ch.angles = true;
-        ch.tr = {2, timeMs_, t, {cur[0], cur[1], cur[2]}, {vel[0], vel[1], vel[2]}};
-        ch.target = ch.tr.evaluate(timeMs_ + t);
         return Value();
     });
     vm_.registerBuiltin("movegravity", [this, mover](CallContext& c) {
