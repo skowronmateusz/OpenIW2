@@ -28,10 +28,10 @@ par + (perp − par)·(−v·n/|v|); normal z > 0.7 and |v'| < 20 stops it there
 and flies on from there. A bounce changing the velocity by more than 100 sends the bounce event (0xbd / 0xbe).
 
 **Explosion** (think 0x526600): smoke grenades (offhandClass 2) still in the air wait 50 ms; one held in an actor's hand
-goes off at its `tag_weapon_right` (string 0x1c7f154). Radius damage (0x5289d0): entities with
+goes off at its `tag_weapon_right` (string 0x1c7f154). Radius damage only when explosionInnerDamage (+0x37c) ≠ 0 (0x5267d3) (0x5289d0): entities with
 takedamage in a box of radius·√2, distance to the origin (brush models: to their bounds) < radius, reachable
 (0x5285b0, five traces), damage (1 − d/r)·(inner − outer) + outer, direction target − origin + (0, 0, 24), flags 9,
-the handler's mod. Then the explosion event and the entity is freed; actors forget it (0x520380).
+the handler's mod. Actors forget it (0x520380); the explosion event follows projExplosionType (+0x390, enum table 0x5a7e1c grenade 0 / rocket 1 / none 2; 0x526763): 0xbf, 0xc0, else 0xc2 (the client plays no surface sound or impact for 0xc2, only projExplosionEffect / projExplosionSound), and the entity is freed. The moscow potato (weapons/sp/potato: projExplosionType none, explosionInnerDamage 0, no effect or sound, fuseTime 25; moscow.gsc throws it with MagicGrenade and a 20 s fuse) therefore vanishes silently at the fuse.
 
 **Landing prediction** (0x527270, through 0x51f7c0): on a copy, 50 ms steps until the fuse with the same
 bounce rules (0x527080); the rest point and its time, or the position at the fuse. Hitting the sky: no prediction (the
