@@ -78,6 +78,19 @@ int main() {
         CHECK(moved > 330.0f && moved < 380.0f);
         CHECK(ps.onGround);
 
+        // Usercmd bit 0x800 (shell shock, 0x508379): the walk command scale × 0.4.
+        {
+            PlayerState sh;
+            sh.origin = floor;
+            for (int i = 0; i < 10; ++i) playerMove(cw, sh, {}, 0.05f);
+            const Vec s0 = sh.origin;
+            MoveParams slow;
+            slow.shellShockSlow = true;
+            for (int i = 0; i < 120; ++i) playerMove(cw, sh, in, 1.0f / 60.0f, slow);
+            const float m = std::hypot(sh.origin[0] - s0[0], sh.origin[1] - s0[1]);
+            std::cout << "shell-shocked walk " << m << " units in 2 s\n";
+            CHECK(m > 0.3f * moved && m < 0.45f * moved);
+        }
         // Half a unit into the ground: the player must not sink or fall through.
         PlayerState in0;
         in0.origin = {floor[0], floor[1], floor[2] - 0.5f};

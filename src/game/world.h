@@ -637,6 +637,11 @@ public:
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);
+    // Script notify on the player entity (ClientEvents 0x4e75f0: binocular events 0xa8..0xac -> "binocular_enter", "_exit",
+    // "_fire", "_release", "_drop" via 0x46d0f0).
+    void notifyPlayer(const std::string& name);
+    // 0x4dc660: the first registered weapon with weaponType binoculars, nullptr when none is registered (here: loaded).
+    const std::map<std::string, std::string>* binocularWeapon();
     bool isAlive(const Entity& e) const;
     bool takesDamage(const Entity& e) const;
     void bulletImpact(Entity& shooter, const std::map<std::string, std::string>* def, const Vec3& start, const Vec3& end,

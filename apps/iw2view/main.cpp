@@ -2996,6 +2996,7 @@ int main(int argc, char** argv) {
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         bool breathWeapon = false; // the equipped weapon has a scope reticle and is not an item (hold-breath weapons, 0x4dd350)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
+        game::V3 rawGunBob{0, 0, 0}, rawGunBobPrev{0, 0, 0}; // 0xf79940..48 as stored by 0x4b4a90 (no reticle factor); 0x4ae210 sees last frame's
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
@@ -3007,6 +3008,7 @@ int main(int argc, char** argv) {
                 return an && !an->looping ? an->length() : 0.0f;
             };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
+            pweapon.binocularDef = [&]() { return world->binocularWeapon(); };
             if (world->player()->obj->get("$weapontaken").truthy()) {
                 world->player()->obj->set("$weapontaken", script::Value());
                 pweapon.weaponTaken();
@@ -3025,7 +3027,7 @@ int main(int argc, char** argv) {
             weaponWritten = pweapon.name();
         };
         auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c) {
-            if (!pweapon.equipped()) return;
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
             const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
             const Scene::CpuModel* gun = sceneCpuModel(scene, dev, vfs, pweapon.gunModel());
             const assets::XAnim* an = viewAnim(vfs, pweapon.anim());
@@ -3485,7 +3487,7 @@ int main(int argc, char** argv) {
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
         auto scopeAlpha = [&]() -> float {
-            if (!pweapon.equipped()) return 0;
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return 0;
             const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
             if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
             const float f = pweapon.adsFrac();
@@ -3973,7 +3975,7 @@ int main(int argc, char** argv) {
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
             // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
             // TODO(spec): the dvars it also tests.
-            if (world && mantleHint && mantleHintItem) {
+            if (world && mantleHint && mantleHintItem && !input.objectivesHeld()) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
                 const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
@@ -4010,7 +4012,7 @@ int main(int argc, char** argv) {
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
             // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
             // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
-            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
+            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
@@ -4382,7 +4384,7 @@ int main(int argc, char** argv) {
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
             // TODO(spec): that def +0x1d4 / +0x1d8 are maxAmmo / clipSize (matches the usage: stock vs max, clip vs clip size).
-            const float maxAmmo = std::min(pweapon.number("maxAmmo"), 999.0f), clipSize = std::min(pweapon.number("clipSize"), 999.0f);
+            const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
             const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
             const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
@@ -4447,8 +4449,8 @@ int main(int argc, char** argv) {
                 if (a > 0.0f)
                     if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
                         auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                        std::string text = name(pweapon.field("displayName"));
-                        const std::string mode = pweapon.field("modeName");
+                        std::string text = name(pweapon.hudField("displayName"));
+                        const std::string mode = pweapon.hudField("modeName");
                         if (!mode.empty()) text += " / " + name(mode);
                         const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
                         float tw = 0;
@@ -5263,14 +5265,22 @@ int main(int argc, char** argv) {
                     else if (act == "frag+" || act == "frag-") shotIn.frag = act == "frag+";
                     else if (act == "smoke+" || act == "smoke-") shotIn.smoke = act == "smoke+";
                     else if (act == "melee+" || act == "melee-") shotIn.melee = act == "melee+";
+                    else if (act == "binoc+" || act == "binoc-") shotIn.binoculars = act == "binoc+";
+                    else if (act == "use+" || act == "use-") shotIn.use = act == "use+";
                     else if (act.rfind("weapon=", 0) == 0) shotIn.weapon = act.substr(7);
                 }
-                const int shotsFired = pweapon.update(0.02f, shotIn);
+                game::PlayerWeapon::Input stepIn = shotIn;
+                if (pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14) stepIn.ads = true; // forced aim (0x409af0)
+                const int shotsFired = pweapon.update(0.02f, stepIn);
                 if (shotsFired > 0 && (shotScript.empty() || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
                 if (!shotScript.empty()) {
                     for (const auto& e : pweapon.takeEvents()) {
                         const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                         if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds();
+                        else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop && world) {
+                            static const char* const kN[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release", "binocular_drop"};
+                            world->notifyPlayer(kN[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
+                        }
                         else if (e.kind == game::PlayerWeapon::Event::MeleeHit && world) world->playerMelee(eye, angles);
                         else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0});
                         std::cout << "shot-script t=" << tNow << " event " << int(e.kind) << " " << e.weapon << "\n";
@@ -5500,6 +5510,13 @@ int main(int argc, char** argv) {
         };
         int shockLoop = 0, shockSeenStart = -1;
         bool shockEndPlayed = true;
+        // Hold-breath sounds (0x4b6840) and the hold_breath channel volumes (cgame registration 0x4a3140 loads
+        // shock/hold_breath.shock into record 16, 0xf5741c; its volumes drive sound volume slot 2 via 0x4b6700).
+        game::BreathSounds breathSnd;
+        int heartbeatLoop = 0;
+        game::ShockRecord holdBreathRec;
+        if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
+        else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
         // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
         auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
@@ -5754,6 +5771,7 @@ int main(int argc, char** argv) {
                 in.forward = controlsBlocked ? 0.0f : float(input.forwardMove()) / 127.0f;
                 in.right = controlsBlocked ? 0.0f : float(input.rightMove()) / 127.0f;
                 in.jump = (buttons & game::Button::Jump) != 0;
+                in.stanceHeld = (buttons & game::Button::StanceHeld) != 0; // 0x2000 (0x50a1f5)
                 in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
                             : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
                 // allowleanleft/right(false) set pm_flags 0x2000000/0x4000000, which cancel the lean (0x50ae13).
@@ -5779,6 +5797,11 @@ int main(int argc, char** argv) {
                 pmp.mantle = &mantleAnims;
                 // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
+                if (world && world->shellShockRecord()) { // usercmd 0x800 (0x409c82): cgame flag 0x621560 = shock running (0x4b24db)
+                    const auto& ss = world->shellShock();
+                    const int64_t el = world->timeMs() - ss.startMs;
+                    pmp.shellShockSlow = ss.startMs != 0 && el >= 0 && el < ss.durationMs;
+                }
                 if (pweapon.equipped()) {
                     auto n = [&](const char* k) { return pweapon.number(k); };
                     pmp.hipSpread = {n("hipSpreadStandMin"), n("hipSpreadDuckedMin"), n("hipSpreadProneMin"), n("hipSpreadMax"),
@@ -5902,6 +5925,14 @@ int main(int argc, char** argv) {
                 wi.weapon = weaponSelect;
                 wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
                 wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
+                wi.binoculars = (buttons & game::Button::Binoculars) != 0;
+                wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
+                wi.inVehicle = inVehicle;
+                {
+                    static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
+                    wi.damaged = world->playerDamageFeedback().event != binocDamageEvent;
+                    binocDamageEvent = world->playerDamageFeedback().event;
+                }
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
@@ -5945,6 +5976,13 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
+                        ps.aimSpread = e.alt ? std::max(ps.aimSpread, 128.0f) : 255.0f;
+                    else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop) {
+                        static const char* const kBinocNotify[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release",
+                                                                   "binocular_drop"}; // 0xa8..0xac (ClientEvents 0x4e76e0..0x4e7740)
+                        world->notifyPlayer(kBinocNotify[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
+                    }
                     else if (e.kind == game::PlayerWeapon::Event::OutOfAmmo && world->player()) { // event 0x92 (0x4baec1 -> 0x4b7090)
                         const std::string next = world->outOfAmmoSwitch(world->inventory(*world->player()), e.weapon);
                         if (!next.empty()) weaponSelect = next;
@@ -5976,10 +6014,16 @@ int main(int argc, char** argv) {
                         shockEndPlayed = !rec;
                     }
                     {
-                        // Channel volumes during the shock (shockChannelVolume, f = shockSoundFraction); 1 once it is over.
+                        // Channel volumes: the sound system keeps 5 volume slots (0x793a34, 0x88 bytes each) and uses the highest
+                        // active one (0x793cdc; set 0x4431f0, clear 0x443390, fade 0 = 1 ms). Shell shock writes slot 4 (0x4b2237)
+                        // while its record has cg_shock_sound and the fraction is > 0, else clears it (0x4b1fa0 / 0x4b1ffc); the
+                        // hold-breath blend writes slot 2 (0x4b682a) and clears it at blend 0 (0x4b671d); none active = 1.
                         const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
-                        const float f = rec ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
-                        for (int c = 0; c < 11; ++c) mixer.channelScale[c] = rec ? game::shockChannelVolume(*rec, c, f) : 1.0f;
+                        const float f = rec && rec->sound ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
+                        const float bb = breathSnd.volumeBlend();
+                        for (int c = 0; c < 11; ++c)
+                            mixer.channelScale[c] = f > 0 ? game::shockChannelVolume(*rec, c, f)
+                                                  : bb != 0 ? game::shockChannelVolume(holdBreathRec, c, bb) : 1.0f;
                     }
                     if (rec && rec->sound) {
                         const int el = int(world->timeMs() - ss.startMs);
@@ -5994,6 +6038,21 @@ int main(int argc, char** argv) {
                         }
                     }
                 } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                if (!onTurret && (pweapon.equipped() || pweapon.binocularsUp()) && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
+                    // Hold-breath sounds (0x4b6840 from the first-person weapon pass 0x4b69b0: a weapon, eFlags & 0x300 clear, in a
+                    // vehicle only in weapon states 0x11-0x16). The heartbeat loop lives while it is played every frame.
+                    const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(dt, 0.1f) * 1000.0f), game::BreathSoundParams{},
+                                                     [&](const char* a) {
+                                                         if (std::strcmp(a, "weap_sniper_heartbeat") == 0) {
+                                                             if (!heartbeatLoop) heartbeatLoop = mixer.play(a);
+                                                             return 0;
+                                                         }
+                                                         float len = 0;
+                                                         mixer.play(a, std::nullopt, &len);
+                                                         return int(len * 1000.0f);
+                                                     });
+                    if (!hb && heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
+                } else if (heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -6008,6 +6067,9 @@ int main(int argc, char** argv) {
                     gunBobAngles = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
                                                 ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"),
                                                 !ret.empty() && ret != "none");
+                    rawGunBobPrev = rawGunBob;
+                    rawGunBob = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
+                                             ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
@@ -6313,13 +6375,17 @@ int main(int argc, char** argv) {
                     cam.yaw += std::atan(k.x) * 57.29578f;
                     cam.pitch -= std::atan(k.y) * 57.29578f;
                 }
-            if (!onTurret && !playerDead && pweapon.equipped() && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
+            if (!onTurret && !playerDead && (pweapon.equipped() || pweapon.binocularsUp()) && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
                 const std::string ret = pweapon.field("adsOverlayReticle");
                 const auto ss = vmMotion.scopeSway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                                    pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
                                                    ps.breathScale, !ret.empty() && ret != "none");
                 cam.pitch += ss[0];
                 cam.yaw += ss[1];
+                const game::V3 vb = game::scopedViewBob(rawGunBobPrev, pweapon.adsFrac(), !ret.empty() && ret != "none"); // 0x4ae210
+                cam.pitch += vb[0];
+                cam.yaw += vb[1];
+                cam.roll += vb[2];
             }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];

@@ -3,6 +3,7 @@
 #include "game/playerweapon.h"
 
 #include <iostream>
+#include <vector>
 
 namespace {
 
@@ -317,6 +318,89 @@ void reloadAddTiming() {
     CHECK(v.clip() == 2);
 }
 
+
+// Binoculars (0x4df9b0 + PM_Weapon 0x11-0x16): toggle press -> quick drop (0x12) -> up (0x13, event 0xa8, pm_flags 0x20000) ->
+// 0x14 (aim forced in); use press / release -> 0xaa / 0xab; press again -> 0x15 (event 0xac) -> 0x16 (event 0xa9, quick raise) -> 0.
+void binoculars() {
+    PlayerWeapon w;
+    const PlayerWeapon::Def binoc{{"weapontype", "binoculars"}, {"aimdownsight", "1"}, {"adstransintime", "0.4"},
+                                  {"adstransouttime", "0.4"}, {"adszoomfov", "10"}, {"idleanim", "b_idle"}, {"gunmodel", "viewmodel_binoculars"}};
+    w.binocularDef = [&]() { return &binoc; };
+    w.equip("rifle", {{"raisetime", "0"}, {"quickdroptime", "0.25"}, {"quickraisetime", "0.25"}, {"idleanim", "idle"},
+                      {"quickdropanim", "qdrop"}, {"quickraiseanim", "qraise"}, {"aimdownsight", "1"}, {"adstransouttime", "0.2"}});
+    auto step = [&](float t, PlayerWeapon::Input in) {
+        std::vector<PlayerWeapon::Event> ev;
+        for (int i = 0; i < int(t * 100 + 0.5f); ++i) {
+            in.ads = w.stateNumber() == 0x13 || w.stateNumber() == 0x14; // the client forces the aim button (0x409af0)
+            w.update(0.01f, in);
+            for (auto& e : w.takeEvents()) ev.push_back(e);
+        }
+        return ev;
+    };
+    auto has = [](const std::vector<PlayerWeapon::Event>& ev, PlayerWeapon::Event::Kind k) {
+        for (auto& e : ev) if (e.kind == k) return true;
+        return false;
+    };
+    PlayerWeapon::Input in;
+    in.weapon = "rifle";
+    step(0.05f, in);
+    CHECK(w.stateNumber() == 0);
+    in.binoculars = true;
+    step(0.01f, in);
+    CHECK(w.stateNumber() == 0x12 && w.anim() == "qdrop");
+    in.binoculars = false;
+    auto ev = step(0.3f, in);
+    CHECK(has(ev, PlayerWeapon::Event::BinocularEnter) && w.binocularsUp());
+    CHECK(w.gunModel() == "xmodel/viewmodel_binoculars" && w.number("adsZoomFov") == 10);
+    step(0.45f, in);
+    CHECK(w.stateNumber() == 0x14 && w.adsFrac() > 0.99f);
+    in.use = true;
+    CHECK(has(step(0.02f, in), PlayerWeapon::Event::BinocularFire));
+    in.use = false;
+    CHECK(has(step(0.02f, in), PlayerWeapon::Event::BinocularRelease));
+    in.binoculars = true;
+    ev = step(0.01f, in);
+    CHECK(w.stateNumber() == 0x15 && has(ev, PlayerWeapon::Event::BinocularDrop));
+    in.binoculars = false;
+    ev = step(0.45f, in);
+    CHECK(has(ev, PlayerWeapon::Event::BinocularExit) && !w.binocularsUp() && w.stateNumber() == 0x16 && w.anim() == "qraise");
+    step(0.3f, in);
+    CHECK(w.stateNumber() == 0 && w.adsFrac() == 0);
+    // Melee while up cancels at once (0x4df0a0): exit event, state 0.
+    in.binoculars = true;
+    step(0.01f, in);
+    in.binoculars = false;
+    step(0.8f, in);
+    CHECK(w.stateNumber() == 0x14);
+    in.melee = true;
+    ev = step(0.01f, in);
+    CHECK(has(ev, PlayerWeapon::Event::BinocularExit) && !w.binocularsUp() && w.adsFrac() == 0);
+    // Holstered hand weapon (in a vehicle, 0x4de880 weapon 0): the press brings the binoculars up without raising the rifle.
+    {
+        PlayerWeapon v;
+        v.binocularDef = [&]() { return &binoc; };
+        const PlayerWeapon::Def rifle{{"raisetime", "0"}, {"droptime", "0"}, {"quickdroptime", "0.25"}, {"idleanim", "idle"}};
+        v.lookup = [&](const std::string&) { return &rifle; };
+        v.equip("rifle", rifle);
+        PlayerWeapon::Input vi;
+        vi.weapon = "rifle";
+        vi.holster = vi.inVehicle = true;
+        for (int i = 0; i < 20; ++i) v.update(0.01f, vi);
+        v.takeEvents();
+        CHECK(!v.equipped());
+        vi.binoculars = true;
+        std::vector<PlayerWeapon::Event> vev;
+        for (int i = 0; i < 3; ++i) {
+            vi.ads = v.stateNumber() == 0x13 || v.stateNumber() == 0x14;
+            v.update(0.01f, vi);
+            for (auto& e : v.takeEvents()) vev.push_back(e);
+            vi.binoculars = false;
+        }
+        CHECK(has(vev, PlayerWeapon::Event::BinocularEnter) && !has(vev, PlayerWeapon::Event::WeaponRaised));
+        CHECK(v.stateNumber() == 0x13 && v.binocularsUp() && !v.equipped());
+    }
+}
+
 int main() {
     reloadAddTiming();
     segmentedReload();
@@ -327,6 +411,7 @@ int main() {
     weaponChange();
     melee();
     offhand();
+    binoculars();
     if (failures) return 1;
     std::cout << "playerweapon tests passed\n";
     return 0;

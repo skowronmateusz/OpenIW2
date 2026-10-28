@@ -147,4 +147,19 @@ void World::playerGrenadeInHand(const Vec3& eye) {
     if (player_ && isAlive(*player_)) damage(*player_, player_, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
 }
 
+void World::notifyPlayer(const std::string& name) {
+    if (player_ && player_->obj) vm_.notify(player_->obj, name);
+}
+
+const std::map<std::string, std::string>* World::binocularWeapon() {
+    // The exe walks its weapon table in registration order; the shipped SP data has one binocular weapon, so the first loaded
+    // definition with weaponType "binoculars" is the same one.
+    for (const auto& [name, def] : weapons_) {
+        if (!def) continue;
+        const auto it = def->find("weapontype");
+        if (it != def->end() && it->second == "binoculars") return &*def;
+    }
+    return nullptr;
+}
+
 } // namespace iw2::game

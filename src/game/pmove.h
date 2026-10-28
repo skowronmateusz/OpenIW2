@@ -18,6 +18,7 @@ struct PlayerInput {
     float forward = 0, right = 0; // -1..1 (the original's -127..127 command bytes)
     bool jump = false;            // held (usercmd 0x400, also the mantle button)
     Stance stance = Stance::Stand; // requested stance
+    bool stanceHeld = false;      // usercmd 0x2000: +prone / +movedown held (CL stance 0x409500); no blocked-rise event then
     bool leanLeft = false, leanRight = false; // +leanleft / +leanright (usercmd bits 0x40 / 0x80)
     float yaw = 0;                // view yaw in degrees
     bool adsHeld = false;         // usercmd 0x1000, or the weapon state forces aim (0x13 / 0x14)
@@ -150,6 +151,7 @@ struct MoveParams {
     float backSpeedScale = 0.7f;      // player_backSpeedScale
     float strafeSpeedScale = 0.8f;    // player_strafeSpeedScale
     float weaponSpeedScale = 0.0f;    // current weapon's moveSpeedScale (0 = none)
+    bool shellShockSlow = false;      // usercmd button 0x800: set by CL_CmdButtons (0x409c82) while the cgame shell shock runs (0x621560, 0x4b24db)
     float jumpStepSize = 18.0f;       // jump_stepSize
     uint32_t traceMask = Contents::PlayerClipMask; // pm->tracemask: the player's clip mask (0x4e90e2)
     int passEntity = -1;              // the player's entity number, skipped by the traces
