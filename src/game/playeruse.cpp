@@ -291,8 +291,9 @@ void World::findPlayerUseEntity() {
         }
         if (e.classname.rfind("weapon_", 0) == 0) {
             // 0x534c80: a weapon item is usable when the weapon is not a grenade (weaponType, def +0x78 ≠ 1) and not
-            // owned; the hint is the weapon's (index + 4). A health item (giType 3) would give hint 3 with no condition (0x534ca0); health items
-            // are not modelled (TODO(spec): item_health spawn, bounds, touch pickup).
+            // owned; the hint is the weapon's (index + 4). The giType 3 branch of 0x534c80 (hint 3, no condition) is unreachable in the SP exe: the
+            // item table 0x5a66f8 is rebuilt from the weapon definitions only (0x4dc320 sets giType 1; 0x4dc280 zeroes giType of every entry
+            // from index 1) and the exe has no "item_health" string, so there are no health items to model.
             const std::string w = lowerStr(e.classname.substr(7));
             if (!weapon(w) || lowerStr(weaponField(w, "weaponType")) == "grenade" || inventory(*player_).owned.count(w)) continue;
             playerUseEntity_ = e.number;
