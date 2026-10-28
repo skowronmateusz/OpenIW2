@@ -561,6 +561,7 @@ public:
     void updateVehicleEngineSound(Entity& e);
     void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
+    void vehicleTouchTriggers(Entity& v); // G_TouchTriggers (0x4e7320) for a vehicle (src/game/vehicletriggers.cpp)
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
