@@ -83,6 +83,25 @@ struct Attachment {
 // AI states (state table 0x56f720; docs/spec/ai.md "AI states").
 enum AiState { AiNone, AiExposed, AiTurret, AiGrenade, AiBadplace, AiDeath, AiPain, AiScripted, AiCustom, AiNegotiation };
 
+// Prone state of an actor (actor +0x140 .. +0x16c, +0x288; docs/spec/ai.md "Prone"). The 24 bytes +0x158 .. +0x16f
+// travel to the client, which pitches tag_origin by them (0x4c1cc0 / 0x4c1b90).
+struct ActorProne {
+    int nodeDown = 0, nodeStraight = 0, nodeUp = 0; // +0x140 / +0x142 / +0x144 leg blend nodes (0 = not set)
+    float invDown = 0, invUp = 0;                   // +0x148 / +0x14c: 1 / down angle, 1 / up angle
+    float lastBend = 0;                             // +0x150 bend the leg weights were last set for (360 forces a refresh)
+    int fits = 0;                                   // +0x154 last fit result (script field proneok)
+    bool corpseBlend = false;                       // +0x158 (set only on corpses, 0x4fdd75)
+    bool prone = false;                             // +0x159
+    int64_t startMs = 0;                            // +0x15c transition start
+    int durMs = 0;                                  // +0x160 transition length; negative while leaving, 0 when settled
+    int out = 0;                                    // +0x164 (the fit writes 0)
+    float pitchBody = 0, pitchLegs = 0;             // +0x168 / +0x16c fit pitches
+    bool tilt = false;                              // +0x288 set by enterprone, cleared by the think when not prone
+    // The think compares the entity's origin and angles with the values of its previous think (0x4ff0b5..0x4ff16e).
+    bool haveLast = false;
+    Vec3 lastOrigin{}, lastAngles{};
+};
+
 // The actor's state machine (actor +0x8 … +0xa4, +0x104, +0x204 … +0x220, +0x25c, +0x704).
 struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
@@ -133,6 +152,7 @@ struct ActorAi {
     float potentialThreatDir[2] = {0, 0};
     int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (TODO(spec): consumer)
     bool noPhysicsFlag = false;               // gentity flag 0x1000 (+0x128): animmode("nophysics") sets it, every other mode clears it
+    ActorProne prone;                         // +0x140 .. +0x16c, +0x288 (src/game/proneworld.cpp)
 };
 
 // A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
@@ -481,6 +501,9 @@ public:
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
     // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
+    // Client prone tilt of an actor's tag_origin (0x4c1cc0 mode 1): rotation about y by fraction x body pitch, lift
+    // fraction x +0x164; false when the actor is not prone.
+    bool actorProneTilt(const Entity& e, float& pitch, float& lift) const;
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
@@ -956,6 +979,11 @@ private:
     bool pathToGoal(Entity& e);
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
     void registerCoverBuiltins();
+    void registerProneBuiltins(); // src/game/proneworld.cpp
+    void proneEnter(Entity& e, int ms);      // 0x514b30
+    void proneExit(Entity& e, int ms);       // 0x514c40
+    void proneRefit(Entity& e, bool fit);    // 0x5022b0
+    void actorProneFrame(Entity& e);         // the prone part of the actor think 0x4ff030
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void turretFireSound(Entity& t, bool playerOwner);

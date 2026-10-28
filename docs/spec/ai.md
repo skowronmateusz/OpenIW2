@@ -234,7 +234,7 @@ state set by the reacquire paths, trimpathtoattack 0x543580 (with the sight test
 rule) / 0x503be0 / 0x546980, the turret damaged handler 0x54af30, the node kd-tree order (0x52de40 build, 0x516820 walk) and
 the node take-over 0x518e80 / priority rule 0x518dc0. Node links (+0x30 / +0x32 / +0x56:
 overlapping nodes within 31 xy / 73 z are linked at load by 0x52d990; a claim holds the linked nodes for good without an
-owner and counts on +0x56, release / block 0x5191a0 / 0x519200 / 0x519300 undo it) are ported (Follow-up 22). The fog sight limit
+owner and counts on +0x56, release / block 0x5191a0 / 0x519200 / 0x519300 undo it) are ported (Follow-up 23). The fog sight limit
 0x1c61038 = ((far - near) * 0.828 + near)² of linear fog (setcullfog, parsed by 0x4e96e0) applies in 0x54c7d0.
 TODO(spec): 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
 check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
@@ -441,7 +441,7 @@ entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight,
 
 The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
 
-## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype, checkprone)
+## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype; checkprone done)
 
 Sweep with `iw2game <main> <map> 40 --spawn-all` over all 28 SP maps: the only built-in still reported as unimplemented is
 `checkprone` (x4 libya, x36 matmata, up to x99 elsewhere). The matmata prediction calls are not reported any more, but there
@@ -453,12 +453,7 @@ methods (entity from the self object, the "entity" check at 0x468ed0 error path)
   hit entity's contents word (+0x128) has bit 0x400 set it gives "obstacle"; otherwise "world". Not implemented: the repo
   does not track the bumped entity (see world.cpp note on 0x500d80 and actorfollow.cpp TODO(spec) for +0x2148).
   TODO(spec): wire +0x318 from the actor move trace, then this is a 10-line builtin.
-- `checkprone` 0x5406f0 (actor method; args: vector origin (0x46ea90), float (arg1, 0x46e6d0), int (arg2, 0x46e4a0)): calls
-  0x4fb530(entnum, &origin, 15.0, 48.0, float, 0, 0, int, 1, 0, 1, 1, 66.0) and returns its bool as an int. 0x4fb530 is a
-  capsule/box clearance test: boxes of half extents -6,-6,-6 .. 6,6,6 around points offset from the origin, traced through
-  the actor's clip function (table 0x5a9190, indexed by a byte argument), with an extra step-height pass (constants
-  0x56fcc8, 0x591e1c, 0x591e20, 0x591ed0, 0x591f30, 0x591f40, 0x5921a0). Not decoded fully (about 400 instructions of x87
-  trace math with several early-outs). TODO(spec): decode 0x4fb530 before implementing; not guessed.
+- `checkprone`: decoded and ported, see "Prone" below.
 - `beginprediction` 0x53f960 / `endprediction` 0x53fb80: snapshot / restore the actor state (the +0x218.. anim-mode words,
   the 0x43-dword AI struct, velocity/origin/angles) plus an animation-state snapshot (0x4796c0 / 0x478db0 / 0x478e10); nested
   through counter 0x1c6104c and a per-depth table at 0x1c7e52c. `predictoriginandangles` 0x53ff50 and `predictanim` 0x540020
@@ -614,3 +609,95 @@ The actor clip mask 0x2820011 has no actor body bit (0x4000), so the bump link 0
 - 0x53b050 (combat script) runs 0x504630 first, clears +0x728/+0x72c, then the cover/combat choice; followed -> ("combat", 0, anim mode 1) else (0, 4).
 Wired in: exposedNoncombat / badplace flee (stop), followActorPath result 1 (stop), grenadeCower, combatScript. TODO(spec): the walk/run scripts 0x53af20/0x53afe0 for a followed actor are reached only through the path step result 1 here.
 Open: the second scan 0x501380 (callers 0x5018a2, 0x501a6a, 0x501c38 in the actor move 0x501xxx), consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
+
+## Prone
+
+Source: CoD2SP_s.exe 1.3, disassembly of 0x4fb530..0x4fbff6 read instruction by instruction (Ghidra pseudo-code of a carved
+image used as a guide; it drops the outputs of the register-argument helpers 0x421270, 0x47f390 and is not trusted alone).
+Port: `src/game/prone.cpp` (fit test), `src/game/proneworld.cpp` (built-ins), test `tests/test_prone.cpp`.
+
+### Fit test 0x4fb530
+
+Arguments (cdecl, 14): a1 entity number (pass entity), a2 origin, a3 radius, a4 height, a5 yaw, a6/a7/a8 optional outputs,
+a9 already prone, a10 strict, a11 optional ground normal, a12 index into the sweep table 0x5a9190 (12-byte entries, first
+dword the sweep: 0 -> 0x4b9810, 1 -> 0x4db7f0 = G_Trace 0x44bf00 with (result, start, mins, maxs, end, pass, mask)),
+a13 adds 0x10000 to the mask 0x810011, a14 body length. Constants (.rdata): 6 (0x56fcc8), 10 (0x591e8c), 0.7 (0x591f30),
+180 (0x591e1c), 1 (0x591e20), 2 (0x591ed0), 48 (0x591f40), 22 (0x5921a0), 2.5 (0x591e44), -0.75 (0x59219c), 0.5
+(0x591e10), 18 (0x591f44), -50 (0x592030), 70 (0x592198), 5 (0x591ef0). "Probe" below is the box -6..6 on all axes.
+
+1. Unless already prone: the box (-r,-r,0)..(r,r,h) swept from the origin 10 units up must not end all-solid (trace byte
+   +0x22), else false.
+2. Strict with a ground normal whose z < 0.7: false.
+3. Body direction F = AngleVectors(0, yaw - 180, 0) (forward of 0x421da0, which takes angles in edx and forward/right/up in
+   esi/edi/ebx). Probe height z0 = h - 6, reach = length - 6. Probe sweep from origin + (0,0,z0) to that + F * reach.
+   - Clear (fraction >= 1): body length D = length, not shortened.
+   - Blocked: non-strict callers get false here. D = reach * fraction + 6; D < r + 2 gives false. If D < z0 * 0.7 + 48
+     (always with checkprone's numbers: 77.4 > 66) the end is raised 22, F becomes the unit vector of (end - start)
+     (0x421270 writes it through esi, which still points at F) and the sweep is repeated: clear gives D = length and
+     "not shortened"; blocked gives D = |end - start| * fraction + 6, false when still below 77.4, else "shortened".
+   - The foot point K = start + (end - start) * fraction of the last sweep.
+4. Hip drop: from origin + F * 48 + (0,0,z0) straight down by r * 2.5 + z0 - 6. Fraction exactly 1 goes to the fallback
+   (below); hit normal z < 0.7 gives false. Hip B = hit point - (0,0,6); hip drop distance hd = drop * fraction + 6.
+5. Only when shortened: D - hd < hd * -0.75 goes to the fallback. Direction V = unit(F * 6 + (K - B) + (0,0,6)); with
+   rest = reach - 48 the sweep goes from the hip probe start S2 to (xy: midpoint of origin + F * reach and S2 + V * rest,
+   z: S2.z + V.z * rest). Blocked: start = hit point, start and end raised 18, swept again; blocked again goes to the
+   fallback. K = end point of the last of these sweeps (0x47f390 with eax = start, edx = end, ecx = out).
+6. Foot drop: from K down by (K.z - B.z) * 2 + r. Fraction exactly 1: fallback; normal z < 0.7: false. K = hit point -
+   (0,0,6).
+7. Bend: pitch(K - B) - pitch(B - origin), wrapped into -180..180 (0x423f50 = a - b, then +-360 until inside), where pitch
+   (0x421990) is -atan2(z, |xy|) in degrees plus 360 when negative (vertical: 270 up, 90 down). Outside [-50, 70] fails.
+   Point sweeps (zero box) from origin + (0,0,5) to B + (0,0,5) and from B + (0,0,5) to K + (0,0,5) must be clear.
+8. Outputs: a6 = 0 (int); a7 = pitch(origin - B), a8 = pitch(B - K), both through 0x424040 (16-bit angle grid via _ftol2
+   truncation, then -180..180). All checks passed: true. Fallback (and a failed step 7): strict gives false; non-strict
+   zeroes the outputs and returns true.
+
+`checkprone(origin, yaw, alreadyProne)` 0x5406f0: actor only ("not an actor"), reads vector / float / int, calls the test
+with (entity, origin, 15, 48, yaw, -, -, -, alreadyProne, strict 1, no normal, table 1, +0x10000, 66) and returns the int.
+Ported exactly; on toujane / moscow (`--spawn-all`, 60 s) 187 / 226 calls, 168 / 90 fit, no runtime errors. Note the
+trace pass entity is the actor itself, and our G_Trace stands in for 0x44bf00 (capsule sweep, docs/spec/collision.md).
+
+### Prone state and built-ins (ported)
+
+Actor fields (offsets from the actor struct, `ActorProne` in src/game/world.h): +0x140/+0x142/+0x144 leg nodes down /
+straight / up (0 = unset), +0x148 = 1 / down angle, +0x14c = 1 / up angle, +0x150 bend of the last leg-weight update,
++0x154 last fit result (script field `proneok`), +0x158 corpse-blend byte, +0x159 prone, +0x15c transition start (level
+ms), +0x160 transition length in ms (negative while leaving, 0 once settled), +0x164 / +0x168 / +0x16c the fit outputs a6 /
+a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; reader not found: TODO(spec)).
+
+- Bookkeeping shared by 0x514970 / 0x514b30 / 0x514c40 / 0x53d430: length < 0 and start - length < now: prone = 0 (the
+  leave finished); length > 0 and start + length < now: length = 0.
+- Fraction 0x5149e0 (edx = block +0x158, ecx = now): 0 when not prone; 1 when length is 0; leaving: 1 - (now - start) /
+  -length (0 once finished); entering: (now - start) / length (1 once finished).
+- `setproneanimnodes(down, up, a, b, c)` 0x53d2f0: floats read before the actor check; down must be < 0, up > 0 (the two
+  error strings at 0x5916ac / 0x591670); stores 1/down, 1/up and the three nodes (0x46e530).
+- `enterprone(sec)` 0x53d1b0: "Must call SetProneAnimNodes before calling EnterProne" (0x5916e4) when both reciprocals
+  are 0 or any node is 0; then 0x514b30 with _ftol2(sec * 1000). 0x514b30: when not prone, a corpse blend, or a leave
+  that has finished: corpse byte 0, prone 1, tilt 1, start = now, length = ms, fit (already prone 0, strict, outputs into
+  +0x164..+0x16c) into +0x154. Otherwise only when the length is non-zero and differs from ms: with f = fraction < 1 the
+  start becomes now - _ftol2(ms * f); the length becomes ms.
+- `exitprone(sec)` 0x53d280 -> 0x514c40(ms): only while prone and not a corpse blend; after the bookkeeping (a finished
+  leave returns), a non-zero length different from ms sets start = now - _ftol2(ms * f), else start = now; length = -ms.
+- `updateprone(a, b, weight, blend, rate)` 0x53d430: only while prone and not a corpse blend; after the bookkeeping (a
+  finished leave clears prone and returns) both animations get setanim 0x4795e0 with (weight, blend, rate), then 0x5022b0
+  with eax = 0.
+- 0x5022b0 (edi = actor): eax != 0 runs the fit with already prone = 1 (into +0x154 and +0x164..+0x16c); eax = 0 sets
+  +0x150 = 360 instead. Bend d = wrap(+0x16c - +0x168). When d differs from +0x150: d < 0 gives down = min(d * +0x148,
+  0.99), d >= 0 gives up = min(d * +0x14c, 0.99) (0x592208 = 0.99), straight = 1 - that; each weight under 0.001
+  (0x591e30) becomes 0 and goes to its node through 0x478f10 (goal, blend 0.05, rate 1) + 0x4794b0 (ancestors); +0x150 = d.
+- Actor think 0x4ff030: after the state loop it compares the entity origin and angles with those of the previous think
+  (moved / turned); at 0x4ff1de, when 0x514970 says prone (prone, no corpse blend, with the bookkeeping) and the actor
+  moved or turned, 0x5022b0 runs with eax = 1; when not prone the tilt byte +0x288 is cleared. Ported as
+  `World::actorProneFrame` after the facing and movement-noise steps.
+- Client 0x4c1cc0 (per centity, prone block from the snapshot): when prone (0x514970 on the client copy) or the corpse
+  byte is set, f = 0x5149e0; corpse byte: mode 2 (pitch f * a7, second rotation f * a8, lift f * a6); otherwise mode 1:
+  pitch f * a7, lift f * a6. 0x4c1b90 applies it to the actor's `tag_origin` (scr const 0x1c7f144 = "tag_origin", set at
+  0x506fed; error "actor (entnum %d) does not have a tag_origin") as a DObj control: rotation 0x423970 = quaternion (0,
+  sin(a/2), 0, cos(a/2)) (a pitch about y, the same as `anglesQuat(a, 0, 0)`), translation (0, 0, lift). Mode 1 is drawn by
+  iw2view through `World::actorProneTilt`.
+
+Verified: 27-map sweep (all SP maps, 40 s, `--spawn-all`, `IW2_PRONE_LOG=1`): no unimplemented built-ins; checkprone / enterprone /
+exitprone run on 24 of the 27 maps; runtime errors only the known ones (elalamein / matmata setbattlechatter, matmata roof_guys,
+silotown_assault field_charge spawn), none from prone code.
+TODO(spec): the corpse prone blend (0x4fdba0 copies the block, sets the corpse byte, 500 ms, zero pitches; client mode 2
+with the second rotation 0x423a10 / product 0x4235e0) is not ported; the reader of +0x288; the client draws with its own
+time (0xf708dc), here the server time is used. Not visually checked in iw2view yet.

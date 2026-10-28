@@ -532,6 +532,7 @@ void World::thinkActors() {
         if (!e.ai.corpse) actorFacing(e);
         if (!e.ai.corpse) actorMoveNoise(e);
         if (!e.ai.corpse) blockFacingNodes(e);
+        if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
     }
     // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
     if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
