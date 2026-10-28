@@ -38,6 +38,25 @@ std::string World::vehicleCollmap(Entity& v) {
     return brush;
 }
 
+bool World::isScriptMover(const Entity& e) {
+    return e.classname == "script_model" || e.classname == "script_brushmodel" || e.classname == "script_origin";
+}
+
+// The gentity's contents word (+0xc0) as the exe has it: what setcontents stored (0x4efd70), else the spawn value: actors 0x4000
+// (0x4fc74f), the player 0x2000000 (0x4e90e2), script_brushmodel 1 (0x533440), script_model 0x2080 (0x533480), script_origin 0
+// (0x5334d0); `solid` restores the model / brush value and `notsolid` clears it (0x533f70 / 0x534050).
+// TODO(spec): other entity classes (their spawn contents are not examined; 0 here).
+uint32_t World::entityContents(const Entity& e) const {
+    const Value c = e.obj->get("$contents");
+    if (c.isNumber()) return uint32_t(c.asInt());
+    if (e.isActor) return Contents::ActorBody;
+    if (e.isPlayer) return Contents::PlayerBody;
+    if (e.obj->get("$notsolid").truthy()) return 0;
+    if (e.classname == "script_brushmodel") return 1;
+    if (e.classname == "script_model") return 0x2080;
+    return 0;
+}
+
 void World::syncEntityClips() {
     std::vector<EntityClip> clips;
     for (const auto& ep : entities_) {
@@ -50,7 +69,8 @@ void World::syncEntityClips() {
             c.origin = o.asVector();
             c.mins = {-15, -15, 0};
             c.maxs = {15, 15, e.isActor ? 72.0f : 70.0f};
-            c.contents = e.isActor ? Contents::ActorBody | uint32_t(e.ai.sideBits) : Contents::PlayerBody; // sideBits: the yield step 0x501620 sets 8 / 0x10
+            c.contents = entityContents(e); // 0xc0: 0x4000 actor (0x4fc74f), 0x2000000 player (0x4e90e2), or what setcontents stored
+            if (!c.contents) continue;      // 0x44b2d0 unlinks an entity without contents: no trace sees it
             c.hitBoxes = e.isActor;
             clips.push_back(c);
             continue;
@@ -97,7 +117,7 @@ void World::syncEntityClips() {
         const Value o = e.obj->get("origin"), a = e.obj->get("angles");
         if (o.isVector()) c.origin = o.asVector();
         if (a.isVector()) c.angles = a.asVector();
-        c.contents = collision_->modelContents(c.model);
+        c.contents = e.obj->get("$contents").isNumber() ? entityContents(e) : collision_->modelContents(c.model);
         if (c.contents) clips.push_back(c);
     }
     collision_->setEntityClips(std::move(clips));

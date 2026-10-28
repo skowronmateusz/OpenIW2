@@ -551,6 +551,13 @@ int World::nearestNode(const std::array<float, 3>& p) const {
 
 // Every actor thinks once per frame (src/game/actorstate.cpp); corpses no longer think.
 void World::thinkActors() {
+    if (player_) { // 0x4e8194..0x4e81e5: the player's moved byte (+0x86b6), once a frame
+        const Value pov = player_->obj->get("origin");
+        const Vec3 po = pov.isVector() ? pov.asVector() : Vec3{0, 0, 0};
+        const float dx = playerLastPos_[0] - po[0], dy = playerLastPos_[1] - po[1];
+        playerMoved_ = !(dy * dy + dx * dx < 0.01f);
+        playerLastPos_ = po;
+    }
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
         if (!e.isActor || e.obj->removed || e.ai.corpse) continue;
@@ -611,6 +618,7 @@ void World::moveActor(Entity& e, float dt) {
     }
     const Vec3 before = o;
     if (p.count > 0) updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
+    if (followed && p.count > 0) e.ai.trail.add(timeMs_, p.lookDir[0], p.lookDir[1]); // 0x505520 (0x504248)
     if (p.count <= 0 && !yieldNow) return;
     float step = 0.0f;
     if (p.count > 0) {

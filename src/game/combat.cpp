@@ -898,13 +898,14 @@ void World::registerCombatBuiltins() {
         return Value();
     });
     // setcontents (0x4efd70): entity +0xc0 = the argument (the old value is returned), then the entity is relinked.
-    // TODO(spec): collision contents are not modelled per entity here, only stored.
+    // The entity clips (syncEntityClips) and the vehicle touch scan read the stored value (World::entityContents); 0 unlinks the entity.
+    // TODO(spec): the contents of entity classes other than actors, the player and script movers are not modelled.
     vm_.registerBuiltin("setcontents", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("setcontents: not an entity");
-        const Value old = e->obj->get("$contents");
+        const uint32_t old = entityContents(*e);
         e->obj->set("$contents", Value(int32_t(c.arg(0).asInt())));
-        return old.isNumber() ? old : Value(int32_t(0));
+        return Value(int32_t(old));
     });
     // setsunlight (0x4f5750): 3 arguments, config string 9 = "%g %g %g"; resetsunlight (0x4f57c0): no arguments, config string 9 reset.
     vm_.registerBuiltin("setsunlight", [this](CallContext& c) {

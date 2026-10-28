@@ -287,7 +287,7 @@ void World::registerMoverBuiltins() {
     vm_.registerBuiltin("solid", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (e && e->classname == "script_origin") throw std::runtime_error("solid called on a script_origin");
-        if (e) e->obj->set("$notsolid", Value());
+        if (e) { e->obj->set("$notsolid", Value()); e->obj->set("$contents", Value()); } // 0x533480 / 0x533440: the spawn contents again
         return Value();
     });
     // setcandamage (0x533eb0): the take-damage flag (ent+0x111) of a script_brushmodel, script_model or
@@ -299,7 +299,7 @@ void World::registerMoverBuiltins() {
     vm_.registerBuiltin("notsolid", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (e && e->classname == "script_origin") throw std::runtime_error("notsolid called on a script_origin");
-        if (e) e->obj->set("$notsolid", Value(true));
+        if (e) { e->obj->set("$notsolid", Value(true)); e->obj->set("$contents", Value()); } // 0x5334db: contents 0
         return Value();
     });
     vm_.registerBuiltin("linkto", [this](CallContext& c) {
