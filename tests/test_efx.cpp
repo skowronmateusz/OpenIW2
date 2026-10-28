@@ -105,6 +105,18 @@ int main() {
         if (sp.size() == 1) CHECK(std::fabs(sp[0].rotation - 80.0f) < 1e-3f && sp[0].size2 == 3.0f);
     }
 
+    // Flag tables (0x56d528): spawnFlags rows 24..36 also set element bits; a name outside the key's rows fails the effect.
+    {
+        const auto ff = iw2::assets::parseEfx("Particle\n{\n\tspawnFlags absoluteAccel evenDistribution\n}\n");
+        CHECK(ff.elements.at(0).flagBits() == 0x400000u && ff.elements.at(0).spawnFlagBits() == 0x200u);
+        bool threw = false;
+        try { iw2::assets::parseEfx("Particle\n{\n\tspawnFlags rgbComponentInterpolation\n}\n"); } catch (const std::exception&) { threw = true; }
+        CHECK(threw);
+        threw = false;
+        try { iw2::assets::parseEfx("Particle\n{\n\tflags absoluteAccel\n}\n"); } catch (const std::exception&) { threw = true; }
+        CHECK(threw);
+    }
+
     // blocksSight particles become sight blockers: radius² from the size, visibility 1 − alpha byte / 255 with
     // useAlpha (alpha · 255 truncated) and 0 without it (0x481a40, 0x480970).
     const char* smoke =

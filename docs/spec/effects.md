@@ -169,6 +169,13 @@ absoluteVel2 / absoluteAccel 0x400000, affectedByWind 0x800000, disableFarPlaneC
 orgOnSphere 0x1, axisFromSphere 0x2, orgOnCylinder 0x4, org2fromTrace 0x8, traceImpactFx 0x10, org2isOffset
 0x20, cheapOrgCalc 0x40, cheapOrg2Calc 0x80, randrotaroundfwd 0x100, evenDistribution 0x200, frustumCull 0x400.
 The spawnFlags parser uses the same table from its `org2fromTrace` row (0x56d648).
+Exact rules (0x489c59 / 0x489c6c → 0x4886b0 → 0x488650): `flags`/`flag` search the first 24 rows (depthHack ..
+disableFarPlaneCulling), `spawnFlags`/`spawnFlag` the 13 rows from org2fromTrace, which end with absoluteVel (0x200000) and
+absoluteAccel (0x400000): a matched row ORs both its element and spawn bits, so these two set ELEMENT flags from spawnFlags
+(grenade_smoke, large_vehicle_explosion, dust_impact_16ftladder). Names compare case-insensitively. A name outside the searched
+rows fails the key, the element ("FX Error while parsing segment type") and so the whole effect (0x486917 frees it): the
+shipped fx/impacts/wall_impact_small_dirt.efx uses `rgbComponentInterpolation`, which is in no row, and does not load in
+the original; OpenIW2's parser rejects it the same way. An effect holds at most 24 elements (0x48693f).
 
 Implemented: `src/assets/efx.{h,cpp}`. Not specified yet: the runtime (spawning, element update, drawing) and the
 meaning of the flag bits.
