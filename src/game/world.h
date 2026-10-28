@@ -775,7 +775,10 @@ private:
     void followActorPath(Entity& e, bool run, bool wide = false);
     int stepActorPath(Entity& e, bool wide, bool run);
     bool followShrink(Entity& e, int bumped);   // 0x500d80
-    void updateFollowed(Entity& e);            // 0x4fedc0
+    void updateFollowed(Entity& e);
+    void retargetFollowed(Entity& e, Entity& player); // 0x4fec50
+    void scanFollowed(Entity& e);                      // 0x504630
+    void standOrFollow(Entity& e, const std::string& script); // 0x504630 + 0x53ae40 / 0x53ade0            // 0x4fedc0
     void linkBumpedActor(Entity& e, int hit);  // 0x501c6f..0x501c8b
     Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);

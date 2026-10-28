@@ -309,7 +309,7 @@ int World::badPlaceThink(Entity& e) {
             return 0;
         }
         if (inBadPlace(originOf(e.obj)) && badPlaceFlee(e)) {
-            setActorAnimScript(e, stopScript(e), 0, 1); // 0x53ae40
+            standOrFollow(e, stopScript(e)); // 0x53ae40
             updateClaimedNode(e);
             return 0;
         }
