@@ -858,7 +858,7 @@ bool World::tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const V
 // 2D direction to the other entity: dot < 0.8 does nothing; a prone player (pm_flags 1) takes 999999; otherwise
 // (dot - 0.8) * min(1, |forward speed| / collisionSpeed) * 5 * collisionDamage, truncated, as damage (MOD_CRUSH 9,
 // inflictor and attacker the vehicle, direction the velocity direction, point the other's origin) when positive.
-// A script mover (eType 5) with take-damage takes 999999 at once (0x512dd1). TODO(spec): the actor touch callback 0x4ff2f0.
+// A script mover (eType 5) with take-damage takes 999999 at once (0x512dd1). The actor touch callback 0x4ff2f0 has no effect from a vehicle (docs/spec/vehicles.md).
 void World::vehicleTouchDamage(Entity& e, Entity& t) {
     if (!e.vehicle || !e.vehicle->info || e.vehicle->info->collisionDamage <= 0.0f) return;
     if (links_.count(t.number) || (t.isPlayer && playerLinked())) return; // +0x1c8 (taken as the link, as in the push 0x50fe40)
@@ -892,8 +892,8 @@ void World::vehicleTouchDamage(Entity& e, Entity& t) {
 // one that cannot be pushed is crushed (999999, MOD_CRUSH = 9) — not an actor in the animscripted or negotiation
 // state (0x4ff310). Script movers (eType 5: script_model 0x2080, script_brushmodel 1, or what setcontents stored; mask 0x2006081)
 // are notified the same way and take 999999 from the touch callback; they are not pushed. TODO(spec): the bounds of a script_model
-// (taken as a point at its origin) and of a rotated brush model (the unrotated bounds), the entity list box, the touch callbacks of
-// players and actors (0x4ff2f0).
+// (taken as a point at its origin) and of a rotated brush model (the unrotated bounds), the entity list box. The touch callbacks of
+// players and actors (0x4ff2f0) do nothing for a vehicle toucher (no sentient or client pointer).
 void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles) {
     if (vehicleCollmap(e).empty()) return;
     const Vec3 o = e.obj->get("origin").asVector(), a = e.obj->get("angles").asVector();
