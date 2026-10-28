@@ -103,71 +103,143 @@ bool World::inActorGoal(Entity& e, const Vec3& p) {
     return in;
 }
 
+// Overlapping nodes are linked in pairs at load (0x52d990): a node j before i within 31 units (xy, 961 on the squared
+// distance) and 73 units of height (either way) is a link of i, and i of j, in the first free of the two slots
+// (+0x30 / +0x32); a third overlap is only a warning.
+void World::linkOverlappingNodes() {
+    if (nodeLinksDone_) return;
+    nodeLinksDone_ = true;
+    for (size_t i = 0; i < nodes_.size(); ++i) {
+        const Vec3 pi = vecField(nodes_[i].obj, "origin");
+        for (size_t j = 0; j < i; ++j) {
+            const Vec3 pj = vecField(nodes_[j].obj, "origin");
+            const float dx = pi[0] - pj[0], dy = pi[1] - pj[1], dz = pi[2] - pj[2];
+            if (dx * dx + dy * dy > 961.0f || dz < -73.0f || dz > 73.0f) continue;
+            for (int k = 0; k < 2; ++k)
+                if (nodes_[i].link[size_t(k)] < 0) {
+                    nodes_[i].link[size_t(k)] = int(j);
+                    break;
+                }
+            for (int k = 0; k < 2; ++k)
+                if (nodes_[j].link[size_t(k)] < 0) {
+                    nodes_[j].link[size_t(k)] = int(i);
+                    break;
+                }
+        }
+    }
+}
+
+// 0x518d80: the first owner of the node or of its linked nodes.
+static Entity* firstNodeOwner(const std::vector<PathNode>& nodes, const PathNode& n) {
+    if (n.owner) return n.owner;
+    for (int l : n.link)
+        if (l >= 0 && nodes[size_t(l)].owner) return nodes[size_t(l)].owner;
+    return nullptr;
+}
+
 // Node usable by this sentient (0x518f20): its own node; not while the node is blocked for its team; free when the
 // owner's hold has expired. A node held for good (+0x44 = 0x7fffffff) is taken over (0x518e80, then 0x518d80 /
-// 0x5191a0: the owner lets go of it) by a sentient without a node that is not walking (0x5055b0) and stands at the node
-// (0x502660) while the owner does not. A priority node (spawnflag 0x40) is also usable (0x518dc0) when nobody has it,
-// or when its owner, of the same team, is dying, or is farther from it than this sentient by more than 15 units (xy;
-// 225 on the squared distance 0x420f00, the owner at least 225 away). TODO(spec): the linked nodes (+0x30 / +0x32,
-// +0x56) of all three are not modelled.
+// 0x5191a0: the owner lets go of it) when neither it nor its linked nodes have an owner, or, with at most one claim
+// on its links, by a sentient without a node that is not walking (0x5055b0) and stands at the node (0x502660) while
+// the owner does not. A priority node (spawnflag 0x40) is also usable (0x518dc0) when nobody has it, or when its
+// owner, of the same team, is dying, or is farther from it than this sentient by more than 15 units (xy; 225 on the
+// squared distance 0x420f00, the owner at least 225 away).
 bool World::nodeUsable(Entity& e, int node) {
+    linkOverlappingNodes();
     PathNode& n = nodes_[size_t(node)];
     if (n.owner == &e) return true;
     const int team = teamIndex(e.obj->get("team"));
     if (team > 0 && timeMs_ <= n.teamBlockedMs[size_t(team)]) return false;
     if (n.ownerUntilMs < timeMs_) return true;
     const Vec3 no = vecField(n.obj, "origin");
-    if (n.ownerUntilMs == kNodeClaimed && n.owner && n.owner->isActor && e.isActor && e.claimedNode < 0 &&
-        !(e.ai.animMode == 1 && e.ai.movemode != 0) && nearPoint(no, vecField(e.obj, "origin")) &&
-        !nearPoint(no, vecField(n.owner->obj, "origin"))) {
-        Entity& owner = *n.owner;
-        if (owner.claimedNode == node) releaseNode(owner);
-        return true;
+    Entity* o = firstNodeOwner(nodes_, n);
+    if (n.ownerUntilMs == kNodeClaimed) {
+        if (!o) return true;
+        if (n.linkClaims <= 1 && o->isActor && e.isActor && e.claimedNode < 0 && !(e.ai.animMode == 1 && e.ai.movemode != 0) &&
+            nearPoint(no, vecField(e.obj, "origin")) && !nearPoint(no, vecField(o->obj, "origin"))) {
+            releaseNode(*o);
+            return true;
+        }
     }
     if (n.spawnflags & 0x40) {
-        if (!n.owner) return true;
-        Entity& o = *n.owner;
-        if (!o.isActor || teamIndex(o.obj->get("team")) != team) return false;
-        if (o.ai.stack[size_t(o.ai.depth)] == AiDeath) return true;
-        const Vec3 mo = vecField(e.obj, "origin"), oo = vecField(o.obj, "origin");
+        if (!o) return true;
+        if (n.linkClaims > 1) return false;
+        if (o == &e) return true;
+        if (!o->isActor || teamIndex(o->obj->get("team")) != team) return false;
+        if (o->ai.stack[size_t(o->ai.depth)] == AiDeath) return true;
+        const Vec3 mo = vecField(e.obj, "origin"), oo = vecField(o->obj, "origin");
         const float d1 = dist2d(no, oo);
         return d1 >= 225.0f && dist2d(no, mo) + 225.0f < d1;
     }
     return false;
 }
 
-// Release the claimed node (0x5191a0): owner and hold cleared. TODO(spec): the linked nodes (+0x30 / +0x32).
+// Release the claimed node (0x5191a0): owner and hold cleared; each linked node loses a claim and, with none left, its
+// owner and hold too.
 void World::releaseNode(Entity& e) {
     if (e.claimedNode < 0) return;
+    linkOverlappingNodes();
     PathNode& n = nodes_[size_t(e.claimedNode)];
     n.owner = nullptr;
     n.ownerUntilMs = 0;
+    for (int l : n.link) {
+        if (l < 0) continue;
+        PathNode& L = nodes_[size_t(l)];
+        if (--L.linkClaims == 0) {
+            L.owner = nullptr;
+            L.ownerUntilMs = 0;
+        }
+    }
     e.claimedNode = -1;
     e.obj->set("node", Value());
 }
 
-// 0x519300: the node failed for the sentient's team (no path, given up): its owner of that team leaves it with a
-// 5 s hold (0x519200), and the team may not use it for 5 s.
+// 0x519300: the node failed for the sentient's team (no path, given up): its owner of that team leaves it (0x519200:
+// the owner keeps the node and its linked ones with a 5 s hold) and the team may not use it for 5 s. With no claims on
+// its links (+0x56 = 0) the hold is cleared again, and so are the owner and hold of the linked nodes that have no
+// claims and are not held for good, when their owner is of that team.
 void World::blockNodeForTeam(int node, Entity& e) {
+    linkOverlappingNodes();
     PathNode& n = nodes_[size_t(node)];
     const int team = teamIndex(e.obj->get("team"));
     if (n.owner && teamIndex(n.owner->obj->get("team")) == team) {
         Entity* owner = n.owner;
-        if (owner->claimedNode == node) {
+        if (owner->claimedNode >= 0) { // 0x519200
+            PathNode& on = nodes_[size_t(owner->claimedNode)];
             owner->claimedNode = -1;
             owner->obj->set("node", Value());
-            n.ownerUntilMs = timeMs_ + 5000;
+            on.owner = owner;
+            on.ownerUntilMs = timeMs_ + 5000;
+            for (int l : on.link) {
+                if (l < 0) continue;
+                PathNode& L = nodes_[size_t(l)];
+                if (--L.linkClaims == 0) {
+                    L.owner = owner;
+                    L.ownerUntilMs = timeMs_ + 5000;
+                }
+            }
         }
         n.owner = nullptr;
     }
     if (team > 0) n.teamBlockedMs[size_t(team)] = timeMs_ + 5000;
-    // TODO(spec): with no claims on its linked nodes (+0x56 = 0) +0x44 and those nodes are cleared too.
+    if (n.linkClaims == 0) {
+        n.ownerUntilMs = 0;
+        for (int l : n.link) {
+            if (l < 0) continue;
+            PathNode& L = nodes_[size_t(l)];
+            if (L.linkClaims == 0 && L.ownerUntilMs < kNodeClaimed) {
+                if (L.owner && teamIndex(L.owner->obj->get("team")) == team) L.owner = nullptr;
+                L.ownerUntilMs = 0;
+            }
+        }
+    }
 }
 
 // Claim a node (0x5152f0): the previous one is released; a normal node (or a priority one whose hold expired) is
 // taken (0x518fa0); a held priority node is taken over (0x519050), evicting a claiming owner (0x515330: its path is
 // dropped when it ends at the node, then 0x519300).
 void World::claimNode(Entity& e, int node) {
+    linkOverlappingNodes();
     if (e.claimedNode == node) return;
     if (e.claimedNode >= 0) releaseNode(e);
     if (node < 0) return;
@@ -181,6 +253,13 @@ void World::claimNode(Entity& e, int node) {
     }
     n.owner = &e;
     n.ownerUntilMs = kNodeClaimed;
+    for (int l : n.link) { // 0x518fa0: the linked nodes are held for good without an owner
+        if (l < 0) continue;
+        PathNode& L = nodes_[size_t(l)];
+        ++L.linkClaims;
+        L.owner = nullptr;
+        L.ownerUntilMs = kNodeClaimed;
+    }
     e.claimedNode = node;
     e.obj->set("node", Value(n.obj));
 }

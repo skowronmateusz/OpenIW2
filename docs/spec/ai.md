@@ -232,8 +232,11 @@ Implemented in `src/game/actorcover.cpp`. Done since: node blocking 0x515390 (bl
 (goalVolumeHolds), the 0x502960 offset goal (dead: +0x73c is only ever written 0), the damaged handler 0x5498c0, the trim
 state set by the reacquire paths, trimpathtoattack 0x543580 (with the sight test 0x54c7d0), the planners 0x503a50 (reuse
 rule) / 0x503be0 / 0x546980, the turret damaged handler 0x54af30, the node kd-tree order (0x52de40 build, 0x516820 walk) and
-the node take-over 0x518e80 / priority rule 0x518dc0. TODO(spec): the linked nodes
-(+0x30 / +0x32, +0x56) of the node claims, 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
+the node take-over 0x518e80 / priority rule 0x518dc0. Node links (+0x30 / +0x32 / +0x56:
+overlapping nodes within 31 xy / 73 z are linked at load by 0x52d990; a claim holds the linked nodes for good without an
+owner and counts on +0x56, release / block 0x5191a0 / 0x519200 / 0x519300 undo it) are ported (Follow-up 22). The fog sight limit
+0x1c61038 = ((far - near) * 0.828 + near)² of linear fog (setcullfog, parsed by 0x4e96e0) applies in 0x54c7d0.
+TODO(spec): 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
 check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
 0x502960's offset goal (0x542340/0x545670, see "Path planner").
 

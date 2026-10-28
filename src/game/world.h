@@ -266,6 +266,8 @@ struct PathNode {
     Entity* owner = nullptr;        // +0x40: sentient that claimed it (or just left it)
     int64_t ownerUntilMs = 0;       // +0x44: kNodeClaimed while claimed, else the owner keeps it until then
     std::array<int64_t, 4> teamBlockedMs{}; // +0x44 + 4·team: unusable for that team until then (1 axis, 2 allies)
+    std::array<int, 2> link{-1, -1};        // +0x30 / +0x32: the overlapping nodes (0x52d990), -1 = none
+    int linkClaims = 0;                     // +0x56: the claims by the nodes linked to this one
 };
 
 class World {
@@ -803,6 +805,7 @@ private:
     void registerActorStateBuiltins();
     // Cover nodes and claiming (src/game/actorcover.cpp)
     bool nodeUsable(Entity& e, int node);
+    void linkOverlappingNodes();                    // 0x52d990 (lazily, once)
     void claimNode(Entity& e, int node);
     void releaseNode(Entity& e);
     void giveUpClaimedNode(Entity& e);
@@ -1043,6 +1046,7 @@ private:
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;
     std::vector<PathNode> nodes_;
+    bool nodeLinksDone_ = false;
     // The node kd-tree (built once by 0x52de40): `nodeTreeOrder_` is the node array as the build permutes it, the tree
     // nodes are {axis (-1 = leaf), split, left, right} or, for a leaf, {-1, -, count, first}.
     struct NodeTreeEnt { int axis; float split; int a, b; };
