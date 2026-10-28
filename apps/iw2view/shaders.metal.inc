@@ -373,23 +373,36 @@ fragment float4 fs_objective(VertexOut in [[stage_in]], constant ObjectiveU& u [
     return float4(c.rgb, tex.a);
 }
 
-// $floatz from the depth buffer: lib/float_z_build.hlsl writes clip-space z; with Camera::viewProj (z_clip = f (d - n) / (f - n),
-// w = d) the depth d = n f / (f - ndc (f - n)) and clip z = ndc · d. Cleared depth (sky): floatz_clear.hlsl's 262144 · 2 · 1.732.
-struct FloatzU { float4 nearFar; };
-fragment float4 fs_floatz_build(GlowVOut in [[stage_in]], constant FloatzU& u [[buffer(0)]],
-                                depth2d<float> depthTex [[texture(0)]], sampler s [[sampler(0)]]) {
-    const float ndc = depthTex.sample(s, in.uv);
-    if (ndc >= 1.0) return float4(u.nearFar.z);
-    const float n = u.nearFar.x, f = u.nearFar.y;
-    const float d = n * f / (f - ndc * (f - n));
-    return float4(ndc * d);
+// "build floatz" technique (build_floatz.tech / build_floatz_atest(_scroll).tech, lib/float_z_build(_alphatest).hlsl): colour =
+// clip-space z; the alpha-test variant discards pixels whose alpha (vertex colour times the colour map) is below the 128 / 255 reference.
+struct FloatzOut {
+    float4 position [[position]];
+    float4 color;
+    float2 uv;
+    float dist;
+};
+vertex FloatzOut vs_floatz(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
+    FloatzOut o;
+    o.position = u.viewProj * (u.model * float4(in.position, 1.0));
+    o.color = in.color;
+    o.uv = in.uv;
+    o.dist = o.position.z;
+    return o;
+}
+struct FloatzFU { float4 p; }; // x: alpha test
+fragment float4 fs_floatz(FloatzOut in [[stage_in]], constant FloatzFU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]],
+                          sampler cs [[sampler(0)]]) {
+    if (u.p.x > 0.5 && (in.color * colorMap.sample(cs, in.uv)).a < 128.0 / 255.0) discard_fragment();
+    return float4(in.dist);
 }
 
 struct EffectVU {
     float4x4 viewProj;
     float4 eye;
     float4x4 model;
-    float4 parms; // distortionScale.xy, or featherParms.x in .x
+    float4 parms;   // distortionScale.xy, or featherParms.x in .x and the OUTDOOR switch in .y
+    float4 outMin;  // worldOutdoorLookupMatrix: mins (xyz); w = outdoorFeatherParms.x (r_outdoorFeather)
+    float4 outInv;  // 1 / (maxs - mins)
 };
 // clipSpaceLookupScale / Offset for the full-window viewport (0x1003eae0): (0.5 w / W, -0.5 h / H, 0, 1) and
 // ((x + w / 2 + 0.5) / W, (y + h / 2 + 0.5) / H, 0, 0). The +0.5 texel term is D3D9's pixel-centre convention; Metal samples
@@ -441,7 +454,9 @@ struct FeatherOut {
     float z;          // texCoordsAndDist.z = clip z · featherParms.x
     float feather;    // featherParms.x
     float4 screen;
-    float3 eyeVec;
+    float3 outdoorMapPos; // OUTDOOR: mul(position, worldOutdoorLookupMatrix)
+    float outdoor;        // > 0.5: OUTDOOR variant; holds outdoorFeatherParms.x in outdoorK
+    float outdoorK;
 };
 vertex FeatherOut vs_feather(VertexIn in [[stage_in]], constant EffectVU& u [[buffer(0)]]) {
     FeatherOut o;
@@ -453,16 +468,23 @@ vertex FeatherOut vs_feather(VertexIn in [[stage_in]], constant EffectVU& u [[bu
     o.z = o.position.z * u.parms.x;
     o.color.a *= saturate(o.z); // near-camera attenuation
     o.screen = o.position * kLookupScale + o.position.w * kLookupOffset;
-    o.eyeVec = world.xyz - u.eye.xyz;
+    o.outdoorMapPos = (world.xyz - u.outMin.xyz) * u.outInv.xyz;
+    o.outdoor = u.parms.y;
+    o.outdoorK = u.outMin.w;
     return o;
 }
 fragment float4 fs_feather(FeatherOut in [[stage_in]], constant FragmentUniforms& u [[buffer(0)]],
                            texture2d<float> colorMap [[texture(0)]], texture2d<float> floatZ [[texture(1)]],
-                           sampler cs [[sampler(0)]], sampler zs [[sampler(1)]]) {
+                           texture2d<float> outdoorMap [[texture(2)]], sampler cs [[sampler(0)]], sampler zs [[sampler(1)]],
+                           sampler os [[sampler(2)]]) {
     const float dist = floatZ.sample(zs, in.screen.xy / in.screen.w).r;
     const float diff = dist * in.feather - in.z;
     float4 c = in.color * colorMap.sample(cs, in.uv);
     c.a *= saturate(abs(diff));
-    return float4(apply_fog(c.rgb, length(in.eyeVec), u), c.a);
+    if (in.outdoor > 0.5) { // OUTDOOR: fade where the point is below the outdoor height map
+        const float outdoorDiff = in.outdoorMapPos.z - outdoorMap.sample(os, in.outdoorMapPos.xy).r;
+        c.a *= saturate(outdoorDiff * in.outdoorK);
+    }
+    return c; // no-fog variant (technique type 0x18)
 }
 )MSL"

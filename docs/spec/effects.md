@@ -254,7 +254,7 @@ mid(r) = (max − min) · 0.5 + min:
   hides whole flakes.
 - OpenIW2: `game/OutdoorMap`, built in iw2view on the first Cloud; covered flakes are skipped (`IW2_OUTDOOR_DUMP`,
   `IW2_NO_OUTDOOR`). TODO(spec): the outdoor sampler's filter / address mode (point sampling, clamped here); surface
-  bounds are taken from the soup's indexed vertices; the zfeather_outdoor effect shaders that also read this map.
+  bounds are taken from the soup's indexed vertices. zfeather_outdoor reads the same map (see "$floatz" below).
 
 ## Cylinder elements (type 4, no shipped effect uses one)
 
@@ -451,21 +451,35 @@ no fog, ... 0x15 emissive no fog, 0x18 emissive feathered no fog.
   gfx_explosion_flash). So featherParms.x = 1 / 40: the feather and near-camera fades run over 40 units of clip z (5 for the flash).
 
 ### OpenIW2 (iw2view)
-- `Renderer::draw`: when an effect batch needs it (MatInfo::fxKind 1 = effect_zfeather*, 2 = distortion) and the scene goes to the
-  offscreen target, the scene render pass is split after the opaque / alpha-tested / l_point passes (before water and the
-  blended passes): `$floatz` (R32_FLOAT, window size) is computed from the depth buffer by `fs_floatz_build` (clip z = ndc · d with
-  Camera::viewProj's near 4 / far 40000, cleared depth = 262144 · 2 · 1.732), the colour target is copied to `postSunTex`
-  (resolvedPostSun), and the pass resumes with load ops. Distortion sprites draw with `vs_distort` / `fs_distort`
-  (distortion_floatz.tech implemented), zfeather sprites with `vs_feather` / `fs_feather` (lib/z_feather.hlsl without the OUTDOOR
-  test). Sprite tangent / binormal: r (= −R) and u (= V) of the quad builder, carried in the vertex normal / light slots.
-  clipSpaceLookupOffset drops D3D9's +0.5 texel (Metal samples texel centres from the same projection). `IW2_NO_POSTSUN=1`
-  turns it off.
-- Inferred / TODO(spec): $floatz comes from depth, not from the "build floatz" technique lists (surfaces without that technique
-  still count); the order of distortion / zfeather sprites inside the effect pass (drawn in the entity-item order); the Tail /
-  Line tangent rule (distortion beams get no offset); zfeather_outdoor's outdoor-map fade (outdoorFeatherParms); fogged zfeather
-  statemaps (fog applied as for other blended sprites); the post-sun copy is taken from the HDR-less scene target before glow, as
-  in the DLL, but the glow chain then also runs over the distorted pixels (order as in 0x10030ed0); only the full-window
-  offscreen path (glow / blur / ghost on, the default) has the copy.
+- `$floatz`: when an effect batch needs it (MatInfo::fxKind 1 = effect_zfeather*, 2 = distortion, 3 = effect_zfeather_outdoor*)
+  and the scene goes to the offscreen target, `Renderer::draw` first runs the "build floatz" pass (0x10024ee0): R32_FLOAT target
+  cleared to 262144 · 2 · 1.732 (sky.techset's build_floatz_clear gives the same value), depth cleared, then every
+  Pass::Opaque / Pass::AlphaTest batch of the world, brush models and entity models with `vs_floatz` / `fs_floatz` (clip z;
+  alpha-tested batches clip (vertex colour · colorMap).a < 128 / 255). Only the *_replace / *_alphatest technique sets (phong,
+  ambient, unlit, default) map "build floatz" (census of iw_07 techniquesets); blended, effect, water and objective
+  surfaces are not drawn into it, as in the DLL.
+- Post-sun copy: the scene pass is split after the opaque / alpha-tested / l_point passes and the colour target is copied to
+  `postSunTex` (resolvedPostSun); the pass resumes with load ops.
+- Distortion: `vs_distort` / `fs_distort` (distortion_floatz.tech). Sprite tangent / binormal = r (−R) / u (V) of the billboard
+  and oriented quads; Tail / Line quads (type 8, builder 0x100409c0) carry tangent = c (the unit quad normal) and binormal =
+  B − A. Census: only Particle elements use distortion materials (9 efx files), and no map or xmodel references any
+  `gfx_distortion*` material, so world / model distortion surfaces have no shipped user (the techset stays Skip there).
+- Z-feather: `vs_feather` / `fs_feather` (lib/z_feather.hlsl). The effect list is drawn with technique type 0x18 "emissive
+  feathered no fog", so only the no-fog techniques run (zfeather.tech, zfeather_add.tech, the _outdoor ones; the techsets'
+  zfeather_lfog / _efog technique files are not even shipped): no fog on these sprites. zfeather_add_nofog.sm blends Add,
+  SrcAlpha, One. OUTDOOR (effect_zfeather_outdoor*, e.g. gfx_rain_mist): alpha · saturate((outdoorMapPos.z − $outdoor(xy)) ·
+  outdoorFeatherParms.x) with outdoorMapPos = (p − mins) / (maxs − mins) (worldOutdoorLookupMatrix) and outdoorFeatherParms =
+  code constant 0xb2 (name table 0x1018f1f8, storage 0x1070c320) = r_outdoorFeather in all lanes (0x10033fd0 / 0x10034082;
+  dvar 0x101ce6bc registered at 0x1000b927, default 8). "$outdoor" is built when such a sprite or a Cloud appears.
+- clipSpaceLookupOffset drops D3D9's +0.5 texel (Metal samples texel centres from the same projection). `IW2_NO_POSTSUN=1`
+  turns it all off. Check (feather): `IW2_NO_HUD=1 IW2_FX_TEST=file:<efx: one Particle, life 10000, size curve 1 scale 150,
+  shader gfx_dark_smoke_atlas> IW2_FX_TEST_DIST=110 IW2_FX_MS=500 iw2view <main> moscow --pitch 35 --shot x.png`: the smoke
+  fades into the ground and the wall; with `IW2_NO_POSTSUN=1` it is cut along straight lines.
+- TODO(spec): the order of sprites inside the effect list (the DLL sorts draw records by a key with material index
+  (key >> 21) & 0x3ff, layer and entity index; the key writer was not found by searching the DLL disassembly
+  for the matching shifts; here the entity-item order and, inside the effect model, the shader name order); polygon offset
+  in the build-floatz pass; the view model (depth-hack range) in the floatz list; the floatZ / outdoor sampler states (point,
+  clamp here).
 - TODO(spec): the matrix that makes clip z comparable to featherParms (material constant featherParms is not yet traced);
   mode 2 (dvar 0x101ce710 == 2) vertex format 0x1003f850; why the post-sun copy needs the full-window flag besides the
   r_distortion / glow gate in 0x100310a0.
