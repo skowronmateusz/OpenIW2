@@ -298,7 +298,9 @@ void World::spawnMapEntities() {
 
     // AI placed without the SPAWNER flag spawn at load (inferred from the SPAWNER flag description in the
     // aitype scripts: "makes this a spawner instead of a guy").
+    mapStartSpawn_ = true;
     for (Entity* sp : mapStartActors) spawnActor(*sp);
+    mapStartSpawn_ = false;
 }
 
 // The entity clips of the level-start drops (0x515f80, 0x5325f0): both save and zero the contents (+0xc0) of every entity
@@ -480,10 +482,24 @@ Entity* World::spawnActor(Entity& spawner, bool force) {
     a.obj->set("classname", Value(cls));
     // 0x4fc640 -> 0x4fc550 (0x4fc66c): an actor spawn without the SPAWNER flag drops the entity to the floor before the actor
     // slot is allocated; dospawn clears the copy's spawnflags bit 0 (0x53234e) and calls 0x4fc640, so runtime spawns are
-    // dropped again from the spawner's (already dropped, 0x5325f0) origin. TODO(spec): map-start placed actors are
-    // dropped by the exe during the entity spawn (0x4fa550, only the entities spawned before them linked), here at the end
-    // of prepareStart with the current entity clips.
-    dropActorToFloor(a);
+    // dropped again from the spawner's (already dropped, 0x5325f0) origin. A map-start placed actor is dropped by the exe
+    // inside the entity spawn (G_SpawnEntitiesFromString 0x4fa550 -> G_CallSpawn 0x4f9770 -> 0x4fc640), in entity-string
+    // order, when only the entities before it are linked: of those only script_brushmodels (contents 1) are in the mask
+    // 0x2820011 (script_model 0x2080, actors 0x4000; the player and vehicle collmaps come later). The port spawns these
+    // actors at the end of prepareStart, so the drop uses the brush models with a lower entity number (map order).
+    if (mapStartSpawn_) {
+        const std::vector<EntityClip> all = collision_->entityClips();
+        std::vector<EntityClip> before;
+        for (const EntityClip& c : all) {
+            const Entity* ce = entityByNumber(c.id);
+            if (ce && ce->classname == "script_brushmodel" && c.id < spawner.number) before.push_back(c);
+        }
+        collision_->setEntityClips(std::move(before));
+        dropActorToFloor(a);
+        collision_->setEntityClips(all);
+    } else {
+        dropActorToFloor(a);
+    }
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
     applyActorFieldDefaults(*a.obj); // docs/spec/ai.md
@@ -549,9 +565,15 @@ void World::prepareStart() {
     cvars["g_player_maxhealth"] = cvars[kSkillHealthCvar[skill]];
     cvars["player_deathInvulnerableTime"] = std::to_string(kSkillDeathInvulMs[skill]);
     spawnMapEntities();
-    if (carriedPlayer_ && player_) { // persistent level change (0x4e6c20 memory save): the player keeps his weapons
+    if (carriedPlayer_ && player_) { // persistent level change (reader 0x4e6de0 from 0x4da4d2): weapons, health, stats words
         inventory(*player_) = carriedPlayer_->inventory;
         if (!carriedPlayer_->weapon.empty()) player_->obj->set("$weapon", Value(carriedPlayer_->weapon));
+        // Entity range table 0x56eeb0 (0x4e6bc0): +0x13c health, +0x140 maxhealth replace the client spawn's g_player_maxhealth.
+        if (carriedPlayer_->health) player_->obj->set("health", Value(int32_t(*carriedPlayer_->health)));
+        if (carriedPlayer_->maxhealth) player_->obj->set("maxhealth", Value(int32_t(*carriedPlayer_->maxhealth)));
+        // Client range table 0x56eec8 (0x4e5b50): ps+0x108..+0x117; the health / max health copies follow the entity, the dead yaw
+        // (+0x10c) is restored. Not carried: stance, origin, view angles, pm_flags.
+        playerDeadYaw_ = carriedPlayer_->deadYaw;
         carriedPlayer_.reset();
     }
     linkVehicleNodes();
