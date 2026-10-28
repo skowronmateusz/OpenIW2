@@ -157,20 +157,87 @@ bool World::nodeBeyondPlanes(int node, const std::vector<PathPlane>& planes) con
 
 // 0x516950 / 0x516820: nodes within `radius` (2D) of `center` whose height difference is at most `height`, of a type
 // in `typeMask` (spawnflag 1 nodes only when bit 0 is set), at most `max`, with their 2D distance². TODO(spec): the
-// original walks a node tree, so which nodes are taken when more than `max` qualify can differ.
+// original walks a node kd-tree, so the nodes taken when more than `max` qualify are the first ones in its order.
+// The tree (0x52de40, built once over the node array in index order): fewer than 4 nodes, or an extent of at most 192
+// on the wider of x / y (y when its extent is the larger), make a leaf; otherwise the array is split at the middle of
+// the extent by a two-ended partition (key < split to the left), the cut then moved towards the middle past the keys
+// equal to the split. The walk (0x516820) takes the left side unless the centre is more than the radius beyond the
+// split, then the right side unless it is more than the radius before it, and the leaf nodes in their permuted order.
+// TODO(spec): a map that ships a precomputed tree (0x52ee40) is assumed to carry the one this build gives.
+int World::buildNodeTree(int first, int count) const {
+    auto key = [&](int i, int axis) { return originOf(nodes_[size_t(nodeTreeOrder_[size_t(i)])].obj)[size_t(axis)]; };
+    if (count >= 4) {
+        double mn[2], mx[2];
+        for (int ax = 0; ax < 2; ++ax) {
+            mn[ax] = mx[ax] = key(first, ax);
+            for (int i = 1; i < count; ++i) {
+                const double v = key(first + i, ax);
+                if (v < mn[ax]) mn[ax] = v;
+                if (v > mx[ax]) mx[ax] = v;
+            }
+        }
+        const int ax = (mx[1] - mn[1]) > (mx[0] - mn[0]) ? 1 : 0;
+        if (mx[ax] - mn[ax] > 192.0) {
+            const float split = float((mn[ax] + mx[ax]) * 0.5);
+            int i = 0, j = count - 1;
+            for (;;) {
+                while (key(first + i, ax) < split) ++i;
+                while (key(first + j, ax) > split) --j;
+                if (i >= j) break;
+                std::swap(nodeTreeOrder_[size_t(first + i)], nodeTreeOrder_[size_t(first + j)]);
+                ++i;
+                --j;
+            }
+            while (2 * i < count && key(first + i, ax) == split) ++i;
+            while (2 * i > count && key(first + i - 1, ax) == split) --i;
+            if (i > 0 && i < count) {
+                const int l = buildNodeTree(first, i), r = buildNodeTree(first + i, count - i);
+                nodeTree_.push_back({ax, split, l, r});
+                return int(nodeTree_.size()) - 1;
+            }
+        }
+    }
+    nodeTree_.push_back({-1, 0.0f, count, first});
+    return int(nodeTree_.size()) - 1;
+}
+
 std::vector<std::pair<int, float>> World::nodesInRange(const Vec3& center, float radius, float height, size_t max,
                                                        uint32_t typeMask) const {
     std::vector<std::pair<int, float>> out;
-    for (size_t i = 0; i < nodes_.size() && out.size() < max; ++i) {
-        const PathNode& n = nodes_[i];
-        const Vec3 p = originOf(n.obj);
-        const float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
-        const float d2 = dx * dx + dy * dy;
-        if (d2 > radius * radius || !(typeMask >> n.typeNum & 1)) continue;
-        if ((n.spawnflags & 1) && !(typeMask & 1)) continue;
-        if (dz * dz > height * height) continue;
-        out.push_back({int(i), d2});
+    if (nodeTreeFor_ != nodes_.size()) {
+        nodeTreeOrder_.resize(nodes_.size());
+        for (size_t i = 0; i < nodes_.size(); ++i) nodeTreeOrder_[i] = int(i);
+        nodeTree_.clear();
+        if (!nodes_.empty()) buildNodeTree(0, int(nodes_.size()));
+        nodeTreeFor_ = nodes_.size();
     }
+    if (nodes_.empty()) return out;
+    const int root = int(nodeTree_.size()) - 1;
+    auto walk = [&](auto&& self, int t) -> void {
+        for (;;) {
+            const NodeTreeEnt& e = nodeTree_[size_t(t)];
+            if (e.axis < 0) {
+                for (int k = 0; k < e.a; ++k) {
+                    const int i = nodeTreeOrder_[size_t(e.b + k)];
+                    const PathNode& n = nodes_[size_t(i)];
+                    const Vec3 p = originOf(n.obj);
+                    const float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
+                    const float d2 = dx * dx + dy * dy;
+                    if (d2 > radius * radius || !(typeMask >> n.typeNum & 1)) continue;
+                    if ((n.spawnflags & 1) && !(typeMask & 1)) continue;
+                    if (dz * dz > height * height) continue;
+                    if (out.size() == max) return;
+                    out.push_back({i, d2});
+                }
+                return;
+            }
+            const float d = center[size_t(e.axis)] - e.split;
+            if (!(d > radius)) self(self, e.a);
+            if (-radius > d) return;
+            t = e.b;
+        }
+    };
+    walk(walk, root);
     return out;
 }
 
@@ -248,10 +315,14 @@ int World::sentientNodePlanes(Entity& e, const std::vector<PathPlane>& planes) {
 // byte +8 + team), and with planes the nodes beyond one of them. The open list is kept sorted by g + h (h: the 2D
 // distance to the goal position); a node is inserted before the first one whose f is not lower. A visited node is
 // re-queued when reached cheaper. The search ends when the goal node is taken from the head of the list.
+// The distance-capped variant (0x546980, `capSq` >= 0): the search ends at the first node taken from the list whose 3D
+// distance² to the goal position is below the cap, and a neighbour is only expanded when `nodeOk` accepts its origin
+// (the actor's goal, 0x5026d0 at 0x546a77; with planes 0x542f40 = the same goal test, then the plane test). Ending
+// at the start node leaves an empty chain (success without a path, 0x546bba).
 bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
-                        std::vector<int>& chain) {
+                        std::vector<int>& chain, float capSq, const std::function<bool(const Vec3&)>* nodeOk) {
     const size_t n = nodes_.size();
-    if (start < 0 || goal < 0 || size_t(start) >= n || size_t(goal) >= n || paths_.size() != n) return false;
+    if (start < 0 || (capSq < 0.0f && goal < 0) || size_t(start) >= n || (capSq < 0.0f && size_t(goal) >= n) || paths_.size() != n) return false;
     static constexpr int kHead = -2; // the list head (the original's fake node whose "next" is the head variable)
     if (search_.size() != n) search_.assign(n, {});
     auto& s = search_;
@@ -261,7 +332,19 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
     auto setNext = [&](int node, int next) { (node == kHead ? head : s[size_t(node)].next) = next; };
     while (true) {
         const int cur = head;
-        if (cur == goal) break;
+        if (capSq >= 0.0f) {
+            const Vec3& cp = paths_.position(size_t(cur));
+            const float dx = goalPos[0] - cp[0], dy = goalPos[1] - cp[1], dz = goalPos[2] - cp[2];
+            if (dx * dx + dy * dy + dz * dz < capSq) {
+                chain.clear();
+                if (cur == start) return true;
+                for (int c = cur; c >= 0; c = c == start ? -1 : s[size_t(c)].parent) chain.push_back(c);
+                std::reverse(chain.begin(), chain.end());
+                return true;
+            }
+        } else if (cur == goal) {
+            break;
+        }
         head = s[size_t(cur)].next;
         if (head >= 0) s[size_t(head)].prev = kHead;
         const auto& links = paths_.links(size_t(cur));
@@ -269,6 +352,7 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
             if (linkBlocked(size_t(cur), li, team)) continue;
             const int nb = links[li].target;
             const Vec3& p = paths_.position(size_t(nb));
+            if (nodeOk && !(*nodeOk)(p)) continue;
             bool beyond = false;
             for (const PathPlane& pl : planes) beyond = beyond || pl.dist < pl.normal[0] * p[0] + pl.normal[1] * p[1];
             if (beyond) continue;
@@ -381,7 +465,7 @@ void World::buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3&
 // lowered); the node cache is reset first. Without danger planes this is 0x5424d0 (plain 0x545840); with them
 // (0x54b670) the start comes from the uncached plane query 0x5150d0, the goal query keeps the planes (0x542810) and
 // 0x5428a0 requires both end nodes to be on the actor's side of every plane (0x542710) before the plane-limited
-// search 0x545ca0. TODO(spec): the planes only appear through the AI events (0x535770 → 0x54b3b0), not implemented.
+// search 0x545ca0. The planes come from the AI events (0x535770 / 0x535860 → 0x54b3b0, actorevents.cpp).
 bool World::pathToPoint(Entity& e, const Vec3& target) {
     clearActorPath(e);
     const std::vector<PathPlane> planes = dangerPlanesOf(e);
@@ -393,6 +477,38 @@ bool World::pathToPoint(Entity& e, const Vec3& target) {
     if (!planes.empty() && (nodeBeyondPlanes(start, planes) || nodeBeyondPlanes(goal, planes))) return false;
     std::vector<int> chain;
     if (!searchNodes(teamOf(e), start, goal, target, planes, chain)) return false;
+    buildActorPath(e, chain, target);
+    return true;
+}
+
+// 0x503a50 (with planes): a path to a sentient at `target`. An existing path is kept when its goal point (+0x38c) is
+// within 2 units (xy, 0x591e64 = 4 on the squared distance) and 80 units (z, 6400) of the target (0x5027e0) and it is
+// not a truncated path whose point count is at least a quarter of the planned count (flag 4, 4·count <= planned drops
+// it); otherwise it is replaced.
+bool World::pathToSentient(Entity& e, const Vec3& target) {
+    if (actorHasPath(e)) {
+        const ActorPath& p = e.path;
+        const bool dropped = (p.flags & 4) && 4 * p.count <= p.planned;
+        const float dz = p.goal[2] - target[2], dx = target[0] - p.goal[0], dy = target[1] - p.goal[1];
+        if (!dropped && dz * dz <= 6400.0f && dx * dx + dy * dy <= 4.0f) return true;
+    }
+    return pathToPoint(e, target);
+}
+
+// 0x503be0: a path that ends at the first node within sqrt(capSq) of `target` (distance-capped search 0x546980 through
+// 0x542eb0, with danger planes 0x542fb0); the start node is the uncached query around the origin (0x517f90, 192 units),
+// every node on the way must be inside the actor's goal and the traversal flag of the path build is 0. The path ends at
+// the node and then the target (the build's goal point is the target; TODO(spec): the traversal flag 0 of the build,
+// 0x542f16, is not modelled — buildActorPath always allows traversals).
+bool World::pathToPointNear(Entity& e, const Vec3& target, float capSq) {
+    clearActorPath(e);
+    const std::vector<PathPlane> planes = dangerPlanesOf(e);
+    e.nodeCached = false;
+    const int start = queryNode(originOf(e.obj), 192.0f, true, 0xfffffffe, planes, nullptr);
+    if (start < 0) return false;
+    std::vector<int> chain;
+    const std::function<bool(const Vec3&)> inGoal = [&](const Vec3& p) { return inActorGoal(e, p); };
+    if (!searchNodes(teamOf(e), start, -1, target, planes, chain, capSq, &inGoal) || chain.empty()) return false;
     buildActorPath(e, chain, target);
     return true;
 }

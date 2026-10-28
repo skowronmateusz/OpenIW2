@@ -39,6 +39,19 @@ bool World::isSentient(const Entity& e) const {
 // Eye position and (horizontal, unit) look direction. Actors: tag_eye (0x500910; origin + 64 without the tag, with
 // the facing as direction). Player: origin + view height (0x4e8b70; the view height is not known to the world, so
 // the stance approximation of eyePosition() is used, TODO).
+// 0x54c7d0 / 0x54c760: a sight trace (mask 0x280d803) from `from` to `to` that ignores the actor and the target and
+// must be clear, and the visibility through effects (0x48b090) must be at least 0.2 (0x592020). With a non-zero
+// `maxDistSq` (maxsightdistsqrd, +0x1770) the 3D distance² must not exceed it. TODO(spec): the second limit, the float
+// 0x1c61038 (FLT_MAX at level start, 0x4d9c93; written at 0x4e4aab / 0x4e9772 by player code).
+bool World::actorSightClear(Entity& actor, Entity& target, const Vec3& from, const Vec3& to, float maxDistSq) {
+    if (maxDistSq != 0.0f) {
+        const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+        if (dx * dx + dy * dy + dz * dz > maxDistSq) return false;
+    }
+    if (collision_->sightBlocked(from, to, {0, 0, 0}, {0, 0, 0}, kSightMask, actor.number, target.number)) return false;
+    return !(fxVisibility(from, to) < 0.2f);
+}
+
 Vec3 World::sightEye(Entity& e, Vec3* forward) {
     if (e.eyeFrameMs != timeMs_) {
         e.eyeFrameMs = timeMs_;
@@ -95,9 +108,8 @@ bool World::sightCheck(Entity& actor, Entity& target) {
     bool vis = false, traced = false;
     if (sightTest(actor, eye, fwd, targetEye, fov, maxd)) {
         traced = true;
-        // 0x54c760 → 0x44c3c0: a sight trace that ignores the actor and the target.
-        // TODO: after a clear trace the original also requires a visibility value ≥ 0.2 (0x48b090, not read).
-        vis = !collision_->sightBlocked(eye, targetEye, {0, 0, 0}, {0, 0, 0}, kSightMask, actor.number, target.number);
+        // 0x54c760 → 0x44c3c0: a sight trace that ignores the actor and the target, then visibility ≥ 0.2 (0x48b090).
+        vis = actorSightClear(actor, target, eye, targetEye, 0.0f);
     }
     SentientInfo& info = actor.sentientInfo[target.obj.get()];
     info.visible = vis;

@@ -775,7 +775,7 @@ void World::registerCombatBuiltins() {
         return Value(tr.fraction >= 0.999f && !tr.startSolid);
     });
     // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).
-    // TODO(spec): the goal volume test (0x447830) when the goal has a volume (+0x75c).
+    // The goal volume (+0x778, 0x447830 at 0x50273f) must contain the point too (World::goalVolumeHolds).
     vm_.registerBuiltin("isingoal", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (c.argc() != 1) throw std::runtime_error("isingoal: one argument");
@@ -787,7 +787,8 @@ void World::registerCombatBuiltins() {
         const float dz = p[2] - g[2];
         if (h * h < dz * dz) return Value(false);
         const float dx = g[0] - p[0], dy = g[1] - p[1];
-        return Value(!(r * r < dx * dx + dy * dy));
+        if (r * r < dx * dx + dy * dy) return Value(false);
+        return Value(goalVolumeHolds(*e, p));
     });
     // Player-only builtins (0x590ab8 "entity %i is not a player" otherwise).
     auto playerSelf = [this](CallContext& c) -> Entity& {
@@ -910,15 +911,6 @@ void World::registerCombatBuiltins() {
     });
     vm_.registerBuiltin("resetsunlight", [this](CallContext&) {
         sunlight_.reset();
-        return Value();
-    });
-    // setreverb (0x539380): player only; 2..5 arguments: priority name (two accepted names), reverb alias, then optional
-    // drywet levels / fade time defaults 0.5 / 1.0 / 0. Sound-system state. TODO(spec): the reverb mixing is not modelled.
-    vm_.registerBuiltin("setreverb", [playerSelf](CallContext& c) {
-        playerSelf(c);
-        const std::string p = c.arg(0).toString();
-        if (p != "snd_enveffectsprio_level" && p != "snd_enveffectsprio_shellshock")
-            throw std::runtime_error("priority must be 'snd_enveffectsprio_level' or 'snd_enveffectsprio_shellshock'");
         return Value();
     });
     // setsoundblend (0x4f7d10): entity of type 6 (script_origin) with two sound aliases and a blend 0..1 (error when outside);

@@ -372,8 +372,40 @@ void World::actorThink(Entity& e) {
 
 // The pain callback (0x4ff3b0) after damage that leaves the actor alive: the attacker counts as having attacked
 // (+0x1780 of its sentient entry), then the pain state is pushed; when it is, the current animscript is killed.
-// TODO(spec): the states' damaged handlers (0x5498c0 node release, turret 0x54af30) are not modelled.
+// The current state's damaged slot runs first (0x4ff4c7). The common one, 0x5498c0, ignores an attacker whose sentient
+// has the actor's own team; otherwise a claimed node within 30 units (xy) and 80 units (z) of the actor is given up
+// (0x502660 limits 900 / 6400, then 0x4fe670).
+static Vec3 vecField(const ObjectPtr& o, const char* key);
+// The turret state's handler 0x54af30 (the gunner of a turret it owns, hit by a sentient of the enemy team table
+// {0, 2, 1, 0, 0}): the first hit sets flag 0x10 and remembers the attacker (+0x60), the next one lets go of the turret
+// (0x54b020: release 0x549a60, forget it).
 void World::actorPain(Entity& e, Entity* attacker) {
+    if (attacker && isSentient(*attacker) && e.ai.stack[size_t(e.ai.depth)] == AiTurret && e.usingTurret) {
+        Entity* t = entityOf(Value(e.usingTurret));
+        static constexpr int kEnemy[5] = {0, 2, 1, 0, 0};
+        auto teamOf = [](const Entity& x) { const std::string t = x.obj->get("team").toString(); return t == "axis" ? 1 : t == "allies" ? 2 : t == "neutral" ? 3 : 0; };
+        const int own = teamOf(e);
+        if (t && t->turret && t->turret->owner == e.obj && own >= 0 && own < 5 && teamOf(*attacker) == kEnemy[own]) {
+            if (t->turret->flags & 0x10u) {
+                releaseTurret(*t);
+                e.usingTurret.reset();
+            } else {
+                t->turret->flags |= 0x10u;
+                t->turret->hitBy = attacker->obj;
+            }
+        }
+        return actorPainNode(e, attacker, false);
+    }
+    actorPainNode(e, attacker, true);
+}
+
+void World::actorPainNode(Entity& e, Entity* attacker, bool nodeRelease) {
+    if (nodeRelease && e.claimedNode >= 0) {
+        const bool friendly = attacker && isSentient(*attacker) && attacker->obj->get("team").toString() == e.obj->get("team").toString();
+        const Vec3 n = vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), o = vecField(e.obj, "origin");
+        const float dx = n[0] - o[0], dy = n[1] - o[1], dz = o[2] - n[2];
+        if (!friendly && dz * dz <= 6400.0f && dx * dx + dy * dy <= 900.0f) giveUpClaimedNode(e);
+    }
     if (attacker && isSentient(*attacker)) e.sentientInfo[attacker->obj.get()].lastAttackedMs = timeMs_;
     if (aiPushState(e, AiPain)) killActorAnimScript(e);
 }
@@ -611,7 +643,7 @@ void World::exposedNoncombat(Entity& e) {
             combatScript(e);
             return;
         }
-        setActorAnimScript(e, stopScript(e), 0, 1); // 0x53ae40
+        standOrFollow(e, stopScript(e)); // 0x53ae40
         return;
     }
     const Vec3 o = e.obj->get("origin").asVector();
@@ -625,9 +657,11 @@ void World::exposedNoncombat(Entity& e) {
 }
 
 // 0x53b050: at the claimed node (0x502910) its cover script (0, anim mode 1); a node that no longer covers is given
-// up (0x4fe670); otherwise "combat" (anim mode 4, 1 when following an actor). TODO(spec): 0x504630 (crowding) and
-// clearing +0x728.
+// up (0x4fe670); otherwise "combat" (anim mode 4, 1 when following an actor).
 void World::combatScript(Entity& e) {
+    scanFollowed(e); // 0x53b058, then +0x728 / +0x72c = 0
+    e.ai.blocker = nullptr;
+    e.ai.blockerEnt = nullptr;
     if (e.claimedNode >= 0 && atClaimedNode(e)) {
         std::string script;
         if (coverScriptAt(e, e.claimedNode, false, script)) {
@@ -638,7 +672,8 @@ void World::combatScript(Entity& e) {
             giveUpClaimedNode(e);
         }
     }
-    setActorAnimScript(e, "combat", 0, 4);
+    if (e.ai.followed) setActorAnimScript(e, "combat", 0, 1); // 0x53b0ce
+    else setActorAnimScript(e, "combat", 0, 4);
 }
 
 // 0x53aed0: at the claimed node its cover script; a node that no longer covers is given up; else "stop".
@@ -678,7 +713,7 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
     }
     const int r = stepActorPath(e, wide, run);
     if (r == 1) {
-        setActorAnimScript(e, "stop", 0, 1); // script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
+        standOrFollow(e, "stop"); // 0x5523d2: script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
         if (ai.followed) moveActor(e, 0.05f); // the 0x504160 branch that skips the path walk (0x5041a3 -> 0x504228)
         return;
     }

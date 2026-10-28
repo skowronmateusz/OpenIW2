@@ -26,6 +26,18 @@ struct PlayerInput {
     float pitch = 0;              // view pitch in degrees (with yaw: the command angles for the aim spread)
     float adsFrac = 0;            // ps+0xb8: the aim fraction
     bool dead = false;            // pm_type ≥ 4
+    bool holdBreathHeld = false;  // usercmd 0x8000 (+holdbreath)
+    bool breathWeapon = false;    // the weapon has an adsOverlayReticle (def +0x278) and weaponClass != item (9) (0x4dd350)
+};
+
+// Hold-breath dvars (registered at 0x4fa9a2-0x4faa7d, flags 0x1082), defaults from the registration calls.
+struct BreathParams {
+    float holdTime = 4.5f;   // player_breath_hold_time (0x1c7f030), seconds, 0 disables the system
+    float gaspTime = 1.0f;   // player_breath_gasp_time (0x1c7f018)
+    float fireDelay = 0.0f;  // player_breath_fire_delay (0x1c7effc)
+    float gaspScale = 4.5f;  // player_breath_gasp_scale (0x1c7efc8)
+    float holdLerp = 4.0f;   // player_breath_hold_lerp (0x1c7f00c)
+    float gaspLerp = 6.0f;   // player_breath_gasp_lerp (0x1c7f020)
 };
 
 struct PlayerState {
@@ -73,6 +85,12 @@ struct PlayerState {
     float aimSpread = 255;       // ps+0x5b0: aim spread scale 0..255 (0x4de540)
     int bobCycle = 0;            // ps+8: 0..255 (PM_Footsteps 0x50a850)
     float prevCmdPitch = 0, prevCmdYaw = 0; // the previous command's angles (pm+0x40)
+    float prevCmdFwd = 0, prevCmdRight = 0; // the previous command's move bytes (pm+0x4c / 0x4d), -1..1
+    bool proneAimLatch = false;  // pm_flags 0x800: set with the prone aim (0x4dd070), zeroes the moves while prone (0x50c748)
+    // Hold breath (0x4dd350, called from PM_Weapon every step after the aim update).
+    bool holdingBreath = false;  // pm_flags 0x4000
+    int breathTimerMs = 0;       // ps+0x594: counts up while holding, down otherwise
+    float breathScale = 0;       // ps+0x590: the scope sway scale (not initialised by the spawn in the exe)
     bool havePrevCmd = false;
 };
 
@@ -148,7 +166,12 @@ struct MoveParams {
     int foliageSlowInterval = 1500;   // bg_foliagesnd_slowinterval (ms)
     int foliageFastInterval = 500;    // bg_foliagesnd_fastinterval (ms)
     int foliageResetInterval = 500;   // bg_foliagesnd_resetinterval (ms)
+    BreathParams breath;
 };
+
+// A shot while holding the breath on a scoped weapon (0x4dd2b0, after the fire event at 0x4dee18): the timer gains
+// player_breath_fire_delay (capped at the hold time) and the hold ends. Only with the aim fraction 1 and a reticle weapon.
+void breathOnFire(PlayerState& ps, const MoveParams& mp, float adsFrac, bool breathWeapon);
 
 // PM_AddEvent (0x507ba0): event 0 is ignored; the ring keeps the last 4.
 // ClientSpawn (0x4e9255..0x4e9263): pm_flags |= 0x400, pm_time = 100.

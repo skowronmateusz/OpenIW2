@@ -106,6 +106,7 @@ private:
     bool editKey(const Menu& m, Key k);
     void startEdit(const Item* it);
     void editStore(const Item& it, const std::string& v);
+    static int editStep(const std::string& s, int cur, int n);
     void moveFocus(const Menu& m, int dir);
     static bool isEditType(int type) { return type == 4 || type == 16; }
     struct ListDrag {

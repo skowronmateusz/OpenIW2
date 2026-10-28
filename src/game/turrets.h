@@ -24,6 +24,7 @@ struct TurretState {
     float aiSpread = 0, playerSpread = 0;
     int team = 3;                // +0x8c: 1 axis, 2 allies (setup: 3)
     float maxRangeSq = 3.4028235e38f; // +0x5c maxRange² (unlimited when maxRange ≤ 0)
+    script::ObjectPtr hitBy;     // +0x60: the enemy sentient that hit the gunner (flag 0x10), 0x54af30
     // Turret think state.
     int state = 0;               // +0x04: 0 idle, 2 aiming, 1 firing
     script::ObjectPtr engaged;   // +0x14 target being engaged

@@ -228,9 +228,13 @@ reacquire), `flagenemyunattackable` (0x53cd90: ignore-until 0x7fffffff, substate
 types 18, 2, 3, 5, 10, 11, 12, 6, 7). `findbestcovernode` options are the constant strings set at 0x506e95…: 0x1c7f12a
 "prefer", 0x1c7f128 "ignore", 0x1c7f12c "better".
 
-Implemented in `src/game/actorcover.cpp`. TODO(spec): node take-over 0x518e80/0x518dc0, linked nodes, 0x515390, goal
-volumes, 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move check's continuation after a
-block, the trim state of the reacquire paths (+0x70c/+0x710), `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
+Implemented in `src/game/actorcover.cpp`. Done since: node blocking 0x515390 (blockFacingNodes), goal volumes
+(goalVolumeHolds), the 0x502960 offset goal (dead: +0x73c is only ever written 0), the damaged handler 0x5498c0, the trim
+state set by the reacquire paths, trimpathtoattack 0x543580 (with the sight test 0x54c7d0), the planners 0x503a50 (reuse
+rule) / 0x503be0 / 0x546980, the turret damaged handler 0x54af30, the node kd-tree order (0x52de40 build, 0x516820 walk) and
+the node take-over 0x518e80 / priority rule 0x518dc0. TODO(spec): the linked nodes
+(+0x30 / +0x32, +0x56) of the node claims, 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
+check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
 0x502960's offset goal (0x542340/0x545670, see "Path planner").
 
 ## Path planner (observed)
@@ -314,7 +318,7 @@ off its centre (0x5451b0, corners 75 apart, stepping back to 37.5 first when clo
 blocked (+0x728 = self, 500 ms); when a detour was already tried the path is dropped every 2 s. Implemented in
 `src/game/actorfollow.cpp` and `src/game/actorpath.cpp`.
 TODO(spec): +0x318 (the bumped entity: following and 0x500d80), +0x250 move delta vs velocity, the actor clip mask
-+0x28c, +0x288, 0x504630 crowding, 0x53ade0, negotiation (+0x244, flag 0x40), the facing blend +0x2150, +0x73c, the
++0x28c, +0x288, 0x504630 crowding, 0x53ade0, negotiation (+0x244, flag 0x40), the facing blend +0x2150, the
 actor physics 0x501xxx.
 
 ## Native actor fields (observed)
@@ -430,7 +434,7 @@ mode 2: the actor's own origin without a chain node (radius and height untouched
 radius sets radius = max(node radius, 4) and height = max(goalheight, 80) (a zero one leaves them as the last update set them). Any other goal
 entity gives its origin (mode 1); no goal entity the setgoalpos / setgoalnode position (mode 0, `setgoalpos` and `setgoalnode` clear the goal
 entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight, 80). The cover search, `pathToGoal` and the in-goal test read it
-(`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (the goal volume test 0x447830 is TODO(spec)).
+(`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (plus the goal volume, 0x447830 = World::triggerContact on the point).
 
 The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
 
@@ -590,6 +594,18 @@ Status: stepActorPath returns early for a followed actor (as the exe skips the p
 Open: the retarget 0x4fec50, 0x504610, the scans 0x501380 and 0x504630 (0x5025f0/0x502660), the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x53ade0, 0x501e06. The link stays gated (IW2_ACTOR_FOLLOW=1): it fires 0 times in matmata/elalamein/toujane even when enabled, so no scene validates it.
 
 - groundtype (actor +0x24c = move block +0x28, written by the ground probe 0x548290 each move): getter 0x5367b0 returns undefined for 0, the table 0x5a0344 (stride 20, same names as the pmove surface aliases bark..asphalt) for 1..22, "default" otherwise. Implemented in World::moveActor (slide path only).
+
+### Retarget 0x4fec50 (decoded, ported as `World::retargetFollowed`)
+0x4fedc0 (every think) first releases as documented above, then, unless +0x2148 is already the player gentity (g_entities[0], 0x1c60504), calls 0x4fec50(actor, player): return unless dontavoidplayer (+0x734) == 0 and +0x28c has 0x2000000 and the state (stack[depth]) is not 2 (turret); the actor's team must not be the team the player's team fights (table {0,2,1,0,0} at 0x4fec9d..0x4fecd2); the box 0x447830 test: player origin + velocity (ps+0x20) * 0.1 (0x59202c) with the player's mins/maxs (ps+0x540 / +0x54c) against the actor's box (an AABB test for an actor model); then 0x504610 (claimed node set and 0x502660 close) and, if that holds, the client byte +0x86b6 must be 0, and a claimed node is handed to the player's sentient (0x519050); finally +0x2148 = the player gentity. TODO(spec): +0x86b6, 0x519050 (the claimed node stays with the actor), the player's stance box (standing box used).
+Scene check: decoytown (player standing on a friendly actor's box edge): the link is re-established every think while the boxes overlap, as in the exe order (release check, then retarget); the actor stands until the player leaves.
+The actor clip mask 0x2820011 has no actor body bit (0x4000), so the bump link 0x501c8b cannot fire on actors; `IW2_FOLLOW_SCENE` forces a link instead.
+
+### Scan 0x504630 and the followed-stand script 0x53ade0 (decoded, ported: `scanFollowed`, `standOrFollow`)
+- 0x504630(actor): only when +0x2148 is 0. flag = 1 when the animscript is grenade_cower (handle 0x1c7e120, string 0x587e50); else 0 without a claimed node, else (node close, 0x502660). Over the 32 actor slots (in use, not itself): with the flag set the other's +0x318 hit entity must have a sentient (+0x104); then 0x5025f0(me, other) (dz^2 <= 6400 at 0x591fdc, 2D distance^2 < 900) -> +0x2148 = the other's gentity (first match).
+- 0x53ade0(actor, script): horizontal speed^2 (+0x230/+0x234) > 1.0 (0x591e20) plays handle 0x1c7e108 ("move", string 0x587e74) at movemode 2 / anim mode 1; otherwise `script` at movemode 1 / anim mode 1. Callers: 0x53ae40 (stop), 0x5523d2 (path step result "stand": "stop" 0x1c7e118), 0x5206c0 (grenade_cower), 0x53b040 (the run/walk scripts 0x53afe0 / 0x53af20 when followed), each after 0x504630 and with the unfollowed fallback (script, movemode 0, anim mode 1).
+- 0x53b050 (combat script) runs 0x504630 first, clears +0x728/+0x72c, then the cover/combat choice; followed -> ("combat", 0, anim mode 1) else (0, 4).
+Wired in: exposedNoncombat / badplace flee (stop), followActorPath result 1 (stop), grenadeCower, combatScript. TODO(spec): the walk/run scripts 0x53af20/0x53afe0 for a followed actor are reached only through the path step result 1 here.
+Open: the second scan 0x501380 (callers 0x5018a2, 0x501a6a, 0x501c38 in the actor move 0x501xxx), consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
 
 ## Prone
 

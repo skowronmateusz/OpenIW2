@@ -18,6 +18,14 @@ void World::releaseTurret(Entity& turret) {
 
 // Inside the goal widened by `extra` (0x502760): height within goalheight, horizontal distance within
 // goalradius + extra. Without a goal the actor counts as inside.
+// The goal volume (+0x778, setgoalvolume) contains the point (0x447830 with the point as a zero-size box); true without one.
+bool World::goalVolumeHolds(Entity& e, const Vec3& p) {
+    Entity* vol = entityOf(e.obj->get("$goalvolume"));
+    return !vol || triggerContact(*vol, p, p);
+}
+
+// 0x5026d0 (extra 0): the height and the radius around the goal position, then the goal volume (0x447830) when set.
+// With an extra radius (0x502760) there is no volume test.
 bool World::actorInGoal(Entity& e, float extra) {
     Vec3 gp{};
     float r = 0, h = 0;
@@ -26,7 +34,8 @@ bool World::actorInGoal(Entity& e, float extra) {
     const float dz = gp[2] - o[2];
     if (h * h < dz * dz) return false;
     const float dx = gp[0] - o[0], dy = gp[1] - o[1];
-    return dx * dx + dy * dy <= (extra + r) * (extra + r);
+    if (!(dx * dx + dy * dy <= (extra + r) * (extra + r))) return false;
+    return extra != 0.0f || goalVolumeHolds(e, o);
 }
 
 // Start (0x549960): take the recorded turret unless someone else uses it. TODO(spec): the actor is linked to the

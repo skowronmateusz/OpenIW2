@@ -128,6 +128,9 @@ struct ActorAi {
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
+    int64_t nodeBlockMs = 0;
+    int trimCount = 0;     // +0x70c: set to path count + 1 by findreacquire*path (0x5492f9); consumed by trimpathtoattack
+    int trimState = 0;     // +0x710: set to -2 by findreacquire*path (0x5492e7)                  // sentient +0x40: next node-facing check (0x515390), every 4950 ms
     int moveNoiseMs = 0;                      // actor +0x23c.. (0x224 struct +0x1c): the movement noise accumulator 0x5485a0
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
@@ -332,6 +335,8 @@ public:
     }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
     uint32_t playerPmFlags() const { return pmFlags_; }
+    // Mirrors a flag the player move owns (pm_flags 0x4000 hold breath) into the flags the HUD reads.
+    void setPlayerPmFlag(uint32_t bit, bool on) { pmFlags_ = on ? (pmFlags_ | bit) : (pmFlags_ & ~bit); }
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
     // Debug (iw2view IW2_FIRE_TURRETS): one shot from every turret entity (number of turrets fired).
     int debugFireTurrets();
@@ -586,6 +591,7 @@ public:
     void setFxSightBlockers(std::vector<FxSightBlocker> b) { fxSightBlockers_ = std::move(b); }
     // Visibility (0..1) through sight-blocking effects between two points (0x48b090).
     float fxVisibility(const Vec3& start, const Vec3& end) const;
+    bool actorSightClear(Entity& actor, Entity& target, const Vec3& from, const Vec3& to, float maxDistSq);
 
     // The player's weapon inventory (throws for non-players).
     // Out-of-ammo weapon switch (cgame 0x4b7090): the weapon to select, or empty to keep the current one.
@@ -762,6 +768,7 @@ private:
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
     bool actorInGoal(Entity& e, float extra);
+    bool goalVolumeHolds(Entity& e, const Vec3& p);
     bool turretStateStart(Entity& e);
     int turretStateThink(Entity& e);
     void turretStateFinish(Entity& e);
@@ -781,7 +788,9 @@ private:
     void actorThink(Entity& e);
     void actorPerceive(Entity& e);
     void actorPain(Entity& e, Entity* attacker);
+    void actorPainNode(Entity& e, Entity* attacker, bool nodeRelease);
     void actorMoveNoise(Entity& e);
+    void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);
     void setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode);
@@ -798,7 +807,10 @@ private:
     void followActorPath(Entity& e, bool run, bool wide = false);
     int stepActorPath(Entity& e, bool wide, bool run);
     bool followShrink(Entity& e, int bumped);   // 0x500d80
-    void updateFollowed(Entity& e);            // 0x4fedc0
+    void updateFollowed(Entity& e);
+    void retargetFollowed(Entity& e, Entity& player); // 0x4fec50
+    void scanFollowed(Entity& e);                      // 0x504630
+    void standOrFollow(Entity& e, const std::string& script); // 0x504630 + 0x53ae40 / 0x53ade0            // 0x4fedc0
     void linkBumpedActor(Entity& e, int hit);  // 0x501c6f..0x501c8b
     Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);
@@ -837,6 +849,7 @@ private:
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
     bool pathToPoint(Entity& e, const Vec3& target);
+    bool pathToSentient(Entity& e, const Vec3& target);
     // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
     void actorLearns(Entity& target, Entity& about); // 0x500c50
     bool actorKnowsRecently(const Entity& target, const Entity& about, int64_t ms) const; // 0x54ddc0
@@ -866,7 +879,8 @@ private:
     int queryNode(const Vec3& pos, float radius, bool lowered, uint32_t typeMask, const std::vector<PathPlane>& planes,
                   int* first);
     bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
-                     std::vector<int>& chain);
+                     std::vector<int>& chain, float capSq = -1.0f, const std::function<bool(const Vec3&)>* nodeOk = nullptr);
+    bool pathToPointNear(Entity& e, const Vec3& target, float capSq);
     void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
     void dropPathGoalPoints(ActorPath& p, int n);
     void pathClearBudget(ActorPath& p, const Vec3& o);
@@ -1057,6 +1071,13 @@ private:
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;
     std::vector<PathNode> nodes_;
+    // The node kd-tree (built once by 0x52de40): `nodeTreeOrder_` is the node array as the build permutes it, the tree
+    // nodes are {axis (-1 = leaf), split, left, right} or, for a leaf, {-1, -, count, first}.
+    struct NodeTreeEnt { int axis; float split; int a, b; };
+    mutable std::vector<int> nodeTreeOrder_;
+    mutable std::vector<NodeTreeEnt> nodeTree_;
+    mutable size_t nodeTreeFor_ = ~size_t(0);
+    int buildNodeTree(int first, int count) const;
     FriendlyChains chains_;
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;

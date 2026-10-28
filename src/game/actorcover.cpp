@@ -104,16 +104,35 @@ bool World::inActorGoal(Entity& e, const Vec3& p) {
 }
 
 // Node usable by this sentient (0x518f20): its own node; not while the node is blocked for its team; free when the
-// owner's hold has expired. TODO(spec): taking a claimed node from another actor (0x518e80 / 0x518d80) and the
-// distance rule of priority nodes (0x518dc0: 0x420f00 against 225) are not implemented.
+// owner's hold has expired. A node held for good (+0x44 = 0x7fffffff) is taken over (0x518e80, then 0x518d80 /
+// 0x5191a0: the owner lets go of it) by a sentient without a node that is not walking (0x5055b0) and stands at the node
+// (0x502660) while the owner does not. A priority node (spawnflag 0x40) is also usable (0x518dc0) when nobody has it,
+// or when its owner, of the same team, is dying, or is farther from it than this sentient by more than 15 units (xy;
+// 225 on the squared distance 0x420f00, the owner at least 225 away). TODO(spec): the linked nodes (+0x30 / +0x32,
+// +0x56) of all three are not modelled.
 bool World::nodeUsable(Entity& e, int node) {
     PathNode& n = nodes_[size_t(node)];
     if (n.owner == &e) return true;
     const int team = teamIndex(e.obj->get("team"));
     if (team > 0 && timeMs_ <= n.teamBlockedMs[size_t(team)]) return false;
     if (n.ownerUntilMs < timeMs_) return true;
-    if ((n.spawnflags & 0x40) && n.owner && n.owner->isActor && n.owner->ai.stack[size_t(n.owner->ai.depth)] == AiDeath)
-        return true; // 0x518dc0: the owner of a priority node is dying
+    const Vec3 no = vecField(n.obj, "origin");
+    if (n.ownerUntilMs == kNodeClaimed && n.owner && n.owner->isActor && e.isActor && e.claimedNode < 0 &&
+        !(e.ai.animMode == 1 && e.ai.movemode != 0) && nearPoint(no, vecField(e.obj, "origin")) &&
+        !nearPoint(no, vecField(n.owner->obj, "origin"))) {
+        Entity& owner = *n.owner;
+        if (owner.claimedNode == node) releaseNode(owner);
+        return true;
+    }
+    if (n.spawnflags & 0x40) {
+        if (!n.owner) return true;
+        Entity& o = *n.owner;
+        if (!o.isActor || teamIndex(o.obj->get("team")) != team) return false;
+        if (o.ai.stack[size_t(o.ai.depth)] == AiDeath) return true;
+        const Vec3 mo = vecField(e.obj, "origin"), oo = vecField(o.obj, "origin");
+        const float d1 = dist2d(no, oo);
+        return d1 >= 225.0f && dist2d(no, mo) + 225.0f < d1;
+    }
     return false;
 }
 
@@ -164,7 +183,32 @@ void World::claimNode(Entity& e, int node) {
     n.ownerUntilMs = kNodeClaimed;
     e.claimedNode = node;
     e.obj->set("node", Value(n.obj));
-    // TODO(spec): 0x515390 (every 4950 ms, flagged 0x8000 nodes within 80 units that face it are blocked).
+}
+
+// 0x515390 (every frame from 0x4ff1d9 / 0x4e8276, due every 4950 ms = 0x1356): with a claimed node flagged 0x8000 the
+// nodes within 80 x 80 (0x516950, mask 0x41ffc, at most 64) that are not claimed (+0x44 != 0x7fffffff), are flagged 0x8000
+// too, lie on the far side of it (dot(claimed - node, facing) <= -0.5 on the normalised xy offset) and look back at it
+// (dot(offset, own facing) > 0.5) are blocked for the actor's team (0x519300). TODO(spec): the facing is taken as
+// (cos, sin) of the node yaw (+0x20), the vector the exe reads at node +0x24 / +0x28.
+void World::blockFacingNodes(Entity& e) {
+    if (timeMs_ - e.ai.nodeBlockMs < 0) return;
+    e.ai.nodeBlockMs = timeMs_ + 4950;
+    if (e.claimedNode < 0 || !(nodes_[size_t(e.claimedNode)].spawnflags & 0x8000)) return;
+    const PathNode& cn = nodes_[size_t(e.claimedNode)];
+    const Vec3 co = vecField(cn.obj, "origin");
+    const float cyaw = vecField(cn.obj, "angles")[1] * float(M_PI) / 180.0f;
+    const float cfx = std::cos(cyaw), cfy = std::sin(cyaw);
+    for (const auto& [i, d2] : nodesInRange(co, 80.0f, 80.0f, 64, 0x41ffc)) {
+        const PathNode& n = nodes_[size_t(i)];
+        if (!(n.spawnflags & 0x8000) || n.ownerUntilMs == kNodeClaimed) continue;
+        const Vec3 no = vecField(n.obj, "origin");
+        float dx = co[0] - no[0], dy = co[1] - no[1];
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len > 0.0f) dx /= len, dy /= len; // 0x421160
+        if (dx * cfx + dy * cfy > -0.5f) continue;
+        const float nyaw = vecField(n.obj, "angles")[1] * float(M_PI) / 180.0f;
+        if (dx * std::cos(nyaw) + dy * std::sin(nyaw) > 0.5f) blockNodeForTeam(i, e);
+    }
 }
 
 // 0x4fe670: give up the claimed node: drop a path that ends at it and block it for the team (0x519300).
@@ -331,21 +375,13 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
     Vec3 goal = vecField(e.obj, "origin");
     float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
     actorGoal(e, goal, r, h);
-    std::vector<std::pair<int, float>> list;
-    // TODO(spec): the original walks a node tree (0x516820), so which 256 nodes are taken when more qualify differs.
-    for (size_t i = 0; i < nodes_.size() && list.size() < 256; ++i) {
-        const PathNode& n = nodes_[i];
-        if (!(kCoverTypes >> n.typeNum & 1) || (n.spawnflags & 1)) continue;
-        const Vec3 no = vecField(n.obj, "origin");
-        const float dz = no[2] - goal[2];
-        if (dist2d(no, goal) > r * r || dz * dz > h * h) continue;
-        list.push_back({int(i), 0.0f});
-    }
+    // The node tree query (0x516950 / 0x516820), 256 nodes at most, in the tree order.
+    std::vector<std::pair<int, float>> list = nodesInRange(goal, r, h, 256, kCoverTypes & ~1u);
     std::vector<std::pair<int, float>> kept;
     for (auto [node, score] : list) {
         if (node == ignore || !nodeUsable(e, node) || !nodeFacesEnemy(e, node)) continue;
         if (coverScriptAt(e, node, true, script) && script.empty()) continue;
-        // TODO(spec): nodes outside the goal volume (+0x75c, 0x447830) are dropped too.
+        if (!goalVolumeHolds(e, vecField(nodes_[size_t(node)].obj, "origin"))) continue; // 0x54c310: outside the goal volume
         if (node == prefer) {
             score = 16.0f;
         } else {
@@ -409,18 +445,32 @@ bool World::pathToNode(Entity& e, int node) {
     return true;
 }
 
-// 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it.
-// TODO(spec): the goal offset of 0x502960 (+0x73c) and its node-based target choice are not read.
+// 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it. A truncated path
+// (flag 4) whose planned count (+0x382) is at least four times its point count is dropped even when it ends inside
+// (0x502984..0x5029a1). The offset goal of 0x502960 (0x502a2d..0x502c4d: a node query around the goal shifted
+// sideways by actor +0x73c, planners 0x542340 / 0x5428a0 / 0x542550) only runs when min(|+0x73c|, goal radius −
+// 0x592114) > 0; the exe never writes +0x73c but 0 (4fc7ab, grep of every `0x73c(%reg)` store), so it is dead in the
+// single-player game and the plain path to the goal (0x503650) always runs. The wrapper 0x502cd0 clears the blocker
+// fields (+0x728 / +0x72c) while there is no path afterwards, and a failed plan waits 500 ms (0x502c70).
 bool World::pathToGoal(Entity& e) {
+    bool done = false;
     if (!actorHasPath(e)) {
-        if (actorInGoal(e, 0.0f)) return true;
+        done = actorInGoal(e, 0.0f);
     } else {
-        if (inActorGoal(e, pathEnd(e))) return true;
-        clearActorPath(e);
+        const bool dropped = (e.path.flags & 4) && 4 * e.path.count <= e.path.planned;
+        done = !dropped && inActorGoal(e, pathEnd(e));
+        if (!done) clearActorPath(e);
     }
-    Vec3 gp{};
-    float gr = 0, gh = 0;
-    const bool ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+    bool ok = done;
+    if (!done) {
+        Vec3 gp{};
+        float gr = 0, gh = 0;
+        ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+    }
+    if (!actorHasPath(e)) {
+        e.ai.blocker = nullptr;
+        e.ai.blockerEnt = nullptr;
+    }
     if (!ok) {
         clearActorPath(e);
         e.ai.planTimeMs = timeMs_ + 500;
@@ -588,9 +638,7 @@ void World::registerCoverBuiltins() {
         // 0x54c7d0 with no distance limit: a sight trace (0x54c760) from the node origin raised by 64 (0x56f6e0)
         // to the enemy's eye.
         const Vec3 no = vecField(nodes_[size_t(node)].obj, "origin");
-        if (collision_->sightBlocked({no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), {0, 0, 0}, {0, 0, 0},
-                                     Contents::SightMask, e.number, enemy->number))
-            return Value(0);
+        if (!actorSightClear(e, *enemy, {no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), 0.0f)) return Value(0);
         if (!pathToNode(e, node) || !actorHasPath(e)) return Value(0);
         claimNode(e, node);
         e.ai.reacquireNodes.clear();
@@ -620,8 +668,8 @@ void World::registerCoverBuiltins() {
             const float ox = dy * dist * side, oy = -dx * dist * side;
             const Vec3 from{eye[0] + ox, eye[1] + oy, eye[2]};
             const float ex = enemyEye[0] - from[0], ey = enemyEye[1] - from[1], ez = enemyEye[2] - from[2];
-            if (maxd != 0.0f && ex * ex + ey * ey + ez * ez >= maxd) continue;
-            if (collision_->sightBlocked(from, enemyEye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) continue;
+            (void)ex; (void)ey; (void)ez;
+            if (!actorSightClear(e, *enemy, from, enemyEye, maxd)) continue; // 0x54c7d0: distance² <= maxsightdistsqrd
             Vec3 at;
             const float step = e.obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f; // TODO(spec): actor +0x288
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
@@ -634,8 +682,9 @@ void World::registerCoverBuiltins() {
         return Value(0);
     });
     // findreacquiredirectpath (0x549280) / findreacquireproximatepath (0x549340): a path towards the enemy, cut
-    // to the goal (0x5047c0); without an enemy in the exposed state the path is cleared.
-    // TODO(spec): 0x503a50 / 0x503be0 (direct and proximate planners) and the trim fields +0x70c / +0x710.
+    // to the goal (0x5047c0) unless the enemy's origin is itself inside the goal (0x5492c5: 0x5026d0 on the enemy
+    // origin); without an enemy in the exposed state the path is cleared. A path left behind sets the trim state
+    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 follows below.
     auto reacquirePath = [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
@@ -643,9 +692,10 @@ void World::registerCoverBuiltins() {
             clearActorPath(e);
             return Value();
         }
-        pathToPoint(e, vecField(enemy->obj, "origin"));
+        const Vec3 eo = vecField(enemy->obj, "origin");
+        pathToSentient(e, eo); // 0x503a50 (keeps a path that already leads there)
         // 0x5434e0: drop the path when its start is outside the goal, else cut it after the last point in the goal.
-        if (actorHasPath(e)) {
+        if (actorHasPath(e) && !inActorGoal(e, eo)) {
             ActorPath& p = e.path;
             if (!inActorGoal(e, p.pts[size_t(p.count - 1)].pos)) {
                 clearActorPath(e);
@@ -655,23 +705,70 @@ void World::registerCoverBuiltins() {
                 dropPathGoalPoints(p, keep + 1);
             }
         }
+        if (actorHasPath(e)) {
+            e.ai.trimState = -2;
+            e.ai.trimCount = e.path.count + 1;
+        }
         return Value();
     };
     vm_.registerBuiltin("findreacquiredirectpath", reacquirePath);
-    vm_.registerBuiltin("findreacquireproximatepath", reacquirePath);
-    // trimpathtoattack (0x504830 → 0x543580): shorten the path by one point per call until the enemy's eye is
-    // visible from its end. TODO(spec): the original's trim state (+0x70c / +0x710) and 0x5433e0.
+    // findreacquireproximatepath (0x549340): the path ends at the first node within sqrt(cap) of the enemy, cap =
+    // min(0.25 · distance² to the enemy (0x591fe0), maxsightdistsqrd · 0.0625 (0x5920cc)) (0x503be0); no goal cut.
+    vm_.registerBuiltin("findreacquireproximatepath", [=, this](CallContext& c) {
+        Entity& e = actor(c);
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (!enemy || !exposed(e)) {
+            clearActorPath(e);
+            return Value();
+        }
+        const Vec3 eo = vecField(enemy->obj, "origin"), o = vecField(e.obj, "origin");
+        const float dx = eo[0] - o[0], dy = eo[1] - o[1], dz = eo[2] - o[2];
+        const float a = (dz * dz + dy * dy + dx * dx) * 0.25f, bcap = floatField(e.obj, "maxsightdistsqrd", 0.0f) * 0.0625f;
+        pathToPointNear(e, eo, a <= bcap ? a : bcap);
+        if (actorHasPath(e)) {
+            e.ai.trimState = -2;
+            e.ai.trimCount = e.path.count + 1;
+        }
+        return Value();
+    });
+    // trimpathtoattack (0x504830 → 0x543580): a search along the path from its start end for the furthest point from
+    // which the enemy's eye is visible (0x54c7d0 from the point raised by 64, maxsightdistsqrd as the limit), driven by
+    // the trim state of findreacquire*path: idx = +0x70c (count + 1), mode = +0x710 (−2). One call tests the candidate
+    // idx + mode (the start end uses the stored start position +0x3c8); returns 1 while the search goes on.
+    //   visible, mode −2, candidate not the start end: idx = candidate, mode = 1 (next: one point back), return 1.
+    //   visible otherwise: drop `candidate` points from the goal end (0x5433e0), return 0.
+    //   not visible, mode 1: drop idx points, return 0; candidate 0: clear the path (0x503e10), return 0;
+    //   else idx = candidate (mode −1 when it is 1, so that the next candidate is point 0), return 1.
     vm_.registerBuiltin("trimpathtoattack", [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (!enemy || e.path.count < 2) return Value(0);
-        const Vec3 eye = sightEye(*enemy, nullptr);
-        const Vec3 end = e.path.pts[1].pos;
-        if (!collision_->sightBlocked({end[0], end[1], end[2] + 64.0f}, eye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) {
-            dropPathGoalPoints(e.path, 1);
+        ActorPath& p = e.path;
+        if (!enemy || p.count <= 0) return Value(0);
+        const int cand = e.ai.trimCount + e.ai.trimState;
+        if (cand >= p.count) return Value(0);
+        const bool atStart = cand == p.count - 1;
+        const Vec3 pos = atStart ? p.start : p.pts[size_t(cand)].pos;
+        const bool visible = actorSightClear(e, *enemy, {pos[0], pos[1], pos[2] + 64.0f}, sightEye(*enemy, nullptr),
+                                             floatField(e.obj, "maxsightdistsqrd", 0.0f));
+        if (visible) {
+            if (e.ai.trimState == -2 && !atStart) {
+                e.ai.trimCount = cand;
+                e.ai.trimState = 1;
+                return Value(1);
+            }
+            dropPathGoalPoints(p, cand);
             return Value(0);
         }
-        dropPathGoalPoints(e.path, 1);
+        if (e.ai.trimState == 1) {
+            dropPathGoalPoints(p, e.ai.trimCount);
+            return Value(0);
+        }
+        if (cand == 0) {
+            clearActorPath(e);
+            return Value(0);
+        }
+        e.ai.trimCount = cand;
+        if (cand == 1) e.ai.trimState = -1;
         return Value(1);
     });
     // reacquiremove (0x53ccb0): with an enemy, in the exposed state and with a path: substate reacquire.

@@ -189,11 +189,23 @@ int main() {
     st.key(Key::End);
     st.key(Key::Backspace);
     CHECK(cv["newname"] == "ZbcX");
-    CHECK(st.editOffset() == 3); // maxPaintChars 3: the window follows the cursor (TODO(spec) rule)
+    CHECK(st.editOffset() == 2); // maxPaintChars 3: offset = max(offset, cursor - 3) (0x4ca7e0); End made it 5 - 3
+    // Colour codes: the cursor steps over a "^N" pair for free (0x4d41c0).
+    cv["newname"] = "a^1bc";
+    st.key(Key::End);
+    st.key(Key::Left);
+    st.key(Key::Left);
+    CHECK(st.editCursor() == 3); // before b
+    st.key(Key::Left); // the pair ^1 is skipped for free, then one step over a
+    CHECK(st.editCursor() == 0);
+    st.key(Key::Right);
+    CHECK(st.editCursor() == 1);
+    st.key(Key::Right); // the code at the cursor is skipped, then one character
+    CHECK(st.editCursor() == 4);
     st.key(Key::Enter);
     CHECK(cv["accepted"] == "1" && !st.editItem());
     st.textInput("q");
-    CHECK(cv["newname"] == "ZbcX"); // not editing any more
+    CHECK(cv["newname"] == "a^1bc"); // not editing any more
 
     // Tab moves the focus (the list consumes up/down), editing resumes on the field.
     st.setFeederSelection(24, 0);
@@ -205,6 +217,63 @@ int main() {
     CHECK(st.focus()->name == "btn" && !st.editItem());
     st.key(Key::Enter);
     CHECK(cv["pressed"] == "1");
+
+    // notselectable list (0x4d1eb0): keys scroll only (0x4c9c60); Left/Right act as Up/Down on a normal list.
+    std::ofstream(dir / "ui/n.menu") << R"({
+	menuDef
+	{
+		name nm
+		rect 0 0 640 480
+		visible 1
+		itemDef
+		{
+			name nlst
+			type 6
+			rect 100 50 250 260
+			elementwidth 120
+			elementheight 14
+			elementtype 0
+			feeder 25
+			notselectable
+			visible 1
+		}
+	}
+})";
+    iw2::fs::Vfs vfs2;
+    vfs2.mountDirectory(dir);
+    iw2::ui::MenuLibrary lib2(vfs2);
+    CHECK(lib2.loadFile("ui/n.menu"));
+    iw2::ui::MenuEnv env2;
+    std::vector<int> sel2;
+    env2.feederCount = [&](int f) { return f == 25 ? 30 : 0; };
+    env2.feederSelect = [&](int f, int r) { if (f == 25) sel2.push_back(r); };
+    iw2::ui::MenuStack st2(lib2, env2);
+    CHECK(st2.open("nm"));
+    const iw2::ui::Item& nl = *st2.top()->items[0];
+    CHECK(nl.notSelectable);
+    st2.mouseMove(150, 100);
+    CHECK(st2.focus() == &nl);
+    st2.key(Key::Down);
+    st2.key(Key::Down);
+    CHECK(st2.listState(nl).startPos == 2);
+    st2.key(Key::Up);
+    CHECK(st2.listState(nl).startPos == 1);
+    st2.key(Key::End);
+    CHECK(st2.listState(nl).startPos == st2.listMaxScroll(nl));
+    st2.key(Key::PageUp);
+    CHECK(st2.listState(nl).startPos == 0);
+    st2.key(Key::Right);
+    CHECK(st2.listState(nl).startPos == 1);
+    st2.key(Key::Left);
+    CHECK(st2.listState(nl).startPos == 0);
+    CHECK(sel2.empty()); // scrolling never notifies the feeder selection
+    // Normal list: Right = Down, Left = Up.
+    st.setFeederSelection(24, 3);
+    st.mouseMove(150, 100);
+    st.key(Key::Right);
+    CHECK(st.listState(lst).cursor == 4);
+    st.key(Key::Left);
+    CHECK(st.listState(lst).cursor == 3);
     std::filesystem::remove_all(dir);
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;
