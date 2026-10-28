@@ -103,6 +103,50 @@ V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, floa
     return b;
 }
 
+V3 scopedViewBob(const V3& rawBob, float adsFrac, bool reticle) {
+    if (!reticle) return {0, 0, 0};
+    return {rawBob[0] * adsFrac, rawBob[1] * adsFrac, rawBob[2] * adsFrac};
+}
+
+namespace {
+// x87 float to int as the exe's _ftol (0x565994): truncation towards zero.
+int ftol(float v) { return int(v); }
+float breathDiffTrack(float target, float cur, float rate, float dt); // DiffTrack 0x420a20, defined below
+} // namespace
+
+bool BreathSounds::update(bool holding, int frameMs, const BreathSoundParams& p, const Play& play) {
+    if (delay_ > 0) delay_ -= frameMs;
+    bool heartbeat = false;
+    if (holding) {
+        blend_ = breathDiffTrack(1.0f, blend_, p.sndLerp, float(frameMs) * 0.001f);
+        if (timer_ < 0) { // the hold just started
+            timer_ = 0;
+            if (delay_ > 0) heartbeatAt_ = 0;
+            else {
+                heartbeatAt_ = play("weap_sniper_breathin");
+                delay_ = ftol(p.sndDelay * 1000.0f);
+            }
+        } else if (timer_ > heartbeatAt_) {
+            play("weap_sniper_heartbeat");
+            heartbeat = true;
+        }
+        timer_ += frameMs;
+        return heartbeat;
+    }
+    if (timer_ >= 0) { // the hold just ended
+        timer_ += frameMs;
+        if (timer_ > ftol(p.holdTime * 1000.0f)) play("weap_sniper_breathgasp");
+        else if (delay_ <= 0) {
+            play("weap_sniper_breathout");
+            delay_ = ftol(p.sndDelay * 1000.0f);
+        }
+    }
+    blend_ = 0;
+    timer_ = -1;
+    heartbeatAt_ = 0;
+    return false;
+}
+
 namespace {
 float stanceBobAmplitude(int vht) { return vht == 11 ? 0.03f : vht == 40 ? 0.0075f : 0.007f; }
 // 0x4adf90: (sin 2c + sin(4c + π/2) · 0.2) · min(speed · stance amplitude, max) · 0.75.
@@ -247,6 +291,10 @@ float diffTrackAngle(float target, float cur, float rate, float dt) {
     return diffTrack(target, cur, rate, dt);
 }
 float angleDelta(float a, float b) { return std::remainder(a - b, 360.0f); } // 0x423f50
+} // namespace
+
+namespace {
+float breathDiffTrack(float target, float cur, float rate, float dt) { return diffTrack(target, cur, rate, dt); }
 } // namespace
 
 float shellShockRatio(int remainingMs, int fadeMs) {

@@ -4,6 +4,8 @@
 
 #include <cmath>
 #include <iostream>
+#include <string>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -73,6 +75,42 @@ int main() {
         CHECK(near(st.stepOffset(2000), 24.0f)); // clamped to 24
         st.step(0x80 - 40, 3000);
         CHECK(near(st.stepOffset(3000), -16.0f)); // clamped to -16
+    }
+    {
+        // Hold-breath sounds (0x4b6840): breathin starts the hold, the heartbeat follows once the timer passes the breathin
+        // length, release before the hold time gives breathout (once per snd delay), after it the gasp.
+        std::vector<std::string> played;
+        auto play = [&](const char* a) { played.push_back(a); return 300; };
+        BreathSoundParams p;
+        BreathSounds b;
+        CHECK(!b.update(true, 100, p, play));
+        CHECK(played.size() == 1 && played[0] == "weap_sniper_breathin");
+        CHECK(near(b.volumeBlend(), 0.2f)); // DiffTrack(1, 0, 2, 0.1)
+        b.update(true, 100, p, play);       // timer 100
+        b.update(true, 100, p, play);       // timer 200
+        b.update(true, 100, p, play);       // timer 300 (not > 300)
+        CHECK(played.size() == 1);
+        CHECK(b.update(true, 100, p, play)); // timer 400 > 300: heartbeat
+        CHECK(played.back() == "weap_sniper_heartbeat");
+        played.clear();
+        CHECK(!b.update(false, 100, p, play)); // released at 500 ms, delay 1000 - 500 > 0: no breathout
+        CHECK(played.empty() && b.volumeBlend() == 0);
+        BreathSounds g;
+        g.update(true, 16, p, play);
+        for (int i = 0; i < 300; ++i) g.update(true, 16, p, play);
+        played.clear();
+        g.update(false, 16, p, play); // over 4500 ms: gasp
+        CHECK(played.size() == 1 && played[0] == "weap_sniper_breathgasp");
+        BreathSounds o;
+        o.update(true, 16, p, play);
+        for (int i = 0; i < 100; ++i) o.update(true, 16, p, play); // 1.6 s: the delay ran out
+        played.clear();
+        o.update(false, 16, p, play);
+        CHECK(played.size() == 1 && played[0] == "weap_sniper_breathout");
+        // 0x4ae210: scoped weapons move the bob to the view by adsFrac.
+        const V3 v = scopedViewBob({1, 2, -3}, 0.5f, true);
+        CHECK(near(v[0], 0.5f) && near(v[1], 1.0f) && near(v[2], -1.5f));
+        CHECK(scopedViewBob({1, 2, 3}, 1.0f, false)[0] == 0);
     }
     return failures ? 1 : 0;
 }

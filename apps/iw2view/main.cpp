@@ -2855,6 +2855,7 @@ int main(int argc, char** argv) {
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         bool breathWeapon = false; // the equipped weapon has a scope reticle and is not an item (hold-breath weapons, 0x4dd350)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
+        game::V3 rawGunBob{0, 0, 0}, rawGunBobPrev{0, 0, 0}; // 0xf79940..48 as stored by 0x4b4a90 (no reticle factor); 0x4ae210 sees last frame's
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
@@ -5345,6 +5346,13 @@ int main(int argc, char** argv) {
         };
         int shockLoop = 0, shockSeenStart = -1;
         bool shockEndPlayed = true;
+        // Hold-breath sounds (0x4b6840) and the hold_breath channel volumes (cgame registration 0x4a3140 loads
+        // shock/hold_breath.shock into record 16, 0xf5741c; its volumes drive sound volume slot 2 via 0x4b6700).
+        game::BreathSounds breathSnd;
+        int heartbeatLoop = 0;
+        game::ShockRecord holdBreathRec;
+        if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
+        else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
         // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
         auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
@@ -5821,10 +5829,16 @@ int main(int argc, char** argv) {
                         shockEndPlayed = !rec;
                     }
                     {
-                        // Channel volumes during the shock (shockChannelVolume, f = shockSoundFraction); 1 once it is over.
+                        // Channel volumes: the sound system keeps 5 volume slots (0x793a34, 0x88 bytes each) and uses the highest
+                        // active one (0x793cdc; set 0x4431f0, clear 0x443390, fade 0 = 1 ms). Shell shock writes slot 4 (0x4b2237)
+                        // while its record has cg_shock_sound and the fraction is > 0, else clears it (0x4b1fa0 / 0x4b1ffc); the
+                        // hold-breath blend writes slot 2 (0x4b682a) and clears it at blend 0 (0x4b671d); none active = 1.
                         const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
-                        const float f = rec ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
-                        for (int c = 0; c < 11; ++c) mixer.channelScale[c] = rec ? game::shockChannelVolume(*rec, c, f) : 1.0f;
+                        const float f = rec && rec->sound ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
+                        const float bb = breathSnd.volumeBlend();
+                        for (int c = 0; c < 11; ++c)
+                            mixer.channelScale[c] = f > 0 ? game::shockChannelVolume(*rec, c, f)
+                                                  : bb != 0 ? game::shockChannelVolume(holdBreathRec, c, bb) : 1.0f;
                     }
                     if (rec && rec->sound) {
                         const int el = int(world->timeMs() - ss.startMs);
@@ -5839,6 +5853,21 @@ int main(int argc, char** argv) {
                         }
                     }
                 } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                if (!onTurret && pweapon.equipped() && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
+                    // Hold-breath sounds (0x4b6840 from the first-person weapon pass 0x4b69b0: a weapon, eFlags & 0x300 clear, in a
+                    // vehicle only in weapon states 0x11-0x16). The heartbeat loop lives while it is played every frame.
+                    const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(dt, 0.1f) * 1000.0f), game::BreathSoundParams{},
+                                                     [&](const char* a) {
+                                                         if (std::strcmp(a, "weap_sniper_heartbeat") == 0) {
+                                                             if (!heartbeatLoop) heartbeatLoop = mixer.play(a);
+                                                             return 0;
+                                                         }
+                                                         float len = 0;
+                                                         mixer.play(a, std::nullopt, &len);
+                                                         return int(len * 1000.0f);
+                                                     });
+                    if (!hb && heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
+                } else if (heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -5853,6 +5882,9 @@ int main(int argc, char** argv) {
                     gunBobAngles = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
                                                 ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"),
                                                 !ret.empty() && ret != "none");
+                    rawGunBobPrev = rawGunBob;
+                    rawGunBob = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
+                                             ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
@@ -6165,6 +6197,10 @@ int main(int argc, char** argv) {
                                                    ps.breathScale, !ret.empty() && ret != "none");
                 cam.pitch += ss[0];
                 cam.yaw += ss[1];
+                const game::V3 vb = game::scopedViewBob(rawGunBobPrev, pweapon.adsFrac(), !ret.empty() && ret != "none"); // 0x4ae210
+                cam.pitch += vb[0];
+                cam.yaw += vb[1];
+                cam.roll += vb[2];
             }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
