@@ -365,7 +365,7 @@ int World::grenadeThrowBackThink(Entity& e) {
 // Cower (0x5206c0): facing 1, grenade_cower (anim mode 1). TODO(spec): 0x504630 / the followed actor (0x53ade0).
 void World::grenadeCower(Entity& e) {
     e.ai.facing = 1;
-    setActorAnimScript(e, "grenade_cower", 0, 1);
+    standOrFollow(e, "grenade_cower"); // 0x5206c0..0x520708
 }
 
 // Think (0x520c30): once per frame perception; for take cover / cover attack without a claimed node, react again

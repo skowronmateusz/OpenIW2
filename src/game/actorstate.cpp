@@ -611,7 +611,7 @@ void World::exposedNoncombat(Entity& e) {
             combatScript(e);
             return;
         }
-        setActorAnimScript(e, stopScript(e), 0, 1); // 0x53ae40
+        standOrFollow(e, stopScript(e)); // 0x53ae40
         return;
     }
     const Vec3 o = e.obj->get("origin").asVector();
@@ -625,9 +625,11 @@ void World::exposedNoncombat(Entity& e) {
 }
 
 // 0x53b050: at the claimed node (0x502910) its cover script (0, anim mode 1); a node that no longer covers is given
-// up (0x4fe670); otherwise "combat" (anim mode 4, 1 when following an actor). TODO(spec): 0x504630 (crowding) and
-// clearing +0x728.
+// up (0x4fe670); otherwise "combat" (anim mode 4, 1 when following an actor).
 void World::combatScript(Entity& e) {
+    scanFollowed(e); // 0x53b058, then +0x728 / +0x72c = 0
+    e.ai.blocker = nullptr;
+    e.ai.blockerEnt = nullptr;
     if (e.claimedNode >= 0 && atClaimedNode(e)) {
         std::string script;
         if (coverScriptAt(e, e.claimedNode, false, script)) {
@@ -638,7 +640,8 @@ void World::combatScript(Entity& e) {
             giveUpClaimedNode(e);
         }
     }
-    setActorAnimScript(e, "combat", 0, 4);
+    if (e.ai.followed) setActorAnimScript(e, "combat", 0, 1); // 0x53b0ce
+    else setActorAnimScript(e, "combat", 0, 4);
 }
 
 // 0x53aed0: at the claimed node its cover script; a node that no longer covers is given up; else "stop".
@@ -678,7 +681,7 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
     }
     const int r = stepActorPath(e, wide, run);
     if (r == 1) {
-        setActorAnimScript(e, "stop", 0, 1); // script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
+        standOrFollow(e, "stop"); // 0x5523d2: script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
         if (ai.followed) moveActor(e, 0.05f); // the 0x504160 branch that skips the path walk (0x5041a3 -> 0x504228)
         return;
     }
