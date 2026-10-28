@@ -41,12 +41,14 @@ bool World::isSentient(const Entity& e) const {
 // the stance approximation of eyePosition() is used, TODO).
 // 0x54c7d0 / 0x54c760: a sight trace (mask 0x280d803) from `from` to `to` that ignores the actor and the target and
 // must be clear, and the visibility through effects (0x48b090) must be at least 0.2 (0x592020). With a non-zero
-// `maxDistSq` (maxsightdistsqrd, +0x1770) the 3D distance² must not exceed it. TODO(spec): the second limit, the float
-// 0x1c61038 (FLT_MAX at level start, 0x4d9c93; written at 0x4e4aab / 0x4e9772 by player code).
+// `maxDistSq` (maxsightdistsqrd, +0x1770) the 3D distance² must not exceed it, nor the fog limit 0x1c61038 (FLT_MAX at
+// level start, 0x4d9c93; the fog command 0x4e96e0 sets it to ((far - near) * 0.828 + near)² for linear fog, density 1,
+// and back to FLT_MAX otherwise); without a maxsightdistsqrd neither limit applies (0x54c7d0 jumps to 0x54c821).
 bool World::actorSightClear(Entity& actor, Entity& target, const Vec3& from, const Vec3& to, float maxDistSq) {
     if (maxDistSq != 0.0f) {
         const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
-        if (dx * dx + dy * dy + dz * dz > maxDistSq) return false;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > maxDistSq || d2 > fogSightSq_) return false;
     }
     if (collision_->sightBlocked(from, to, {0, 0, 0}, {0, 0, 0}, kSightMask, actor.number, target.number)) return false;
     return !(fxVisibility(from, to) < 0.2f);
@@ -81,11 +83,11 @@ Vec3 World::sightEye(Entity& e, Vec3* forward) {
 }
 
 // Distance and field-of-view test (0x54c840). maxDistSq 0 means unlimited; fovCos 0 means no cone.
-// TODO: the fog distance limit (0x1c61038, from the fog config string, 0x4e96e0) is not applied.
+// Like 0x54c7d0, the fog sight limit (0x1c61038, 0x4e96e0) applies only with a non-zero maxDistSq.
 bool World::sightTest(Entity&, const Vec3& eye, const Vec3& forward, const Vec3& target, float fovCos, float maxDistSq) {
     const Vec3 d = sub(target, eye);
     const float distSq = dot(d, d);
-    if (maxDistSq != 0.0f && maxDistSq < distSq) return false;
+    if (maxDistSq != 0.0f && (maxDistSq < distSq || distSq > fogSightSq_)) return false;
     if (fovCos != 0.0f) {
         const float f = dot(forward, d);
         if (f < 0.0f) return false;

@@ -90,6 +90,7 @@ struct Thread {
     std::vector<Value> stack;
     std::vector<Ref> refs;
     int64_t wakeTimeMs = 0;
+    uint64_t waitSeq = 0;     // filing order of the wait (0x46a2e9 links the thread at the head of its frame's list)
     Value result;             // value of the first function's return; a thread call yields it if the thread ends at once
     // waittill / waittillmatch
     ObjectPtr waitObject;
@@ -131,6 +132,11 @@ public:
     // (0x46f5c0 -> 0x46de90 -> 0x46d560) runs, re-reading its head until it is empty. So they run after the notifying
     // thread yields, at the next runFrame()/drainReady(); `thread f()` still runs f at once.
     void notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args = {});
+    // Frees an entity's script object (Scr_FreeEntityNum 0x4670b0, from G_FreeEntity 0x4d7c30): the object reads as
+    // undefined at once; the threads registered on its notify list (waittill and endon) end when the freed-object list is
+    // processed (0x467150 -> 0x46d1f0), which the exe does after a script run returns to the engine.
+    void freeObject(const ObjectPtr& object);
+    void processFreedObjects();
     // Runs the queued woken threads (and those woken while running them) until none is left.
     void drainReady();
 
@@ -155,6 +161,7 @@ public:
     std::optional<int> findFunction(const std::string& file, const std::string& name) const;
 
 private:
+    std::vector<ObjectPtr> freed_; // 0x9bef38 list
     struct File {
         std::string path;
         std::unordered_map<std::string, int> functions;
@@ -189,6 +196,7 @@ private:
     uint64_t nextObjectId_ = 1;
     int64_t nowMs_ = 0;
     int runDepth_ = 0;
+    uint64_t waitSeq_ = 0;
     std::deque<Thread*> ready_; // woken by notify, not yet run
     bool draining_ = false;
     ObjectPtr level_, game_, anim_;

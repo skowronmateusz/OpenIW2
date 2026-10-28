@@ -74,6 +74,8 @@ void World::registerSoundBuiltins() {
         std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", 0.0, 1.0, double(c.arg(0).asFloat()), double(c.arg(1).asFloat()),
                       double(c.arg(2).asFloat()), double(c.arg(3).asFloat()), double(c.arg(4).asFloat() * 1000.0f));
         clientCommands_.push_back({"fog", buf});
+        // 0x4e96e0 on "0 1 <density> ...": only a density of 1 or more sets the AI sight limit ((1 - 0) * 0.828)².
+        fogSightSq_ = c.arg(0).asFloat() >= 1.0f ? 0.828f * 0.828f : 3.4028235e38f;
         return Value();
     });
     // setculldist(distance) (0x4f5700): configstring 8 = "%g" (the renderer's far cull distance). TODO(spec): not applied.
@@ -104,6 +106,8 @@ void World::registerSoundBuiltins() {
         std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", double(c.arg(0).asFloat()), double(c.arg(1).asFloat()), 1.0, double(c.arg(2).asFloat()),
                       double(c.arg(3).asFloat()), double(c.arg(4).asFloat()), double(c.arg(5).asFloat() * 1000.0f));
         clientCommands_.push_back({"fog", buf});
+        const float lim = (c.arg(1).asFloat() - c.arg(0).asFloat()) * 0.828f + c.arg(0).asFloat();
+        fogSightSq_ = lim * lim; // 0x4e96e0: the AI sight limit of linear fog (0x1c61038)
         return Value();
     });
     vm_.registerBuiltin("playsound", [this, originOf](CallContext& c) {

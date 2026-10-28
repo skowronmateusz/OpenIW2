@@ -792,6 +792,120 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
     it->second.batches = batches;
     return &it->second;
 }
+// Cloud elements (renderer type 6, 1.3 DLL 0x10041370): every cloud draws the same static 1024-quad buffer ("Initializing
+// particle cloud buffer...", 0x10011ca0) with the particle_cloud(_outdoor) shader (iw_07.iwd materials/shaders/lib/
+// particle_cloud.hlsl). Buffer: for i = 0..7, j = 0..7, k = 0..15 one quad whose four vertices share the point
+// x = (rand · (1/32767) + i) · 0.25 − 1, y = (rand · (1/32767) + j) · 0.25 − 1, z = (rand · (1/32767) + k) · 0.125 − 1
+// (0x1019bec8 / 0x1019be48 / 0x1019be2c, three CRT rand() calls x, y, z per quad; the DLL never calls srand, so the CRT
+// starts from 1), texcoords (0,0) (0,1) (1,0) (1,1), indices 0 1 2, 2 1 3. Vertex shader: the point goes through the world
+// matrix (0x1005a7a0: rows axis · size, translation origin) into view space, then gets offset in the view plane by
+// (u − 0.5) · m.xy + (v − 0.5) · m.zw, m = particleCloudMatrix (0x10041230 / 0x10041180, see below), colour =
+// texture · particleCloudColor. Done on the CPU here: view x / y are the view right / up. TODO(spec): the outdoor map test
+// of particle_cloud_outdoor (pixel alpha 0 where the point is under cover, worldOutdoorLookupMatrix, the "$outdoor" image).
+const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::vector<game::FxCloud>& clouds,
+                           const Vec3& right, const Vec3& upv) {
+    if (clouds.empty()) return nullptr;
+    constexpr uint32_t kQuads = 1024, kMaxClouds = 64;
+    static std::array<std::array<float, 3>, kQuads> points = [] {
+        std::array<std::array<float, 3>, kQuads> pts{};
+        uint32_t holdrand = 1; // MSVC rand(): holdrand = holdrand * 214013 + 2531011, (holdrand >> 16) & 0x7fff
+        auto crand = [&] { holdrand = holdrand * 214013u + 2531011u; return int((holdrand >> 16) & 0x7fff); };
+        uint32_t q = 0;
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j)
+                for (int k = 0; k < 16; ++k, ++q) {
+                    pts[q][0] = (float(crand()) * 3.0518509e-05f + float(i)) * 0.25f - 1.0f;
+                    pts[q][1] = (float(crand()) * 3.0518509e-05f + float(j)) * 0.25f - 1.0f;
+                    pts[q][2] = (float(crand()) * 3.0518509e-05f + float(k)) * 0.125f - 1.0f;
+                }
+        return pts;
+    }();
+    auto key = std::make_pair(-4, std::string("cloud"));
+    auto it = scene.skinned.find(key);
+    if (it == scene.skinned.end()) {
+        GpuModel gm;
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = kMaxClouds * kQuads * 4 * sizeof(GpuVertex);
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        SDL_GPUBufferCreateInfo ib{};
+        ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        ib.size = kMaxClouds * kQuads * 6 * 4;
+        gm.indices = SDL_CreateGPUBuffer(dev, &ib);
+        std::vector<uint32_t> idx;
+        for (uint32_t qd = 0; qd < kMaxClouds * kQuads; ++qd)
+            for (uint32_t k : {0u, 1u, 2u, 2u, 1u, 3u}) idx.push_back(qd * 4 + k);
+        up.buffer(gm.indices, idx.data(), uint32_t(idx.size() * 4));
+        it = scene.skinned.emplace(key, gm).first;
+    }
+    std::map<std::string, std::vector<const game::FxCloud*>> byShader;
+    for (const auto& c : clouds) byShader[c.shader].push_back(&c);
+    std::vector<GpuVertex> verts;
+    std::vector<Batch> batches;
+    size_t drawn = 0;
+    for (const auto& [shader, list] : byShader) {
+        const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
+        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        Batch b;
+        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
+        b.texture = mi.texture;
+        b.lightmap = -3;
+        b.fullbright = true;
+        b.firstIndex = uint32_t(verts.size() / 4 * 6);
+        for (const game::FxCloud* c : list) {
+            if (drawn >= kMaxClouds) break;
+            ++drawn;
+            // particleCloudMatrix (0x10041230): (width, 0, 0, height) when width == height or A ~ B (each squared component
+            // difference <= 1e-6, 0x1003f260); else d = normalize(B - A) * height in view space (0x100410e0) and 0x10041180:
+            // if d.x < 0.001 and d.y < 0.001 (signed compares, 0x1019be64) again (width, 0, 0, height), otherwise
+            // m = (d.y, -d.x, d.x, d.y) with m.xy scaled to length width and m.zw scaled by the same factor when |d.xy| < width.
+            const Vec3 A{c->origin[0], c->origin[1], c->origin[2]}, B{c->prev[0], c->prev[1], c->prev[2]};
+            float m[4] = {c->width, 0, 0, c->height};
+            const Vec3 dAB = B + A * -1.0f;
+            const bool same = dAB.x * dAB.x <= 1.0000001e-06f && dAB.y * dAB.y <= 1.0000001e-06f && dAB.z * dAB.z <= 1.0000001e-06f;
+            if (c->width != c->height && !same) {
+                const float l = std::sqrt(dAB.x * dAB.x + dAB.y * dAB.y + dAB.z * dAB.z);
+                const Vec3 d = dAB * (c->height / l);
+                const float vx = d.x * right.x + d.y * right.y + d.z * right.z, vy = d.x * upv.x + d.y * upv.y + d.z * upv.z;
+                if (!(vx < 0.001f) || !(vy < 0.001f)) {
+                    m[0] = vy, m[1] = -vx, m[2] = vx, m[3] = vy;
+                    const float len = std::sqrt(m[0] * m[0] + m[1] * m[1]);
+                    const float f = 1.0f / len * c->width;
+                    m[0] *= f, m[1] *= f;
+                    if (len < c->width) m[2] *= f, m[3] *= f;
+                }
+            }
+            const Vec3 ax0 = Vec3{c->axis[0][0], c->axis[0][1], c->axis[0][2]} * c->size;
+            const Vec3 ax1 = Vec3{c->axis[1][0], c->axis[1][1], c->axis[1][2]} * c->size;
+            const Vec3 ax2 = Vec3{c->axis[2][0], c->axis[2][1], c->axis[2][2]} * c->size;
+            static const float tc[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+            Vec3 off[4];
+            for (int k = 0; k < 4; ++k) {
+                const float su = tc[k][0] - 0.5f, sv = tc[k][1] - 0.5f;
+                off[k] = right * (su * m[0] + sv * m[2]) + upv * (su * m[1] + sv * m[3]);
+            }
+            for (const auto& pt : points) {
+                const Vec3 ctr = A + ax0 * pt[0] + ax1 * pt[1] + ax2 * pt[2];
+                for (int k = 0; k < 4; ++k) {
+                    GpuVertex g{};
+                    const Vec3 w = ctr + off[k];
+                    g.pos[0] = w.x; g.pos[1] = w.y; g.pos[2] = w.z;
+                    g.normal[2] = 1;
+                    for (int ch = 0; ch < 4; ++ch) g.color[ch] = c->rgba[ch];
+                    g.uv[0] = tc[k][0];
+                    g.uv[1] = tc[k][1];
+                    verts.push_back(g);
+                }
+            }
+        }
+        b.indexCount = uint32_t(verts.size() / 4 * 6) - b.firstIndex;
+        if (b.indexCount) batches.push_back(b);
+    }
+    if (verts.empty()) return nullptr;
+    up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+    it->second.batches = batches;
+    return &it->second;
+}
 // Impact marks (game/marks.h) into a per-frame model: one batch per (material, lightmap), drawn in the blend pass
 // with the lightmap of the surface each fragment came from (mark +0x20, the surface's lightmap, FUN_10002a00).
 // TODO(spec): the renderer's mark drawing (refexport slot 0x68, 0x10024320) and its depth offset are not read.
@@ -2708,6 +2822,18 @@ int main(int argc, char** argv) {
                 it.sunVisibility = 0;
                 items.push_back(it);
             }
+            if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
+                DrawItem it;
+                it.model = cm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (const auto& c : fxSystem.clouds())
+                    std::cerr << "fx cloud " << c.shader << " pos " << c.origin[0] << "," << c.origin[1] << "," << c.origin[2] << " size " << c.size
+                              << " w " << c.width << " h " << c.height << " rgba " << int(c.rgba[0]) << "," << int(c.rgba[3]) << "\n";
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
                 it.model = fxm;
@@ -5174,7 +5300,8 @@ int main(int argc, char** argv) {
             setFxFrustum(fxSystem, cam, float(width) / float(height));
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
-                const Vec3 at = cam.pos + cam.forward() * 150.0f;
+                const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
+                const Vec3 at = cam.pos + cam.forward() * dist;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
             if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
