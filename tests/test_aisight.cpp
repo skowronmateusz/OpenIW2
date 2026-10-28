@@ -53,7 +53,7 @@ playereye()
 
 sightpos()
 {
-	level.t_lesp = self.lastenemysightpos;
+	level.t_lesp = self.lastEnemySightPos;
 }
 )";
     iw2::fs::Vfs vfs;
