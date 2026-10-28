@@ -1254,7 +1254,7 @@ void World::registerVehicleBuiltins() {
     // useby(user) (0x4ef020): notifies "trigger" with the user, then runs the entity type's use function
     // (table 0x5a5740). For vehicles (0x512f00) a player gets in, or out when already using a vehicle.
     // The use function 0x529280 (handlers 6 / 7) is trigger_hurt's on/off toggle (its touch 0x5291d0 calls G_Damage with
-    // MOD_TRIGGER_HURT). TODO(spec): the use function 0x529450 of entity type 8.
+    // MOD_TRIGGER_HURT). The use function of entity type 8 (trigger_damage) is 0x529450 (triggerDamageUse).
     vm_.registerBuiltin("useby", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         Entity* user = entityOf(c.arg(0));
@@ -1266,6 +1266,7 @@ void World::registerVehicleBuiltins() {
             vm_.notify(e->obj, "trigger", {Value(user->obj)});
             // trigger_hurt (handlers 6 / 7, use function 0x529280) toggles between off (6) and on (7).
             if (e->classname == "trigger_hurt") e->obj->set("$hurtOff", Value(!e->obj->get("$hurtOff").truthy()));
+            if (e->classname == "trigger_damage") triggerDamageUse(*e); // entity type 8 use function 0x529450
         }
         return Value();
     });

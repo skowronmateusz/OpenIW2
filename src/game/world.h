@@ -697,6 +697,7 @@ public:
     void spawnTriggerDamage(Entity& e);
     void triggerDamageApply(Entity& e, Entity* attacker, int damage, int mod);
     void triggerDamageHit(Entity& e, Entity* attacker, int amount, const std::string& mod);
+    void triggerDamageUse(Entity& e); // 0x529450
     void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
