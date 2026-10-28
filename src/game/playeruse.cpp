@@ -456,36 +456,50 @@ void World::pickUpWeaponItem(Entity& item) {
     if (item.obj->removed) return;
     Inventory& inv = inventory(*player_);
     if (inv.owned.count(w)) return;
-    const std::string slotName = lowerStr(weaponField(w, "weaponSlot"));
-    const bool primary = slotName == "primary" || slotName == "primaryb";
-    if (primary && !inv.slot[1].empty() && !inv.slot[2].empty()) {
-        const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
-        if (!cur.empty() && cur != "none" && inv.owned.count(cur)) {
-            Entity& dropped = spawnEntity("weapon_" + cur);
-            // 0x5220f0: the player's stock (ps+0x118 by ammoName) and clip (ps+0x318 by clipName) move onto the item (+0x148 / +0x154,
-            // -1 for none, 0x522328..0x522340) and are cleared in the player state.
-            {
-                int& st = inv.ammo[weaponField(cur, "ammoName")];
-                int& cl = inv.clip[weaponField(cur, "clipName")];
-                dropped.obj->set("$ammoStock", Value(int32_t(st != 0 ? st : -1)));
-                dropped.obj->set("$ammoClip", Value(int32_t(cl != 0 ? cl : -1)));
-                st = cl = 0;
-            }
-            dropped.obj->set("origin", player_->obj->get("origin"));
-            dropped.obj->set("angles", player_->obj->get("angles"));
-            const std::string wm = weaponField(cur, "worldModel");
-            if (!wm.empty()) dropped.obj->set("model", Value(wm));
-            launchItem(dropped, *player_); // 0x5220f0 → 0x521f70
-            const int slot = inv.slot[1] == cur ? 1 : 2;
-            takeWeapon(inv, cur);
-            // 0x4dc8a0: taking the held weapon clears ps weapon at once, so the swap has no putaway.
-            player_->obj->set("$weapontaken", Value(true));
-            giveWeapon(inv, w);
-            if (inv.slot[slot] != w) {
-                for (auto& sname : inv.slot)
-                    if (sname == w) sname.clear();
-                inv.slot[slot] = w;
-            }
+    // Slot choice (0x521394..0x52150c). Slot class = weaponSlot (def +0x80: primary 1, primaryb 2). A free slot of 0x4dcae0 (slot 1, else 2)
+    // takes the weapon. With both slots full: the held weapon (ps+0xb0) is dropped when it has the same slot class (0x52146d); else, when
+    // the player has neither stock nor clip of the new weapon's ammo / clip type (0x5214ac..0x5214e9), the slot-1 weapon is dropped;
+    // otherwise nothing is taken and the client gets gm "GAME_CANT_GET_PRIMARY_WEAP_MESSAGE" (0x58dff4).
+    // 0x4dcb20 (slot pairing for slotStackable weapons, def +0x88) also lets a pickup through; no SP weapon file sets slotStackable, so it
+    // never applies. TODO(spec): the debug-weapon warning 0x58e020.
+    auto slotClass = [&](const std::string& n) {
+        const std::string sl = lowerStr(weaponField(n, "weaponSlot"));
+        return sl == "primary" ? 1 : sl == "primaryb" ? 2 : 0;
+    };
+    const int newClass = slotClass(w);
+    if (newClass != 0 && !inv.slot[1].empty() && !inv.slot[2].empty()) {
+        const std::string held = lowerStr(player_->obj->get("$weapon").toString());
+        std::string cur;
+        if (!held.empty() && held != "none" && inv.owned.count(held) && slotClass(held) == newClass) cur = held;
+        else if (inv.ammo[weaponField(w, "ammoName")] == 0 && inv.clip[weaponField(w, "clipName")] == 0) cur = inv.slot[1];
+        if (cur.empty()) {
+            clientCommands_.push_back({"gm", "GAME_CANT_GET_PRIMARY_WEAP_MESSAGE"});
+            return;
+        }
+        Entity& dropped = spawnEntity("weapon_" + cur);
+        // 0x5220f0: the player's stock (ps+0x118 by ammoName) and clip (ps+0x318 by clipName) move onto the item (+0x148 / +0x154,
+        // -1 for none, 0x522328..0x522340) and are cleared in the player state.
+        {
+            int& st = inv.ammo[weaponField(cur, "ammoName")];
+            int& cl = inv.clip[weaponField(cur, "clipName")];
+            dropped.obj->set("$ammoStock", Value(int32_t(st != 0 ? st : -1)));
+            dropped.obj->set("$ammoClip", Value(int32_t(cl != 0 ? cl : -1)));
+            st = cl = 0;
+        }
+        dropped.obj->set("origin", player_->obj->get("origin"));
+        dropped.obj->set("angles", player_->obj->get("angles"));
+        const std::string wm = weaponField(cur, "worldModel");
+        if (!wm.empty()) dropped.obj->set("model", Value(wm));
+        launchItem(dropped, *player_); // 0x5220f0 → 0x521f70
+        const int slot = inv.slot[1] == cur ? 1 : 2;
+        takeWeapon(inv, cur);
+        // 0x4dc8a0: taking the held weapon clears ps weapon at once, so the swap has no putaway.
+        if (cur == held) player_->obj->set("$weapontaken", Value(true));
+        giveWeapon(inv, w);
+        if (inv.slot[slot] != w) {
+            for (auto& sname : inv.slot)
+                if (sname == w) sname.clear();
+            inv.slot[slot] = w;
         }
     } else {
         giveWeapon(inv, w);
@@ -503,8 +517,18 @@ void World::pickUpWeaponItem(Entity& item) {
         if (clip > clipSize) stock += clip - clipSize, clip = clipSize;
         inv.clip[weaponField(w, "clipName")] = clip;
         int& st = inv.ammo[weaponField(w, "ammoName")];
+        int& cl = inv.clip[weaponField(w, "clipName")];
+        // 0x520e40: stock += item stock; a clipOnly weapon (+0x340) first tops its clip up from the stock (0x520de0: n = min(clipSize -
+        // clip, stock)); then the stock is capped at the ammo's maxAmmo (0x520efd..0x520f1b) and the clip at clipSize (0x520f1d..0x520f3b).
+        // TODO(spec): the clipOnly branch that zeroes the stock when gentity +0x100 is 0 (0x520ed8). The shared-ammo trim follows.
         st += stock;
-        if (weaponInt(w, "clipOnly") == 0) st = std::min(st, weaponInt(w, "maxAmmo")); // TODO(spec): the caps of 0x520e40 past 0x520efd
+        if (weaponInt(w, "clipOnly") != 0) {
+            const int n = std::min(clipSize - cl, st);
+            if (n > 0) st -= n, cl += n;
+        }
+        st = std::min(st, weaponInt(w, "maxAmmo"));
+        cl = std::min(cl, clipSize);
+        trimSharedAmmo(inv, w); // 0x520f3d..0x520ff5
     }
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
     item.obj->removed = true;

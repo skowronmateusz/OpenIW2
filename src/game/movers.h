@@ -54,6 +54,7 @@ float angleSubtract(float a, float b);
 // Starts a move from `current` to `target` over totalMs with accel/decel phases (0x532ad0).
 void startMove(MoverChannel& ch, const MVec& current, const MVec& target, int totalMs, int accelMs, int decelMs, int64_t nowMs);
 // Advances finished phases (0x5327d0); returns true when the whole move is done.
+void startVelocityMove(MoverChannel& ch, const MVec& current, const MVec& velocity, int totalMs, int accelMs, int decelMs, int64_t nowMs);
 bool stepMove(MoverChannel& ch, int64_t nowMs);
 
 } // namespace iw2::game

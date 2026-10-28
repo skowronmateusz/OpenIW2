@@ -272,6 +272,7 @@ void World::spawnMapEntities() {
     if (!starts.empty()) playerStart = &starts.front();
 
     dropPathNodes(); // 0x4d9c3e: G_InitGame drops the nodes right after the entity spawn (0x4fa550), before the path data load
+    dropSpawners();  // 0x4d9c43: then the spawners (0x5325f0)
 
     std::vector<std::array<float, 3>> nodePositions;
     for (const auto& n : nodes_) nodePositions.push_back(n.obj->get("origin").isVector() ? n.obj->get("origin").asVector() : Vec3{0, 0, 0});
@@ -300,15 +301,11 @@ void World::spawnMapEntities() {
     for (Entity* sp : mapStartActors) spawnActor(*sp);
 }
 
-// Every path node is put on the ground once at level start (0x515f80 → 0x515d70 per node; docs/spec/ai.md "Node drop"):
-// a (-15,-15,0)..(15,15,30) box (mask 0x820011, no pass entity) is swept from 1 above the node origin to 256 below it.
-// Starting in solid gives "is in solid", no hit "is floating"; either way the node's type (+0) becomes 0 (BAD NODE).
-// Otherwise the full actor box (0x56f704 / 0x56f710, (-15,-15,0)..(15,15,72)) is tested at the hit point (start = end);
-// in solid there is the same "in solid" case, else the hit point becomes the node origin (+0x14).
-// 0x515f80 clears the contents of the entities with the DYNAMICPATH flag 0x100 (+0x128) during the drop and restores
-// them after it. Vehicle collmaps are linked later (0x50dc40 at 0x4d9c6f) and actors are not spawned yet, so the only
-// entity clips here are the other script_brushmodels. TODO(spec): the other entity classes linked at 0x4d9c3e.
-void World::dropPathNodes() {
+// The entity clips of the level-start drops (0x515f80, 0x5325f0): both save and zero the contents (+0xc0) of every entity
+// whose flags (+0x128) have DYNAMICPATH 0x100 and restore them afterwards. Vehicle collmaps are linked later (0x50dc40 at
+// 0x4d9c6f) and actors are not spawned yet, so the clips left are the other script_brushmodels.
+// TODO(spec): the other entity classes linked at 0x4d9c3e.
+void World::setLevelStartDropClips() {
     syncEntityClips();
     std::vector<EntityClip> clips;
     for (const EntityClip& c : collision_->entityClips()) {
@@ -319,8 +316,21 @@ void World::dropPathNodes() {
         clips.push_back(c);
     }
     collision_->setEntityClips(std::move(clips));
+}
+
+// Every path node is put on the ground once at level start (0x515f80 → 0x515d70 per node; docs/spec/ai.md "Node drop"):
+// a (-15,-15,0)..(15,15,30) box (mask 0x820011, no pass entity) is swept from 1 above the node origin to 256 below it.
+// Starting in solid gives "is in solid", no hit "is floating"; either way the node's type (+0) becomes 0 (BAD NODE).
+// Otherwise the full actor box (0x56f704 / 0x56f710, (-15,-15,0)..(15,15,72)) is tested at the hit point (start = end);
+// in solid there is the same "in solid" case, else the hit point becomes the node origin (+0x14).
+void World::dropPathNodes() {
+    setLevelStartDropClips();
     char buf[256];
-    static const bool strict = std::getenv("IW2_NODE_DROP_STRICT") != nullptr;
+    // Debug opt-out: IW2_NODE_DROP_STRICT=0 keeps a rejected node's type (the port's old behaviour, docs/debug-flags.md).
+    static const bool keepRejected = [] {
+        const char* v = std::getenv("IW2_NODE_DROP_STRICT");
+        return v && v[0] == '0';
+    }();
     for (PathNode& n : nodes_) {
         const Value ov = n.obj->get("origin");
         const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
@@ -341,18 +351,57 @@ void World::dropPathNodes() {
             std::snprintf(buf, sizeof buf, "^3WARNING: Pathnode (%s) at (%g %g %g) %s", pathNodeTypeName(n.type).c_str(), double(o[0]),
                           double(o[1]), double(o[2]), what);
             print(buf);
-            // DEVIATION (TODO(spec)): the exe sets the type to 0 here (0x515f6f). 27 of the 29 nodes our traces put "in solid"
-            // on the 39 maps are clear as a point and only the box start overlaps a brush (e.g. breakout's End node at
-            // (194 8859 2), a chain node of a map with 22 trigger_friendlychain); a bad chain node empties every friendly
-            // chain (0x52d5d0), which the shipped maps evidently do not do, so our box start-solid test probably disagrees
-            // with the exe's there. The node keeps its map origin and type unless IW2_NODE_DROP_STRICT=1.
-            if (strict) {
+            // 0x515f6f: the node becomes a BAD NODE (type 0) and keeps its map origin. The drop sphere (radius 15, centre 16
+            // above the node) really overlaps a brush for every node the 39-map sweep rejects (e.g. breakout's End node
+            // (194 8859 2): 13.5 units from the corner of an AI clip brush), the same test as the exe's 0x416480; a rejected
+            // node in a friendly chain then clears the chain fields (0x52d8b0 -> 0x52d5d0, breakout, silotown_assault).
+            if (!keepRejected) {
                 n.typeNum = 0;
                 n.obj->set("type", Value(std::string("BAD NODE"))); // the type getter 0x515b60 reads +0 (name table 0x5a9368)
             }
             continue;
         }
         n.obj->set("origin", Value(hit));
+    }
+    syncEntityClips();
+}
+
+// 0x4fc550 (actor drop to floor): the entity origin z is raised by 1 (0x591e20, written back), then a (-15,-15,0)..(15,15,30)
+// box is swept with mask 0x2820011 and no pass entity (0x7ff) from that origin to the original origin 128 (0x591e3c) below.
+// Only allsolid (+0x23) is tested: then the origin stays 1 higher and the result is 1. Otherwise the origin moves to
+// start + (end - start) * fraction, which is the end point when nothing is hit (no "floating" case), and the result is 0.
+bool World::dropActorToFloor(Entity& e) {
+    const Value ov = e.obj->get("origin");
+    if (!ov.isVector()) return false;
+    const Vec3 o = ov.asVector();
+    const Vec3 start{o[0], o[1], o[2] + 1.0f}, end{o[0], o[1], o[2] - 128.0f};
+    e.obj->set("origin", Value(start));
+    const TraceResult tr = collision_->trace(start, end, {-15, -15, 0}, {15, 15, 30}, 0x2820011u);
+    if (tr.allSolid) return true;
+    e.obj->set("origin", Value(Vec3{start[0] + (end[0] - start[0]) * tr.fraction, start[1] + (end[1] - start[1]) * tr.fraction,
+                                    start[2] + (end[2] - start[2]) * tr.fraction}));
+    return false;
+}
+
+// 0x5325f0 (G_InitGame 0x4d9c43, right after the node drop 0x4d9c3e): every spawner (eType 0xa, set by the spawner init
+// 0x532740 for an actor_* entity with spawnflags bit 1) is dropped to the floor with 0x4fc550, with the same DYNAMICPATH
+// clip rule as the node drop. An allsolid spawner prints "^3Spawner at (%g %g %g) is in solid" (0x58f7ec) with its origin
+// before the drop and gets bit 0 of +0xa2 cleared (0x5326d9; TODO(spec): what reads that bit, not modelled).
+void World::dropSpawners() {
+    setLevelStartDropClips();
+    char buf[160];
+    for (const auto& ep : entities_) {
+        Entity& e = *ep;
+        if (!e.isSpawner || e.obj->removed) continue;
+        const Value sf = e.obj->get("spawnflags");
+        if (!(sf.isInt() && (sf.asInt() & 1))) continue; // a placed actor_* is dropped when it spawns (0x4fc640)
+        const Value ov = e.obj->get("origin");
+        if (!ov.isVector()) continue;
+        const Vec3 o = ov.asVector();
+        if (dropActorToFloor(e)) {
+            std::snprintf(buf, sizeof buf, "^3Spawner at (%g %g %g) is in solid", double(o[0]), double(o[1]), double(o[2]));
+            print(buf);
+        }
     }
     syncEntityClips();
 }
@@ -429,6 +478,12 @@ Entity* World::spawnActor(Entity& spawner, bool force) {
     for (const auto& [k, v] : spawner.obj->fields)
         if (k != "spawnflags" && k != "count" && (placed || k != "targetname")) a.obj->set(k, v);
     a.obj->set("classname", Value(cls));
+    // 0x4fc640 -> 0x4fc550 (0x4fc66c): an actor spawn without the SPAWNER flag drops the entity to the floor before the actor
+    // slot is allocated; dospawn clears the copy's spawnflags bit 0 (0x53234e) and calls 0x4fc640, so runtime spawns are
+    // dropped again from the spawner's (already dropped, 0x5325f0) origin. TODO(spec): map-start placed actors are
+    // dropped by the exe during the entity spawn (0x4fa550, only the entities spawned before them linked), here at the end
+    // of prepareStart with the current entity clips.
+    dropActorToFloor(a);
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
     applyActorFieldDefaults(*a.obj); // docs/spec/ai.md

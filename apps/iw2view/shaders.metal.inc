@@ -356,4 +356,20 @@ fragment float4 fs_dlight(VertexOut in [[stage_in]], constant DLightU& u [[buffe
     const float f = mix(u.ramp[i0 >> 2][i0 & 3], u.ramp[i1 >> 2][i1 & 3], x - float(i0));
     return float4(base.rgb * u.color.rgb * (ndl * f), 1.0);
 }
+
+// Technique set "objective" (objective_base.tech / objective_base.hlsl): a pulsing gold silhouette of objective models.
+// facing = -(view-space normal).z, here -dot(normal, camera forward); colour = mix(min, max, 0.5 - 0.5 sin(2 pi (facing / 2 +
+// gameTime.z))) * (luminance + 0.5), luminance = dot(0.333, texture rgb); alpha = texture alpha (added with SRC_ALPHA, ONE).
+struct ObjectiveU {
+    float4 forward; // xyz: camera forward (world), w: gameTime.z
+};
+fragment float4 fs_objective(VertexOut in [[stage_in]], constant ObjectiveU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]],
+                             sampler s [[sampler(0)]]) {
+    const float4 tex = colorMap.sample(s, in.uv);
+    const float luminance = dot(float3(0.333), tex.rgb);
+    const float facing = -dot(normalize(in.normal), u.forward.xyz);
+    const float k = 0.5 - sin((facing * 0.5 + u.forward.w) * 3.14159 * 2.0) * 0.5;
+    const float4 c = mix(float4(0.25, 0.15, 0.0, 1.0), float4(1.0, 1.0, 0.5, 1.0), k) * (luminance + 0.5);
+    return float4(c.rgb, tex.a);
+}
 )MSL"

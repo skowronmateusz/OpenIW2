@@ -66,6 +66,10 @@ the unlinked write). script_origins are not dropped (spawn 0x5334d0: mover init 
 `mos_0_01_rs1_pickuprifle_t`, whose delta translation starts at z −37.3 (feet at 48.7, the floor is 49.2). For the block idle
 the commissar plays there before the welcome dialogue starts (~1.5 s) no exe path that lowers him was found: the script_origin is
 not dropped, the scripted path has no z handling, and only the sync animation's delta covers the height from the dialogue on.
+Actors that stand still at their spawner height (cityhall's spawner (4386 −4304 64), 28.6 above the terrain; moscow's
+stationary guards) are put on the floor by the actor spawn drop 0x4fc550 and the level-start spawner drop 0x5325f0
+(docs/spec/ai.md "Actor spawn drop"); the actor physics alone never lowers them (0x5487c0 returns while the ground entity is
+the initial 0x7fe and the move delta is zero).
 
 ### Every frame (0x53baf0)
 

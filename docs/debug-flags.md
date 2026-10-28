@@ -35,6 +35,7 @@ described in the code that reads them.
 | `IW2_PRONE_LOG=1` | iw2game/iw2view | Prints each `checkprone` call (actor, origin, yaw, alreadyProne, the answer and the two pitch outputs of the fit test 0x4fb530), each `enterprone` (length, fit result, pitches) and each `exitprone`. |
 | `IW2_NO_PRONE_TILT=1` | iw2view | Draws actors and corpses without the prone / corpse-blend tag_origin control (A/B check of 0x4c1cc0). |
 | `IW2_SHOT_ENT=N[,dist,yaw,height]` | iw2view `--shot` | Puts the shot camera `dist` (120) units from entity N at its yaw + `yaw` (90) and `height` (50) above its origin, looking at it. |
+| `IW2_SHOT_FREE_CAM=1` | iw2view `--shot` | Keeps the `--pos` camera when a script link carries the player (otherwise the shot is taken from the linked player, e.g. in the duhoc_assault boat). |
 | `IW2_FACING_LOG=N` | iw2game/iw2view | Per think of actor N (-1: all): facing mode (override), path count, movemode, yaw after the turn, active target, motion yaw and the trail sum (0x505d80 / 0x504ca0). |
 | `IW2_PLAYER_DMG_LOG=1` | iw2game/iw2view | Prints every damage the player takes: time, amount, attacker entity / classname and means of death. |
 | `IW2_TOUCH_TEST=<s>` | iw2game | At sim time `<s>` runs the vehicle touch callback (0x512d40) for the first vehicle with collisionDamage > 0 placed 100 units behind the player, moving at 400 units/s at it; prints the target health before and after; `IW2_TEST_ACTOR=1` targets the first living actor instead of the player. |
@@ -98,7 +99,7 @@ described in the code that reads them.
 
 - Env `IW2_FLOAT_LOG=1` (iw2game): an actor whose box (mask 0x820011) has no ground within 16 units below its origin for 10 frames in a row, outside the negotiation state, is printed every second (`[float ms] #n classname state script animmode at x y z ground d`, plus `linked` / `animscripted`); the end line counts them as `floating actor reports`. Debug only.
 
-- Env `IW2_NODE_DROP_STRICT=1` (iw2game/iw2view): the level-start node drop (`World::dropPathNodes`, 0x515d70) also turns a node it finds "in solid" or "floating" into a BAD NODE (type 0) as the exe does; by default such a node keeps its map origin and type because our box start-solid test is not confirmed to match the exe's (docs/spec/ai.md "Node drop"). With it, breakout and silotown_assault print "Bad node in friendly chain" and lose their friendly chains.
+- Env `IW2_NODE_DROP_STRICT=0` (iw2game/iw2view): the level-start node drop (`World::dropPathNodes`, 0x515d70) keeps the type of a node it finds "in solid" or "floating" instead of making it a BAD NODE (type 0) as the exe does (the default since the drop test was checked against 0x416480, docs/spec/ai.md "Node drop"). With the default, breakout and silotown_assault print "Bad node in friendly chain" and clear their chain fields. Debug only.
 
 - Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) for one actor (default every 20 frames). Debug only.
 
@@ -131,7 +132,7 @@ described in the code that reads them.
   puts a pmove player 20 units in front of it and holds forward looking up for 4 s; exit 0 when it climbed > 40 units. Env
   `IW2_LADDER_RAISE=targetname` first puts that entity back at its realOrigin (maps/_utility.gsc triggerOn, e.g. moscow's `regroup_ladder`),
   `IW2_LADDER_DEBUG=1` prints the probe hits and the ladder clips, `IW2_LADDER_MASK=0x..` the probe mask (default 0x2810011),
-  `IW2_LADDER_SCAN=1` lists spots with headroom above. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.
+  `IW2_LADDER_SCAN=1` lists spots with headroom above, `IW2_LADDER_JUMP=1` holds jump from 1.4 s (exit at the top), `IW2_LADDER_SHAFT=1` / `IW2_LADDER_FLOORZ=z` print moscow shaft / floor probes. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.
 
 ## Level end / victory screen
 | Flag | Tool | Effect |

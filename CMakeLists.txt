@@ -78,7 +78,7 @@ add_library(iw2_game
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/triggerdamage.cpp
-  src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
+  src/game/vehicles.cpp src/game/vehicletriggers.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
@@ -211,6 +211,9 @@ add_executable(test_movers tests/test_movers.cpp)
 target_link_libraries(test_movers PRIVATE iw2_game)
 add_test(NAME movers COMMAND test_movers)
 
+add_executable(test_vehicletrigger tests/test_vehicletrigger.cpp)
+target_link_libraries(test_vehicletrigger PRIVATE iw2_game)
+
 add_executable(test_animtree tests/test_animtree.cpp)
 target_link_libraries(test_animtree PRIVATE iw2_game)
 add_test(NAME animtree COMMAND test_animtree)
@@ -296,6 +299,8 @@ set(IW2_TEST_MAIN "$ENV{IW2_MAIN}")
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   add_test(NAME savestate_world COMMAND test_savestate)
   set_tests_properties(savestate_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME vehicletrigger_world COMMAND test_vehicletrigger)
+  set_tests_properties(vehicletrigger_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME itempickup_world COMMAND test_itempickup)
   set_tests_properties(itempickup_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
@@ -308,4 +313,11 @@ target_link_libraries(test_aisight PRIVATE iw2_game)
 add_test(NAME aisight COMMAND test_aisight)
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(nodedrop PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_spawndrop tests/test_spawndrop.cpp)
+target_link_libraries(test_spawndrop PRIVATE iw2_game)
+add_test(NAME spawndrop COMMAND test_spawndrop)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(spawndrop PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()

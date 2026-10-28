@@ -39,6 +39,26 @@ int World::weaponRoom(Inventory& inv, const std::string& w) {
     return room;
 }
 
+// After an ammo add (0x520e40 tail, 0x520f3d..0x520ff5): a weapon in a shared-cap group (def +0x1e4 >= 0) whose room (0x4dcc00) went
+// negative gives the excess back: from the clip of a clipOnly weapon (+0x340), else from the stock, not below 0; a clipOnly weapon left
+// with an empty clip is taken away (0x4dc8a0).
+void World::trimSharedAmmo(Inventory& inv, const std::string& w) {
+    if (weaponField(w, "sharedAmmoCapName").empty()) return;
+    const int room = weaponRoom(inv, w);
+    if (room >= 0) return;
+    if (weaponInt(w, "clipOnly") != 0) {
+        int& c = inv.clip[weaponField(w, "clipName")];
+        c += room;
+        if (c <= 0) {
+            c = 0;
+            takeWeapon(inv, w);
+        }
+    } else {
+        int& a = inv.ammo[weaponField(w, "ammoName")];
+        a = std::max(0, a + room);
+    }
+}
+
 void World::debugSpawnWeaponItem(const std::string& name) {
     if (!player_) return;
     Entity& item = spawnEntity("weapon_" + lower(name));
@@ -106,6 +126,7 @@ bool World::touchWeaponItem(Entity& item) {
         inv.ammo[a] += stock;
         if (weaponInt(w, "clipOnly") == 0) inv.ammo[a] = std::min(inv.ammo[a], weaponInt(w, "maxAmmo"));
         inv.clip[c] = std::min(inv.clip[c], weaponInt(w, "clipSize"));
+        trimSharedAmmo(inv, w);
         const std::string snd = weaponField(w, "pickupSound");
         if (!snd.empty()) startSound(snd, nullptr);
     }

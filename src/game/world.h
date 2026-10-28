@@ -320,6 +320,9 @@ public:
     // start() = prepareStart() (cvars, map entities, vehicle nodes, turrets, path disconnects) + runLevelMain() (the level script's
     // main() and the first frame). A savegame load runs prepareStart() and then loadState() instead of runLevelMain().
     void prepareStart();
+    // 0x4fc550: the actor drop to floor of every actor spawn and of the level-start spawner drop (0x5325f0); true when the
+    // trace is allsolid (the origin is then left 1 higher).
+    bool dropActorToFloor(Entity& e);
     void runLevelMain();
     // Savegame state (src/game/savestate.cpp, docs/spec/savegame.md section 5). saveState only between frames.
     void saveState(script::StateWriter& w);
@@ -558,6 +561,7 @@ public:
     void updateVehicleEngineSound(Entity& e);
     void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
+    void vehicleTouchTriggers(Entity& v); // G_TouchTriggers (0x4e7320) for a vehicle (src/game/vehicletriggers.cpp)
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
@@ -716,6 +720,8 @@ private:
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
+    void dropSpawners();  // 0x5325f0: spawners put on the ground at level start
+    void setLevelStartDropClips();
     void registerBuiltins();
     void registerMissingStubs();
     void runTriggers();
@@ -808,6 +814,7 @@ private:
     void touchItems();                // G_TouchTriggers for weapon items (0x4e7320 -> Touch_Item 0x521a90)
     bool touchWeaponItem(Entity& item); // Pickup_Weapon (0x521170) by touch; true when the item was used up
     int weaponRoom(Inventory& inv, const std::string& weapon); // 0x4dcc00
+    void trimSharedAmmo(Inventory& inv, const std::string& weapon); // 0x520f3d..0x520ff5 (sharedAmmoCap over-fill)
     uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);

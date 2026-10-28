@@ -1016,6 +1016,7 @@ void World::thinkVehicles() {
                            ? std::clamp(angleDelta(e.obj->get("angles").asVector()[1], prevAngles[1]) * 10.0f, -45.0f, 45.0f)
                            : 0.0f;
         vehicleTouch(e, prevOrigin, prevAngles);
+        if (!e.obj->removed) vehicleTouchTriggers(e); // 0x512c50
         v.sightBlocked = false;
         if (v.owner >= 0) vehiclePlayerAim(e); // +0x174 bit 0, set by VEH_LinkPlayer
         v.turretMoved = false;

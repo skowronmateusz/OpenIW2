@@ -189,12 +189,18 @@ Otherwise the hit point (z = start + fraction·(−257)) is tested with the acto
 the "in solid" case, else the hit point becomes the origin (+0x14..+0x1c). Implemented in `World::dropPathNodes` (before the
 path graph and the chains are built); the entity clips there are the non-DYNAMICPATH script_brushmodels (vehicle collmaps are
 linked later, 0x50dc40 at 0x4d9c6f). TODO(spec): the other entity classes linked at 0x4d9c3e. The 39-map sweep flags 29 nodes
-"in solid" and 2 "floating". Only 2 of the 29 are solid as a point (silotown_assault `checkpointB` (-688 -464 56) inside a
-clip_nosight brush, newvillers (-1840 2096 -46)); the others are clear points where the 30-unit box start (or the 72-unit box at
-the hit) overlaps a brush edge, e.g. breakout's End node (194 8859 2), a chain node on a map with 22 trigger_friendlychain. Marking
-it type 0 would empty breakout's friendly chains, which the shipped game evidently does not do, so our box start-solid test likely
-disagrees with the exe's (TODO(spec): CM start-solid for capsule/box traces near brush edges). DEVIATION: a node the drop rejects
-keeps its map origin and type; `IW2_NODE_DROP_STRICT=1` applies the exe's type 0.
+"in solid" and 2 "floating"; all become BAD NODEs (type 0) as in the exe. The rejections are real overlaps under the exe's
+own brush test (0x416480: axial sides pushed out by the trace extents (15, 15, 15), the other sides by |offsetZ·n.z| + radius,
+d ≤ 0 inside, epsilon 0x591f80 = 0.125; the port's `traceThroughBrush` does the same): for breakout's negotiation End node
+(194.331 8859.31 2) the drop sphere (radius 15, centre (194.3, 8859.3, 18)) is 2.3 inside the AI clip brush's y face and 3.5
+inside its slanted side, 13.5 units from the brush's vertical edge at (199, 8872); newvillers (−1648 2096 −48) is 7 units
+from a clip wall. An earlier note here assumed the exe could not reject such nodes because breakout's friendly chains would
+then be emptied; that was never checked against the exe, and a bad chain node clears the chain fields (0x52d8b0 →
+0x52d5d0: +0x34/+0x36 = 0, +0x38 = −1; it also writes +0x30/+0x32 = −1 and +0x3a/+0x54 = 0, of which the path data load
+0x52e3c0 rewrites +0x3a (0x52e473); TODO(spec): +0x30/+0x32/+0x54 there, not modelled); the chain node count is kept, so trigger_friendlychain (0x518bf0)
+still finds its node by name. breakout and
+silotown_assault therefore print "Error: bad node [%d] in friendly chain" and "Bad node in friendly chain" (0x42c7f0 channel
+1, not fatal), as the exe does. Debug opt-out: `IW2_NODE_DROP_STRICT=0` keeps a rejected node's type.
 
 **Runtime node** (0x78 bytes from 0x1c8da04; script value = node index): +0 type 1…18, +4 spawnflags (0x40 priority,
 0x8000 "cover script optional", 1 never a cover candidate), +0x14 origin, +0x20 yaw, +0x24 forward, +0x30/+0x32 linked
@@ -457,6 +463,24 @@ bounds (−15, −15, 0)–(15, 15, 72), and on the actor `dropweapon` 1, `drawo
 `accuracystationarymod` 1, `keepclaimednode` 0, `keepclaimednodeingoal` 0, the goal position to the entity origin,
 and goal radius and height through `FUN_005061f0(0)`/`FUN_00506220(0)`, which
 clamp to the minimums: `goalradius` 4, `goalheight` 80 (instructions at 0x4fc80d–0x4fc82a).
+
+**Actor spawn drop** (0x4fc550; `World::dropActorToFloor`, test_spawndrop). 0x4fc640 tests g_spawnai (0x1c1487c), then
+spawnflags bit 0 (SPAWNER, +0x124): a spawner goes to the spawner init 0x532740 (eType 0xa, +0xa2 = 1, contents 0) and is
+not dropped here; any other actor entity is dropped by 0x4fc550 (0x4fc66c) before the actor slot is allocated (0x4fc8d0).
+0x4fc550: origin z += 1 (0x591e20 = 1.0, written to the entity), then G_Trace 0x44bf00 of the box (-15,-15,0)..(15,15,30)
+from that origin to (x, y, original z − 128) (0x591e3c = 128.0), pass entity 0x7ff, mask 0x2820011. Only allsolid (+0x23,
+0x4fc5e9) is tested: then the result is 1 and the origin stays 1 higher. Otherwise the origin becomes start + (end −
+start)·fraction on every axis, which is the end point when nothing is hit (there is no "floating" case). dospawn
+(0x532312..0x53235c) spawns a fresh entity, copies the spawner's key/values, clears spawnflags bit 0 (0x53234e) and calls
+0x4fc640, so every spawned actor is dropped again. At level start 0x5325f0 (G_InitGame 0x4d9c43, right after the node drop)
+drops every in-use eType 0xa entity (the spawners) with 0x4fc550, with the node drop's DYNAMICPATH rule (contents of
+entities with flags 0x100 saved, zeroed and restored, 0x532620..0x532660 / 0x532705..0x53272e); an allsolid spawner prints
+"^3Spawner at (%g %g %g) is in solid" (0x58f7ec, its origin before the drop) and gets bit 0 of +0xa2 cleared (0x5326d9;
+TODO(spec): the reader of that bit, not modelled). The actor physics does not lower a stationary actor: the move block
+starts with ground entity 0x7fe (0x500d27) and 0x5487c0 returns at once while the ground entity is 0x7fe and the move delta
+is zero (0x5487c3..0x548823), so before this drop was modelled actors without a delta kept their spawner height (cityhall
+spawner (4386 −4304 64) over terrain at 35.4). TODO(spec): map-start placed actors are dropped by the exe inside the entity
+spawn 0x4fa550 with only the entities spawned before them linked; the port drops them at the end of `prepareStart`.
 
 No instruction in `.text` stores to actor offsets 0x780/0x784 (byte scan for `mov`/`fstp` with those
 displacements), so `pathenemylookahead` and `pathenemyfightdist` start at 0 and change only from script.

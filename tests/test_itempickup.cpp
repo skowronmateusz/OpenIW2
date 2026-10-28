@@ -53,7 +53,20 @@ int main() {
 
     if (failures) return 1;
     std::cout << "ok\n";
-        // World (IW2_MAIN): an emptied MP40 swapped for a kar98k keeps its (empty) counters on the dropped item; an NPC's MP40 picked up
+        // Actor drop ammo (0x522185..): ranges, the default formula and the clip draw stay within the total.
+    {
+        uint32_t seed = 1;
+        for (int i = 0; i < 50; ++i) {
+            const ItemAmmo d = actorDropAmmo(0, 0, 32, seed);
+            CHECK(d.clip >= 0 && d.stock >= 0 && d.clip + d.stock >= 16 && d.clip + d.stock <= 33);
+            const ItemAmmo r = actorDropAmmo(10, 20, 8, seed);
+            CHECK(r.clip >= 0 && r.clip < 8 && r.clip + r.stock >= 10 && r.clip + r.stock < 20);
+        }
+        CHECK(actorDropAmmo(-5, -1, 8, seed).clip == 0 && actorDropAmmo(-5, -1, 8, seed).stock == 0);
+        const ItemAmmo eq = actorDropAmmo(3, 3, 0, seed);
+        CHECK(eq.clip == 0 && eq.stock == 3);
+    }
+    // World (IW2_MAIN): an emptied MP40 swapped for a kar98k keeps its (empty) counters on the dropped item; an NPC's MP40 picked up
     // afterwards brings its own clip (Pickup_Weapon sets the clip slot to the item's clip, 0x521611), not the old empty one.
     if (const char* main = std::getenv("IW2_MAIN")) {
         iw2::fs::Vfs vfs;
@@ -81,6 +94,18 @@ int main() {
         const auto mp2 = world.debugAmmo("mp40");
         std::cout << "npc mp40: stock " << mp2.first << " clip " << mp2.second << "\n";
         CHECK(mp2.second == 32 && mp2.first == 40);
+        // Shared ammo cap (0x520f3d): frag grenades share WEAPON_FRAGGRENADE, cap 4. With 3 frags a touched stick grenade item holding 3
+        // is trimmed back to the one that fits.
+        inv.owned.insert("fraggrenade");
+        inv.offhand = "fraggrenade";
+        world.debugSetClip("fraggrenade", 3);
+        world.debugSpawnItem("stielhandgranate");
+        for (const auto& e : world.entities())
+            if (!e->obj->removed && e->classname == "weapon_stielhandgranate") e->obj->set("$ammoClip", iw2::script::Value(int32_t(3)));
+        world.frame();
+        const auto st = world.debugAmmo("stielhandgranate");
+        std::cout << "stielhandgranate after the shared cap: clip " << st.second << " owned " << inv.owned.count("stielhandgranate") << "\n";
+        CHECK(world.debugAmmo("fraggrenade").second + st.second <= 4);
     }
     return failures ? 1 : 0;
 }
