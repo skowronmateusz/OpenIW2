@@ -496,8 +496,8 @@ void updateViewHeight(PlayerState& ps) {
 // Command scale (0x508140, 0x5080a0): g_speed · max(|forward| (×backSpeedScale when backwards),
 // |right|·strafeSpeedScale) / (|command| · 127), then ×0.65 crouched, ×0.15 prone, × the weapon's
 // moveSpeedScale; ×0.4 once while aiming (pm_flags 0x100) or leaning; walk only: ×0.4 with command bit 0x800
-// (0x508379; the bit is the shell-shock flag, MoveParams::shellShockSlow). TODO(spec): the blend during crouch/prone
-// transitions (0x509760), pm_type 2 (×3) and 3 (×6).
+// (0x508379; the bit is the shell-shock flag, MoveParams::shellShockSlow). The stance factor blends over the crouch/prone
+// transitions (stanceSpeedFactor, 0x509760). TODO(spec): pm_type 2 (×3) and 3 (×6).
 float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bool walking) {
     const float fb = f < 0 && walking ? f * mp.backSpeedScale : f;
     const float rs = walking ? std::fabs(r * mp.strafeSpeedScale) : std::fabs(r);
@@ -505,8 +505,7 @@ float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bo
     if (m == 0) return 0;
     float s = float(mp.speed) * m / (std::sqrt(f * f + r * r) * 127.0f);
     if (walking) {
-        if (ps.stance == Stance::Prone) s *= 0.15f;
-        else if (ps.stance == Stance::Crouch) s *= 0.65f;
+        s *= stanceSpeedFactor(ps.viewHeightTarget, ps.timeMs, ps.transitionStartMs, ps.transitionDown);
         if (mp.weaponSpeedScale > 0) s *= mp.weaponSpeedScale;
         if (mp.shellShockSlow) s *= 0.4f; // 0x508379, after the weapon scale (0x508370)
     }
@@ -944,7 +943,7 @@ void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, f
 // A footstep event (PM_FootstepEvent 0x50a6d0) fires whenever bit 7 of (cycle + 64) changes, on the walking or ground
 // plane (0x50abe6): the event of 0x508f20 for the ground's surface type: none for surface 0 (or flag 0x2000), prone
 // 0x2f + surface, walking (pm_flags 0x100 or leaning) 0x18 + surface, else the run step 1 + surface.
-// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf). The ladder case is below.
+// The speed uses the stance-transition blend (stanceSpeedFactor: the prone lerp of 0x509760 and the prone-to-crouch lerp at 0x50aaaf). The ladder case is below.
 void updateBobCycle(const CollisionWorld& w, PlayerState& ps, const Pml& pml, float f, float r, int ms, const MoveParams& mp) {
     // Ladder branch (0x50a8c5..0x50a94c, airborne with pm_flags 0x20, pm_type != 1): no bob within 300 ms of a jump, else
     // the cycle advances by the vertical speed · 0.010499 · 0.45 (0.026247 · 0.35 with pm_flags 0x100 or leaning) · msec.
@@ -989,8 +988,9 @@ void updateBobCycle(const CollisionWorld& w, PlayerState& ps, const Pml& pml, fl
     const bool slow = ps.adsSlow || ps.lean != 0;
     if (slow) s *= 0.4f;
     float k;
-    if (ps.viewHeightTarget == 11) { s *= 0.15f; k = slow ? 0.24f : 0.25f; }
-    else if (ps.viewHeightTarget == 40) { s *= 0.65f; k = slow ? 0.315f : 0.34f; }
+    s *= stanceSpeedFactor(ps.viewHeightTarget, ps.timeMs, ps.transitionStartMs, ps.transitionDown); // the blend of 0x509760 (0x50aa5b)
+    if (ps.viewHeightTarget == 11) k = slow ? 0.24f : 0.25f;
+    else if (ps.viewHeightTarget == 40) k = slow ? 0.315f : 0.34f;
     else k = ps.movingBack ? (slow ? 0.32499998807907104f : 0.36000001430511475f) : (slow ? 0.305f : 0.335f);
     const float bobmove = xy / s * k;
     const int oldCycle = ps.bobCycle;

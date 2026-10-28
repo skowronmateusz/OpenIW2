@@ -41,6 +41,28 @@ struct BreathParams {
     float gaspLerp = 6.0f;   // player_breath_gasp_lerp (0x1c7f020)
 };
 
+// Speed factor of the stance (0x508140 after 0x509760, and the same blend in the bob cycle 0x50a9a0..0x50ab62): 1 standing, 0.65
+// crouched, 0.15 prone, blended over the view-height transition. ps+0xd0 = viewHeightTarget, +0xd8 = lerp time (start; none = -1 here),
+// +0xdc = lerp target, +0xe0 = lerp down (the port keeps one target and the flag in PlayerState). While a lerp towards prone runs
+// (0x509760 with target 0xb: fraction f = clamp((time - start) / 400) when the lerp target is prone) a nonzero f gives
+// (1 - f) * 0.65 + f * 0.15. Otherwise, a lerp towards crouch that is not a downward one (rising from prone, 400 ms) with
+// t = (time - start) * 0.0025 clamped above at 1 gives (1 - t) * 0.15 + t * 0.65 for t > 0. Anything else (including f or t exactly 0)
+// is the flat factor of the target: crouch 0.65, prone 0.15, other 1.
+inline float stanceSpeedFactor(int viewHeightTarget, int64_t timeMs, int64_t lerpStartMs, bool lerpDown) {
+    const bool lerping = lerpStartMs >= 0;
+    if (lerping && viewHeightTarget == 11) {
+        float f = float(timeMs - lerpStartMs) / 400.0f;
+        f = f < 0.0f ? 0.0f : f > 1.0f ? 1.0f : f;
+        if (f != 0.0f) return (1.0f - f) * 0.65f + f * 0.15f;
+    }
+    if (lerping && viewHeightTarget == 40 && !lerpDown) {
+        float t = float(timeMs - lerpStartMs) * 0.0025f;
+        if (t > 1.0f) t = 1.0f;
+        if (t > 0.0f) return (1.0f - t) * 0.15f + t * 0.65f;
+    }
+    return viewHeightTarget == 40 ? 0.65f : viewHeightTarget == 11 ? 0.15f : 1.0f;
+}
+
 struct PlayerState {
     Vec origin{};
     Vec velocity{};
