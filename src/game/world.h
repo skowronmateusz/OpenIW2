@@ -568,6 +568,7 @@ public:
     void setFxSightBlockers(std::vector<FxSightBlocker> b) { fxSightBlockers_ = std::move(b); }
     // Visibility (0..1) through sight-blocking effects between two points (0x48b090).
     float fxVisibility(const Vec3& start, const Vec3& end) const;
+    bool actorSightClear(Entity& actor, Entity& target, const Vec3& from, const Vec3& to, float maxDistSq);
 
     // The player's weapon inventory (throws for non-players).
     // Out-of-ammo weapon switch (cgame 0x4b7090): the weapon to select, or empty to keep the current one.
@@ -824,6 +825,7 @@ private:
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
     bool pathToPoint(Entity& e, const Vec3& target);
+    bool pathToSentient(Entity& e, const Vec3& target);
     // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
     void actorLearns(Entity& target, Entity& about); // 0x500c50
     bool actorKnowsRecently(const Entity& target, const Entity& about, int64_t ms) const; // 0x54ddc0

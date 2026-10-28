@@ -397,6 +397,20 @@ bool World::pathToPoint(Entity& e, const Vec3& target) {
     return true;
 }
 
+// 0x503a50 (with planes): a path to a sentient at `target`. An existing path is kept when its goal point (+0x38c) is
+// within 2 units (xy, 0x591e64 = 4 on the squared distance) and 80 units (z, 6400) of the target (0x5027e0) and it is
+// not a truncated path whose point count is at least a quarter of the planned count (flag 4, 4·count <= planned drops
+// it); otherwise it is replaced.
+bool World::pathToSentient(Entity& e, const Vec3& target) {
+    if (actorHasPath(e)) {
+        const ActorPath& p = e.path;
+        const bool dropped = (p.flags & 4) && 4 * p.count <= p.planned;
+        const float dz = p.goal[2] - target[2], dx = target[0] - p.goal[0], dy = target[1] - p.goal[1];
+        if (!dropped && dz * dz <= 6400.0f && dx * dx + dy * dy <= 4.0f) return true;
+    }
+    return pathToPoint(e, target);
+}
+
 // A path to a node (0x503890; `withPlanes` its third argument): from the sentient's node (0x515040, or 0x5150d0 with
 // the planes) to `node`, ending at its origin; a node with spawnflag 1 is replaced by the node query around it (192
 // units, lowered, without planes — 0x517f90 is called with none there). With planes both end nodes must be on the

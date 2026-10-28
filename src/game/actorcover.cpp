@@ -627,9 +627,7 @@ void World::registerCoverBuiltins() {
         // 0x54c7d0 with no distance limit: a sight trace (0x54c760) from the node origin raised by 64 (0x56f6e0)
         // to the enemy's eye.
         const Vec3 no = vecField(nodes_[size_t(node)].obj, "origin");
-        if (collision_->sightBlocked({no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), {0, 0, 0}, {0, 0, 0},
-                                     Contents::SightMask, e.number, enemy->number))
-            return Value(0);
+        if (!actorSightClear(e, *enemy, {no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), 0.0f)) return Value(0);
         if (!pathToNode(e, node) || !actorHasPath(e)) return Value(0);
         claimNode(e, node);
         e.ai.reacquireNodes.clear();
@@ -659,8 +657,8 @@ void World::registerCoverBuiltins() {
             const float ox = dy * dist * side, oy = -dx * dist * side;
             const Vec3 from{eye[0] + ox, eye[1] + oy, eye[2]};
             const float ex = enemyEye[0] - from[0], ey = enemyEye[1] - from[1], ez = enemyEye[2] - from[2];
-            if (maxd != 0.0f && ex * ex + ey * ey + ez * ez >= maxd) continue;
-            if (collision_->sightBlocked(from, enemyEye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) continue;
+            (void)ex; (void)ey; (void)ez;
+            if (!actorSightClear(e, *enemy, from, enemyEye, maxd)) continue; // 0x54c7d0: distance² <= maxsightdistsqrd
             Vec3 at;
             const float step = e.obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f; // TODO(spec): actor +0x288
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
@@ -686,7 +684,7 @@ void World::registerCoverBuiltins() {
             return Value();
         }
         const Vec3 eo = vecField(enemy->obj, "origin");
-        pathToPoint(e, eo);
+        pathToSentient(e, eo); // 0x503a50 (keeps a path that already leads there)
         // 0x5434e0: drop the path when its start is outside the goal, else cut it after the last point in the goal.
         if (actorHasPath(e) && !inActorGoal(e, eo)) {
             ActorPath& p = e.path;
@@ -706,19 +704,44 @@ void World::registerCoverBuiltins() {
     };
     vm_.registerBuiltin("findreacquiredirectpath", reacquirePath);
     vm_.registerBuiltin("findreacquireproximatepath", reacquirePath);
-    // trimpathtoattack (0x504830 → 0x543580): shorten the path by one point per call until the enemy's eye is
-    // visible from its end. TODO(spec): the original's trim state (+0x70c / +0x710) and 0x5433e0.
+    // trimpathtoattack (0x504830 → 0x543580): a search along the path from its start end for the furthest point from
+    // which the enemy's eye is visible (0x54c7d0 from the point raised by 64, maxsightdistsqrd as the limit), driven by
+    // the trim state of findreacquire*path: idx = +0x70c (count + 1), mode = +0x710 (−2). One call tests the candidate
+    // idx + mode (the start end uses the stored start position +0x3c8); returns 1 while the search goes on.
+    //   visible, mode −2, candidate not the start end: idx = candidate, mode = 1 (next: one point back), return 1.
+    //   visible otherwise: drop `candidate` points from the goal end (0x5433e0), return 0.
+    //   not visible, mode 1: drop idx points, return 0; candidate 0: clear the path (0x503e10), return 0;
+    //   else idx = candidate (mode −1 when it is 1, so that the next candidate is point 0), return 1.
     vm_.registerBuiltin("trimpathtoattack", [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (!enemy || e.path.count < 2) return Value(0);
-        const Vec3 eye = sightEye(*enemy, nullptr);
-        const Vec3 end = e.path.pts[1].pos;
-        if (!collision_->sightBlocked({end[0], end[1], end[2] + 64.0f}, eye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) {
-            dropPathGoalPoints(e.path, 1);
+        ActorPath& p = e.path;
+        if (!enemy || p.count <= 0) return Value(0);
+        const int cand = e.ai.trimCount + e.ai.trimState;
+        if (cand >= p.count) return Value(0);
+        const bool atStart = cand == p.count - 1;
+        const Vec3 pos = atStart ? p.start : p.pts[size_t(cand)].pos;
+        const bool visible = actorSightClear(e, *enemy, {pos[0], pos[1], pos[2] + 64.0f}, sightEye(*enemy, nullptr),
+                                             floatField(e.obj, "maxsightdistsqrd", 0.0f));
+        if (visible) {
+            if (e.ai.trimState == -2 && !atStart) {
+                e.ai.trimCount = cand;
+                e.ai.trimState = 1;
+                return Value(1);
+            }
+            dropPathGoalPoints(p, cand);
             return Value(0);
         }
-        dropPathGoalPoints(e.path, 1);
+        if (e.ai.trimState == 1) {
+            dropPathGoalPoints(p, e.ai.trimCount);
+            return Value(0);
+        }
+        if (cand == 0) {
+            clearActorPath(e);
+            return Value(0);
+        }
+        e.ai.trimCount = cand;
+        if (cand == 1) e.ai.trimState = -1;
         return Value(1);
     });
     // reacquiremove (0x53ccb0): with an enemy, in the exposed state and with a path: substate reacquire.
