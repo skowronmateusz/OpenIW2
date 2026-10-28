@@ -67,9 +67,9 @@ std::vector<HitBoxModel> World::entityModels(Entity& e) {
     if (!body) return models;
     // A turret's bone controls (0x51d740) also apply on top of an animation tree (the mg42 animscripts give the turret one).
     const assets::XPose pose =
-        e.anim ? (e.turret ? assets::applyControls(*body, e.anim->pose(*body), turretBoneControls(*body, e.turret->pitch, e.turret->yaw))
+        e.anim ? (e.turret ? assets::applyControls(*body, e.anim->pose(*body), turretBoneControls(*body, e.turret->pitch, e.turret->yaw, e.turret->drop))
                            : e.anim->pose(*body))
-        : e.turret ? assets::controlledPose(*body, turretBoneControls(*body, e.turret->pitch, e.turret->yaw))
+        : e.turret ? assets::controlledPose(*body, turretBoneControls(*body, e.turret->pitch, e.turret->yaw, e.turret->drop))
                    : assets::bindPose(*body);
     // Bone lookup by name; the first model that has a name keeps it.
     std::unordered_map<std::string, std::pair<std::array<float, 3>, assets::Quat>> local;

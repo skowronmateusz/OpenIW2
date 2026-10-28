@@ -50,6 +50,7 @@ struct TurretState {
     // The AI gunner's pose step (0x549ba0, flag 0x20 = the offsets below are set).
     script::Vec3 gunnerOriginOffset{}; // +0x90: gunner origin − posed origin, slides to 0 (0x53b9a0)
     script::Vec3 gunnerAnglesOffset{}; // +0x9c: gunner angles − posed angles, slides to 0 (0x53ba60)
+    float drop = 0;                    // entity +0x78: bone-control pitch drop (0x51b7a3), cleared every think (0x51d279)
     float pitchLimit = 0;              // +0xa8: pitch bound outside the gunner's animation range (flags 0x200 / 0x400)
 };
 

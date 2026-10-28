@@ -30,12 +30,12 @@ float spawnOrWeapon(const ObjectPtr& o, const char* key, const std::map<std::str
 } // namespace
 
 // Bone controls of a turret model, the same on the server (0x51d740, entity type callback +0x10) and in cgame
-// (0x4ab0d0): tag_aim and tag_aim_animated turn by (pitch − e+0x78, yaw, 0), tag_flash by (e+0x78, 0, 0). e+0x78 is
-// cleared by every think (0x51d279) and only set by the turn (0x51b7a3) with turret flag 0x200, which nothing in
-// OpenIW2 sets yet, so it is 0 here.
-std::vector<std::pair<int, assets::Quat>> World::turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw) {
+// (0x4ab0d0): tag_aim and tag_aim_animated turn by (pitch − e+0x78, yaw, 0), tag_flash by (e+0x78, 0, 0). e+0x78
+// (TurretState::drop) is cleared by every think (0x51d279) and set by the turn (0x51b7a3) beyond the AI gunner's
+// pitch bound (flag 0x200).
+std::vector<std::pair<int, assets::Quat>> World::turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw,
+                                                                    float drop) {
     std::vector<std::pair<int, assets::Quat>> out;
-    const float drop = 0.0f;
     for (size_t i = 0; i < parts.bones.size(); ++i) {
         std::string n = parts.bones[i].name;
         for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));

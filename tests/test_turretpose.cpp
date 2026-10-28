@@ -9,6 +9,7 @@
 //    along the turret.
 #include "fs/vfs.h"
 #include "game/animtree.h"
+#include "game/savestate.h"
 #include "game/world.h"
 
 #include <cmath>
@@ -118,6 +119,37 @@ void gunnerTest(iw2::fs::Vfs& vfs) {
     }
     std::cout << "gunner frames checked " << checked << "\n";
     CHECK(checked > 0);
+
+    // 4. Savegame (version 4): the setturretanim node / flag and the turret's pose fields survive a round trip.
+    SaveRequest req;
+    req.name = "turretpose";
+    req.description = "turret pose";
+    LoadedSave ls;
+    const std::string err = parseSaveFile(buildSaveFile(w, req), ls);
+    CHECK(err.empty());
+    if (!err.empty()) return;
+    World b(vfs, ls.info.mapName);
+    b.prepareStart();
+    restoreSave(b, ls);
+    int compared = 0;
+    for (size_t i = 0; i < w.entities().size() && i < b.entities().size(); ++i) {
+        const Entity& x = *w.entities()[i];
+        const Entity& y = *b.entities()[i];
+        if (x.isActor && x.turretAnimSet) {
+            ++compared;
+            CHECK(y.turretAnimSet && y.turretAnim == x.turretAnim);
+        }
+        if (x.turret && y.turret && (x.turret->flags & 0x20u)) {
+            ++compared;
+            for (int k = 0; k < 3; ++k) {
+                CHECK(y.turret->gunnerOriginOffset[size_t(k)] == x.turret->gunnerOriginOffset[size_t(k)]);
+                CHECK(y.turret->gunnerAnglesOffset[size_t(k)] == x.turret->gunnerAnglesOffset[size_t(k)]);
+            }
+            CHECK(y.turret->pitchLimit == x.turret->pitchLimit && y.turret->drop == x.turret->drop);
+        }
+    }
+    std::cout << "saved turret pose fields compared " << compared << "\n";
+    CHECK(compared > 0);
 }
 
 } // namespace
