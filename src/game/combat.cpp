@@ -814,8 +814,9 @@ void World::registerCombatBuiltins() {
         const int s = playerCmd_.stance;
         return Value(std::string(s == 2 ? "prone" : s == 1 ? "crouch" : "stand"));
     });
-    // bullettracer (0x4ee830): reads two vectors and queues a client event 0xb2 carrying one of them (event+0x64);
-    // purely visual. TODO(spec): the tracer rendering of event 0xb2.
+    // bullettracer (0x4ee830): reads two vectors and queues a temp entity of event 0xb2 (entity type 0xb2 + 0xf = 0xc1, 0x4d7f40) at the
+    // first one, carrying the second at +0x64. The client event switch (0x4cbea9: event - 9, byte table 0x4cc04c, jump table 0x4cc02c)
+    // maps 0xc1 (index 0xb8, byte 7) to the default exit 0x4cc023: the event has no handler in the SP exe, so the call is a proven no-op.
     vm_.registerBuiltin("bullettracer", [](CallContext&) { return Value(); });
     // magicbullet (0x4ee880): (weapon, start, end); exactly 3 arguments. Weapon type 0 (bullet): direction = normalize(end - start),
     // bulletspread(0, 8192) then the bullet fire 0x531340 with the world entity (0x7fe) as attacker and ignore entity, then client

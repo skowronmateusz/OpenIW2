@@ -72,9 +72,12 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("savegamenocommit", [](CallContext&) { return Value(1); });
     vm_.registerBuiltin("commitsave", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("issaverecentlyloaded", [](CallContext&) { return Value(false); });
-    // playrumble (0x4f8bf0) and stoprumble (0x4f8c10) are bare `ret`s in the original.
+    // Proven no-ops: playrumble 0x4f8bf0, stoprumble 0x4f8c10, playrumbleonpos 0x4f8b20 and giveachievement 0x4f8b50 are each a single
+    // `ret` (byte c3) in CoD2SP_s.exe 1.3; the arguments are not even read (the interpreter drops them).
     vm_.registerBuiltin("stoprumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("playrumble", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("playrumbleonpos", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("giveachievement", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("setcullfog", [this](CallContext& c) {
         if (c.args.size() < 6) return Value();
         char buf[160];

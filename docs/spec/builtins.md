@@ -478,3 +478,10 @@ rows start at 0x5a5c20; the method tables are read the same way.
 ## Not found in the tables above
 
 These are called by scripts but are compiled specially (`notify`, `waittill`, `waittillmatch`, `endon`) or live in tables not yet located: `addtestclient`, `allowspectateteam`, `clientclaimtrigger`, `clientreleasetrigger`, `cloneplayer`, `closeingamemenu`, `disableweapon`, `dropitem`, `enableweapon`, `endon`, `endparty`, `exitlevel`, `finishplayerdamage`, `getguid`, `getteamscore`, `getviewmodel`, `issplitscreen`, `logprint`, `makecvarserverinfo`, `map_restart`, `newclienthudelem`, `newteamhudelem`, `notify`, `obituary`, `objective_onentity`, `objective_team`, `pingplayer`, `placespawnpoint`, `positionwouldtelefrag`, `precacheheadicon`, `precachestatusicon`, `prof_begin`, `prof_end`, `sayall`, `sayteam`, `sendranks`, `setarchive`, `setclientcvar`, `setclientnamemode`, `setplayerteamrank`, `setspawnweapon`, `setteamfortrigger`, `setteamscore`, `setwaypoint`, `suicide`, `updatescores`, `waittill`, `waittillmatch`.
+
+## Proven no-ops (single `ret` or no handler)
+
+Read from the executable bytes (`c3 cc cc cc` at each address): `playrumble` 0x4f8bf0, `stoprumble` 0x4f8c10, `playrumbleonpos` 0x4f8b20,
+`giveachievement` 0x4f8b50. `bullettracer` (0x4ee830) allocates a temp entity of event 0xb2 (type 0xc1) holding a vector at +0x64, but the
+client event switch (0x4cbea9, event - 9, byte table 0x4cc04c, jump table 0x4cc02c) sends index 0xb8 (byte 7) to the default exit 0x4cc023, so
+nothing reads it. All five are registered as empty built-ins.
