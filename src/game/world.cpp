@@ -126,7 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
         submodels_.push_back({mn, mx});
     }
     vm_.print = [this](const std::string& s) { print(s); };
-    registerCoreBuiltins(vm_);
+    registerCoreBuiltins(vm_, std::getenv("IW2_SCRIPT_SEED") ? uint32_t(std::strtoul(std::getenv("IW2_SCRIPT_SEED"), nullptr, 10)) : 1u); // IW2_SCRIPT_SEED: debug only, varies script randomness
     registerBuiltins();
     registerAnimBuiltins();
     registerCombatBuiltins();
@@ -212,6 +212,21 @@ void World::spawnMapEntities() {
             n.typeNum = pathNodeTypeNum(cls);
             const Value sf = n.obj->get("spawnflags");
             n.spawnflags = sf.isInt() ? sf.asInt() : 0;
+            // Node key parse (0x52d280 via 0x52d0b0, key table 0x5a9670): the yaw (+0x20) starts at the sentinel -1; the
+            // "angles" key (type 0xb, 0x52d1f4) is read as "%f %f %f" and only AngleNormalize360(angles[1]) (0x4240a0) is
+            // stored. A yaw still at -1 becomes 0, any other yaw sets spawnflag 0x8000 (0x52d2ba..0x52d2cd): "node has an
+            // angle", which the node facing (0x505dcc, 0x505935) and the goal check (0x4fef89) test. The script field
+            // `angles` (type 0xb, getter 0x4f9e21) is (0, yaw, 0).
+            bool hasAngles = false;
+            for (const auto& [k, v] : be.fields) hasAngles = hasAngles || lower(k) == "angles";
+            if (hasAngles) {
+                float yaw = n.obj->get("angles").isVector() ? n.obj->get("angles").asVector()[1] : 0.0f;
+                while (yaw < 0.0f) yaw += 360.0f;
+                while (yaw >= 360.0f) yaw -= 360.0f;
+                n.obj->set("angles", Value(Vec3{0.0f, yaw, 0.0f}));
+                n.spawnflags |= 0x8000;
+                n.obj->set("spawnflags", Value(int32_t(n.spawnflags)));
+            }
             nodes_.push_back(std::move(n));
         } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
@@ -1077,7 +1092,6 @@ void World::registerBuiltins() {
             o->set("$goalpos", c.arg(0).asObject()->get("origin"));
             o->set("$goalent", Value()); // 0x540880 clears the goal entity (+0x77c)
             if (Entity* self = entityOf(c.self); self && !goalVolumeHolds(*self, c.arg(0).asObject()->get("origin").isVector() ? c.arg(0).asObject()->get("origin").asVector() : Vec3{0, 0, 0})) o->set("$goalvolume", Value()); // 0x5408fe..: the volume must contain the new goal
-            o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
         }
         return Value();
     });
@@ -1086,7 +1100,6 @@ void World::registerBuiltins() {
         c.self.asObject()->set("$goalpos", c.arg(0));
         c.self.asObject()->set("$goalent", Value());
         if (Entity* self = entityOf(c.self); self && c.arg(0).isVector() && !goalVolumeHolds(*self, c.arg(0).asVector())) c.self.asObject()->set("$goalvolume", Value()); // 0x5409bd
-        c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });
     vm_.registerBuiltin("setgoalentity", [this](CallContext& c) {
@@ -1150,8 +1163,10 @@ void World::registerBuiltins() {
         if (!e) throw std::runtime_error("delete on a non-entity");
         if (e->isPlayer) throw std::runtime_error("cannot delete the player");
         connectEntityPaths(*e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
-        e->obj->removed = true;
+        // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
+        // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
         vm_.notify(e->obj, "death");
+        vm_.freeObject(e->obj);
         return Value();
     });
     vm_.registerBuiltin("setmodel", [](CallContext& c) {

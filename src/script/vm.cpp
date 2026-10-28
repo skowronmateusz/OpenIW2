@@ -642,6 +642,9 @@ std::string VM::backtrace(const Thread& t) const {
     for (const Frame& fr : t.frames) {
         const CompiledFunction& f = functions_[size_t(fr.function)];
         out += " < " + f.file + ":" + std::to_string(fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0) + " " + f.name;
+        out += fr.self.isObject() ? " [self " + fr.self.asObject()->kind + "#" + std::to_string(fr.self.asObject()->id) + "]" : "";
+        for (const Value& l : fr.locals)
+            if (l.isObject()) out += " {" + l.asObject()->kind + "#" + std::to_string(l.asObject()->id) + (l.asObject()->removed ? " removed" : "") + "}";
     }
     return out;
 }
@@ -888,6 +891,13 @@ void VM::step(Thread& t, bool& suspended) {
     case Op::LoadRef: push(readRef(t, int(t.refs.size()) - 1)); break;
     case Op::Store: {
         Value v = pop();
+        if (static const char* fl = std::getenv("IW2_FIELD_LOG"); fl && t.refs.back().kind == Ref::Field && t.refs.back().field.find(fl) != std::string::npos) {
+            // IW2_FIELD_LOG=<text>: debug only, prints every script store to a field whose name contains <text>
+            const auto& o = t.refs.back().object;
+            print("[field " + std::to_string(nowMs_) + "ms] " + o->kind + "#" + std::to_string(o->id) + "." + t.refs.back().field + " = " +
+                  (v.isObject() ? v.asObject()->kind + "#" + std::to_string(v.asObject()->id) : v.toString()) + " at " + f.file + ":" +
+                  std::to_string(in.line));
+        }
         writeRef(t, int(t.refs.size()) - 1, std::move(v));
         // Pop the whole reference chain.
         int i = int(t.refs.size()) - 1;
@@ -1092,6 +1102,45 @@ void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<V
     for (auto it = woken.rbegin(); it != woken.rend(); ++it) ready_.push_front(*it);
 }
 
+void VM::freeObject(const ObjectPtr& object) {
+    object->removed = true;
+    freed_.push_back(object);
+}
+
+// 0x467150 walks the freed list; 0x46d1f0 cancels the object's notify list (key 0x1fffe): an entry of type 0xa (the paused
+// stack of a waittill) is freed (0x46c2e0 with 0), i.e. that thread ends; any other entry is an endon thread, which is ended
+// the way a notify's endon ends it (0x46c2e0 with 1, the entry becomes type 0x17).
+void VM::processFreedObjects() {
+    while (!freed_.empty()) {
+        std::vector<ObjectPtr> list;
+        list.swap(freed_);
+        for (const ObjectPtr& object : list) {
+            std::vector<Thread*> resumed;
+            for (size_t i = 0; i < threads_.size(); ++i) {
+                Thread& th = *threads_[i];
+                if (th.state == ThreadState::Done) continue;
+                if (th.state == ThreadState::WaitingNotify && th.waitObject == object) {
+                    th.state = ThreadState::Done;
+                    continue;
+                }
+                size_t frame = SIZE_MAX;
+                for (const auto& e : th.endons)
+                    if (e.frame < frame && e.object.lock() == object) frame = e.frame;
+                if (frame == SIZE_MAX) continue;
+                if (frame == 0 || frame >= th.frames.size()) {
+                    th.state = ThreadState::Done;
+                } else if (th.running) {
+                    if (th.pendingUnwind < 0 || int(frame) < th.pendingUnwind) th.pendingUnwind = int(frame);
+                } else {
+                    unwind(th, frame);
+                    resumed.push_back(&th);
+                }
+            }
+            for (Thread* th : resumed) run(*th);
+        }
+    }
+}
+
 void VM::drainReady() {
     if (draining_) return; // a nested call: the outer drain picks up what was queued
     draining_ = true;
@@ -1105,6 +1154,7 @@ void VM::drainReady() {
 
 void VM::runFrame(int64_t nowMs) {
     nowMs_ = nowMs;
+    processFreedObjects(); // objects freed by engine code since the last script run
     // Threads due this frame, in creation order.
     std::vector<Thread*> due;
     for (auto& th : threads_)
@@ -1121,6 +1171,7 @@ void VM::runFrame(int64_t nowMs) {
         for (Thread* th : fe) run(*th);
         drainReady(); // TODO(spec): where 0x467150 runs what the frame-end threads notify
     }
+    processFreedObjects(); // 0x467150 after the frame's script run (0x4daf56)
     // Drop finished threads.
     threads_.erase(std::remove_if(threads_.begin(), threads_.end(), [](const auto& th) { return th->state == ThreadState::Done; }),
                    threads_.end());

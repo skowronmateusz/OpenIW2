@@ -357,14 +357,6 @@ void World::actorThink(Entity& e) {
             }
         }
         if (pathInGoal) {
-            // DEV-ONLY BYPASS (IW2_DEV_SNAP_GOAL_YAW=1, docs/debug-flags.md): turns the actor to its goal node's angles before
-            // "goal". NOT original behaviour: the exe has no such step. It only lets
-            // moscow's `while (letlev.angles != node.angles)` (moscow.gsc:5031) pass so that later stages can be walked.
-            static const bool snap = std::getenv("IW2_DEV_SNAP_GOAL_YAW") != nullptr;
-            if (snap) {
-                const Value na = e.obj->get("$goalnodeangles");
-                if (na.isVector()) e.obj->set("angles", na);
-            }
             vm_.notify(e.obj, "goal");
         }
     }
