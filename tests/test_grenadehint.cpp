@@ -1,6 +1,10 @@
 // Tests for the grenade hint node geometry: pick 0x51ece0, MagicGrenade lob 0x51f050, sort comparator 0x51f280.
 
+#include "assets/font.h"
+#include "fs/vfs.h"
 #include "game/grenadehint.h"
+
+#include <cstdlib>
 
 #include <cmath>
 #include <iostream>
@@ -68,10 +72,36 @@ void testSort() {
 }
 }  // namespace
 
+// With IW2_MAIN: the moscow potato's text keys resolve (weapon file displayName WEAPON_POTATO, the moscow hints), and
+// its weapon file is the non-exploding kind the explosion code keys on (projExplosionType none, no inner damage).
+void testPotatoGameFiles() {
+    const char* main = std::getenv("IW2_MAIN");
+    if (!main) return;
+    iw2::fs::Vfs vfs;
+    vfs.mountDirectory(main);
+    for (const char* lang : {"ENGLISH", "POLISH"}) {
+        iw2::assets::Localization loc;
+        loc.load(vfs, lang);
+        CHECK(loc.find("WEAPON_POTATO") && !loc.find("WEAPON_POTATO")->empty());
+        CHECK(loc.find("MOSCOW_GRAB_POTATO"));
+        CHECK(loc.find("MOSCOW_PLATFORM_THROW_POTATO"));
+        CHECK(loc.find("MOSCOW_OBJ_POTATO1"));
+    }
+    const auto w = vfs.read("weapons/sp/potato");
+    CHECK(w.has_value());
+    if (w) {
+        const std::string t(w->begin(), w->end());
+        CHECK(t.find("\\displayName\\WEAPON_POTATO\\") != std::string::npos);
+        CHECK(t.find("\\projExplosionType\\none\\") != std::string::npos);
+        CHECK(t.find("\\explosionInnerDamage\\0\\") != std::string::npos);
+    }
+}
+
 int main() {
     testPick();
     testLob();
     testSort();
+    testPotatoGameFiles();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

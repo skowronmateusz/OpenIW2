@@ -49,6 +49,13 @@ std::string lowerStr(std::string s) {
     return s;
 }
 
+// projExplosionType (weapon +0x390) through the enum table 0x5a7e1c: "grenade" 0, "rocket" 1, "none" 2.
+int explosionType(const std::string& v) {
+    if (v.empty() || v == "grenade") return 0;
+    if (v == "rocket") return 1;
+    return 2;
+}
+
 } // namespace
 
 float World::gravity() {
@@ -221,9 +228,11 @@ void World::explodeGrenade(Entity& e) {
     }
     e.obj->set("origin", Value(at));
     ++stats.grenadeExplosions;
+    // 0x5267d3: radius damage only when explosionInnerDamage (+0x37c) is not 0 (the moscow potato has 0).
     const float radius = weaponFloat(g.weapon, "explosionRadius");
-    radiusDamage(at, g.parent, weaponFloat(g.weapon, "explosionInnerDamage"), weaponFloat(g.weapon, "explosionOuterDamage"),
-                 radius, nullptr, "MOD_GRENADE_SPLASH");
+    if (weaponFloat(g.weapon, "explosionInnerDamage") != 0.0f)
+        radiusDamage(at, g.parent, weaponFloat(g.weapon, "explosionInnerDamage"), weaponFloat(g.weapon, "explosionOuterDamage"),
+                     radius, nullptr, "MOD_GRENADE_SPLASH");
     // The explode event (0x526700 → 0x4d8020, EV_GRENADE_EXPLODE 0xbf for projExplosionType grenade): a point trace
     // 16 down from the grenade (mask 0x811, skipping it) gives the direction (its normal, sent as a dir byte) and the
     // surface type (surface flags >> 20 & 0x1f; 20 = water when the point is in water, 0x44c840 mask 0x20). The client
@@ -240,9 +249,13 @@ void World::explodeGrenade(Entity& e) {
         static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
                                                     "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
                                                     "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
-        if (surface < 23) {
-            startSound(std::string("grenade_explode_") + kSurfaceAlias[surface], &at);
-            const std::string& impact = impactEffect(9, surface);
+        // 0x526763: the event follows projExplosionType (+0x390, enum table 0x5a7e1c: grenade 0, rocket 1, none 2):
+        // 0 → 0xbf (grenade_explode_<surface> + impact type 9), 1 → 0xc0 (rocket_explode_<surface> + impact type 10),
+        // anything else → 0xc2 (no surface sound or impact; only projExplosionEffect / projExplosionSound below).
+        const int type = explosionType(lowerStr(weaponField(g.weapon, "projExplosionType")));
+        if (type < 2 && surface < 23) {
+            startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at);
+            const std::string& impact = impactEffect(type == 0 ? 9 : 10, surface);
             if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
             if (std::getenv("IW2_GRENADE_DEBUG"))
                 std::printf("grenade %s explodes at (%g %g %g), surface %s, effect %s\n", g.weapon.c_str(), at[0], at[1], at[2],
