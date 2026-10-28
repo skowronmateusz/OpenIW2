@@ -35,7 +35,8 @@ the piecewise-linear curve), used for velocities.
   0x48abb0: origin, then rows forward / left / up). Relative elements get the attachment record (0x485bf0, element +0xc0 via
   0x48cb00) and are kept in the element array 0x5a39dc.
 - Spawn: the spawn point is converted into tag space at the end of 0x48c290 ((p − origin) · row k, the 0x440600 pattern);
-  Line B by 0x440600 (0x48d4a1), Cylinder / OrientedParticle / Emitter directions by 0x440650 (0x48d786, 0x48dd53, 0x48d964).
+  Line B by 0x440600 (0x48d4a1), Cylinder / OrientedParticle directions by 0x440650 (0x48d786, 0x48dd53); the Emitter stores the attachment origin in +0x264
+  (0x47faa0 / 0x48a870 at 0x48d964, see "Emitter physics").
   The particle velocity axes (+0xd0, 0x4803f0) are the effect's axes as given, i.e. the tag axes in world space; the
   velocity / gravity offsets are added to the tag-space position as they are.
 - Update: 0x47fcd0 returns the attachment orientation (refreshed by 0x48abb0 when the frame stamp 0x6221a8 changed; failure

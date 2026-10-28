@@ -934,33 +934,12 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         const float life = float(p.endMs - p.startMs);
         const float t = float(nowMs - p.startMs);
         const float u = std::min(1.0f, t / life);
-        const float lifeS = life * 0.001f;
-        auto integ = [&](const char* name, const char* rname, bool useRand, float rnd) {
-            const auto* g = graph(e, name);
-            if (!g) return 0.0f;
-            float v = g->integral(u);
-            if (useRand)
-                if (const auto* rg = graph(e, rname)) v += (rg->integral(u) - v) * rnd;
-            return v * g->scaleMin; // TODO(spec): the per-particle velocity scales (+0x1c4…)
-        };
-        const bool rv = flags & 0x80000, rv2 = flags & 0x100000;
-        FVec v1{integ("velocityx", "velocityxrand", rv, p.velRnd[0]), integ("velocityy", "velocityyrand", rv, p.velRnd[1]),
-                integ("velocityz", "velocityzrand", rv, p.velRnd[2])};
-        FVec v2{integ("velocity2x", "velocity2xrand", rv2, p.vel2Rnd[0]), integ("velocity2y", "velocity2yrand", rv2, p.vel2Rnd[1]),
-                integ("velocity2z", "velocity2zrand", rv2, p.vel2Rnd[2])};
-        auto toWorld = [&](const FVec& v, bool absolute) {
-            return absolute ? v : add(add(mul(p.axis[0], v[0]), mul(p.axis[1], v[1])), mul(p.axis[2], v[2]));
-        };
-        FVec pos = add(p.origin, add(mul(toWorld(v1, flags & 0x200000), lifeS), mul(toWorld(v2, flags & 0x400000), lifeS)));
-        pos[2] += p.gravity * (t * 0.001f) * (t * 0.001f);
+        FVec pos = p.origin; // every type reaching here sets its own +0x7c below
         FxTag tagNow;
         const bool relative = p.bolt && !p.tail;
         if (relative) {
-            // Relative (0x480330): the tag-space position (spawn point in tag space + the velocity / gravity offsets, added as they
-            // are: the velocity axes +0xd0 are the effect's world axes, copied by 0x4803f0) through the current tag orientation
-            // (0x47fcd0 -> 0x48abb0, 0x4404f0). An invalid attachment ends the update.
+            // The current tag orientation (0x47fcd0 -> 0x48abb0); an invalid attachment ends the update.
             if (!(*p.bolt)(tagNow)) continue;
-            pos = fromTagSpace(tagNow, add(p.local0, sub(pos, p.origin)));
         }
         if (moving) pos = relative ? fromTagSpace(tagNow, p.pos) : p.pos; // +0x7c (0x48037a / 0x48269c)
         FxTag tailTag;
