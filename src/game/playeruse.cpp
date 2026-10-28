@@ -297,7 +297,7 @@ void World::findPlayerUseEntity() {
             playerUseEntity_ = e.number;
             const Value h = e.obj->get("$cursorhint"), str = e.obj->get("$hintstring");
             playerUseHint_.hint = h.isNumber() ? h.asInt() : 2;
-            if (str.isString()) playerUseHint_.text = str.asString();
+            if (str.isNumber()) playerUseHint_.text = hintStrings_.at(str.asInt());
             return;
         }
         if (e.isActor) {
@@ -309,7 +309,7 @@ void World::findPlayerUseEntity() {
                 playerUseEntity_ = e.number;
                 playerUseHint_.hint = 4;
                 const Value str = e.obj->get("$hintstring");
-                if (str.isString()) playerUseHint_.text = str.asString();
+                if (str.isNumber()) playerUseHint_.text = hintStrings_.at(str.asInt());
             }
             return;
         }

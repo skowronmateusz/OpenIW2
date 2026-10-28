@@ -296,10 +296,14 @@ void World::shootTurret(Entity& t) {
     // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
     // (empty for the MG42s) plays too. The event also shakes the view (0x4bf5e0 with scale 0.05, 100 ms, radius 100 at the entity origin, ViewShake). The effect is bolted on tag_flash of the turret entity.
     shakeEvents_.push_back({t.obj->get("origin").asVector(), 0.05f, 100, 100.0f, timeMs_});
-    // The same event (0x4bb069..0x4bb0b6) pings the compass for the entity at es +0xa4 (the turret user) when it is an actor (type 9): 50 ms
-    // at the turret's origin (centity +0x148) through 0x4c0e20. TODO(spec): the user's centity byte +0x140 test and the skip when
-    // the turret is the one at the local playerstate +0x570 (a player user is not an actor, so it never pings here).
-    if (user && !user->isPlayer && user->obj->kind == "actor") compassPing(*user, t.obj->get("origin").asVector(), 50);
+    // The same event (0x4bb069..0x4bb0b6) pings the compass for the entity at es +0xa4 (the turret user) when it is an actor (type 9):
+    // 50 ms at the turret's origin (centity +0x148) through 0x4c0e20. The centity byte +0x140 it tests is "present in the
+    // current snapshot": 0x4a4336 clears it on every entity of the old snapshot and sets it for the new snapshot's entities and the
+    // own player. The ping is skipped when the event entity's number equals the snapshot ps word +0x570; ps +0x570 is not the turret
+    // link (turret use writes ps +0x568, 0x51db8d) and is not identified, so the skip is not modelled.
+    // TODO(spec): ps +0x570, and the snapshot membership of the user (the server's PVS / broadcast test; every actor counts as in it).
+    if (user && !user->isPlayer && user->obj->kind == "actor")
+        compassPing(*user, t.obj->get("origin").asVector(), 50);
     const std::string flash = weaponField(ts.weapon, "worldFlashEffect");
     if (!flash.empty()) fxEvents_.push_back({flash, muzzle, dir, t.number, "tag_flash"});
     // Shell eject: the same handler 0x4b7800 calls CG_EjectWeaponBrass (0x4b7730, 0x4b79dc) unless boltAction (+0x328) is set:
@@ -351,26 +355,34 @@ void World::turretFireSound(Entity& t, bool playerOwner) {
 // degree steps (pitch -3·i, i = 0..30, the muzzle going up) and at the first step where a point trace (mask 0x800811,
 // the turret passed) from the tag_aim pivot to the stock hits something stores -3·i + the turret's pitch as the drop
 // pitch (info +0x4c). No hit in 31 steps leaves the drop pitch as it was. Done in the turret's yaw frame.
-// TODO(spec): the exe reads the tag poses of the dobj (which include the current turret bone pitch) and the entity's
-// full angles (e+0xe8); here the unpitched bind pose is used, which is the same at the first think (pitch 0).
+// The tag poses are the dobj's (model space, including the bone controls of the turret's current pitch and yaw, which
+// entityBones poses through entityModels); the frame carrying the points to the world is AnglesToAxis of the full entity
+// angles (e+0xe8: pitch, yaw and roll) at the entity origin (e+0xdc, 0x423430), not the yaw alone.
 void World::restoreDefaultDropPitch(Entity& t) {
     TurretState& ts = *t.turret;
     const auto bones = entityBones(t);
     const auto ia = bones.find("tag_aim"), ib = bones.find("tag_butt");
     if (ia == bones.end() || ib == bones.end()) return;
-    const Vec3 pivot = ia->second.position, butt = ib->second.position;
-    const Value av = t.obj->get("angles");
-    const float yaw = (av.isVector() ? av.asVector()[1] : 0.0f) * 3.14159265f / 180.0f;
-    const float cy = std::cos(yaw), sy = std::sin(yaw);
-    const Vec3 dw = sub(butt, pivot);
-    // Into the entity frame (x forward, y left, z up).
-    const float d0 = dw[0] * cy + dw[1] * sy, d1 = -dw[0] * sy + dw[1] * cy, d2 = dw[2];
+    const Value ov = t.obj->get("origin"), av = t.obj->get("angles");
+    if (!ov.isVector()) return;
+    const Vec3 origin = ov.asVector();
+    const Vec3 angles = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+    // entityBones places the model by the yaw alone: back to model space (x forward, y left, z up).
+    const Axis yawFrame = yawAxis(angles[1]);
+    auto toModel = [&](const Vec3& w) {
+        const Vec3 r = sub(w, origin);
+        return Vec3{dot(r, yawFrame[0]), dot(r, yawFrame[1]), dot(r, yawFrame[2])};
+    };
+    const Vec3 pivot = toModel(ia->second.position), butt = toModel(ib->second.position);
+    const Axis frame = anglesAxis(angles);
+    const Vec3 start = axisApply(origin, frame, pivot);
+    const float d0 = butt[0] - pivot[0], d1 = butt[1] - pivot[1], d2 = butt[2] - pivot[2];
     for (int i = 0; i <= 30; ++i) {
         const float p = float(i) * -3.0f * 3.14159265f / 180.0f, cp = std::cos(p), sp = std::sin(p);
         // d0 · forward − d1 · right + d2 · up of AngleVectors(pitch p) (right = (0,-1,0)).
         const float l0 = d0 * cp + d2 * sp, l1 = d1, l2 = -d0 * sp + d2 * cp;
-        const Vec3 end = {pivot[0] + l0 * cy - l1 * sy, pivot[1] + l0 * sy + l1 * cy, pivot[2] + l2};
-        const TraceResult tr = collision_->trace(pivot, end, {0, 0, 0}, {0, 0, 0}, 0x800811, t.number);
+        const Vec3 end = axisApply(origin, frame, {pivot[0] + l0, pivot[1] + l1, pivot[2] + l2});
+        const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, 0x800811, t.number);
         if (tr.fraction < 1.0f) {
             ts.dropPitch = float(i) * -3.0f + ts.pitch;
             return;

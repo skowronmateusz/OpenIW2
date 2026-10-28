@@ -3,6 +3,7 @@
 #include "game/world.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -200,16 +201,34 @@ void World::registerTurretBuiltins() {
             }
         throw std::runtime_error(h + " is not a valid hint type. See above for list of valid hint types");
     });
-    // sethintstring (0x4f0ec0): trigger_use / trigger_use_touch (+3) or actors (+0x2124); "" clears it.
-    // TODO(spec): 0x4eb9b0 ("Hint String") joins all arguments (localized ones wrapped in marker bytes 0x15 / 0x14) into one text of
-    // at most 1024 bytes, registered in a configstring table (0x4f0da0, error "Too many different hintstring values"); only the
-    // first argument is kept here and the marker format of the client-side reader is not decoded.
-    vm_.registerBuiltin("sethintstring", [](CallContext& c) {
-        const Value v = c.arg(0);
-        std::string key;
-        if (std::holds_alternative<script::LocalizedString>(v.v)) key = std::get<script::LocalizedString>(v.v).key;
-        else key = v.toString();
-        c.self.asObject()->set("$hintstring", key.empty() ? Value() : Value(key));
+    // sethintstring (0x4f0ec0): trigger_use / trigger_use_touch (hint index byte +3) or an actor (+0x2124). The arguments are joined
+    // by 0x4eb9b0 (src/game/hintstring.h) and registered in the 32-slot table (0x4f0da0); an empty string first argument clears
+    // the hint (index 0xff / -1), as does a full table after the error message.
+    // TODO(spec): the table is shared with the weapons' useHintString / dropHintString, which G_RegisterWeapon (0x522ba0) registers
+    // through the same 0x4f0da0 (def +0x574 / +0x578); OpenIW2 has no weapon registration, so those slots are not counted here.
+    vm_.registerBuiltin("sethintstring", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("not an entity");
+        if (e->classname != "trigger_use" && e->classname != "trigger_use_touch" && !e->isActor)
+            throw std::runtime_error("The setHintString command only works on trigger_use entities and actors.\n");
+        if (c.argc() == 0) throw std::runtime_error("parameter 1 does not exist");
+        const Value& first = c.arg(0);
+        int idx = -1;
+        if (!(first.isString() && first.asString().empty())) { // 0x4f0f5a: a plain empty string clears
+            std::vector<HintArg> args;
+            for (size_t i = 0; i < c.argc(); ++i) {
+                const Value& v = c.arg(i);
+                if (std::holds_alternative<script::LocalizedString>(v.v)) args.push_back({true, std::get<script::LocalizedString>(v.v).key});
+                else args.push_back({false, v.toString()});
+            }
+            std::string warn;
+            const std::string buf = buildHintString(args, "Hint String", cvarFloat("loc_warnings", 0.0f) != 0.0f,
+                                                    cvarFloat("loc_warningsAsErrors", 0.0f) != 0.0f, &warn);
+            if (!warn.empty()) std::fprintf(stderr, "%s", warn.c_str());
+            idx = hintStrings_.intern(buf);
+            if (idx < 0) throw std::runtime_error("Too many different hintstring values. Max allowed is " + std::to_string(kHintStringSlots) + " different strings");
+        }
+        e->obj->set("$hintstring", idx < 0 ? Value() : Value(int32_t(idx)));
         return Value();
     });
     vm_.registerBuiltin("maketurretunusable", [this](CallContext& c) { turretOf(c.self).flags &= ~0x1000u; return Value(); });

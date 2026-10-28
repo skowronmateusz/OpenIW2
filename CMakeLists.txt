@@ -213,6 +213,10 @@ add_test(NAME movers COMMAND test_movers)
 
 add_executable(test_builtinaudit tests/test_builtinaudit.cpp)
 target_link_libraries(test_builtinaudit PRIVATE iw2_game)
+add_executable(test_hintstring tests/test_hintstring.cpp)
+target_link_libraries(test_hintstring PRIVATE iw2_game)
+add_test(NAME hintstring COMMAND test_hintstring)
+
 add_executable(test_vehicletrigger tests/test_vehicletrigger.cpp)
 target_link_libraries(test_vehicletrigger PRIVATE iw2_game)
 
