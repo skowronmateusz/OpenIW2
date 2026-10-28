@@ -76,6 +76,23 @@ Vec3 World::sightEye(Entity& e, Vec3* forward) {
             Vec3 f = assets::rotate(assets::multiply(er, pose.rotation[size_t(eyeBone)]), {1, 0, 0});
             const float l = std::sqrt(f[0] * f[0] + f[1] * f[1]);
             if (l > 0) e.eyeForward = {f[0] / l, f[1] / l, 0};
+        } else if (e.isActor && parts) {
+            // 0x500910 looks tag_eye (scr const 0x1c7f156, string 0x589f94) up in the whole DObj (0x4d74b0), so a tag_eye
+            // of an attached model (the head) counts; only without one it warns (0x589b84) and uses origin + 64 (0x56f6e0).
+            const assets::Quat er{0, 0, std::sin(yaw * 0.5f), std::cos(yaw * 0.5f)};
+            for (const HitBoxModel& m : entityModels(e)) {
+                for (size_t b = 0; b < m.parts->bones.size(); ++b) {
+                    if (strcasecmp(m.parts->bones[b].name.c_str(), "tag_eye") != 0) continue;
+                    const Vec3 p = assets::rotate(er, m.position[b]);
+                    e.eyePos = {o[0] + p[0], o[1] + p[1], o[2] + p[2]};
+                    Vec3 f = assets::rotate(assets::multiply(er, m.rotation[b]), {1, 0, 0});
+                    const float l = std::sqrt(f[0] * f[0] + f[1] * f[1]);
+                    if (l > 0) e.eyeForward = {f[0] / l, f[1] / l, 0};
+                    eyeBone = int(b);
+                    break;
+                }
+                if (eyeBone >= 0) break;
+            }
         }
     }
     if (forward) *forward = e.eyeForward;
@@ -94,6 +111,18 @@ bool World::sightTest(Entity&, const Vec3& eye, const Vec3& forward, const Vec3&
         if (f * f < distSq * fovCos * fovCos) return false;
     }
     return true;
+}
+
+// 0x54ce10: the cached sight of a sentient (the actor's per-sentient record +0x1774: +0 visible, +4 check time) when
+// it was checked and the check is at most `withinMs` old, else a new sight check (0x54ca60 with the actor's fovcosine
+// +0x176c and maxsightdistsqrd +0x1770), whose result is the target's visibility (0x54cc5b).
+bool World::seesWithin(Entity& actor, Entity& target, int64_t withinMs) {
+    auto it = actor.sentientInfo.find(target.obj.get());
+    if (it != actor.sentientInfo.end() && it->second.lastCheckMs != 0 && it->second.lastCheckMs + withinMs >= timeMs_)
+        return it->second.visible;
+    sightCheck(actor, target);
+    it = actor.sentientInfo.find(target.obj.get());
+    return it != actor.sentientInfo.end() && it->second.visible;
 }
 
 // Sight check of one sentient (0x54ca60) and the target's reciprocal knowledge when it is an actor. Returns

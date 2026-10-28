@@ -143,3 +143,4 @@ described in the code that reads them.
   `missionsuccess`) and `player weapons: ... ; current ..., offhand ...` at the end of every run.
 - iw2view logs `victory screen (next map X)`, `changing level to X (persistent)` and `player weapons: ...` after each load.
 - `--shot` runs open all menus with their fades already finished (`MenuStack::settleFades`).
+- Env `IW2_CANSHOOT_LOG=<entity number>` (or `-1` for all; iw2game/iw2view): prints every muzzle trace 0x54cf40 (`canshoot`, 0x54d010) of that actor: `[canshoot <ms>] #n muzzle (..) target (..) fraction f hit <ent> -> 0|1`. Debug only.

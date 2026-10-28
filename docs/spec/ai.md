@@ -111,8 +111,14 @@ place (+0x2128) → 4; a recorded turret (+0x2114) that is free → replace 2 (i
 (0x4fe890) and the substate (0x548d50): no enemy → 0x65 noncombat; noncombat and the enemy seen
 (0x54ce10: the last sight check if within 250 ms, else a new one) → 100 combat; reacquire 0x66 →
 combat without a path (+0x6b0 <= 0) or with +0x728/+0x2148 set, else when the enemy was seen within 250 ms (0x54ce70) and
-0x54d010 passes (0x54cf40: a point trace, mask 0x200c861, from the enemy's eye - 16 to the actor's eye, clear or ending on a
-sentient of another team; beyond the fog limit 0x1c61038 it fails). The +0x728/+0x2148 shortcut is not modelled.
+0x54d010 passes (0x54cf40: a point trace, mask 0x200c861, from the actor's muzzle (0x500b40, tag_flash; no tag fails) to the
+enemy's eye - 16 (G_Trace 0x44bf00 start EBX, end EDI), clear or ending on a sentient of another team; beyond the fog
+limit 0x1c61038 it fails). The +0x728/+0x2148 shortcut is not modelled.
+- Script sight builtins: `canshoot(target [, offset])` (0x53d800) is 0x54cf40 from tag_flash + offset (script error
+  "Couldn't find tag_flash in entity %d" without the tag); `cansee(ent [, seconds])` (0x53d930) on a sentient is the cached
+  sight 0x54ce10 no older than seconds × 1000 (truncated; default 250 ms), refreshed by 0x54ca60 (TODO(spec): non-sentient
+  targets, 0x54cc87); `geteye()` (0x4eee60) of an actor is tag_eye (0x500910, scr const 0x1c7f156) looked up in the whole
+  DObj, so the head model's tag_eye counts; without one, origin + 64 (warning 0x589b84).
 - Combat 100: path update 0x503490; with a path and the enemy seen: clear the path when inside the goal (always with
   +0x728/+0x2148). No path → 0x548c70 (0x53b050; inside the goal, with the enemy not seen for 5 s, at a claimed
   cover node: facing 6, else 3); else facing 4 and path follow (run).
