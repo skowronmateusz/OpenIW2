@@ -74,6 +74,24 @@ int main() {
         if (sp.size() == 1) CHECK(sp[0].beamTail && std::fabs(sp[0].beamB[0] - (10.0f + 4096.0f)) < 1e-2f && sp[0].beamA[0] == 10.0f);
     }
 
+    // Cylinder (0x483450 / DLL 0x100401f0): B = A + length * row0, radii size2 (A) / size (B), segments from the distance.
+    {
+        auto cylFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Cylinder\n{\n\tlife 1000\n\tsize\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 5\n\t}\n"
+            "\tlength\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 100\n\t}\n\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n"));
+        iw2::game::FxSystem cs;
+        cs.viewValid = true;
+        cs.viewOrigin = {0, 0, 0};
+        cs.play(cylFx, {0, 0, 0}, {0, 0, 1}, 0);
+        const auto sp = cs.sprites(100);
+        CHECK(sp.size() == 1);
+        if (sp.size() == 1) {
+            CHECK(sp[0].cylinder && sp[0].widthA == 5.0f && sp[0].widthB == 5.0f);
+            CHECK(std::fabs(sp[0].beamB[2] - 100.0f) < 1e-4f);
+            CHECK(sp[0].segments == 30); // round((1 - 50 / 1024) * 32) = round(30.44)
+        }
+    }
+
     // blocksSight particles become sight blockers: radius² from the size, visibility 1 − alpha byte / 255 with
     // useAlpha (alpha · 255 truncated) and 0 without it (0x481a40, 0x480970).
     const char* smoke =

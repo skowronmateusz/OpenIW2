@@ -200,7 +200,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             if (!(*bolt)(t)) continue;
         }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
-                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud";
+                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud" || e.type == "Cylinder";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -699,6 +699,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         }
         if (p.tail) pos = p.pos;
         FVec lineShift{};
+        if (e.type == "Cylinder") pos = p.origin; // no motion (0x483450)
         if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
             pos = p.origin;
             FVec now{};
@@ -769,6 +770,38 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             const float cl = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
             if (!(cl > 0)) continue;
             s.beamPerp = mul(c, 1.0f / cl);
+        }
+        if (e.type == "Cylinder") {
+            // Spawn 0x48d6c0: position = the spawn point (0x48ce70), +0x48 = the instance axis row 0 (tag space for relative).
+            // Update 0x483450 (no motion): size -> +0x88, size2 -> +0x8c (0x481940: = size without nonUniformScale), length ->
+            // +0x258 (0x4830d0), rgb, alpha; A = position, B = position + length · row0 (both through the bolt). Draw 0x483440:
+            // renderer type 9 (A = +0x3c, B = +0x48, +0x64 = size, +0x68 = size2 result).
+            // DLL 0x100401f0: n = clamp(round((1 − (|(A + B)/2 − view| · lodScale + lodBias) / 1024) · 32), 8, 32) (0x1019bf58,
+            // 0x1019bf20; lodScale / lodBias = r_lodScale (1) / r_lodBias (0) · tan(40°) / tan(fovX / 2), 0x10025b76).
+            // TODO(spec): r_lodScale / r_lodBias other than their defaults; the mode-2 builder 0x100405e0 (dvar 0x101ce710 = 2).
+            FVec shift{};
+            FVec now{};
+            if (p.bolt && (*p.bolt)(now)) shift = sub(now, p.bolt0); // TODO(spec): the tag rotation
+            const auto nus = e.numbers("nonuniformscale");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
+            const float size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
+            const float length = channel(e, "length", "lengthrand", flags & 0x20000, p.rnd[4], u, 0, 1.0f) * p.scale[4];
+            s.cylinder = true;
+            s.beamA = add(p.origin, shift);
+            s.beamB = add(add(p.origin, mul(p.axis[0], length)), shift);
+            s.widthA = size2;
+            s.widthB = s.size;
+            s.position = s.beamA;
+            int n = 8;
+            if (viewValid) {
+                const FVec m = sub(mul(add(s.beamA, s.beamB), 0.5f), viewOrigin);
+                const float dist = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+                const float lodScale = viewScale != 0 ? 1.0f / viewScale : 1.0f, lodBias = 0.0f;
+                const double x = double((1.0f - (dist * lodScale + lodBias) * 0.0009765625f) * 32.0f) + 9.313225746154785e-10;
+                n = int(std::nearbyint(x));
+                n = n < 8 ? 8 : n > 32 ? 32 : n;
+            }
+            s.segments = n;
         }
         if (p.tail) {
             // 0x4830d0 length channel (graph "length", random lerp 0x20000, scale +0x1d4), 0x483160 end point: while the

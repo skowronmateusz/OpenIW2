@@ -92,6 +92,10 @@ struct FxSprite {
     bool beamTail = false;
     FVec beamA{}, beamB{}, beamPerp{};
     float widthA = 0, widthB = 0;
+    // Cylinder element (renderer type 9, 1.3 DLL 0x100401f0): a tube of `segments` quads from beamA (radius widthA = size2
+    // result, refEntity +0x68) to beamB (radius widthB = size, +0x64); see iw2view spriteModel for the ring build.
+    bool cylinder = false;
+    int segments = 0;
 };
 
 // A Cloud element as handed to the renderer (draw slot 0x482960 -> 0x480010 with renderer type 6 -> 1.3 DLL 0x10041370):

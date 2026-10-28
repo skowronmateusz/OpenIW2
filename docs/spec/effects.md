@@ -129,12 +129,20 @@ mid(r) = (max − min) · 0.5 + min:
 
 ## Cylinder elements (type 4, no shipped effect uses one)
 
-- Update 0x483450: size → +0x88, size2 → +0x8c (= size without nonUniformScale), length → +0x258 (0x4830d0), rgb, alpha;
-  A (+0x7c) = position, B (+0x9c) = position + length · axis row 0 (+0x48), both through the bolt. Draw 0x483440: renderer
-  type 9. Cull 0x4833f0: capsule A–B (0x486ef0) with the two radii.
-- DLL 0x100401f0 (0x100405e0 when the dvar at 0x101ce710 is 2): n = clamp(round((1 − (|mid(A, B) − view| · [0x1070c3d8] +
-  [0x1070c3dc]) / 1024) · 32), 8, 32) segments, angle step 2π / n, ring vertices around A and B from a perpendicular basis
-  (0x10059bd0) scaled by ent+0x68 … TODO(spec): the rest of the ring / texcoord build and the spawn 0x48d6c0; not implemented.
+- Spawn 0x48d6c0 (vtable 0x57c7b8, 0x278 bytes): common init, randoms 0x48ce70 (the spawn point becomes the position +0x4),
+  sequence 0x48cd20, +0x48 = row 0 of the instance axes (into tag space with 0x440650 for relative).
+- Update 0x483450 (no motion): size → +0x88, size2 → +0x8c (= size without nonUniformScale), length → +0x258 (0x4830d0),
+  rgb, alpha; A (+0x7c) = position, B (+0x9c) = position + length · row0, both through the bolt. Draw 0x483440: renderer
+  type 9 (A = ent+0x3c, B = ent+0x48, ent+0x64 = size, ent+0x68 = size2 result). Cull 0x4833f0: capsule A–B (0x486ef0).
+- DLL 0x100401f0 (0x100405e0 instead when the dvar at 0x101ce710 is 2): n = clamp(round((1 − (|(A + B)/2 − view| ·
+  lodScale + lodBias) / 1024) · 32 + 9.3e-10), 8, 32) (0x1019bf58, 0x1019bf20, 0x1019be00); lodScale / lodBias = r_lodScale
+  (default 1) / r_lodBias (default 0) · tan(40°) / tan(fovX / 2) when fovX ≠ 80 (0x10025b76, view record +0x24 / +0x28).
+  d = normalize(A − B); p1 = (d.z, −d.x, d.y) minus its d part, normalised, p2 = p1 × d (0x10059bd0). Per step k < n
+  ((cos, sin) start (1, 0) and turn by 2π/n each step, t starts 0 and grows by 1/n): vertex A + (p1·sin + p2·cos) · ent+0x68
+  with texcoord (t, 1) and B + (p1·sin + p2·cos) · ent+0x64 with (t, 0); triangles (b, b+1, b+3), (b+3, b+2, b); then a
+  copy of the first pair with t = 1. Colour = the element bytes (D3DCOLOR order); 64-byte vertices with w = 1, nothing else.
+- OpenIW2: `FxSprite::cylinder`, ring built in iw2view `spriteModel`. Check: `IW2_FX_TEST=file:<cyl.efx>` (any local efx with
+  a Cylinder element). TODO(spec): r_lodScale / r_lodBias other than the defaults, the mode-2 builder, the capsule cull.
 
 ## Flags
 

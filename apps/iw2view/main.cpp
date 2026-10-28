@@ -757,6 +757,51 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         b.firstIndex = uint32_t(verts.size() / 4 * 6);
         for (const auto* s : list) {
             if (verts.size() / 4 >= kMax) break;
+            if (s->cylinder) {
+                // 1.3 DLL 0x100401f0: d = normalize(A − B); p1 = (d.z, −d.x, d.y) minus its d part, normalised; p2 = p1 × d
+                // (0x10059bd0). Ring k (k = 0..n−1, (cos, sin) turned by 2π/n each step from (1, 0)): A + (p1·sin + p2·cos)·rA with
+                // texcoord (t, 1) and B + (p1·sin + p2·cos)·rB with (t, 0), t += 1/n; a closing copy of pair 0 with t = 1;
+                // triangles (b, b+1, b+3), (b+3, b+2, b) per step (drawn here as the quad b, b+1, b+3, b+2). Colour = the bytes.
+                const Vec3 A{s->beamA[0], s->beamA[1], s->beamA[2]}, B{s->beamB[0], s->beamB[1], s->beamB[2]};
+                Vec3 d = A + B * -1.0f;
+                const float dl = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                if (dl != 0.0f) d = d * (1.0f / dl);
+                Vec3 p1{d.z, -d.x, d.y};
+                const float pd = -(d.x * p1.x + d.z * p1.z + p1.y * d.y);
+                p1 = p1 + d * pd;
+                const float pl = std::sqrt(p1.x * p1.x + p1.y * p1.y + p1.z * p1.z);
+                if (pl != 0.0f) p1 = p1 * (1.0f / pl);
+                const Vec3 p2{p1.y * d.z - p1.z * d.y, p1.z * d.x - d.z * p1.x, d.y * p1.x - p1.y * d.x};
+                const int n = std::max(1, s->segments);
+                const float stepT = 1.0f / float(n), ang = stepT * 6.2831855f;
+                const float C = std::cos(ang), S = std::sin(ang);
+                std::vector<std::pair<Vec3, Vec3>> ring; // (A side, B side)
+                std::vector<float> ts;
+                float co = 1.0f, si = 0.0f, t = 0.0f;
+                for (int k = 0; k < n; ++k) {
+                    ring.push_back({A + p1 * (si * s->widthA) + p2 * (co * s->widthA), B + p1 * (si * s->widthB) + p2 * (co * s->widthB)});
+                    ts.push_back(t);
+                    t += stepT;
+                    const float ns = si * C + co * S, nc = co * C - si * S;
+                    si = ns, co = nc;
+                }
+                ring.push_back(ring[0]);
+                ts.push_back(1.0f);
+                for (int k = 0; k < n && verts.size() / 4 < kMax; ++k) {
+                    const Vec3 q[4] = {ring[size_t(k)].first, ring[size_t(k)].second, ring[size_t(k) + 1].second, ring[size_t(k) + 1].first};
+                    const float quv[4][2] = {{ts[size_t(k)], 1}, {ts[size_t(k)], 0}, {ts[size_t(k) + 1], 0}, {ts[size_t(k) + 1], 1}};
+                    for (int v = 0; v < 4; ++v) {
+                        GpuVertex g{};
+                        g.pos[0] = q[v].x; g.pos[1] = q[v].y; g.pos[2] = q[v].z;
+                        g.normal[2] = 1;
+                        for (int ch = 0; ch < 4; ++ch) g.color[ch] = uint8_t(std::clamp(s->rgba[ch], 0.0f, 1.0f) * 255.0f);
+                        g.uv[0] = quv[v][0];
+                        g.uv[1] = quv[v][1];
+                        verts.push_back(g);
+                    }
+                }
+                continue;
+            }
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
             const Vec3 r = right * s->size, u = upv * s->size;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
@@ -2705,7 +2750,11 @@ int main(int argc, char** argv) {
             auto [it, inserted] = efxCache.try_emplace(path);
             if (inserted) {
                 try {
-                    if (const auto d = vfs.read(path))
+                    if (path.rfind("file:", 0) == 0) { // IW2_FX_TEST=file:<local path>: a test effect from disk (debug only)
+                        std::ifstream in(path.substr(5), std::ios::binary);
+                        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                        if (!text.empty()) it->second = std::make_shared<assets::EfxEffect>(assets::parseEfx(text));
+                    } else if (const auto d = vfs.read(path))
                         it->second = std::make_shared<assets::EfxEffect>(
                             assets::parseEfx(std::string_view(reinterpret_cast<const char*>(d->data()), d->size())));
                 } catch (const std::exception& e) {
