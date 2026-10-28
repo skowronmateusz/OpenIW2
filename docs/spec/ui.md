@@ -122,8 +122,11 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
 - List keys (handler 0x4c9c60, PROVEN, vertical lists): Up 0x9c/0xb9 and Down 0x9d/0xbb (0xb9/0xbb are the wheel codes) move one row; Home (0xa5/0xb6) sets
   cursor and startPos to 0; End (0xa6/0xbc) sets cursor = count-1 and, when it is not shown, startPos = cursor - rows + 1; PgUp (0xa4/0xb8) / PgDn (0xa3/0xbe) move
   the cursor by the visible row count (rows = 0x4c9320), clamped to [0, count-1], scrolling only as far as needed to keep it shown. Every key ends in the feeder
-  selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Horizontal lists (flag at +0x108) use the left/right keys instead; unimplemented.
-- TODO(spec): image columns, drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
-  textsavegame, horizontal listbox, 64-profile cap on the add loop, the restart of sound/video on profile load.
+  selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Left (0x9a/0xb7/0xce) and Right (0x9b/0xbd/0xcd) share the code of Up and Down.
+  `notselectable` (0x4d1eb0, def +0x108 = 1) makes the keys move startPos only: Up/Left/wheel up -1 (min 0), Down/wheel down +1 (max count-1),
+  Right +1 (max maxScroll), PgUp/PgDn +-rows (0 / maxScroll), Home 0, End maxScroll. `horizontalscroll` (0x4d1fb0, item flag 0x200000) runs the same
+  code with rows = ftol(w / elementWidth); no shipped menu uses it, so its drawing stays TODO(spec).
+- TODO(spec): image columns (unused by shipped menus), drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
+  textsavegame, horizontal listbox drawing, 64-profile cap on the add loop, the restart of sound/video on profile load.
 - No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
   out of scope.

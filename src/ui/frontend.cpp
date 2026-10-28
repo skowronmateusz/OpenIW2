@@ -499,11 +499,30 @@ bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
     ListState& st = lists_[&it];
     const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
     const int vis = listVisible(it);
+    if (it.notSelectable) { // 0x4c9c60 with def+0x108 set: the keys move startPos only
+        const int maxScroll = listMaxScroll(it);
+        switch (k) {
+        case Key::Up:
+        case Key::Left:
+        case Key::WheelUp: st.startPos = std::max(st.startPos - 1, 0); break;
+        case Key::Down: // 0x4c9d9a: clamped to count - 1
+        case Key::WheelDown: st.startPos = std::min(st.startPos + 1, count - 1); break;
+        case Key::Right: st.startPos = std::min(st.startPos + 1, maxScroll); break; // 0x4ca166
+        case Key::PageUp: st.startPos = std::max(st.startPos - vis, 0); break;
+        case Key::PageDown: st.startPos = std::min(st.startPos + vis, maxScroll); break;
+        case Key::Home: st.startPos = 0; break;
+        case Key::End: st.startPos = maxScroll; break;
+        default: return false;
+        }
+        return true;
+    }
     int cur = st.cursor;
     switch (k) {
     case Key::Up:
+    case Key::Left: // 0x9a/0xb7/0xce go to the same code as Up/Down (0x4ca183 / 0x4ca0e5)
     case Key::WheelUp: --cur; break;
     case Key::Down:
+    case Key::Right:
     case Key::WheelDown: ++cur; break;
     case Key::PageUp: cur -= vis; break;
     case Key::PageDown: cur += vis; break;
