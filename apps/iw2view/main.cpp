@@ -6301,6 +6301,7 @@ int main(int argc, char** argv) {
                 mixer.fadeStep(dt * 1000.0f);
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
                 if (menuEnv.getCvar("cl_paused") != "1") gameClock += std::min(dt, 0.25f) * slowmo; // cl_paused freezes the simulation
+                mixer.setPaused(menuEnv.getCvar("cl_paused") == "1"); // the sound update pauses the non-menu channels (0x442dc0)
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();

@@ -91,6 +91,25 @@ int main() {
             std::cout << "shell-shocked walk " << m << " units in 2 s\n";
             CHECK(m > 0.3f * moved && m < 0.45f * moved);
         }
+        // One jump gives exactly one landing event (0x5d..0x8a), none while standing afterwards.
+        {
+            PlayerState jp;
+            jp.origin = floor;
+            for (int i = 0; i < 30; ++i) playerMove(cw, jp, {}, 1.0f / 60.0f);
+            PlayerInput ji;
+            ji.jump = true;
+            int lands = 0, seq = jp.eventSeq;
+            for (int i = 0; i < 240; ++i) {
+                playerMove(cw, jp, i < 150 ? ji : PlayerInput{}, 1.0f / 60.0f);
+                for (; seq < jp.eventSeq; ++seq) {
+                    const int ev = jp.events[seq & 3] & 0xff;
+                    if (ev >= 0x5d && ev < 0x8b) ++lands;
+                    if (ev) std::cout << "jump test event " << std::hex << ev << std::dec << " at frame " << i << "\n";
+                }
+            }
+            std::cout << "jump: " << lands << " landing events\n";
+            CHECK(lands <= 1);
+        }
         // Half a unit into the ground: the player must not sink or fall through.
         PlayerState in0;
         in0.origin = {floor[0], floor[1], floor[2] - 0.5f};

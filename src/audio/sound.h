@@ -96,6 +96,11 @@ public:
     // snd_fade (0x4431a0): volume scale moving linearly to `fadeTarget` at `fadeRate` per ms (fadeStep advances it).
     float fadeVolume = 1.0f, fadeTarget = 1.0f, fadeRate = 0.0f;
     void fade(float target, int ms);
+    // cl_paused (sound update 0x442dc0 / 0x444660 compare it with the paused flag 0x793a02): pausing (0x442a30) stops every playing
+    // voice whose alias channel is pausable (table 0x793d6f, default all but "menu", 0x444ba5..0x444bc9) and marks it; resuming
+    // (0x442bf0) continues the marked voices where they stopped. Voices started while paused play.
+    void setPaused(bool paused);
+    bool paused() const { return paused_; }
     void fadeStep(float ms);
     // Environment effects (reverb) state, see audio/reverb.h. `enableReverb` is the dvar snd_enableReverb (default 1).
     // TODO(spec): the reverb DSP is Miles' (mss32.dll), so only the state is modelled.
@@ -108,6 +113,7 @@ public:
 
 private:
     std::string lastSubtitle_;
+    bool paused_ = false;
     struct Voice {
         int handle = 0;
         std::shared_ptr<const Wav> wav;
@@ -122,6 +128,7 @@ private:
         bool master = false;
         float slavePct = -1;
         bool noWet = false;
+        bool held = false; // paused by setPaused (the exe's per-voice paused byte)
         int chan = -1; // index into kChannels (the alias `channel` column), -1 = unknown
         float volLow = 0, volHigh = 0;
         std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};

@@ -551,6 +551,7 @@ int main(int argc, char** argv) {
         int turretTest = -1; // --turret N: stand behind the N-th usable turret, F at 1 s, aim + fire 2–3 s, F at 4 s
         iw2::game::Entity* testTurret = nullptr;
         bool pmove = false;
+        int pmoveEventsDone = 0;
         iw2::game::PlayerState pmoveState;
         bool pmoveInit = false;
         std::vector<std::pair<float, iw2::game::Vec3>> playerPath; // --player-at T x,y,z: player origin from time T (linear between)
@@ -1224,7 +1225,12 @@ int main(int argc, char** argv) {
                 iw2::game::PlayerInput in;
                 in.yaw = world.player()->obj->get("angles").asVector()[1];
                 if (std::getenv("IW2_PMOVE_FORWARD")) in.forward = 1; // walk ahead to make footstep noise
+                // IW2_PMOVE_JUMP=1: hold jump for 0.1 s every 1.5 s (landing / footstep event sounds via applyPlayerEvent).
+                if (std::getenv("IW2_PMOVE_JUMP")) in.jump = world.timeMs() % 1500 < 100;
                 for (int k = 0; k < 3; ++k) iw2::game::playerMove(world.collision(), pmoveState, in, 1.0f / 60.0f, mp);
+                for (; pmoveEventsDone < pmoveState.eventSeq; ++pmoveEventsDone) // as iw2view: the step's events, last 4 kept
+                    if (pmoveState.eventSeq - pmoveEventsDone <= 4)
+                        world.applyPlayerEvent(pmoveState.events[pmoveEventsDone & 3], pmoveState.eventParms[pmoveEventsDone & 3]);
                 world.setPlayerOrigin({pmoveState.origin[0], pmoveState.origin[1], pmoveState.origin[2]}, world.player()->obj->get("angles").asVector());
                 world.playerPmEvents(pmoveState.eventSeq, pmoveState.events, pmoveState.stance == iw2::game::Stance::Crouch);
             }

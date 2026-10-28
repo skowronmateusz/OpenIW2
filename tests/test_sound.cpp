@@ -7,6 +7,8 @@
 #include "fs/vfs.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <filesystem>
 #include <fstream>
 #include <cstring>
@@ -154,6 +156,30 @@ int main() {
         CHECK(r.voiceWet(true) == 0.0f && r.voiceWet(false, false) == 0.0f);
     }
 
+    // Real data (IW2_MAIN): one-shot player sounds end; nothing stays in the mixer.
+    if (const char* main = std::getenv("IW2_MAIN")) {
+        iw2::fs::Vfs vfs;
+        vfs.mountDirectory(main);
+        iw2::audio::SoundAliases al;
+        al.load(vfs, "toujane");
+        iw2::audio::Mixer m(vfs, al, 48000);
+        for (const char* a : {"land_plr_dirt", "step_run_plr_dirt", "gear_rattle_plr_run", "land_damage"}) {
+            const int h = m.play(a);
+            CHECK(h != 0 || std::string(a) == "gear_rattle_plr_run");
+        }
+        std::vector<float> buf(2 * 1024);
+        for (int i = 0; i < 48000 * 4 / 1024; ++i) m.mix(buf.data(), 1024);
+        std::cout << "voices after 4 s: " << m.active() << "\n";
+        CHECK(m.active() == 0);
+        // Pause (0x442a30): a game-channel voice holds its position while paused and finishes after the resume.
+        CHECK(m.play("land_plr_dirt") != 0);
+        m.setPaused(true);
+        for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
+        CHECK(m.active() == 1);
+        m.setPaused(false);
+        for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
+        CHECK(m.active() == 0);
+    }
     if (failures) return 1;
     std::cout << "sound tests passed\n";
     return 0;
