@@ -792,7 +792,7 @@ private:
     void linkBumpedActor(Entity& e, int hit);  // +0x318 bookkeeping only
     bool yieldFollowed(Entity& e, ActorSlide& pm, const SlideTraceFn& fn, const Vec3& before); // 0x501620
     bool followClear(Entity& e, const Vec3& newPos); // 0x501380
-    bool atClaimedNode(const Entity& a) const; // 0x504610
+    bool nearClaimedNode(const Entity& a) const; // 0x504610
     Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);
     std::string stopScript(Entity& e);

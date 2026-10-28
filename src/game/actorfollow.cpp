@@ -95,7 +95,10 @@ bool World::aiReach(const Vec3& start, const Vec3& target, int passEnt, uint32_t
         out = tr.endPos;
         return !(out[2] >= cur[2] && tr.fraction != 1.0f && tr.normal[2] < 0.7f);
     };
-    while (true) {
+    // TODO(spec): the exe loop has no found bound, but a sentient with contents bit 0x10 (a sidestepping actor, only 0x4000 is
+    // dropped from the mask below) is hit again from the same place; a cap of 16 passes keeps that from spinning.
+    for (int pass16 = 0;; ++pass16) {
+        if (pass16 >= 16) return false;
         const TraceResult tr = collision_->trace(cur, {target[0], target[1], cur[2]}, mins, maxs, mask, pass);
         out = tr.endPos;
         if (!tr.startSolid && tr.fraction == 1.0f) break;
@@ -274,7 +277,7 @@ bool World::followShrink(Entity& e, int bumped) {
 void World::linkBumpedActor(Entity& e, int hit) { e.ai.bumpedEnt = hit; }
 
 // 0x504610: the actor's sentient has a claimed node (+0x2c) and stands at it (0x502660: height within 80, 2D distance within 30).
-bool World::atClaimedNode(const Entity& a) const {
+bool World::nearClaimedNode(const Entity& a) const {
     if (a.claimedNode < 0) return false;
     const Vec3 mo = originOf(a.obj), no = originOf(nodes_[size_t(a.claimedNode)].obj);
     const float dz = mo[2] - no[2];
@@ -296,7 +299,7 @@ bool World::followClear(Entity& e, const Vec3& newPos) {
         if (!(dist2d(oo, newPos) < 900.0f)) continue;
         if (!(dist2d(oo, me) >= 900.0f)) continue;
         if (!(std::fabs(me[2] - oo[2]) < 80.0f)) continue;
-        if (enabled && !o.ai.followed && !atClaimedNode(o)) o.ai.followed = &e, ++stats.followLinks;
+        if (enabled && !o.ai.followed && !nearClaimedNode(o)) o.ai.followed = &e, ++stats.followLinks;
         clear = false;
     }
     return clear;
