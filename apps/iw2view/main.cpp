@@ -39,6 +39,7 @@
 #include "ui/frontend.h"
 #include "ui/profile.h"
 #include "ui/profilelist.h"
+#include "game/savestate.h"
 #include "ui/savegame.h"
 #include <filesystem>
 #include <fstream>
@@ -52,6 +53,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -2626,7 +2628,7 @@ int main(int argc, char** argv) {
         }
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
-        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
+        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame, const game::LoadedSave* save = nullptr) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
@@ -2650,7 +2652,12 @@ int main(int argc, char** argv) {
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             // The bindings from default.cfg, reported to scripts through getkeybinding.
             for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
-            w->start();
+            if (save) { // savegame load: map entities, then the saved state instead of the level script (docs/spec/savegame.md 5)
+                w->prepareStart();
+                game::restoreSave(*w, *save);
+            } else {
+                w->start();
+            }
             return w;
         };
         std::string currentMap = menuMode ? std::string() : args[1];
@@ -3226,6 +3233,7 @@ int main(int argc, char** argv) {
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
         bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
+        std::optional<std::string> pendingLoad;                   // savegame to load ("loadgame X", loadgame_continue)
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
         menuEnv.getCvar = [&](const std::string& n) {
@@ -3289,8 +3297,25 @@ int main(int argc, char** argv) {
                 else if (c == "quit") std::exit(0);
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
-                // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
+                // TODO(spec): fast_restart (reloads the current map here).
                 else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
+                // vid_restart (0x40cd10) / snd_restart (0x40ce30) while a level runs: queue the save internal/<cmd> (type 0, flags 4);
+                // once written, "disconnect;<cmd>;loadgame internal/<cmd>" runs (0x44a050). Without a level: the restart itself, which
+                // openiw2 does not implement (TODO: renderer / mixer re-init), so it only logs.
+                else if (c == "vid_restart" || c == "snd_restart") {
+                    if (world && !pendingDisconnect) world->queueSave("internal/" + c, "", "", 0, 4);
+                    else std::cout << c << ": no subsystem restart in openiw2\n";
+                }
+                // "loadgame <name>" (exe "You must specify a savegame to load", "Can't find savegame %s") and loadgame_continue
+                // (0x447190: the save named by sv_lastSaveGame) load save/<name>.svg (docs/spec/savegame.md section 5).
+                else if (c == "loadgame") {
+                    if (a1.empty()) std::cout << "You must specify a savegame to load\n";
+                    else pendingLoad = a1;
+                } else if (c == "loadgame_continue") {
+                    const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+                    if (!last.empty()) pendingLoad = last;
+                    else if (!currentMap.empty()) pendingLevel = std::make_pair(currentMap, true); // no save yet: restart the level
+                }
             }
         };
         int menuLoopHandle = 0;
@@ -3319,8 +3344,28 @@ int main(int argc, char** argv) {
             else uiCvars["ui_playerProfileSelected"] = profiles.name(row);
         };
         uiCvars["com_playerProfile"] = profileName;
+        struct SaveRow { std::string name; ui::SaveSortKey key; ui::SaveInfo info; };
+        std::vector<SaveRow> saveRows;
+        uint64_t saveRowsAt = 0;
+        auto saveLoc = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+        std::string saveDetail;   // UI state +0x41e: detail text of the selected savegame (drawn by textsavegame items)
+        std::string saveSelName;  // UI state +0x31e: entry +0 of the selected savegame (ownerdraw UI_SAVEGAMENAME 262)
+        int saveSel = -1;         // selected row (ownerdraw UI_SAVEGAME_SHOT 258 reads its image name, entry +8)
+        // Savegame directory (IW2_SAVE_DIR, default <main dir>/save; docs/debug-flags.md).
+        const std::filesystem::path saveDir = std::getenv("IW2_SAVE_DIR") ? std::filesystem::path(std::getenv("IW2_SAVE_DIR"))
+                                                                          : std::filesystem::path(args[0]) / "save";
         menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
             if (name == "quit") execText("quit");
+            // "Loadgame" uiScript: "loadgame %s" of ui_savegame (0x580f98 / 0x580fa8).
+            else if (name == "loadgame") { const std::string sv = menuEnv.getCvar("ui_savegame"); if (!sv.empty()) execText("loadgame " + sv); }
+            // "DelSavegame": deletes save/<ui_savegame>.svg ("Deleted savegame: %s.svg" / "Unable to delete savegame: %s.svg", 0x5812d0 / 0x5812a0).
+            else if (name == "delsavegame") {
+                const std::string sv = menuEnv.getCvar("ui_savegame");
+                std::error_code ec;
+                if (!sv.empty() && std::filesystem::remove(saveDir / (sv + ".svg"), ec)) std::cout << "Deleted savegame: " << sv << ".svg\n";
+                else std::cout << "Unable to delete savegame: " << sv << ".svg\n";
+                saveRowsAt = 0;
+            }
             // Profile scripts (exe 0x4c4b80 addPlayerProfiles, 0x4c5a06 sortPlayerProfiles, 0x4c4a70 selectActive, 0x4c4d20 create,
             // 0x4c4e50 delete); details in src/ui/profilelist.h.
             else if (name == "addplayerprofiles") { profiles.refresh(); profileCountChanged(); selectProfileRow(0); }
@@ -3344,10 +3389,14 @@ int main(int argc, char** argv) {
                 if (!profiles.exists(sel) && menuEnv.getCvar("com_playerProfile") == sel) uiCvars["com_playerProfile"] = "";
                 selectProfileRow(row);
             } else if (name == "loadplayerprofile") {
-                // Activate the selected profile: remember it in players/active.txt, read its config.cfg (cvars + bindings).
-                // TODO(spec): the exe restarts the sound/video subsystems (snd_restart) and runs the profile's config via exec.
+                // loadPlayerProfile (0x4c4f10 -> 0x4274a0, docs/spec/savegame.md section 4): nothing for an empty selection, the
+                // active profile (case-insensitive) or a profile that does not exist; else players/active.txt, `disconnect`, dvar
+                // reset, the profile's config.cfg, and snd_restart only when a dvar's current value differs from its latched one.
+                // openiw2 has no latched dvars, so that condition never holds and no snd_restart is issued (no vid_restart either).
                 const std::string sel = menuEnv.getCvar("ui_playerProfileSelected");
-                if (sel.empty()) return;
+                if (sel.empty() || !profiles.exists(sel)) return;
+                if (strcasecmp(sel.c_str(), profileName.c_str()) == 0) return;
+                if (world) pendingDisconnect = true; // console "disconnect" (0x42750e)
                 saveProfileCfg();
                 profileName = sel;
                 profileCfg = playersDir / profileName / "config.cfg";
@@ -3368,24 +3417,26 @@ int main(int argc, char** argv) {
         };
         // Savegame list (FEEDER_SAVEGAMES 0x10): save/*.svg whose header is listable, newest first (0x4c44a0).
         // TODO(spec): the level name / time / health / difficulty columns come from header fields that are not decoded yet.
-        struct SaveRow { std::string name; ui::SaveSortKey key; ui::SaveInfo info; };
-        std::vector<SaveRow> saveRows;
-        uint64_t saveRowsAt = 0;
-        auto saveLoc = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-        std::string saveDetail; // text of the selected savegame (UI_SAVEGAMEINFO / textsavegame; TODO(spec): drawing)
         auto refreshSaves = [&] {
             if (saveRowsAt && SDL_GetTicksNS() - saveRowsAt < 1000000000ull) return;
             saveRowsAt = SDL_GetTicksNS() | 1;
             saveRows.clear();
             std::error_code ec;
-            for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(args[0]) / "save", ec)) {
-                if (de.path().extension() != ".svg") continue;
+            // save/*.svg and, with ui_savegameListAutosave set, save/autosave/*.svg listed as "autosave/<name>" (entry +0 is "%s/%s"
+            // of directory and name for a sub directory, 0x4c44a0). TODO(spec): the exe's directory walk and the toggle's exact test.
+            std::vector<std::pair<std::filesystem::path, std::string>> files;
+            for (const auto& de : std::filesystem::directory_iterator(saveDir, ec)) files.emplace_back(de.path(), "");
+            if (menuEnv.getCvar("ui_savegameListAutosave") != "" && menuEnv.getCvar("ui_savegameListAutosave") != "0")
+                for (const auto& de : std::filesystem::directory_iterator(saveDir / "autosave", ec)) files.emplace_back(de.path(), "autosave/");
+            for (const auto& [path, prefix] : files) {
+                if (path.extension() != ".svg") continue;
+                const std::filesystem::directory_entry de(path);
                 std::ifstream f(de.path(), std::ios::binary);
                 std::vector<uint8_t> hdr(ui::kSaveHeaderSize);
                 f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
                 if (size_t(f.gcount()) != hdr.size() || !ui::saveHeaderListable(hdr)) continue;
                 SaveRow r;
-                r.name = de.path().stem().string();
+                r.name = prefix + de.path().stem().string();
                 if (!ui::saveSortKey(hdr, r.key) || !ui::saveHeaderInfo(hdr, r.info)) continue;
                 size_t at = saveRows.size();
                 for (size_t i = 0; i < saveRows.size(); ++i)
@@ -3413,8 +3464,20 @@ int main(int argc, char** argv) {
             // 0x4c6050 for feeder 0x10: dvar ui_savegame = file name; the name and the detail text go to the UI state (0x59b724 +0x31e / +0x41e).
             if (feeder == 0x10 && row >= 0 && size_t(row) < saveRows.size()) {
                 uiCvars["ui_savegame"] = saveRows[size_t(row)].name;
+                saveSelName = saveRows[size_t(row)].name;
+                saveSel = row;
                 saveDetail = ui::saveDetailText(saveRows[size_t(row)].info, [&](const std::string& k) { return saveLoc(k); });
             }
+        };
+        // savegameshow / savegamehide: the save named by sv_lastSaveGame is loadable (0x4e06e0: a whole 0x4d8-byte header with
+        // version 0x99). TODO(spec): that menurun's show/hide rule matches the exe's caller of 0x4e06e0 exactly.
+        menuEnv.savegameExists = [&] {
+            const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+            if (last.empty()) return false;
+            std::ifstream f(saveDir / (last + ".svg"), std::ios::binary);
+            std::vector<uint8_t> hdr(ui::kSaveHeaderSize);
+            f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
+            return size_t(f.gcount()) == hdr.size() && ui::saveHeaderLoadable(hdr);
         };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
@@ -4850,8 +4913,23 @@ int main(int argc, char** argv) {
                             }
                             continue;
                         }
-                        if (it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
-                        const std::string text = menuLocalized(it.text);
+                        // UI_SAVEGAME_SHOT (258, 0x4c3c00): the material named by the selected entry's image (+8 = header +0x320,
+                        // script default "$default"); no selection, an empty name or a material that does not load -> "unknownsave".
+                        // Drawn over the item rect (0x4d4790). TODO(spec): the colour argument of the ownerdraw call (item fore colour here).
+                        if (it.ownerDraw == 258) {
+                            std::string mat = "unknownsave";
+                            if (saveSel >= 0 && size_t(saveSel) < saveRows.size() && !saveRows[size_t(saveSel)].info.image.empty() &&
+                                (vfs.exists("materials/" + saveRows[size_t(saveSel)].info.image)))
+                                mat = saveRows[size_t(saveSel)].info.image;
+                            quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
+                            continue;
+                        }
+                        // UI_SAVEGAMENAME (262) shows UI state +0x31e, a textsavegame item UI state +0x41e (0x4c6050 fills both).
+                        // TODO(spec): the ownerdraw / textsavegame draw handlers are not decoded; drawn with the item's text settings.
+                        const bool saveText = it.ownerDraw == 262 || it.textSaveGame;
+                        if (saveText && (it.ownerDraw == 262 ? saveSelName : saveDetail).empty()) continue;
+                        if (!saveText && it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
+                        const std::string text = saveText ? (it.ownerDraw == 262 ? saveSelName : saveDetail) : menuLocalized(it.text);
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts, it.textFont);
                         if (!f) continue;
@@ -6251,7 +6329,34 @@ int main(int argc, char** argv) {
                         screenBlur.command(ms, radius, rt != 0, prio, std::max<int64_t>(now, 1), screenBlur.composed());
                     }
                 }
-                if (auto change = world->dueLevelChange()) pendingLevel = std::make_pair(change->map, change->failed);
+                // Saves the level produced this frame (0x44a230): written to save/<name>.svg; a save that is not internal
+                // becomes sv_lastSaveGame (0x4e0554..0x4e0573, internal names 0x44a2f0).
+                for (auto& f : world->takeSaveFiles()) {
+                    const std::filesystem::path path = saveDir / (f.name + ".svg");
+                    std::error_code ec;
+                    std::filesystem::create_directories(path.parent_path(), ec);
+                    std::ofstream of(path, std::ios::binary);
+                    of.write(reinterpret_cast<const char*>(f.bytes.data()), std::streamsize(f.bytes.size()));
+                    const bool ok = bool(of);
+                    world->setSaveFailed(!ok);
+                    std::cout << (ok ? "saved " : "save failed: ") << path.string() << "\n";
+                    if (ok && !ui::saveNameInternal(f.name)) {
+                        uiCvars["sv_lastSaveGame"] = f.name;
+                        world->cvars["sv_lastSaveGame"] = f.name;
+                        profileDirty = true; // archived dvar (flags 0x1001): goes into the profile's config.cfg
+                    }
+                    for (const char* r : {"vid_restart", "snd_restart"}) // 0x44a050 (exact names, 0x15 bytes compared)
+                        if (ok && f.name == std::string("internal/") + r) {
+                            std::cout << "Game saved for " << r << "\n";
+                            execText(std::string("disconnect;") + r + ";loadgame internal/" + r);
+                        }
+                    saveRowsAt = 0;
+                }
+                if (auto change = world->dueLevelChange()) {
+                    const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+                    if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last;
+                    else pendingLevel = std::make_pair(change->map, change->failed);
+                }
             }
             if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
                 // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
@@ -6264,6 +6369,21 @@ int main(int argc, char** argv) {
                 menuEnv.setCvar("cl_paused", "0");
                 frontStack.closeAll();
                 frontStack.open("main");
+            }
+            std::optional<game::LoadedSave> loadedSave;
+            if (pendingLoad) {
+                const std::filesystem::path path = saveDir / (*pendingLoad + ".svg");
+                std::ifstream lf(path, std::ios::binary);
+                const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(lf)), {});
+                game::LoadedSave ls;
+                const std::string err = bytes.empty() ? "Can't find savegame " + *pendingLoad : game::parseSaveFile(bytes, ls);
+                if (err.empty()) {
+                    loadedSave = std::move(ls);
+                    pendingLevel = std::make_pair(loadedSave->info.mapName, false);
+                } else {
+                    std::cout << path.string() << ": " << err << "\n";
+                }
+                pendingLoad.reset();
             }
             if (pendingLevel) {
                     // Level change or restart: rebuild the world and the scene for the next map.
@@ -6279,7 +6399,13 @@ int main(int argc, char** argv) {
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();
                     releaseScene(dev, scene);
-                    world = makeWorld(currentMap, carried);
+                    try {
+                        world = makeWorld(currentMap, loadedSave ? nullptr : carried, loadedSave ? &*loadedSave : nullptr);
+                    } catch (const std::exception& e) {
+                        if (!loadedSave) throw;
+                        std::cout << "loadgame failed: " << e.what() << "; restarting " << currentMap << "\n";
+                        world = makeWorld(currentMap, nullptr);
+                    }
                     scene = loadScene(dev, vfs, currentMap, false);
                     frontStack.closeAll(); // leaving the front end / pause menu
                     aliases.clear();
@@ -6288,6 +6414,12 @@ int main(int argc, char** argv) {
                     cam = scene.start;
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
+                    if (loadedSave && world->player()) { // a loaded save puts the player where the save has him
+                        // TODO(spec): the front end's pmove state (velocity, stance, view) is not part of the openiw2 save
+                        const auto o = world->player()->obj->get("origin"), an = world->player()->obj->get("angles");
+                        if (o.isVector()) ps.origin = o.asVector();
+                        if (an.isVector()) cam.yaw = an.asVector()[1];
+                    }
                     game::markSpawned(ps);
                     pweapon = game::PlayerWeapon{};
                     weaponSelect.clear();

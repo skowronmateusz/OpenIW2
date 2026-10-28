@@ -24,7 +24,7 @@ void angleVectors(const Vec3& angles, Vec3* forward, Vec3* right, Vec3* up) {
 
 } // namespace
 
-void registerCoreBuiltins(VM& vm, uint32_t seed) {
+std::shared_ptr<std::mt19937> registerCoreBuiltins(VM& vm, uint32_t seed) {
     auto rng = std::make_shared<std::mt19937>(seed);
 
     vm.registerBuiltin("sin", [](CallContext& c) { return Value(std::sin(c.arg(0).asFloat() * kDegToRad)); });
@@ -127,6 +127,7 @@ void registerCoreBuiltins(VM& vm, uint32_t seed) {
         flush();
         return Value(out);
     });
+    return rng;
 }
 
 } // namespace iw2::script

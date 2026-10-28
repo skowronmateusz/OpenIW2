@@ -943,8 +943,6 @@ void World::registerCombatBuiltins() {
         const int s = playerCmd_.weaponState;
         return Value(s >= 12 && s <= 16);
     });
-    // issavesuccessful (0x4f3d80): true unless the save-failed byte (+0xd of the save state) is set; savegame is a stub.
-    vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(true); });
     // setfriendlychain (0x4eeb10): src/game/friendlychain.cpp.
     vm_.registerBuiltin("setfriendlychain", [this](CallContext& c) {
         Entity* e = entityOf(c.self);

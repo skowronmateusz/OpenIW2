@@ -14,10 +14,14 @@
 #include "game/pmoverecord.h"
 #include "game/clientinput.h"
 #include "game/playerweapon.h"
+#include "game/savestate.h"
 #include "game/world.h"
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
+#include <fstream>
+#include <filesystem>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -577,9 +581,19 @@ int main(int argc, char** argv) {
         struct LevelCall { float t; std::string file, func; };
         std::vector<LevelCall> levelCalls; // --level-call T file.gsc function: starts a thread on level at T seconds (headless test)
         std::vector<std::pair<float, std::string>> levelNotifies; // --level-notify T name: level notify at T seconds (headless test)
+        std::string saveDir;   // --save-dir DIR: write the saves of the level (autosaves, --save-at) to DIR/<name>.svg
+        std::string loadFile;  // --load FILE: start from a savegame instead of running the level script
+        std::vector<std::pair<float, std::string>> saveAts; // --save-at T name: queue a manual save (type 0, flags 6) at T seconds
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
-            if (a == "--trace-actor" && i + 1 < argc) {
+            if (a == "--save-dir" && i + 1 < argc) {
+                saveDir = argv[++i];
+            } else if (a == "--load" && i + 1 < argc) {
+                loadFile = argv[++i];
+            } else if (a == "--save-at" && i + 2 < argc) {
+                const float t = std::stof(argv[++i]);
+                saveAts.emplace_back(t, argv[++i]);
+            } else if (a == "--trace-actor" && i + 1 < argc) {
                 traceActor = std::stoi(argv[++i]);
             } else if (a == "--move-stats") {
                 moveStats = true; // speed of actors moving along a path (anim mode 1, movemode walk/run)
@@ -676,7 +690,29 @@ int main(int argc, char** argv) {
             return 1;
         };
         const auto t0 = std::chrono::steady_clock::now();
-        world.start();
+        if (!loadFile.empty()) {
+            std::ifstream lf(loadFile, std::ios::binary);
+            const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(lf)), {});
+            iw2::game::LoadedSave ls;
+            const std::string err = iw2::game::parseSaveFile(bytes, ls);
+            if (!err.empty()) throw std::runtime_error(loadFile + ": " + err);
+            if (ls.info.mapName != argv[2]) throw std::runtime_error(loadFile + " is a save of " + ls.info.mapName);
+            world.prepareStart();
+            iw2::game::restoreSave(world, ls);
+            std::cout << "loaded " << loadFile << " (" << ls.name << ", time " << world.timeMs() << " ms, threads " << world.vm().liveThreadCount() << ")\n";
+        } else {
+            world.start();
+        }
+        auto writeSaves = [&] {
+            for (auto& f : world.takeSaveFiles()) {
+                if (saveDir.empty()) { std::cout << "save " << f.name << " (" << f.bytes.size() << " bytes, not written: no --save-dir)\n"; continue; }
+                const std::filesystem::path path = std::filesystem::path(saveDir) / (f.name + ".svg");
+                std::filesystem::create_directories(path.parent_path());
+                std::ofstream of(path, std::ios::binary);
+                of.write(reinterpret_cast<const char*>(f.bytes.data()), std::streamsize(f.bytes.size()));
+                std::cout << "saved " << path.string() << " (" << f.bytes.size() << " bytes at " << world.timeMs() << " ms)\n";
+            }
+        };
         if (spawnAll) {
             std::cout << "spawned " << world.spawnAllActors() << " actors\n";
             if (traceActor >= 0) {
@@ -1191,7 +1227,13 @@ int main(int argc, char** argv) {
                 for (const auto& e : world.entities())
                     if (e->isActor && !e->obj->removed && e->path.count > 0 && e->ai.animMode == 1 && e->ai.movemode >= 2)
                         before[e.get()] = e->obj->get("origin").asVector();
+            for (auto it = saveAts.begin(); it != saveAts.end();)
+                if (world.timeMs() >= int64_t(it->first * 1000.0f)) {
+                    world.queueSave(it->second, "iw2game --save-at", "$default", 0, 6);
+                    it = saveAts.erase(it);
+                } else ++it;
             world.frame();
+            writeSaves();
             if (!menuAnswers.empty())
                 for (const auto& cmd : world.takeClientCommands())
                     if (cmd.name == "popupopen") {

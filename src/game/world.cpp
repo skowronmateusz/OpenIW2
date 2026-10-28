@@ -126,7 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
         submodels_.push_back({mn, mx});
     }
     vm_.print = [this](const std::string& s) { print(s); };
-    registerCoreBuiltins(vm_, std::getenv("IW2_SCRIPT_SEED") ? uint32_t(std::strtoul(std::getenv("IW2_SCRIPT_SEED"), nullptr, 10)) : 1u); // IW2_SCRIPT_SEED: debug only, varies script randomness
+    scriptRng_ = registerCoreBuiltins(vm_, std::getenv("IW2_SCRIPT_SEED") ? uint32_t(std::strtoul(std::getenv("IW2_SCRIPT_SEED"), nullptr, 10)) : 1u); // IW2_SCRIPT_SEED: debug only, varies script randomness
     registerBuiltins();
     registerAnimBuiltins();
     registerCombatBuiltins();
@@ -142,6 +142,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerVehicleBuiltins();
     registerTurretBuiltins();
     registerActorStateBuiltins();
+    registerSaveBuiltins();
     registerMissingStubs();
 }
 
@@ -399,6 +400,11 @@ Entity* World::spawnActor(Entity& spawner, bool force) {
 }
 
 void World::start() {
+    prepareStart();
+    runLevelMain();
+}
+
+void World::prepareStart() {
     // maps/_load.gsc sets level.script from getcvar("mapname"), so the cvar must name the running map before the
     // level script starts (docs/spec/ui.md, intro screen).
     cvars["mapname"] = mapName_;
@@ -437,6 +443,9 @@ void World::start() {
         if (sf.isInt() && (sf.asInt() & 1)) disconnectEntityPaths(*ep);
     }
     vm_.level()->set("script", Value(mapName_));
+}
+
+void World::runLevelMain() {
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
     // Threads the init code woke by notify were appended to the current frame list (counter 0x9bef20), which the first
     // Scr_RunFrame runs before the next frame's list that holds the timed waits (VM_Notify 0x46ca60, Scr_RunFrame 0x46f5c0).
@@ -505,6 +514,7 @@ void World::frame(bool advanceTime) {
     thinkActors();
     updatePlayerLink(); // ClientEndFrame (0x4e7f90) after the entities. TODO(spec): the exact frame order
     runDeathScreen();
+    processSaves(); // 0x44a230 once per server frame. TODO(spec): its place in the frame (here: after everything else)
 }
 
 const std::map<std::string, std::string>* World::weapon(const std::string& name) {

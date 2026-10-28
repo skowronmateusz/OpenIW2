@@ -107,6 +107,10 @@ public:
     float time(int n) const { return nodes_[size_t(n)].time; }
     const AnimTree& tree() const { return tree_; }
 
+    // Savegame: the per-node playback state (one entry per tree node).
+    const std::vector<AnimNodeState>& nodeStates() const { return nodes_; }
+    std::vector<AnimNodeState>& nodeStates() { return nodes_; }
+
     // Debug: active nodes with weight, goal, time, rate and notify name.
     std::string debugString() const;
 

@@ -54,6 +54,8 @@ fade value. TODO: compass face rotation (ownerdraw 84), back (85, FUN_004a90b0),
 
 ## Saves (0x4f3a30–0x4f3db0, FUN_0044a140)
 
+Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/game/savestate.cpp).
+
 - `savegame(name [, description [, image]])` and `savegamenocommit(...)`: error `Attempting to save while dead` when
   the player is dead. Empty name → `auto`. File: `autosave\<mapname>` or `autosave\<mapname>-<name>` (choice by
   FUN_0043f6d0; that `levelstart` selects the short form is inferred from the adjacent `levelstart` string, TODO

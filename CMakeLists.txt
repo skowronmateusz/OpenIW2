@@ -61,6 +61,8 @@ add_library(iw2_script
   src/script/parser.cpp
   src/script/value.cpp
   src/script/vm.cpp
+  src/script/vmstate.cpp
+  src/script/stateio.cpp
   src/script/builtins_core.cpp)
 target_include_directories(iw2_script PUBLIC src)
 target_compile_options(iw2_script PRIVATE -Wall -Wextra -Wpedantic)
@@ -82,9 +84,9 @@ add_library(iw2_game
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
-  src/game/prone.cpp src/game/proneworld.cpp)
+  src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp)
 target_include_directories(iw2_game PUBLIC src)
-target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
+target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_ui
@@ -275,3 +277,13 @@ add_test(NAME triggerdamage COMMAND test_triggerdamage)
 add_executable(test_grenadehint tests/test_grenadehint.cpp)
 target_link_libraries(test_grenadehint PRIVATE iw2_game)
 add_test(NAME grenadehint COMMAND test_grenadehint)
+
+add_executable(test_savestate tests/test_savestate.cpp)
+target_link_libraries(test_savestate PRIVATE iw2_game)
+add_test(NAME savestate COMMAND test_savestate)
+# The World round trip needs the game files; registered only when they are found.
+set(IW2_TEST_MAIN "$ENV{IW2_MAIN}")
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME savestate_world COMMAND test_savestate)
+  set_tests_properties(savestate_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()

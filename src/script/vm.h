@@ -2,6 +2,7 @@
 #pragma once
 
 #include "script/ast.h"
+#include "script/stateio.h"
 #include "script/value.h"
 
 #include <cstdint>
@@ -159,6 +160,19 @@ public:
     // Calls a function value synchronously (no suspension allowed); used by builtins.
     const CompiledFunction* function(int index) const { return &functions_[size_t(index)]; }
     std::optional<int> findFunction(const std::string& file, const std::string& name) const;
+
+    // Savegame (src/script/vmstate.cpp, docs/spec/savegame.md section 5). Only between frames (no thread running).
+    // collectState adds every object / array the VM holds (level, game, anim, thread frames, stacks, refs, waits) to the table;
+    // saveState / loadState write / read the threads, the woken queue, time and the id counters. Functions are stored by
+    // file + name and re-resolved (loading the file if needed), so the load order of script files does not matter.
+    void collectState(ObjectTable& t) const;
+    void saveState(StateWriter& w, const ObjectTable& t) const;
+    void loadState(StateReader& r, const ObjectTable& t);
+    void writeFunctionName(StateWriter& w, int function) const;
+    int readFunctionName(StateReader& r);
+    uint64_t nextObjectId() const { return nextObjectId_; }
+    // Creates an object with a given id (savegame load of an object the fresh world does not have).
+    ObjectPtr newObjectWithId(std::string kind, uint64_t id);
 
 private:
     std::vector<ObjectPtr> freed_; // 0x9bef38 list
