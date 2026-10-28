@@ -2,6 +2,8 @@
 // bounces and fuse (G_RunMissile 0x526c30, 0x525f30, 0x526600), the radius damage (0x5289d0), the landing prediction
 // (0x527270), the throw solvers behind checkGrenadeThrowPos (0x51f490) and throwGrenade / MagicGrenade(Manual) /
 // pickUpGrenade.
+#include "game/grenadeangles.h"
+#include "game/itemslide.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -88,7 +90,7 @@ Vec3 World::grenadeVelocity(const GrenadeState& g, int64_t atMs) const {
 
 // The grenade entity (0x5275f0): classname "grenade", fuse now + fuseMs, thrown by `thrower` (+0x134, owner +0xf4),
 // gravity trajectory from `start` with `velocity`, bouncing (flags 0x1000000), the weapon's projectile model.
-// TODO(spec): the fuse a player cooked (client +0x3c), the angular trajectory (+0x38 … +0x58, random yaw and spin).
+// The fuse a player cooked (client +0x3c) is passed in by playerThrowGrenade as fuseMs (0x527605).
 Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, const Vec3& start, const Vec3& velocity, int fuseMs) {
     Entity& e = spawnEntity("grenade");
     e.grenade = std::make_unique<GrenadeState>();
@@ -110,10 +112,8 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
         const float pitch = -std::atan2(velocity[2], hyp) * 57.29578f;
         const float a = pitch - 120.0f;
         const float pm = (360.0f / 65536.0f) * float(int(a * (65536.0f / 360.0f)) & 65535);
-        meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
-        const float r1 = float(meleeSeed_ >> 0x11 & 0x7fff);
-        meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
-        const float r2 = float(meleeSeed_ >> 0x11 & 0x7fff);
+        const float r1 = float(nextRand());
+        const float r2 = float(nextRand());
         g.aBase = {pm, yaw, 0};
         g.aDelta = {r1 / 32768.0f * 90.0f + 675.0f, 0, r2 / 32768.0f * 90.0f + 315.0f};
         g.aTime = timeMs_;
@@ -130,13 +130,11 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
 // surface's bounce factor, interpolated from the parallel to the perpendicular factor by the impact angle. Resting on
 // ground (normal z > 0.7) slower than 20 units/s stops it; otherwise it moves 0.1 along the normal (never upwards)
 // and flies on. Returns true for a bounce that changed the velocity by more than 100 (the bounce event).
-// TODO(spec): the angular trajectory and the bounce event's sound; 0x520230 (actors re-planning when the grenade
+// Angular trajectory: grenadeRebaseAngles (0x525cb0). TODO(spec): 0x520230 (actors re-planning when the grenade
 // hits a character).
 bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
     GrenadeState& g = *e.grenade;
     const Vec3 v = grenadeVelocity(g, hitMs);
-    g.aBase = grenadeAngles(g, hitMs); // 0x525cb0: re-base the angular trajectory at the hit time (spin rescale: TODO(spec))
-    g.aTime = hitMs;
     const Vec3& n = tr.normal;
     const float d = dot(v, n);
     Vec3 nv = add(v, scale(n, -2.0f * d));
@@ -148,16 +146,26 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
         const float perp = weaponFloat(g.weapon, ("perpendicular" + std::string(name) + "Bounce").c_str());
         if (speed > 0.0f && d <= 0.0f) nv = scale(nv, -1.0f / speed * d * (perp - par) + par);
         if (n[2] > 0.7f && len(nv) < 20.0f) {
+            // Rest branch (0x5260d2): 0x525cb0 aligns the pitch with the slope; 0x4d83c0 then makes the angular trajectory
+            // stationary (type/time/duration/delta 0) with base = currentAngles = those angles.
+            const GrenadeRebase rb = grenadeRebaseAngles(grenadeAngles(g, hitMs), g.aDelta[0], n, true, [&] { return nextRand(); });
             g.trType = 0;
             g.trBase = tr.endPos;
             g.trDelta = {0, 0, 0};
             g.onGround = true;
-            g.aDelta = {0, 0, 0}; // TODO(spec): the exe's angular trajectory of a resting grenade
+            g.aBase = rb.angles;
+            g.aDelta = {0, 0, 0};
+            g.aTime = 0;
             e.obj->set("angles", Value(g.aBase));
             e.obj->set("origin", Value(tr.endPos));
             return false;
         }
     }
+    // Flying branch (0x52615e): re-base the angular trajectory at the hit angles, stamped with the current level time.
+    const GrenadeRebase rb = grenadeRebaseAngles(grenadeAngles(g, hitMs), g.aDelta[0], n, false, [&] { return nextRand(); });
+    g.aBase = rb.angles;
+    g.aDelta[0] = rb.pitchSpin;
+    g.aTime = timeMs_;
     const Vec3 p = add(tr.endPos, {n[0] * 0.1f, n[1] * 0.1f, std::min(n[2] * 0.1f, 0.0f)});
     g.trType = 5;
     g.trBase = p;
@@ -850,7 +858,19 @@ void World::runItems() {
         const float t = (float(timeMs_) - e.obj->get("$trtime").asFloat()) * 0.001f;
         const Vec3 cur = e.obj->get("origin").asVector();
         const Vec3 next{base[0] + delta[0] * t, base[1] + delta[1] * t, base[2] + delta[2] * t - 400.0f * t * t};
-        const TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
+        TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
+        // Slide (0x5231b2..0x523278): a hit that barely moved (fraction < 0.01, 0x591ea0) on a steep surface (normal z < 0.5) that
+        // did not start solid pushes the end point out along the normal, next + n · (1 − (next − cur)·n), traces again from the
+        // hit point to it and takes the point at that second fraction (0x47f390 lerp); the second trace replaces the first.
+        if (tr.fraction < 1.0f && !tr.startSolid && tr.fraction < 0.01f && tr.normal[2] < 0.5f) {
+            const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+            const Vec3 end2 = itemSlideEnd(cur, next, n);
+            const Vec3 from{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
+            TraceResult tr2 = collision_->trace(from, end2, mins, maxs, 0x491, e.number);
+            const float f2 = tr2.fraction;
+            tr2.endPos = {from[0] + (end2[0] - from[0]) * f2, from[1] + (end2[1] - from[1]) * f2, from[2] + (end2[2] - from[2]) * f2};
+            tr = tr2;
+        }
         if (tr.fraction < 1.0f) {
             const Vec3 at{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
             if (collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
@@ -860,10 +880,11 @@ void World::runItems() {
             // 0x522ea0 (called from 0x523387 for every resting item that is not type 0xb): the item's forward vector
             // (its pitch and yaw) is projected onto the plane of the hit normal, (n × f) × n, and the angles become its
             // vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
-            // trajectory is cleared and currentAngles (+0xe8..) set. TODO(spec): the slide branch 0x5231b2-0x52327b
-            // (taken when the trace fraction is < 0.01 and the normal z < 0.5, 0x4db7f0 clip + 0x47f390), the 50 ms
-            // ease (TR 3, 0x52327f; the server origin is already the hit point and the view lerps 50 ms), the owner
-            // as the trace's passEnt (item+0xf4).
+            // trajectory is cleared and currentAngles (+0xe8..) set. The exe eases the view to the hit point (TR 3, 50 ms, delta = 20 x
+            // the offset, 0x52327f); the server origin is already there. TODO(spec): the exe settles only when a trace of the next
+            // frame (gravity trajectory re-based on the origin each frame, 0x523086) hits with fraction < 0.01 and normal z > 0
+            // (else frees the item), with an entity flag at +0xa4; the port settles on the first hit. The owner as the trace's
+            // passEnt (item+0xf4).
             {
                 const Value av = e.obj->get("angles");
                 const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
