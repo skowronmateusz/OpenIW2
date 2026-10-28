@@ -105,6 +105,14 @@ void testMixer() {
     CHECK(std::fabs(out[2 * 2399] - (0.25f * 0.75f + 0.25f)) < 1e-3f);
     m.mix(out.data(), 2400); // full duck: slave factor 0.5
     CHECK(std::fabs(out[2 * 2399] - (0.25f * 0.5f + 0.25f)) < 1e-3f);
+    // snd_fade (0x4431a0 / 0x443a21): the master scale moves linearly to the target over the given ms and stops there.
+    m.fade(0.0f, 1000);
+    m.mix(out.data(), 2400); // 50 ms of 1000
+    CHECK(std::fabs(m.fadeVolume - 0.95f) < 1e-3f);
+    for (int i = 0; i < 25; i++) m.mix(out.data(), 2400);
+    CHECK(m.fadeVolume == 0.0f);
+    m.fade(1.0f, 0); // 0 ms sets it at once
+    CHECK(m.fadeVolume == 1.0f);
     fsys::remove_all(dir);
 }
 

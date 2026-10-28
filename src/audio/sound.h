@@ -153,6 +153,7 @@ private:
     Vec3 listener_{0, 0, 0}, forward_{1, 0, 0}, right_{0, -1, 0};
     int nextHandle_ = 1;
     double reverbMs_ = 0;
+    double fadeMs_ = 0;
     float duck_ = 0; // 0x793cfc: 0..1, rises while a master voice plays
 };
 
