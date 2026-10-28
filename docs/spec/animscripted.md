@@ -51,6 +51,24 @@ delta tracks sampled at the node's time, rotation (0, 0) → (0, 1)); position =
 AxisToAngles(yawFrame(yaw(d.rot)) · frame). Offsets: origin offset (+0x30) = entity origin − position, angle
 offsets (+0x3c) = AngleSubtract(entity angles, pose angles) (0x423f50).
 
+Mode byte (0x4f6066..0x4f608c): `al = (mode == "deathplant")` (scr_const 0x1c7f05e) is the 0x53b190 flag stored at +0x4d, so an
+undefined mode and `normal` both take the plain origin; only `deathplant` traces (36 above / 18 below, 0x591f5c / 0x591f44,
+box (-15,-15,0)..(15,15,72) at 0x56f704 / 0x56f710, mask 0x820011) and plants every frame (0x53bb84 gate). The unlinked
+per-frame write (0x53bd8f..0x53bdc5) stores the pose as the entity origin and angles with no z handling.
+
+Floating scripted actors (moscow, `IW2_FLOAT_LOG`): `anim_loop` / `anim_single` (maps/_anim.gsc) pass node or script_origin
+origins, and path nodes sit 16–48 units above the collision floor on every map (moscow 0x820011 box trace: mode 24–32;
+toujane 40–48; beltot 16–24). Sync animations carry that height in their delta translation (e.g.
+`mos_0_01_rs1_pickuprifle_t` delta z −37.3 at frame 0), but loop idles such as `downtown_sniper_blocking_door_idle` /
+`_twitch` and `moscow_guy*_coldidle` have the delta flag with a translation count of 0 (the exe's loader 0x47aacf..0x47aae4
+also stores no track), so the pose is the node origin and the actor stands 33 (script_origin auto8635, z 86) or 48
+(node auto8467, z 76) units above the floor, rising to it at 300 units/s through the origin-offset slide (0x53b9a0). Checked
+in the exe without finding a drop: the mode byte above; the start 0x53b190 normal branch (0x53b61d); the unlinked write;
+node spawn 0x52d2e0 / 0x52d280 (no trace); the path-data load 0x52e3c0 (lump 38: links and visibility only, no positions);
+0x447780 (brush model bounds, not a node routine). The intro shooters at z 91–105 are on the intro truck (script_vehicle
+spawned by `misc()` at 0.05 s, group 3), which is present at runtime. TODO(spec): what keeps these idles on the ground in the
+original (not found: no z handling on the scripted path for actors).
+
 ### Every frame (0x53baf0)
 
 Called by the actor state think and, for other entities, by 0x52ccb0. Without a tree (0x4d6090) or animation the

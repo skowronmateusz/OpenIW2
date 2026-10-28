@@ -586,6 +586,21 @@ void World::thinkActors() {
             actorMoveNoise(e);
             actorFoliageSound(e);
         }
+        // Debug (IW2_FLOAT_LOG=1): an actor whose box has no ground within 16 units below it for 10 frames in a row (not in the
+        // negotiation state) is printed once per second: number, classname, state, animscript, anim mode, z, ground distance.
+        if (static const bool floatLog = std::getenv("IW2_FLOAT_LOG") != nullptr; floatLog && !e.ai.corpse && ov.isVector()) {
+            const Vec3 o = ov.asVector();
+            const TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 256.0f}, {-15, -15, 0}, {15, 15, 72}, 0x820011u, e.number);
+            const float gd = tr.startSolid ? 0.0f : tr.fraction * 256.0f;
+            const int st = e.ai.stack[size_t(e.ai.depth)];
+            e.ai.floatFrames = (gd > 16.0f && st != AiNegotiation) ? e.ai.floatFrames + 1 : 0;
+            if (e.ai.floatFrames >= 10 && e.ai.floatFrames % 20 == 10) {
+                ++stats.floatingActors;
+                print("[float " + std::to_string(timeMs_) + "] #" + std::to_string(e.number) + " " + e.classname + " state " + std::to_string(st) +
+                      " script " + e.animScript + " animmode " + std::to_string(e.ai.animMode) + " at " + std::to_string(int(o[0])) + " " + std::to_string(int(o[1])) + " " + std::to_string(o[2]) +
+                      " ground " + std::to_string(gd) + (links_.count(e.number) ? " linked" : "") + (e.scripted ? " animscripted" : ""));
+            }
+        }
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
     }
