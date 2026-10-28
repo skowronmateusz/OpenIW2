@@ -4467,13 +4467,25 @@ int main(int argc, char** argv) {
                 };
                 // The rows keep per-character colours from the ^ codes; plain text is white (only obj_update / obj_complete are
                 // formatted "^2%s" by the client handler, 0x57f6a0), so pickup and iprintln messages are white.
+                // The game-message and bold-message windows (0x4bf1c0 / 0x4bf210) draw only with cl_paused == 0 and with alpha
+                // 1 - f, f = 0x4bfd00: 1 while the objectives screen is held (0xf791fc), else the 300 ms release fade of touch 5
+                // (0xf79200, 0x4b0900), 0 without a touch; they are skipped when 1 - f == 0. The subtitles (0x4bf2e0) ignore f.
+                // TODO(spec): the 2D hud dvar 0x1040c4c (f = 0 when it is off).
+                float objFade = 0.0f;
+                if (hudFade.objectivesHeld) objFade = 1.0f;
+                else if (world && hudFade.objectives != 0) {
+                    const int64_t el = world->timeMs() - hudFade.objectives;
+                    if (el < 300) objFade = el <= 0 ? 1.0f : float(300 - el) / 300.0f;
+                }
+                const float msgAlpha = menuEnv.getCvar("cl_paused") == "1" ? 0.0f : 1.0f - objFade;
                 const uint8_t white[4] = {255, 255, 255, 255};
+                const uint8_t whiteMsg[4] = {255, 255, 255, uint8_t(std::clamp(msgAlpha, 0.0f, 1.0f) * 255.0f)};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, white, 0);
+                    if (msgAlpha > 0) drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, whiteMsg, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
-                // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
+                // 9 lines (struct 0x5cc954, +0x10 = 0x5cc964; corrected: 0x5ccff4 is the subtitle window), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
                 // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
                 // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
                 // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
@@ -4483,8 +4495,7 @@ int main(int argc, char** argv) {
                 {
                     const float scale = 12.0f / 48.0f * float(h) / 480.0f;
                     if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
-                        const uint8_t white[4] = {255, 255, 255, 255};
-                        drawWindow(windowRows(true, 60, 10), left43 + 320.0f * sc, 180.0f, 16.0f, *f, white, 0);
+                        if (msgAlpha > 0) drawWindow(windowRows(true, 60, 9), left43 + 320.0f * sc, 180.0f, 16.0f, *f, whiteMsg, 0);
                     }
                 }
                 // Subtitles (alias subtitle column, 0x4a3540 -> 0x401d60 -> 0x404830 into the third text window, struct
