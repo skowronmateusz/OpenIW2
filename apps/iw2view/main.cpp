@@ -2623,6 +2623,17 @@ struct Renderer {
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
             };
             bindBlend();
+            // Order from the exe: the scene command (gfx 0x10030fc0) runs glow + blur (0x10030ed0) itself, the exe queues the shock
+            // blend (cmd 0x1d) and the capture (cmd 0xa) after it (0x4bfccd), so the blurred scene is what gets blended and captured.
+            SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
+            for (int q = 1; q < (blurA > 0.0f ? 2 : 1); ++q) { // q = 0 (the scene) was copied above
+                SDL_GPUTextureSamplerBinding tex[4] = {{srcs[q], clampSampler},
+                                                       {scene.dummyLightmap.coeffs, clampSampler},
+                                                       {scene.dummyLightmap.sun, clampSampler},
+                                                       {scene.textures[0], repeatSampler}};
+                SDL_BindGPUFragmentSamplers(p2, 0, tex, 4);
+                SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, q * 4, 0);
+            }
             if (ghostActive) {
                 if (ghostValid && ghostElapsedMs >= 0.0f && ghostElapsedMs < ghostBlendMs) {
                     SDL_GPUTextureSamplerBinding tex[4] = {{ghostTex[1 - ghostCur], clampSampler},
@@ -2648,15 +2659,6 @@ struct Renderer {
                 ghostValid = true;
             } else {
                 ghostValid = false; // flag 0xf7e8a4 cleared: the next shock starts with a capture only
-            }
-            SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
-            for (int q = 1; q < (blurA > 0.0f ? 2 : 1); ++q) { // q = 0 (the scene) was copied above
-                SDL_GPUTextureSamplerBinding tex[4] = {{srcs[q], clampSampler},
-                                                       {scene.dummyLightmap.coeffs, clampSampler},
-                                                       {scene.dummyLightmap.sun, clampSampler},
-                                                       {scene.textures[0], repeatSampler}};
-                SDL_BindGPUFragmentSamplers(p2, 0, tex, 4);
-                SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, q * 4, 0);
             }
             if (nq) drawOverlay(p2, cmd, scene, overlay, nq);
             SDL_EndGPURenderPass(p2);
