@@ -27,6 +27,10 @@ struct PlayerInput {
     float pitch = 0;              // view pitch in degrees (with yaw: the command angles for the aim spread)
     float adsFrac = 0;            // ps+0xb8: the aim fraction
     bool dead = false;            // pm_type ≥ 4
+    // Lean gates of 0x50ade0 (leanInputAllowed): ps+0xc & 0x8000 (freezecontrols or an absolute playerlinkto, ClientThink 0x4e7bc0) and
+    // ps+0x7c (eFlags) & 0x20300 (in a vehicle / turret: 0x20000, on a turret: 0x300).
+    bool controlsFrozen = false;
+    bool eFlagsNoLean = false;
     bool holdBreathHeld = false;  // usercmd 0x8000 (+holdbreath)
     bool breathWeapon = false;    // the weapon has an adsOverlayReticle (def +0x278) and weaponClass != item (9) (0x4dd350)
 };
@@ -63,7 +67,19 @@ inline float stanceSpeedFactor(int viewHeightTarget, int64_t timeMs, int64_t ler
     return viewHeightTarget == 40 ? 0.65f : viewHeightTarget == 11 ? 0.15f : 1.0f;
 }
 
+// Speed factor of the movement types noclip (ps+4 == 2: x3) and ufo (3: x6) in the command scale (0x5080a0, 0x508140: constants
+// 0x591f8c = 3.0 and 0x56fcc8 = 6.0); applied after the aim / lean factor 0.4, and in the walking scale it replaces the stance, weapon
+// and shell shock factors (the function returns right after it). 1 for every other type.
+inline float pmTypeSpeedFactor(int pmType) { return pmType == 2 ? 3.0f : pmType == 3 ? 6.0f : 1.0f; }
+
+// Whether the lean buttons count this step (0x50adf1..0x50ae37): not with pm_flags 0x8000 (controlsFrozen), not with pm_type >= 4, not
+// airborne (groundEntityNum ps+0x60 == 0x7ff) unless pm_type == 1 (linked), and not with eFlags & 0x20300.
+inline bool leanInputAllowed(int pmType, bool controlsFrozen, bool onGround, bool eFlagsNoLean) {
+    return !controlsFrozen && pmType < 4 && (onGround || pmType == 1) && !eFlagsNoLean;
+}
+
 struct PlayerState {
+    int pmType = 0;              // ps+4: 0 normal, 1 linked, 2 noclip, 3 ufo, >= 4 spectator / dead (the port also has PlayerInput::dead)
     Vec origin{};
     Vec velocity{};
     bool onGround = false;       // groundEntityNum (ps+0x60) != ENTITYNUM_NONE

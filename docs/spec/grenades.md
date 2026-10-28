@@ -129,6 +129,42 @@ safe, else cower), 0x12d take cover (0x520860: at a covering claimed node that i
 React 0x51f900, acquire 0x51fb20, cover node 0x54c110, flee search 0x545f30: see the comments in `src/game/actorgrenade.cpp`.
 
 TODO(spec): the qsort tie order of 0x51f320, 0x51fe90's last test, 0x4f9f30 /
-0x4fa070, 0x520230 (re-planning when a grenade hits a character), water (0x526b40), the ground settle and rotation,
+0x4fa070, 0x520230 (re-planning when a grenade hits a character), water (0x526b40), the ground settle,
 whizby (0x5297b0), the bounce sounds, the targets of 0x5285b0's five traces (Q3 CanDamage pattern assumed: the point
-and four ±15 offsets), the player's cooked fuse, the danger planes (+0x2050).
+and four ±15 offsets), the danger planes (+0x2050).
+
+## Cooked fuse and bounce angular re-base (decoded)
+- Spawn 0x5275f0: if the thrower has a client and client +0x3c (ps grenade fuse, ms) is non-zero, the entity fuse +0x138 =
+  levelTime + that value and client +0x3c is set to 0 (0x527605..0x52762c); otherwise levelTime + the fuse argument (the weapon
+  fuseTime, 0x531990 passes weapon +0x248). Port: `playerThrowGrenade(..., cookedFuseMs)` fed by `PlayerWeapon::takeFuseMs()`.
+- 0x525cb0(trace, resting) re-bases the angular trajectory (+0x38..+0x58) at the hit time; port `grenadeRebaseAngles`
+  (src/game/grenadeangles.h, tests/test_grenadeangles.cpp). out = angles at the hit time.
+  - trace normal z <= 0.1 (wall): only a flying call changes anything: pitch spin +0x50 = AngleMod16(spin + (rand & 0x7f) - 63).
+  - else: slope = pitch (0x421990) of the heading (cos yaw, sin yaw, 0), yaw = out[1], projected into the surface plane
+    (0x4261a0); d = |AngleSubtract(out pitch, slope)| (0x423f50). The pitch spin is multiplied by rand/32768 * 0.3 + 0.85, and
+    by -1 when d < 80. out pitch is normalised to (-180, 180] (0x424040). A flying bounce with d >= 45 keeps it (AngleMod16) or,
+    for d < 80, adds d / 4; otherwise (d < 45 or resting) the pitch lies on the slope: slope if |pitch| <= 90, else slope + 180.
+  - Flying caller (0x52615e): apos.base = out, apos.time = level time (not the hit time). Rest caller (0x5260d2): 0x4d8380 stops
+    the position, 0x4d83c0 stops the angular trajectory (type, time, duration, delta = 0) with base = currentAngles = out.
+
+## Item slide (G_RunItem 0x523040, 0x5231b2..0x52327f, decoded)
+- Each frame an item evaluates its position 50 ms ahead (0x4fae80, now + 0x32) and traces the entity box from the current origin
+  (owner as passEnt, mask 0x491 when clipmask is 0). If that move is shorter than 0.1 (0x420d90, 0x59202c) the end z drops by 1.
+- No hit: origin = end. Hit: endpos = cur + (end - cur) * fraction. If the trace did not start solid, fraction < 0.01 and normal z
+  < 0.5: end' = end + n * (1 - (end - cur) . n); a second trace from endpos to end' (0x4db7f0 -> 0x44bf00) overwrites the result and
+  endpos = endpos + (end' - endpos) * fraction2 (0x47f390). Port: `itemSlideEnd` (src/game/itemslide.h, tests/test_grenadeangles.cpp).
+- Then the position trajectory becomes type 3 (stop), duration 50 ms, base = old origin, delta = (endpos - origin) * 20; the
+  currentOrigin is set to endpos at once. Settling (0x523315..0x5233a9) needs fraction < 0.01 and normal z > 0, else the item is freed;
+  no-drop contents 0x80000000 at the origin free it too. Open (multi-function): the entity flag byte +0xa4 gating it, and the exe's
+  per-frame gravity re-base (0x523086), which the port replaces with "settle on the first hit".
+
+## Open findings (item settle, water), not ported
+- Entity byte +0xa4 is the in-use flag (savegame and getent loops), so the "gate" in G_RunItem is always true for a live item.
+- Item settle: the exe's frame loop settles only when the trace has fraction < 0.01 and normal z > 0, but the collision spec's trace
+  leaves an epsilon of 0.125 before a surface, so with the 1-unit gravity step a fraction < 0.01 looks unreachable. The reading of the
+  fraction operand (0x24(esp) after the slide lerp) or of 0x420d90 (<0.1 -> end z -= 1) is therefore unresolved; no headless item-drop
+  harness exists, so runItems keeps "settle on the first hit".
+- Missile water entry: G_RunMissile (0x526c6c..0x526dd4) traces twice (0x526840); when the second trace's surface type
+  ((surfaceFlags & 0x1f00000) == 0x1400000, water) it calls 0x526b40, which creates a temp entity event 0xb8 (0x4d7f40) holding the
+  quantised direction (bytes at +4/+3 from 0x420c30), the surface type (+1) and the entity number (+0xa). Client handling of event 0xb8
+  is not decoded.

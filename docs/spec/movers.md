@@ -28,9 +28,18 @@ Evidence: addresses in CoD2SP_s.exe 1.3. Implemented in
   common phase step; final angles = phase2End (+ v·decel/2 when decel > 0).
 - `movegravity(velocity, time)`: type 5 from the current origin.
 
+- `vibrate(direction, amplitude, seconds, phase)` (0x533b90): needs a script_model / brush model / origin entity and a running
+  level (0xa0189c == 4). v = normalize(direction) · amplitude (0x4210d0 leaves a zero vector alone). Sets the angular trajectory
+  (entity +0x38..): type 4, duration = (int)(seconds · 1000) (double constant 1000.0 at 0x592338), start = level time −
+  (int)(phase · −1000), base = current angles (+0xe8), delta = (forward · v, 0, left · v) with forward / left the first two rows of
+  the axis of the current angles (0x421da0 = AnglesToAxis), and the current angles copied to +0x1a8. The type 4 evaluator
+  (0x4fae80, jump table 0x4fb0e4 entry 4) is base + delta · sin(2π · (now − start) / duration), without clamping the time
+  (constant 0x59203c = 2π). When start + duration has passed the phase step 0x5327d0 takes its final branch (type is not 7, 3,
+  5): base = the +0x1a8 copy, type 0, then the angles are normalised and `rotatedone` is notified. `startVibrate` in movers.cpp.
+
 ## Not specified yet (TODO in code)
 
-`vibrate` (0x533b90), the per-frame mover runner and linked
+the per-frame mover runner and linked
 entity update order, the body of `linkto` (0x4ed770: tag offsets), `istouching` shape tests (0x4f9f50,
 0x447830), and collision of moving brush models (submodel traces).
 OpenIW2's linkto keeps the child at the parent (or tag) plus the given offsets, rotated by the parent's yaw

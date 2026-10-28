@@ -93,6 +93,8 @@ public:
     int stateNumber() const { return int(state_); }
     // The offhand fuse (ps+0x3c) in ms: non-zero while a grenade is being cooked.
     int fuseMs() const { return int(fuse_ * 1000.0f); }
+    // The throw consumes ps+0x3c (0x527625 stores 0 after the grenade takes it as its fuse); returns the cooked fuse in ms.
+    int takeFuseMs() { const int ms = fuseMs(); fuse_ = 0; return ms; }
 
     // View model: xmodel paths for the gun and hands and the current animation with its elapsed time. During an
     // offhand throw these are the offhand weapon's (ps+0xac while flag 0x10 is set).

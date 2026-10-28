@@ -430,8 +430,10 @@ Pass classify(const std::string& techset) {
     // technique type 0x18 "emissive feathered no fog" when r_zFeather (0x101ce694, default 1) is on and $floatz (0x101d489c)
     // exists, else 0x15 "emissive no fog" (types: name table built at 0x1001c0d1..). So distortion samples the opaque scene
     // and, with the default r_zFeather, runs distortion_floatz.tech, which needs the float-z target.
-    // Still missing: (b) the tangent / binormal the effects code gives sprite vertices (code.tangent / code.binormal);
-    // the $floatz contents (build floatz pass, technique type 2).
+    // Sprite vertices (docs/spec/effects.md "Sprite vertices, $floatz and the post-sun copy"): tangent = -(half width vector),
+    // binormal = half height vector (billboard: -width * view row 1, height * view row 2). The post-sun copy only happens when the
+    // scene viewport equals the window. $floatz = R32F target of clip z built by technique type 2 "build floatz" (sky: max extent).
+    // Not implemented: the resolve copy, the float-z target and the distortion pass itself.
     if (techset == "distortion") return Pass::Skip;
     // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
     // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
@@ -3074,6 +3076,88 @@ int main(int argc, char** argv) {
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
+        // Tag orientations of the drawn (interpolated) entity poses of the current rendered frame. The effect attachment
+        // 0x48abb0 reads the cgame entity (0xf7eb80 + n · 0x184: origin +0x148 and angles +0x154 of the frame's interpolated
+        // pose, 0x4a25c0) and the client skeleton (0x4acea0), not the server state; gatherItems fills this for the tags that
+        // bolted world effects use, and their bolts prefer it over World::entityTagOrientation (server pose).
+        struct DrawnTag { int64_t stamp = -1; game::FxTag tag; };
+        std::map<std::pair<int, std::string>, DrawnTag> drawnTags;
+        std::map<int, std::set<std::string>> boltTags; // tags of bolted world effects per entity (filled when played)
+        int64_t renderStamp = 0;
+        auto recordDrawnTags = [&](int number, const BoneMap& bones, const Vec3& ov, const Vec3& av) {
+            // tag_flash / tag_brass always (a flash event of this frame is drained after the entity loop, before its bolt is
+            // known), plus any other tag a bolted world effect of this entity uses.
+            std::set<std::string> tags{"tag_flash", "tag_brass"};
+            if (const auto bt = boltTags.find(number); bt != boltTags.end()) tags.insert(bt->second.begin(), bt->second.end());
+            const Mat4 m = entityTransform(ov, av);
+            for (const std::string& tag : tags) {
+                const auto it = bones.find(lowerName(tag));
+                if (it == bones.end()) continue;
+                auto toWorld = [&](const std::array<float, 3>& v, float w) {
+                    return game::FVec{m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * w, m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * w,
+                                      m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * w};
+                };
+                DrawnTag d;
+                d.stamp = renderStamp;
+                d.tag.origin = toWorld(it->second.first, 1.0f);
+                d.tag.hasAxes = true;
+                for (int k = 0; k < 3; ++k) {
+                    std::array<float, 3> u{0, 0, 0};
+                    u[size_t(k)] = 1;
+                    d.tag.axes[size_t(k)] = toWorld(assets::rotate(it->second.second, u), 0.0f);
+                }
+                drawnTags[{number, tag}] = d;
+            }
+        };
+        // World effect / tracer events (server events) are played when they are taken: per rendered frame in play, and per
+        // simulated server frame in --shot mode, so a shot shows each effect at its own age rather than every queued event of
+        // the whole simulation at age 0 (cgame consumes events per frame, effect time = cg.time, 0x486b30).
+        auto playWorldFx = [&]() {
+            if (!world) return;
+            for (const auto& ev : world->takeFxEvents()) {
+                if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
+                if (ev.entity >= 0 && !ev.tag.empty()) {
+                    // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
+                    game::World* wp = world.get();
+                    // 0x48abb0: the tag orientation (origin + axes), refreshed once per frame stamp (cached per world time here).
+                    boltTags[ev.entity].insert(ev.tag);
+                    auto bolt = std::make_shared<game::FxBolt>([wp, &drawnTags, &renderStamp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
+                        if (const auto dt = drawnTags.find({n, tag}); dt != drawnTags.end() && dt->second.stamp == renderStamp) {
+                            out = dt->second.tag; // the drawn pose of this rendered frame
+                            return true;
+                        }
+                        if (wp->timeMs() != lastT) {
+                            lastT = wp->timeMs();
+                            game::Vec3 p{};
+                            std::array<game::Vec3, 3> ax{};
+                            bool hasAxes = false;
+                            ok = wp->entityTagOrientation(n, tag, p, ax, hasAxes);
+                            if (ok) {
+                                last = game::FxTag{};
+                                last.origin = {p[0], p[1], p[2]};
+                                last.hasAxes = hasAxes;
+                                if (hasAxes)
+                                    for (int k = 0; k < 3; ++k) last.axes[size_t(k)] = {ax[size_t(k)][0], ax[size_t(k)][1], ax[size_t(k)][2]};
+                            }
+                        }
+                        out = last;
+                        return ok;
+                    });
+                    game::FVec f{ev.forward[0], ev.forward[1], ev.forward[2]};
+                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    f = fl > 0 ? game::FVec{f[0] / fl, f[1] / fl, f[2] / fl} : game::FVec{0, 0, 1};
+                    game::FVec r = std::fabs(f[2]) < 0.99f ? game::FVec{f[1], -f[0], 0} : game::FVec{1, 0, 0};
+                    const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+                    r = {r[0] / rl, r[1] / rl, r[2] / rl};
+                    const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, fxTime() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
+                    continue;
+                }
+                fxSystem.play(efx(ev.path), ev.origin, ev.forward, fxTime());
+            }
+            for (const auto& te : world->takeTracerEvents())
+                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, fxTime(), 0);
+        };
         auto gatherItems = [&](const Camera& viewCam) {
             std::vector<DrawItem> items;
             if (!world) return items;
@@ -3103,121 +3187,7 @@ int main(int argc, char** argv) {
                 return true;
             };
             Uploader up(dev, false);
-            for (const auto& ev : world->takeFxEvents()) {
-                if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
-                if (ev.entity >= 0 && !ev.tag.empty()) {
-                    // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
-                    game::World* wp = world.get();
-                    // 0x48abb0: the tag orientation (origin + axes), refreshed once per frame stamp (cached per world time here).
-                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
-                        if (wp->timeMs() != lastT) {
-                            lastT = wp->timeMs();
-                            game::Vec3 p{};
-                            std::array<game::Vec3, 3> ax{};
-                            bool hasAxes = false;
-                            ok = wp->entityTagOrientation(n, tag, p, ax, hasAxes);
-                            if (ok) {
-                                last = game::FxTag{};
-                                last.origin = {p[0], p[1], p[2]};
-                                last.hasAxes = hasAxes;
-                                if (hasAxes)
-                                    for (int k = 0; k < 3; ++k) last.axes[size_t(k)] = {ax[size_t(k)][0], ax[size_t(k)][1], ax[size_t(k)][2]};
-                            }
-                        }
-                        out = last;
-                        return ok;
-                    });
-                    game::FVec f{ev.forward[0], ev.forward[1], ev.forward[2]};
-                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
-                    f = fl > 0 ? game::FVec{f[0] / fl, f[1] / fl, f[2] / fl} : game::FVec{0, 0, 1};
-                    game::FVec r = std::fabs(f[2]) < 0.99f ? game::FVec{f[1], -f[0], 0} : game::FVec{1, 0, 0};
-                    const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
-                    r = {r[0] / rl, r[1] / rl, r[2] / rl};
-                    const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
-                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
-                    continue;
-                }
-                fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
-            }
-            for (const auto& te : world->takeTracerEvents())
-                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
-            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
-            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
-            for (const auto& d : fxSystem.takeDecals(world->timeMs()))
-                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
-            if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
-                DrawItem it;
-                it.model = mm;
-                it.transform = kIdentity;
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-                scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
-            }
-            // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
-            // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
-            const int64_t fxNow = fxTime();
-            const auto fxSprites = fxSystem.sprites(fxNow);
-            if (std::getenv("IW2_FX_DEBUG"))
-                for (size_t i = 0; i < fxSprites.size(); i += std::max<size_t>(1, fxSprites.size() / 12))
-                    std::cerr << "fx sprite " << i << "/" << fxSprites.size() << " " << fxSprites[i].shader << " pos " << fxSprites[i].position[0] << ","
-                              << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
-                              << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
-            world->setFxSightBlockers(fxSystem.sightBlockers());
-            // Emitter models (shell casings, 0x48d7d0): static xmodels at the particle position and angles.
-            for (const auto& fm : fxSystem.models()) {
-                const GpuModel* gm = sceneModel(scene, dev, vfs, fm.model);
-                if (!gm) continue;
-                DrawItem it;
-                it.model = gm;
-                it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
-                if (fm.hasAxes) { // relative Emitter: world axis rows from the tag
-                    const float k = fm.scale;
-                    it.transform = {fm.axes[0][0] * k, fm.axes[0][1] * k, fm.axes[0][2] * k, 0, fm.axes[1][0] * k, fm.axes[1][1] * k, fm.axes[1][2] * k, 0,
-                                    fm.axes[2][0] * k, fm.axes[2][1] * k, fm.axes[2][2] * k, 0, fm.pos[0], fm.pos[1], fm.pos[2], 1};
-                }
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-            }
-            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
-                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
-                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
-                scene.outdoor.build([&](float x, float y, float top, float bottom) {
-                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
-                    return top + (bottom - top) * tr.fraction;
-                });
-                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
-                    if (FILE* f = std::fopen(dump, "wb")) {
-                        std::fprintf(f, "P5 512 512 255\n");
-                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
-                        std::fclose(f);
-                    }
-                }
-                if (std::getenv("IW2_FX_DEBUG"))
-                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
-                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
-            }
-            if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
-                DrawItem it;
-                it.model = cm;
-                it.transform = kIdentity;
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-            }
-            if (std::getenv("IW2_FX_DEBUG"))
-                for (const auto& c : fxSystem.clouds())
-                    std::cerr << "fx cloud " << c.shader << " pos " << c.origin[0] << "," << c.origin[1] << "," << c.origin[2] << " size " << c.size
-                              << " w " << c.width << " h " << c.height << " rgba " << int(c.rgba[0]) << "," << int(c.rgba[3]) << "\n";
-            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
-                DrawItem it;
-                it.model = fxm;
-                it.transform = kIdentity;
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-            }
+            ++renderStamp;
             for (const auto& e : world->entities()) {
                 if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");
@@ -3365,6 +3335,7 @@ int main(int argc, char** argv) {
                         ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
                         if (ai.model) items.push_back(ai);
                     }
+                    recordDrawnTags(e->number, bones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                     continue;
                 }
                 if (e->turret) {
@@ -3381,16 +3352,100 @@ int main(int argc, char** argv) {
                         tp = playerTurretPose->first;
                         ty = playerTurretPose->second;
                     }
+                    const assets::XPose tpose = assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty));
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm,
-                                         assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty)));
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm, tpose);
                     if (it.model) items.push_back(it);
+                    {
+                        BoneMap tbones;
+                        addBones(tbones, tm->parts, tpose);
+                        recordDrawnTags(e->number, tbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                    }
                     continue;
                 }
                 const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
                 if (!gm) continue;
                 DrawItem it = base;
                 it.model = gm;
+                items.push_back(it);
+            }
+            // Effects after the entities: bolted world effects follow this frame's drawn tags (recordDrawnTags).
+            playWorldFx();
+            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
+            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
+            for (const auto& d : fxSystem.takeDecals(world->timeMs()))
+                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
+            if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
+                DrawItem it;
+                it.model = mm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+                scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
+            }
+            // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
+            // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
+            const int64_t fxNow = fxTime();
+            const auto fxSprites = fxSystem.sprites(fxNow);
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (size_t i = 0; i < fxSprites.size(); i += std::max<size_t>(1, fxSprites.size() / 12))
+                    std::cerr << "fx sprite " << i << "/" << fxSprites.size() << " " << fxSprites[i].shader << " pos " << fxSprites[i].position[0] << ","
+                              << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
+                              << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
+            world->setFxSightBlockers(fxSystem.sightBlockers());
+            // Emitter models (shell casings, 0x48d7d0): static xmodels at the particle position and angles.
+            for (const auto& fm : fxSystem.models()) {
+                const GpuModel* gm = sceneModel(scene, dev, vfs, fm.model);
+                if (!gm) continue;
+                DrawItem it;
+                it.model = gm;
+                it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
+                if (fm.hasAxes) { // relative Emitter: world axis rows from the tag
+                    const float k = fm.scale;
+                    it.transform = {fm.axes[0][0] * k, fm.axes[0][1] * k, fm.axes[0][2] * k, 0, fm.axes[1][0] * k, fm.axes[1][1] * k, fm.axes[1][2] * k, 0,
+                                    fm.axes[2][0] * k, fm.axes[2][1] * k, fm.axes[2][2] * k, 0, fm.pos[0], fm.pos[1], fm.pos[2], 1};
+                }
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
+            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
+                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
+                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
+                scene.outdoor.build([&](float x, float y, float top, float bottom) {
+                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
+                    return top + (bottom - top) * tr.fraction;
+                });
+                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
+                    if (FILE* f = std::fopen(dump, "wb")) {
+                        std::fprintf(f, "P5 512 512 255\n");
+                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
+                        std::fclose(f);
+                    }
+                }
+                if (std::getenv("IW2_FX_DEBUG"))
+                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
+                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
+            }
+            if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
+                DrawItem it;
+                it.model = cm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (const auto& c : fxSystem.clouds())
+                    std::cerr << "fx cloud " << c.shader << " pos " << c.origin[0] << "," << c.origin[1] << "," << c.origin[2] << " size " << c.size
+                              << " w " << c.width << " h " << c.height << " rgba " << int(c.rgba[0]) << "," << int(c.rgba[3]) << "\n";
+            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
+                DrawItem it;
+                it.model = fxm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
                 items.push_back(it);
             }
             up.flush();
@@ -4310,7 +4365,9 @@ int main(int argc, char** argv) {
                     // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
                     // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
                     // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
-                    // TODO(spec): the "KEY_" prefix handling of 0x4c6a20 (key.str has UNBOUND / OR / TAB without it).
+                    // 0x4c6a20 is the generic string translator (a leading 0x15 byte marks a literal; otherwise 0x498a20 does an exact
+                    // map find; a miss gives "^1UNLOCALIZED(^7" s "^1)^7"); it has no KEY_ special case. The "KEY_" in the refs comes from
+                    // the string file name (key.str -> KEY_<REFERENCE>), as with loc.find("KEY_USE").
                     for (size_t b; (b = text.find("[{")) != std::string::npos;) {
                         const size_t e = text.find("}]", b);
                         if (e == std::string::npos) break;
@@ -5320,7 +5377,22 @@ int main(int argc, char** argv) {
                     if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = world->timeMs();
             const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
-                const float csize = 1.0f; // cg_hudCompassSize
+                // Compass dvars from the world's dvar table (maps set cg_hudCompassMaxRange with setsavedcvar: demolition 700/400,
+                // downtown_assault 1000, moscow 900, libya 7000), else the exe defaults: cg_hudCompassSize 1 (0x1040c38),
+                // MaxRange 1500 (0xf48b54), MinRange 0 (0xf569dc), MinRadius 0 (0x1040b8c), SoundPingFadeTime 2 s (0xf48ce4).
+                auto compassDvar = [&](const char* n, float def) {
+                    const auto it = world->cvars.find(n);
+                    return it == world->cvars.end() || it->second.empty() ? def : float(std::atof(it->second.c_str()));
+                };
+                const float csize = compassDvar("cg_hudCompassSize", 1.0f);
+                const float cMaxRange = compassDvar("cg_hudCompassMaxRange", 1500.0f), cMinRange = compassDvar("cg_hudCompassMinRange", 0.0f);
+                const float cMinRadius = compassDvar("cg_hudCompassMinRadius", 0.0f), pingFade = compassDvar("cg_hudCompassSoundPingFadeTime", 2.0f);
+                // Radius factor of an actor / tank at horizontal distance d (0x4c1148..0x4c11e4): d clamped to MaxRange (beyond it
+                // on the rim, no culling), t = (d - MinRange) / (MaxRange - MinRange), r = (1 - MinRadius) * t + MinRadius.
+                auto compassRadius = [&](float d) {
+                    const float t = (std::min(d, cMaxRange) - cMinRange) / (cMaxRange - cMinRange);
+                    return (1.0f - cMinRadius) * t + cMinRadius;
+                };
                 const float cyaw = c.yaw, north = world->northYaw();
                 auto wrap360 = [](float a) { a = std::fmod(a, 360.0f); return a < 0 ? a + 360.0f : a; };
                 const auto& mr = compassMenu->rect;
@@ -5335,28 +5407,61 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
                     col[3] = uint8_t(std::clamp(compassAlpha, 0.0f, 1.0f) * 255.0f);
                     if (it.ownerDraw == 87 || it.ownerDraw == 88) {
-                        // Friendly actors (4c0f20): R = size * r * 43.75, icon size*10 (0x591e8c), r from the distance between
-                        // cg_hudCompassMinRange 0 and MaxRange 1500 (0xf48b54) clamped to the rim (no culling), minRadius 0;
-                        // placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor - view yaw;
-                        // the arrow turns by (view yaw - actor yaw). TODO(spec): the 800 ms entry age, springy yaw
-                        // (cg_hudCompassSpringyPointers 0), the sound ping rings (cg_hudCompassSoundPingFadeTime).
+                        // Friendly actors (4c0f20): R = size * r * 43.75 (double @0x591e90), icon size*10 (0x591e8c), r from
+                        // compassRadius; placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor -
+                        // view yaw; the arrow turns by (view yaw - actor yaw). 88 tanks (4c1700): the same formulas over the vehicles
+                        // with addvehicletocompass, icon 16 (0x591e84). TODO(spec): the 800 ms entry age (the exe refreshes an entry
+                        // only for entities in the client snapshot, 0xf5bd28 +0x85cc), springy yaw (cg_hudCompassSpringyPointers 0).
                         if (it.background.empty()) continue;
-                                                // 88 tanks (4c1700): the same formulas over the vehicles with addvehicletocompass, icon 16 (0x591e84).
                         const bool tanks = it.ownerDraw == 88;
                         const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
-                        const int tex = materialTexture(it.background);
-                        for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
-                            const float dx = m.pos[0] - c.pos.x, dy = m.pos[1] - c.pos.y;
+                        auto place = [&](float px, float py, float& ix, float& iy) {
+                            const float dx = px - c.pos.x, dy = py - c.pos.y;
                             const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
-                            const float t = std::clamp(std::sqrt(dx * dx + dy * dy) / 1500.0f, 0.0f, 1.0f);
-                            const float rad = csize * t * 43.75f * sc;
-                            const float ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
-                            Quad2D q{ix, iy, ix + icon, iy + icon};
-                            std::memcpy(q.rgba, col, 4);
-                            q.texture = tex;
-                            q.rotDeg = wrap360(cyaw - m.yaw);
-                            out.push_back(q);
+                            const float rad = csize * compassRadius(std::sqrt(dx * dx + dy * dy)) * 43.75f * sc;
+                            ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
+                        };
+                        const int tex = materialTexture(it.background);
+                        const int64_t now = world->timeMs();
+                        for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
+                            float ix, iy;
+                            place(m.pos[0], m.pos[1], ix, iy);
+                            // Friendly sound ping (0x4c1279..0x4c1371): while active, alpha = min(ping alpha, compass alpha); at full
+                            // ping alpha the arrow itself is skipped, otherwise drawn first; then compassping_friendlyfiring
+                            // (0xf5bca0) in the same rotated rect with the item colour and the ping alpha. Tanks (4c1700) have none.
+                            const float pa = tanks ? -1.0f : game::compassPingAlpha(m.pingEndMs, now, pingFade);
+                            const float pingA = std::min(pa, compassAlpha);
+                            const float rot = wrap360(cyaw - m.yaw);
+                            if (pa < 0.0f || pingA != 1.0f) {
+                                Quad2D q{ix, iy, ix + icon, iy + icon};
+                                std::memcpy(q.rgba, col, 4);
+                                q.texture = tex;
+                                q.rotDeg = rot;
+                                out.push_back(q);
+                            }
+                            if (pa >= 0.0f) {
+                                Quad2D q{ix, iy, ix + icon, iy + icon};
+                                std::memcpy(q.rgba, col, 4);
+                                q.rgba[3] = uint8_t(std::clamp(pingA, 0.0f, 1.0f) * 255.0f);
+                                q.texture = materialTexture("compassping_friendlyfiring");
+                                q.rotDeg = rot;
+                                out.push_back(q);
+                            }
                         }
+                        // Enemy sound pings (second pass 0x4c1480..0x4c16e6, ownerdraw 87 only): every entry with the enemy byte and an
+                        // active ping, at the position stored by the shot, icon size*10, alpha = min(ping alpha, compass alpha), item
+                        // colour, material compassping_enemyfiring (0xf5bca8, a red dot), drawn unrotated (0x4d4790).
+                        if (!tanks)
+                            for (const auto& p : world->compassPings().activeEnemyPings(now, pingFade)) {
+                                float ix, iy;
+                                place(p.pos[0], p.pos[1], ix, iy);
+                                Quad2D q{ix, iy, ix + icon, iy + icon};
+                                std::memcpy(q.rgba, col, 4);
+                                const float ea = std::min(game::compassPingAlpha(p.endMs, now, pingFade), compassAlpha);
+                                q.rgba[3] = uint8_t(std::clamp(ea, 0.0f, 1.0f) * 255.0f);
+                                q.texture = materialTexture("compassping_enemyfiring");
+                                out.push_back(q);
+                            }
                         continue;
                     }
                     if (it.ownerDraw != 86) {
@@ -5370,7 +5475,7 @@ int main(int argc, char** argv) {
                     }
                     // Pointers: centre (x + w*size/2, y + h*size/2 - (size-1)*h); K = 43.75 (double @0x591e90); icon 16*size.
                     const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f;
-                    const float maxR = 1500.0f, minR = 0.0f, minRad = 0.0f, objMax = 2048.0f, minAlpha = 1.0f;
+                    const float maxR = cMaxRange, minR = cMinRange, minRad = cMinRadius, objMax = 2048.0f, minAlpha = 1.0f;
                     const float icon = 16.0f * csize * sc;
                     for (const auto& ob : world->objectives()) {
                         // An objective without an icon uses the default material "objective" (0xf5b6cc, registered at 0x4a2d62
@@ -5801,6 +5906,13 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
+                    // This server frame's effect events are played now and the effects updated at the frame time, as the client
+                    // does per frame (before, every event of the simulation was played at the shot time, all at age 0).
+                    fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
+                    fxSystem.viewValid = true;
+                    setFxFrustum(fxSystem, cam, float(width) / float(height));
+                    playWorldFx();
+                    (void)fxSystem.sprites(world->timeMs());
                     if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
                         std::array<game::Vec3, 3> body;
                         if (world->playerVehicleBodyAxis(body)) {
@@ -6018,7 +6130,7 @@ int main(int argc, char** argv) {
                             world->notifyPlayer(kN[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
                         }
                         else if (e.kind == game::PlayerWeapon::Event::MeleeHit && world) world->playerMelee(eye, angles);
-                        else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0});
+                        else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0}, pweapon.takeFuseMs());
                         std::cout << "shot-script t=" << tNow << " event " << int(e.kind) << " " << e.weapon << "\n";
                     }
                     if (i % 13 == 0)
@@ -6543,6 +6655,10 @@ int main(int argc, char** argv) {
                 in.leanRight = (buttons & game::Button::LeanRight) != 0 && !(world->playerPmFlags() & 0x4000000u);
                 in.yaw = cam.yaw;
                 in.dead = playerDead;
+                // ps+4 (ClientThink 0x4e7bc0: linked -> 1, dead -> 5), ps+0xc & 0x8000 and ps+0x7c & 0x20300 for the lean gates (0x50ade0).
+                ps.pmType = playerDead ? 5 : world->playerLinked() ? 1 : 0;
+                in.controlsFrozen = world->playerControlsFrozen();
+                in.eFlagsNoLean = inVehicle || world->playerOnTurret();
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
                 in.adsAllowed = pweapon.adsAllowed();
                 in.weaponState = pweapon.stateNumber();
@@ -6759,7 +6875,7 @@ int main(int argc, char** argv) {
                     }
                     else if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->playerMelee(eye, angles);
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
-                        world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity);
+                        world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity, pweapon.takeFuseMs());
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye);
                     else if (e.kind == game::PlayerWeapon::Event::NoAmmo) setInvalidCmd(1, world->timeMs()); // event 0x92 (0x4baeb6)

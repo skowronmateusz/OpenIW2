@@ -99,8 +99,24 @@ the piecewise-linear curve), used for velocities.
   smoke, fire_airplane_emitter (no useModel) and the useModel explosion debris (silo_explode, artilleryexp_*, eldaba boat, tank
   libya).
 - OpenIW2: `FxSystem::stepEmitter` / `physicsStep` / `emitFx` (steps of at most 200 ms between host updates; emitted and
-  impact effects play after the update loop). TODO(spec): the CRT rand() sequence (std::rand here), deathFx 0x200 (+0x30 is
-  picked but never played here).
+  impact effects play after the update loop). The emitFx distance uses the MSVC CRT rand() (0x553d5d: per-thread seed ·
+  0x343fd + 0x269ec3, (seed >> 16) & 0x7fff); the exe seeds it once with timeGetTime() (srand 0x553d50 at 0x40e149) and 25
+  other callers share it, so the exact sequence is not reproducible; `FxSystem::crtRand` keeps the generator and the 0..32767
+  range (seed 1, the CRT default). Before, std::rand() (0..2^31 − 1 on macOS) made the distances up to 65536 · variance.
+- deathFx 0x200: the death slot (vtable +4) 0x4801d0 of Particle, OrientedParticle, Emitter, Tail and Cylinder (not Line,
+  Light, Cloud). The update loop 0x48be90 calls it when the system time is past the end +0xbc (after clearing impactKills
+  0x400, 0x48bec9) or when the update slot returned false. With 0x200 set, 0x400 clear and an effect in +0x30: a, b, c =
+  0x426250(−1, 1) in that order, dir = (c, b, a) / |·| when the length is above 1e-6 (double 0x592310), else (0, 0, 1); plays
+  +0x30 at +0x4 (tag space for a relative element, passed unchanged) with row 0 = dir (0x485220). Shipped users:
+  fx/misc/flare_hill400.efx (Emitter, deathfx fx/misc/flare) and fx/impacts/minefield.efx. OpenIW2: `FxSystem::deathEffect`
+  (deferred like impactFx).
+- Channel scales (0x4804c0, init slot vtable +0x1c of Particle / OrientedParticle / Emitter / Line): one record per group
+  for the 22 groups in key order without length / lengthRand (instance +0x144, stride 0xc: curve, 0, scale = 0x48a2c0 of the
+  group's `scale` range, no draw when min == max). Rand groups get a scale too but 0x47f570 multiplies only by the main
+  group's. Tail / Cylinder (0x482fa0) and Cloud (0x482970) add length and lengthRand after it; Light (0x4840d0) has only rgb,
+  rgbRand, size, sizeRand. So velocity / velocity2 X, Y and Z each use their own per-instance scale (+0x1c4 / +0x1d0 / +0x1dc,
+  +0x20c / +0x218 / +0x224; 0x480e80 / 0x481050). The order relative to the other spawn draws (0x48cb00 / 0x48ce70) is
+  still approximate.
 
 ## Particle quads (renderer type 4)
 
@@ -284,7 +300,6 @@ meaning of the flag bits.
 Particles and oriented particles are spawned by `playfx`, `playfxontag` and `playloopedfx` and drawn as
 camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
 the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
-the per-particle velocity scale,
 other element types (CameraShake, Cylinder; see the sections below for the decoded ones), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
 
@@ -370,3 +385,68 @@ their spawn delay are left out (the original lists every element in its two elem
 - Rectangle (1.3 DLL 0x1003fa60): c = byte 0xf, r = byte 0xe, u0 = (frame % c)/c, v0 = (frame / c)/r, u1 = u0 + 1/c,
   v1 = v0 + 1/r; a single frame uses 0..1.
 - OpenIW2: `FxSystem::atlas` (host reads the material bytes), `FxSprite::uv`. TODO(spec): start mode 2's value.
+
+## Flash element (type 11, 0x48ddb0)
+
+No shipped effect uses it: a census of all 375 `fx/**/*.efx` files in main finds the element types Particle 858, Tail 143,
+Emitter 111, FxRunner 99, Decal 80, Light 49, OrientedParticle 20, Cloud 9, CameraShake 1, Line 1 and no Flash (nor
+Cylinder). Not decoded; TODO(spec) if an effect with it ever appears.
+## Sprite vertices, $floatz and the post-sun copy (1.3 DLL, heat distortion / z-feather)
+
+Evidence: `gfx_d3d_x86_s.dll` 1.3 disassembly, exe vtables read from `CoD2SP_s.exe`, shipped `iw_07.iwd` shaders.
+
+### Which refEntity type each element submits
+Draw slot 4 of the element vtable calls 0x480010 with a type: Particle (vtable 0x57c810, slot 0x4802f0) 4, OrientedParticle
+(0x57c7e4, 0x482620) 7, Cloud (0x57c78c, 0x482960) 6, Line and Tail (0x57c708 / 0x57c6b0) 8, Cylinder (0x57c7b8, 0x483440) 9.
+The DLL type switch at 0x100414f0: 4 -> 0x1003ff90 (camera-facing billboard), 7 -> 0x1003ffe0 (oriented quad).
+
+### Vertex layout (code mesh buffer, 64 bytes, vertex declaration row 0 of the table at 0x1018eac8)
+Declaration builder 0x10016810 (CreateVertexDeclaration, device vtable +0x158) reads 3-byte {stream, offset, type} rows per
+shader input code (stride 0x15 per layout); the semantic matcher 0x10019330 maps "binormal" to code 5, "tangent" to 6.
+Row 0: code 0 position FLOAT4 @0x00, 1 normal FLOAT3 @0x10, 2 color D3DCOLOR @0x1c, 3 texcoord0 FLOAT2 @0x20, 5 **binormal
+FLOAT3 @0x28**, 6 **tangent FLOAT3 @0x34**. (Row 1, 68 bytes, is another layout; row 2 is position + texcoord only.)
+
+### Sprite tangent / binormal (the data distortion.hlsl reads as code.tangent / code.binormal)
+Quad writers 0x1003f560 (normal) and 0x1003f850 (dpvs mode 2, 36-byte vertices, not decoded) get O (origin), A (width vector),
+B (height vector). Vertices: O + A + B, O - A + B, O - A - B, O + A - B; w = 1.0 at +0xc; the same values go to all four
+vertices: normal = -view axis row 0, **binormal = B, tangent = -A**.
+- Billboard (type 4, 0x1003fb00): view = the 0x14c-byte view record behind [0x1070c3c8], whose +0xc / +0x18 / +0x24 are the three
+  view axis rows (copied from the scene's view matrix by 0x100259c0; Q3 order forward / left / up assumed, TODO(spec) sign of
+  row 1). Unrotated: A = width * row1, B = height * row2 (width / height = entity +0x64 / +0x68). Rotation r (entity +0x6c,
+  degrees * 0x1019be0c to radians; c = cos, s = sin): A = width * (c * row1 - s * row2), B = height * (c * row2 + s * row1).
+  Entity flag 0x1000 (+4) adds the height param to the origin z; entity +0x70 is a screen-size clamp (0x1003ff20 / 0x1003fdf0).
+- Oriented (type 7, 0x1003ffe0): axis V = entity +0x14; P = perpendicular of V (0x10059bd0: (V.z, -V.x, V.y), projected off V,
+  normalized); unrotated A = width * P, B = height * (P x V); with r != 0 the pair is rotated by sin / cos of r (fsincos at 0x1004008d), TODO(spec): the exact mixing is not implemented.
+- Tail / line (type 8, 0x10041470): tangent / binormal written from the quad axes (B-A and c).
+So for a distortion sprite T' / B' of distortion.hlsl are the clip-space images of the sprite's half-width and half-height
+screen vectors (tangent points to the viewer's right), scaled by distortionScale.
+
+### Frame position of the post-sun scene copy
+Scene builder 0x10025490 (called from 0x100257d0 through 0x10025750): order inside one scene is: z-feather float-z pass
+(0x10024ee0, below), draw lists of technique type 1 "sky" and 6 "lightmap no fog" (0x10021cf0), 0x10021d80, then, only when the
+scene viewport covers the whole window (flag byte +4 of the argument built at 0x10025ce5: refdef width / height == 0x101d4ca8 /
+0x101d4cac, the vid config size set by 0x10011670), command 0x19 (0x100310a0 post-sun resolve, emitted by 0x10022510), then the
+effects list of technique type 0x18 (`emissive feathered no fog`) when r_zFeather and `$floatz` exist, else 0x15 (`emissive no fog`).
+Technique type names (0x1001c0c0, index = type): 0 depth prepass, 1 sky, **2 build floatz**, 3..5 unlit no/linear/exp fog, 6 lightmap
+no fog, ... 0x15 emissive no fog, 0x18 emissive feathered no fog.
+
+### `$floatz` (R32F distance target) and its build pass
+- Created at 0x10023240..0x10023276 when r_zFeather (0x101ce694) is on and the dvar 0x101ce710 is not 2: render target texture of
+  D3D format 0x72 (D3DFMT_R32F), size = max(1, window width / height) = 0x101d4ca8 x 0x101d4cac; global 0x101d489c; render target
+  array entry 6 (0x101d4820 + 6 * 0x14 = 0x101d4898).
+- Build pass 0x10024ee0 (called first thing in the scene builder, 0x100254a9; skipped unless r_zFeather and $floatz exist): begin
+  GPU timer slot, command 0xe (set render target) with target 6, 0x10024e90 = clear of depth + stencil (flags 6, z 1.0, stencil 0)
+  and command 0x14 (viewport 0, 0, 1, 1 of the target), then the draw list of **technique type 2 "build floatz"**, end timer.
+- What it writes (shipped files): build_floatz.tech (stateMap build_floatz: no blend, depth write on, colour write on, alpha test
+  Always, fog off) with lib/float_z_build.hlsl: colour = clip-space z (`position.z`) of each opaque surface; the alpha-test
+  variants (build_floatz_atest, _scroll, _dtl_scroll) clip texels with alpha < 128/255. Techniquesets phong_*, ambient_*,
+  unlit_* map "build floatz" to these; `sky.techset` and `shadowclear.techset` use build_floatz_clear.tech with
+  floatz_clear.hlsl, which writes 262144 * 2 * 1.732 (the maximum world extent) into all channels. So `$floatz` is a per-pixel
+  distance (clip z) of the nearest opaque surface, "infinite" where only sky shows.
+- Readers: zfeather.hlsl (`floatZSampler`; alpha *= saturate(|floatz * featherParms.x - z * featherParms.x|), `pixel.color.a *=
+  saturate(z * featherParms.x)` near the camera) and distortion_floatz (`USE_FLOAT_Z`: `floatZSampler` at the offset position;
+  if the offset sample is nearer than the distortion quad the unoffset scene sample is used). Not modelled in openiw2: no
+  float-z target exists in iw2view yet; its distortion material stays Skip.
+- TODO(spec): the matrix that makes clip z comparable to featherParms (material constant featherParms is not yet traced);
+  mode 2 (dvar 0x101ce710 == 2) vertex format 0x1003f850; why the post-sun copy needs the full-window flag besides the
+  r_distortion / glow gate in 0x100310a0.

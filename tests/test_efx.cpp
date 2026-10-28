@@ -224,6 +224,16 @@ int main() {
         CHECK(emits.size() == 1);
         es.sprites(200);
         CHECK(emits.size() == 2 && emits[1] == "fx/trail.efx");
+        // `variance`: the next distance is (2 · rand() / 32768 − 1) · variance + density with the CRT rand() range 0..32767
+        // (0x553d5d), so with density 10, variance 5 every gap is 5..15 units: 100 units of travel give 6..20 emissions.
+        auto varFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            std::string("Emitter\n{\n\tflags emitFx\n\tlife 1000\n\tdensity 10\n\tvariance 5\n\temitfx\n\t[\n\t\tfx/trail\n\t]\n") + vel + "}\n"));
+        emits.clear();
+        iw2::game::FxSystem vs;
+        vs.loader = es.loader;
+        vs.play(varFx, {0, 0, 0}, {1, 0, 0}, 0);
+        for (int t = 0; t <= 1000; t += 50) vs.sprites(t);
+        CHECK(emits.size() >= 6 && emits.size() <= 20);
     }
     // Bug 12: a relative Tail (view muzzle flash) whose tag turns keeps pointing along the tag (both ends through the bolt).
     {
@@ -247,6 +257,57 @@ int main() {
             CHECK(std::fabs(dx) < 1e-3f && dy < -19.0f); // B behind A along the turned forward (+y)
             CHECK(std::fabs(sp[0].beamA[0]) < 1e-3f && sp[0].beamA[1] > 29.0f);
         }
+    }
+    // Per-component velocity scales (0x4804c0 records +0x1c4 / +0x1d0, read by 0x480e80): each component uses its own scale,
+    // drawn per instance from its `scale` range.
+    {
+        auto velFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Particle\n{\n\tlife 1000\n"
+            "\tvelocityX\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t\t1 1\n\t\t]\n\t\tscale 50 150\n\t}\n"
+            "\tvelocityY\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t\t1 1\n\t\t]\n\t\tscale 20\n\t}\n"
+            "\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n"));
+        iw2::game::FxSystem vs2;
+        vs2.play(velFx, {0, 0, 0}, {1, 0, 0}, 0);
+        vs2.sprites(0);
+        const auto sp = vs2.sprites(100);
+        CHECK(sp.size() == 1);
+        if (sp.size() == 1) {
+            // the effect axes from forward (1, 0, 0): x along row 0, y along row 1
+            const float along = sp[0].position[0], side = std::sqrt(sp[0].position[1] * sp[0].position[1] + sp[0].position[2] * sp[0].position[2]);
+            CHECK(along > 5.0f && along < 15.0f);
+            CHECK(std::fabs(side - 2.0f) < 1e-3f);
+        }
+    }
+    // deathFx 0x200 (death slot 0x4801d0): played when the element's life ends (impactKills 0x400 cleared first) or its update
+    // fails, but not after an impactKills hit.
+    {
+        std::vector<std::string> loads;
+        auto child = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx("Particle\n{\n\tlife 1000\n}\n"));
+        auto loader = [&](const std::string& n) { loads.push_back(n); return std::shared_ptr<const iw2::assets::EfxEffect>(child); };
+        auto deathFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Emitter\n{\n\tflags deathFx impactKills\n\tlife 100\n\tdeathfx\n\t[\n\t\tfx/misc/flare\n\t]\n}\n"));
+        iw2::game::FxSystem ds;
+        ds.loader = loader;
+        ds.play(deathFx, {5, 6, 7}, {1, 0, 0}, 0);
+        ds.sprites(50);
+        CHECK(loads.empty());
+        ds.sprites(100); // expired: impactKills is cleared, the death effect plays at the element position
+        CHECK(loads.size() == 1 && loads[0] == "fx/misc/flare.efx");
+        CHECK(ds.count() == 1); // the child particle
+
+        auto killFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Emitter\n{\n\tflags deathFx usePhysics impactKills\n\tlife 1000\n\tdeathfx\n\t[\n\t\tfx/misc/flare\n\t]\n"
+            "\tvelocityX\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t\t1 1\n\t\t]\n\t\tscale 3\n\t}\n}\n"));
+        loads.clear();
+        iw2::game::FxSystem ks2;
+        ks2.loader = loader;
+        ks2.trace = [](const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, float& frac,
+                       iw2::game::FVec& n) { frac = 0.5f; n = {0, 0, 1}; return true; };
+        ks2.play(killFx, {0, 0, 0}, {1, 0, 0}, 0);
+        ks2.sprites(0);
+        ks2.sprites(100); // the impactKills hit ends the element: no death effect
+        ks2.sprites(200);
+        CHECK(loads.empty() && ks2.count() == 0);
     }
     if (failures) return 1;
     std::cout << "efx tests passed\n";

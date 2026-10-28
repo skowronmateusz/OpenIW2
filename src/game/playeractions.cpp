@@ -52,7 +52,8 @@ std::string World::playerOffhandFor(const std::string& offhandClass) {
 // The throw (pmove state 14 → 15 takes one round from the clip; the event 0xa6 runs 0x531d60): the view's forward
 // (0x531b90) times projectileSpeed, plus projectileSpeedUp upwards, is the grenade's velocity from the eye with the
 // weapon's fuseTime; the player's velocity along that direction is added (0x5319e5…0x531a2e).
-void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity) {
+void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity,
+                              int cookedFuseMs) {
     if (!player_ || !isAlive(*player_)) return;
     Inventory& inv = inventory(*player_);
     int& clip = inv.clip[weaponField(weaponName, "clipName")];
@@ -61,7 +62,8 @@ void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, c
     angleVectors(viewAngles, f, r, u);
     const float speed = float(weaponInt(weaponName, "projectileSpeed"));
     const Vec3 v{speed * f[0], speed * f[1], speed * f[2] + float(weaponInt(weaponName, "projectileSpeedUp"))};
-    const int fuseMs = int(std::lround(weaponFloat(weaponName, "fuseTime") * 1000.0f));
+    // 0x527605..0x52762c: a non-zero client fuse (ps+0x3c, the time cooked in the hand) replaces the weapon fuseTime.
+    const int fuseMs = cookedFuseMs != 0 ? cookedFuseMs : int(std::lround(weaponFloat(weaponName, "fuseTime") * 1000.0f));
     Entity& g = spawnGrenade(*player_, weaponName, eye, v, fuseMs);
     const float l = len(v);
     if (l > 0) {

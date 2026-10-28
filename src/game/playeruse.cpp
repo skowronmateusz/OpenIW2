@@ -291,8 +291,9 @@ void World::findPlayerUseEntity() {
         }
         if (e.classname.rfind("weapon_", 0) == 0) {
             // 0x534c80: a weapon item is usable when the weapon is not a grenade (weaponType, def +0x78 ≠ 1) and not
-            // owned; the hint is the weapon's (index + 4). A health item (giType 3) would give hint 3 with no condition (0x534ca0); health items
-            // are not modelled (TODO(spec): item_health spawn, bounds, touch pickup).
+            // owned; the hint is the weapon's (index + 4). The giType 3 branch of 0x534c80 (hint 3, no condition) is unreachable in the SP exe: the
+            // item table 0x5a66f8 is rebuilt from the weapon definitions only (0x4dc320 sets giType 1; 0x4dc280 zeroes giType of every entry
+            // from index 1) and the exe has no "item_health" string, so there are no health items to model.
             const std::string w = lowerStr(e.classname.substr(7));
             if (!weapon(w) || lowerStr(weaponField(w, "weaponType")) == "grenade" || inventory(*player_).owned.count(w)) continue;
             playerUseEntity_ = e.number;
@@ -569,9 +570,18 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
         CompassMarker m;
         m.pos = org.asVector();
         if (ang.isVector()) m.yaw = ang.asVector()[1];
+        m.pingEndMs = compassPings_.endMs(e->number);
         out.push_back(m);
     }
     return out;
+}
+
+void World::compassPing(const Entity& actor, const Vec3& pos, int durationMs) {
+    // 0x4c0e20: team = the actor's sentient team (0x1c6421c, copied from sentient +4 by the server pass 0x4db387).
+    const Value tv = actor.obj->get("team");
+    const std::string t = tv.isString() ? tv.asString() : std::string();
+    const int team = t == "axis" ? 1 : t == "allies" ? 2 : t == "neutral" ? 3 : 0;
+    compassPings_.ping(actor.number, team, pos[0], pos[1], timeMs_, durationMs);
 }
 
 void World::debugSpawnItem(const std::string& weapon) {

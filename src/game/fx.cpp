@@ -41,6 +41,12 @@ float FxSystem::frand() {
     return float((seed_ >> 17) & 0x7fff) / 32768.0f;
 }
 
+// MSVC CRT rand() (0x553d5d): seed = seed · 0x343fd + 0x269ec3, result (seed >> 16) & 0x7fff.
+int FxSystem::crtRand() {
+    crtSeed_ = crtSeed_ * 0x343fd + 0x269ec3;
+    return int((crtSeed_ >> 16) & 0x7fff);
+}
+
 // 0x48a2c0: lo + (hi − lo) · draw; equal bounds return lo WITHOUT consuming a draw.
 float FxSystem::range(const std::vector<float>& v, float fallback) {
     if (v.empty()) return fallback;
@@ -323,7 +329,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     // Common init 0x48cb00 after the life draw: the box (+0x14 = def +0xa0 `min`, +0x20 = def +0xac `max`, 0x487be0 / 0x487c30),
     // then one `deathfx` entry (+0x30, def +0x78 / +0x7c) and one `impactfx` entry (+0x2c, def +0x70 / +0x74), each
     // (seed >> 17) · count >> 15 with a generator draw only when the list is not empty. The rest of the draw order of the
-    // spawn is approximate here (see the other comments). TODO(spec): deathFx 0x200 (the +0x30 effect is not played).
+    // spawn is approximate here (see the other comments). deathFx (0x200) plays +0x30 when the element ends (`deathEffect`).
     {
         const auto mn = e.numbers("min"), mx = e.numbers("max");
         if (mn.size() >= 3) p.boxMins = {mn[0], mn[1], mn[2]};
@@ -334,7 +340,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             seed_ = seed_ * 0x343fd + 0x269ec3;
             return fxPath(names[std::min(names.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * names.size()) >> 15))]);
         };
-        pick("deathfx");
+        p.deathFx = pick("deathfx");
         p.impactFx = pick("impactfx");
     }
     p.origin = spawnPoint(e, origin, ax);
@@ -360,10 +366,47 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     for (int k = 0; k < 3; ++k) p.vel2Rnd[k] = flags & 0x100000 ? frand() : 0.0f;
     p.gravity = range(e.numbers("gravity"), 0);
     p.bounce = range(e.numbers("bounce"), 0); // 0x48ce70: +0x100 from def +0x280 (after gravity, wind and the spawn point)
-    const char* scaled[8] = {"rgb", "alpha", "size", "size2", "length", "rotationdelta", "velocityx", "velocity2x"};
-    for (int k = 0; k < 8; ++k) {
-        const auto* g = graph(e, scaled[k]);
-        p.scale[k] = g ? g->scaleMin + (g->scaleMax - g->scaleMin) * frand() : 1.0f;
+    // Per-instance channel records, built by the element's init slot (vtable +0x1c): 0x4804c0 (Particle, OrientedParticle,
+    // Emitter, Line) fills the 22 groups in key order without length / lengthRand (instance +0x144, stride 0xc: curve, 0,
+    // scale); each scale is 0x48a2c0 of the group's `scale` range (no generator draw when min == max; a group without `scale`
+    // has 1 1). The Rand groups' scales are drawn but never read: the random lerp 0x47f570 multiplies by the main group's
+    // scale. Velocity / velocity2 X, Y, Z each keep their own scale (+0x1c4 / +0x1d0 / +0x1dc and +0x20c / +0x218 / +0x224,
+    // read by 0x480e80 / 0x481050). Tail and Cylinder (0x482fa0) and Cloud (0x482970) call 0x4804c0 and then add the length
+    // group (def +0x160) and lengthRand; Light (0x4840d0) only rgb, rgbRand, size, sizeRand.
+    {
+        auto drawScale = [&](const char* name) {
+            const auto* g = graph(e, name);
+            if (!g || g->scaleMin == g->scaleMax) return g ? g->scaleMin : 1.0f;
+            return g->scaleMin + (g->scaleMax - g->scaleMin) * frand();
+        };
+        for (float& v : p.scale) v = 1.0f;
+        if (e.type == "Light") {
+            p.scale[0] = drawScale("rgb");
+            (void)drawScale("rgbrand");
+            p.scale[2] = drawScale("size");
+            (void)drawScale("sizerand");
+        } else {
+            p.scale[0] = drawScale("rgb");
+            (void)drawScale("rgbrand");
+            p.scale[1] = drawScale("alpha");
+            (void)drawScale("alpharand");
+            p.scale[2] = drawScale("size");
+            (void)drawScale("sizerand");
+            p.scale[3] = drawScale("size2");
+            (void)drawScale("size2rand");
+            p.scale[5] = drawScale("rotationdelta");
+            (void)drawScale("rotationdeltarand");
+            static const char* const v1[6] = {"velocityx", "velocityy", "velocityz", "velocityxrand", "velocityyrand", "velocityzrand"};
+            static const char* const v2[6] = {"velocity2x", "velocity2y", "velocity2z", "velocity2xrand", "velocity2yrand", "velocity2zrand"};
+            for (int k = 0; k < 6; ++k) { const float sc = drawScale(v1[k]); if (k < 3) p.velScale[k] = sc; }
+            for (int k = 0; k < 6; ++k) { const float sc = drawScale(v2[k]); if (k < 3) p.vel2Scale[k] = sc; }
+            p.scale[6] = p.velScale[0];
+            p.scale[7] = p.vel2Scale[0];
+            if (e.type == "Tail" || e.type == "Cylinder" || e.type == "Cloud") {
+                p.scale[4] = drawScale("length");
+                (void)drawScale("lengthrand");
+            }
+        }
     }
     if (e.type == "Line") {
         // 0x48c850 (without org2fromTrace 0x8): origin2 ranges drawn z, y, x (+0xe0, +0xd8, +0xd0; `origin2 a b c d e f` =
@@ -494,7 +537,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.emitP = p.pos;
             p.emitOff = p.bolt ? p.bolt0 : FVec{};
             p.emitLastMs = startMs;
-            p.emitDist = (float(std::rand()) / 32768.0f * 2.0f - 1.0f) * p.variance + p.density;
+            p.emitDist = (float(crtRand()) / 32768.0f * 2.0f - 1.0f) * p.variance + p.density;
         }
     }
     particles_.push_back(p);
@@ -509,19 +552,21 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
 FVec FxSystem::velocityAt(const FxParticle& p, float u, const FxTag* orient) const {
     const assets::EfxElement& e = *p.element;
     const uint32_t flags = e.flagBits();
-    auto comp = [&](const char* name, const char* rname, bool useRand, float rnd) {
+    // Each component is (curve + (randCurve − curve) · rnd) · its own instance scale (0x47f570 / 0x480efb: record +8).
+    auto comp = [&](const char* name, const char* rname, bool useRand, float rnd, float scale) {
         const auto* g = graph(e, name);
         if (!g) return 0.0f;
         float v = g->sample(u, 0);
         if (useRand)
             if (const auto* rg = graph(e, rname)) v += (rg->sample(u, 0) - v) * rnd;
-        return v * g->scaleMin;
+        return v * scale;
     };
     const bool rv = flags & 0x80000, rv2 = flags & 0x100000;
-    const FVec v1{comp("velocityx", "velocityxrand", rv, p.velRnd[0]), comp("velocityy", "velocityyrand", rv, p.velRnd[1]),
-                  comp("velocityz", "velocityzrand", rv, p.velRnd[2])};
-    const FVec v2{comp("velocity2x", "velocity2xrand", rv2, p.vel2Rnd[0]), comp("velocity2y", "velocity2yrand", rv2, p.vel2Rnd[1]),
-                  comp("velocity2z", "velocity2zrand", rv2, p.vel2Rnd[2])};
+    const FVec v1{comp("velocityx", "velocityxrand", rv, p.velRnd[0], p.velScale[0]), comp("velocityy", "velocityyrand", rv, p.velRnd[1], p.velScale[1]),
+                  comp("velocityz", "velocityzrand", rv, p.velRnd[2], p.velScale[2])};
+    const FVec v2{comp("velocity2x", "velocity2xrand", rv2, p.vel2Rnd[0], p.vel2Scale[0]),
+                  comp("velocity2y", "velocity2yrand", rv2, p.vel2Rnd[1], p.vel2Scale[1]),
+                  comp("velocity2z", "velocity2zrand", rv2, p.vel2Rnd[2], p.vel2Scale[2])};
     auto frame = [&](const FVec& v, bool absolute) {
         if (absolute) return orient ? dirToTagSpace(*orient, v) : v;
         return orient ? v : add(add(mul(p.axis[0], v[0]), mul(p.axis[1], v[1])), mul(p.axis[2], v[2]));
@@ -640,7 +685,9 @@ bool FxSystem::physicsStep(FxParticle& p, int64_t frameMs, const FxTag* orient) 
 //   k = max(k − n, (t − +0x270)), ka = k · 0.001, Q = P + velocity(min((ka + now − spawn + acc) / life, 1)) · ka (no drift);
 // - P = Q, +0x258 = velocity at that time, off += drift · ka (relative), acc += ka, +0x270 += k, t = +0x270, k = 0, and the
 //   next distance d = (2 · rand() / 32768 − 1) · variance + density (CRT rand 0x553d5d, 0x591efc);
-// otherwise t += 12. TODO(spec): the CRT rand() sequence (here std::rand).
+// otherwise t += 12. rand() is the MSVC CRT one (0x553d5d: per-thread seed · 0x343fd + 0x269ec3, (seed >> 16) & 0x7fff); the
+// exe seeds it once with timeGetTime() (srand 0x553d50 at 0x40e149) and shares it with 25 other callers, so the sequence
+// itself cannot be reproduced; `crtRand` keeps the generator and the 0..32767 range with seed 1 (the CRT default).
 void FxSystem::emitFx(FxParticle& p, int64_t frameMs, const FxTag* orient, const FVec& drift) {
     const assets::EfxElement& e = *p.element;
     if (!(e.flagBits() & 0x100) || frameMs == 0) return;
@@ -698,7 +745,7 @@ void FxSystem::emitFx(FxParticle& p, int64_t frameMs, const FxTag* orient, const
         p.emitLastMs += k;
         t = p.emitLastMs;
         k = 0;
-        p.emitDist = (float(std::rand()) / 32768.0f * 2.0f - 1.0f) * p.variance + p.density;
+        p.emitDist = (float(crtRand()) / 32768.0f * 2.0f - 1.0f) * p.variance + p.density;
         d2 = p.emitDist * p.emitDist;
     }
 }
@@ -804,9 +851,42 @@ void FxSystem::addTracer(const FVec& from, const FVec& to, int64_t nowMs, int fr
     tracers_.push_back(t);
 }
 
+// The element death slot (vtable +4, 0x4801d0; in the Particle, OrientedParticle, Emitter, Tail and Cylinder vtables 0x57c810,
+// 0x57c7e4, 0x57c760, 0x57c6b0, 0x57c7b8, not Line / Light / Cloud). The update loop 0x48be90 calls it when the system time has
+// passed the end (+0xbc; it clears impactKills 0x400 first, 0x48bec9) or when the update slot returned false. With deathFx
+// 0x200, without impactKills 0x400 and with an effect in +0x30 it draws a, b, c = 0x426250(-1, 1) in that order, dir = (c, b, a)
+// normalised when its length is above 1e-6 (double 0x592310), else (0, 0, 1), and plays +0x30 at the position +0x4 with row 0 =
+// dir (0x485220). +0x4 is passed as it is, i.e. in tag space for a relative element. The play goes through the deferred list
+// (after the update loop) like impactFx; the exe plays it inside the loop.
+void FxSystem::deathEffect(const FxParticle& p, bool expired) {
+    const assets::EfxElement& e = *p.element;
+    const bool hasSlot = e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" || e.type == "Tail" ||
+                         e.type == "Cylinder";
+    const uint32_t flags = e.flagBits() & (expired ? ~0x400u : ~0u);
+    if (!hasSlot || !(flags & 0x200) || (flags & 0x400) || p.deathFx.empty()) return;
+    auto draw = [&] { return -1.0f + 2.0f * frand(); }; // 0x426250(-1, 1): lo + (hi - lo) · (seed >> 17) / 32768
+    const float a = draw(), b = draw(), c = draw();
+    const double len = std::sqrt(double(c * c + b * b + a * a));
+    FVec dir{0, 0, 1};
+    if (len > 1e-6) {
+        const float k = 1.0f / float(len);
+        dir = {c * k, b * k, a * k};
+    }
+    DeferredPlay dp;
+    dp.path = p.deathFx;
+    dp.origin = e.type == "Cylinder" ? (p.bolt ? p.local0 : p.origin) : p.pos; // +0x4
+    dp.axes[0] = dir;
+    axesFromForward(dp.axes);
+    deferred_.push_back(std::move(dp));
+}
+
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     runPending(nowMs);
-    std::erase_if(particles_, [&](const FxParticle& p) { return p.dead || nowMs >= p.endMs; });
+    std::erase_if(particles_, [&](const FxParticle& p) {
+        if (!p.dead && nowMs < p.endMs) return false;
+        deathEffect(p, !p.dead);
+        return true;
+    });
     std::vector<FxSprite> out;
     sightBlockers_.clear();
     if (std::getenv("IW2_FX_DEBUG")) {
@@ -1113,6 +1193,9 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!(cl > 0)) continue;
             s.beamPerp = mul(c, 1.0f / cl);
         }
+        // Debug: IW2_FX_SKIP=<element type or name> leaves those sprites out of the draw (the element still updates).
+        static const char* const fxSkip = std::getenv("IW2_FX_SKIP");
+        if (fxSkip && (e.type == fxSkip || e.name == fxSkip)) continue;
         if (!hidden) out.push_back(s);
     }
     // Tracer entities (0x4c0d98): the head P = base + dir * speed * age (TR_LINEAR, 0x4fae80); the streak runs from P

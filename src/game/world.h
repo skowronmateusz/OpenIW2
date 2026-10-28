@@ -13,6 +13,7 @@
 #include "game/campaign.h"
 #include "game/fx.h"
 #include "game/collision.h"
+#include "game/compassping.h"
 #include "game/friendlychain.h"
 #include "game/grenadehint.h"
 #include "game/hitboxes.h"
@@ -603,8 +604,14 @@ public:
     float northYaw() const { return float(std::atof(northYaw_.c_str())); }
     // Compass friendlies (ownerdraw 87, server 0x4db2ee..0x4db37b): with drawcompassfriendlies (0x4f4450, flag 0x1c61050) on, every
     // living ally actor whose `drawoncompass` field (actor +0x2120) is set is listed with its origin and yaw.
-    struct CompassMarker { Vec3 pos{}; float yaw = 0; };
+    // pingEndMs: the entry's sound-ping end (0xf79a88 +16, 0 = none), read by the friendly pass of 0x4c0f20.
+    struct CompassMarker { Vec3 pos{}; float yaw = 0; int64_t pingEndMs = 0; };
     std::vector<CompassMarker> compassFriendlies() const;
+    // Compass sound pings (0x4c0e20): an actor's weapon fire (EV_FIRE_WEAPON 0x4b7800 -> 0x4b79bb, length of the fire sound) and an
+    // actor's MG42 fire (0x4bb0b6, 50 ms at the turret origin). Axis actors' pings are drawn by ownerdraw 87 (compassping_enemyfiring).
+    const CompassPings& compassPings() const { return compassPings_; }
+    // Registers a ping for an actor (team string from its `team` field) at pos lasting durationMs (0x4c0e20).
+    void compassPing(const Entity& actor, const Vec3& pos, int durationMs);
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
@@ -735,7 +742,8 @@ public:
     void triggerDamageHit(Entity& e, Entity* attacker, int amount, const std::string& mod);
     void triggerDamageUse(Entity& e); // 0x529450
     void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod);
-    void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
+    void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity,
+                            int cookedFuseMs = 0);
     std::string playerOffhandFor(const std::string& offhandClass);
     void playerGrenadeInHand(const Vec3& eye);
     // Script notify on the player entity (ClientEvents 0x4e75f0: binocular events 0xa8..0xac -> "binocular_enter", "_exit",
@@ -1076,6 +1084,7 @@ private:
     Vec3 grenadeVelocity(const GrenadeState& g, int64_t atMs) const;
     Entity& spawnGrenade(Entity& thrower, const std::string& weaponName, const Vec3& start, const Vec3& velocity, int fuseMs);
     bool bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs);
+    int nextRand() { meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3; return int(meleeSeed_ >> 0x11 & 0x7fff); } // rand() (0x5a56f4)
     void radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                       const std::string& mod);
     bool canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at = nullptr);
@@ -1264,6 +1273,7 @@ private:
     float cullDist_ = 0;                  // setculldist (configstring 8), unused
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
+    CompassPings compassPings_;
     std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;
