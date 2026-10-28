@@ -225,8 +225,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // attacker, direction, point, means of death; 0x527fd0) whenever the amount is not 0, health (ent+0x13c) minus the
     // amount, kept above −1000 (0x528466); below 1 "death" (0x1c7f05c) with the attacker and the means-of-death name
     // (0x5a95ac). Script models (handler 0xd) and brush models (0xc) have no pain or die callback (0x5a5744 /
-    // 0x5a5748), so they stay damageable. TODO(spec): the spawn health of these entities (OpenIW2 starts from the
-    // "health" key or 0), the team kill counter (0x82552c) for actor deaths.
+    // 0x5a5748), so they stay damageable. Spawn health: "health" is an int spawn key stored at ent+0x13c (field tables 0x16f518 / 0x170868), the
+    // entity memory is zeroed otherwise, so the key or 0 is exact. TODO(spec): the team kill counter (0x82552c) for actor deaths.
     if (!target.isActor && !target.isPlayer) {
         if (amount == 0) return;
         const Value hv = target.obj->get("health");
@@ -1114,8 +1114,8 @@ void World::registerCombatBuiltins() {
         return Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]});
     });
     // dropweapon(weapon, hand, throwSpeed) (0x53da50): hand "left"/"right" picks tag_weapon_left/right, other
-    // values no tag; the weapon item is spawned there by 0x5220f0. TODO(spec): the throw velocity (applied when
-    // throwSpeed != 0) and the item entity's physics.
+    // values no tag; the weapon item is spawned there by 0x5220f0. The throw velocity is applied below (exe-checked);
+    // the item falls under G_RunItem (World::runItems).
     vm_.registerBuiltin("dropweapon", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("not an entity");

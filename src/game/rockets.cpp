@@ -84,7 +84,7 @@ void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at,
 // direction of flight, (0, 0, 1) when it has none); with projImpactExplode the explosion event goes out with the
 // surface and the hit normal, the missile stops there and the radius damage (explosionInnerDamage /
 // OuterDamage / Radius from the parent, the hit entity skipped, MOD_PROJECTILE_SPLASH) follows.
-// TODO(spec): projImpactExplode 0 (the missile bounces, 0x525f30), the AI event 0x535860 (type 0x11) for the
+// TODO(spec): projImpactExplode 0 (the missile bounces, 0x525f30; every shipped projectile weapon has 1), the AI event 0x535860 (type 0x11) for the
 // parent, and that the exploded missile stays as an ET_GENERAL entity until freed.
 void World::rocketImpact(Entity& e, const TraceResult& tr) {
     RocketState& r = *e.rocket;
@@ -98,7 +98,8 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     }
     // 0x526484: with a direct damage the impact also runs the trigger_damage segment test (0x5295f0) from the missile
     // origin (the trace end point was stored there at 0x526e7b), MOD_PROJECTILE, for the parent.
-    // TODO(spec): the segment's end argument is a local of G_RunMissile (the stack slot 0x24); the origin is used for both ends.
+    // The segment's end argument is the G_RunMissile local vec3 (frame +0x24) that is stored to the origin (0xdc) at 0x526e7b, so
+    // both ends are the origin (0x526e38..0x526e80, call at 0x526ff6).
     if (damage != 0) triggerDamageSegment(r.parent, tr.endPos, tr.endPos, damage, 5);
     if (std::atoi(weaponField(r.weapon, "projImpactExplode").c_str()) == 0) {
         e.obj->removed = true;

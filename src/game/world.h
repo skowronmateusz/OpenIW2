@@ -612,6 +612,8 @@ public:
     const std::vector<std::string>& menuNames() const { return menus_; }
     // freezecontrols(): client +0x8630 (0x5392e0); the front end ignores movement and button input while it is set.
     bool controlsFrozen() const { return controlsFrozen_; }
+    // ClientThink 0x4e7bc0: pm_flags 0x8000 is set by freezecontrols (client +0x8630) or an absolute playerlinkto (+0x8698).
+    bool playerControlsFrozen() const { return controlsFrozen_ || (playerLink_ && playerLink_->absolute); }
     // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
     std::optional<LevelChange> dueLevelChange() const {
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;

@@ -729,8 +729,8 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     if (v.owner >= 0 && player_ && v.owner == player_->number) {
         pmFlags_ |= 0x40000;
         // ps+0xc 0x8000 (freezecontrols, client +0x8630 via ClientThink 0x4e7bc0) also zeroes the command.
-        // TODO(spec): the second source, client +0x8698.
-        if (!(pmFlags_ & 0x80000) && !controlsFrozen_) {
+        // The second source (0x4e7be6: client +0x8698 = an absolute playerlinkto) is playerControlsFrozen().
+        if (!(pmFlags_ & 0x80000) && !playerControlsFrozen()) {
             cmd.forward = playerCmd_.forward;
             cmd.right = playerCmd_.right;
             cmd.jump = (playerCmd_.buttons & 0x400) ? 127 : 0;
@@ -780,8 +780,8 @@ void World::vehiclePlayerAim(Entity& e) {
     Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
     if (!owner || owner != player_ || (pmFlags_ & 0x80000)) return;
     if (v.fireTimerMs < 1) {
-        // ps+0xc bit 0x8000 (freezecontrols) also blocks firing. TODO(spec): the second source, client +0x8698.
-        if ((playerCmd_.buttons & 1) && !controlsFrozen_) vm_.notify(e.obj, "turret_fire");
+        // ps+0xc bit 0x8000 (freezecontrols, or an absolute playerlinkto: client +0x8698, 0x4e7be6) also blocks firing.
+        if ((playerCmd_.buttons & 1) && !playerControlsFrozen()) vm_.notify(e.obj, "turret_fire");
     } else {
         v.fireTimerMs -= 50;
     }
