@@ -102,7 +102,10 @@ int main() {
     {
         ChainNodeIn bad = node("b", "", 0);
         bad.typeNum = 0;
-        CHECK(throws([&] { FriendlyChains f; f.build({node("a", "b", 0), bad}); }, "bad node"));
+        FriendlyChains f; // not fatal (0x52d5d0): the messages are kept and every chain field is cleared
+        f.build({node("a", "b", 0), bad});
+        CHECK(f.errors.size() == 2 && f.errors.back() == "Bad node in friendly chain");
+        CHECK(f.chainId(0) == 0 && f.chainId(1) == 0 && f.prev(1) == -1 && f.inChainCount() == 2);
     }
     // A chain whose head is flagged 2 gets id 0 and is not a friendly chain at all.
     {

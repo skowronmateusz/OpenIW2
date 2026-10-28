@@ -60,6 +60,7 @@ void World::buildFriendlyChains() {
         in.push_back(std::move(c));
     }
     chains_.build(in);
+    for (const std::string& m : chains_.errors) print(m); // 0x52d8ee / 0x52d5d0: printed, not fatal
 }
 
 // setfriendlychain: the node must be on a chain (+0x34 >= 1).

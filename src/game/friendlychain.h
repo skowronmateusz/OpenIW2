@@ -30,7 +30,7 @@ struct ChainEnv {
 class FriendlyChains {
 public:
     // Throws std::runtime_error with the exe's fatal messages (multiple nodes target a node, a node targets itself,
-    // a chain loop, a bad node in a chain).
+    // a chain loop). A bad node (type 0) in a chain is not fatal: its messages go to `errors` and the chains are cleared.
     void build(const std::vector<ChainNodeIn>& nodes);
 
     int count() const { return int(chain_.size()); }
@@ -48,6 +48,7 @@ public:
     // 0x518a70: the node a follower of leader node `L` stands at; `cur` is its current chain node (-1 none).
     int choose(int L, int minOff, int maxOff, int cur, bool fallback, const ChainEnv& env);
 
+    std::vector<std::string> errors; // the non-fatal bad-node messages of the last build (0x52d8e9, 0x52d90d)
     uint32_t seed = 1; // the exe's own LCG (0x5a56f4); the stream is not reproducible.
 
 private:

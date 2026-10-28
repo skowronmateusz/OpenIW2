@@ -174,6 +174,18 @@ turn is the prone block (0x514b30 / 0x514c40), not an override angle.
 
 ## Cover nodes (observed; Ghidra decompiles and the objdump listing)
 
+**Node drop** (0x515f80, called by G_InitGame at 0x4d9c3e right after the entity spawn 0x4fa550): the contents (+0xc0) of
+every entity whose flags (+0x128) have 0x100 (DYNAMICPATH) are saved and zeroed, every node goes through 0x515d70, then the
+contents are restored. 0x515d70(node): G_Trace 0x44bf00 of the box (-15,-15,0)..(15,15,30) from origin + (0,0,1) to origin −
+(0,0,256), pass entity 0x7ff, mask 0x820011. allsolid or startsolid (+0x22 / +0x23): "^3WARNING: Pathnode (%s) at (%g %g %g) is
+in solid" (0x58d790, type name from 0x5a9368); fraction 1: "... is floating" (0x58d75c); both set the type (+0) to 0 (BAD NODE).
+Otherwise the hit point (z = start + fraction·(−257)) is tested with the actor box 0x56f704 / 0x56f710 (start = end); solid gives
+the "in solid" case, else the hit point becomes the origin (+0x14..+0x1c). Implemented in `World::dropPathNodes` (before the
+path graph and the chains are built); the entity clips there are the non-DYNAMICPATH script_brushmodels (vehicle collmaps are
+linked later, 0x50dc40 at 0x4d9c6f). TODO(spec): the other entity classes linked at 0x4d9c3e. The 39-map sweep flags 29 nodes
+"in solid" and 2 "floating" (e.g. silotown_assault `checkpointB` (-688 -464 56) inside a clip_nosight brush, which empties the
+friendly chains of that map as in the exe's rule above; whether the original's collision agrees there is not verified).
+
 **Runtime node** (0x78 bytes from 0x1c8da04; script value = node index): +0 type 1…18, +4 spawnflags (0x40 priority,
 0x8000 "cover script optional", 1 never a cover candidate), +0x14 origin, +0x20 yaw, +0x24 forward, +0x30/+0x32 linked
 nodes, +0x40 owner sentient, +0x44 hold time (0x7fffffff while claimed), +0x44 + 4·team per-team block time (1 axis,
@@ -467,7 +479,11 @@ predecessor. Fatal errors: "multiple nodes target node with name '%s'", "node wi
 with name '%s'". Heads (a predecessor of something, with none of their own), visited in array order, get ids 1, 2, ... and position 1; each
 successor gets position + 1 (0x52d4c0). A head or successor with spawnflags bit 2 is excluded (id 0). The nodes are sorted (qsort, 0x52d580)
 by chain id descending, position ascending, predecessor ascending, type descending; the nodes before the first id 0 are the chain nodes
-(0x1c8da08). A chain node of type 0 is fatal ("bad node ... in friendly chain").
+(0x1c8da08). A chain node of type 0 is not fatal: each prints "Error: bad node [%d] in friendly chain at (%g %g %g)" (0x52d8e9, 0x42c7f0
+channel 1); then 0x52d5d0 keeps the first path error "\nBad node in friendly chain" (0x1cb2bac; G_RunFrame 0x4da9b9 prints it
+every 100 frames while the dvar at 0x1c1487c is set) and clears every node's chain fields (+0x34 / +0x36 = 0, +0x38 = -1); the
+returned chain node count (0x1c8da08) is kept. The chain build runs from the client begin (0x4e8f40 → 0x516bc0), after the
+node drop below.
 
 `setfriendlychain(node)` (0x4eeb10): the entity must be a player, one argument, and the node's chain id must be >= 1 ("Node %d (%.2f, %.2f,
 %.2f) is not a friendly chain node."); it is stored as the sentient's chain node (+0x30). `trigger_friendlychain` (type 5, spawn 0x529170,

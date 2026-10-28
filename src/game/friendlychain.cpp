@@ -69,11 +69,21 @@ void FriendlyChains::build(const std::vector<ChainNodeIn>& nodes) {
     for (int p = 0; p < n; ++p) inv_[size_t(sorted_[size_t(p)])] = p;
     inChain_ = 0;
     while (inChain_ < n && chain_[size_t(sorted_[size_t(inChain_)])] != 0) ++inChain_;
+    // 0x52d8b0..0x52d917: every chain node of type 0 prints "Error: bad node [%d] in friendly chain at (%g %g %g)" (0x42c7f0
+    // channel 1, not fatal); if there was one, 0x52d5d0 keeps the first path error "\nBad node in friendly chain" (0x1cb2bac,
+    // printed again every 100 frames by 0x4da9b9 while a dvar at 0x1c1487c is set) and clears the chain fields of every
+    // node (+0x34 id and +0x36 position 0, +0x38 predecessor -1). The returned chain node count (0x1c8da08) is kept.
+    errors.clear();
     for (int p = 0; p < inChain_; ++p) {
         const ChainNodeIn& a = nodes[size_t(sorted_[size_t(p)])];
         if (a.typeNum == 0)
-            throw std::runtime_error("Error: bad node [" + std::to_string(sorted_[size_t(p)]) + "] in friendly chain at (" +
-                                     fmt3(a.origin) + ")\nBad node in friendly chain");
+            errors.push_back("Error: bad node [" + std::to_string(sorted_[size_t(p)]) + "] in friendly chain at (" + fmt3(a.origin) + ")");
+    }
+    if (!errors.empty()) {
+        errors.push_back("Bad node in friendly chain");
+        std::fill(chain_.begin(), chain_.end(), 0);
+        std::fill(pos_.begin(), pos_.end(), 0);
+        std::fill(prev_.begin(), prev_.end(), -1);
     }
 }
 

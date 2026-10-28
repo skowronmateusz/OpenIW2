@@ -698,6 +698,7 @@ private:
     Entity* spawnActor(Entity& spawner, bool force = true);
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
+    void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
     void registerBuiltins();
     void registerMissingStubs();
     void runTriggers();
