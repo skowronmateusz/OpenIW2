@@ -195,6 +195,12 @@ private:
     };
     std::shared_ptr<FxBolt> curBolt_; // the attachment of the effect being played (children inherit it, 0x48dac0)
     std::vector<PendingRun> pending_;
+    struct ImpactRun {
+        std::string path;
+        FVec origin{}, dir{};
+        int64_t startMs = 0;
+    };
+    std::vector<ImpactRun> impactQueue_;
     struct Tracer {
         FVec base{}, dir{};
         float length = 0; // distance base -> impact (+0x44)

@@ -60,9 +60,16 @@ mid(r) = (max − min) · 0.5 + min:
   useRandomColors / Alpha / Size / Size2 (+0x118..+0x124). With org2fromTrace 0x8 B comes from a trace (not implemented).
 - Update 0x482da0: +0x7c = A, +0x9c = B (through the bolt for relative), then size (0x4818b0 → +0x88), rgb, alpha. No
   frame step. Draw 0x482d90: renderer type 8, the Tail quad (half width = size).
-- OpenIW2: `FxSystem` emits a `beamTail` sprite. TODO(spec): the frame value (+0x94) of a Line (never written by its spawn
-  or update), org2fromTrace / traceImpactFx, the bolt transform of B. The only Line effect (minefield.efx) names materials
-  that do not ship and is not played by any script.
+- org2fromTrace 0x8 (0x48c850): end = A + row0 · 16384 (0x592270), plus the origin2 sample with org2isOffset 0x20 (world
+  axes with cheapOrg2Calc); B = A + (end − A) · fraction of the effect trace 0x486f70 (zero box, contents 1). With
+  traceImpactFx 0x10 one `impactfx` entry (list +0x70, count word +0x74; (seed >> 17) · count >> 15) plays at B along the
+  trace normal (0x485220).
+- Frame +0x94: no Line code writes it and the effect pool (0x47f0a0) hands out freed slots uncleared, so it is whatever the
+  previous occupant left (0 in never-used pool memory 0xa32380). Frame 0 is used.
+- Relative Lines: the spawn stores B in tag space (0x440600), the update maps A and B through the bolt (0x4404f0).
+- OpenIW2: `FxSystem` emits a `beamTail` sprite; relative Lines follow the tag's translation (TODO(spec): its rotation, as for
+  all relative elements here). The only Line effect (minefield.efx) names materials that do not ship and is not played by
+  any script.
 
 ## Cloud elements (type 12)
 

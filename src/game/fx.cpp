@@ -285,18 +285,44 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     if (e.type == "Line") {
         // 0x48c850 (without org2fromTrace 0x8): origin2 ranges drawn z, y, x (+0xe0, +0xd8, +0xd0; `origin2 a b c d e f` =
         // x [a, d], y [b, e], z [c, f]), taken in world axes with cheapOrg2Calc 0x80, else as x·row0 + y·row1 + z·row2 of the
-        // instance axes (0x424a70, after the spawn shape changed them), added to the effect origin. TODO(spec): org2fromTrace
-        // (trace from A along the axis, 0x592270), org2isOffset, traceImpactFx; the relative Line's bolt transform (0x440600).
+        // instance axes (0x424a70, after the spawn shape changed them), added to the effect origin. For relative Lines the spawn
+        // stores B in tag space (0x440600) and the update maps both points back through the bolt (0x4404f0); here both follow
+        // the tag's translation, like relative particles.
         p.line = true;
+        const uint32_t sf = e.spawnFlagBits();
         const auto o2 = e.numbers("origin2");
-        float x = 0, y = 0, z = 0;
-        if (o2.size() >= 6) {
-            z = range({o2[2], o2[5]}, 0);
-            y = range({o2[1], o2[4]}, 0);
-            x = range({o2[0], o2[3]}, 0);
+        auto org2 = [&] {
+            float x = 0, y = 0, z = 0;
+            if (o2.size() >= 6) {
+                z = range({o2[2], o2[5]}, 0);
+                y = range({o2[1], o2[4]}, 0);
+                x = range({o2[0], o2[3]}, 0);
+            }
+            return sf & 0x80 ? FVec{x, y, z} : add(add(mul(ax[0], x), mul(ax[1], y)), mul(ax[2], z));
+        };
+        if (!(sf & 0x8)) {
+            p.lineB = add(origin, org2());
+        } else {
+            // org2fromTrace 0x8: end = A + row0 · 16384 (0x592270), plus the origin2 sample with org2isOffset 0x20; B = A + (end − A)
+            // · fraction of the effect trace (0x486f70, zero box). With traceImpactFx 0x10 one `impactfx` entry at random
+            // ((seed >> 17) · count >> 15, none when the list is empty: entry 0 = null) plays at B along the trace normal (0x485220).
+            FVec end = add(p.origin, mul(ax[0], 16384.0f));
+            if (sf & 0x20) end = add(end, org2());
+            float frac = 1.0f;
+            FVec n{};
+            if (!(trace && trace(p.origin, end, frac, n))) frac = 1.0f;
+            p.lineB = add(p.origin, mul(sub(end, p.origin), frac));
+            if (sf & 0x10) {
+                const auto names = e.list("impactfx");
+                if (!names.empty()) {
+                    seed_ = seed_ * 0x343fd + 0x269ec3;
+                    std::string name = names[std::min(names.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * names.size()) >> 15))];
+                    while (!name.empty() && name[0] == '/') name.erase(0, 1);
+                    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
+                    if (loader) impactQueue_.push_back({name, p.lineB, n, startMs});
+                }
+            }
         }
-        const FVec off = e.spawnFlagBits() & 0x80 ? FVec{x, y, z} : add(add(mul(ax[0], x), mul(ax[1], y)), mul(ax[2], z));
-        p.lineB = add(origin, off);
     }
     // Material and sequence (0x48cd20): the material at random ((seed >> 17)·count >> 15); with a frame
     // count n > 1 the start frame by sequenceStartFrameMode (+0x288; 0 fixed: sequenceFixedFrameValue − 1,
@@ -325,7 +351,9 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
         }
     }
     if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
-        p.seqStart = 0, p.seqRate = 0; // TODO(spec): the frame (+0x94) the Line instance carries
+        // +0x94 is never written for a Line: the pool (0x47f0a0) reuses freed slots without clearing, so the frame is the value
+        // a previous element left there, 0 in never-used pool memory (0xa32380, zero-initialised data). Frame 0 here.
+        p.seqStart = 0, p.seqRate = 0;
     }
     if (p.cloud) {
         // 0x48ce70 draws the start angle +0x44 from `rotation` (+0x220); 0x48de90 then draws +0x260 = 0x426250(0, 1) and copies
@@ -488,6 +516,15 @@ std::vector<FxDecal> FxSystem::takeDecals(int64_t nowMs) {
 }
 
 void FxSystem::runPending(int64_t nowMs) {
+    if (!impactQueue_.empty() && loader) { // traceImpactFx of Line spawns (played once their spawn time has come)
+        std::vector<ImpactRun> due;
+        std::erase_if(impactQueue_, [&](const ImpactRun& r) {
+            if (r.startMs > nowMs) return false;
+            due.push_back(r);
+            return true;
+        });
+        for (const ImpactRun& r : due) play(loader(r.path), r.origin, r.dir, r.startMs);
+    }
     if (pending_.empty() || !loader) return;
     std::vector<PendingRun> due;
     std::erase_if(pending_, [&](const PendingRun& p) {
@@ -661,7 +698,13 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
         }
         if (p.tail) pos = p.pos;
-        if (p.line) pos = p.origin; // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, nothing moves
+        FVec lineShift{};
+        if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
+            pos = p.origin;
+            FVec now{};
+            if (p.bolt && (*p.bolt)(now)) lineShift = sub(now, p.bolt0); // TODO(spec): the tag rotation (translation only, as particles)
+            pos = add(pos, lineShift);
+        }
         FxSprite s;
         s.position = pos;
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
@@ -717,8 +760,8 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Line draw 0x482d90 -> 0x480010 renderer type 8 (the Tail quad, 1.3 DLL 0x10041470 / 0x100409c0): A = +0x7c, B = +0x9c,
             // half width = the size channel (+0x88, 0x4818b0), colour bytes from rgb / alpha (0x4819b0 / 0x481a40).
             s.beam = s.beamTail = true;
-            s.beamA = p.origin;
-            s.beamB = p.lineB;
+            s.beamA = add(p.origin, lineShift);
+            s.beamB = add(p.lineB, lineShift);
             s.widthA = s.widthB = s.size;
             if (!viewValid) continue;
             const FVec a = sub(s.beamA, viewOrigin), b = sub(s.beamB, viewOrigin);
