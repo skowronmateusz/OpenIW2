@@ -474,7 +474,12 @@ int World::deathThink(Entity& e) {
     }
     ai.facing = 1;
     setActorAnimScript(e, "death", 0, 4);
-    // TODO(spec): 500 ms after death the entity's contents become 0x4002000 (corpse); collision does not model it.
+    // 0x548bac..0x548bcd: while the death script runs, from 500 ms after the state was set (+0x20) the entity's contents
+    // (+0xc0) are 0x4002000 and it is relinked. Of the trace masks only bit 0x2000 is hit: bullets / melee / bullettrace
+    // (0x280e831), grenades and rockets (0x280e891), the use trace (0x280e801); not the actor move (0x2820011), the player
+    // (0x281c011) or sight (0x280d803) masks, which do hit the living contents 0x4000 it had until then (syncEntityClips).
+    // The corpse (0x4fdba0, 0x4fdc75) gets 0x4000000, which no mask in the exe holds, so a corpse has no clip here.
+    if (timeMs_ >= ai.baseStateMs + 500) ai.dyingContents = 0x4002000u;
     return 0;
 }
 

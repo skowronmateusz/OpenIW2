@@ -128,8 +128,14 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
   (0, 4); finish 0x54d300 broadcasts the pain AI event (0x535770).
 - Death: start 0x548980 (substate 200); think 0x548ab0: substate 200 and 800 ms
   since the state was set → 0x548a10 (death AI event, grenade, sentient release, clear path), substate 201; the
-  `death` script's thread ended → 2 (corpse); else facing 1, `death` (0, override or 4); 500 ms after death the
-  contents become 0x4002000.
+  `death` script's thread ended → 2 (corpse); else facing 1, `death` (0, override or 4); while the script runs, from 500 ms
+  after the state was set (+0x20) the contents (+0xc0) are 0x4002000 and the entity is relinked (0x548bac..0x548bcd). Until then
+  the dying actor keeps its living contents 0x4000 and box. Which traces that hits, from the masks in the exe: 0x2000 is in the
+  bullet / melee / bullettrace mask 0x280e831, the grenade and rocket clip 0x280e891 and the use trace 0x280e801, not in the actor
+  move (0x2820011), player move (0x281c011) or sight (0x280d803) masks; 0x4000 is in all of these. The corpse (0x4fdba0) gets
+  0x4000000 (0x4fdc75), which no mask in the exe contains. Ported: `syncEntityClips` keeps a clip for an actor in the death state
+  with 0x4000, then 0x4002000 (`ActorAi::dyingContents`, set by `deathThink`); a corpse has none (toujane lethal combat scene:
+  death state at 8.15 s, 0x4000 to 8.65 s, 0x4002000 to the corpse at 10.0 s).
 - "Script ended" (death, pain, animcustom, negotiation, grenade return, 0x53ac10): the animscript thread id +0x200 is 0, or the VM
   variable of that id (table 0x8bee88, stride 16, type = low 5 bits) has type 0x17, which the VM's thread-end paths 0x464990 /
   0x46ca60 / 0x46d1f0 write (`& ~8 | 0x17`). The seven actor-code readers (0x520973, 0x53ac25, 0x548b09, 0x54b122, 0x54b2d1,

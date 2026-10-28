@@ -142,6 +142,7 @@ struct ActorAi {
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
     std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
     bool corpse = false;                      // turned into a corpse (0x4fdba0)
+    uint32_t dyingContents = 0;               // gentity +0xc0 written by the death think 500 ms into the state (0x548bc0: 0x4002000); 0 = unchanged
     bool badPlace = false;                    // +0x2128: noticed a bad place (→ badplace state)
     struct Entity* grenade = nullptr;         // +0x20c4: grenade it reacts to (script field "grenade")
     bool throwPending = false;                // +0x20d0: a solved throw waits for throwGrenade
