@@ -114,8 +114,13 @@ bounds are relative to the entity origin (demolition `*73`, origin 6488 480 272:
 OpenIW2 (iw2view): with a running level the soups of `script_brushmodel` submodels are not baked into the world; they
 are drawn by the world passes (same shaders, lightmaps, `lmap_s` path) at the entity's interpolated origin/angles,
 and not while the entity is hidden (`hide` 0x4efd10 sets bit 0x80 of ent+0x128, `show` 0x4efcb0 clears it) or
-deleted. Marks and the outdoor bounds use model 0's soups only. TODO(spec): the client draw path of brush entities
-(cgame → renderer) was not traced; marks on brush models; sky/water soups in brush models (skipped).
+deleted. Marks and the outdoor bounds use model 0's soups only. Marks: as the 1.3 renderer, whose MarkFragments
+(0x10015df0) only walks the world node tree and the cells' surface lists (0x10015990 → 0x100157f0), with no entity /
+submodel path, so brush models get no impact marks. Water soups of brush models are drawn by the water pass at the
+entity transform; a scan of every brush submodel of the 27 SP maps found water only in duhoc_assault `*26` /
+duhoc_defend `*128` (`water_section`, material `water_duhoc`, hidden / shown and moved by the level scripts) and no
+sky soup (sky soups of brush models are still dropped). TODO(spec): the client draw path of brush entities (cgame →
+renderer) was not traced; whether a cell list can reference a submodel soup.
 
 ## Not yet specified
 

@@ -813,6 +813,7 @@ private:
     void touchItems();                // G_TouchTriggers for weapon items (0x4e7320 -> Touch_Item 0x521a90)
     bool touchWeaponItem(Entity& item); // Pickup_Weapon (0x521170) by touch; true when the item was used up
     int weaponRoom(Inventory& inv, const std::string& weapon); // 0x4dcc00
+    void trimSharedAmmo(Inventory& inv, const std::string& weapon); // 0x520f3d..0x520ff5 (sharedAmmoCap over-fill)
     uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);
     int weaponInt(const std::string& weaponName, const char* key);
