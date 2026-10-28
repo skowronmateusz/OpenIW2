@@ -3,6 +3,7 @@
 #include "script/parser.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <stdexcept>
@@ -675,6 +676,7 @@ void VM::run(Thread& t) {
     bool suspended = false;
     const bool wasRunning = t.running;
     t.running = true;
+    if (!wasRunning) runStart_ = std::chrono::steady_clock::now();
     while (!suspended && t.state != ThreadState::Done) {
         try {
             step(t, suspended);
@@ -925,7 +927,14 @@ void VM::step(Thread& t, bool& suspended) {
         break;
     }
     case Op::BitNot: push(Value(~pop().asInt())); break;
-    case Op::Jump: fr.pc = size_t(in.a); break;
+    case Op::Jump:
+        // Backward jump (0x46aae9): a script that has run 2500 ms of wall time without suspending is killed
+        // ("potential infinite loop in script - killing thread.", developer off).
+        if (size_t(in.a) <= fr.pc &&
+            std::chrono::steady_clock::now() - runStart_ >= std::chrono::milliseconds(2500))
+            throw std::runtime_error("potential infinite loop in script - killing thread.");
+        fr.pc = size_t(in.a);
+        break;
     case Op::JumpIfFalse:
         if (!pop().truthy()) fr.pc = size_t(in.a);
         break;

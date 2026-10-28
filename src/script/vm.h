@@ -5,6 +5,7 @@
 #include "script/stateio.h"
 #include "script/value.h"
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -202,6 +203,7 @@ private:
     SourceLoader loader_;
     std::unordered_map<std::string, File> files_;
     std::vector<CompiledFunction> functions_;
+    std::chrono::steady_clock::time_point runStart_ = std::chrono::steady_clock::now(); // 0x9ff01c: start of the running script
     std::unordered_map<std::string, int> builtinIndex_;
     std::vector<Builtin> builtins_;
     std::vector<std::string> builtinNames_;
