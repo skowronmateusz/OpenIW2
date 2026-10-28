@@ -238,13 +238,13 @@ void World::blockNodeForTeam(int node, Entity& e) {
 // Claim a node (0x5152f0): the previous one is released; a normal node (or a priority one whose hold expired) is
 // taken (0x518fa0); a held priority node is taken over (0x519050), evicting a claiming owner (0x515330: its path is
 // dropped when it ends at the node, then 0x519300).
-void World::claimNode(Entity& e, int node) {
+void World::claimNode(Entity& e, int node, bool takeOver) {
     linkOverlappingNodes();
     if (e.claimedNode == node) return;
     if (e.claimedNode >= 0) releaseNode(e);
     if (node < 0) return;
     PathNode& n = nodes_[size_t(node)];
-    if ((n.spawnflags & 0x40) && n.ownerUntilMs >= timeMs_ && n.owner && n.owner != &e && n.ownerUntilMs == kNodeClaimed) {
+    if (((n.spawnflags & 0x40) || takeOver) && n.ownerUntilMs >= timeMs_ && n.owner && n.owner != &e && n.ownerUntilMs == kNodeClaimed) {
         Entity* owner = n.owner;
         if (owner->isActor && owner->claimedNode == node) {
             if (actorHasPath(*owner) && samePoint(vecField(n.obj, "origin"), pathEnd(*owner))) clearActorPath(*owner);
@@ -479,6 +479,19 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
 // path end) is near it or the plan time is not reached; else release it and claim the node the actor stands at
 // when it is a cover node (or flagged 0x8000), near and usable.
 void World::updateClaimedNode(Entity& e) {
+    updateClaimedNodeCore(e);
+    // 0x4fe8e1..0x4fe906 (and 0x548b6c..): afterwards, a claimed node that the followed entity stands at (0x502660: within 30 units
+    // in xy and 80 in z of the node) is given up (0x4fe670).
+    if (e.claimedNode >= 0 && e.ai.followed && nearClaimedNodeOf(e, vecField(e.ai.followed->obj, "origin"))) giveUpClaimedNode(e);
+}
+
+bool World::nearClaimedNodeOf(const Entity& a, const Vec3& pos) const {
+    const Vec3 no = vecField(nodes_[size_t(a.claimedNode)].obj, "origin");
+    const float dz = pos[2] - no[2];
+    return dz * dz <= 6400.0f && dist2d(no, pos) <= 900.0f;
+}
+
+void World::updateClaimedNodeCore(Entity& e) {
     if (!e.ai.alive || e.obj->get("keepclaimednode").truthy()) return;
     if (e.obj->get("keepclaimednodeingoal").truthy()) {
         if (e.claimedNode >= 0 && inActorGoal(e, vecField(nodes_[size_t(e.claimedNode)].obj, "origin"))) return;
@@ -526,10 +539,10 @@ bool World::pathToNode(Entity& e, int node) {
 
 // 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it. A truncated path
 // (flag 4) whose planned count (+0x382) is at least four times its point count is dropped even when it ends inside
-// (0x502984..0x5029a1). The offset goal of 0x502960 (0x502a2d..0x502c4d: a node query around the goal shifted
-// sideways by actor +0x73c, planners 0x542340 / 0x5428a0 / 0x542550) only runs when min(|+0x73c|, goal radius −
-// 0x592114) > 0; the exe never writes +0x73c but 0 (4fc7ab, grep of every `0x73c(%reg)` store), so it is dead in the
-// single-player game and the plain path to the goal (0x503650) always runs. The wrapper 0x502cd0 clears the blocker
+// (0x502984..0x5029a1). With s = min(|+0x73c|, goal radius − 15 (0x592114)) > 0 the offset goal runs instead of the
+// plain path to the goal (0x503650): pathToSideGoal with s signed like +0x73c (0x502b13..0x502b2a). The exe never
+// writes +0x73c but 0 (4fc7ab is the only store; the actor field table 0x5703f0 has no row for it), so in the
+// single-player game the offset goal is dead and the plain path always runs. The wrapper 0x502cd0 clears the blocker
 // fields (+0x728 / +0x72c) while there is no path afterwards, and a failed plan waits 500 ms (0x502c70).
 bool World::pathToGoal(Entity& e) {
     bool done = false;
@@ -544,7 +557,12 @@ bool World::pathToGoal(Entity& e) {
     if (!done) {
         Vec3 gp{};
         float gr = 0, gh = 0;
-        ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+        if (actorGoal(e, gp, gr, gh)) {
+            float side = std::fabs(e.ai.goalSide);
+            if (!(side <= gr - 15.0f)) side = gr - 15.0f;
+            if (side > 0.0f) ok = pathToSideGoal(e, e.ai.goalSide < 0.0f ? -side : side);
+            else ok = pathToPoint(e, gp);
+        }
     }
     if (!actorHasPath(e)) {
         e.ai.blocker = nullptr;
@@ -572,11 +590,16 @@ void World::updateActorPath(Entity& e) {
         return;
     }
     followFriendlyChain(e); // 0x505ed0
-    // 0x503080: fighting = an enemy known within 5 s, or (without a path) one whose node the claimed node sees.
+    // 0x503080: fighting = an enemy and, without a path, the claimed node sees the enemy's node (0x502fc0), else the
+    // enemy's position known within 5 s (record +0x10).
     bool fighting = false;
     if (Entity* enemy = entityOf(e.obj->get("enemy"))) {
-        auto it = e.sentientInfo.find(enemy->obj.get());
-        fighting = it != e.sentientInfo.end() && it->second.lastKnownMs != 0 && timeMs_ - it->second.lastKnownMs < 5000;
+        if (!hadPath && claimedNodeSeesEnemyNode(e, *enemy)) {
+            fighting = true;
+        } else {
+            auto it = e.sentientInfo.find(enemy->obj.get());
+            fighting = it != e.sentientInfo.end() && it->second.lastKnownMs != 0 && timeMs_ - it->second.lastKnownMs < 5000;
+        }
     }
     if (!fighting) ai.pathToEnemy = false;
     updateWorkingGoal(e); // 0x505f70
@@ -605,9 +628,148 @@ void World::updateActorPath(Entity& e) {
         ai.pathToEnemy = false;
         ai.planTimeMs = timeMs_ + 500;
     }
-    // 0x503200: stop for the enemy. Only its first test is implemented: never without an enemy and a path, or
-    // when the enemy is farther (2D) than pathenemyfightdist. TODO(spec): the rest (0x503000, 0x502e80, 0x543ae0).
-    if (node >= 0) claimNode(e, node);
+    // 0x503200: stopping for the enemy drops the path and waits 500 ms (0x503e10) without claiming the node.
+    if (stopForEnemy(e, fighting, node, hadPath)) {
+        clearActorPath(e);
+        ai.planTimeMs = timeMs_ + 500;
+        return;
+    }
+    if (node >= 0) claimNode(e, node); // 0x5152f0
+}
+
+// 0x502fc0 (and the first test of 0x503000): the claimed node sees the enemy's node (0x515040, 0x517ed0: the same node,
+// or its bit in the node visibility matrix; none without the matrix).
+bool World::claimedNodeSeesEnemyNode(Entity& e, Entity& enemy) {
+    if (e.claimedNode < 0) return false;
+    const int en = sentientNode(enemy);
+    if (en < 0) return false;
+    if (en == e.claimedNode) return true;
+    const size_t cnt = paths_.size(), hi = size_t(std::max(en, e.claimedNode)), lo = size_t(std::min(en, e.claimedNode));
+    const size_t bit = (hi - 1) * cnt + lo;
+    const auto& bits = paths_.visibilityBits();
+    return bit / 8 < bits.size() && (bits[bit / 8] >> (bit % 8) & 1);
+}
+
+namespace {
+// 0x502e10: `ep` within sqrt(r2) (2D) of the segment that ends at `p` and runs `len` back along −`dir`: t = (p − ep)·dir
+// must be below len; past the end (t <= 0) the distance to `p` counts, else the distance from the line.
+bool nearSegment(const Vec3& p, const std::array<float, 2>& dir, float len, float r2, const Vec3& ep) {
+    const float dx = p[0] - ep[0], dy = p[1] - ep[1];
+    const float t = dx * dir[0] + dy * dir[1];
+    if (!(t < len)) return false;
+    float d2;
+    if (t > 0.0f) {
+        const float c = dx * dir[1] - dy * dir[0];
+        d2 = c * c;
+    } else {
+        d2 = dx * dx + dy * dy;
+    }
+    return d2 < r2;
+}
+
+// 0x543ae0: the path ahead is longer than `dist`: the lookahead (+0x3ac) and the rest of its segment (+0x3b4), 128 more
+// with a traversal point (+0x386), then the segments towards the goal from the lookahead's point; the actor's own first
+// segment counts with what is left of it (+0x3c4).
+bool pathLongerThan(const ActorPath& p, float dist) {
+    float t = p.lookSegLen + p.lookDist;
+    if (p.traversal != 0) t += 128.0f;
+    if (t > dist) return true;
+    if (p.lookIndex == 0) return false;
+    int i = p.lookIndex - 1;
+    if (i == p.count - 2) {
+        t += p.startLen;
+        if (t > dist) return true;
+        --i;
+    }
+    for (; i >= 0; --i) {
+        t += p.pts[size_t(i)].len;
+        if (t > dist) return true;
+    }
+    return false;
+}
+} // namespace
+
+bool pathAheadLongerThan(const ActorPath& p, float dist) { return pathLongerThan(p, dist); } // used by 0x545580
+
+// 0x502e80: the enemy (at `ep`) is near the way ahead. The reach is pathenemylookahead (+0x780), 256 more without a
+// path before this update; inside it (2D) around the actor counts, else near the lookahead segment (the actor to
+// `look`), the rest of the lookahead's path segment, and the segments after it towards the goal while the length
+// covered (from the lookahead distance on) is below pathenemyfightdist (+0x784).
+bool World::enemyNearPathAhead(Entity& e, const Vec3& ep, const Vec3& look, bool hadPath) {
+    float la = floatField(e.obj, "pathenemylookahead", 0.0f);
+    if (!hadPath) la += 256.0f;
+    const float r2 = la * la;
+    const Vec3 o = vecField(e.obj, "origin");
+    const float dx = ep[0] - o[0], dy = ep[1] - o[1];
+    if (dy * dy + dx * dx < r2) return true;
+    const ActorPath& p = e.path;
+    if (nearSegment(look, {p.lookDir[0], p.lookDir[1]}, p.lookDist, r2, ep)) return true;
+    int i = p.lookIndex;
+    if (nearSegment(p.pts[size_t(i)].pos, p.pts[size_t(i)].dir, p.lookSegLen, r2, ep)) return true;
+    const float fight = floatField(e.obj, "pathenemyfightdist", 0.0f);
+    float covered = p.lookDist + p.lookSegLen;
+    while (covered < fight) {
+        if (--i < 0) return false;
+        const PathPoint& q = p.pts[size_t(i)];
+        if (nearSegment(q.pos, q.dir, q.len, r2, ep)) return true;
+        covered += q.len;
+    }
+    return false;
+}
+
+// 0x503200 (from the path update 0x503490; `fighting` 0x503080, `node` the node chosen this update or -1, `hadPath`
+// whether there was a path before it). Never without an enemy and a path, when the enemy is not nearer (2D) than
+// pathenemyfightdist, or when the actor stands at `node` (0x502660). The enemy must be seen within 5 s (record +0x8),
+// or without a path before the claimed node must see its node (0x503000). Then:
+// - the lookahead point L = origin + lookDist · lookDir is past the enemy ((L − enemy)·lookDir > 0) and nearer to it
+//   than lookDist: stop; when fighting and not yet pathing to the enemy, start (+0x788) and recompute the working
+//   goal (0x505f70);
+// - inside the goal with the enemy seen within 250 ms (0x54ce70): stop without a node, or when the path ahead is longer
+//   than the node's 2D distance to the enemy (0x420ec0, 0x543ae0);
+// - fighting, not yet pathing to the enemy, outside the goal, and the enemy near the way ahead (0x502e80): start
+//   pathing to the enemy (working goal recomputed); then stop unless the claimed node is inside the new goal and is
+//   `node`; with no claimed node inside it, stop unless `node` is inside it.
+bool World::stopForEnemy(Entity& e, bool fighting, int node, bool hadPath) {
+    Entity* enemy = entityOf(e.obj->get("enemy"));
+    if (!enemy || !actorHasPath(e)) return false;
+    ActorAi& ai = e.ai;
+    const Vec3 o = vecField(e.obj, "origin"), ep = vecField(enemy->obj, "origin");
+    const float fight = floatField(e.obj, "pathenemyfightdist", 0.0f);
+    {
+        const float dx = o[0] - ep[0], dy = o[1] - ep[1];
+        if (!(fight * fight > dy * dy + dx * dx)) return false;
+    }
+    if (node >= 0 && nearPoint(vecField(nodes_[size_t(node)].obj, "origin"), o)) return false;
+    // 0x503000
+    bool engaged = !hadPath && claimedNodeSeesEnemyNode(e, *enemy);
+    if (!engaged) {
+        auto it = e.sentientInfo.find(enemy->obj.get());
+        engaged = it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000;
+    }
+    if (!engaged) return false;
+    const ActorPath& p = e.path;
+    const Vec3 look{o[0] + p.lookDist * p.lookDir[0], o[1] + p.lookDist * p.lookDir[1], o[2]};
+    const float vx = look[0] - ep[0], vy = look[1] - ep[1];
+    if (vy * p.lookDir[1] + vx * p.lookDir[0] > 0.0f && p.lookDist * p.lookDist > vy * vy + vx * vx) {
+        if (fighting && !ai.pathToEnemy) {
+            ai.pathToEnemy = true;
+            updateWorkingGoal(e);
+        }
+        return true;
+    }
+    if (inActorGoal(e, o) && seesEnemyRecently(e, 250)) {
+        if (node < 0) return true;
+        const Vec3 no = vecField(nodes_[size_t(node)].obj, "origin");
+        if (pathLongerThan(p, std::sqrt(dist2d(no, ep)))) return true;
+    }
+    if (!fighting || ai.pathToEnemy || inActorGoal(e, o)) return false;
+    if (!enemyNearPathAhead(e, ep, look, hadPath)) return false;
+    ai.pathToEnemy = true;
+    updateWorkingGoal(e);
+    const int claimed = e.claimedNode;
+    if (claimed >= 0 && inActorGoal(e, vecField(nodes_[size_t(claimed)].obj, "origin"))) return node != claimed;
+    if (node >= 0 && inActorGoal(e, vecField(nodes_[size_t(node)].obj, "origin"))) return false;
+    return true;
 }
 
 // Move check towards a point (0x543d30, src/game/actorfollow.cpp) from the actor's origin.
@@ -750,7 +912,7 @@ void World::registerCoverBuiltins() {
             (void)ex; (void)ey; (void)ez;
             if (!actorSightClear(e, *enemy, from, enemyEye, maxd)) continue; // 0x54c7d0: distance² <= maxsightdistsqrd
             Vec3 at;
-            const float step = e.obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f; // TODO(spec): actor +0x288
+            const float step = e.ai.prone.tilt ? 10.0f : 18.0f; // actor +0x288 (prone tilt byte, 0x5491bf)
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
             if (pathToPoint(e, at, false) && actorHasPath(e)) { // 0x549229: 0x503650(…, 0), no traversals
                 e.ai.substate = kSubReacquire;

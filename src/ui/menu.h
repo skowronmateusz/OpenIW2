@@ -37,6 +37,7 @@ struct Window {
     bool visible = false;
     bool decoration = false;
     int ownerDraw = 0;
+    bool textSaveGame = false; // "textsavegame": the item shows the selected savegame's detail text (UI state +0x41e)
     Color foreColor{1, 1, 1, 1}, backColor{0, 0, 0, 0}, borderColor{0, 0, 0, 0}, outlineColor{0, 0, 0, 0};
     std::string background;
     // Every property as written (lower-case key), for the ones without a decoded field.

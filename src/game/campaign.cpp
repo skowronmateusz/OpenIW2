@@ -190,7 +190,7 @@ void World::registerCampaignBuiltins() {
         print("missionfailed at " + std::to_string(timeMs_) + " ms from" + vm_.backtrace(c.thread));
         if (player_ && !player_->obj->removed) {
             openDeathScreen();
-            if (levelChange_.pending && !levelChange_.failed) levelChange_ = {true, true, mapName_, false, levelChange_.atMs};
+            if (levelChange_.pending && !levelChange_.failed) levelChange_ = {true, true, mapName_, false, levelChange_.atMs, true};
         }
         return Value();
     });
@@ -217,13 +217,13 @@ void World::openDeathScreen() {
 // Per frame: the client think opens the death screen when the player is dead and the level time is past the
 // respawn time (0x4e7eb7: pm_type >= 4 and level time > client +0x866c); the server frame runs loadgame_continue
 // when its real-time deadline passes (0x4d9f90).
-// TODO(spec): loadgame_continue loads sv_lastSaveGame (0x447190); OpenIW2 has no save games yet and restarts the
-// level instead (the level-start save).
+// loadgame_continue loads sv_lastSaveGame (0x447190): the front end does that for a change with loadContinue set and restarts
+// the level when there is no such save.
 void World::runDeathScreen() {
     if (player_ && playerRespawnMs_ >= 0 && !isAlive(*player_) && timeMs_ > playerRespawnMs_) openDeathScreen();
     if (loadGameAtRealMs_ >= 0 && realNowMs() >= loadGameAtRealMs_) {
         loadGameAtRealMs_ = -1;
-        levelChange_ = {true, true, mapName_, false, timeMs_};
+        levelChange_ = {true, true, mapName_, false, timeMs_, true};
     }
 }
 

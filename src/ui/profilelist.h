@@ -18,7 +18,9 @@ public:
     explicit ProfileList(std::filesystem::path playersDir) : dir_(std::move(playersDir)) {}
 
     // addPlayerProfiles: count = 0, ascending flag = 1, lists the directories of players/ (the exe's FS_ListFiles(
-    // "players", "/")), sorts them case-insensitively. TODO(spec): the exe does not cap the add loop at 64 names; this does.
+    // "players", "/")), sorts them case-insensitively. PROVEN (docs/spec/savegame.md section 4): the exe's add loop has no cap and
+    // would overrun its 64-slot array with more directories; this keeps the first 64 instead (deliberate safety deviation). The
+    // 64 limit itself is enforced only by create (count == 0x40 at 0x4c4d73).
     void refresh();
     int count() const { return int(names_.size()); }
     // Feeder text of a row: names[index[row]] ("" when out of range).

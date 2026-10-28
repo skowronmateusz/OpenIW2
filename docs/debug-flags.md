@@ -15,12 +15,16 @@ described in the code that reads them.
 | `IW2_NO_GLOW=1` | iw2view | Disables the glow/bloom post chain (glow_setup, two blur layers, glow_apply_bloom/sky_bleed); the scene then goes straight to the swapchain. For A/B comparison. |
 | `IW2_NO_PROBE=1` | iw2view | Entities and the view model use the old single up-normal light-grid colour instead of per-pixel ProbeLighting(N). For A/B comparison. |
 | `IW2_PROF=N` | iw2view | Prints average per-frame CPU timings every N frames and quits after two reports. |
-| `IW2_SHOT_SCRIPT=t:action,...` | iw2view `--shot` | Scripted weapon input before the shot (actions `reload+/-`, `fire+/-`, `ads+/-`, `frag+/-`, `smoke+/-`, `melee+/-`, `weapon=name`; times in seconds) for `IW2_SHOT_SECONDS` (default 3); logs `shot-script` lines (state, anim, clip, stock, ads every 0.26 s, events). Melee and throw events act on the world. |
+| `IW2_SHOT_SCRIPT=t:action,...` | iw2view `--shot` | Scripted weapon input before the shot (actions `reload+/-`, `fire+/-`, `ads+/-`, `frag+/-`, `smoke+/-`, `melee+/-`, `binoc+/-` (binoculars 0x4000), `use+/-` (0x28, binocular fire), `weapon=name`; times in seconds) for `IW2_SHOT_SECONDS` (default 3); logs `shot-script` lines (state, anim, clip, stock, ads every 0.26 s, events). Melee and throw events act on the world. |
 | `IW2_VM_TRACE=1` | iw2view | Prints the view model anim, frame, time and hand/gun models each time it is added. |
 | `IW2_DEBUG_ITEM=name[@seconds]` | iw2view `--shot` | Zeroes the player's ammo, then drops weapon_<name> on the player at that simulation time (default 0) and prints the inventory 1 s later (touch pickup check). |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
 | `IW2_FX_TEST=<efx>` | iw2view `--shot` | Plays the effect 150 units ahead of the camera, aged `IW2_FX_MS` ms (use with `IW2_NO_HUD=1`, otherwise the script fade-in can make the shot black). |
+| `IW2_FX_TEST=file:<path>` | iw2view `--shot` | As `IW2_FX_TEST`, but parses an effect file from the local disk (for element types no shipped effect uses, e.g. Cylinder). |
+| `IW2_FX_TEST_DIST=<units>` | iw2view `--shot` | Distance ahead of the camera at which `IW2_FX_TEST` plays its effect (default 150). |
+| `IW2_OUTDOOR_DUMP=<file.pgm>` | iw2view | Writes the outdoor map (game/outdoor.h, 512 x 512 heights, row 0 = world mins.y) when it is built for the first Cloud. |
+| `IW2_NO_OUTDOOR=1` | iw2view | Skips the outdoor-map test of particle_cloud_outdoor clouds (flakes also show under cover). |
 | `IW2_TRACER_TEST=N` | iw2view | With `--shot`, N tracer attempts (the 0.4 chance applies) from beside the view to 1500 units ahead, aged `IW2_FX_MS` (default 100). |
 | `IW2_FIRE_TURRETS=N` | iw2view | With `--shot`, fires every turret entity (`World::debugFireTurrets`, prints each) in the last 3 simulation frames and puts the camera 150 units beside and 60 above turret N (toujane: 4 is a ground MG42); use `IW2_FX_MS=40` so the 100 ms muzzle flash has grown. |
 | `IW2_FIRE_VEHICLES=1` | iw2view | With `--shot`, sends the script notify `turret_fire` to every vehicle in the last 3 simulation frames (combine with `--follow-vehicle N --follow-dist D`; elalamein 2 is a flak88). The iw2game variant takes a time in seconds. |
@@ -28,7 +32,12 @@ described in the code that reads them.
 | `IW2_RIDE_TRACE=1` | iw2view | Per-frame trace of the ridden vehicle (origin, angles, turret, camera link). |
 | `IW2_CROSSHAIR_DEBUG=1` | iw2game/iw2view | Prints the crosshair trace eye/yaw and the hit entity/target name. |
 | `IW2_PRONE_LOG=1` | iw2game/iw2view | Prints each `checkprone` call (actor, origin, yaw, alreadyProne, the answer and the two pitch outputs of the fit test 0x4fb530), each `enterprone` (length, fit result, pitches) and each `exitprone`. |
+| `IW2_NO_PRONE_TILT=1` | iw2view | Draws actors and corpses without the prone / corpse-blend tag_origin control (A/B check of 0x4c1cc0). |
+| `IW2_SHOT_ENT=N[,dist,yaw,height]` | iw2view `--shot` | Puts the shot camera `dist` (120) units from entity N at its yaw + `yaw` (90) and `height` (50) above its origin, looking at it. |
+| `IW2_FACING_LOG=N` | iw2game/iw2view | Per think of actor N (-1: all): facing mode (override), path count, movemode, yaw after the turn, active target, motion yaw and the trail sum (0x505d80 / 0x504ca0). |
+| `IW2_PLAYER_DMG_LOG=1` | iw2game/iw2view | Prints every damage the player takes: time, amount, attacker entity / classname and means of death. |
 | `IW2_TOUCH_TEST=<s>` | iw2game | At sim time `<s>` runs the vehicle touch callback (0x512d40) for the first vehicle with collisionDamage > 0 placed 100 units behind the player, moving at 400 units/s at it; prints the target health before and after; `IW2_TEST_ACTOR=1` targets the first living actor instead of the player. |
+| `IW2_TEST_MOVER=1` | iw2game | With `IW2_TOUCH_TEST`: targets the first script_model (take-damage on, health 100) to check the eType 5 crush (0x512dd1, 999999 at once). |
 | `IW2_ROCKET_TEST=<s>` | iw2game | At sim time `<s>` fires the first vehicle's turret rocket at the player from 300 units away; prints the player health before and 3 s after. |
 | `IW2_KILL_VERBOSE=1` | iw2game | With `IW2_KILL_VEHICLES`, also prints each vehicle's model and health before the kill. |
 | `IW2_FIRE_VEHICLES=<s>` | iw2game | At sim time `<s>` sends the script notify `turret_fire` to every vehicle (the AI tank fire loop in `_tank.gsc`), to test vehicle weapons headless. |
@@ -38,10 +47,10 @@ described in the code that reads them.
 | `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time. For walking mission flows. |
 | `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). |
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
-| `IW2_DEV_SNAP_GOAL_YAW=1` | iw2game/iw2view | DEV-ONLY BYPASS, not original behaviour: an actor whose goal was set with `setgoalnode` is turned to that node's angles right before it is notified "goal". Lets moscow's `letlev.angles != node.angles` loop (moscow.gsc:5031, the commissar yaw stall) pass so later stages can be walked. |
 | `IW2_ACTOR_DUMP=<team\|all>` | iw2game | At the end of the run prints `actor #N classname (origin) script_noteworthy` for every living actor of the team (`axis`, `allies`, ...) or of all. Used to aim `--player-fire-at`. |
 | `IW2_CHAIN_LOG=1` | iw2game | Prints a line whenever a `trigger_friendlychain` changes the player's friendly chain node (trigger entity number, node name, time). Also prints `setgoalentity at <ms> from <file:line function>` for every `setgoalentity` call. |
 | `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname or `target` starts with the prefix (printed as `targetname -> target`) (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
+| `IW2_GRENADE_HINT_DEBUG=1` | iw2game/iw2view | Logs the grenade hint node decisions (docs/spec/grenades.md "Grenade hint nodes"): `grenade hint: <method> blocked throw (start) -> (target) aims at hint (h)` / `..., no hint of N` for a 0x51f490 throw whose line of sight is blocked, `MagicGrenade lob over (h) lands (p)` (0x51f050) and `throw back from (landing) at hint (h)` (0x51f320). |
 | `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`, `call:file.gsc:function` runs a thread on level, `exec:console text`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
 | `IW2_SHOT_HEALTH=<hp>[,<trail>[,<phase ms>]]` | iw2view `--shot` | Sets the player health (a value <= 1 is a fraction of maxhealth), the health-bar trail fraction and how far into its pulse period the low-health background is. |
@@ -85,9 +94,28 @@ described in the code that reads them.
 - Env `IW2_SCENE_COVER=1` (with `IW2_COMBAT_SCENE`): the scene is built around a cover node (victim beside it with the goal volume set, shooter in front) and logs the distance to the node. Env `IW2_COVER_LOG=1`: stderr `[cover ms] #n ...` lines for findcovernode / findbestcovernode / usecovernode, and the scene log adds the victim's animscript thread wait site and animation nodes. Debug only.
 - Env `IW2_TRAVERSE_SCENE=<s>[,<pair>]` (iw2game): at sim time `<s>` takes the first living non-scripted actor, places it at the outer link node before the pair on the shortest route, freezes its goal (`$goalfrozen`, setgoal* ignored) on the far side, neutral team, and prints `[trav]` setup and `[trav t]` state/path/traversal lines every `IW2_TRAVERSE_EVERY` frames (default 10). Debug only.
 
-- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos` for one actor (default every 20 frames). Debug only.
+- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) for one actor (default every 20 frames). Debug only.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 
-- `IW2_ACTOR_FOLLOW=0` (iw2game): disables the bump link (0x501c8b: a bumped actor follows the bumper, +0x2148). On by default; it cannot fire while no trace hits an actor body (contents 0x4000 is not in the actor clip mask 0x2820011).
+- `IW2_ACTOR_FOLLOW=0` (iw2game): keeps the yield step 0x501620 and the clear scan 0x501380 from setting the followed link (+0x2148) of other actors; the yield move itself still runs. On by default.
+- `IW2_FOLLOW_SCAN=0` (iw2game): disables the follow retarget scan 0x504630 (`scanFollowed`), so no actor starts following a blocker from the scan. On by default.
+- `IW2_FOLLOW_SCENE=<s>` (iw2game): at that time the first path-walking actor is made to follow a second actor placed ahead, to exercise the yield step 0x501620; prints `[follow ...]` lines.
 - Env `IW2_FOLLOW_SCENE=<s>` (iw2game): at sim time `<s>` takes a path-walking actor A and a second actor B pinned 20 units ahead, forces A.followed = B one second later (the link cannot fire naturally) and prints `[follow t]` lines: positions, speed, followed, bumped entity, link/release counters.
+- `IW2_ACTOR_FOLLOW=1`: lets a bumped actor start following the bumper (0x501c8b). Off by default: the follower trail (0x505520) that moves a followed actor is not ported, so a followed actor would stand still.
+
+- Env `IW2_SCRIPT_SEED=<n>` (iw2game/iw2view): seeds the script `randomint`/`randomfloat` generator with n instead of 1. Debug only; used to vary a
+  headless run (the moscow melee assert only showed with some seeds).
+- Env `IW2_FIELD_LOG=<text>`: prints `[field T ms] kind#id.field = value at file:line` for every script store to a field whose name contains
+  <text>. Debug only. `IW2_SCRIPT_BACKTRACE=1` now also lists each frame's self and the object locals (`{kind#id removed}`).
+
+## Savegames (docs/spec/savegame.md section 5)
+- `iw2game <main> <map> <secs> --save-dir DIR`: writes the level's saves (script `savegame` autosaves, `--save-at`) to `DIR/<name>.svg`
+  (autosaves land in `DIR/autosave/`). Without it the saves are built and only reported.
+- `iw2game ... --save-at T name`: queues a manual save (type 0, flags 6) at sim time T seconds: an openiw2 stand-in, the exe's console
+  `savegame` / `devsave` handlers (0x4474xx) are not decoded.
+- `iw2game <main> <map> <secs> --load FILE`: starts from that save (map must match) instead of running the level script.
+- Env `IW2_MAIN=<game main dir>` (test_savestate): also runs the World round trip on a real map (save after 5 s, load into a
+  fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
+  `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
+- Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads).

@@ -264,7 +264,7 @@ bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes) {
 // the throw from the landing point (arm offset (0, 0, 80)) at the enemy (or the thrower) is solved with min energy,
 // min time, max time (re-solved from the hand when thrown); then a path to the landing point (stopping 32 units short
 // towards the actor unless that is the same point). The thrower becomes the enemy; a grenade nobody went for yet gets
-// one more second of fuse. TODO(spec): the grenade hint fallback 0x51f320.
+// one more second of fuse. When all three fail, the hint fallback 0x51f320 (grenadeHintFromLanding).
 bool World::grenadeAcquire(Entity& e) {
     ActorAi& ai = e.ai;
     Entity& ge = *ai.grenade;
@@ -294,16 +294,19 @@ bool World::grenadeAcquire(Entity& e) {
         ok = throwSolution(e, landing, {0, 0, 80.0f}, m, target, true, start, vel);
     }
     if (!ok) {
+        // 0x51fd6c: no re-solve from the hand, then the hint fallback 0x51f320 from the landing point.
         ai.throwFromTag = false;
-        return false;
+        if (!grenadeHintFromLanding(e, landing, vel)) return false;
     }
     pathToPoint(e, aim, false); // 0x51fd89: 0x503650(…, 0), no traversals
     if (!actorHasPath(e)) return false;
     if (!enemy && thrower != &e) setEnemy(e, thrower, true);
+    // 0x51fded..0x51fe45: the kept start is the landing point itself (not the arm-offset start of 0x51f490); the
+    // target is only stored when the throw is re-solved from the hand (+0x20d4).
     ai.throwPending = true;
-    ai.throwStart = start;
+    ai.throwStart = landing;
     ai.throwVel = vel;
-    ai.throwTarget = target;
+    if (ai.throwFromTag) ai.throwTarget = target;
     if (g.holder != &e) {
         g.explodeMs += 1000;
         g.holder = &e;

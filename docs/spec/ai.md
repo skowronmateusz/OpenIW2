@@ -110,7 +110,9 @@ within |velocity|² · 0.0625 (a quarter second) +0x704 = now + 500; when it has
 place (+0x2128) → 4; a recorded turret (+0x2114) that is free → replace 2 (in use → forget it); then perception
 (0x4fe890) and the substate (0x548d50): no enemy → 0x65 noncombat; noncombat and the enemy seen
 (0x54ce10: the last sight check if within 250 ms, else a new one) → 100 combat; reacquire 0x66 →
-combat without a path (or with +0x728/+0x2148), or when seen and 0x54d010 passes.
+combat without a path (+0x6b0 <= 0) or with +0x728/+0x2148 set, else when the enemy was seen within 250 ms (0x54ce70) and
+0x54d010 passes (0x54cf40: a point trace, mask 0x200c861, from the enemy's eye - 16 to the actor's eye, clear or ending on a
+sentient of another team; beyond the fog limit 0x1c61038 it fails). The +0x728/+0x2148 shortcut is not modelled.
 - Combat 100: path update 0x503490; with a path and the enemy seen: clear the path when inside the goal (always with
   +0x728/+0x2148). No path → 0x548c70 (0x53b050; inside the goal, with the enemy not seen for 5 s, at a claimed
   cover node: facing 6, else 3); else facing 4 and path follow (run).
@@ -167,8 +169,8 @@ desiredangle + 90° (constant 0x5920bc).
 
 Implemented in `src/game/world.cpp` (`moveActor` writes `desiredangle` from the look direction while
 path-moving) and `src/game/actorfields.cpp` (0.0 from the zeroed allocation, so scripts always read a float).
-TODO(spec): the anim-mode switch cases, the turn-pair update rates, the facing-mode → target mapping, and the
-override angle + expiry (+0x120/+0x159/+0x15c/+0x160).
+The anim-mode switch, the turn rates, the facing-mode targets and the look turn: see "Facing blend"; the +0x159..+0x160 slow
+turn is the prone block (0x514b30 / 0x514c40), not an override angle.
 
 ## Cover nodes (observed; Ghidra decompiles and the objdump listing)
 
@@ -246,11 +248,25 @@ the node take-over 0x518e80 / priority rule 0x518dc0. Node links (+0x30 / +0x32 
 overlapping nodes within 31 xy / 73 z are linked at load by 0x52d990; a claim holds the linked nodes for good without an
 owner and counts on +0x56, release / block 0x5191a0 / 0x519200 / 0x519300 undo it) are ported (Follow-up 23). The fog sight limit
 0x1c61038 = ((far - near) * 0.828 + near)² of linear fog (setcullfog, parsed by 0x4e96e0) applies in 0x54c7d0.
-0x505ed0 / 0x505f70 (goal entity, working goal) are ported ("Friendly chains" below; re-checked against the exe: the chain node is
-cleared when there is no sentient goal entity, and the working goal volume +0x75c is the script volume only in mode 0).
-TODO(spec): the path to the enemy (0x503100 sets +0x788 and refreshes the working goal; 0x503200), the move
-check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
-0x502960's offset goal (0x542340/0x545670, see "Path planner").
+**Stop for the enemy** (0x503200, called at the end of the path update 0x503490 with `fighting` 0x503080, the node
+chosen this update, and whether there was a path before it; `World::stopForEnemy`): 0x503080 = an enemy and, without a
+path, the claimed node sees the enemy's node (0x502fc0: 0x515040 + 0x517ed0), else its position known within 5 s (record
++0x10). 0x503200 returns 0 without an enemy or path, when the enemy is not nearer (2D) than pathenemyfightdist, or when
+the actor stands at the node (0x502660); 0x503000 then needs the enemy seen within 5 s (record +0x8) or, without a path
+before, the claimed node seeing its node. Stop when the lookahead point L = origin + lookDist·lookDir (+0x6dc, +0x6c8) is
+past the enemy ((L − enemy)·dir > 0) and nearer to it than lookDist (starting pathToEnemy +0x788 and recomputing the working
+goal 0x505f70 when fighting); stop when inside the goal with the enemy seen within 250 ms (0x54ce70 → 0x54ce10) and there is
+no node or the path ahead (0x543ae0: lookDist + the rest of its segment, +128 with a traversal point, then segment
+lengths, the first one by +0x3c4) is longer than the node's 2D distance to the enemy (0x420ec0). Otherwise, when fighting,
+not yet pathing to the enemy and outside the goal, 0x502e80 (reach = pathenemylookahead, +256 without a path before:
+within it of the actor, or of the segments L…actor, the lookahead's segment rest, and further segments while the covered
+length is below pathenemyfightdist; segment test 0x502e10) starts pathing to the enemy, and the update stops unless the
+claimed node is in the new goal and is the chosen node (with no claimed node in it: unless the chosen node is). A stop
+drops the path, waits 500 ms (0x503e10, +0x720) and does not claim the node (else 0x5152f0 claims it).
+The goal entity (0x505ed0) and the working goal (0x505f70) are in `friendlychainworld.cpp` (re-checked against the exe: the chain node is cleared when there is no sentient goal entity, and the working goal volume +0x75c is the script volume only in mode 0). TODO(spec): the move
+check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0, the other 0x505f70 caller
+0x54ad05, `withinapproxpathdist` (0x545030 starts from the lookahead +0x3ac/+0x3b4 and the traversal index +0x386; the
+builtin still sums the point distances from the origin).
 
 ## Path planner (observed)
 
@@ -260,7 +276,20 @@ below, height 184), linked nodes first then nearest (0x516640); a linked node is
 ones are traced last. Sentient node 0x515040: radius 192, cached (+0x38, flags +0x3c/+0x3d). A* 0x545840: sorted open list by g + h (h = 2D distance to the goal position), insert before the first not lower,
 re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0 adds planes. Path points 0x541da0: goal first in the original (+0x330, 0x1c bytes: pos, dir, length, node), at most 32 (+0x6e8 |= 4),
 the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
-(goal-first layout, see "Path following"). Negotiation pairs (types 16/17) are ported. TODO(spec): 0x502960's offset goal (0x542340/0x545670).
+(goal-first layout, see "Path following"). Negotiation pairs (types 16/17) are ported.
+
+**Offset goal** (0x502960, 0x502a5b..0x502c58; `World::pathToSideGoal`): runs instead of the plain path to the goal when
+s = min(|+0x73c|, goal radius − 15) > 0; s takes the sign of +0x73c. +0x73c is only ever stored as 0 (0x4fc7ab; no actor
+field row, table 0x5703f0) and its other readers are 0x50533d / 0x505387 / 0x5053a4, so the branch is dead in SP; it is
+ported for completeness with `ActorAi::goalSide` = 0. Point = goal + s·(dir y, −dir x) with dir = the lookahead direction
+(+0x6c8), goal z. 0x542340 seeds {point, best node = the goal node of the working-goal query, best = its 2D distance²}
+and runs 0x545670: the list search of 0x545840 without a goal (until the list is empty, returns 0); each neighbour must
+first pass 0x5422c0 (2D distance² to the point below the best, (z − point z)² <= 6400; passing makes it the best), so a
+non-improving neighbour is never queued. The result is the best node (`nearestReachableNode`, pathnodes.cpp, unit test
+`test_nodesearch`). A move check 0x543d30 from that node's origin to the point (mask 0x820011, no pass entity, step 10
+with the tilt byte +0x288, else 18) gives the target: its end if inside the goal, else the node origin if inside (both make
+the node the goal node), else the working goal with the queried goal node. Then 0x542550 → 0x545840 (planes: 0x5428a0)
+from the sentient's node (cache flag +0x3c cleared first; 0x5150d0 with planes). Returns whether there is a path.
 
 0x541da0 arguments (read at every call site; the search variants 0x545840 / 0x545a70 / 0x545ca0 / 0x545f30 / 0x5461a0 /
 0x546980 / 0x546c10 pass their sixth and seventh arguments as its fifth and sixth): the fifth says whether the goal position is
@@ -309,9 +338,9 @@ passes on its own knowledge of its enemy (copied per-sentient when the target's 
 (0x54b3b0). Types 7/12/13 print "not yet handled" in the exe, 11 does nothing, 8/9 (grenade ping) go through
 `grenadePing` instead of this dispatch. Knowledge is kept per sentient (0x500c50 learns position + own position then,
 0x54ddc0 "known within ms"). Implemented in `src/game/actorevents.cpp`; producers wired in `combat.cpp` (G_Damage,
-Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain throttle 500 ms, pain reveal, death).
-TODO(spec): the pain accumulator's +0x48 add and damage-class gate, the turret entity +0x10c field of the
-pain/death handler, the player pain events 2/3 of the client fire path (0x4e786b / 0x4e787b).
+Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain reveal, death).
+The +0x48 accumulator is not a pain accumulator: it is the movement-noise accumulator 0x5485a0 (`actorMoveNoise`). TODO(spec): the turret entity +0x10c field of the pain/death handler. The player's events 2/3 are the footstep and
+landing events of G_ClientEvents 0x4e75f0 (`World::playerPmEvents`).
 
 ## Bad places (observed 0x524060 0x5199f0)
 
@@ -618,26 +647,33 @@ events before, 296 after).
 
 Ported (src/game/actorfollow.cpp `updateFollowed`, `linkBumpedActor`):
 - 0x4fedc0, called at the start of each think (0x4fef20): no-op without a followed gentity; the followed entity is dropped when removed. With d2 the squared XY distance: d2 >= 1406.25 (0x591fd0) clears this actor's link and the followed actor's back-link; closer, the link is cleared when the followed actor's blocker (+0x72c) is this actor. If still set and d2 >= 900 (0x591fd4), a moving actor (anim mode 1, path count > 0, not blocked by the followed one) clears it when (me - followed) . lookDir > 0.
-- 0x501c6f..0x501c8b: after the actor move block, +0x318 = hit entity; a hit actor with no followed entity gets +0x2148 = this gentity (`IW2` stat "follow links").
-- Scene check: across matmata/elalamein/toujane spawn-all the link never fires (0/0), since the default trace mask has no body bit and actors rarely bump each other without combat.
+- 0x501c6f..0x501c8b: this is NOT a link from the hit entity. It is the last fallback of the yield step 0x501620 (below): +0x318 = the followed entity and an actor followed that follows nobody gets +0x2148 = this actor.
 
 TODO(spec): the retarget to the player (0x4fec50, 0x447830, 0x504610, 0x519050), the scans 0x501380 and 0x504630 (0x5025f0/0x502660), the follower trail (0x500d80 + 0x544ca0 + 0x505520/0x504f60, path walk skipped at 0x5041a3), the 0x504160 branch not running 0x505230 (0x504228), and the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x5013b0, 0x53ade0, 0x501e06 are not decoded/ported.
 
-Status: stepActorPath returns early for a followed actor (as the exe skips the path walk, 0x5041a3), so with the link enabled but no trail the follower freezes; the bump link is therefore gated behind IW2_ACTOR_FOLLOW=1 until 0x500d80/0x544ca0/0x505520 are ported.
+Status: stepActorPath returns early for a followed actor (as the exe skips the path walk, 0x5041a3); the follower is moved by the yield step 0x501620 from the physics step 0x501d00 (next section), so it does not freeze.
 
 ### Followed-actor branch of 0x504160 (decoded and ported)
 
-0x50418b (anim mode 1): the path walk runs only when movemode (+0x214) is set, the path count (+0x6b0) > 0 and +0x2148 is 0. Otherwise, with path count > 0, 0x504228 runs: 0x544ca0 (the lookahead update, `World::updatePathLook`) with shrink = 0x500d80(+0x318) and correct = 0, then the trail 0x505520; the mode word +0x264 = 1 and the desired delta +0x250..0x258 = 0. The path walk (0x505230) and its stop-soon check 0x503ec0 do not run. So a followed actor does not move by itself; the physics still applies gravity. `World::moveActor` models this (no step, no angles write, no stop soon); `followActorPath` calls it for a followed actor.
-0x500d80 is `World::followShrink`: a bumped actor -> level time < +0x724. TODO(spec): the contents-0x400 and +0x6ec/+0x1ec branches.
-0x505520 (trail): every think, at (level time / 100) % 10 != 0 the lookahead direction * 0.1 (0x59202c) is added to ring[+0x214c] (8 bytes per entry at +0x2150), at the tenth boundary 0x504f60 advances the ring (index 0 wraps to 10, a weighted smoothing of the other entries by 0x591e20-stepped divisors) and the entry is set to lookDir * 0.1. TODO(spec): 0x504f60 weights; the ring is read only by 0x504e70/0x504de0 (facing blend, 0x505630), not modelled.
-Open: the retarget 0x4fec50, 0x504610, the scans 0x501380 and 0x504630 (0x5025f0/0x502660), the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x53ade0, 0x501e06. The link stays gated (IW2_ACTOR_FOLLOW=1): it fires 0 times in matmata/elalamein/toujane even when enabled, so no scene validates it.
+0x50418b (anim mode 1): the path walk runs only when movemode (+0x214) is set, the path count (+0x6b0) > 0 and +0x2148 is 0. Otherwise, with path count > 0, 0x504228 runs: 0x544ca0 (the lookahead update, `World::updatePathLook`) with shrink = 0x500d80(+0x318) and correct = 0, then the trail 0x505520; the mode word +0x264 = 1 and the desired delta +0x250..0x258 = 0. The path walk (0x505230) and its stop-soon check 0x503ec0 do not run. So a followed actor does not walk its path; the physics step 0x501d00 runs the yield step 0x501620 for it (anim mode 1 or 7), which moves it out of the followed entity's way. `World::moveActor` models this (no step, no angles write, no stop soon); `followActorPath` calls it for a followed actor.
+0x500d80 is `World::followShrink`: a bumped gentity with a sentient (actor or player) -> level time < +0x724; otherwise contents 0x400 gives 0, else signed (+0x6ec > gentity +0x1ec). TODO(spec): +0x6ec has no writer and +0x1ec is zero for non-actors, so the last branch is taken as false.
+0x505520 (trail): every think, at (level time / 100) % 10 != 0 the lookahead direction * 0.1 (0x59202c) is added to ring[+0x214c] (8 bytes per entry at +0x2150), at the tenth boundary 0x504f60 advances the ring (index 0 wraps to 10, a weighted smoothing of the other entries by 0x591e20-stepped divisors) and the entry is set to lookDir * 0.1. Decoded and ported (`src/game/actortrail.h`, test_actortrail): the ring is 10 (x, y) float entries at +0x2150, index +0x214c. 0x505520: time/100 not a multiple of 10 -> entry[idx] += look * 0.1; else advance (0x504f60) and entry[idx] = look * 0.1. 0x504f60: with prev = idx-1 and pp = prev-1 (mod 10), when cross(pp,prev) * cross(prev,cur) <= 0 and prev.cur >= 0 and prev.pp >= 0, entry[pp] = entry[cur]; then entries idx+1..9, 0..idx-1 are multiplied by k/(k+1), k = 1, 2, ... in that order; idx = (idx+1) % 10. 0x504e70 sums the entries into a vector (x, y, 0); 0x504de0 zeroes the ring and the index (at spawn 0x4fc806 and in the move script 0x5523b6). The ring is written only on the followed branch (0x50424a); its only reader is the facing 0x505630 of the path walker (calls 0x505c3a, 0x505d5e, 0x505dad; with a zero sum or the path walk it turns by 0x5055d0 / 0x504950 / 0x5048b0), so it has no effect here: TODO(spec): the facing modes / turn (0x504aa0, 0x505630) are not modelled (angles = lookDir yaw), and the 0x5523b6 clear is not wired.
+Open: the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend, 0x519050 / +0x86b6.
+
+### Yield step 0x501620 and clear scan 0x501380 (decoded, ported: `yieldFollowed`, `followClear`)
+- 0x501d00 (actor physics): with +0x2148 set and anim mode 1 or 7 it calls 0x501620; nonzero ends the step, zero continues to the path mover 0x501e48 (path count > 0) or 0x501f59. So the follower moves, with or without a path.
+- 0x501620 moves the actor block (0x5487c0) up to three times, each from the actor's origin with the entry velocity/ground/contact. 1: away from the followed entity (player: perpendicular to its horizontal velocity, or its view direction when still, on the actor's side, 0x5014b0, speed max(60, speed) * 0.05; actor: directly away by the animation frame distance, at least 1.5 (0x592334), a random direction from the game LCG when co-located). Accepted when it ended no closer than it started, moved over half the intended distance and 0x501380 finds nobody in the way. 2/3: when the move hit something (ground entity not none) the delta is the perpendicular of the unit hit normal at 0.75 then 0.5625 of the distance; accepted above 0.375 / 0.281 of the distance. The side taken is remembered in the actor gentity flags (+0x128) bits 0x10 / 8; when the opposite bit is set the delta is added to 0.33 of the perpendicular instead of replacing it. Nothing worked: +0x318 = the followed entity, a followed actor that follows nobody follows this one, velocity zeroed, the actor stays. Returns 0 when 0x5487c0 failed (flags bits 0x18 cleared).
+- 0x501380: every other actor (not the followed one) that the move brought within 30 units (2D) of the new position while at least 30 from the actor's old origin and within 80 vertically blocks the move; one that follows nobody and is not at its claimed node (0x504610) starts following this actor.
+- CORRECTION (supersedes the earlier "natural bumps" reading): bits 8 / 0x10 are in the gentity FLAGS word at +0x128 (the same word as notarget 4 and the 0x400 obstacle bit of 0x500d80), not in the contents word at +0xc0. Every trace reads contents from +0xc0 only (area query 0x419ea0 `testl mask, 0xc0(ent)`, link 0x44b2d0, entity clip 0x44bb8c / 0x44c8dd); +0x128 is read back only by the yield step itself (0x501927 tests 8, 0x501978 tests 0x10 on the other entity). Actor contents is 0x4000 (0x4fc74f), which is in none of the actor / player clip masks, so a sidestepping actor is NOT solid to traces and `sideBits` no longer enters the entity clips. Actors and the player therefore do not block each other in traces; what makes the +0x318 / link bump fire in the exe is TODO(spec) (the actor touch record 0x500c50 is a candidate, undecoded).
+- 0x504610: claimed node set and dz^2 <= 6400, 2D distance^2 <= 900.
+- `IW2_FOLLOW_SCAN=0` disables the 0x504630 scan, `IW2_ACTOR_FOLLOW=0` the link writes (docs/debug-flags.md).
 
 - groundtype (actor +0x24c = move block +0x28, written by the ground probe 0x548290 each move): getter 0x5367b0 returns undefined for 0, the table 0x5a0344 (stride 20, same names as the pmove surface aliases bark..asphalt) for 1..22, "default" otherwise. Implemented in World::moveActor (slide path only).
 
 ### Retarget 0x4fec50 (decoded, ported as `World::retargetFollowed`)
-0x4fedc0 (every think) first releases as documented above, then, unless +0x2148 is already the player gentity (g_entities[0], 0x1c60504), calls 0x4fec50(actor, player): return unless dontavoidplayer (+0x734) == 0 and +0x28c has 0x2000000 and the state (stack[depth]) is not 2 (turret); the actor's team must not be the team the player's team fights (table {0,2,1,0,0} at 0x4fec9d..0x4fecd2); the box 0x447830 test: player origin + velocity (ps+0x20) * 0.1 (0x59202c) with the player's mins/maxs (ps+0x540 / +0x54c) against the actor's box (an AABB test for an actor model); then 0x504610 (claimed node set and 0x502660 close) and, if that holds, the client byte +0x86b6 must be 0, and a claimed node is handed to the player's sentient (0x519050); finally +0x2148 = the player gentity. TODO(spec): +0x86b6, 0x519050 (the claimed node stays with the actor), the player's stance box (standing box used).
+0x4fedc0 (every think) first releases as documented above, then, unless +0x2148 is already the player gentity (g_entities[0], 0x1c60504), calls 0x4fec50(actor, player): return unless dontavoidplayer (+0x734) == 0 and +0x28c has 0x2000000 and the state (stack[depth]) is not 2 (turret); the actor's team must not be the team the player's team fights (table {0,2,1,0,0} at 0x4fec9d..0x4fecd2); the box 0x447830 test: player origin + velocity (ps+0x20) * 0.1 (0x59202c) with the player's mins/maxs (ps+0x540 / +0x54c) against the actor's box (an AABB test for an actor model); then 0x504610 (claimed node set and 0x502660 close) and, if that holds, the client byte +0x86b6 must be 0, and a claimed node is handed to the player's sentient (0x519050); finally +0x2148 = the player gentity. +0x86b6 (decoded, 0x4e8180 per player frame: sentient +0x10 is the previous origin; the byte is set when the squared xy distance to the current origin is >= 0.01 (0x591ea0), then the previous origin is updated): standing at its claimed node (0x504610) an actor is skipped (not linked) while the player moves; otherwise 0x519050 (release the player's sentient's old node 0x519200, take the actor's node over: the claiming owner is evicted by 0x515330 - its path ending at the node dropped, the node blocked for its team 0x519300 - then claimed 0x518fa0) runs before +0x2148 = the player; modelled as `claimNode(player, node, takeOver)`. TODO(spec): the eviction of the owners of the linked nodes in 0x519050; the player's stance box (standing box used).
 Scene check: decoytown (player standing on a friendly actor's box edge): the link is re-established every think while the boxes overlap, as in the exe order (release check, then retarget); the actor stands until the player leaves.
-The actor clip mask 0x2820011 has no actor body bit (0x4000), so the bump link 0x501c8b cannot fire on actors; `IW2_FOLLOW_SCENE` forces a link instead.
+`IW2_FOLLOW_SCENE` forces a link to exercise the yield step.
 
 ### Scan 0x504630 and the followed-stand script 0x53ade0 (decoded, ported: `scanFollowed`, `standOrFollow`)
 - 0x504630(actor): only when +0x2148 is 0. flag = 1 when the animscript is grenade_cower (handle 0x1c7e120, string 0x587e50); else 0 without a claimed node, else (node close, 0x502660). Over the 32 actor slots (in use, not itself): with the flag set the other's +0x318 hit entity must have a sentient (+0x104); then 0x5025f0(me, other) (dz^2 <= 6400 at 0x591fdc, 2D distance^2 < 900) -> +0x2148 = the other's gentity (first match).
@@ -734,6 +770,131 @@ a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; 
 Verified: 27-map sweep (all SP maps, 40 s, `--spawn-all`, `IW2_PRONE_LOG=1`): no unimplemented built-ins; checkprone / enterprone /
 exitprone run on 24 of the 27 maps; runtime errors only the known ones (elalamein / matmata setbattlechatter, matmata roof_guys,
 silotown_assault field_charge spawn), none from prone code.
+Actor +0x288 readers (every `0x288(%reg)` byte access; no script field: the 51-entry actor field table at 0x570530 has
+no 0x288 entry): 0x502b42 (offset goal 0x502960), 0x53defc (maymovetopoint 0x53dce0), 0x543ca4 (0x543c30, per listed
+actor), 0x5491bf (reacquirestep 0x548f10). Each takes a step height of 10 (0x41200000 / 0x591e8c) while it is set and 18
+otherwise. Ported in reacquirestep, aiReachPast and maymovetopoint (replacing the crouch-pose guess); 0x502960's offset
+goal is dead code (see actorcover.cpp).
+
+### Corpse prone blend (ported)
+
+- Death start 0x548980 (0x54899f..0x5489f9): anim mode (+0x218) not 8 ("nophysics"), not linked (gentity +0x1c8 tagInfo
+  0) and not prone (0x514970): start = now, prone 1, corpse byte 1, length 500, +0x168 = +0x16c = 0, then 0x4fd9e0(ent, 0).
+- Death think 0x548ab0 (0x548b96): while the corpse byte is set, 0x4fd9e0(ent, 1) every think.
+- Corpse conversion 0x4fdba0: the 24-byte block is copied to the corpse slot (0x1c7e5ac + 0x20 * i, block at +8, entity
+  number at +4). With "not prone, mode not 8, not linked" the blend starts (only when the corpse byte is still 0) and
+  0x4fd9e0(corpse, 0) runs. 0x523040 (item/corpse trajectory) runs 0x4fd9e0(corpse, 0) when a falling corpse lands (corpse
+  falling is not modelled here).
+- Snapshot 0x4db2b0: every frame the blocks of the actors in use and of the corpse slots are copied to 0x1c638bc (24
+  bytes each) with the index per entity at 0x1c630bc; the client reads them there.
+- 0x4fd9e0(edx = entity, smooth): block = corpse slot (eType 0xb) or actor +0x158; nothing unless the corpse byte is set;
+  mask = clip mask & 0xfdff3fff (0x820011 for actors and corpses). smooth 0: 0x4fd890 straight into +0x168 / +0x16c /
+  +0x164. smooth 1: into temporaries; each angle moves towards its target by at most 6 (0x56fcc8) per call (0x423f50
+  wrap), the lift by at most 0.6 (0x592308).
+- 0x4fd890(pass, mask, yaw, outRoll, outLift; eax = outPitch, ecx = origin): forward / right from yaw (0x421f00: (cos,
+  sin, 0) / (sin, -cos, 0)); pitch probe along forward; |pitch| >= 30 (0x591e08) gives roll 0 and height h1, else a roll
+  probe along right and height (h1 + h2) / 2. Lift = height - origin z; when negative and the box (-15,-15,0)..(15,15,72)
+  (0x56f704 / 0x56f710) cannot move 1 unit down (0x44c1b0, pass entities actor and 0x7ff) it becomes 0.
+- 0x4fd460(pass, mask, origin, fallback = origin, dir, outSlope): box (-4,-4,0)..(4,4,8); from origin + (0,0,30) a sweep of
+  10.9 (0x5922d4) along dir (fraction 0: slope 0, return fallback z); from where it stopped straight down to origin z - 30
+  (start-solid or no hit: the fallback point); the same along -dir. Slope = 0x424040(pitch(front - back)), 0 when the two
+  points are equal; returns (back z + fallback z + front z) / 3 (0x592250).
+- Client 0x4c1cc0 / 0x4c1b90: corpse byte set gives mode 2: rotation = 0x423970(f * +0x168) (pitch about y) times
+  0x423a10(f * +0x16c) (quaternion (sin(a/2), 0, 0, cos(a/2)), roll about x), product 0x4235e0 (Hamilton, pitch first) =
+  `anglesQuat(pitch, 0, roll)`; translation (0, 0, f * +0x164).
+- Client time: f uses cg.time (0xf708dc), set from the snapshot server time (0x4a4070) and lying between the previous and
+  next snapshot (frame interpolation 0x4a4c10). iw2view passes its effect time, server time - 50 + lerp * 50.
+- Visual check (iw2view, toujane `--spawn-all` 50 s, corpse #1139 with pitch -4.2 / roll 11.7, `IW2_SHOT_ENT=1139,110,0,40`,
+  A/B with `IW2_NO_PRONE_TILT`): with the control the body lies on the rising ground beside the wall (right side raised),
+  without it the right arm sinks into the slope. Live prone pitches seen so far are a few degrees (not visible).
+
 TODO(spec): the corpse prone blend (0x4fdba0 copies the block, sets the corpse byte, 500 ms, zero pitches; client mode 2
 with the second rotation 0x423a10 / product 0x4235e0) is not ported; the reader of +0x288; the client draws with its own
 time (0xf708dc), here the server time is used. Not visually checked in iw2view yet.
+Consumers (decoded): 0x4fe8d0 (the end of the exposed / pain / death / grenade / flee thinks: 0x504450, 0x4fe740 = `updateClaimedNodeCore`) and 0x548b60.. then give up the claimed node (0x4fe670) when the FOLLOWED entity stands at it (0x502660: dz^2 <= 6400, 2D distance^2 <= 900; 0x4fe6ca / 0x4fe8eb) - `updateClaimedNode` does this after the core. 0x4fe6c0 is the same check with no caller found. 0x50081d is only the debug text of the actor debug draw ("close: %d" for +0x2148, with "blockee: %d, blocker: %d" and "dontavoidplayer" next to it): no gameplay. 0x501e06 is the physics dispatch already modelled (anim mode 1, movemode set, path count > 0, not followed -> the path mover 0x501e48; followed with anim mode 1 or 7 -> 0x501620). TODO(spec): 0x504450 (placing the entity from the linked parent +0x1c8) before the node update; a path-less / movemode-0 actor goes through the block move at 0x501f22 (clears contents bits 0x18 first), not modelled.
+Resolved: the facing blend (see "Facing blend"). Open (from before): the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
+
+## Facing blend (ported; src/game/actorfacing.cpp, World::actorFacing)
+
+- Look blocks: base at actor +0x104 (mode, +0x108 pitch, +0x10c yaw, +0x110 turn target), override at +0x114 (orientmode;
+  +0x118, +0x11c, +0x120). 0x5048b0 stores trunc(a * 65536/360) & 0xffff back in degrees for pitch / yaw; 0x504950(pitch,
+  yaw) also sets the target to the quantised yaw; 0x5055d0(dir) does the same from vectoangles(dir) (0x421b30). The spawn
+  (0x4fc7dd) sets the base block from the spawn angles.
+- Selector 0x505d80 (jump table 0x505dec, mode - 2): 2 -> 0x505630, 3 -> 0x505960, 4 -> 0x505b80, 5 -> 0x505cb0, 6 ->
+  0x504950(0, claimed node yaw) when the node has flag 0x8000 (0x505dcc); mode 1 and others: nothing. The override block is
+  used when +0x114 is set.
+- 0x505630 (motion): only with a path (+0x6b0 > 0) in anim mode 1. Moving (movemode +0x214 != 0), path direct (+0x6e8 & 1),
+  lookahead distance (+0x6dc) < 60 (0x591e4c) and lookahead direction (+0x6c8) behind lookforward (+0xe0, dot < 0): keep
+  (0x504950 with the entity pitch / yaw). Else the trail sum (0x504e70); zero: keep; moving: 0x5055d0(sum); standing: the
+  sum normalised (0x421160) and compared with (cos, sin) of the block target: dot < 0.9 (0x59200c) faces it, else keep.
+- 0x505b80 (mode 4): path and a non-zero velocity (+0x230 / +0x234): with an enemy seen within 250 ms (0x54ce10) +0x130 =
+  now + 500 and, within 256 (dist² <= 65536, 0x591e24) and 0x545580(unit direction) true, 0x505960; every other case
+  0x505630. Without a path or standing: 0x505960.
+- 0x505cb0 (mode 5): path and moving: 0x545580(unit direction to the enemy) ? 0x505960 : 0x505630 (the exe reads the enemy
+  without a null check; the port faces the motion without one); otherwise 0x505960.
+- 0x545580: true when the path was planned (+0x6ec) under 300 ms ago, or 0x543ae0 says the path ahead is not longer than
+  128; else with h = (1 + lookDir . dir) / 2: false when 72 - 48 h (0x591f3c, 0x591f40) > lookahead distance, else
+  age < 1500 + 3500 h (0x591f34, 0x591f38).
+- Trail ring: 0x505230 (the path walk) writes every frame ring[idx] = F, then 0x504f60 advances. F = lookahead direction
+  when w = (dist * 20 - 95) / 95 <= 0 (0x591e18, 0x592364, 0x592360), the far direction (+0x6d4) when w >= 1, else the
+  normalised blend w * far + (1 - w) * look (the side offset branch +0x73c is dead). The followed branch (0x504248) adds
+  through 0x505520. 0x5523a2..0x5523c4: when the walk script starts from standing in anim mode 1 with movemode set, the ring
+  is cleared (0x504de0), gentity +0x128 &= ~0x18 and +0x704 = 0. The spawn clears it too (0x4fc806).
+- 0x504ca0 (turn): +0x124 = the active target; yaw turns by at most rate * 50 (0x592030 / 0x592034), rate 0.4, or 0.036
+  (0x3d1374bc) while prone (with the 0x514970 bookkeeping inline); pitch 0; re-quantised. The port no longer writes the yaw
+  in moveActor (it was inferred); the selector + turn do it. Measured on toujane (30 s, IW2_FACING_LOG=-1, moving actors
+  after 3 s): yaw within 3 degrees of the motion in mode 2, 6 in mode 4 (where the enemy facing applies).
+- Re-read for the move frame (cluster-animmode), where it differs from the earlier decode:
+  - 0x505960 with an enemy and a path does not return early (0x5059f6 jg 0x505a22): when the path is older than 300 ms
+    (+0x6ec + 300.0, 0x591f4c, compared as floats) and the enemy was not seen for more than 500 ms, the node from 0x5432f0
+    (with the sight record) is faced, else the enemy's origin (0x505a80). The direction is 3D through 0x5055d0, so the look
+    pitch follows it (the earlier port used yaw only, pitch 0).
+  - 0x505960 without an enemy calls 0x505790 first and only then the claimed-node test (0x505973..0x5059b7); never-seen and
+    seen-long-ago enemies go to 0x505920 = 0x505790, then the node test (0x505920..0x505959).
+  - 0x505790 (nearest threat): the fought team ({0, 2, 1, 0, 0}[team]); none -> false. While +0x204c - now > 0 -> true (the
+    block stays). Else the nearest sentient of that team (0x515230 / 0x515270 over the team mask; 3D distance², a client's
+    * 0.25 (0x591fe0), strictly smaller wins); none -> false; +0x204c = now + 3000; 0x5432f0 without a record; none -> false;
+    the block faces that node (0x5055d0) when it is 1 or more away in 2D; true. Ported as `World::faceThreat`.
+  - 0x5432f0 (sentient a, sentient b, record or none): a's node 0x515040 (none -> 0); b's node = record +0x24 (b's node
+    +0x38 when the record was written, 0x500ca2; `SentientInfo::lastKnownNode`) or 0x515040(b) (none -> 0); when they see
+    each other (0x517e40) b's node; else 0x547330: a search from b's node over the links (b's team block bytes skipped,
+    cost = link length, no heuristic) that stops at the first node seeing a's node; that node or 0. Ported as
+    `World::enemyPositionNode`.
+  - 0x505b80 / 0x505cb0 read the block velocity +0x230 inside 0x504160, before this frame's physics: the previous step's
+    velocity (`ActorAi::blockVel`), not the one moveActor just set.
+- 0x504aa0 (anim yaw, `World::turnActorByDelta`, called by 0x504160 when the yaw is not 0, args (0, yaw)): both blocks: pitch
+  re-quantised, look yaw and target = target + yaw (rebuilt from +0x110 / +0x120); entity yaw += yaw (pitch, roll 0); look
+  angles += (0, yaw) through 0x5049a0.
+- 0x504be0 (look turn, `World::actorLookTurn`, after 0x504ca0): look pitch / yaw (+0xd8 / +0xdc) each turn by at most 40
+  (0x591f78 / 0x592110) towards the active block's look pitch / yaw (0x423f50 = a - b normalised to [-180, 180]); 0x5049a0
+  stores them quantised and derives the look axes (0x421da0: +0xe0 forward = the script field lookforward, field table
+  0x570418, +0xec right, +0xf8 up).
+- 0x504160 (anim-mode switch, jump table 0x504428 over +0x218 - 1): 1 the path walk (0x505230) or the followed branch
+  (0x504228), yaw 0; 2 delta xy, z 0, kind (+0x264) 2, yaw 0; 3 ("angle deltas") delta zeroed, kind 1, yaw of the delta;
+  4 delta xy, z 0, kind 2, yaw; 5 3D delta, kind 3, yaw; 6 3D delta, kind 4, yaw; 7 delta xy, z 0, kind 5, yaw; others yaw 0.
+  The delta is 0x503e40 -> 0x478550 (goal weights per +0x220), the yaw 0x423900 of its rotation (atan2 with 2 / (a² + b²)).
+  Then (0x5042ea) a non-zero yaw -> 0x504aa0(0, yaw), the selector 0x505d80, 0x504ca0, 0x504be0. 0x501d00 rotates the delta
+  of kinds other than 1 by +0x124 (desiredangle, 0x421f00) before the block move. +0x220 writers: death 0x548b59 0, pain
+  0x54d47c 0, animcustom 0x54b2c2 1, negotiation 0x54b7b4 1, the move-script choices 0x53ae15..0x53b12e 0.
+- 0x504450 is now one frame (`World::actorMoveFrame`, from thinkActors after the state think, for every state but the
+  turret and animscripted, whose thinks do not reach it): mode 8 nothing; modes 2..7 the delta / yaw above, then the
+  facing tail, then `moveActorKind` with the rotated delta. The mode-1 path walk stays in the state code (moveActor); a frame
+  that already walked is treated as mode 1 so an animmode override does not move the actor twice (TODO(spec): whether
+  0x552350 stores mode 1 directly or through 0x53ac90, which applies +0x21c). Pain and death animations now move the actor by
+  their deltas (mode 4), as animcustom and the negotiation (whose ad hoc copy is removed) did. The linked branch (parent tag
+  frame) and 0x4e7150 stay TODO(spec).
+- orientmode (0x53f510) sets the override block through the same helpers: "face angle" 0x5048b0(0, angle) and +0x120;
+  "face current" +0x120 = +0x124 (desiredangle, not the entity yaw); "face direction" / "face point" 0x5055d0 (look pitch from
+  the vector); "face default" 0x5063f0. teleport with angles (0x53e237) and the animscripted think (0x54b1f3, every frame) set
+  the base block from the entity angles (teleport also the look angles).
+- getmotionangle (0x53f770): block velocity (+0x230) of more than 1 (2D squared) -> its yaw (0x421890) - entity yaw; else
+  with a path the lookahead direction's yaw - entity yaw; else 0. Replaces the inferred `$motionyaw` reader.
+- TODO(spec): +0x130 has no reader found; the turret user's angles from the turret (0x54a7e6, then 0x54a829) are not set.
+- Elalamein check (after the facing blend): the player dies by 40 s where the build before it (1b1b4a0) survived. The
+  bisect (ring feed, modes 2/4/5, prone turn rate, the removed moveActor yaw write) shows the death only goes away with
+  both the selector and the old yaw write restored; it is not tied to one piece. The damage (`IW2_PLAYER_DMG_LOG`) comes
+  from the same standing kar98 riflemen (#1396, #1405, #1409, #1411; 80 per hit) in both builds, and #1396's facing state
+  is identical frame by frame (mode 3 override, no path, yaw 12.9). Only the hit timing differs: 7 hits within 7.8 s
+  versus 5 spread out, against 500 health that regenerates. The cause is the shared random sequence shifting when other
+  actors move differently, not a facing fault, so this is not a regression. breakout, duhoc_defend and hill400_assault
+  end with the player dead in both builds.

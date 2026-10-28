@@ -9,6 +9,7 @@ bool isArchivedCvar(const std::string& name) {
     std::string n;
     for (char c : name) n += char(std::tolower(static_cast<unsigned char>(c)));
     if (n == "sensitivity" || n == "m_pitch" || n == "snd_volume" || n == "g_gameskill" || n == "mis_difficulty" || n == "mis_none") return true;
+    if (n == "sv_lastsavegame") return true; // registered with flags 0x1001 (archive) at 0x449d78
     return n.size() == 6 && n.compare(0, 4, "mis_") == 0 && std::isdigit(static_cast<unsigned char>(n[4])) && std::isdigit(static_cast<unsigned char>(n[5]));
 }
 

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <random>
 
 namespace iw2::game {
@@ -200,6 +201,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         print("DBG player damage " + std::to_string(amount) + " to " + target.classname + " (" + mod + ") at " + std::to_string(timeMs_));
     // G_Damage (0x52835c): a client accumulates the damage; with a direction the direction is kept, else the
     // target's origin and the world flag (P_DamageFeedback turns that into 255/255).
+    if (target.isPlayer && std::getenv("IW2_PLAYER_DMG_LOG"))
+        std::fprintf(stderr, "[pdmg %lld] %d from #%d %s (%s)\n", (long long)timeMs_, amount, attacker ? attacker->number : -1, attacker ? attacker->classname.c_str() : "-", mod.c_str());
     if (target.isPlayer) {
         damageBlood_ += amount;
         if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0) {
@@ -771,7 +774,10 @@ void World::registerCombatBuiltins() {
         if (!c.arg(0).isVector()) return Value(false);
         const Vec3 from = c.self.asObject()->get("origin").asVector();
         const Vec3 to = c.arg(0).asVector();
-        const TraceResult tr = collision_->trace(add(from, {0, 0, 18}), add(to, {0, 0, 18}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
+        // Step height: 10 while the prone tilt byte +0x288 is set, else 18 (0x53defc). TODO(spec): the rest of 0x53dce0.
+        Entity* self = entityOf(c.self);
+        const float step = self && self->isActor && self->ai.prone.tilt ? 10.0f : 18.0f;
+        const TraceResult tr = collision_->trace(add(from, {0, 0, step}), add(to, {0, 0, step}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
         return Value(tr.fraction >= 0.999f && !tr.startSolid);
     });
     // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).
@@ -895,13 +901,14 @@ void World::registerCombatBuiltins() {
         return Value();
     });
     // setcontents (0x4efd70): entity +0xc0 = the argument (the old value is returned), then the entity is relinked.
-    // TODO(spec): collision contents are not modelled per entity here, only stored.
+    // The entity clips (syncEntityClips) and the vehicle touch scan read the stored value (World::entityContents); 0 unlinks the entity.
+    // TODO(spec): the contents of entity classes other than actors, the player and script movers are not modelled.
     vm_.registerBuiltin("setcontents", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("setcontents: not an entity");
-        const Value old = e->obj->get("$contents");
+        const uint32_t old = entityContents(*e);
         e->obj->set("$contents", Value(int32_t(c.arg(0).asInt())));
-        return old.isNumber() ? old : Value(int32_t(0));
+        return Value(int32_t(old));
     });
     // setsunlight (0x4f5750): 3 arguments, config string 9 = "%g %g %g"; resetsunlight (0x4f57c0): no arguments, config string 9 reset.
     vm_.registerBuiltin("setsunlight", [this](CallContext& c) {
@@ -940,8 +947,6 @@ void World::registerCombatBuiltins() {
         const int s = playerCmd_.weaponState;
         return Value(s >= 12 && s <= 16);
     });
-    // issavesuccessful (0x4f3d80): true unless the save-failed byte (+0xd of the save state) is set; savegame is a stub.
-    vm_.registerBuiltin("issavesuccessful", [](CallContext&) { return Value(true); });
     // setfriendlychain (0x4eeb10): src/game/friendlychain.cpp.
     vm_.registerBuiltin("setfriendlychain", [this](CallContext& c) {
         Entity* e = entityOf(c.self);

@@ -49,5 +49,29 @@ int main() {
     put(0x4a4, 9);
     saveHeaderInfo(g, si);
     check(saveDetailText(si, loc).find("<GAME_DIFFICULTY_UNKNOWN>") != std::string::npos, __LINE__);
+    // Header writer (0x4d4f70 layout) read back by the list builder rules.
+    SaveHeaderFields f;
+    f.mapName = "toujane";
+    f.description = "Before the tanks";
+    f.image = "$default";
+    f.name = "autosave/toujane-1";
+    f.healthPercent = saveHealthPercent(50, 200);
+    f.difficulty = 3;
+    f.tm = {1, 2, 3, 4, 5, 106, 0, 0, 0};
+    f.bodySize = 1234;
+    const auto hb = buildSaveHeader(f);
+    check(hb.size() == kSaveHeaderSize && saveHeaderLoadable(hb) && saveHeaderListable(hb), __LINE__);
+    check(saveHeaderInfo(hb, si) && si.mapName == "toujane" && si.title == "Before the tanks" && si.image == "$default" && si.health == 25 &&
+              si.difficulty == 3 && si.tm[5] == 106, __LINE__);
+    int32_t sz = 0;
+    std::memcpy(&sz, hb.data() + 0x4d0, 4);
+    check(sz == 1234 && std::string(reinterpret_cast<const char*>(hb.data() + 0x460)) == "autosave/toujane-1", __LINE__);
+    // +0x4a0 clamp (0x4d5126..0x4d5173)
+    check(saveHealthPercent(0, 100) == 1 && saveHealthPercent(100, 0) == 1 && saveHealthPercent(1, 1000) == 1 && saveHealthPercent(900, 100) == 100 &&
+              saveHealthPercent(100, 100) == 100, __LINE__);
+    // internal names (0x44a2f0)
+    check(saveNameInternal("internal/snd_restart") && saveNameInternal("INTERNAL/vid_restart") && saveNameInternal("x/internal/y") &&
+              saveNameInternal("x\\internal/y"), __LINE__);
+    check(!saveNameInternal("internal") && !saveNameInternal("internalx/a") && !saveNameInternal("ainternal/b") && !saveNameInternal("internal\\a"), __LINE__);
     return failures ? 1 : 0;
 }

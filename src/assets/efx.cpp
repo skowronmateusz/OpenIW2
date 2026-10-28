@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -30,7 +31,11 @@ std::vector<std::string> words(const std::string& line) {
     return out;
 }
 
-// {name, element-flag bit, spawn-flag bit} rows; one table serves both keys.
+// The exe's flag table 0x56d528 ({name, element flag +0x90, spawn flag +0x94}, 12-byte rows, in this order). `flags` / `flag`
+// search rows 0..23 (0x489c73: count 0x18), `spawnFlags` / `spawnFlag` rows 24..36 (0x56d648, count 0xd); a found row ORs BOTH
+// of its bits into the element (0x488650), so `absoluteVel` / `absoluteAccel` under spawnFlags set element flags. A name not
+// in the searched rows fails the key (0x4886b0 -> 0x489650 "Error while parsing key"), which fails the whole effect (0x486917:
+// "FX Error while parsing segment type", the effect is freed).
 struct FlagName { const char* name; uint32_t flag, spawn; };
 constexpr FlagName kFlagNames[] = {
     {"depthHack", 0x1, 0}, {"setShaderTime", 0x4, 0}, {"useModel", 0x10, 0}, {"useBBox", 0x40, 0},
@@ -43,25 +48,123 @@ constexpr FlagName kFlagNames[] = {
     {"org2fromTrace", 0, 0x8}, {"traceImpactFx", 0, 0x10}, {"org2isOffset", 0, 0x20}, {"cheapOrgCalc", 0, 0x40},
     {"cheapOrg2Calc", 0, 0x80}, {"orgOnSphere", 0, 0x1}, {"orgOnCylinder", 0, 0x4}, {"axisFromSphere", 0, 0x2},
     {"randrotaroundfwd", 0, 0x100}, {"evenDistribution", 0, 0x200}, {"frustumCull", 0, 0x400},
-    {"absoluteAccel", 0x400000, 0},
+    {"absoluteVel", 0x200000, 0}, {"absoluteAccel", 0x400000, 0},
+};
+constexpr size_t kElementRows = 24, kSpawnFirst = 24, kSpawnRows = 13;
+
+const FlagName* findFlag(const std::string& name, bool spawnKey) {
+    const size_t first = spawnKey ? kSpawnFirst : 0, count = spawnKey ? kSpawnRows : kElementRows;
+    for (size_t k = first; k < first + count; ++k)
+        if (lower(name) == lower(kFlagNames[k].name)) return &kFlagNames[k];
+    return nullptr;
+}
+
+// Bit `which` (0 = element +0x90, 1 = spawn +0x94) gathered from both keys.
+uint32_t bitsOf(const EfxElement& e, int which) {
+    uint32_t bits = 0;
+    for (int key = 0; key < 2; ++key)
+        for (const auto& n : e.list(key ? "spawnflags" : "flags"))
+            if (const FlagName* f = findFlag(n, key == 1)) bits |= which ? f->spawn : f->flag;
+    return bits;
+}
+
+// Legacy channel syntax (`start`, `end`, `parm`, `flags` inside a channel group; channel parser 0x489450 with the
+// helpers 0x488c30 / 0x488ca0 (3-component start / end: 3 numbers = fixed, 6 = min xyz then max xyz, 0x4879b0, unsorted),
+// 0x488d10 / 0x488d90 (one component, "%f %f" sorted min <= max), 0x488e10 (parm) and 0x488e70 (flags, names at 0x57d1d8:
+// linear 0x1, random 0x2, nonlinear 0x4, wave 0x8, clamp 0xc)). Every record starts as start = end = parm = 1, flags 0
+// (0x4878c0). After the whole element is parsed, 0x487910 turns every channel whose record was touched into a graph
+// (0x47eb10), replacing a `curve` graph of the same channel.
+struct LegacyChannel {
+    float start[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    float end[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    float parm[2] = {1, 1};
+    uint32_t flags = 0;
+    bool set = false;
 };
 
-uint32_t bitsOf(const std::vector<std::string>& names, bool spawn) {
-    uint32_t bits = 0;
-    for (const auto& n : names)
-        for (const auto& f : kFlagNames)
-            if (lower(n) == lower(f.name)) bits |= spawn ? f.spawn : f.flag;
-    return bits;
+float mid(const float r[2]) { return (r[1] - r[0]) * 0.5f + r[0]; } // (max - min) * 0.5 + min (0x591e10 = 0.5)
+
+// 0x47eb10: graph and scale range of one legacy channel. dims = 3 for rgb (index 0), else 1; alpha (index 2) uses M = 1,
+// other channels M = max(1, max(mid(start), mid(end)) * 4/3) (0x59212c, component 0). Scale range = M -/+ half the start
+// spread (component 0). Values are divided by M. p = 0.01 * mid(parm) / M (0x591ea0), w = mid(parm) / M * meanLife *
+// 0.0031415929 (0x592158), meanLife = mid(life) (0x487910, element +0x58 / +0x5c).
+// - linear only (flags & 1, no 0xc bits, 0x47e780): two rows {0, start}, {1, end}.
+// - nonlinear only ((flags & 0xd) == 4, 0x47e7f0): three rows {0, start}, {p, start}, {1, end}.
+// - otherwise (0x47e870): 16 rows at t = 0, 1/15, ... (0x5920a4, t clamped to 1). f = 1, or 1 - t with linear; nonlinear:
+//   g = t > p ? 1 - (t - p) / (1 - p) : 1; clamp: g = t < p ? (p - t) / p : 0; with linear f = (f + g) / 2 else f = g; wave:
+//   f *= cos(t * w) (0x566090). Value = (1 - f) * end + f * start, set to 0 when negative and to 1 when f > 1; random (0x2)
+//   multiplies it by a draw of the shared effect generator (0x59b2a8, fxGeneratorSeed).
+EfxGraph legacyGraph(const LegacyChannel& r, int dims, bool alpha, float meanLife) {
+    float M = 1.0f;
+    if (!alpha) {
+        const float s = mid(r.start[0]), e = mid(r.end[0]);
+        M = (s - e < 0.0f ? e : s) * 1.3333334f; // 0x47eb44: the larger of the two
+        if (!(M >= 1.0f)) M = 1.0f;
+    }
+    EfxGraph g;
+    g.dims = dims;
+    const float half = (r.start[0][1] - r.start[0][0]) * 0.5f;
+    g.scaleMin = M - half;
+    g.scaleMax = M + half;
+    const float inv = 1.0f / M;
+    float s[3], e[3];
+    for (int d = 0; d < dims; ++d) s[d] = mid(r.start[d]) * inv, e[d] = mid(r.end[d]) * inv;
+    const float parmN = mid(r.parm) * inv;
+    const float p = parmN * 0.01f, w = parmN * meanLife * 0.0031415929f;
+    auto row = [&](float t, const float* v) {
+        std::vector<float> x{t};
+        for (int d = 0; d < dims; ++d) x.push_back(v[d]);
+        g.points.push_back(std::move(x));
+    };
+    const uint32_t f = r.flags;
+    if ((f & 1) && !(f & 0xc)) {
+        row(0, s), row(1, e);
+    } else if (!(f & 1) && (f & 0xc) == 4) {
+        row(0, s), row(p, s), row(1, e);
+    } else {
+        uint32_t& seed = fxGeneratorSeed(); // the shared generator; its state at load depends on all earlier draws
+        float t = 0;
+        for (int i = 0; i < 16; ++i) {
+            if (!(t <= 1.0f)) t = 1.0f;
+            float k = (f & 1) ? 1.0f - t : 1.0f;
+            const uint32_t mode = f & 0xc;
+            if (mode == 4 || mode == 0xc) {
+                float gg = mode == 4 ? (t > p ? 1.0f - (t - p) / (1.0f - p) : 1.0f) : (t < p ? (p - t) / p : 0.0f);
+                k = (f & 1) ? (gg + k) * 0.5f : gg;
+            } else if (mode == 8) {
+                k *= float(std::cos(double(t * w)));
+            }
+            float v[3];
+            for (int d = 0; d < dims; ++d) {
+                float x = (1.0f - k) * e[d] + k * s[d];
+                if (x < 0.0f) x = 0.0f;
+                else if (k > 1.0f) x = 1.0f;
+                if (f & 2) {
+                    seed = seed * 0x343fd + 0x269ec3;
+                    x = x * float((seed >> 17) & 0x7fff) / 32768.0f;
+                }
+                v[d] = x;
+            }
+            row(t, v);
+            t += 0.06666667f;
+        }
+    }
+    return g;
 }
 
 } // namespace
 
+uint32_t& fxGeneratorSeed() {
+    static uint32_t seed = 0x89abcdef;
+    return seed;
+}
+
 uint32_t EfxElement::flagBits() const {
-    if (flagBitsCache_ < 0) flagBitsCache_ = bitsOf(list("flags"), false);
+    if (flagBitsCache_ < 0) flagBitsCache_ = bitsOf(*this, 0);
     return uint32_t(flagBitsCache_);
 }
 uint32_t EfxElement::spawnFlagBits() const {
-    if (spawnFlagBitsCache_ < 0) spawnFlagBitsCache_ = bitsOf(list("spawnflags"), true);
+    if (spawnFlagBitsCache_ < 0) spawnFlagBitsCache_ = bitsOf(*this, 1);
     return uint32_t(spawnFlagBitsCache_);
 }
 
@@ -135,6 +238,7 @@ EfxEffect parseEfx(std::string_view text) {
         if (head.size() != 1) throw std::runtime_error("efx: expected an element type");
         EfxElement el;
         el.type = head[0];
+        std::vector<std::pair<std::string, LegacyChannel>> legacy;
         expect("{");
         while (true) {
             auto& l = next();
@@ -160,6 +264,26 @@ EfxEffect parseEfx(std::string_view text) {
                 // A channel group: { curve [ rows ] scale a [b] … }.
                 EfxGraph g;
                 g.dims = key == "rgb" || key == "rgbrand" ? 3 : 1;
+                LegacyChannel leg;
+                const bool rgb3 = key == "rgb"; // channel index 0 (0x489450: indices 0 and 1 read three components)
+                auto pairOf = [&](const std::vector<std::string>& gl, float out[2], bool sorted) {
+                    if (gl.size() < 2) return false;
+                    out[0] = float(std::atof(gl[1].c_str()));
+                    out[1] = gl.size() > 2 ? float(std::atof(gl[2].c_str())) : out[0];
+                    if (sorted && out[1] < out[0]) std::swap(out[0], out[1]);
+                    return true;
+                };
+                auto triple = [&](const std::vector<std::string>& gl, float out[3][2]) {
+                    if (gl.size() == 4 || gl.size() >= 7) { // 0x4879b0: 3 numbers (fixed) or 6 (min xyz, max xyz)
+                        const bool six = gl.size() >= 7;
+                        for (int d = 0; d < 3; ++d) {
+                            out[d][0] = float(std::atof(gl[size_t(1 + d)].c_str()));
+                            out[d][1] = six ? float(std::atof(gl[size_t(4 + d)].c_str())) : out[d][0];
+                        }
+                        return true;
+                    }
+                    return false;
+                };
                 expect("{");
                 while (true) {
                     auto& gl = next();
@@ -175,6 +299,22 @@ EfxEffect parseEfx(std::string_view text) {
                             while (p.size() < size_t(g.dims) + 1) p.push_back(0);
                             g.points.push_back(p);
                         }
+                    } else if (gk == "start" || gk == "end") {
+                        auto& dst = gk == "start" ? leg.start : leg.end;
+                        if (rgb3 || key == "rgbrand") { if (triple(gl, dst)) leg.set = true; }
+                        else if (pairOf(gl, dst[0], true)) leg.set = true;
+                    } else if (gk == "parm" || gk == "parms") {
+                        if (pairOf(gl, leg.parm, false)) leg.set = true; // 0x488e10: one number = both, not sorted
+                    } else if (gk == "flags" || gk == "flag") {
+                        for (size_t w = 1; w < gl.size() && w <= 4; ++w) { // "%s %s %s %s" (0x57d1e0)
+                            const std::string fl = lower(gl[w]);
+                            if (fl == "linear") leg.flags |= 1;
+                            else if (fl == "nonlinear") leg.flags |= 4;
+                            else if (fl == "wave") leg.flags |= 8;
+                            else if (fl == "random") leg.flags |= 2;
+                            else if (fl == "clamp") leg.flags |= 0xc;
+                        }
+                        leg.set = true;
                     } else if (gk == "scale" && gl.size() > 1) {
                         g.scaleMin = float(std::atof(gl[1].c_str()));
                         g.scaleMax = gl.size() > 2 ? float(std::atof(gl[2].c_str())) : g.scaleMin;
@@ -187,11 +327,31 @@ EfxEffect parseEfx(std::string_view text) {
                     if (g.points.back()[0] != 1) { auto p = first; p[0] = 1; g.points.push_back(p); }
                     if (first[0] != 0) { auto p = first; p[0] = 0; g.points.insert(g.points.begin(), p); }
                 }
+                if (leg.set) legacy.emplace_back(key, leg);
                 el.graphs[key] = std::move(g);
                 continue;
             }
             if (key == "name") el.name = l[1];
-            el.keys[key] = std::vector<std::string>(l.begin() + 1, l.end());
+            std::string storeKey = key;
+            if (key == "flag") storeKey = "flags";
+            if (key == "spawnflag") storeKey = "spawnflags";
+            if (storeKey == "flags" || storeKey == "spawnflags")
+                for (size_t w = 1; w < l.size(); ++w)
+                    if (!findFlag(l[w], storeKey == "spawnflags"))
+                        throw std::runtime_error("efx: unknown " + storeKey + " name " + l[w] + " (the effect fails to load, 0x486917)");
+            el.keys[storeKey] = std::vector<std::string>(l.begin() + 1, l.end());
+        }
+        // 0x487910: legacy records become graphs once the element is complete (mean life from `life`, element +0x58/+0x5c).
+        // rgbRand (index 1) gets one component there, which the rgb updater (0x47f4a0, fixed 16-byte rows) reads out of bounds:
+        // undefined in the original, no shipped file has it; left as parsed here.
+        if (!legacy.empty()) {
+            const auto life = el.numbers("life");
+            float lr[2] = {life.empty() ? 0.0f : life[0], life.size() > 1 ? life[1] : (life.empty() ? 0.0f : life[0])};
+            const float meanLife = mid(lr);
+            for (auto& [name, rec] : legacy) {
+                if (name == "rgbrand") continue;
+                el.graphs[name] = legacyGraph(rec, name == "rgb" ? 3 : 1, name == "alpha", meanLife);
+            }
         }
         fx.elements.push_back(std::move(el));
     }

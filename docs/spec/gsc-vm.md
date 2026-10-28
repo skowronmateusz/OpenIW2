@@ -66,8 +66,9 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   the threads woken by a LATER notify run BEFORE those of an earlier one. Evidence by behaviour: moscow.gsc:1396-1399, where
   dialogue() must run before friendly_letlev_block's resume_idle restart (else the block loop animscripted cancels lookcompass
   and the chain dies; with the old FIFO the lines moscow_rs1_lookcompass / storeroom never played; with the stack they do).
-  TODO(spec): the same head insertion probably applies to `wait` filing (0x46a2e9), so threads due in one frame would run
-  newest-first; ours still runs them in creation order. Only VM_RunList (0x46d560) calls the interpreter
+  `wait` filing (0x46a2e9) uses the same head insertion (0x4643a0) into the wake frame's list (counter + frames mod 0xfffd,
+  looked up with 0x463f20) and Scr_RunFrame runs that list through the same VM_RunList, so threads due in one frame run
+  newest-filed first (VM::runFrame sorts the due threads by filing sequence, descending). Only VM_RunList (0x46d560) calls the interpreter
   (0x4690c0); it runs the list head and re-reads the head until the list is empty. Scr_RunFrame (0x46f5c0) = run the current list
   (0x46de90), the frame-end threads (0x467150), then `incl 0x9bef20`. `thread f()` runs f at once. Ours: `VM::notify` queues,
   `VM::drainReady` runs the queue as a stack (push at the head) after the timed threads of `runFrame`.

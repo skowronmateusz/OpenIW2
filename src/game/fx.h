@@ -16,9 +16,16 @@ namespace iw2::game {
 using FVec = std::array<float, 3>;
 using FxAxes = std::array<FVec, 3>; // forward, right, up (rows of the 3x3 axis of the game)
 
-// A bolt (the attachment record of 0x4853f0: entity + tag) as a host callback returning the tag's current world position;
+// The orientation of an attachment's tag (0x48abb0 output: origin, then axis rows forward / left / up). hasAxes is false when the
+// host only knows the position (the axes are then taken as the identity, i.e. the tag only translates).
+struct FxTag {
+    FVec origin{};
+    FxAxes axes{FVec{1, 0, 0}, FVec{0, 1, 0}, FVec{0, 0, 1}};
+    bool hasAxes = false;
+};
+// A bolt (the attachment record of 0x4853f0: entity + tag) as a host callback returning the tag's current orientation;
 // false when the attachment is no longer valid (0x485bf0).
-using FxBolt = std::function<bool(FVec&)>;
+using FxBolt = std::function<bool(FxTag&)>;
 
 struct FxParticle {
     const assets::EfxElement* element = nullptr;
@@ -28,8 +35,11 @@ struct FxParticle {
     float rnd[8]{};                     // per-channel lerp randoms: rgb, alpha, size, size2, length, rotation, vel, vel2
     float velRnd[3]{}, vel2Rnd[3]{};
     float gravity = 0;
+    float rot0 = 0;                     // Particle start angle (+0x44, drawn from `rotation` by 0x48ce70)
     std::shared_ptr<FxBolt> bolt;       // relative (0x2) particle of a bolted effect: follows the tag
     FVec bolt0{};                       // the tag position at spawn
+    FVec local0{};                      // relative: the spawn point in tag space (0x48c290 end: (p − tag origin) · tag rows)
+    FxTag tag0;                         // relative: the tag orientation at spawn
     float scale[8]{};                   // per-channel scale picked from the scale range
     size_t shader = 0;                  // index into the element's shader list
     // Atlas sequence (0x48cd20): start frame (+0x108), frames per ms (+0x10c), loop mode / times (+0x110 / +0x114).
@@ -43,6 +53,17 @@ struct FxParticle {
     // position at the start of the update (+0x24c), tailB the end point (+0x9c, 0x483160).
     bool tail = false;
     FVec prev{}, tailB{};
+    // Line element (type 2, class vtable 0x57c708, spawn 0x48d3c0): fixed end points A (the spawn point, +0x4) and B (+0x24c,
+    // from `origin2`, 0x48c850), drawn as a renderer type 8 quad like Tail (update 0x482da0, draw 0x482d90).
+    bool line = false;
+    FVec lineB{};
+    // Cloud element (type 12, class vtable 0x57c78c, spawn 0x48de90): moves like an Emitter (0x480bd0) and spins its
+    // 1024-point cube about a random unit axis (+0x24c, 0x482850) by the angle +0x44 (start: `rotation`, advanced by the
+    // rotationDelta channel, 0x481b90). lengthRnd is the useRandomLength lerp random (+0x260, 0x426250(0, 1)).
+    bool cloud = false;
+    FVec cloudAxis{1, 0, 0};
+    float cloudAngle = 0, lengthRnd = 0;
+    int64_t cloudLastMs = 0;
     std::string model;                  // chosen from `models` at random when useModel (0x10) is set
     FVec pos{};                         // current position (+0x4)
     FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
@@ -73,6 +94,10 @@ struct FxSprite {
     float size = 0;
     std::string shader;
     float uv[4]{0, 0, 1, 1}; // atlas frame rectangle u0, v0, u1, v1 (renderer 0x1003fa60)
+    // Particle quad (renderer type 4, 1.3 DLL 0x1003ff20 -> 0x1003fb00): half width `size` (+0x64), half height `size2`
+    // (+0x68; < 0 = size) and the angle in degrees (+0x6c, element +0x44).
+    float size2 = -1;
+    float rotation = 0;
     // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
     // `position` / `size` are unused.
     bool beam = false;
@@ -81,6 +106,22 @@ struct FxSprite {
     bool beamTail = false;
     FVec beamA{}, beamB{}, beamPerp{};
     float widthA = 0, widthB = 0;
+    // Cylinder element (renderer type 9, 1.3 DLL 0x100401f0): a tube of `segments` quads from beamA (radius widthA = size2
+    // result, refEntity +0x68) to beamB (radius widthB = size, +0x64); see iw2view spriteModel for the ring build.
+    bool cylinder = false;
+    int segments = 0;
+};
+
+// A Cloud element as handed to the renderer (draw slot 0x482960 -> 0x480010 with renderer type 6 -> 1.3 DLL 0x10041370):
+// the world matrix of the shared 1024-point cube (0x1005a7a0: rows axis[k] * size, translation origin), the flake quad
+// width / height (refEntity +0x64 / +0x68) and the previous position B (+0x48) that stretches the flakes into streaks
+// (0x10041230), colour = the rgb / alpha bytes / 255 (particleCloudColor).
+struct FxCloud {
+    std::string shader;
+    FVec origin{}, prev{};
+    FVec axis[3]{};
+    float size = 0, width = 0, height = 0;
+    uint8_t rgba[4]{255, 255, 255, 255};
 };
 
 // A live particle of a blocksSight (0x1000) element as entered in the sight-blocker list (0x480970 → 0xc3ed80,
@@ -143,12 +184,14 @@ public:
     // Light elements alive at the last sprites() call (DLL keeps at most r_dlightLimit = 4 of them, TODO(spec): the order
     // 0x10015180 chooses when there are more).
     const std::vector<FxLight>& lights() const { return lights_; }
+    // Cloud elements alive at the last sprites() call.
+    const std::vector<FxCloud>& clouds() const { return clouds_; }
     size_t count() const { return particles_.size(); }
     // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
 
 private:
-    uint32_t seed_ = 0x13579bdf;
+    uint32_t& seed_ = assets::fxGeneratorSeed(); // the exe's single effect generator (0x59b2a8)
     float frand();
     float range(const std::vector<float>& v, float fallback);
     void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);
@@ -170,6 +213,12 @@ private:
     };
     std::shared_ptr<FxBolt> curBolt_; // the attachment of the effect being played (children inherit it, 0x48dac0)
     std::vector<PendingRun> pending_;
+    struct ImpactRun {
+        std::string path;
+        FVec origin{}, dir{};
+        int64_t startMs = 0;
+    };
+    std::vector<ImpactRun> impactQueue_;
     struct Tracer {
         FVec base{}, dir{};
         float length = 0; // distance base -> impact (+0x44)
@@ -180,6 +229,7 @@ private:
     std::vector<FxSightBlocker> sightBlockers_;
     std::vector<FxModelInst> models_;
     std::vector<FxLight> lights_;
+    std::vector<FxCloud> clouds_;
     FVec velocityAt(const FxParticle& p, float u) const;
     void stepEmitter(FxParticle& p, int64_t nowMs);
 };

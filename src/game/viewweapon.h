@@ -70,6 +70,45 @@ private:
 // adsBobFactor: the weapon's; reticle: the weapon has an adsOverlayReticle (then also × (1 − adsFrac)).
 V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, float adsBobFactor, bool reticle);
 
+// Scoped view bob (cgame 0x4ae210, called by CG_OffsetFirstPersonView 0x4ae290 right after the scope sway): for a
+// weapon with an adsOverlayReticle the view angles (pitch, yaw, roll) get the gun bob angles × adsFrac. `rawBob` is
+// gunBob(..., reticle = false), i.e. the angles the exe keeps in 0xf79940..48 (already × the adsBobFactor term). The exe
+// reads the values the weapon pass (0x4b4a90 via 0x4b6d40) stored in the previous frame: 0x4b0040 calls the view
+// (0x4af3d0) before the weapon (0x4b6d40). The gun itself keeps × (1 − adsFrac) (0x4b4d10), so the bob moves from the
+// gun to the view while zooming in.
+V3 scopedViewBob(const V3& rawBob, float adsFrac, bool reticle);
+
+// Hold-breath sounds (cgame 0x4b6840, run by the first-person weapon pass 0x4b69b0 at 0x4b6bf4 every drawn frame).
+// State 0xf7e8b0 timer (−1 = not holding), 0xf7e8b4 heartbeat start, 0xf7e8b8 delay, 0xf7e8bc volume blend; reset by
+// 0x4b66e0. Aliases (registered at 0x4a2a4a..0x4a2a77): weap_sniper_heartbeat, _breathin, _breathout, _breathgasp.
+// Dvars: player_breath_snd_lerp (0x1c7efc4, default 2), player_breath_snd_delay (0x1c7efd4, default 1),
+// player_breath_hold_time (0x1c7f030, 4.5).
+struct BreathSoundParams {
+    float sndLerp = 2.0f;  // player_breath_snd_lerp (registered 0x4faa62..0x4faa7d, range 0..100)
+    float sndDelay = 1.0f; // player_breath_snd_delay (0x4faa85..0x4faaa0, range 0..2), seconds
+    float holdTime = 4.5f; // player_breath_hold_time, seconds
+};
+class BreathSounds {
+public:
+    // Plays an alias as the local client (0x4a33f0: alias pick + 0x4423d0 at the client's origin) and returns the
+    // length of the started sound in ms (0x4423d0's result, also used as the subtitle duration by 0x4a3540).
+    using Play = std::function<int(const char* alias)>;
+    // One frame: holding = pm_flags 0x4000 of the predicted player state (0xf708f4), frameMs = cg.frametime (0xf708d4).
+    // Returns true when the heartbeat is requested this frame (the alias loops; a looping alias played through 0x4423d0
+    // keeps playing only while it is played again every sound frame, sweep 0x443550..0x4436bc, refresh 0x441f80).
+    bool update(bool holding, int frameMs, const BreathSoundParams& p, const Play& play);
+    // The blend 0..1 of the hold_breath channel volumes (0x4b6700: volume[c] = (record volume[c] − 1) · blend + 1 into
+    // the sound volume slot 2, slot cleared at blend 0).
+    float volumeBlend() const { return blend_; }
+    void reset() { *this = BreathSounds{}; } // 0x4b66e0
+
+private:
+    int timer_ = -1;      // 0xf7e8b0
+    int heartbeatAt_ = 0; // 0xf7e8b4
+    int delay_ = 0;       // 0xf7e8b8
+    float blend_ = 0;     // 0xf7e8bc
+};
+
 // Camera bob (CG_OffsetFirstPersonView 0x4ae290): the eye goes up by the bob wave (0x4adf90, cap bg_bobMax 8) and
 // sideways along the view's right vector by sin(cycle) · min(speed · stance amplitude, bg_bobMax) (0x4ae010).
 // Aiming a weapon with adsViewBobMult turns the view: pitch −= adsFrac · mult · wave (cap 45), yaw −= adsFrac ·

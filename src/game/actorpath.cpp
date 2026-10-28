@@ -72,8 +72,9 @@ bool isEnemyTeam(const Entity& me, const Entity& other) {
 // an enemy team's fire counts (0x54b3c9…0x54b3f2: the source's team must be the enemy of the actor's). The slot is
 // the one the source already owns, else the oldest; it stores the time, the source and the plane. The plane is the
 // perpendicular of b − a through a — (a.y − b.y, b.x − a.x), n·p = c — flipped so the actor's own origin is on the
-// kept side (n·origin ≤ c). A same-team source (0x54b484: only reachable through the unidentified entity +0xfc
-// exception, TODO(spec)) marks the slot short-lived and drops the actor's path.
+// kept side (n·origin ≤ c). A same-team source (0x54b484: only reachable through the entity +0xfc exception, the
+// client pointer, i.e. the player, whose fire skips the team check) marks the slot short-lived and drops the actor's
+// path.
 void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) {
     // The team check is skipped for the player (its entity +0xfc, the client pointer, is nonzero — G_Damage's
     // "client or actor" pair 0x528050, confirmed by 0x53145c), so player fire also suppresses same-team and
@@ -554,6 +555,52 @@ bool World::pathToNodeDirect(Entity& e, int node, bool withPlanes) {
     if (!searchNodes(teamOf(e), start, goal, target, planes, chain)) return false;
     buildActorPath(e, chain, target);
     return true;
+}
+
+// The offset goal of 0x502960 (0x502a5b..0x502c58), `side` = ±min(|+0x73c|, goal radius − 15) with the sign of +0x73c.
+// The sentient's node cache flag (+0x3c) is cleared; the start node is 0x515040 (0x5150d0 with danger planes) and the
+// goal node the query around the working goal (192 units, lowered, with the planes). The point is the working goal
+// moved `side` to the right of the lookahead direction (+0x6c8 / +0x6cc): goal + side·(dir y, −dir x), goal z.
+// 0x542340 then picks the node nearest that point reached from the goal node through ever closer nodes
+// (nearestReachableNode). A move check (0x543d30, mask 0x820011, no pass entity, step 10 with the tilt byte +0x288,
+// else 18) runs from that node's origin to the point: its end is the target when inside the goal (0x5026d0), else the
+// node's origin when inside, and both make that node the goal node; otherwise the target is the working goal and the
+// goal node stays the queried one. The path goes from the start node to the goal node, ending at the target
+// (0x542550 → 0x545840; with planes 0x5428a0: both end nodes on the kept side, search 0x545ca0). Returns whether
+// the actor has a path afterwards.
+bool World::pathToSideGoal(Entity& e, float side) {
+    const std::vector<PathPlane> planes = dangerPlanesOf(e);
+    e.nodeCached = false;
+    const int start = planes.empty() ? sentientNode(e) : sentientNodePlanes(e, planes);
+    if (start < 0) return false;
+    Vec3 gp{};
+    float gr = 0, gh = 0;
+    if (!actorGoal(e, gp, gr, gh)) return false;
+    int goal = queryNode(gp, 192.0f, true, 0xfffffffe, planes, nullptr);
+    if (goal < 0) return false;
+    const Vec3& dir = e.path.lookDir;
+    const Vec3 point{gp[0] + dir[1] * side, gp[1] - dir[0] * side, gp[2]};
+    const float step = e.ai.prone.tilt ? 10.0f : 18.0f;
+    const int team = teamOf(e);
+    const int near = nearestReachableNode(paths_, goal, point,
+                                          [&](size_t node, size_t link) { return linkBlocked(node, link, team); });
+    Vec3 target = gp;
+    if (near >= 0) {
+        const Vec3 from = originOf(nodes_[size_t(near)].obj);
+        Vec3 out{};
+        aiReach(from, point, 0x7ff, 0x820011, out, step); // no pass entity
+        if (inActorGoal(e, out)) {
+            target = out;
+            goal = near;
+        } else if (inActorGoal(e, from)) {
+            target = from;
+            goal = near;
+        }
+    }
+    if (!planes.empty() && (nodeBeyondPlanes(start, planes) || nodeBeyondPlanes(goal, planes))) return false;
+    std::vector<int> chain;
+    if (searchNodes(team, start, goal, target, planes, chain)) buildActorPath(e, chain, target);
+    return actorHasPath(e);
 }
 
 bool World::linkBlocked(size_t node, size_t link, int team) const {

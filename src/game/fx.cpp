@@ -63,6 +63,26 @@ FVec rotateAbout(const FVec& axis, const FVec& v, float deg) {
     const float d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
     return add(add(mul(v, c), mul(cross(axis, v), s)), mul(axis, d * (1.0f - c)));
 }
+// 0x440600: a world point into tag space, (p − origin) · row k; 0x440650: a direction, d · row k; 0x4404f0: back, origin +
+// x·row0 + y·row1 + z·row2.
+FVec toTagSpace(const FxTag& t, const FVec& p) {
+    const FVec d{p[0] - t.origin[0], p[1] - t.origin[1], p[2] - t.origin[2]};
+    FVec o;
+    for (int k = 0; k < 3; ++k) o[size_t(k)] = d[0] * t.axes[size_t(k)][0] + d[1] * t.axes[size_t(k)][1] + d[2] * t.axes[size_t(k)][2];
+    return o;
+}
+FVec dirToTagSpace(const FxTag& t, const FVec& d) {
+    FVec o;
+    for (int k = 0; k < 3; ++k) o[size_t(k)] = d[0] * t.axes[size_t(k)][0] + d[1] * t.axes[size_t(k)][1] + d[2] * t.axes[size_t(k)][2];
+    return o;
+}
+FVec fromTagSpace(const FxTag& t, const FVec& l) {
+    FVec o = t.origin;
+    for (int k = 0; k < 3; ++k)
+        for (int c = 0; c < 3; ++c) o[size_t(c)] += l[size_t(k)] * t.axes[size_t(k)][size_t(c)];
+    return o;
+}
+
 // 0x4217f0: from the forward axis d build r = (d.z, −d.x, d.y) − d · (d·r), row1 = normalise(r), row2 = row1 × d.
 void axesFromForward(FxAxes& ax) {
     const FVec& d = ax[0];
@@ -173,10 +193,12 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
 }
 
 void FxSystem::playBolted(const std::shared_ptr<const assets::EfxEffect>& fx, std::shared_ptr<FxBolt> bolt, const FxAxes& axes, int64_t nowMs) {
-    FVec at{};
+    FxTag at;
     if (!bolt || !(*bolt)(at)) return; // 0x4853f0: an invalid attachment plays nothing
     curBolt_ = std::move(bolt);
-    playAxes(fx, at, axes, nowMs);
+    // 0x485479: with an attachment the effect's origin AND axes are the tag's orientation (0x48abb0); the caller's direction
+    // is only used when the host does not know the tag axes.
+    playAxes(fx, at.origin, at.hasAxes ? at.axes : axes, nowMs);
     curBolt_.reset();
 }
 
@@ -196,10 +218,11 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
         }
         const uint32_t flags = e.flagBits();
         if (bolt && (flags & 0x2)) { // 0x485bf0: a relative element needs a valid attachment
-            FVec t{};
+            FxTag t;
             if (!(*bolt)(t)) continue;
         }
-        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" || e.type == "Tail" || e.type == "Light";
+        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
+                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud" || e.type == "Cylinder";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -248,10 +271,34 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
 void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs) {
     FxParticle p;
     p.element = &e;
+    if (e.type == "Cloud") {
+        // 0x482850 (first thing the Cloud spawn 0x48de90 does): up to 4 tries of three draws x, y, z = draw · 2 − 1 (0x591efc,
+        // 0x591e20); a vector with |v|² < 0.01 (0x591ea0) or > 1 is rejected, an accepted one is normalised (0x4210d0); after
+        // 4 rejections the axis is (1, 0, 0).
+        p.cloud = true;
+        bool ok = false;
+        for (int tries = 0; tries < 4 && !ok; ++tries) {
+            FVec v;
+            for (int k = 0; k < 3; ++k) v[size_t(k)] = frand() * 2.0f - 1.0f;
+            const float l2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            if (l2 < 0.01f || l2 > 1.0f) continue;
+            p.cloudAxis = normalized(v);
+            ok = true;
+        }
+        if (!ok) p.cloudAxis = {1, 0, 0};
+    }
     p.startMs = startMs;
     p.endMs = p.startMs + std::max<int64_t>(1, int64_t(range(e.numbers("life"), 1000)));
     p.origin = spawnPoint(e, origin, ax);
-    if (curBolt_ && (flags & 0x2) && (*curBolt_)(p.bolt0)) p.bolt = curBolt_; // relative: follows the tag
+    if (curBolt_ && (flags & 0x2)) { // relative: the spawn point is stored in tag space (0x48c290 end, 0x440600)
+        FxTag t0;
+        if ((*curBolt_)(t0)) {
+            p.bolt = curBolt_;
+            p.bolt0 = t0.origin;
+            p.local0 = toTagSpace(t0, p.origin);
+            p.tag0 = t0;
+        }
+    }
     p.axis[0] = ax[0];
     p.axis[1] = ax[1];
     p.axis[2] = ax[2];
@@ -264,6 +311,48 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     for (int k = 0; k < 8; ++k) {
         const auto* g = graph(e, scaled[k]);
         p.scale[k] = g ? g->scaleMin + (g->scaleMax - g->scaleMin) * frand() : 1.0f;
+    }
+    if (e.type == "Line") {
+        // 0x48c850 (without org2fromTrace 0x8): origin2 ranges drawn z, y, x (+0xe0, +0xd8, +0xd0; `origin2 a b c d e f` =
+        // x [a, d], y [b, e], z [c, f]), taken in world axes with cheapOrg2Calc 0x80, else as x·row0 + y·row1 + z·row2 of the
+        // instance axes (0x424a70, after the spawn shape changed them), added to the effect origin. For relative Lines the spawn
+        // stores B in tag space (0x440600) and the update maps both points back through the bolt (0x4404f0); here both follow
+        // the tag's translation, like relative particles.
+        p.line = true;
+        const uint32_t sf = e.spawnFlagBits();
+        const auto o2 = e.numbers("origin2");
+        auto org2 = [&] {
+            float x = 0, y = 0, z = 0;
+            if (o2.size() >= 6) {
+                z = range({o2[2], o2[5]}, 0);
+                y = range({o2[1], o2[4]}, 0);
+                x = range({o2[0], o2[3]}, 0);
+            }
+            return sf & 0x80 ? FVec{x, y, z} : add(add(mul(ax[0], x), mul(ax[1], y)), mul(ax[2], z));
+        };
+        if (!(sf & 0x8)) {
+            p.lineB = add(origin, org2());
+        } else {
+            // org2fromTrace 0x8: end = A + row0 · 16384 (0x592270), plus the origin2 sample with org2isOffset 0x20; B = A + (end − A)
+            // · fraction of the effect trace (0x486f70, zero box). With traceImpactFx 0x10 one `impactfx` entry at random
+            // ((seed >> 17) · count >> 15, none when the list is empty: entry 0 = null) plays at B along the trace normal (0x485220).
+            FVec end = add(p.origin, mul(ax[0], 16384.0f));
+            if (sf & 0x20) end = add(end, org2());
+            float frac = 1.0f;
+            FVec n{};
+            if (!(trace && trace(p.origin, end, frac, n))) frac = 1.0f;
+            p.lineB = add(p.origin, mul(sub(end, p.origin), frac));
+            if (sf & 0x10) {
+                const auto names = e.list("impactfx");
+                if (!names.empty()) {
+                    seed_ = seed_ * 0x343fd + 0x269ec3;
+                    std::string name = names[std::min(names.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * names.size()) >> 15))];
+                    while (!name.empty() && name[0] == '/') name.erase(0, 1);
+                    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
+                    if (loader) impactQueue_.push_back({name, p.lineB, n, startMs});
+                }
+            }
+        }
     }
     // Material and sequence (0x48cd20): the material at random ((seed >> 17)·count >> 15); with a frame
     // count n > 1 the start frame by sequenceStartFrameMode (+0x288; 0 fixed: sequenceFixedFrameValue − 1,
@@ -290,6 +379,20 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopMode = int(num("sequenceLoopMode"));
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
+    }
+    if (e.type == "Particle") p.rot0 = range(e.numbers("rotation"), 0); // 0x48ce70 (after the material, 0x48cb00)
+    if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
+        // +0x94 is never written for a Line: the pool (0x47f0a0) reuses freed slots without clearing, so the frame is the value
+        // a previous element left there, 0 in never-used pool memory (0xa32380, zero-initialised data). Frame 0 here.
+        p.seqStart = 0, p.seqRate = 0;
+    }
+    if (p.cloud) {
+        // 0x48ce70 draws the start angle +0x44 from `rotation` (+0x220); 0x48de90 then draws +0x260 = 0x426250(0, 1) and copies
+        // useLength (+0x9d) into +0x25c. The position steps like an Emitter (update 0x482a30 -> 0x480bd0).
+        p.pos = p.prev = p.origin;
+        p.lastMs = p.cloudLastMs = startMs;
+        p.cloudAngle = range(e.numbers("rotation"), 0);
+        p.lengthRnd = frand();
     }
     if (e.type == "Emitter" || e.type == "Tail") {
         // 0x48d7d0: start position from the spawn shape; the angles are the effect axes' angles plus a random draw in
@@ -444,6 +547,15 @@ std::vector<FxDecal> FxSystem::takeDecals(int64_t nowMs) {
 }
 
 void FxSystem::runPending(int64_t nowMs) {
+    if (!impactQueue_.empty() && loader) { // traceImpactFx of Line spawns (played once their spawn time has come)
+        std::vector<ImpactRun> due;
+        std::erase_if(impactQueue_, [&](const ImpactRun& r) {
+            if (r.startMs > nowMs) return false;
+            due.push_back(r);
+            return true;
+        });
+        for (const ImpactRun& r : due) play(loader(r.path), r.origin, r.dir, r.startMs);
+    }
     if (pending_.empty() || !loader) return;
     std::vector<PendingRun> due;
     std::erase_if(pending_, [&](const PendingRun& p) {
@@ -513,9 +625,73 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     }
     models_.clear();
     lights_.clear();
+    clouds_.clear();
     for (FxParticle& p : particles_) {
         if (nowMs < p.startMs) continue;
         const assets::EfxElement& e = *p.element;
+        if (p.cloud) {
+            // Cloud update 0x482a30: B (+0x9c) = the position before the step, Emitter step (0x480bd0), then the channels:
+            // size (0x4818b0 -> +0x88), size2 (0x481940: the size2 channel with nonUniformScale (+0x104 = element +0x9c), else
+            // = size), length (0x4829d0, only with useLength: +0x258, useRandomLength 0x20000 lerps by +0x260), rgb / alpha
+            // bytes (0x4819b0 / 0x481a40), angle += frame ms · rotationDelta · 0.01 (0x481b90, useRandomRotationDelta 0x40000).
+            // Then axis rows = rotation about +0x24c by the angle (0x423a50 quaternion, 0x423680 matrix), refEntity scale
+            // (+0x98) = size, width (+0x88) = size2 result, height (+0x8c) = length with useLength else the size2 result; A (+0x7c)
+            // = the position (through the bolt with relative, 0x4404f0). TODO(spec): `wind` (+0xf8) and affectedByWind 0x800000
+            // have no reader in the exe's effect code.
+            const FVec before = p.pos;
+            stepEmitter(p, nowMs);
+            const uint32_t flags = e.flagBits();
+            const float u = std::min(1.0f, float(nowMs - p.startMs) / float(p.endMs - p.startMs));
+            const float size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
+            const auto nus = e.numbers("nonuniformscale"), ul = e.numbers("uselength");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0, useLength = !ul.empty() && int(ul[0]) != 0; // _atol != 0
+            const float width = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : size;
+            const float height = useLength ? channel(e, "length", "lengthrand", flags & 0x20000, p.lengthRnd, u, 0, 1.0f) * p.scale[4] : width;
+            const float rotDelta = channel(e, "rotationdelta", "rotationdeltarand", flags & 0x40000, p.rnd[5], u, 0, 0.0f) * p.scale[5];
+            p.cloudAngle += float(nowMs - p.cloudLastMs) * rotDelta * 0.01f; // 0x591ea0
+            p.cloudLastMs = nowMs;
+            // 0x423a50: q = (sin(h) · axis, cos(h)), h = angle · pi / 360 (0x591fa4); 0x423680 with s = 2 / |q|²: rows
+            // (1 − s(y² + z²), s(xy + wz), s(xz − wy)), (s(xy − wz), 1 − s(x² + z²), s(yz + wx)), (s(xz + wy), s(yz − wx), 1 − s(x² + y²)).
+            const float h = p.cloudAngle * 0.008726646f, sn = std::sin(h);
+            const float qx = sn * p.cloudAxis[0], qy = sn * p.cloudAxis[1], qz = sn * p.cloudAxis[2], qw = std::cos(h);
+            const float sc = 2.0f / (qx * qx + qy * qy + qz * qz + qw * qw);
+            FxCloud c;
+            c.axis[0] = {1 - sc * (qy * qy + qz * qz), sc * (qx * qy + qw * qz), sc * (qx * qz - qy * qw)};
+            c.axis[1] = {sc * (qx * qy - qw * qz), 1 - sc * (qz * qz + qx * qx), sc * (qy * qz + qx * qw)};
+            c.axis[2] = {sc * (qy * qw + qx * qz), sc * (qy * qz - qx * qw), 1 - sc * (qy * qy + qx * qx)};
+            c.origin = p.pos;
+            c.prev = before;
+            if (p.bolt) { // relative: A = the tag-space position through the bolt (0x4404f0); B stays the tag-space value (0x482b2d)
+                FxTag now;
+                if (!(*p.bolt)(now)) continue; // 0x47fcd0 fails: the update returns false
+                c.origin = fromTagSpace(now, add(p.local0, sub(p.pos, p.origin)));
+                c.prev = add(p.local0, sub(before, p.origin));
+            }
+            c.size = size;
+            c.width = width;
+            c.height = height;
+            // 0x4819b0 / 0x481a40: bytes = clamped channel · 255 truncated; without useAlpha (0x80) the alpha byte is 255 and
+            // rgb is scaled by the alpha channel instead (docs/spec/effects.md).
+            const float alpha = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
+            for (int k = 0; k < 3; ++k) {
+                const float v = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, k, 1.0f), 0.0f, 1.0f);
+                c.rgba[k] = uint8_t((flags & 0x80 ? v : v * alpha) * 255.0f);
+            }
+            c.rgba[3] = flags & 0x80 ? uint8_t(alpha * 255.0f) : 255;
+            const auto shaders = e.list("shaders");
+            if (!shaders.empty()) c.shader = shaders[std::min(p.shader, shaders.size() - 1)];
+            // Cull slot 0x4827e0 -> 0x486e30: skipped when n·A − d < −r for a view plane (view +0x20, stride 0x10, count +0x80,
+            // at most 5 with disableFarPlaneCulling 0x2000000), r = size + max(width, height) (the larger of +0x88 / +0x8c,
+            // plus +0x98). TODO(spec): the exe's plane set; viewPlanes holds the four side planes (no far plane).
+            bool culled = false;
+            if (viewValid) {
+                const float r = (width - height < 0.0f ? height : width) + size;
+                for (const auto& pl : viewPlanes)
+                    if (pl[0] * c.origin[0] + pl[1] * c.origin[1] + pl[2] * c.origin[2] - pl[3] < -r) culled = true;
+            }
+            if (!culled) clouds_.push_back(std::move(c));
+            continue;
+        }
         if (p.emitter) {
             p.prev = p.pos; // 0x483010 saves the position (+0x4 -> +0x24c) before the step
             stepEmitter(p, nowMs);
@@ -550,16 +726,46 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         };
         FVec pos = add(p.origin, add(mul(toWorld(v1, flags & 0x200000), lifeS), mul(toWorld(v2, flags & 0x400000), lifeS)));
         pos[2] += p.gravity * (t * 0.001f) * (t * 0.001f);
-        if (p.bolt) { // relative: keep the offset from the tag (TODO(spec): the tag's rotation is not applied)
-            FVec now{};
-            if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
+        FxTag tagNow;
+        const bool relative = p.bolt && !p.tail;
+        if (relative) {
+            // Relative (0x480330): the tag-space position (spawn point in tag space + the velocity / gravity offsets, added as they
+            // are: the velocity axes +0xd0 are the effect's world axes, copied by 0x4803f0) through the current tag orientation
+            // (0x47fcd0 -> 0x48abb0, 0x4404f0). An invalid attachment ends the update.
+            if (!(*p.bolt)(tagNow)) continue;
+            pos = fromTagSpace(tagNow, add(p.local0, sub(pos, p.origin)));
         }
-        if (p.tail) pos = p.pos;
+        if (p.tail) pos = p.pos; // TODO(spec): relative Emitter / Tail (0x480bd0 traces through the bolt, 0x440650 normals)
+        FVec lineA = p.origin, lineB = p.lineB;
+        if (e.type == "Cylinder") pos = relative ? fromTagSpace(tagNow, p.local0) : p.origin; // no motion (0x483450)
+        if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
+            if (relative) {
+                lineA = fromTagSpace(tagNow, p.local0);
+                lineB = fromTagSpace(tagNow, toTagSpace(p.tag0, p.lineB)); // B stored in tag space at spawn (0x440600)
+            }
+            pos = lineA;
+        }
         FxSprite s;
         s.position = pos;
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
         s.rgba[3] = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
+        if (e.type == "Particle") {
+            // Particle update 0x480330: size (0x4818b0), then (size ≠ 0) size2 (0x481940: the size2 channel with nonUniformScale,
+            // else = size) and (size2 ≠ 0) rgb, alpha, angle += frame ms · rotationDelta · 0.01 (0x481b90), frame. The per-frame
+            // sum is taken as its continuous limit: rot0 + 0.01 · life ms · ∫rotationDelta du (rand lerp 0x40000, scale).
+            const auto nus = e.numbers("nonuniformscale");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
+            s.size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
+            float rd = 0;
+            if (const auto* g = graph(e, "rotationdelta")) {
+                rd = g->integral(u);
+                if (flags & 0x40000)
+                    if (const auto* rg = graph(e, "rotationdeltarand")) rd += (rg->integral(u) - rd) * p.rnd[5];
+                rd *= p.scale[5];
+            }
+            s.rotation = p.rot0 + 0.01f * life * rd;
+        }
         if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite
             FxLight l;
             l.origin = pos;
@@ -605,6 +811,53 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Alpha byte (0x481a40): the clamped alpha · 255 truncated (_ftol) with useAlpha (0x80), else 255.
             const int alphaByte = flags & 0x80 ? int(s.rgba[3] * 255.0f) : 255;
             sightBlockers_.push_back({pos, s.size * s.size, 1.0f - float(alphaByte) * (1.0f / 255.0f)});
+        }
+        if (p.line) {
+            // Line draw 0x482d90 -> 0x480010 renderer type 8 (the Tail quad, 1.3 DLL 0x10041470 / 0x100409c0): A = +0x7c, B = +0x9c,
+            // half width = the size channel (+0x88, 0x4818b0), colour bytes from rgb / alpha (0x4819b0 / 0x481a40).
+            s.beam = s.beamTail = true;
+            s.beamA = lineA;
+            s.beamB = lineB;
+            s.widthA = s.widthB = s.size;
+            if (!viewValid) continue;
+            const FVec a = sub(s.beamA, viewOrigin), b = sub(s.beamB, viewOrigin);
+            const FVec c = cross(a, b);
+            const float cl = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+            if (!(cl > 0)) continue;
+            s.beamPerp = mul(c, 1.0f / cl);
+        }
+        if (e.type == "Cylinder") {
+            // Spawn 0x48d6c0: position = the spawn point (0x48ce70), +0x48 = the instance axis row 0 (tag space for relative).
+            // Update 0x483450 (no motion): size -> +0x88, size2 -> +0x8c (0x481940: = size without nonUniformScale), length ->
+            // +0x258 (0x4830d0), rgb, alpha; A = position, B = position + length · row0 (both through the bolt). Draw 0x483440:
+            // renderer type 9 (A = +0x3c, B = +0x48, +0x64 = size, +0x68 = size2 result).
+            // DLL 0x100401f0: n = clamp(round((1 − (|(A + B)/2 − view| · lodScale + lodBias) / 1024) · 32), 8, 32) (0x1019bf58,
+            // 0x1019bf20; lodScale / lodBias = r_lodScale (1) / r_lodBias (0) · tan(40°) / tan(fovX / 2), 0x10025b76).
+            // TODO(spec): r_lodScale / r_lodBias other than their defaults; the mode-2 builder 0x100405e0 (dvar 0x101ce710 = 2).
+            const auto nus = e.numbers("nonuniformscale");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
+            const float size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
+            const float length = channel(e, "length", "lengthrand", flags & 0x20000, p.rnd[4], u, 0, 1.0f) * p.scale[4];
+            s.cylinder = true;
+            s.beamA = p.origin;
+            s.beamB = add(p.origin, mul(p.axis[0], length));
+            if (relative) { // row 0 stored in tag space (0x48d786, 0x440650); A and B through the bolt
+                s.beamA = fromTagSpace(tagNow, p.local0);
+                s.beamB = fromTagSpace(tagNow, add(p.local0, mul(dirToTagSpace(p.tag0, p.axis[0]), length)));
+            }
+            s.widthA = size2;
+            s.widthB = s.size;
+            s.position = s.beamA;
+            int n = 8;
+            if (viewValid) {
+                const FVec m = sub(mul(add(s.beamA, s.beamB), 0.5f), viewOrigin);
+                const float dist = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+                const float lodScale = viewScale != 0 ? 1.0f / viewScale : 1.0f, lodBias = 0.0f;
+                const double x = double((1.0f - (dist * lodScale + lodBias) * 0.0009765625f) * 32.0f) + 9.313225746154785e-10;
+                n = int(std::nearbyint(x));
+                n = n < 8 ? 8 : n > 32 ? 32 : n;
+            }
+            s.segments = n;
         }
         if (p.tail) {
             // 0x4830d0 length channel (graph "length", random lerp 0x20000, scale +0x1d4), 0x483160 end point: while the

@@ -30,6 +30,7 @@
 #include "game/fx.h"
 #include "game/fog.h"
 #include "game/marks.h"
+#include "game/outdoor.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
 #include "game/turrets.h"
@@ -39,6 +40,7 @@
 #include "ui/frontend.h"
 #include "ui/profile.h"
 #include "ui/profilelist.h"
+#include "game/savestate.h"
 #include "ui/savegame.h"
 #include <filesystem>
 #include <fstream>
@@ -52,6 +54,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -356,6 +359,7 @@ struct Scene {
     std::vector<WaterMat> waters;
     std::unique_ptr<game::CollisionWorld> collision;
     game::MarkSystem marks;
+    game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
@@ -755,8 +759,58 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         b.firstIndex = uint32_t(verts.size() / 4 * 6);
         for (const auto* s : list) {
             if (verts.size() / 4 >= kMax) break;
+            if (s->cylinder) {
+                // 1.3 DLL 0x100401f0: d = normalize(A − B); p1 = (d.z, −d.x, d.y) minus its d part, normalised; p2 = p1 × d
+                // (0x10059bd0). Ring k (k = 0..n−1, (cos, sin) turned by 2π/n each step from (1, 0)): A + (p1·sin + p2·cos)·rA with
+                // texcoord (t, 1) and B + (p1·sin + p2·cos)·rB with (t, 0), t += 1/n; a closing copy of pair 0 with t = 1;
+                // triangles (b, b+1, b+3), (b+3, b+2, b) per step (drawn here as the quad b, b+1, b+3, b+2). Colour = the bytes.
+                const Vec3 A{s->beamA[0], s->beamA[1], s->beamA[2]}, B{s->beamB[0], s->beamB[1], s->beamB[2]};
+                Vec3 d = A + B * -1.0f;
+                const float dl = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                if (dl != 0.0f) d = d * (1.0f / dl);
+                Vec3 p1{d.z, -d.x, d.y};
+                const float pd = -(d.x * p1.x + d.z * p1.z + p1.y * d.y);
+                p1 = p1 + d * pd;
+                const float pl = std::sqrt(p1.x * p1.x + p1.y * p1.y + p1.z * p1.z);
+                if (pl != 0.0f) p1 = p1 * (1.0f / pl);
+                const Vec3 p2{p1.y * d.z - p1.z * d.y, p1.z * d.x - d.z * p1.x, d.y * p1.x - p1.y * d.x};
+                const int n = std::max(1, s->segments);
+                const float stepT = 1.0f / float(n), ang = stepT * 6.2831855f;
+                const float C = std::cos(ang), S = std::sin(ang);
+                std::vector<std::pair<Vec3, Vec3>> ring; // (A side, B side)
+                std::vector<float> ts;
+                float co = 1.0f, si = 0.0f, t = 0.0f;
+                for (int k = 0; k < n; ++k) {
+                    ring.push_back({A + p1 * (si * s->widthA) + p2 * (co * s->widthA), B + p1 * (si * s->widthB) + p2 * (co * s->widthB)});
+                    ts.push_back(t);
+                    t += stepT;
+                    const float ns = si * C + co * S, nc = co * C - si * S;
+                    si = ns, co = nc;
+                }
+                ring.push_back(ring[0]);
+                ts.push_back(1.0f);
+                for (int k = 0; k < n && verts.size() / 4 < kMax; ++k) {
+                    const Vec3 q[4] = {ring[size_t(k)].first, ring[size_t(k)].second, ring[size_t(k) + 1].second, ring[size_t(k) + 1].first};
+                    const float quv[4][2] = {{ts[size_t(k)], 1}, {ts[size_t(k)], 0}, {ts[size_t(k) + 1], 0}, {ts[size_t(k) + 1], 1}};
+                    for (int v = 0; v < 4; ++v) {
+                        GpuVertex g{};
+                        g.pos[0] = q[v].x; g.pos[1] = q[v].y; g.pos[2] = q[v].z;
+                        g.normal[2] = 1;
+                        for (int ch = 0; ch < 4; ++ch) g.color[ch] = uint8_t(std::clamp(s->rgba[ch], 0.0f, 1.0f) * 255.0f);
+                        g.uv[0] = quv[v][0];
+                        g.uv[1] = quv[v][1];
+                        verts.push_back(g);
+                    }
+                }
+                continue;
+            }
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
-            const Vec3 r = right * s->size, u = upv * s->size;
+            // 1.3 DLL 0x1003fb00: with L / U the view's left / up axes (view +0x18 / +0x24) and angle a: R = w(cos a · L − sin a · U),
+            // V = h(cos a · U + sin a · L); corners C + R + V (u0, v0), C − R + V (u1, v0), C − R − V (u1, v1), C + R − V (u0, v1).
+            // Here right = −L, so r = −R = w(cos a · right + sin a · up), u = V = h(cos a · up − sin a · right).
+            const float hw = s->size, hh = s->size2 >= 0 ? s->size2 : s->size;
+            const float ra = s->rotation * 0.017453292f, rc = std::cos(ra), rs = std::sin(ra);
+            const Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
             Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
             float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
@@ -787,6 +841,129 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         b.indexCount = uint32_t(verts.size() / 4 * 6) - b.firstIndex;
         if (b.indexCount) batches.push_back(b);
     }
+    if (verts.empty()) return nullptr;
+    up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+    it->second.batches = batches;
+    return &it->second;
+}
+// Cloud elements (renderer type 6, 1.3 DLL 0x10041370): every cloud draws the same static 1024-quad buffer ("Initializing
+// particle cloud buffer...", 0x10011ca0) with the particle_cloud(_outdoor) shader (iw_07.iwd materials/shaders/lib/
+// particle_cloud.hlsl). Buffer: for i = 0..7, j = 0..7, k = 0..15 one quad whose four vertices share the point
+// x = (rand · (1/32767) + i) · 0.25 − 1, y = (rand · (1/32767) + j) · 0.25 − 1, z = (rand · (1/32767) + k) · 0.125 − 1
+// (0x1019bec8 / 0x1019be48 / 0x1019be2c, three CRT rand() calls x, y, z per quad; the DLL never calls srand, so the CRT
+// starts from 1), texcoords (0,0) (0,1) (1,0) (1,1), indices 0 1 2, 2 1 3. Vertex shader: the point goes through the world
+// matrix (0x1005a7a0: rows axis · size, translation origin) into view space, then gets offset in the view plane by
+// (u − 0.5) · m.xy + (v − 0.5) · m.zw, m = particleCloudMatrix (0x10041230 / 0x10041180, see below), colour =
+// texture · particleCloudColor. Done on the CPU here: view x / y are the view right / up. TODO(spec): the outdoor map test
+// of particle_cloud_outdoor (pixel alpha 0 where the point is under cover, worldOutdoorLookupMatrix, the "$outdoor" image).
+const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::vector<game::FxCloud>& clouds,
+                           const Vec3& right, const Vec3& upv) {
+    if (clouds.empty()) return nullptr;
+    constexpr uint32_t kQuads = 1024, kMaxClouds = 64;
+    static std::array<std::array<float, 3>, kQuads> points = [] {
+        std::array<std::array<float, 3>, kQuads> pts{};
+        uint32_t holdrand = 1; // MSVC rand(): holdrand = holdrand * 214013 + 2531011, (holdrand >> 16) & 0x7fff
+        auto crand = [&] { holdrand = holdrand * 214013u + 2531011u; return int((holdrand >> 16) & 0x7fff); };
+        uint32_t q = 0;
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j)
+                for (int k = 0; k < 16; ++k, ++q) {
+                    pts[q][0] = (float(crand()) * 3.0518509e-05f + float(i)) * 0.25f - 1.0f;
+                    pts[q][1] = (float(crand()) * 3.0518509e-05f + float(j)) * 0.25f - 1.0f;
+                    pts[q][2] = (float(crand()) * 3.0518509e-05f + float(k)) * 0.125f - 1.0f;
+                }
+        return pts;
+    }();
+    auto key = std::make_pair(-4, std::string("cloud"));
+    auto it = scene.skinned.find(key);
+    if (it == scene.skinned.end()) {
+        GpuModel gm;
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = kMaxClouds * kQuads * 4 * sizeof(GpuVertex);
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        SDL_GPUBufferCreateInfo ib{};
+        ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        ib.size = kMaxClouds * kQuads * 6 * 4;
+        gm.indices = SDL_CreateGPUBuffer(dev, &ib);
+        std::vector<uint32_t> idx;
+        for (uint32_t qd = 0; qd < kMaxClouds * kQuads; ++qd)
+            for (uint32_t k : {0u, 1u, 2u, 2u, 1u, 3u}) idx.push_back(qd * 4 + k);
+        up.buffer(gm.indices, idx.data(), uint32_t(idx.size() * 4));
+        it = scene.skinned.emplace(key, gm).first;
+    }
+    std::map<std::string, std::vector<const game::FxCloud*>> byShader;
+    for (const auto& c : clouds) byShader[c.shader].push_back(&c);
+    std::vector<GpuVertex> verts;
+    std::vector<Batch> batches;
+    size_t drawn = 0, coveredFlakes = 0;
+    for (const auto& [shader, list] : byShader) {
+        const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
+        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        bool outdoorTest = false; // technique set particle_cloud_outdoor -> particle_cloud_outdoor.hlsl (OUTDOOR 1)
+        if (const auto md = vfs.read("materials/" + shader)) {
+            try { outdoorTest = assets::parseMaterial(*md).techniqueSet == "particle_cloud_outdoor"; } catch (...) {}
+        }
+        const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
+        Batch b;
+        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
+        b.texture = mi.texture;
+        b.lightmap = -3;
+        b.fullbright = true;
+        b.firstIndex = uint32_t(verts.size() / 4 * 6);
+        for (const game::FxCloud* c : list) {
+            if (drawn >= kMaxClouds) break;
+            ++drawn;
+            // particleCloudMatrix (0x10041230): (width, 0, 0, height) when width == height or A ~ B (each squared component
+            // difference <= 1e-6, 0x1003f260); else d = normalize(B - A) * height in view space (0x100410e0) and 0x10041180:
+            // if d.x < 0.001 and d.y < 0.001 (signed compares, 0x1019be64) again (width, 0, 0, height), otherwise
+            // m = (d.y, -d.x, d.x, d.y) with m.xy scaled to length width and m.zw scaled by the same factor when |d.xy| < width.
+            const Vec3 A{c->origin[0], c->origin[1], c->origin[2]}, B{c->prev[0], c->prev[1], c->prev[2]};
+            float m[4] = {c->width, 0, 0, c->height};
+            const Vec3 dAB = B + A * -1.0f;
+            const bool same = dAB.x * dAB.x <= 1.0000001e-06f && dAB.y * dAB.y <= 1.0000001e-06f && dAB.z * dAB.z <= 1.0000001e-06f;
+            if (c->width != c->height && !same) {
+                const float l = std::sqrt(dAB.x * dAB.x + dAB.y * dAB.y + dAB.z * dAB.z);
+                const Vec3 d = dAB * (c->height / l);
+                const float vx = d.x * right.x + d.y * right.y + d.z * right.z, vy = d.x * upv.x + d.y * upv.y + d.z * upv.z;
+                if (!(vx < 0.001f) || !(vy < 0.001f)) {
+                    m[0] = vy, m[1] = -vx, m[2] = vx, m[3] = vy;
+                    const float len = std::sqrt(m[0] * m[0] + m[1] * m[1]);
+                    const float f = 1.0f / len * c->width;
+                    m[0] *= f, m[1] *= f;
+                    if (len < c->width) m[2] *= f, m[3] *= f;
+                }
+            }
+            const Vec3 ax0 = Vec3{c->axis[0][0], c->axis[0][1], c->axis[0][2]} * c->size;
+            const Vec3 ax1 = Vec3{c->axis[1][0], c->axis[1][1], c->axis[1][2]} * c->size;
+            const Vec3 ax2 = Vec3{c->axis[2][0], c->axis[2][1], c->axis[2][2]} * c->size;
+            static const float tc[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+            Vec3 off[4];
+            for (int k = 0; k < 4; ++k) {
+                const float su = tc[k][0] - 0.5f, sv = tc[k][1] - 0.5f;
+                off[k] = right * (su * m[0] + sv * m[2]) + upv * (su * m[1] + sv * m[3]);
+            }
+            for (const auto& pt : points) {
+                const Vec3 ctr = A + ax0 * pt[0] + ax1 * pt[1] + ax2 * pt[2];
+                // The outdoor map coordinate comes from the point alone (all four vertices share it), so a covered flake has
+                // alpha 0 over its whole quad: it is left out.
+                if (useOutdoor && scene.outdoor.covered({ctr.x, ctr.y, ctr.z})) { ++coveredFlakes; continue; }
+                for (int k = 0; k < 4; ++k) {
+                    GpuVertex g{};
+                    const Vec3 w = ctr + off[k];
+                    g.pos[0] = w.x; g.pos[1] = w.y; g.pos[2] = w.z;
+                    g.normal[2] = 1;
+                    for (int ch = 0; ch < 4; ++ch) g.color[ch] = c->rgba[ch];
+                    g.uv[0] = tc[k][0];
+                    g.uv[1] = tc[k][1];
+                    verts.push_back(g);
+                }
+            }
+        }
+        b.indexCount = uint32_t(verts.size() / 4 * 6) - b.firstIndex;
+        if (b.indexCount) batches.push_back(b);
+    }
+    if (std::getenv("IW2_FX_DEBUG")) std::cerr << "fx clouds " << drawn << " flakes drawn " << verts.size() / 4 << " covered " << coveredFlakes << "\n";
     if (verts.empty()) return nullptr;
     up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
     it->second.batches = batches;
@@ -1022,6 +1199,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     const assets::D3dBsp bsp(*data);
     scene.collision = std::make_unique<game::CollisionWorld>(bsp);
     scene.marks.setWorld(bsp, vfs);
+    scene.outdoor.setBounds(bsp, vfs);
     Uploader up(dev);
 
     // White fallback texture.
@@ -2512,7 +2690,7 @@ int main(int argc, char** argv) {
         }
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
-        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame) {
+        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame, const game::LoadedSave* save = nullptr) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
@@ -2536,7 +2714,12 @@ int main(int argc, char** argv) {
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             // The bindings from default.cfg, reported to scripts through getkeybinding.
             for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
-            w->start();
+            if (save) { // savegame load: map entities, then the saved state instead of the level script (docs/spec/savegame.md 5)
+                w->prepareStart();
+                game::restoreSave(*w, *save);
+            } else {
+                w->start();
+            }
             return w;
         };
         std::string currentMap = menuMode ? std::string() : args[1];
@@ -2579,7 +2762,11 @@ int main(int argc, char** argv) {
             auto [it, inserted] = efxCache.try_emplace(path);
             if (inserted) {
                 try {
-                    if (const auto d = vfs.read(path))
+                    if (path.rfind("file:", 0) == 0) { // IW2_FX_TEST=file:<local path>: a test effect from disk (debug only)
+                        std::ifstream in(path.substr(5), std::ios::binary);
+                        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                        if (!text.empty()) it->second = std::make_shared<assets::EfxEffect>(assets::parseEfx(text));
+                    } else if (const auto d = vfs.read(path))
                         it->second = std::make_shared<assets::EfxEffect>(
                             assets::parseEfx(std::string_view(reinterpret_cast<const char*>(d->data()), d->size())));
                 } catch (const std::exception& e) {
@@ -2650,12 +2837,21 @@ int main(int argc, char** argv) {
                 if (ev.entity >= 0 && !ev.tag.empty()) {
                     // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
                     game::World* wp = world.get();
-                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FVec{}, ok = false](game::FVec& out) mutable {
+                    // 0x48abb0: the tag orientation (origin + axes), refreshed once per frame stamp (cached per world time here).
+                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
                         if (wp->timeMs() != lastT) {
                             lastT = wp->timeMs();
                             game::Vec3 p{};
-                            ok = wp->entityTagPosition(n, tag, p);
-                            if (ok) last = {p[0], p[1], p[2]};
+                            std::array<game::Vec3, 3> ax{};
+                            bool hasAxes = false;
+                            ok = wp->entityTagOrientation(n, tag, p, ax, hasAxes);
+                            if (ok) {
+                                last = game::FxTag{};
+                                last.origin = {p[0], p[1], p[2]};
+                                last.hasAxes = hasAxes;
+                                if (hasAxes)
+                                    for (int k = 0; k < 3; ++k) last.axes[size_t(k)] = {ax[size_t(k)][0], ax[size_t(k)][1], ax[size_t(k)][2]};
+                            }
                         }
                         out = last;
                         return ok;
@@ -2708,6 +2904,36 @@ int main(int argc, char** argv) {
                 it.sunVisibility = 0;
                 items.push_back(it);
             }
+            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
+                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
+                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
+                scene.outdoor.build([&](float x, float y, float top, float bottom) {
+                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
+                    return top + (bottom - top) * tr.fraction;
+                });
+                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
+                    if (FILE* f = std::fopen(dump, "wb")) {
+                        std::fprintf(f, "P5 512 512 255\n");
+                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
+                        std::fclose(f);
+                    }
+                }
+                if (std::getenv("IW2_FX_DEBUG"))
+                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
+                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
+            }
+            if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
+                DrawItem it;
+                it.model = cm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (const auto& c : fxSystem.clouds())
+                    std::cerr << "fx cloud " << c.shader << " pos " << c.origin[0] << "," << c.origin[1] << "," << c.origin[2] << " size " << c.size
+                              << " w " << c.width << " h " << c.height << " rgba " << int(c.rgba[0]) << "," << int(c.rgba[3]) << "\n";
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
                 it.model = fxm;
@@ -2794,15 +3020,18 @@ int main(int argc, char** argv) {
                     } else {
                         pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
                     }
-                    // Prone tilt (cgame 0x4c1cc0 / 0x4c1b90): tag_origin turned about y by the transition fraction times
-                    // the fit's body pitch, lifted by fraction x +0x164 (always 0).
-                    if (float tiltPitch = 0, tiltLift = 0; world->actorProneTilt(*e, tiltPitch, tiltLift)) {
+                    // Prone tilt (cgame 0x4c1cc0 / 0x4c1b90): a DObj control on tag_origin, rotation pitch (0x423970) times
+                    // roll (0x423a10, corpse blend only) = anglesQuat(pitch, 0, roll), lift on z. The fraction uses cg.time,
+                    // which lies between the two snapshots it interpolates (0x4a4c10): the effect time below.
+                    const int64_t cgTime = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
+                    static const bool noTilt = std::getenv("IW2_NO_PRONE_TILT") != nullptr;
+                    if (float tiltPitch = 0, tiltRoll = 0, tiltLift = 0; !noTilt && world->actorProneTilt(*e, cgTime, tiltPitch, tiltRoll, tiltLift)) {
                         for (size_t bi = 0; bi < body->parts.bones.size(); ++bi) {
                             std::string n = body->parts.bones[bi].name;
                             for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                             if (n != "tag_origin") continue;
                             pose = assets::applyControls(body->parts, pose,
-                                                         std::vector<assets::BoneControl>{{int(bi), assets::anglesQuat(tiltPitch, 0, 0), {0, 0, tiltLift}}});
+                                                         std::vector<assets::BoneControl>{{int(bi), assets::anglesQuat(tiltPitch, 0, tiltRoll), {0, 0, tiltLift}}});
                             break;
                         }
                     }
@@ -2867,6 +3096,7 @@ int main(int argc, char** argv) {
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         bool breathWeapon = false; // the equipped weapon has a scope reticle and is not an item (hold-breath weapons, 0x4dd350)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
+        game::V3 rawGunBob{0, 0, 0}, rawGunBobPrev{0, 0, 0}; // 0xf79940..48 as stored by 0x4b4a90 (no reticle factor); 0x4ae210 sees last frame's
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
@@ -2878,6 +3108,7 @@ int main(int argc, char** argv) {
                 return an && !an->looping ? an->length() : 0.0f;
             };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
+            pweapon.binocularDef = [&]() { return world->binocularWeapon(); };
             if (world->player()->obj->get("$weapontaken").truthy()) {
                 world->player()->obj->set("$weapontaken", script::Value());
                 pweapon.weaponTaken();
@@ -2896,7 +3127,7 @@ int main(int argc, char** argv) {
             weaponWritten = pweapon.name();
         };
         auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c) {
-            if (!pweapon.equipped()) return;
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
             const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
             const Scene::CpuModel* gun = sceneCpuModel(scene, dev, vfs, pweapon.gunModel());
             const assets::XAnim* an = viewAnim(vfs, pweapon.anim());
@@ -2999,8 +3230,8 @@ int main(int argc, char** argv) {
                             viewFlash->brassPending = false;
                             const std::string path = pweapon.field("shellEjectEffect");
                             if (viewFlash->brassValid && !path.empty() && path != "none") {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
-                                    o = vf->brassPos;
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // position only (no tag axes known here)
+                                    o.origin = vf->brassPos;
                                     return vf->brassValid;
                                 });
                                 const auto& m = base.transform;
@@ -3012,8 +3243,8 @@ int main(int argc, char** argv) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
                             if (!path.empty()) {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
-                                    o = vf->pos;
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // position only (no tag axes known here)
+                                    o.origin = vf->pos;
                                     return vf->valid;
                                 });
                                 const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
@@ -3095,6 +3326,7 @@ int main(int argc, char** argv) {
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
         bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
+        std::optional<std::string> pendingLoad;                   // savegame to load ("loadgame X", loadgame_continue)
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
         menuEnv.getCvar = [&](const std::string& n) {
@@ -3158,8 +3390,25 @@ int main(int argc, char** argv) {
                 else if (c == "quit") std::exit(0);
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
-                // TODO(spec): fast_restart (reloads the current map here), loadgame_continue (0x447190: needs the savegame format).
+                // TODO(spec): fast_restart (reloads the current map here).
                 else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
+                // vid_restart (0x40cd10) / snd_restart (0x40ce30) while a level runs: queue the save internal/<cmd> (type 0, flags 4);
+                // once written, "disconnect;<cmd>;loadgame internal/<cmd>" runs (0x44a050). Without a level: the restart itself, which
+                // openiw2 does not implement (TODO: renderer / mixer re-init), so it only logs.
+                else if (c == "vid_restart" || c == "snd_restart") {
+                    if (world && !pendingDisconnect) world->queueSave("internal/" + c, "", "", 0, 4);
+                    else std::cout << c << ": no subsystem restart in openiw2\n";
+                }
+                // "loadgame <name>" (exe "You must specify a savegame to load", "Can't find savegame %s") and loadgame_continue
+                // (0x447190: the save named by sv_lastSaveGame) load save/<name>.svg (docs/spec/savegame.md section 5).
+                else if (c == "loadgame") {
+                    if (a1.empty()) std::cout << "You must specify a savegame to load\n";
+                    else pendingLoad = a1;
+                } else if (c == "loadgame_continue") {
+                    const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+                    if (!last.empty()) pendingLoad = last;
+                    else if (!currentMap.empty()) pendingLevel = std::make_pair(currentMap, true); // no save yet: restart the level
+                }
             }
         };
         int menuLoopHandle = 0;
@@ -3188,8 +3437,28 @@ int main(int argc, char** argv) {
             else uiCvars["ui_playerProfileSelected"] = profiles.name(row);
         };
         uiCvars["com_playerProfile"] = profileName;
+        struct SaveRow { std::string name; ui::SaveSortKey key; ui::SaveInfo info; };
+        std::vector<SaveRow> saveRows;
+        uint64_t saveRowsAt = 0;
+        auto saveLoc = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+        std::string saveDetail;   // UI state +0x41e: detail text of the selected savegame (drawn by textsavegame items)
+        std::string saveSelName;  // UI state +0x31e: entry +0 of the selected savegame (ownerdraw UI_SAVEGAMENAME 262)
+        int saveSel = -1;         // selected row (ownerdraw UI_SAVEGAME_SHOT 258 reads its image name, entry +8)
+        // Savegame directory (IW2_SAVE_DIR, default <main dir>/save; docs/debug-flags.md).
+        const std::filesystem::path saveDir = std::getenv("IW2_SAVE_DIR") ? std::filesystem::path(std::getenv("IW2_SAVE_DIR"))
+                                                                          : std::filesystem::path(args[0]) / "save";
         menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
             if (name == "quit") execText("quit");
+            // "Loadgame" uiScript: "loadgame %s" of ui_savegame (0x580f98 / 0x580fa8).
+            else if (name == "loadgame") { const std::string sv = menuEnv.getCvar("ui_savegame"); if (!sv.empty()) execText("loadgame " + sv); }
+            // "DelSavegame": deletes save/<ui_savegame>.svg ("Deleted savegame: %s.svg" / "Unable to delete savegame: %s.svg", 0x5812d0 / 0x5812a0).
+            else if (name == "delsavegame") {
+                const std::string sv = menuEnv.getCvar("ui_savegame");
+                std::error_code ec;
+                if (!sv.empty() && std::filesystem::remove(saveDir / (sv + ".svg"), ec)) std::cout << "Deleted savegame: " << sv << ".svg\n";
+                else std::cout << "Unable to delete savegame: " << sv << ".svg\n";
+                saveRowsAt = 0;
+            }
             // Profile scripts (exe 0x4c4b80 addPlayerProfiles, 0x4c5a06 sortPlayerProfiles, 0x4c4a70 selectActive, 0x4c4d20 create,
             // 0x4c4e50 delete); details in src/ui/profilelist.h.
             else if (name == "addplayerprofiles") { profiles.refresh(); profileCountChanged(); selectProfileRow(0); }
@@ -3213,10 +3482,14 @@ int main(int argc, char** argv) {
                 if (!profiles.exists(sel) && menuEnv.getCvar("com_playerProfile") == sel) uiCvars["com_playerProfile"] = "";
                 selectProfileRow(row);
             } else if (name == "loadplayerprofile") {
-                // Activate the selected profile: remember it in players/active.txt, read its config.cfg (cvars + bindings).
-                // TODO(spec): the exe restarts the sound/video subsystems (snd_restart) and runs the profile's config via exec.
+                // loadPlayerProfile (0x4c4f10 -> 0x4274a0, docs/spec/savegame.md section 4): nothing for an empty selection, the
+                // active profile (case-insensitive) or a profile that does not exist; else players/active.txt, `disconnect`, dvar
+                // reset, the profile's config.cfg, and snd_restart only when a dvar's current value differs from its latched one.
+                // openiw2 has no latched dvars, so that condition never holds and no snd_restart is issued (no vid_restart either).
                 const std::string sel = menuEnv.getCvar("ui_playerProfileSelected");
-                if (sel.empty()) return;
+                if (sel.empty() || !profiles.exists(sel)) return;
+                if (strcasecmp(sel.c_str(), profileName.c_str()) == 0) return;
+                if (world) pendingDisconnect = true; // console "disconnect" (0x42750e)
                 saveProfileCfg();
                 profileName = sel;
                 profileCfg = playersDir / profileName / "config.cfg";
@@ -3237,24 +3510,26 @@ int main(int argc, char** argv) {
         };
         // Savegame list (FEEDER_SAVEGAMES 0x10): save/*.svg whose header is listable, newest first (0x4c44a0).
         // TODO(spec): the level name / time / health / difficulty columns come from header fields that are not decoded yet.
-        struct SaveRow { std::string name; ui::SaveSortKey key; ui::SaveInfo info; };
-        std::vector<SaveRow> saveRows;
-        uint64_t saveRowsAt = 0;
-        auto saveLoc = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-        std::string saveDetail; // text of the selected savegame (UI_SAVEGAMEINFO / textsavegame; TODO(spec): drawing)
         auto refreshSaves = [&] {
             if (saveRowsAt && SDL_GetTicksNS() - saveRowsAt < 1000000000ull) return;
             saveRowsAt = SDL_GetTicksNS() | 1;
             saveRows.clear();
             std::error_code ec;
-            for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(args[0]) / "save", ec)) {
-                if (de.path().extension() != ".svg") continue;
+            // save/*.svg and, with ui_savegameListAutosave set, save/autosave/*.svg listed as "autosave/<name>" (entry +0 is "%s/%s"
+            // of directory and name for a sub directory, 0x4c44a0). TODO(spec): the exe's directory walk and the toggle's exact test.
+            std::vector<std::pair<std::filesystem::path, std::string>> files;
+            for (const auto& de : std::filesystem::directory_iterator(saveDir, ec)) files.emplace_back(de.path(), "");
+            if (menuEnv.getCvar("ui_savegameListAutosave") != "" && menuEnv.getCvar("ui_savegameListAutosave") != "0")
+                for (const auto& de : std::filesystem::directory_iterator(saveDir / "autosave", ec)) files.emplace_back(de.path(), "autosave/");
+            for (const auto& [path, prefix] : files) {
+                if (path.extension() != ".svg") continue;
+                const std::filesystem::directory_entry de(path);
                 std::ifstream f(de.path(), std::ios::binary);
                 std::vector<uint8_t> hdr(ui::kSaveHeaderSize);
                 f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
                 if (size_t(f.gcount()) != hdr.size() || !ui::saveHeaderListable(hdr)) continue;
                 SaveRow r;
-                r.name = de.path().stem().string();
+                r.name = prefix + de.path().stem().string();
                 if (!ui::saveSortKey(hdr, r.key) || !ui::saveHeaderInfo(hdr, r.info)) continue;
                 size_t at = saveRows.size();
                 for (size_t i = 0; i < saveRows.size(); ++i)
@@ -3282,8 +3557,20 @@ int main(int argc, char** argv) {
             // 0x4c6050 for feeder 0x10: dvar ui_savegame = file name; the name and the detail text go to the UI state (0x59b724 +0x31e / +0x41e).
             if (feeder == 0x10 && row >= 0 && size_t(row) < saveRows.size()) {
                 uiCvars["ui_savegame"] = saveRows[size_t(row)].name;
+                saveSelName = saveRows[size_t(row)].name;
+                saveSel = row;
                 saveDetail = ui::saveDetailText(saveRows[size_t(row)].info, [&](const std::string& k) { return saveLoc(k); });
             }
+        };
+        // savegameshow / savegamehide: the save named by sv_lastSaveGame is loadable (0x4e06e0: a whole 0x4d8-byte header with
+        // version 0x99). TODO(spec): that menurun's show/hide rule matches the exe's caller of 0x4e06e0 exactly.
+        menuEnv.savegameExists = [&] {
+            const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+            if (last.empty()) return false;
+            std::ifstream f(saveDir / (last + ".svg"), std::ios::binary);
+            std::vector<uint8_t> hdr(ui::kSaveHeaderSize);
+            f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
+            return size_t(f.gcount()) == hdr.size() && ui::saveHeaderLoadable(hdr);
         };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
@@ -3356,7 +3643,7 @@ int main(int argc, char** argv) {
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
         auto scopeAlpha = [&]() -> float {
-            if (!pweapon.equipped()) return 0;
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return 0;
             const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
             if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
             const float f = pweapon.adsFrac();
@@ -3844,7 +4131,7 @@ int main(int argc, char** argv) {
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
             // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
             // TODO(spec): the dvars it also tests.
-            if (world && mantleHint && mantleHintItem) {
+            if (world && mantleHint && mantleHintItem && !input.objectivesHeld()) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
                 const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
@@ -3881,7 +4168,7 @@ int main(int argc, char** argv) {
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
             // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
             // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
-            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
+            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
@@ -4253,7 +4540,7 @@ int main(int argc, char** argv) {
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
             // TODO(spec): that def +0x1d4 / +0x1d8 are maxAmmo / clipSize (matches the usage: stock vs max, clip vs clip size).
-            const float maxAmmo = std::min(pweapon.number("maxAmmo"), 999.0f), clipSize = std::min(pweapon.number("clipSize"), 999.0f);
+            const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
             const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
             const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
@@ -4318,8 +4605,8 @@ int main(int argc, char** argv) {
                 if (a > 0.0f)
                     if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
                         auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                        std::string text = name(pweapon.field("displayName"));
-                        const std::string mode = pweapon.field("modeName");
+                        std::string text = name(pweapon.hudField("displayName"));
+                        const std::string mode = pweapon.hudField("modeName");
                         if (!mode.empty()) text += " / " + name(mode);
                         const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
                         float tw = 0;
@@ -4719,8 +5006,23 @@ int main(int argc, char** argv) {
                             }
                             continue;
                         }
-                        if (it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
-                        const std::string text = menuLocalized(it.text);
+                        // UI_SAVEGAME_SHOT (258, 0x4c3c00): the material named by the selected entry's image (+8 = header +0x320,
+                        // script default "$default"); no selection, an empty name or a material that does not load -> "unknownsave".
+                        // Drawn over the item rect (0x4d4790). TODO(spec): the colour argument of the ownerdraw call (item fore colour here).
+                        if (it.ownerDraw == 258) {
+                            std::string mat = "unknownsave";
+                            if (saveSel >= 0 && size_t(saveSel) < saveRows.size() && !saveRows[size_t(saveSel)].info.image.empty() &&
+                                (vfs.exists("materials/" + saveRows[size_t(saveSel)].info.image)))
+                                mat = saveRows[size_t(saveSel)].info.image;
+                            quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
+                            continue;
+                        }
+                        // UI_SAVEGAMENAME (262) shows UI state +0x31e, a textsavegame item UI state +0x41e (0x4c6050 fills both).
+                        // TODO(spec): the ownerdraw / textsavegame draw handlers are not decoded; drawn with the item's text settings.
+                        const bool saveText = it.ownerDraw == 262 || it.textSaveGame;
+                        if (saveText && (it.ownerDraw == 262 ? saveSelName : saveDetail).empty()) continue;
+                        if (!saveText && it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
+                        const std::string text = saveText ? (it.ownerDraw == 262 ? saveSelName : saveDetail) : menuLocalized(it.text);
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts, it.textFont);
                         if (!f) continue;
@@ -5031,6 +5333,19 @@ int main(int argc, char** argv) {
                                 cam.pitch = 15.0f;
                             }
                 }
+                if (const char* se = std::getenv("IW2_SHOT_ENT")) { // IW2_SHOT_ENT=N[,dist,yaw,height]: camera aimed at entity N
+                    float v[4] = {-1, 120, 90, 50};
+                    std::sscanf(se, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]);
+                    for (const auto& te : world->entities())
+                        if (te->number == int(v[0]) && te->obj->get("origin").isVector()) {
+                            const script::Vec3 to = te->obj->get("origin").asVector();
+                            const script::Value ta = te->obj->get("angles");
+                            const float yr = ((ta.isVector() ? ta.asVector()[1] : 0.0f) + v[2]) * float(M_PI) / 180.0f;
+                            cam.pos = {to[0] + std::cos(yr) * v[1], to[1] + std::sin(yr) * v[1], to[2] + v[3]};
+                            cam.yaw = std::atan2(to[1] - cam.pos.y, to[0] - cam.pos.x) * 180.0f / float(M_PI);
+                            cam.pitch = std::atan2(v[3] - 10.0f, v[1]) * 180.0f / float(M_PI);
+                        }
+                }
                 if (forceTurret || forceJolt)
                     for (const auto& e : world->entities())
                         if (e->vehicle) {
@@ -5121,14 +5436,22 @@ int main(int argc, char** argv) {
                     else if (act == "frag+" || act == "frag-") shotIn.frag = act == "frag+";
                     else if (act == "smoke+" || act == "smoke-") shotIn.smoke = act == "smoke+";
                     else if (act == "melee+" || act == "melee-") shotIn.melee = act == "melee+";
+                    else if (act == "binoc+" || act == "binoc-") shotIn.binoculars = act == "binoc+";
+                    else if (act == "use+" || act == "use-") shotIn.use = act == "use+";
                     else if (act.rfind("weapon=", 0) == 0) shotIn.weapon = act.substr(7);
                 }
-                const int shotsFired = pweapon.update(0.02f, shotIn);
+                game::PlayerWeapon::Input stepIn = shotIn;
+                if (pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14) stepIn.ads = true; // forced aim (0x409af0)
+                const int shotsFired = pweapon.update(0.02f, stepIn);
                 if (shotsFired > 0 && (shotScript.empty() || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
                 if (!shotScript.empty()) {
                     for (const auto& e : pweapon.takeEvents()) {
                         const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                         if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds();
+                        else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop && world) {
+                            static const char* const kN[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release", "binocular_drop"};
+                            world->notifyPlayer(kN[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
+                        }
                         else if (e.kind == game::PlayerWeapon::Event::MeleeHit && world) world->playerMelee(eye, angles);
                         else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0});
                         std::cout << "shot-script t=" << tNow << " event " << int(e.kind) << " " << e.weapon << "\n";
@@ -5158,7 +5481,8 @@ int main(int argc, char** argv) {
             setFxFrustum(fxSystem, cam, float(width) / float(height));
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
-                const Vec3 at = cam.pos + cam.forward() * 150.0f;
+                const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
+                const Vec3 at = cam.pos + cam.forward() * dist;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
             if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
@@ -5357,6 +5681,13 @@ int main(int argc, char** argv) {
         };
         int shockLoop = 0, shockSeenStart = -1;
         bool shockEndPlayed = true;
+        // Hold-breath sounds (0x4b6840) and the hold_breath channel volumes (cgame registration 0x4a3140 loads
+        // shock/hold_breath.shock into record 16, 0xf5741c; its volumes drive sound volume slot 2 via 0x4b6700).
+        game::BreathSounds breathSnd;
+        int heartbeatLoop = 0;
+        game::ShockRecord holdBreathRec;
+        if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
+        else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
         // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
         auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
@@ -5611,6 +5942,7 @@ int main(int argc, char** argv) {
                 in.forward = controlsBlocked ? 0.0f : float(input.forwardMove()) / 127.0f;
                 in.right = controlsBlocked ? 0.0f : float(input.rightMove()) / 127.0f;
                 in.jump = (buttons & game::Button::Jump) != 0;
+                in.stanceHeld = (buttons & game::Button::StanceHeld) != 0; // 0x2000 (0x50a1f5)
                 in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
                             : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
                 // allowleanleft/right(false) set pm_flags 0x2000000/0x4000000, which cancel the lean (0x50ae13).
@@ -5636,6 +5968,11 @@ int main(int argc, char** argv) {
                 pmp.mantle = &mantleAnims;
                 // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
+                if (world && world->shellShockRecord()) { // usercmd 0x800 (0x409c82): cgame flag 0x621560 = shock running (0x4b24db)
+                    const auto& ss = world->shellShock();
+                    const int64_t el = world->timeMs() - ss.startMs;
+                    pmp.shellShockSlow = ss.startMs != 0 && el >= 0 && el < ss.durationMs;
+                }
                 if (pweapon.equipped()) {
                     auto n = [&](const char* k) { return pweapon.number(k); };
                     pmp.hipSpread = {n("hipSpreadStandMin"), n("hipSpreadDuckedMin"), n("hipSpreadProneMin"), n("hipSpreadMax"),
@@ -5759,6 +6096,14 @@ int main(int argc, char** argv) {
                 wi.weapon = weaponSelect;
                 wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
                 wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
+                wi.binoculars = (buttons & game::Button::Binoculars) != 0;
+                wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
+                wi.inVehicle = inVehicle;
+                {
+                    static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
+                    wi.damaged = world->playerDamageFeedback().event != binocDamageEvent;
+                    binocDamageEvent = world->playerDamageFeedback().event;
+                }
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
@@ -5802,6 +6147,13 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
+                        ps.aimSpread = e.alt ? std::max(ps.aimSpread, 128.0f) : 255.0f;
+                    else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop) {
+                        static const char* const kBinocNotify[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release",
+                                                                   "binocular_drop"}; // 0xa8..0xac (ClientEvents 0x4e76e0..0x4e7740)
+                        world->notifyPlayer(kBinocNotify[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
+                    }
                     else if (e.kind == game::PlayerWeapon::Event::OutOfAmmo && world->player()) { // event 0x92 (0x4baec1 -> 0x4b7090)
                         const std::string next = world->outOfAmmoSwitch(world->inventory(*world->player()), e.weapon);
                         if (!next.empty()) weaponSelect = next;
@@ -5833,10 +6185,16 @@ int main(int argc, char** argv) {
                         shockEndPlayed = !rec;
                     }
                     {
-                        // Channel volumes during the shock (shockChannelVolume, f = shockSoundFraction); 1 once it is over.
+                        // Channel volumes: the sound system keeps 5 volume slots (0x793a34, 0x88 bytes each) and uses the highest
+                        // active one (0x793cdc; set 0x4431f0, clear 0x443390, fade 0 = 1 ms). Shell shock writes slot 4 (0x4b2237)
+                        // while its record has cg_shock_sound and the fraction is > 0, else clears it (0x4b1fa0 / 0x4b1ffc); the
+                        // hold-breath blend writes slot 2 (0x4b682a) and clears it at blend 0 (0x4b671d); none active = 1.
                         const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
-                        const float f = rec ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
-                        for (int c = 0; c < 11; ++c) mixer.channelScale[c] = rec ? game::shockChannelVolume(*rec, c, f) : 1.0f;
+                        const float f = rec && rec->sound ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
+                        const float bb = breathSnd.volumeBlend();
+                        for (int c = 0; c < 11; ++c)
+                            mixer.channelScale[c] = f > 0 ? game::shockChannelVolume(*rec, c, f)
+                                                  : bb != 0 ? game::shockChannelVolume(holdBreathRec, c, bb) : 1.0f;
                     }
                     if (rec && rec->sound) {
                         const int el = int(world->timeMs() - ss.startMs);
@@ -5851,6 +6209,21 @@ int main(int argc, char** argv) {
                         }
                     }
                 } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                if (!onTurret && (pweapon.equipped() || pweapon.binocularsUp()) && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
+                    // Hold-breath sounds (0x4b6840 from the first-person weapon pass 0x4b69b0: a weapon, eFlags & 0x300 clear, in a
+                    // vehicle only in weapon states 0x11-0x16). The heartbeat loop lives while it is played every frame.
+                    const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(dt, 0.1f) * 1000.0f), game::BreathSoundParams{},
+                                                     [&](const char* a) {
+                                                         if (std::strcmp(a, "weap_sniper_heartbeat") == 0) {
+                                                             if (!heartbeatLoop) heartbeatLoop = mixer.play(a);
+                                                             return 0;
+                                                         }
+                                                         float len = 0;
+                                                         mixer.play(a, std::nullopt, &len);
+                                                         return int(len * 1000.0f);
+                                                     });
+                    if (!hb && heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
+                } else if (heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -5865,6 +6238,9 @@ int main(int argc, char** argv) {
                     gunBobAngles = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
                                                 ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"),
                                                 !ret.empty() && ret != "none");
+                    rawGunBobPrev = rawGunBob;
+                    rawGunBob = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
+                                             ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
@@ -6046,7 +6422,34 @@ int main(int argc, char** argv) {
                         screenBlur.command(ms, radius, rt != 0, prio, std::max<int64_t>(now, 1), screenBlur.composed());
                     }
                 }
-                if (auto change = world->dueLevelChange()) pendingLevel = std::make_pair(change->map, change->failed);
+                // Saves the level produced this frame (0x44a230): written to save/<name>.svg; a save that is not internal
+                // becomes sv_lastSaveGame (0x4e0554..0x4e0573, internal names 0x44a2f0).
+                for (auto& f : world->takeSaveFiles()) {
+                    const std::filesystem::path path = saveDir / (f.name + ".svg");
+                    std::error_code ec;
+                    std::filesystem::create_directories(path.parent_path(), ec);
+                    std::ofstream of(path, std::ios::binary);
+                    of.write(reinterpret_cast<const char*>(f.bytes.data()), std::streamsize(f.bytes.size()));
+                    const bool ok = bool(of);
+                    world->setSaveFailed(!ok);
+                    std::cout << (ok ? "saved " : "save failed: ") << path.string() << "\n";
+                    if (ok && !ui::saveNameInternal(f.name)) {
+                        uiCvars["sv_lastSaveGame"] = f.name;
+                        world->cvars["sv_lastSaveGame"] = f.name;
+                        profileDirty = true; // archived dvar (flags 0x1001): goes into the profile's config.cfg
+                    }
+                    for (const char* r : {"vid_restart", "snd_restart"}) // 0x44a050 (exact names, 0x15 bytes compared)
+                        if (ok && f.name == std::string("internal/") + r) {
+                            std::cout << "Game saved for " << r << "\n";
+                            execText(std::string("disconnect;") + r + ";loadgame internal/" + r);
+                        }
+                    saveRowsAt = 0;
+                }
+                if (auto change = world->dueLevelChange()) {
+                    const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+                    if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last;
+                    else pendingLevel = std::make_pair(change->map, change->failed);
+                }
             }
             if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
                 // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
@@ -6059,6 +6462,21 @@ int main(int argc, char** argv) {
                 menuEnv.setCvar("cl_paused", "0");
                 frontStack.closeAll();
                 frontStack.open("main");
+            }
+            std::optional<game::LoadedSave> loadedSave;
+            if (pendingLoad) {
+                const std::filesystem::path path = saveDir / (*pendingLoad + ".svg");
+                std::ifstream lf(path, std::ios::binary);
+                const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(lf)), {});
+                game::LoadedSave ls;
+                const std::string err = bytes.empty() ? "Can't find savegame " + *pendingLoad : game::parseSaveFile(bytes, ls);
+                if (err.empty()) {
+                    loadedSave = std::move(ls);
+                    pendingLevel = std::make_pair(loadedSave->info.mapName, false);
+                } else {
+                    std::cout << path.string() << ": " << err << "\n";
+                }
+                pendingLoad.reset();
             }
             if (pendingLevel) {
                     // Level change or restart: rebuild the world and the scene for the next map.
@@ -6074,7 +6492,13 @@ int main(int argc, char** argv) {
                     const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
                     world.reset();
                     releaseScene(dev, scene);
-                    world = makeWorld(currentMap, carried);
+                    try {
+                        world = makeWorld(currentMap, loadedSave ? nullptr : carried, loadedSave ? &*loadedSave : nullptr);
+                    } catch (const std::exception& e) {
+                        if (!loadedSave) throw;
+                        std::cout << "loadgame failed: " << e.what() << "; restarting " << currentMap << "\n";
+                        world = makeWorld(currentMap, nullptr);
+                    }
                     scene = loadScene(dev, vfs, currentMap, false);
                     frontStack.closeAll(); // leaving the front end / pause menu
                     aliases.clear();
@@ -6083,6 +6507,12 @@ int main(int argc, char** argv) {
                     cam = scene.start;
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
+                    if (loadedSave && world->player()) { // a loaded save puts the player where the save has him
+                        // TODO(spec): the front end's pmove state (velocity, stance, view) is not part of the openiw2 save
+                        const auto o = world->player()->obj->get("origin"), an = world->player()->obj->get("angles");
+                        if (o.isVector()) ps.origin = o.asVector();
+                        if (an.isVector()) cam.yaw = an.asVector()[1];
+                    }
                     game::markSpawned(ps);
                     pweapon = game::PlayerWeapon{};
                     weaponSelect.clear();
@@ -6170,13 +6600,17 @@ int main(int argc, char** argv) {
                     cam.yaw += std::atan(k.x) * 57.29578f;
                     cam.pitch -= std::atan(k.y) * 57.29578f;
                 }
-            if (!onTurret && !playerDead && pweapon.equipped() && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
+            if (!onTurret && !playerDead && (pweapon.equipped() || pweapon.binocularsUp()) && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
                 const std::string ret = pweapon.field("adsOverlayReticle");
                 const auto ss = vmMotion.scopeSway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
                                                    pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
                                                    ps.breathScale, !ret.empty() && ret != "none");
                 cam.pitch += ss[0];
                 cam.yaw += ss[1];
+                const game::V3 vb = game::scopedViewBob(rawGunBobPrev, pweapon.adsFrac(), !ret.empty() && ret != "none"); // 0x4ae210
+                cam.pitch += vb[0];
+                cam.yaw += vb[1];
+                cam.roll += vb[2];
             }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];

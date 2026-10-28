@@ -61,6 +61,8 @@ add_library(iw2_script
   src/script/parser.cpp
   src/script/value.cpp
   src/script/vm.cpp
+  src/script/vmstate.cpp
+  src/script/stateio.cpp
   src/script/builtins_core.cpp)
 target_include_directories(iw2_script PUBLIC src)
 target_compile_options(iw2_script PRIVATE -Wall -Wextra -Wpedantic)
@@ -76,15 +78,15 @@ add_library(iw2_game
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/triggerdamage.cpp
-  src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
+  src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
-  src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp
-  src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorfacing.cpp src/game/actorevents.cpp
+  src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
+  src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
-  src/game/prone.cpp src/game/proneworld.cpp)
+  src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp)
 target_include_directories(iw2_game PUBLIC src)
-target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets)
+target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_ui
@@ -186,6 +188,10 @@ add_executable(test_friendlychain tests/test_friendlychain.cpp)
 target_link_libraries(test_friendlychain PRIVATE iw2_game)
 add_test(NAME friendlychain COMMAND test_friendlychain)
 
+add_executable(test_nodesearch tests/test_nodesearch.cpp)
+target_link_libraries(test_nodesearch PRIVATE iw2_game)
+add_test(NAME nodesearch COMMAND test_nodesearch)
+
 add_executable(test_itempickup tests/test_itempickup.cpp)
 target_link_libraries(test_itempickup PRIVATE iw2_game)
 add_test(NAME itempickup COMMAND test_itempickup)
@@ -258,6 +264,12 @@ add_test(NAME savegame COMMAND test_savegame)
 add_executable(test_prone tests/test_prone.cpp)
 target_link_libraries(test_prone PRIVATE iw2_game)
 add_test(NAME prone COMMAND test_prone)
+add_executable(test_yield tests/test_yield.cpp)
+target_link_libraries(test_yield PRIVATE iw2_game)
+add_test(NAME yield COMMAND test_yield)
+add_executable(test_actortrail tests/test_actortrail.cpp)
+target_link_libraries(test_actortrail PRIVATE iw2_game)
+add_test(NAME actortrail COMMAND test_actortrail)
 add_executable(test_compassspring tests/test_compassspring.cpp)
 target_link_libraries(test_compassspring PRIVATE iw2_game)
 add_test(NAME compassspring COMMAND test_compassspring)
@@ -272,3 +284,16 @@ add_test(NAME roq COMMAND test_roq)
 add_executable(test_triggerdamage tests/test_triggerdamage.cpp)
 target_link_libraries(test_triggerdamage PRIVATE iw2_game)
 add_test(NAME triggerdamage COMMAND test_triggerdamage)
+add_executable(test_grenadehint tests/test_grenadehint.cpp)
+target_link_libraries(test_grenadehint PRIVATE iw2_game)
+add_test(NAME grenadehint COMMAND test_grenadehint)
+
+add_executable(test_savestate tests/test_savestate.cpp)
+target_link_libraries(test_savestate PRIVATE iw2_game)
+add_test(NAME savestate COMMAND test_savestate)
+# The World round trip needs the game files; registered only when they are found.
+set(IW2_TEST_MAIN "$ENV{IW2_MAIN}")
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME savestate_world COMMAND test_savestate)
+  set_tests_properties(savestate_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
