@@ -5144,7 +5144,8 @@ int main(int argc, char** argv) {
             setFxFrustum(fxSystem, cam, float(width) / float(height));
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
-                const Vec3 at = cam.pos + cam.forward() * 150.0f;
+                const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
+                const Vec3 at = cam.pos + cam.forward() * dist;
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
             }
             if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {

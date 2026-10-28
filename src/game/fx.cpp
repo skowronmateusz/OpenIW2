@@ -199,7 +199,8 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             FVec t{};
             if (!(*bolt)(t)) continue;
         }
-        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" || e.type == "Tail" || e.type == "Light";
+        const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
+                           e.type == "Tail" || e.type == "Light" || e.type == "Line";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -265,6 +266,22 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
         const auto* g = graph(e, scaled[k]);
         p.scale[k] = g ? g->scaleMin + (g->scaleMax - g->scaleMin) * frand() : 1.0f;
     }
+    if (e.type == "Line") {
+        // 0x48c850 (without org2fromTrace 0x8): origin2 ranges drawn z, y, x (+0xe0, +0xd8, +0xd0; `origin2 a b c d e f` =
+        // x [a, d], y [b, e], z [c, f]), taken in world axes with cheapOrg2Calc 0x80, else as x·row0 + y·row1 + z·row2 of the
+        // instance axes (0x424a70, after the spawn shape changed them), added to the effect origin. TODO(spec): org2fromTrace
+        // (trace from A along the axis, 0x592270), org2isOffset, traceImpactFx; the relative Line's bolt transform (0x440600).
+        p.line = true;
+        const auto o2 = e.numbers("origin2");
+        float x = 0, y = 0, z = 0;
+        if (o2.size() >= 6) {
+            z = range({o2[2], o2[5]}, 0);
+            y = range({o2[1], o2[4]}, 0);
+            x = range({o2[0], o2[3]}, 0);
+        }
+        const FVec off = e.spawnFlagBits() & 0x80 ? FVec{x, y, z} : add(add(mul(ax[0], x), mul(ax[1], y)), mul(ax[2], z));
+        p.lineB = add(origin, off);
+    }
     // Material and sequence (0x48cd20): the material at random ((seed >> 17)·count >> 15); with a frame
     // count n > 1 the start frame by sequenceStartFrameMode (+0x288; 0 fixed: sequenceFixedFrameValue − 1,
     // 1 random: (seed >> 17)·n >> 15, 2: the caller's value, TODO(spec)) and the rate by
@@ -290,6 +307,9 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopMode = int(num("sequenceLoopMode"));
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
+    }
+    if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
+        p.seqStart = 0, p.seqRate = 0; // TODO(spec): the frame (+0x94) the Line instance carries
     }
     if (e.type == "Emitter" || e.type == "Tail") {
         // 0x48d7d0: start position from the spawn shape; the angles are the effect axes' angles plus a random draw in
@@ -555,6 +575,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if ((*p.bolt)(now)) pos = add(pos, {now[0] - p.bolt0[0], now[1] - p.bolt0[1], now[2] - p.bolt0[2]});
         }
         if (p.tail) pos = p.pos;
+        if (p.line) pos = p.origin; // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, nothing moves
         FxSprite s;
         s.position = pos;
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
@@ -605,6 +626,20 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Alpha byte (0x481a40): the clamped alpha · 255 truncated (_ftol) with useAlpha (0x80), else 255.
             const int alphaByte = flags & 0x80 ? int(s.rgba[3] * 255.0f) : 255;
             sightBlockers_.push_back({pos, s.size * s.size, 1.0f - float(alphaByte) * (1.0f / 255.0f)});
+        }
+        if (p.line) {
+            // Line draw 0x482d90 -> 0x480010 renderer type 8 (the Tail quad, 1.3 DLL 0x10041470 / 0x100409c0): A = +0x7c, B = +0x9c,
+            // half width = the size channel (+0x88, 0x4818b0), colour bytes from rgb / alpha (0x4819b0 / 0x481a40).
+            s.beam = s.beamTail = true;
+            s.beamA = p.origin;
+            s.beamB = p.lineB;
+            s.widthA = s.widthB = s.size;
+            if (!viewValid) continue;
+            const FVec a = sub(s.beamA, viewOrigin), b = sub(s.beamB, viewOrigin);
+            const FVec c = cross(a, b);
+            const float cl = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+            if (!(cl > 0)) continue;
+            s.beamPerp = mul(c, 1.0f / cl);
         }
         if (p.tail) {
             // 0x4830d0 length channel (graph "length", random lerp 0x20000, scale +0x1d4), 0x483160 end point: while the

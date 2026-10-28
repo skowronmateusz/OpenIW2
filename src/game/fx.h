@@ -43,6 +43,10 @@ struct FxParticle {
     // position at the start of the update (+0x24c), tailB the end point (+0x9c, 0x483160).
     bool tail = false;
     FVec prev{}, tailB{};
+    // Line element (type 2, class vtable 0x57c708, spawn 0x48d3c0): fixed end points A (the spawn point, +0x4) and B (+0x24c,
+    // from `origin2`, 0x48c850), drawn as a renderer type 8 quad like Tail (update 0x482da0, draw 0x482d90).
+    bool line = false;
+    FVec lineB{};
     std::string model;                  // chosen from `models` at random when useModel (0x10) is set
     FVec pos{};                         // current position (+0x4)
     FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
