@@ -124,6 +124,11 @@ struct ActorAi {
     float lookAngles[2] = {0, 0};             // +0xd8 / +0xdc look pitch / yaw (lookforward +0xe0 from them, 0x5049a0)
     int64_t threatCheckMs = 0;                // +0x204c next nearest-threat facing check (0x505790)
     Vec3 blockVel{};                          // +0x230 block velocity of the previous physics step (read by 0x505b80 / 0x505cb0)
+    // The slide block's own velocity (block +0xc = actor +0x230; the block lives in the actor at +0x224, 0x501f38 passes
+    // actor + 0x224 to 0x5487c0, which updates it in place): it carries over to the next physics step as the move block's
+    // velocity (the airborne branch moves on it with gravity). TODO(spec): blockVel above is the frame displacement, which
+    // the readers 0x505b80 / 0x505cb0 still take; the exe has only this one field.
+    float slideVel[3] = {0, 0, 0};
     int64_t walkedMs = -1;                    // level time of the last mode-1 path walk (moveActor)
     bool facingInit = false;
     int floatFrames = 0;                      // IW2_FLOAT_LOG: frames in a row without ground within 16 units

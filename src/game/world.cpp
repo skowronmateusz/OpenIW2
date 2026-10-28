@@ -844,7 +844,7 @@ void World::moveActor(Entity& e, float dt) {
         pm.gravity = gravity();
         pm.mask = e.ai.noPush ? 0x2820011u : 0x820011u; // actor +0x28c, see actorMoveNoise
         pm.groundEnt = uint16_t(e.ai.groundEnt);
-        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.ai.blockVel[size_t(a)]; // the block velocity persists between frames (+0x230)
+        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.ai.slideVel[a]; // the block velocity persists between frames (+0x230)
         const SlideTraceFn fn = [&](const float s[3], const float en[3]) {
             const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 72}, pm.mask, e.number);
             SlideTrace t;
@@ -866,6 +866,7 @@ void World::moveActor(Entity& e, float dt) {
             moveBlock(pm, fn);
         }
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
+        for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a]; // written back in place (block +0xc)
         e.ai.groundEnt = pm.groundEnt;
         grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground
         linkBumpedActor(e, pm.hitEnt);
@@ -914,7 +915,7 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
     for (int a = 0; a < 3; ++a) {
         pm.origin[a] = before[a];
         pm.moveDelta[a] = delta[size_t(a)];
-        pm.velocity[a] = e.velocity[a];
+        pm.velocity[a] = e.ai.slideVel[a]; // block +0xc = actor +0x230 (in place, see slideVel)
     }
     pm.dt = dt;
     pm.timeMs = int(dt * 1000.0f + 0.5f);
@@ -937,6 +938,7 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
     moveBlock(pm, fn);
     const Vec3 o{pm.origin[0], pm.origin[1], pm.origin[2]};
     e.obj->set("origin", Value(o));
+    for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a];
     e.ai.groundEnt = pm.groundEnt;
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     linkBumpedActor(e, pm.hitEnt);
