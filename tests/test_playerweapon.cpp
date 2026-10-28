@@ -97,6 +97,20 @@ void boltBrass() {
         brassAt(w, 1.0f, false, at, tick);
         CHECK(at.empty());
     }
+    {
+        PlayerWeapon w; // the pending casing is a per-weapon bit (ps+0x530): it survives a switch away and back
+        const PlayerWeapon::Def kar{{"semiauto", "1"}, {"boltaction", "1"}, {"firetime", "0.33"}, {"rechambertime", "1"},
+                                    {"rechamberbolttime", "0.65"}, {"clipsize", "5"}, {"startammo", "20"}, {"raisetime", "0.1"},
+                                    {"reloadtime", "2"}, {"fireanim", "fire"}, {"rechamberanim", "rechamber"}};
+        w.equip("kar", kar);
+        std::vector<int> at;
+        int tick = 0;
+        brassAt(w, 0.3f, false, at, tick);
+        brassAt(w, 0.01f, true, at, tick);
+        w.equip("other", {{"firetime", "0.1"}, {"clipsize", "30"}, {"startammo", "60"}, {"raisetime", "0.1"}});
+        w.equip("kar", kar);
+        CHECK(w.hasBrassPending());
+    }
 }
 
 // An empty projectile weapon reloads with reloadAnim / reloadTime: the empty variant is only for weaponType bullet
@@ -504,7 +518,25 @@ void inventoryAmmo() {
     CHECK(w.clip() == 32 && w.stock() == 10);
 }
 
+// player_adsExitDelay (0x4dd0d0): at a full aim fraction the aim is held for the delay after the button is released.
+void adsExitDelay() {
+    PlayerWeapon w;
+    w.equip("rifle", {{"firetime", "0.1"}, {"clipsize", "5"}, {"startammo", "20"}, {"raisetime", "0"},
+                      {"aimdownsight", "1"}, {"adstransintime", "0.1"}, {"adstransouttime", "0.1"}});
+    PlayerWeapon::Input in;
+    in.ads = true;
+    for (int i = 0; i < 30; ++i) w.update(0.01f, in);
+    CHECK(w.adsFrac() == 1.0f);
+    in.ads = false;
+    in.adsExitDelay = 0.2f;
+    for (int i = 0; i < 15; ++i) w.update(0.01f, in);
+    CHECK(w.adsFrac() == 1.0f); // still held
+    for (int i = 0; i < 30; ++i) w.update(0.01f, in);
+    CHECK(w.adsFrac() == 0.0f); // then released
+}
+
 int main() {
+    adsExitDelay();
     reloadAddTiming();
     segmentedReload();
     weaponSounds();
