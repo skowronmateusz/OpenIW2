@@ -4235,9 +4235,30 @@ int main(int argc, char** argv) {
                         text = text.substr(0, b) + keys + text.substr(e + 2);
                     }
                     if (text.empty()) continue;
+                    // Font and size (cgame 0x4c27b8, hudelem font +0x14): 0 "default": textScale = fontScale * 0.25 (0x591fe0),
+                    // s = textScale * h / 480 (0x793944); s <= ui_smallFont $smallfont, >= ui_extraBigFont $extrabigfont,
+                    // < ui_bigFont $font, else $bigfont. 1 "bigfixed": textScale = fontScale * 0.5 (0x591e10); s <= ui_smallFont
+                    // $smallfont, < ui_bigFont $font, else $boldfont. 2 "smallfixed": $consolefont, textScale = fontScale / 3
+                    // (0x592250). Handles: 0x1107448 $bigfont, 0x110744c $smallfont, 0x1107450 $consolefont, 0x1107454 $boldfont,
+                    // 0x1107458 $font, 0x110745c $extrabigfont (0x4c3493..0x4c34fe). Glyphs: textScale * 48 / font height virtual
+                    // units per font pixel, as menu text. Before, every hudelem used $font stretched (blurry intro text).
                     const std::string fontName = o->get("font").toString();
-                    const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
-                    if (f) hudText(dst, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
+                    const int fontType = fontName == "bigfixed" ? 1 : fontName == "smallfixed" ? 2 : 0;
+                    auto uiF = [&](const char* k, float def) {
+                        auto it = world->cvars.find(k);
+                        return it == world->cvars.end() ? def : float(std::atof(it->second.c_str()));
+                    };
+                    const float fsc = field(o, "fontscale", 1);
+                    const float textScale = fsc * (fontType == 0 ? 0.25f : fontType == 1 ? 0.5f : 1.0f / 3.0f);
+                    const float s = textScale * sc;
+                    const char* hudFont = "consoleFont";
+                    if (fontType == 0)
+                        hudFont = s <= uiF("ui_smallFont", 0.25f) ? "smallFont" : s >= uiF("ui_extraBigFont", 0.55f) ? "extraBigFont"
+                                : s < uiF("ui_bigFont", 0.4f) ? "normalFont" : "bigFont";
+                    else if (fontType == 1)
+                        hudFont = s <= uiF("ui_smallFont", 0.25f) ? "smallFont" : s < uiF("ui_bigFont", 0.4f) ? "normalFont" : "boldFont";
+                    const assets::Font* f = font(hudFont);
+                    if (f) hudText(dst, text, px, py, textScale * 48.0f / float(f->pixelHeight) * sc, *f, rgba, fx, fy);
                 }
             }
             {
