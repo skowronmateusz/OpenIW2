@@ -97,10 +97,17 @@ void PlayerWeapon::enterWith(const Def& d, State s, const char* animKey, float d
 
 void PlayerWeapon::equip(const std::string& name, const Def& def) {
     pendingIdle_ = false;
-    if (!name_.empty()) ammo_[name_] = {clip_, stock_};
+    if (!name_.empty()) {
+        ammo_[name_] = {clip_, stock_};
+        if (writeAmmo) writeAmmo(name_, clip_, stock_);
+    }
     name_ = name;
     def_ = def;
-    if (auto it = ammo_.find(name); it != ammo_.end()) {
+    const std::optional<std::pair<int, int>> inv = readAmmo ? readAmmo(name) : std::nullopt;
+    if (inv) {
+        clip_ = inv->first;
+        stock_ = inv->second;
+    } else if (auto it = ammo_.find(name); it != ammo_.end()) {
         clip_ = it->second.first;
         stock_ = it->second.second;
     } else {
@@ -339,6 +346,17 @@ sw:
 }
 
 int PlayerWeapon::update(float dt, const Input& in) {
+    // The ammunition lives in the player state (the world inventory): scripts, pickups and the HUD see the same counters.
+    if (!name_.empty() && readAmmo)
+        if (const auto a = readAmmo(name_)) clip_ = a->first, stock_ = a->second;
+    const std::string before = name_;
+    const int shots = updateImpl(dt, in);
+    if (!before.empty() && before == name_ && writeAmmo) writeAmmo(name_, clip_, stock_);
+    else if (!name_.empty() && writeAmmo) writeAmmo(name_, clip_, stock_);
+    return shots;
+}
+
+int PlayerWeapon::updateImpl(float dt, const Input& in) {
     const bool binocPossible = inBinoc() || (in.binoculars && binocularDef && binocularDef());
     const bool idleNoWeapon = name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster));
     if (idleNoWeapon && !binocPossible) {

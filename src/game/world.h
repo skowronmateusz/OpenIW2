@@ -587,6 +587,9 @@ public:
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
     // Debug (iw2game --item-test): a weapon item at the player's origin and the player's stock / clip of a weapon.
     void debugSpawnItem(const std::string& weapon);
+    // Test hook: a weapon item of `weapon` with the given item ammo (stock, clip; 0 = unset) at the player, used like F (0x5341a0 ->
+    // Pickup_Weapon). Returns the dropped item (the swapped-out weapon), or nullptr.
+    Entity* debugUseWeaponItem(const std::string& weapon, int stock, int clip);
     void debugSetClip(const std::string& weapon, int rounds);
     std::pair<int, int> debugAmmo(const std::string& weapon);
     void debugDamage(Entity& e, int amount);

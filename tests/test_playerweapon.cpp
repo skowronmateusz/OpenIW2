@@ -3,6 +3,8 @@
 #include "game/playerweapon.h"
 
 #include <iostream>
+#include <map>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -401,6 +403,32 @@ void binoculars() {
     }
 }
 
+// The ammunition comes from the player state (inventory) through readAmmo / writeAmmo: a picked-up weapon of the same type brings its
+// own clip (the counters are not remembered per weapon name), and firing writes back.
+void inventoryAmmo() {
+    std::map<std::string, std::pair<int, int>> inv; // owned weapon -> {clip, stock}
+    PlayerWeapon w;
+    w.readAmmo = [&](const std::string& n) -> std::optional<std::pair<int, int>> {
+        auto it = inv.find(n);
+        if (it == inv.end()) return std::nullopt;
+        return it->second;
+    };
+    w.writeAmmo = [&](const std::string& n, int c, int s) { if (inv.count(n)) inv[n] = {c, s}; };
+    const PlayerWeapon::Def mp40{{"semiauto", "0"}, {"firetime", "0.1"}, {"clipsize", "32"}, {"startammo", "64"}, {"raisetime", "0"},
+                                 {"reloadtime", "2"}, {"reloademptytime", "2"}};
+    inv["mp40"] = {2, 0};
+    w.equip("mp40", mp40);
+    CHECK(w.clip() == 2 && w.stock() == 0);
+    run(w, 0.3f, true);
+    CHECK(w.clip() == 0 && inv["mp40"].first == 0); // fired out, written back
+    // Dropped (no longer owned): nothing is written back; a new MP40 from the ground sets the clip slot to its own 32.
+    inv.erase("mp40");
+    run(w, 0.05f, false);
+    inv["mp40"] = {32, 10};
+    run(w, 0.05f, false);
+    CHECK(w.clip() == 32 && w.stock() == 10);
+}
+
 int main() {
     reloadAddTiming();
     segmentedReload();
@@ -412,6 +440,7 @@ int main() {
     melee();
     offhand();
     binoculars();
+    inventoryAmmo();
     if (failures) return 1;
     std::cout << "playerweapon tests passed\n";
     return 0;

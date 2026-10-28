@@ -98,10 +98,12 @@ bool World::touchWeaponItem(Entity& item) {
         if (!snd.empty()) startSound(snd, nullptr);
     } else {
         giveWeapon(inv, w);
-        ammo.clip = std::min(ammo.clip, weaponInt(w, "clipSize"));
+        // 0x5215c3..0x521611: the clip slot is set to the item's clip (over clipSize goes to the stock), the stock is added (0x520e40).
+        int clip = std::max(ammo.clip, 0), stock = std::max(ammo.stock, 0);
+        if (clip > weaponInt(w, "clipSize")) stock += clip - weaponInt(w, "clipSize"), clip = weaponInt(w, "clipSize");
         const std::string a = weaponField(w, "ammoName"), c = weaponField(w, "clipName");
-        inv.clip[c] += ammo.clip;
-        inv.ammo[a] += ammo.stock;
+        inv.clip[c] = clip;
+        inv.ammo[a] += stock;
         if (weaponInt(w, "clipOnly") == 0) inv.ammo[a] = std::min(inv.ammo[a], weaponInt(w, "maxAmmo"));
         inv.clip[c] = std::min(inv.clip[c], weaponInt(w, "clipSize"));
         const std::string snd = weaponField(w, "pickupSound");

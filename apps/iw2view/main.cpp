@@ -3129,6 +3129,31 @@ int main(int argc, char** argv) {
             };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
             pweapon.binocularDef = [&]() { return world->binocularWeapon(); };
+            // The weapon's clip and stock are the player state's (clip by clipName, stock by ammoName; the inventory): only for owned
+            // weapons, so a weapon that was just dropped or swapped never writes its old counters back.
+            auto wfield = [&](const std::string& w, const char* key) -> std::string {
+                const auto* d = world->weapon(w);
+                if (!d) return {};
+                const auto it = d->find(key);
+                return it == d->end() ? std::string() : it->second;
+            };
+            pweapon.readAmmo = [&, wfield](const std::string& n) -> std::optional<std::pair<int, int>> {
+                if (!world || !world->player()) return std::nullopt;
+                game::Inventory& inv = world->inventory(*world->player());
+                std::string k = n;
+                for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (!inv.owned.count(k)) return std::nullopt;
+                return std::make_pair(inv.clip[wfield(k, "clipname")], inv.ammo[wfield(k, "ammoname")]);
+            };
+            pweapon.writeAmmo = [&, wfield](const std::string& n, int clip, int stock) {
+                if (!world || !world->player()) return;
+                game::Inventory& inv = world->inventory(*world->player());
+                std::string k = n;
+                for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (!inv.owned.count(k)) return;
+                inv.clip[wfield(k, "clipname")] = clip;
+                inv.ammo[wfield(k, "ammoname")] = stock;
+            };
             if (world->player()->obj->get("$weapontaken").truthy()) {
                 world->player()->obj->set("$weapontaken", script::Value());
                 pweapon.weaponTaken();

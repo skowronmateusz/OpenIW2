@@ -3,6 +3,7 @@
 // The player's use key and what it uses (docs/spec/controls.md "Use"): the use scan (0x534490) and the pick of the
 // usable entity (0x534d40), the press (0x5343d0 → 0x5342b0 → 0x5341a0), and turrets used by the player (use
 // 0x51db50, think 0x51b5c0, release 0x51b3d0).
+#include "game/itempickup.h"
 #include "game/world.h"
 #include "game/pmove.h"
 
@@ -461,6 +462,15 @@ void World::pickUpWeaponItem(Entity& item) {
         const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
         if (!cur.empty() && cur != "none" && inv.owned.count(cur)) {
             Entity& dropped = spawnEntity("weapon_" + cur);
+            // 0x5220f0: the player's stock (ps+0x118 by ammoName) and clip (ps+0x318 by clipName) move onto the item (+0x148 / +0x154,
+            // -1 for none, 0x522328..0x522340) and are cleared in the player state.
+            {
+                int& st = inv.ammo[weaponField(cur, "ammoName")];
+                int& cl = inv.clip[weaponField(cur, "clipName")];
+                dropped.obj->set("$ammoStock", Value(int32_t(st != 0 ? st : -1)));
+                dropped.obj->set("$ammoClip", Value(int32_t(cl != 0 ? cl : -1)));
+                st = cl = 0;
+            }
             dropped.obj->set("origin", player_->obj->get("origin"));
             dropped.obj->set("angles", player_->obj->get("angles"));
             const std::string wm = weaponField(cur, "worldModel");
@@ -480,7 +490,22 @@ void World::pickUpWeaponItem(Entity& item) {
     } else {
         giveWeapon(inv, w);
     }
-    addAmmo(inv, w, weaponInt(w, "startAmmo"), true);
+    // The item's ammunition (0x52117f..0x52133f: +0x148 stock / +0x154 clip; unset (0) resolves from dropAmmoMin/Max or half to a full
+    // clip, negative counts as none): the clip slot is set to the item's clip (anything over clipSize goes to the stock, 0x5215c3..0x521611),
+    // the stock is added (0x520e40). An NPC's dropped weapon thus brings its own rounds, independent of what the player had before.
+    {
+        ItemAmmo a{item.obj->get("$ammoStock").isNumber() ? item.obj->get("$ammoStock").asInt() : 0,
+                   item.obj->get("$ammoClip").isNumber() ? item.obj->get("$ammoClip").asInt() : 0};
+        a = resolveItemAmmo(a, weaponInt(w, "dropAmmoMin"), weaponInt(w, "dropAmmoMax"), weaponInt(w, "clipSize"), weaponInt(w, "maxAmmo"),
+                            meleeSeed_);
+        const int clipSize = weaponInt(w, "clipSize");
+        int stock = std::max(a.stock, 0), clip = std::max(a.clip, 0);
+        if (clip > clipSize) stock += clip - clipSize, clip = clipSize;
+        inv.clip[weaponField(w, "clipName")] = clip;
+        int& st = inv.ammo[weaponField(w, "ammoName")];
+        st += stock;
+        if (weaponInt(w, "clipOnly") == 0) st = std::min(st, weaponInt(w, "maxAmmo")); // TODO(spec): the caps of 0x520e40 past 0x520efd
+    }
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
     item.obj->removed = true;
 }
@@ -510,6 +535,16 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
 void World::debugSpawnItem(const std::string& weapon) {
     Entity& e = spawnEntity("weapon_" + weapon);
     e.obj->set("origin", player_->obj->get("origin"));
+}
+
+Entity* World::debugUseWeaponItem(const std::string& weapon, int stock, int clip) {
+    Entity& e = spawnEntity("weapon_" + weapon);
+    e.obj->set("origin", player_->obj->get("origin"));
+    if (stock != 0) e.obj->set("$ammoStock", Value(int32_t(stock)));
+    if (clip != 0) e.obj->set("$ammoClip", Value(int32_t(clip)));
+    const size_t before = entities_.size();
+    pickUpWeaponItem(e);
+    return entities_.size() > before ? entities_.back().get() : nullptr;
 }
 
 void World::debugSetClip(const std::string& w, int rounds) { inventory(*player_).clip[weaponField(w, "clipName")] = rounds; }
