@@ -1005,7 +1005,7 @@ int main(int argc, char** argv) {
                     for (const auto& ep : world.entities())
                         if (ep->isActor && ep->number == std::atoi(tr)) {
                             const auto ao = ep->obj->get("origin").asVector();
-                            std::printf("[atrace %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f\n", f * 0.05f, ep->ai.stack[size_t(ep->ai.depth)], ep->ai.substate, ep->obj->get("$goalpos").toString().c_str(), ep->animScript.c_str(), ep->path.count, ep->path.traversal, ep->path.flags, (long long)ep->ai.stopSoonMs, ao[0], ao[1], ao[2]);
+                            { const auto av = ep->obj->get("angles"); const auto dv = ep->obj->get("desiredangle"); std::printf("[atrace %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f yaw %.1f desired %.1f facing %d orient %d animmode %d\n", f * 0.05f, ep->ai.stack[size_t(ep->ai.depth)], ep->ai.substate, ep->obj->get("$goalpos").toString().c_str(), ep->animScript.c_str(), ep->path.count, ep->path.traversal, ep->path.flags, (long long)ep->ai.stopSoonMs, ao[0], ao[1], ao[2], av.isVector() ? av.asVector()[1] : 0.0f, dv.isNumber() ? dv.asFloat() : 0.0f, ep->ai.facing, ep->ai.orient, ep->ai.animMode); }
                             if (std::getenv("IW2_ACTOR_TRACE_LINKS")) // links of every path point's node: node (distance)
                                 for (int i = 0; i < ep->path.count; ++i) if (ep->path.pts[size_t(i)].node >= 0) {
                                     std::printf("    links of %d:", ep->path.pts[size_t(i)].node);

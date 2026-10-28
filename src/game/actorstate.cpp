@@ -450,6 +450,7 @@ int World::painThink(Entity& e) {
     actorPerceive(e);
     ai.facing = 1;
     setActorAnimScript(e, "pain", 0, 4);
+    ai.animDeltaGoalWeights = false; // 0x54d47c
     return 0;
 }
 
@@ -474,6 +475,7 @@ int World::deathThink(Entity& e) {
     }
     ai.facing = 1;
     setActorAnimScript(e, "death", 0, 4);
+    ai.animDeltaGoalWeights = false; // 0x548b59
     // 0x548bac..0x548bcd: while the death script runs, from 500 ms after the state was set (+0x20) the entity's contents
     // (+0xc0) are 0x4002000 and it is relinked. Of the trace masks only bit 0x2000 is hit: bullets / melee / bullettrace
     // (0x280e831), grenades and rockets (0x280e891), the use trace (0x280e801); not the actor move (0x2820011), the player
@@ -492,6 +494,7 @@ int World::customThink(Entity& e) {
     if (e.claimedNode >= 0) releaseNode(e);
     clearActorPath(e);
     setActorAnimScript(e, "<custom>", 0, 4);
+    e.ai.animDeltaGoalWeights = true; // 0x54b2c2
     if (!actorAnimScriptDone(e)) {
         actorPerceive(e);
         return 0;
@@ -512,30 +515,7 @@ int World::negotiationThink(Entity& e) {
     setActorAnimScript(e, "traverse/" + ai.negotiationScript, 0, mode);
     ai.animDeltaGoalWeights = true;
     if (!actorAnimScriptDone(e)) {
-        if (e.anim) {
-            // 0x504160 modes 4-6: the delta (0x503e40 -> 0x478550) fills the velocity +0x250 (z 0 in mode 4) and its yaw
-            // (0x423900 of the relative quaternion) turns the actor (0x504aa0: angles[1] and the turn targets += yaw). The physics
-            // 0x501d00 rotates the velocity by the yaw +0x124 (x forward, y left), then the actor block moves it (kind 2/3/4).
-            const AnimDelta d = e.anim->delta(true);
-            Value av = e.obj->get("angles");
-            Vec3 ang = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
-            float yawDelta = 0.0f;
-            const float sq = d.rot[0] * d.rot[0] + d.rot[1] * d.rot[1];
-            if (sq > 0.0f) {
-                const float k = 2.0f / sq;
-                yawDelta = std::atan2(d.rot[1] * d.rot[0] * k, 1.0f - k * d.rot[0] * d.rot[0]) * 57.2957763671875f;
-            }
-            if (yawDelta != 0.0f) {
-                ang[1] = std::fmod(ang[1] + yawDelta + 720.0f, 360.0f);
-                e.obj->set("angles", Value(ang));
-                const Value dv = e.obj->get("desiredangle");
-                if (dv.isNumber()) e.obj->set("desiredangle", Value(std::fmod(dv.asFloat() + yawDelta + 720.0f, 360.0f)));
-            }
-            const float yaw = ang[1] * float(M_PI) / 180.0f;
-            const float c = std::cos(yaw), s = std::sin(yaw);
-            const float vz = mode == 4 ? 0.0f : d.trans[2];
-            moveActorKind(e, mode - 2, {d.trans[0] * c - d.trans[1] * s, d.trans[0] * s + d.trans[1] * c, vz}, 0.05f);
-        }
+        // The anim delta, its yaw and the physics of modes 4-6 run in the move frame (actorfacing.cpp actorMoveFrame, 0x54b8ab).
         actorPerceive(e);
         return 0;
     }
@@ -722,6 +702,7 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
         ai.movemode = 0;
     }
     const int r = stepActorPath(e, wide, run);
+    ai.animDeltaGoalWeights = false; // the stop / move script choices 0x53ac90 callers 0x53ae15..0x53b12e clear +0x220
     if (r == 1) {
         standOrFollow(e, "stop"); // 0x5523d2: script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
         if (ai.followed) moveActor(e, 0.05f); // the 0x504160 branch that skips the path walk (0x5041a3 -> 0x504228)
@@ -737,15 +718,6 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
     moveActor(e, 0.05f);
 }
 
-// Goal facing (FUN_00505d80, run by the movement frame FUN_00504160 right before FUN_00504ca0).
-// The facing mode (+0x104) selects the turn target: 6 -> the claimed node's yaw (node +0x20) when it is flagged 0x8000
-// (0x505dcc); 3 without an enemy -> the same node yaw when the actor stands at the node (0x502660: height within 80,
-// 2D distance within 30), after the hostile check 0x505790 (0x50596c..0x5059af). The target is stored by 0x504950 as a
-// 16-bit binary angle (trunc(deg * 65536/360) & 0xffff, * 360/65536) and 0x504ca0 turns the entity towards it, at most
-// 0.4 * 50 = 20 degrees per frame, re-quantising the yaw (pitch and roll 0), and refreshes desiredangle.
-// TODO(spec): modes 2, 4, 5 and 3 with an enemy / hostile target (0x505630, 0x505b80, 0x505cb0, 0x505790, 0x505a80), the
-// pair update by the path move (0x504aa0), orientmode (+0x114), the override angle (+0x159..0x160, 1.8 degrees/frame) and
-// the target while a path is followed (moveActor writes the yaw there).
 static Vec3 vecField(const ObjectPtr& o, const char* key) {
     const Value v = o->get(key);
     return v.isVector() ? v.asVector() : Vec3{0, 0, 0};
@@ -756,71 +728,7 @@ static std::string lowerStr(std::string s) {
     return s;
 }
 
-// Yaw of a direction vector (0x421b30, the same as vectortoangles: 0..360).
-static float yawOfVector(const Vec3& v) {
-    float yaw = v[0] != 0.0f ? std::atan2(v[1], v[0]) * 57.2957795f : (v[1] > 0 ? 90.0f : 270.0f);
-    if (yaw < 0) yaw += 360.0f;
-    return yaw;
-}
-
 static float quantYaw(float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; } // 0x591e68, 0x591f10
-
-void World::actorFacing(Entity& e) {
-    const ActorAi& ai = e.ai;
-    const int m = ai.orient ? ai.orient : ai.facing; // 0x505d80: the orientmode override, else the facing mode
-    float target = 0;
-    // Mode 3 with an enemy (0x505960 -> 0x5059c2): the enemy's sight record decides. Visible now (record byte 0): turn
-    // towards the enemy's origin (0x505a80; ignored when the 2D distance² < 1.0, 0x591e20). Not visible: with no path and
-    // the enemy seen (record +8) less than 5000 ms ago the target is left alone (0x505a08); otherwise (never seen, or
-    // seen long ago) the node facing below runs (0x505a16 -> 0x505920).
-    // TODO(spec): the path branch (0x505a22: +0x6ec time gate, 0x5432f0 position when not seen for > 500 ms); while a path
-    // is followed moveActor writes the yaw.
-    bool enemyTargeted = false;
-    if (ai.orient != 1 && m >= 3 && m <= 5) {
-        Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (enemy) {
-            if (e.path.count > 0) return;
-            const auto it = e.sentientInfo.find(enemy->obj.get());
-            if (it != e.sentientInfo.end() && it->second.visible) {
-                const Vec3 o = vecField(e.obj, "origin"), eo = vecField(enemy->obj, "origin");
-                const float dx = eo[0] - o[0], dy = eo[1] - o[1];
-                if (dx * dx + dy * dy < 1.0f) return;
-                target = quantYaw(yawOfVector({dx, dy, 0}));
-                enemyTargeted = true;
-            } else if (it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000) {
-                return;
-            }
-        }
-    }
-    if (ai.orient == 1) {
-        // orientmode angle / current / direction / point (0x53f510): 0x504ca0 turns to the override target +0x120
-        // every frame (no selector runs for mode 1). While a path is followed moveActor writes the yaw instead.
-        if (e.path.count > 0) return;
-        target = ai.orientTarget;
-    } else if (enemyTargeted) {
-        // target set from the enemy (0x505a80 .. 0x505aec)
-    } else {
-        if (e.path.count > 0 || e.claimedNode < 0) return;
-        const PathNode& n = nodes_[size_t(e.claimedNode)];
-        if (!(n.spawnflags & 0x8000)) return;
-        const Vec3 o = vecField(e.obj, "origin");
-        if (m >= 3 && m <= 5) {
-            const Vec3 np = vecField(n.obj, "origin");
-            const float dz = o[2] - np[2], dx = np[0] - o[0], dy = np[1] - o[1];
-            if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x502660 (0x591fdc, 0x591fd4)
-        } else if (m != 6) {
-            return;
-        }
-        target = quantYaw(vecField(n.obj, "angles")[1]);
-    }
-    const Vec3 a = vecField(e.obj, "angles");
-    float d = target - a[1]; // FUN_00423f50 (AngleNormalize180)
-    while (d > 180.0f) d -= 360.0f;
-    while (d < -180.0f) d += 360.0f;
-    d = std::max(-20.0f, std::min(20.0f, d)); // 0.4 * +-50 (0x592030 / 0x592034)
-    e.obj->set("angles", Value(Vec3{0, quantYaw(a[1] + d), 0}));
-    e.obj->set("desiredangle", Value(target)); // 0x504ca0
-}
 
 void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
@@ -872,7 +780,7 @@ void World::registerActorStateBuiltins() {
         if (c.argc() > 1 && c.arg(1).isVector()) {
             const float yaw = quantYaw(c.arg(1).asVector()[1]);
             a->obj->set("angles", Value(Vec3{0, yaw, 0}));
-            a->obj->set("desiredangle", Value(yaw));
+            faceBlockToAngles(*a, true); // 0x53e237 / 0x53e24c: base block and look angles from the new angles
         }
         clearActorPath(*a);
         a->ai.detourMs = 0; // +0x724
@@ -891,17 +799,19 @@ void World::registerActorStateBuiltins() {
         if (!e || !e->isActor) throw std::runtime_error("orientmode on a non-actor");
         ActorAi& ai = e->ai;
         const std::string mode = lowerStr(c.arg(0).toString());
+        const FaceBlock over{1, ai.orientLook, ai.orientTarget};
         if (mode == "face angle") {
             ai.orient = 1;
-            ai.orientTarget = quantYaw(c.arg(1).asFloat());
+            setFaceBlock(over, 0.0f, c.arg(1).asFloat()); // 0x53f58c: 0x5048b0(0, angle), +0x120 = the angle
         } else if (mode == "face current") {
             ai.orient = 1;
-            ai.orientTarget = quantYaw(vecField(e->obj, "angles")[1]);
+            const Value da = e->obj->get("desiredangle"); // 0x53f5ce: +0x120 = +0x124
+            ai.orientTarget = da.isNumber() ? da.asFloat() : 0.0f;
         } else if (mode == "face direction") {
             const Vec3 v = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
             if (v[0] == 0.0f && v[1] == 0.0f) throw std::runtime_error("cannot face (0, 0, *)");
             ai.orient = 1;
-            ai.orientTarget = quantYaw(yawOfVector(v));
+            setFaceBlockDir(over, v); // 0x53f646: 0x5055d0 (look pitch from the vector too)
         } else if (mode == "face enemy") {
             ai.orient = 3;
         } else if (mode == "face enemy or motion") {
@@ -915,9 +825,16 @@ void World::registerActorStateBuiltins() {
             const Vec3 o = vecField(e->obj, "origin");
             const Vec3 d{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
             ai.orient = 1;
-            if (d[0] * d[0] + d[1] * d[1] >= 1.0f) ai.orientTarget = quantYaw(yawOfVector(d)); // 0x591e20 = 1.0
+            if (d[0] * d[0] + d[1] * d[1] >= 1.0f) setFaceBlockDir(over, d); // 0x53f730, 0x591e20 = 1.0
         } else if (mode == "face default") {
-            ai.orient = 0; // the base pair keeps the override target; the base target is not modelled
+            // 0x5063f0: with an override the base block takes it over; the override is cleared.
+            if (ai.orient != 0) {
+                ai.facing = ai.orient;
+                ai.faceLook[0] = ai.orientLook[0];
+                ai.faceLook[1] = ai.orientLook[1];
+                ai.faceYaw = ai.orientTarget;
+            }
+            ai.orient = 0;
         } else {
             throw std::runtime_error("orientMode must be 'face angle', 'face current', 'face direction', 'face enemy', 'face enemy or motion', 'face goal', 'face motion', 'face point', or 'face default'");
         }

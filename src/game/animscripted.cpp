@@ -246,7 +246,7 @@ int World::scriptedThink(Entity& e) {
               (links_.count(e.number) ? " linked" : ""));
     }
     actorPerceive(e); // 0x4fe890
-    // TODO(spec): 0x504950 (the actor's look angles from its pitch / yaw) is not modelled.
+    faceBlockToAngles(e, false); // 0x54b1f3: the base facing block follows the entity angles (no look angles)
     e.velocity = {0, 0, 0}; // +0x230…, +0x250…
     return 0;
 }

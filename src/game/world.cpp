@@ -520,16 +520,18 @@ void World::thinkActors() {
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
         if (!e.isActor || e.obj->removed || e.ai.corpse) continue;
-        {
-            // lookforward: unit vector of the actor's facing (native field, docs/spec/ai.md).
-            const Value ang = e.obj->get("angles");
-            const float yaw = ang.isVector() ? ang.asVector()[1] * float(M_PI) / 180.0f : 0.0f;
-            e.obj->set("lookforward", Value(Vec3{std::cos(yaw), std::sin(yaw), 0}));
-        }
+        if (!e.ai.facingInit) initActorFacing(e); // lookforward (+0xe0) follows the look angles (actorfacing.cpp)
         e.ai.thoughtMs = timeMs_;
+        e.ai.blockVel = e.velocity; // the block velocity of the previous physics step (+0x230, read by 0x505b80 / 0x505cb0)
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
         actorThink(e);
-        if (!e.ai.corpse) actorFacing(e);
+        // The move frame 0x504450 (anim-mode step, turn, facing) runs from the thinks of the exposed, grenade, badplace, death,
+        // pain, animcustom and negotiation states (0x4fe8d0, 0x520a3e, 0x548b60, 0x54b358, 0x54b8ab, 0x54d483), not from the
+        // turret (0x54aba0) or animscripted (0x54b0a0) thinks.
+        if (!e.ai.corpse) {
+            const int st = e.ai.stack[size_t(e.ai.depth)];
+            if (st != AiTurret && st != AiScripted) actorMoveFrame(e);
+        }
         // 0x4ff0b5..0x4ff1b8: when the origin differs from the one stored at the previous think (sentient +0x10), the entity
         // is relinked and the move block runs the movement noise 0x5485a0 (alive actors, +0x25c) and the foliage sound
         // 0x548650; an actor that did not move runs neither (its noise sum is kept, not cleared).
@@ -592,17 +594,11 @@ void World::moveActor(Entity& e, float dt) {
     o[0] += p.lookDir[0] * step;
     o[1] += p.lookDir[1] * step;
     o[2] += p.lookDir[2] * step;
-    if (step > 0.0f) {
-        const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
-        e.obj->set("angles", Value(Vec3{0, yaw, 0}));
-        e.obj->set("$motionyaw", Value(yaw));
-        // desiredangle (actor +0x124): the engine refreshes it at the end of every movement frame from the
-        // active turn-target pair (FUN_00504ca0, called by FUN_00504160 after its turn; degrees, the units of
-        // angles[1] — animscripts/stop.gsc:555 reads AngleClamp(desiredangle - angles[1])). We have no turn
-        // pairs yet (TODO(spec): facing modes, FUN_00504aa0), so while path-moving the target is the look
-        // direction, like the angles write above.
-        e.obj->set("desiredangle", Value(yaw));
-    }
+    // The path walk never writes the angles: it stores this frame's facing direction in the trail ring (0x505230, or the follower
+    // trail 0x505520), which the facing modes read (actorfacing.cpp, 0x505630); desiredangle is written by the body turn 0x504ca0.
+    if (followed) actorTrailFollow(e);
+    else actorTrailFromPath(e, dist);
+    e.ai.walkedMs = timeMs_;
     bool grounded = false;
     if (actorSlideEnabled()) {
         // The actor slide move (actorslide.cpp, exe 0x5487c0 and callees) instead of the ground snap below. Block set-up from
@@ -621,7 +617,7 @@ void World::moveActor(Entity& e, float dt) {
         pm.gravity = gravity();
         pm.mask = e.ai.noPush ? 0x2820011u : 0x820011u; // actor +0x28c, see actorMoveNoise
         pm.groundEnt = uint16_t(e.ai.groundEnt);
-        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.velocity[a];
+        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.ai.blockVel[size_t(a)]; // the block velocity persists between frames (+0x230)
         const SlideTraceFn fn = [&](const float s[3], const float en[3]) {
             const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 72}, pm.mask, e.number);
             SlideTrace t;
@@ -1043,16 +1039,29 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("weaponisboltaction", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "boltaction") == "1"); });
     vm_.registerBuiltin("weapontype", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weapontype")); });
     vm_.registerBuiltin("weaponclass", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weaponclass")); });
-    // Angle of the actor's motion relative to its facing, in degrees (0 = moving forward). Inferred from
-    // animscripts/utility.gsc QuadrantAnimWeights(getMotionAngle() + 180) picking "front" for forward motion.
-    vm_.registerBuiltin("getmotionangle", [](CallContext& c) {
-        const auto o = c.self.asObject();
-        const Value mv = o->get("$motionyaw"), an = o->get("angles");
-        if (!mv.isNumber() || !an.isVector()) return Value(0.0f);
-        float d = mv.asFloat() - an.asVector()[1];
-        while (d > 180) d -= 360;
-        while (d < -180) d += 360;
-        return Value(d);
+    // getmotionangle (0x53f770): with a block velocity (+0x230) of more than 1 unit (2D, squared) its yaw (0x421890) minus the
+    // entity yaw (0x423f50); else with a path the look direction's yaw (+0x6c8) minus the entity yaw; else 0.
+    vm_.registerBuiltin("getmotionangle", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("not an actor");
+        const Value an = e->obj->get("angles");
+        const float yaw = an.isVector() ? an.asVector()[1] : 0.0f;
+        auto vecYaw = [](float x, float y) {
+            if (x == 0.0f && y == 0.0f) return 0.0f;
+            float a = std::atan2(y, x) * 180.0f / float(M_PI);
+            if (a < 0.0f) a += 360.0f;
+            return a;
+        };
+        auto sub = [](float a, float b) {
+            float d = a - b;
+            while (d > 180.0f) d -= 360.0f;
+            while (d < -180.0f) d += 360.0f;
+            return d;
+        };
+        const Vec3& v = e->velocity;
+        if (v[0] * v[0] + v[1] * v[1] > 1.0f) return Value(sub(vecYaw(v[0], v[1]), yaw));
+        if (e->path.count > 0) return Value(sub(vecYaw(e->path.lookDir[0], e->path.lookDir[1]), yaw));
+        return Value(0.0f);
     });
     vm_.registerBuiltin("getentitynumber", [this](CallContext& c) {
         Entity* e = entityOf(c.self);

@@ -56,6 +56,7 @@ void World::actorLearns(Entity& target, Entity& about) {
     SentientInfo& info = target.sentientInfo[about.obj.get()];
     info.lastKnownMs = timeMs_;
     info.lastKnownPos = about.obj->get("origin").isVector() ? about.obj->get("origin").asVector() : Vec3{0, 0, 0};
+    info.lastKnownNode = about.cachedNode; // 0x500ca2: the sentient node +0x38
     info.ownPosThen = target.obj->get("origin").isVector() ? target.obj->get("origin").asVector() : Vec3{0, 0, 0};
 }
 
@@ -96,6 +97,7 @@ void World::aiEventDispatch(Entity& source, Entity& target, int type) {
         theirs.ignoreUntilMs = 0;
         theirs.lastKnownMs = mine.lastKnownMs;
         theirs.lastKnownPos = mine.lastKnownPos;
+        theirs.lastKnownNode = mine.lastKnownNode;
         theirs.ownPosThen = mine.ownPosThen;
         break;
     }

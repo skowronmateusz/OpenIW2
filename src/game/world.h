@@ -116,8 +116,19 @@ struct ActorAi {
     int substate = 0;                         // +0x28
     int64_t perceptionFrameMs = -1;           // +0x24
     int64_t painStartMs = 0;                  // +0xa4
-    int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
+    int facing = 0;                           // +0x104 facing mode of the base block (actorfacing.cpp)
+    float faceLook[2] = {0, 0};               // +0x108 / +0x10c base block look pitch / yaw
+    float faceYaw = 0;                        // +0x110 base block body yaw (desiredangle when no override)
     int orient = 0;                           // +0x114 orientmode override (0 = none, else a facing mode 1..6)
+    float orientLook[2] = {0, 0};             // +0x118 / +0x11c override block look pitch / yaw
+    float lookAngles[2] = {0, 0};             // +0xd8 / +0xdc look pitch / yaw (lookforward +0xe0 from them, 0x5049a0)
+    int trailIdx = 0;                         // +0x214c current trail entry
+    std::array<std::array<float, 2>, 10> trail{}; // +0x2150 motion trail (0x504f60 / 0x505230 / 0x505520)
+    int64_t threatCheckMs = 0;                // +0x204c next nearest-threat facing check (0x505790)
+    int64_t enemyFaceMs = 0;                  // +0x130 set to now + 500 by 0x505b80 when the enemy was seen (TODO(spec): reader)
+    Vec3 blockVel{};                          // +0x230 block velocity of the previous physics step (read by 0x505b80 / 0x505cb0)
+    int64_t walkedMs = -1;                    // level time of the last mode-1 path walk (moveActor)
+    bool facingInit = false;
     int64_t meleeFrameMs = -1;                // +0xcc: level time of the last melee blow (one per frame, 0x550c7a)
     float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
@@ -807,7 +818,34 @@ private:
     void exposedSubstate(Entity& e);
     void exposedCombat(Entity& e);
     void exposedNoncombat(Entity& e);
-    void actorFacing(Entity& e); // 0x505d80 + 0x504ca0 (goal facing)
+    // Facing and turning (actorfacing.cpp).
+    struct FaceBlock { int mode; float* look; float& yaw; };
+    FaceBlock activeFaceBlock(Entity& e);
+    void setFaceBlock(FaceBlock b, float pitch, float yaw);            // 0x504950 / 0x5048b0
+    void setFaceBlockDir(FaceBlock b, const Vec3& dir);               // 0x5055d0
+    void setLookAngles(Entity& e, float pitch, float yaw);            // 0x5049a0
+    void initActorFacing(Entity& e);                                  // spawn 0x4fc7c9..0x4fc806
+    void faceBlockToAngles(Entity& e, bool look);                     // 0x53e237 / 0x54b1f3: base block from the entity angles
+    void turnActorByDelta(Entity& e, float yawDelta);                 // 0x504aa0
+    void actorBodyTurn(Entity& e);                                    // 0x504ca0
+    void actorLookTurn(Entity& e);                                    // 0x504be0
+    std::array<float, 2> actorTrailSum(const Entity& e) const;        // 0x504e70
+    void actorTrailAdvance(Entity& e);                                // 0x504f60
+    void actorTrailFromPath(Entity& e, float dist);                   // 0x505230's trail entry
+    void actorTrailFollow(Entity& e);                                 // 0x505520
+    void faceMotion(Entity& e, FaceBlock b);                          // 0x505630
+    bool nodesSeeEachOther(int a, int b) const;                       // 0x517e40
+    int enemyPositionNode(Entity& e, Entity& target, const SentientInfo* rec); // 0x5432f0 / 0x547330
+    bool faceThreat(Entity& e, FaceBlock b);                          // 0x505790
+    void faceClaimedNode(Entity& e, FaceBlock b, bool threatFirst);   // 0x505920
+    void faceEnemy(Entity& e, FaceBlock b);                           // 0x505960
+    bool pathLongerThan(const Entity& e, float dist) const;           // 0x543ae0
+    bool mayFaceEnemyWhileMoving(const Entity& e, const Vec3& dir) const; // 0x545580
+    bool canSeeEnemyRecent(Entity& e, Entity& enemy, int ms);         // 0x54ce10
+    void faceEnemyOrMotion(Entity& e, FaceBlock b, bool mode5);       // 0x505b80 / 0x505cb0
+    void selectActorFacing(Entity& e);                                // 0x505d80
+    void actorFacingFrame(Entity& e, float animYaw);                  // 0x504160 tail
+    void actorMoveFrame(Entity& e);                                   // 0x504450 (modes other than the path walk)
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);

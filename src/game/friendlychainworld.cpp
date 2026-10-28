@@ -105,6 +105,7 @@ void World::followFriendlyChain(Entity& e) {
         SentientInfo& in = e.sentientInfo[S->obj.get()]; // 0x500c50
         in.lastKnownMs = timeMs_;
         in.lastKnownPos = originOf(S->obj);
+        in.lastKnownNode = S->cachedNode;
         in.ownPosThen = originOf(e.obj);
         e.chainNode = -1;
     } else if (minOff > maxOff) {
