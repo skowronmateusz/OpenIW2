@@ -176,3 +176,18 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   the woken-thread queue, time and id counters; functions by file + name) and the World state listed there. Per-entity runtime that is
   rebuilt rather than restored (animation playback, AI state machine, paths, vehicles, turrets, missiles, perception) is listed as
   TODO(spec) in the header of savestate.cpp.
+
+## 6. Save/load menu drawing (FEEDER_SAVEGAMES, ui/save_load.menu)
+
+- UI_SAVEGAME_SHOT (ownerdraw 258, handler 0x4c3c00, PROVEN): finds the selected row (0x4c3ba0, index map 0x1106db0); no selection ->
+  material `unknownsave` (0x581340, registered via 0x617ac0). Otherwise the entry's +8 string (= header +0x320, the image name; script
+  default `$default`) is registered (0x617ac4, cached by name in 0x11073d0 / handle 0x11073cc, case-insensitive compare); an empty name
+  or a failed registration falls back to `unknownsave`. The quad covers the item rect (0x4d4790 with the ownerdraw's colour argument).
+  The menu comment "located in /save/images/<savegamename>.tga" does not match 1.3: no per-save picture exists (section 2.1).
+- UI_SAVEGAMENAME (262) and `textsavegame` items show the UI-state strings +0x31e / +0x41e that the feeder selection 0x4c6050 fills.
+  TODO(spec): their draw handlers (font, wrapping of the multi-line detail text) are not decoded; openiw2 draws them with the item's
+  text settings.
+- openiw2 (apps/iw2view): saves are written to `IW2_SAVE_DIR` (default `<main dir>/save`), `save/autosave/` rows are listed as
+  `autosave/<name>` while `ui_savegameListAutosave` is set (TODO(spec): the exe's directory walk), uiScripts `Loadgame` ("loadgame %s"
+  of `ui_savegame`) and `DelSavegame` work, console `loadgame <name>` / `loadgame_continue` load a save, and a death / mission failure
+  (loadgame_continue 0x4d9f90) loads `sv_lastSaveGame`, restarting the level only when no such save exists.

@@ -276,6 +276,7 @@ private:
             else if (k == "visible") w.visible = num(a, 0) != 0;
             else if (k == "decoration") w.decoration = true;
             else if (k == "ownerdraw") w.ownerDraw = int(num(a, 0));
+            else if (k == "textsavegame") w.textSaveGame = true;
             else if (k == "forecolor") w.foreColor = color(a);
             else if (k == "backcolor") w.backColor = color(a);
             else if (k == "bordercolor") w.borderColor = color(a);
