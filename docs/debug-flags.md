@@ -45,7 +45,7 @@ described in the code that reads them.
 | `IW2_KILL_VEHICLES=<s>` | iw2view `--shot` | Same as the iw2game variant below, at sim time `<s>` of the shot run (combine with `--follow-vehicle N`, `--sim-seconds`). |
 | `IW2_KILL_VEHICLES=<s>` | iw2game | At sim time `<s>` deals 100000 damage (attacker: the player) to every script vehicle, to test the death chain. |
 | `IW2_THREADS_PREFIX=<p>` | iw2game | Lists every live script thread whose wait site starts with `<p>`. |
-| `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time. For walking mission flows. |
+| `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time and, when the first argument is a string, that argument in quotes (the notetrack name of an animation flag notify). For walking mission flows. |
 | `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). |
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
 | `IW2_ACTOR_DUMP=<team\|all>` | iw2game | At the end of the run prints `actor #N classname (origin) script_noteworthy` for every living actor of the team (`axis`, `allies`, ...) or of all. Used to aim `--player-fire-at`. |
@@ -77,7 +77,7 @@ described in the code that reads them.
 | `IW2_EXIT_AFTER=N` | Exits iw2view after N seconds. |
 
 
-- Env `IW2_ACC_DEBUG=1` (iw2game/iw2view): prints one `ACC #<ent> (<origin>) <weapon> <ai|player> dist <d> chance <c> hit|miss` line per AI/player shot (combat.cpp).
+- Env `IW2_ACC_DEBUG=1` (iw2game/iw2view): prints one `ACC #<ent> (<origin>) <weapon> <ai|player> dist <d> chance <c> hit|miss clip <n>` line per AI/player shot (combat.cpp); `clip` is the shooter's script field `bulletsInClip` (the animscripts ammo count, decremented by the scripts after each shot; `undefined` before the first refill).
 - Env `IW2_NO_DLIGHT=1` (iw2view): disables the dynamic point-light (l_point) pass, for before/after comparisons of explosion lighting. The count is the `r_dlightLimit` cvar (default 4, max 32).
 - Env `IW2_PMOVE_FORWARD=1` (iw2game `--pmove` / fall test): the test pmove holds forward, so footstep events reach the AI (stats line "player noise events").
 - Env `IW2_PMOVE_JUMP=1` (iw2game `--pmove`): jump for 0.1 s every 1.5 s; with `--pmove` the player-state events now also start their sounds (World::applyPlayerEvent, visible with `IW2_SOUND_LOG=1`).
@@ -103,6 +103,8 @@ described in the code that reads them.
 - Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) for one actor (default every 20 frames). Debug only.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
+
+- Env `IW2_ACTOR_TRACE_THREADS=1` (with `IW2_ACTOR_TRACE`) also prints the wait site of every live script thread whose innermost `self` is the traced actor (battlechatter / coldbreath threads left out) and its active animation nodes (weight, goal, time, rate, notify flag). Debug only.
 
 - `IW2_ACTOR_FOLLOW=0` (iw2game): keeps the yield step 0x501620 and the clear scan 0x501380 from setting the followed link (+0x2148) of other actors; the yield move itself still runs. On by default.
 - `IW2_FOLLOW_SCAN=0` (iw2game): disables the follow retarget scan 0x504630 (`scanFollowed`), so no actor starts following a blocker from the scan. On by default.
