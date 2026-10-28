@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iw2::assets {
@@ -66,6 +67,9 @@ public:
     const std::vector<BspVertex>& vertices() const { return vertices_; }
     const std::vector<uint16_t>& indices() const { return indices_; }
     size_t lightmapCount() const { return lump(BspLump::Lightmaps).size() / kLightmapBytes; }
+    // Triangle soups of brush model `model` (lump 35 row: +0x18 first soup, +0x1c soup count; 1.3 renderer loader
+    // 0x10002df0). Model 0 is the static world. Returns {first, count}, clamped to the soup lump; {0, 0} if absent.
+    std::pair<size_t, size_t> modelSoups(int model) const;
 
     std::string entityString() const;
     std::vector<BspEntity> entities() const;

@@ -104,7 +104,9 @@ void MarkSystem::setWorld(const assets::D3dBsp& bsp, const fs::Vfs& vfs) {
     }
     const auto& verts = bsp.vertices();
     const auto& idx = bsp.indices();
-    for (size_t s = 0; s < bsp.soups().size(); ++s) {
+    // World surfaces only: model 0's soups (lump 35). TODO(spec): marks on brush models (model-space, can move or hide).
+    const auto [worldFirst, worldCount] = bsp.modelSoups(0);
+    for (size_t s = worldFirst; s < worldFirst + worldCount; ++s) {
         const auto& soup = bsp.soups()[s];
         if (soup.material >= usable.size() || usable[soup.material] != 1 || soup.indexCount < 3) continue;
         Surface surf;

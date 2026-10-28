@@ -1,6 +1,7 @@
 #include "assets/d3dbsp.h"
 
 #include <cctype>
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -95,6 +96,16 @@ D3dBsp::D3dBsp(std::span<const uint8_t> data) : data_(data) {
             if (indices_[t.firstIndex + k] >= t.vertexCount) throw std::runtime_error("d3dbsp: soup index out of range");
         soups_.push_back(t);
     }
+}
+
+std::pair<size_t, size_t> D3dBsp::modelSoups(int model) const {
+    const auto m = lump(BspLump::Models);
+    if (model < 0 || (size_t(model) + 1) * 48 > m.size()) return {0, 0};
+    int32_t first = 0, count = 0;
+    std::memcpy(&first, m.data() + size_t(model) * 48 + 24, 4);
+    std::memcpy(&count, m.data() + size_t(model) * 48 + 28, 4);
+    if (first < 0 || count <= 0 || size_t(first) >= soups_.size()) return {0, 0};
+    return {size_t(first), std::min(size_t(count), soups_.size() - size_t(first))};
 }
 
 std::span<const uint8_t> D3dBsp::lump(int index) const {
