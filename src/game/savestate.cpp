@@ -6,7 +6,7 @@
 // movers, links, inventories, hud elements, the script and engine random generators, pending notifies, objectives, looped effects, earthquakes, bad places, path
 // disconnects, node claims, the random generator states.
 //
-// TODO(spec) (not restored; rebuilt or reset on load):
+// TODO(spec) (not restored; rebuilt or reset on load; the compass ping table is cleared on load, as CG_Init 0x4a5c10 does):
 //  - the rest of ActorAi (requests, cover lists, timers; the state stack and depth are saved), danger planes, perception (sentientInfo), eye cache;
 //  - sound handles of vehicles and turrets; FriendlyChains runtime beyond the per-entity chain node;
 //  - the player's turret pointer (playerTurret_) / shell shock / view kick / damage feedback / use hints and the front end's pmove state;
@@ -469,6 +469,9 @@ void World::loadState(StateReader& r) {
     t.read(r, live, [this](const std::string& kind, uint64_t id) { return vm_.newObjectWithId(kind, id); });
     vm_.loadState(r, t);
 
+    // CG_Init (0x4a5c10, run on every level / savegame load) zeroes the cgame block holding the compass ping table (0xf79a88); the
+    // table is not saved, so it starts empty after a restore. The saved layout is unchanged (no kStateVersion bump).
+    compassPings_.clear();
     timeMs_ = r.i64();
     realMs_ = r.i64();
     nextEntityNumber_ = r.i32();

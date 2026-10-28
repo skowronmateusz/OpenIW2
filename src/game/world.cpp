@@ -1601,6 +1601,16 @@ void World::registerBuiltins() {
     weaponStateQuery("isfiring", 1, 0, {3, 4, 10, 11});
     weaponStateQuery("isthrowinggrenade", 12, 16, {});
     weaponStateQuery("ismeleeing", 1, 0, {10, 11});
+    // islookingat (0x5399b0): player method taking an entity; true when it is the crosshair target ps+0x8678 of the last client think
+    // (0x535070: trigger_lookat hits, vehicles, actors within the name / enemy distances). Error 0x590ab8 for a non-client self; a
+    // bad entity argument raises a script error in the exe (the compare then runs against a null pointer: true when nothing is targeted).
+    vm_.registerBuiltin("islookingat", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("islookingat: entity is not a player");
+        Entity* t = entityOf(c.arg(0));
+        if (!t) throw std::runtime_error("islookingat: parameter 0 is not an entity");
+        return Value(int32_t(crosshairTarget_ >= 0 && crosshairTarget_ == t->number && !t->obj->removed ? 1 : 0));
+    });
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
     vm_.registerBuiltin("getorigin", [](CallContext& c) { return c.self.asObject()->get("origin"); });

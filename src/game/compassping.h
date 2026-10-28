@@ -46,7 +46,8 @@ public:
             if (p.enemy && p.endMs != 0 && compassPingAlpha(p.endMs, nowMs, fadeSeconds) >= 0.0f) out.push_back(p);
         return out;
     }
-    // TODO(spec): whether the cgame table is zeroed on a savegame restore or level restart (not cleared here).
+    // CG_Init (0x4a5c10) zeroes 0x8b93 dwords from 0xf5bd00, which covers this table (0xf79a88, 32 x 24 bytes); the table is not part
+    // of the savegame, so World::loadState clears it.
     void clear() { pings_.clear(); }
 
 private:

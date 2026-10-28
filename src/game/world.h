@@ -539,6 +539,8 @@ public:
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
     // The crosshair name target (ps+0x8678, 0x535070) of the last update as the two HUD lines 0x534aa0 sends as configstrings
     // 0xb (name) and 0xc (weapon display name) for an actor; empty when there is no target or it has no name.
+    // ps+0x8678 as an entity number (-1 = none): the entity islookingat (0x5399b0) compares against.
+    int crosshairTarget() const { return crosshairTarget_; }
     const std::string& crosshairNameLine() const { return crosshairName_; }
     const std::string& crosshairWeaponLine() const { return crosshairWeaponLine_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
@@ -1281,6 +1283,7 @@ private:
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
     CompassPings compassPings_;
+    int crosshairTarget_ = -1; // ps+0x8678 as an entity number (updateCrosshairTarget)
     std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;

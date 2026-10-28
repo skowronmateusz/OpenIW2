@@ -199,7 +199,13 @@ void worldRoundTrip() {
     CHECK(ls.info.mapName == map && ls.info.title == "round trip");
     iw2::game::World b(vfs, ls.info.mapName);
     b.prepareStart();
+    // A compass ping made before the restore is gone afterwards (CG_Init zeroes the cgame ping table, which is not saved).
+    if (b.player()) {
+        b.compassPing(*b.player(), {1.0f, 2.0f, 0.0f}, 5000);
+        CHECK(b.compassPings().endMs(b.player()->number) != 0);
+    }
     iw2::game::restoreSave(b, ls);
+    if (b.player()) CHECK(b.compassPings().endMs(b.player()->number) == 0);
     const std::string da = a.stateDigest(), db = b.stateDigest();
     CHECK(da == db);
     if (da != db) std::cerr << "--- saved\n" << da << "--- loaded\n" << db;
