@@ -462,9 +462,8 @@ int World::customThink(Entity& e) {
 // node's animscript (animscripts/traverse/<key>, copied by the trigger, 0x543760) runs with movemode stop; +0x220 is set.
 // While the script thread lives the actor only perceives (0x54b86c: the same 0x54d0a0 / 0x54e230 round as animcustom). When
 // it ended the sentient node becomes the end node (+0x38, cache flags +0x3c = 1 / +0x3d = 0), the path is planned again
-// (0x5037e0) and the state pops. The translation of the anim delta (0x504160 modes 4-6 -> velocity +0x250, consumed by the
-// actor physics, which is not decoded) is approximated: TODO(spec) the delta rotation 0x4758f0 and the physics; here the
-// delta is added in the actor's yaw frame (mode 4 without z; 5 and 6 with z).
+// (0x5037e0) and the state pops. Every frame the anim delta (0x504160 modes 4-6) becomes the velocity +0x250 (mode 4 without z)
+// and its yaw turns the actor; the physics (0x501d00) rotates it by the yaw and the actor block moves it (kinds 2, 3, 4).
 int World::negotiationThink(Entity& e) {
     ActorAi& ai = e.ai;
     const int mode = ai.traverseMode == 1 ? 4 : ai.traverseMode == 3 ? 5 : 6;
@@ -472,16 +471,28 @@ int World::negotiationThink(Entity& e) {
     ai.animDeltaGoalWeights = true;
     if (!actorAnimScriptDone(e)) {
         if (e.anim) {
+            // 0x504160 modes 4-6: the delta (0x503e40 -> 0x478550) fills the velocity +0x250 (z 0 in mode 4) and its yaw
+            // (0x423900 of the relative quaternion) turns the actor (0x504aa0: angles[1] and the turn targets += yaw). The physics
+            // 0x501d00 rotates the velocity by the yaw +0x124 (x forward, y left), then the actor block moves it (kind 2/3/4).
             const AnimDelta d = e.anim->delta(true);
-            const Value av = e.obj->get("angles");
-            const float yaw = (av.isVector() ? av.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
+            Value av = e.obj->get("angles");
+            Vec3 ang = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+            float yawDelta = 0.0f;
+            const float sq = d.rot[0] * d.rot[0] + d.rot[1] * d.rot[1];
+            if (sq > 0.0f) {
+                const float k = 2.0f / sq;
+                yawDelta = std::atan2(d.rot[1] * d.rot[0] * k, 1.0f - k * d.rot[0] * d.rot[0]) * 57.2957763671875f;
+            }
+            if (yawDelta != 0.0f) {
+                ang[1] = std::fmod(ang[1] + yawDelta + 720.0f, 360.0f);
+                e.obj->set("angles", Value(ang));
+                const Value dv = e.obj->get("desiredangle");
+                if (dv.isNumber()) e.obj->set("desiredangle", Value(std::fmod(dv.asFloat() + yawDelta + 720.0f, 360.0f)));
+            }
+            const float yaw = ang[1] * float(M_PI) / 180.0f;
             const float c = std::cos(yaw), s = std::sin(yaw);
-            Value ov = e.obj->get("origin");
-            Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
-            o[0] += d.trans[0] * c - d.trans[1] * s;
-            o[1] += d.trans[0] * s + d.trans[1] * c;
-            if (mode != 4) o[2] += d.trans[2];
-            e.obj->set("origin", Value(o));
+            const float vz = mode == 4 ? 0.0f : d.trans[2];
+            moveActorKind(e, mode - 2, {d.trans[0] * c - d.trans[1] * s, d.trans[0] * s + d.trans[1] * c, vz}, 0.05f);
         }
         actorPerceive(e);
         return 0;

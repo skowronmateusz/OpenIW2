@@ -74,7 +74,8 @@ struct AnimNodeState {
 // Root motion of the weighted animations over the last time update (0x478550 → 0x477b80).
 struct AnimDelta {
     float weight = 0;              // summed weight of the animations with delta tracks
-    std::array<float, 3> trans{};  // translation (length preserved; TODO(spec): the rotation into the start frame, 0x4758f0)
+    std::array<float, 3> trans{};  // translation, xy rotated into the frame of the new-time rotation (0x4758f0)
+    std::array<float, 2> rot{};    // weighted relative yaw quaternion (z, w) from the old to the new time (0x475a0b..0x475a35); yaw: 0x423900
 };
 
 // Per-entity animation state on one tree.
