@@ -6591,6 +6591,10 @@ int main(int argc, char** argv) {
                 in.leanRight = (buttons & game::Button::LeanRight) != 0 && !(world->playerPmFlags() & 0x4000000u);
                 in.yaw = cam.yaw;
                 in.dead = playerDead;
+                // ps+4 (ClientThink 0x4e7bc0: linked -> 1, dead -> 5), ps+0xc & 0x8000 and ps+0x7c & 0x20300 for the lean gates (0x50ade0).
+                ps.pmType = playerDead ? 5 : world->playerLinked() ? 1 : 0;
+                in.controlsFrozen = world->playerControlsFrozen();
+                in.eFlagsNoLean = inVehicle || world->playerOnTurret();
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
                 in.adsAllowed = pweapon.adsAllowed();
                 in.weaponState = pweapon.stateNumber();

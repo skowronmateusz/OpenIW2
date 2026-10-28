@@ -181,6 +181,13 @@ void worldRoundTrip() {
     iw2::game::World a(vfs, map);
     a.start();
     for (int i = 0; i < 100; ++i) a.frame();
+    // A setswitchnode replacement in progress (VehiclePathPos::hasSwitch) must survive: force one on the first vehicle, when the map has any.
+    iw2::game::VehicleState* sw = nullptr;
+    for (const auto& e : a.entities())
+        if (e->vehicle) { sw = e->vehicle.get(); sw->path.hasSwitch = true;
+            sw->path.switched.obj = e->obj; sw->path.original.obj = e->obj;
+            sw->path.switched.name = "sw"; sw->path.switched.next = 7; sw->path.switched.length = 12.5f;
+            sw->path.original.next = 3; break; }
     iw2::game::SaveRequest req;
     req.name = "test";
     req.description = "round trip";
@@ -212,6 +219,12 @@ void worldRoundTrip() {
                     if (la != lb) { std::cerr << "frame " << i + 1 << "\n  saved : " << la << "\n  loaded: " << lb << "\n"; ++shown; }
             }
         }
+    }
+    if (sw) {
+        CHECK(da.find("switch 1 sw->7 len 12.5 orig 3") != std::string::npos);
+        std::cout << "vehicle switch node round trip checked\n";
+    } else {
+        std::cout << "no vehicle on " << map << ": switch node not exercised\n";
     }
     // continuation: time and thread layout stay in step (AI/anim runtime is rebuilt, so entity positions may drift: not compared)
     CHECK(a.timeMs() == b.timeMs());
