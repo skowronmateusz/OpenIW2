@@ -592,6 +592,7 @@ void World::moveActor(Entity& e, float dt) {
     }
     const Vec3 before = o;
     if (p.count > 0) updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
+    if (followed && p.count > 0) e.ai.trail.add(timeMs_, p.lookDir[0], p.lookDir[1]); // 0x505520 (0x504248)
     if (p.count <= 0 && !yieldNow) return;
     float step = 0.0f;
     if (p.count > 0) {

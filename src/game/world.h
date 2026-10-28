@@ -5,6 +5,7 @@
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
 #include "game/actorslide.h"
+#include "game/actortrail.h"
 #include "game/animtree.h"
 #include "game/axis.h"
 #include "game/inventory.h"
@@ -138,6 +139,7 @@ struct ActorAi {
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
     struct Entity* followed = nullptr;        // +0x2148 the entity this actor yields to (0x501620 steps it aside)
     int sideBits = 0;                         // gentity contents bits 8 / 0x10 (+0x128): the side the last yield step slid to; 0x10 is in the actor clip masks
+    ActorTrail trail;                         // +0x214c / +0x2150: the follower trail ring (inert: its reader, the facing blend 0x505630, is not modelled)
     int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
     bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, TODO(spec))
