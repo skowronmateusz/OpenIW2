@@ -604,19 +604,38 @@ void World::registerCombatBuiltins() {
     vm_.registerBuiltin("geteye", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("geteye on a non-entity");
+        // 0x4eee60: an actor's eye is its tag_eye (0x500910, actor +0x174; sightEye), the player's 0x4e8b70. TODO(spec):
+        // a non-sentient entity is a script error there (string 0x5871b0); here it gets the pose-height eye.
+        if (e->isActor) return Value(sightEye(*e, nullptr));
         return Value(eyePosition(*e));
     });
+    // cansee(entity [, seconds]) (0x53d930) on an actor: for a sentient target the cached sight of 0x54ce10 no older
+    // than the seconds × 1000 (0x591e50, truncated by _ftol2 0x565994), else 250 ms (0x53da00). TODO(spec): a non-sentient
+    // target goes straight to 0x54ca60 (0x53da1f; it aims at the centre of the entity's absolute bounds, 0x54cc87),
+    // here still the eye-to-eye trace.
     vm_.registerBuiltin("cansee", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         Entity* b = entityOf(c.arg(0));
-        return Value(a && b && canSee(*a, *b));
+        if (!a || !b) return Value(false);
+        if (a->isActor && isSentient(*b)) {
+            const int64_t within = c.argc() > 1 ? int64_t(c.arg(1).asFloat() * 1000.0f) : 250;
+            return Value(seesWithin(*a, *b, within));
+        }
+        return Value(canSee(*a, *b));
     });
+    // canshoot(target [, offset]) (0x53d800): from the muzzle (0x500b40, "Couldn't find tag_flash in entity %d" when the
+    // model has none) plus the optional offset vector (second argument) to the target, by 0x54cf40.
     vm_.registerBuiltin("canshoot", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
-        if (!a) return Value(false);
-        const Vec3 start = eyePosition(*a);
-        const Vec3 target = c.arg(0).isVector() ? c.arg(0).asVector() : start;
-        return Value(collision_->trace(start, target, {0, 0, 0}, {0, 0, 0}, Contents::Solid).fraction >= 0.999f);
+        if (!a || !a->isActor) throw std::runtime_error("not an actor");
+        const Vec3 target = c.arg(0).asVector();
+        Vec3 muzzle;
+        if (!muzzlePosition(*a, muzzle)) throw std::runtime_error("Couldn't find tag_flash in entity " + std::to_string(a->number));
+        if (c.argc() > 1) {
+            const Vec3 off = c.arg(1).asVector();
+            muzzle = {muzzle[0] + off[0], muzzle[1] + off[1], muzzle[2] + off[2]};
+        }
+        return Value(muzzleTraceOk(*a, muzzle, target));
     });
     vm_.registerBuiltin("shoot", [this](CallContext& c) {
         Entity* a = entityOf(c.self);

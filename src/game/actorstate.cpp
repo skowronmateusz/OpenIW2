@@ -171,7 +171,8 @@ bool World::aiStart(Entity& e, int state) {
     case AiTurret:
         return turretStateStart(e); // 0x549960
     case AiDeath: // 0x548980: +0x740 / +0x741 cleared and the claimed node released at once (0x548995..0x54899a).
-                  // 0x5489a8..0x5489f9 is the corpse prone blend (proneCorpseStart). TODO(spec): +0x28 = 200 (0x548a02).
+                  // 0x5489a8..0x5489f9 is the corpse prone blend (proneCorpseStart); 0x548a02 sets the substate
+                  // (+0x28) to 200 (kSubDeath) on every path.
         e.obj->set("keepclaimednode", Value(int32_t(0)));
         e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
         if (e.claimedNode >= 0) releaseNode(e);
@@ -237,7 +238,11 @@ void World::aiFinish(Entity& e, int state) {
 
 void World::aiSuspend(Entity& e, int state) {
     if (state == AiTurret) {
-        turretStateFinish(e); // TODO(spec): the turret's own suspend 0x549b70 is not read; finish is used
+        // 0x549b70: a turret this actor owns (turret +0xf4 is its entity) is released (0x549a60: "turret_deactivate"
+        // when it was in use, owner 0x7ff, "turretownerchange"). Unlike finish (0x549b20) the claimed node stays and
+        // the recorded turret (+0x2114) is kept, so resume (start 0x549960) takes it again.
+        Entity* t = e.usingTurret ? entityOf(Value(e.usingTurret)) : nullptr;
+        if (t && t->turret && t->turret->inUse && t->turret->owner == e.obj) releaseTurret(*t);
         return;
     }
     aiFinish(e, state); // 0x5498a0
@@ -542,21 +547,46 @@ bool World::seesEnemyRecently(Entity& e, int64_t withinMs) {
     return sightCheck(e, *enemy);
 }
 
-// 0x54d010 → 0x54cf40: a point trace (mask 0x200c861, ignoring the actor) between the enemy's eye lowered by 16 (actor:
-// 0x500910 +0x174, player: 0x4e8b70) and the actor's own eye (0x500b40). Beyond the fog sight limit 0x1c61038 it fails;
-// a clear trace passes; a trace that ends on a sentient of another team passes too (gentity +0x104 sentient, +4 team).
+// 0x500b40: the actor's muzzle, the world position of its tag "tag_flash" (scr const 0x1c7f14a, string 0x589fdc,
+// registered at 0x507032), cached per level time at actor +0x18c..+0x1a4 (position +0x190, direction +0x19c). It fails
+// (returns 0 at 0x500c39) when the model has no such tag.
+bool World::muzzlePosition(Entity& e, Vec3& out) {
+    const auto bones = entityBones(e);
+    auto it = bones.find("tag_flash");
+    if (it == bones.end()) return false;
+    out = it->second.position;
+    return true;
+}
+
+// 0x54cf40 (muzzle in EAX, target in ECX, the actor on the stack): beyond the fog sight limit 0x1c61038 (squared
+// distance) it fails; else a point trace (0x44bf00, mask 0x200c861, ignoring the actor) that is clear passes, and one
+// that ends on a sentient (gentity +0x104) of another team (+4) passes too.
+bool World::muzzleTraceOk(Entity& e, const Vec3& muzzle, const Vec3& target) {
+    const Vec3 d = {muzzle[0] - target[0], muzzle[1] - target[1], muzzle[2] - target[2]};
+    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > fogSightSq_) return false;
+    // G_Trace 0x44bf00 takes the start in EBX and the end in EDI (handed to CM_BoxTrace 0x417640 as EDX and the
+    // second stack argument, 0x4176b0 / 0x4176b6): 0x54cf40 sets EBX = muzzle, EDI = target.
+    const TraceResult tr = collision_->trace(muzzle, target, {0, 0, 0}, {0, 0, 0}, 0x200c861, e.number);
+    const bool ok = tr.fraction == 1.0f || [&] {
+        Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+        return hit && isSentient(*hit) && hit->obj->get("team").toString() != e.obj->get("team").toString();
+    }();
+    if (static const char* log = std::getenv("IW2_CANSHOOT_LOG"); log && (std::atoi(log) == e.number || std::atoi(log) < 0))
+        std::printf("[canshoot %lldms] #%d muzzle (%.0f %.0f %.0f) target (%.0f %.0f %.0f) fraction %.3f hit %d -> %d\n", (long long)timeMs_,
+                    e.number, muzzle[0], muzzle[1], muzzle[2], target[0], target[1], target[2], tr.fraction, tr.entity, int(ok));
+    return ok;
+}
+
+// 0x54d010: the enemy's eye lowered by 16 (actor: 0x500910 +0x174, player: 0x4e8b70) must be reachable from the
+// actor's muzzle (0x500b40; no tag_flash fails) by 0x54cf40.
 bool World::enemyEyeTraceOk(Entity& e) {
     Entity* enemy = entityOf(e.obj->get("enemy"));
     if (!enemy) return false;
-    Vec3 target = sightEye(*enemy, nullptr);
+    Vec3 target = enemy->isPlayer ? eyePosition(*enemy) : sightEye(*enemy, nullptr);
     target[2] -= 16.0f;
-    const Vec3 eye = sightEye(e, nullptr);
-    const Vec3 d = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
-    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > fogSightSq_) return false;
-    const TraceResult tr = collision_->trace(target, eye, {0, 0, 0}, {0, 0, 0}, 0x200c861, e.number);
-    if (tr.fraction == 1.0f) return true;
-    Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
-    return hit && isSentient(*hit) && hit->obj->get("team").toString() != e.obj->get("team").toString();
+    Vec3 muzzle;
+    if (!muzzlePosition(e, muzzle)) return false;
+    return muzzleTraceOk(e, muzzle, target);
 }
 
 // Exposed think (0x5496f0): a grenade (+0x20c4) → grenade state, a recorded free turret (+0x2114) → turret state;

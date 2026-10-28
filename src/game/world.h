@@ -755,6 +755,7 @@ private:
     Vec3 sightEye(Entity& e, Vec3* forward);
     bool sightTest(Entity& from, const Vec3& eye, const Vec3& forward, const Vec3& target, float fovCos, float maxDistSq);
     bool sightCheck(Entity& actor, Entity& target);
+    bool seesWithin(Entity& actor, Entity& target, int64_t withinMs); // 0x54ce10
     int threatOf(Entity& actor, Entity& target);
     void selectEnemy(Entity& actor);
     void setEnemy(Entity& actor, Entity* enemy, bool notify);
@@ -905,6 +906,8 @@ private:
     void combatScript(Entity& e);
     std::string stopScript(Entity& e);
     bool enemyEyeTraceOk(Entity& e);
+    bool muzzlePosition(Entity& e, Vec3& out);                                // 0x500b40
+    bool muzzleTraceOk(Entity& e, const Vec3& muzzle, const Vec3& target);  // 0x54cf40
     bool seesEnemyRecently(Entity& e, int64_t withinMs);
     int painThink(Entity& e);
     int deathThink(Entity& e);

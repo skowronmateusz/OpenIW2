@@ -209,7 +209,12 @@ void World::stopScriptedAnim(Entity& e) {
     if (e.isActor && e.ai.predicted[size_t(e.ai.predictedDepth)] == AiScripted) aiPopState(e);
     if (!e.scripted) return;
     if (e.scripted->anim && e.anim) {
-        AnimState::SetArgs a; // TODO(spec): the arguments of this 0x4795e0 call are not read; those of 0x53bdf6
+        // 0x4f6196..0x4f61ad: setanim (0x4795e0) of the block's animation (+0x48) with weight 0 over 0.2 s at rate 1
+        // and no notify, so the scripted animation fades out (0x53bdf6 passes weight 1 instead).
+        AnimState::SetArgs a;
+        a.weight = 0.0f;
+        a.blendTime = 0.2f;
+        a.rate = 1.0f;
         e.anim->set(e.scripted->anim, a);
     }
     e.scripted.reset();
