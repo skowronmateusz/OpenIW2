@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,6 +26,9 @@ public:
     PathGraph() = default;
     // `positions` are the node origins in entity-string order; the lump must describe the same count.
     PathGraph(std::span<const uint8_t> lump, std::vector<std::array<float, 3>> positions);
+    // A graph given directly (tests).
+    PathGraph(std::vector<std::array<float, 3>> positions, std::vector<std::vector<PathLink>> links)
+        : positions_(std::move(positions)), links_(std::move(links)) {}
 
     size_t size() const { return positions_.size(); }
     const std::array<float, 3>& position(size_t i) const { return positions_[i]; }
@@ -40,5 +44,11 @@ private:
     std::vector<std::vector<PathLink>> links_;
     std::vector<uint8_t> vis_;
 };
+
+// The node nearest (2D) to `pos` that a search from `start` reaches through ever closer nodes (0x542340 with the
+// search 0x545670 and its neighbour gate 0x5422c0; docs/spec/ai.md "Path planner"). `blocked(node, link)` is the
+// team's link block byte (+8 + team). Returns `start` when no neighbour improves on it.
+int nearestReachableNode(const PathGraph& g, int start, const std::array<float, 3>& pos,
+                         const std::function<bool(size_t node, size_t link)>& blocked);
 
 } // namespace iw2::game

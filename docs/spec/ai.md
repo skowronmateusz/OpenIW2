@@ -238,9 +238,25 @@ the node take-over 0x518e80 / priority rule 0x518dc0. Node links (+0x30 / +0x32 
 overlapping nodes within 31 xy / 73 z are linked at load by 0x52d990; a claim holds the linked nodes for good without an
 owner and counts on +0x56, release / block 0x5191a0 / 0x519200 / 0x519300 undo it) are ported (Follow-up 23). The fog sight limit
 0x1c61038 = ((far - near) * 0.828 + near)² of linear fog (setcullfog, parsed by 0x4e96e0) applies in 0x54c7d0.
-TODO(spec): 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
-check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
-0x502960's offset goal (0x542340/0x545670, see "Path planner").
+**Stop for the enemy** (0x503200, called at the end of the path update 0x503490 with `fighting` 0x503080, the node
+chosen this update, and whether there was a path before it; `World::stopForEnemy`): 0x503080 = an enemy and, without a
+path, the claimed node sees the enemy's node (0x502fc0: 0x515040 + 0x517ed0), else its position known within 5 s (record
++0x10). 0x503200 returns 0 without an enemy or path, when the enemy is not nearer (2D) than pathenemyfightdist, or when
+the actor stands at the node (0x502660); 0x503000 then needs the enemy seen within 5 s (record +0x8) or, without a path
+before, the claimed node seeing its node. Stop when the lookahead point L = origin + lookDist·lookDir (+0x6dc, +0x6c8) is
+past the enemy ((L − enemy)·dir > 0) and nearer to it than lookDist (starting pathToEnemy +0x788 and recomputing the working
+goal 0x505f70 when fighting); stop when inside the goal with the enemy seen within 250 ms (0x54ce70 → 0x54ce10) and there is
+no node or the path ahead (0x543ae0: lookDist + the rest of its segment, +128 with a traversal point, then segment
+lengths, the first one by +0x3c4) is longer than the node's 2D distance to the enemy (0x420ec0). Otherwise, when fighting,
+not yet pathing to the enemy and outside the goal, 0x502e80 (reach = pathenemylookahead, +256 without a path before:
+within it of the actor, or of the segments L…actor, the lookahead's segment rest, and further segments while the covered
+length is below pathenemyfightdist; segment test 0x502e10) starts pathing to the enemy, and the update stops unless the
+claimed node is in the new goal and is the chosen node (with no claimed node in it: unless the chosen node is). A stop
+drops the path, waits 500 ms (0x503e10, +0x720) and does not claim the node (else 0x5152f0 claims it).
+The goal entity (0x505ed0) and the working goal (0x505f70) are in `friendlychainworld.cpp`. TODO(spec): the move
+check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0, the other 0x505f70 caller
+0x54ad05, `withinapproxpathdist` (0x545030 starts from the lookahead +0x3ac/+0x3b4 and the traversal index +0x386; the
+builtin still sums the point distances from the origin).
 
 ## Path planner (observed)
 
@@ -250,7 +266,20 @@ below, height 184), linked nodes first then nearest (0x516640); a linked node is
 ones are traced last. Sentient node 0x515040: radius 192, cached (+0x38, flags +0x3c/+0x3d). A* 0x545840: sorted open list by g + h (h = 2D distance to the goal position), insert before the first not lower,
 re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0 adds planes. Path points 0x541da0: goal first in the original (+0x330, 0x1c bytes: pos, dir, length, node), at most 32 (+0x6e8 |= 4),
 the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
-(goal-first layout, see "Path following"). Negotiation pairs (types 16/17) are ported. TODO(spec): 0x502960's offset goal (0x542340/0x545670).
+(goal-first layout, see "Path following"). Negotiation pairs (types 16/17) are ported.
+
+**Offset goal** (0x502960, 0x502a5b..0x502c58; `World::pathToSideGoal`): runs instead of the plain path to the goal when
+s = min(|+0x73c|, goal radius − 15) > 0; s takes the sign of +0x73c. +0x73c is only ever stored as 0 (0x4fc7ab; no actor
+field row, table 0x5703f0) and its other readers are 0x50533d / 0x505387 / 0x5053a4, so the branch is dead in SP; it is
+ported for completeness with `ActorAi::goalSide` = 0. Point = goal + s·(dir y, −dir x) with dir = the lookahead direction
+(+0x6c8), goal z. 0x542340 seeds {point, best node = the goal node of the working-goal query, best = its 2D distance²}
+and runs 0x545670: the list search of 0x545840 without a goal (until the list is empty, returns 0); each neighbour must
+first pass 0x5422c0 (2D distance² to the point below the best, (z − point z)² <= 6400; passing makes it the best), so a
+non-improving neighbour is never queued. The result is the best node (`nearestReachableNode`, pathnodes.cpp, unit test
+`test_nodesearch`). A move check 0x543d30 from that node's origin to the point (mask 0x820011, no pass entity, step 10
+with the tilt byte +0x288, else 18) gives the target: its end if inside the goal, else the node origin if inside (both make
+the node the goal node), else the working goal with the queried goal node. Then 0x542550 → 0x545840 (planes: 0x5428a0)
+from the sentient's node (cache flag +0x3c cleared first; 0x5150d0 with planes). Returns whether there is a path.
 
 **Danger planes** (observed; Ghidra decompile and objdump call sites): actor
 +0x2050 holds four 0x18-byte slots {time, source, nx, ny, dist, short-lived}. 0x54b3b0 (slot choice 0x54b370: the
