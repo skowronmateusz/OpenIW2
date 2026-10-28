@@ -694,8 +694,11 @@ bool PlayerWeapon::startReload() {
 // 0x4dd980 / 0x4dd8c0: one reload round of reloadTime (reloadEmptyTime from an empty clip). The rounds are added reloadAddTime
 // into it when that is non-zero and shorter, less the fire delay (or 1 ms when that is not shorter).
 void PlayerWeapon::beginRound() {
-    const bool empty = clip_ == 0;
-    const float t = time(empty && fieldValue("weaponType") == "bullet" ? "reloadEmptyTime" : "reloadTime", 2.0f);
+    // 0x4dd997..0x4dda14: the empty variant (anim 0xc, reloadEmptyTime +0x21c, event 0x97) only for a bullet weapon (weaponType
+    // +0x78 == 0) with an empty clip; everything else (also an empty projectile weapon such as the panzerschreck, which has no
+    // reloadEmptyAnim) takes anim 0xb, reloadTime (+0x218) and event 0x96.
+    const bool empty = clip_ == 0 && fieldValue("weaponType") == "bullet";
+    const float t = time(empty ? "reloadEmptyTime" : "reloadTime", 2.0f);
     enter(State::Reloading, empty ? "reloadEmptyAnim" : "reloadAnim", t);
     float d = t;
     const float a = time("reloadAddTime", 0);

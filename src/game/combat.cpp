@@ -639,6 +639,15 @@ void World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot) {
     if (!player_ || !isAlive(*player_)) return;
     playerLastShot_ = lastShot;
     const Value w = player_->obj->get("$weapon");
+    // FireWeapon (0x531c40) dispatches on weaponType (+0x78): 0 bullet (0x5312b0), 1 grenade (0x531990), 2 projectile
+    // (0x531a40 -> G_FireRocket 0x527810 from the muzzle point of 0x531b90 along the view forward).
+    // TODO(spec): the muzzle offset client +0x864c..0x8654 added to the eye (0x531bff), the projectile spread (0x531170,
+    // tan of the aim spread), and the shooter's velocity kick of forward · 64 (0x56f6e0, 0x531b1b).
+    if (w.isString() && weaponField(w.asString(), "weaponType") == "projectile") {
+        spawnRocket(*player_, w.asString(), eye, forward);
+        playerLastShot_ = false;
+        return;
+    }
     const int dmg = weaponDamage(w.isString() ? w.asString() : "kar98k");
     fireBullet(*player_, eye, add(eye, scale(forward, 8192.0f)), dmg, player_);
     playerLastShot_ = false;

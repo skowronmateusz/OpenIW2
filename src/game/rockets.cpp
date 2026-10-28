@@ -56,6 +56,11 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
     if (!model.empty()) e.obj->set("model", Value(model));
     rockets_.push_back(&e);
     ++stats.rockets;
+    // CG_Missile (0x4ab3af): the weapon's projTrailEffect (+0x458, handle weapon info +0x170) is played once (cent +0x143),
+    // bolted (0x4853f0) on the missile's tag_origin (scr const 0x1c7f144, 0x47eec0). Queued here at the launch.
+    // TODO(spec): projectileDLight (+0x45c -> info +0x14c, rgb +0x150..0x158) added each frame (0x4ab404 -> *0x617b1c).
+    const std::string trail = weaponField(weaponName, "projTrailEffect");
+    if (!trail.empty() && !model.empty()) fxEvents_.push_back({trail, start, dir, e.number, "tag_origin"});
     return e;
 }
 
