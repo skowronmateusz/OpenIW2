@@ -235,6 +235,7 @@ struct DangerPlane {
 struct Entity {
     ObjectPtr obj;
     int number = 0;
+    uint32_t shadowHint = 0;          // entity state +0x10 bits 0x2000..0xe000 (setshadowhint 0x4ef700; render only)
     std::string classname;
     bool isPlayer = false;
     bool isSpawner = false;

@@ -4,8 +4,34 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string>
 
 namespace iw2::game {
+
+// Argument validation of the shared fog script command 0x4f53f0 (setCullFog 0x4f5580 calls it with the script's near / far / r / g / b / time,
+// setExpFog 0x4f5630 with near 0, far 1). Returns the script error text (strings 0x585c8c, 0x585c58, 0x585c18, 0x585bec; "%s" is the
+// command name) or an empty string. The checks run in this order; plain float compares against 0.0 / 1.0 (0x591e00, 0x591e20).
+inline std::string fogArgError(const char* name, float nearD, float farD, float r, float g, float b, float timeSec) {
+    const std::string n = name;
+    if (nearD < 0.0f) return n + ": near distance must be >= 0";
+    if (farD <= nearD) return n + ": near distance must be less than far distance";
+    for (float c : {r, g, b})
+        if (c < 0.0f || c > 1.0f) return n + ": red/green/blue color components must be in the range [0, 1]";
+    if (timeSec < 0.0f) return n + ": transition time must be >= 0 seconds";
+    return {};
+}
+// setExpFog's own density check (0x4f5697..0x4f56ca, string 0x585b8c): the density must be > 0 and < 1.
+inline bool fogDensityValid(float density) { return density > 0.0f && density < 1.0f; }
+// setshadowhint (0x4ef700): the entity-state bits 0x2000..0xe000 per argument string (script strings 0x1c7f0a6 "normal" -> 0,
+// 0x1c7f132 "never" -> 0x2000, 0x1c7f134 "low_priority" -> 0x4000, 0x1c7f136 "high_priority" -> 0x6000, 0x1c7f130 "always" -> 0x8000,
+// 0x1c7f138 "receiver" -> 0xa000). Any other string is a script error (0x587058).
+inline bool shadowHintBits(const std::string& s, uint32_t& bits) {
+    static const struct { const char* n; uint32_t b; } k[] = {{"normal", 0},       {"never", 0x2000},   {"low_priority", 0x4000},
+                                                               {"high_priority", 0x6000}, {"always", 0x8000}, {"receiver", 0xa000}};
+    for (const auto& e : k)
+        if (s == e.n) return bits = e.b, true;
+    return false;
+}
 
 struct FogParams {
     bool active = false;

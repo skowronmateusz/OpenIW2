@@ -1,6 +1,7 @@
 // Script sound built-ins and weapon sounds (docs/spec/sound.md). Mixing and output belong to the front end,
 // which installs World::playSound / World::stopSound.
 #include <cstdio>
+#include "game/fog.h"
 #include "game/world.h"
 
 namespace iw2::game {
@@ -64,31 +65,44 @@ void World::registerSoundBuiltins() {
             return Value();
         });
     }
-    // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): sends "fog <near> <far> 1 <r> <g> <b> <time*1000>" to the client
-    // (format "%g %g %g %g %g %g %.0f" 0x585bd4). TODO(spec): the original raises script errors for near < 0, far <= near,
-    // colour components outside 0..1 and time < 0 (0x4f53f0); setexpfog (0x4f5630, no SP script uses it) is not implemented.
-    // setexpfog(density, r, g, b, time) (0x4f5630 -> the same 0x4f53f0): sends "fog 0 1 <density> <r> <g> <b> <time*1000>";
-    // the client takes a third value < 1 as the exponential density (R_SetFog arg7).
-    // TODO(spec): the renderer's exponential fog (iw2view ignores such a command).
+    // setexpfog(density, r, g, b, time) (0x4f5630 -> the shared 0x4f53f0): exactly 5 arguments, density in (0, 1) (error 0x585b8c), then the
+    // shared colour / time checks; sends "fog 0 1 <density> <r> <g> <b> <time*1000>" (the client takes a third value < 1 as the exponential
+    // density: FogState::commandExp, R_SetFog arg7). The shared sender (0x4f5512) skips the command and the
+    // AI sight update when the global 0x1c61048 is 2. TODO(spec): that global's meaning (not modelled; the command is always sent).
     vm_.registerBuiltin("setexpfog", [this](CallContext& c) {
-        if (c.args.size() < 5) return Value();
+        if (c.args.size() != 5) throw std::runtime_error("Incorrect number of parameters\n");
+        const float d = c.arg(0).asFloat(), r = c.arg(1).asFloat(), g = c.arg(2).asFloat(), b = c.arg(3).asFloat(), t = c.arg(4).asFloat();
+        if (!fogDensityValid(d)) throw std::runtime_error("setExpFog: distance must be greater than 0 and less than 1");
+        if (const std::string e = fogArgError("setExpFog", 0.0f, 1.0f, r, g, b, t); !e.empty()) throw std::runtime_error(e);
         char buf[160];
-        std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", 0.0, 1.0, double(c.arg(0).asFloat()), double(c.arg(1).asFloat()),
-                      double(c.arg(2).asFloat()), double(c.arg(3).asFloat()), double(c.arg(4).asFloat() * 1000.0f));
+        std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", 0.0, 1.0, double(d), double(r), double(g), double(b), double(t * 1000.0f));
         clientCommands_.push_back({"fog", buf});
-        // 0x4e96e0 on "0 1 <density> ...": only a density of 1 or more sets the AI sight limit ((1 - 0) * 0.828)².
-        fogSightSq_ = c.arg(0).asFloat() >= 1.0f ? 0.828f * 0.828f : 3.4028235e38f;
+        // 0x4e96e0 on "0 1 <density> ...": only a density of 1 or more sets the AI sight limit ((1 - 0) * 0.828)^2; a valid density is < 1,
+        // so the limit is always cleared here.
+        fogSightSq_ = d >= 1.0f ? 0.828f * 0.828f : 3.4028235e38f;
         return Value();
     });
-    // setculldist(distance) (0x4f5700): configstring 8 = "%g" (the renderer's far cull distance). TODO(spec): not applied.
+    // setculldist(distance) (0x4f5700): exactly 1 argument; configstring 8 = "%g" (the renderer's far cull distance). TODO(spec): the
+    // renderer's consumer of configstring 8 (gfx dll) is not decoded, so the value is only stored.
     vm_.registerBuiltin("setculldist", [this](CallContext& c) {
+        if (c.args.size() != 1) throw std::runtime_error("Incorrect number of parameters\n");
         cullDist_ = c.arg(0).asFloat();
         return Value();
     });
     // soundexists(alias) (0x4ef380 -> 0x428320): is there a sound alias of that name (hash lookup, case-insensitive).
     vm_.registerBuiltin("soundexists", [this](CallContext& c) { return Value(soundExists(c.arg(0).toString())); });
-    // setshadowhint(name) (0x4ef700): sets entity state bits 0x2000..0xe000 (shadow hint, render only). TODO(spec): not applied.
-    vm_.registerBuiltin("setshadowhint", [](CallContext&) { return Value(); });
+    // setshadowhint(name) (0x4ef700): replaces the entity state bits 0x2000..0xe000 by the hint's value (shadowHintBits in fog.h); an unknown
+    // name is the script error 0x587058. Render only: the bits are stored in Entity::shadowHint.
+    // TODO(spec): the renderer's consumer of these bits (gfx dll) and their savegame round trip.
+    vm_.registerBuiltin("setshadowhint", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("setshadowhint: not an entity");
+        uint32_t bits = 0;
+        if (!shadowHintBits(c.arg(0).toString(), bits))
+            throw std::runtime_error("setshadowhint argument must be \"normal\", \"never\", \"high_priority\", \"low_priority\", \"always\", or \"receiver\".");
+        e->shadowHint = bits;
+        return Value();
+    });
     // savegame / savegamenocommit / commitsave / issaverecentlyloaded / issavesuccessful: src/game/savestate.cpp.
     // Proven no-ops: playrumble 0x4f8bf0, stoprumble 0x4f8c10, playrumbleonpos 0x4f8b20 and giveachievement 0x4f8b50 are each a single
     // `ret` (byte c3) in CoD2SP_s.exe 1.3; the arguments are not even read (the interpreter drops them).
@@ -96,13 +110,17 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("playrumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("playrumbleonpos", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("giveachievement", [](CallContext&) { return Value(); });
+    // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): exactly 6 arguments, then the fogArgError checks; sends
+    // "fog <near> <far> 1 <r> <g> <b> <time*1000>" (format "%g %g %g %g %g %g %.0f" 0x585bd4). Same 0x1c61048 TODO(spec) as setexpfog.
     vm_.registerBuiltin("setcullfog", [this](CallContext& c) {
-        if (c.args.size() < 6) return Value();
+        if (c.args.size() != 6) throw std::runtime_error("Incorrect number of parameters\n");
+        const float nr = c.arg(0).asFloat(), fr = c.arg(1).asFloat(), r = c.arg(2).asFloat(), g = c.arg(3).asFloat(), b = c.arg(4).asFloat(),
+                    t = c.arg(5).asFloat();
+        if (const std::string e = fogArgError("setCullFog", nr, fr, r, g, b, t); !e.empty()) throw std::runtime_error(e);
         char buf[160];
-        std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", double(c.arg(0).asFloat()), double(c.arg(1).asFloat()), 1.0, double(c.arg(2).asFloat()),
-                      double(c.arg(3).asFloat()), double(c.arg(4).asFloat()), double(c.arg(5).asFloat() * 1000.0f));
+        std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", double(nr), double(fr), 1.0, double(r), double(g), double(b), double(t * 1000.0f));
         clientCommands_.push_back({"fog", buf});
-        const float lim = (c.arg(1).asFloat() - c.arg(0).asFloat()) * 0.828f + c.arg(0).asFloat();
+        const float lim = (fr - nr) * 0.828f + nr;
         fogSightSq_ = lim * lim; // 0x4e96e0: the AI sight limit of linear fog (0x1c61038)
         return Value();
     });
