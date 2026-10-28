@@ -253,6 +253,7 @@ struct Entity {
         Vec3 pos{};
         float radius = 0, height = 0;
         int mode = 0;
+        bool scriptVolume = true; // +0x75c: the script goal volume (+0x778) in mode 0, none otherwise
     } workGoal;
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
@@ -772,6 +773,7 @@ private:
     void releaseTurret(Entity& turret);
     bool actorInGoal(Entity& e, float extra);
     bool goalVolumeHolds(Entity& e, const Vec3& p);
+    bool workGoalVolumeHolds(Entity& e, const Vec3& p); // the working goal volume (+0x75c)
     bool turretStateStart(Entity& e);
     int turretStateThink(Entity& e);
     void turretStateFinish(Entity& e);

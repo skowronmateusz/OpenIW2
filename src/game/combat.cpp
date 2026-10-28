@@ -775,7 +775,7 @@ void World::registerCombatBuiltins() {
         return Value(tr.fraction >= 0.999f && !tr.startSolid);
     });
     // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).
-    // The goal volume (+0x778, 0x447830 at 0x50273f) must contain the point too (World::goalVolumeHolds).
+    // The working goal volume (+0x75c: block +0x748 + 0x14, 0x447830 at 0x50273f) must contain the point too.
     vm_.registerBuiltin("isingoal", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (c.argc() != 1) throw std::runtime_error("isingoal: one argument");
@@ -788,7 +788,7 @@ void World::registerCombatBuiltins() {
         if (h * h < dz * dz) return Value(false);
         const float dx = g[0] - p[0], dy = g[1] - p[1];
         if (r * r < dx * dx + dy * dy) return Value(false);
-        return Value(goalVolumeHolds(*e, p));
+        return Value(workGoalVolumeHolds(*e, p));
     });
     // Player-only builtins (0x590ab8 "entity %i is not a player" otherwise).
     auto playerSelf = [this](CallContext& c) -> Entity& {

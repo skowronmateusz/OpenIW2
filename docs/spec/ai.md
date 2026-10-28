@@ -236,7 +236,9 @@ the node take-over 0x518e80 / priority rule 0x518dc0. Node links (+0x30 / +0x32 
 overlapping nodes within 31 xy / 73 z are linked at load by 0x52d990; a claim holds the linked nodes for good without an
 owner and counts on +0x56, release / block 0x5191a0 / 0x519200 / 0x519300 undo it) are ported (Follow-up 23). The fog sight limit
 0x1c61038 = ((far - near) * 0.828 + near)² of linear fog (setcullfog, parsed by 0x4e96e0) applies in 0x54c7d0.
-TODO(spec): 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
+0x505ed0 / 0x505f70 (goal entity, working goal) are ported ("Friendly chains" below; re-checked against the exe: the chain node is
+cleared when there is no sentient goal entity, and the working goal volume +0x75c is the script volume only in mode 0).
+TODO(spec): the path to the enemy (0x503100 sets +0x788 and refreshes the working goal; 0x503200), the move
 check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
 0x502960's offset goal (0x542340/0x545670, see "Path planner").
 
@@ -436,7 +438,9 @@ pathenemyfightdist > 80 else 80. Else with a goal entity (+0x77c): a sentient on
 mode 2: the actor's own origin without a chain node (radius and height untouched); with one the chain node's origin, and a non-zero node
 radius sets radius = max(node radius, 4) and height = max(goalheight, 80) (a zero one leaves them as the last update set them). Any other goal
 entity gives its origin (mode 1); no goal entity the setgoalpos / setgoalnode position (mode 0, `setgoalpos` and `setgoalnode` clear the goal
-entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight, 80). The cover search, `pathToGoal` and the in-goal test read it
+entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight, 80). The working volume (+0x75c) is the script
+volume (+0x778) in mode 0 and none otherwise; the in-goal test, isingoal and the cover filter read it. Spawn sets the working goal
+to (origin, 4, 80) (0x4fc80d..0x4fc837). Without a sentient goal entity 0x505ed0 clears the chain node (+0x78c). The cover search, `pathToGoal` and the in-goal test read it
 (`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (plus the goal volume, 0x447830 = World::triggerContact on the point).
 
 The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
