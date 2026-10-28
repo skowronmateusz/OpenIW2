@@ -121,3 +121,8 @@ described in the code that reads them.
   fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
   `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
 - Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads).
+- iw2game `<main> <map> --ladder-test x,y,z`: finds a ladder surface (flag 8) within 64 units around x,y,z in the running level's collision,
+  puts a pmove player 20 units in front of it and holds forward looking up for 4 s; exit 0 when it climbed > 40 units. Env
+  `IW2_LADDER_RAISE=targetname` first puts that entity back at its realOrigin (maps/_utility.gsc triggerOn, e.g. moscow's `regroup_ladder`),
+  `IW2_LADDER_DEBUG=1` prints the probe hits and the ladder clips, `IW2_LADDER_MASK=0x..` the probe mask (default 0x2810011),
+  `IW2_LADDER_SCAN=1` lists spots with headroom above. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.
