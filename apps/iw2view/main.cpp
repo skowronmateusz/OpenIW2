@@ -302,6 +302,7 @@ struct Batch {
     int normalTex = -1, specTex = -1;
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
     int detail = -1; // Scene::details index
+    bool alphaOne = false; // see MatInfo::alphaOne
 };
 
 struct Lightmap {
@@ -325,6 +326,12 @@ struct MatInfo {
     int detail = -1; // Scene::details index (technique set *_detail)
     int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
+    // The pixel shader writes alpha 1 instead of texture × vertex alpha: the phong_* / ambient_* replace technique sets run the
+    // lmap / lprobe / lprobe_sm_ambient shaders with USE_ALPHA 0 (materials/shaders/lib/lightmap.hlsl, lightprobe.hlsl:
+    // "fragment.color.a = 1.0f"), and the nofog / fogged state maps write that alpha unblended for mtlBlendOp Disable
+    // (separateAlphaBlendFunc Disable, One, Zero). Some models carry vertex alpha 0 (viewmodel_tokarev, crates), which the
+    // glow pass would otherwise read as sky (fs_glow_setup nonSky = saturate(4 · alpha)) and bleed the sky colour over.
+    bool alphaOne = false;
 };
 
 // water.techset / water_l_sun.tech (lib/water.hlsl): waterColor constant and the cubicEnvMap reflection cube.
@@ -532,6 +539,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 return mi;
             }
             mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
+            mi.alphaOne = mi.pass == Pass::Opaque && (m.techniqueSet.rfind("phong_", 0) == 0 || m.techniqueSet.rfind("ambient_", 0) == 0);
             const std::string& img = m.colorImage();
             auto imageSlot = [&](const std::string& image) {
                 auto it = scene.imageIndex.find(image);
@@ -619,6 +627,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             b.cull = mi.cull;
         b.scroll = mi.scroll;
             b.detail = mi.detail;
+            b.alphaOne = mi.alphaOne;
             b.firstIndex = uint32_t(indices.size());
             for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
             b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -701,6 +710,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.cull = mi.cull;
         b.scroll = mi.scroll;
         b.detail = mi.detail;
+        b.alphaOne = mi.alphaOne;
         b.firstIndex = uint32_t(indices.size());
         for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -1291,8 +1301,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
-    std::map<int, std::map<std::tuple<int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>>> brushGroups;
+    std::map<std::tuple<int, int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<int, std::map<std::tuple<int, int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>>> brushGroups;
     for (size_t si = 0; si < bsp.soups().size(); ++si) {
         const auto& s = bsp.soups()[si];
         const MatInfo& mi = mats[s.material];
@@ -1304,7 +1314,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail}];
+        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne)}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1398,7 +1408,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne)}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1419,6 +1429,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.normalState = uint8_t(std::get<7>(key));
         b.specState = uint8_t(std::get<8>(key));
         b.detail = std::get<9>(key);
+        b.alphaOne = std::get<10>(key) != 0;
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -2271,7 +2282,7 @@ struct Renderer {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                    {p == Pass::AlphaTest ? 1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
+                    {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
                     {0, 0, 0, 0}};
                 detailUniforms(fu, b.detail);
                 if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
@@ -2309,7 +2320,7 @@ struct Renderer {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {b.detail >= 0 ? scene.details[size_t(b.detail)].scale[0] : 0.0f, b.detail >= 0 ? scene.details[size_t(b.detail)].scale[1] : 0.0f, b.detail >= 0 ? 1.0f : 0.0f, 0.0f},
-                        {p == Pass::AlphaTest ? 1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {0, 0, 0, 0}};
                     applyFog(fu);
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -2350,7 +2361,7 @@ struct Renderer {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                        {p == Pass::AlphaTest ? 1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
                     std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
@@ -4821,9 +4832,11 @@ int main(int argc, char** argv) {
             // Back (95): background drawn with the item colour and the fade alpha; below hud_health_startpulse_injured (1.0) the same
             // background is drawn again in (0.89 0.18 0.01) with alpha (timer - now + period) / period, capped by the fade, period =
             // hud_health_pulserate_injured (1.0 s), below hud_health_startpulse_critical (0.33) pulserate_critical (0.5 s).
-            // TODO(spec): the pm_type == 4 case of 0x4a8790, other health touches, the cg_drawHealth-style dvar 0xf48cf8 (assumed on),
-            // the texcoords of the trail (assumed fraction..trail), the hud_health_pulserate dvar flags.
-            if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player()) {
+            // Both ownerdraws draw nothing unless the bool dvar cg_drawHealth (0xf48cf8, registered at 0x4a125d with default 0, flags
+            // 0x1080; no shipped default.cfg / config sets it, only developer cfgs) is on, so the stock SP HUD has no health bar.
+            // TODO(spec): the pm_type == 4 case of 0x4a8790, other health touches, the texcoords of the trail (assumed
+            // fraction..trail), the hud_health_pulserate dvar flags.
+            if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player() && std::atof(menuEnv.getCvar("cg_drawHealth").c_str()) != 0.0) {
                 const int64_t now = world->timeMs();
                 const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
                 hudFade.lastHudMs = now;
@@ -6115,7 +6128,12 @@ int main(int argc, char** argv) {
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
                 }
-                if (world) world->setPlayerPmFlag(0x4000, ps.holdingBreath); // hold breath, read by the HUD hint
+                if (world) {
+                    world->setPlayerPmFlag(0x4000, ps.holdingBreath); // hold breath, read by the HUD hint
+                    // Stance bits the HUD stance icon reads (pm_flags & 3, 0x4a80f0): 1 prone, 2 ducked.
+                    world->setPlayerPmFlag(1, ps.stance == game::Stance::Prone);
+                    world->setPlayerPmFlag(2, ps.stance == game::Stance::Crouch);
+                }
                 // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
                 if (world) {
                     if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
@@ -6403,10 +6421,6 @@ int main(int argc, char** argv) {
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
-                    lastDamageEvent = 0;
-                    lastLandSeq = 0;
-                    lastEventSeq = 0;
-                    viewImp.reset(); // 0x4ba570
                     for (const auto& e : world->entities()) {
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                         if (o.isVector())
@@ -6642,6 +6656,13 @@ int main(int argc, char** argv) {
                     weaponWritten.clear();
                     prevSelect.clear();
                     input.clearAds(); // the toggled aim ends with the level (0x40e821)
+                    // cgame's new-level reset (0x4ba570): the new world's damage event, the fresh player state's event and
+                    // landing counters start at 0; no damage icons, landing dip or damage kick carried over.
+                    lastDamageEvent = 0;
+                    damageIcons = {};
+                    lastLandSeq = 0;
+                    lastEventSeq = 0;
+                    viewImp.reset();
                     lerpPrev.clear();
                     prevAnim.clear();
                     prevTurret.clear();

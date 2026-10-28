@@ -49,6 +49,7 @@ std::string registeredDefault(const std::string& n) {
         {"cg_drawCrosshair", "1"},  // 0x40e400
         {"cg_subtitles", "1"},      // 0x40e418
         {"cg_blood", "1"},          // 0x40e5f9
+        {"cg_drawHealth", "0"},     // 0x4a125d (bool, flags 0x1080; gates the health bar ownerdraws 0x4a8800 / 0x4a8ab0)
         {"monkeytoy", "1"},         // 0x4037ba
         {"cl_freelook", "1"},       // 0x40e2e0
         {"cl_mouseAccel", "0"},     // 0x40e2c3 (float 0..100)
