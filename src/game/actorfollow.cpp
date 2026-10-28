@@ -188,6 +188,17 @@ void World::updateFollowed(Entity& e) {
     if ((mo[0] - fo[0]) * e.path.lookDir[0] + (mo[1] - fo[1]) * e.path.lookDir[1] > 0.0f) ai.followed = nullptr, ++stats.followReleases;
 }
 
+// 0x500d80 (this = actor, arg = the bumped entity number +0x318): the lookahead shrink flag of the followed branch. A bumped
+// actor (gentity +0x104 set): level time < +0x724. Otherwise 0 when its contents hold 0x400 (an obstacle, as gethitenttype).
+// TODO(spec): the last branch (actor +0x6ec > gentity +0x1ec, neither has a writer in the actor range) is taken as false.
+bool World::followShrink(Entity& e, int bumped) {
+    if (bumped < 0 || bumped >= 0x7fe) return false;
+    Entity* o = entityByNumber(bumped);
+    if (!o) return false;
+    if (o->isActor) return timeMs_ < e.ai.detourMs;
+    return false;
+}
+
 // 0x501c6f..0x501c8b (after the actor move 0x5487c0): +0x318 = the hit entity; when it is an actor that follows nobody it
 // starts following this actor (its +0x2148 = this gentity).
 void World::linkBumpedActor(Entity& e, int hit) {
