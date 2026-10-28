@@ -4445,7 +4445,7 @@ int main(int argc, char** argv) {
                 // row younger than +0x18 (250 ms) moves the whole window down by (1 − age / 250) × the row pitch, so the
                 // rows slide up when a new row is added.
                 auto drawWindow = [&](const std::vector<WindowRow>& rows, float x, float yBottom, float pitch, const assets::Font& f,
-                                      const uint8_t base[4], float alignX, float charH = 12.0f) {
+                                      const uint8_t base[4], float alignX, float charH = 12.0f, float glyphScale = 1.0f) {
                     auto ms = [&](uint64_t a, uint64_t b) { return a >= b ? 0.0f : float(b - a) / 1.0e6f; };
                     float shift = 0;
                     for (const auto& r : rows) {
@@ -4462,7 +4462,7 @@ int main(int argc, char** argv) {
                             else if (left < 500.0f) a = left / 500.0f;
                         }
                         const uint8_t col[4] = {base[0], base[1], base[2], uint8_t(base[3] * a)};
-                        hudText(out, it->text, x, ry * sc, charH / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
+                        hudText(out, it->text, x, ry * sc, charH * glyphScale / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
                     }
                 };
                 // The rows keep per-character colours from the ^ codes; plain text is white (only obj_update / obj_complete are
@@ -4470,9 +4470,10 @@ int main(int argc, char** argv) {
                 // The game-message and bold-message windows (0x4bf1c0 / 0x4bf210) draw only with cl_paused == 0 and with alpha
                 // 1 - f, f = 0x4bfd00: 1 while the objectives screen is held (0xf791fc), else the 300 ms release fade of touch 5
                 // (0xf79200, 0x4b0900), 0 without a touch; they are skipped when 1 - f == 0. The subtitles (0x4bf2e0) ignore f.
-                // TODO(spec): the 2D hud dvar 0x1040c4c (f = 0 when it is off).
+                // 0x1040c4c is the bool dvar cg_drawpaused (name 0x57103c, default 1, flags 0x1000): when it is 0, f = 0.
                 float objFade = 0.0f;
-                if (hudFade.objectivesHeld) objFade = 1.0f;
+                if (menuEnv.getCvar("cg_drawpaused") == "0") objFade = 0.0f;
+                else if (hudFade.objectivesHeld) objFade = 1.0f;
                 else if (world && hudFade.objectives != 0) {
                     const int64_t el = world->timeMs() - hudFade.objectives;
                     if (el < 300) objFade = el <= 0 ? 1.0f : float(300 - el) / 300.0f;
@@ -4506,8 +4507,9 @@ int main(int argc, char** argv) {
                 // CharHeight (0xf48cf0 / 0xf48cf4 / 0x1040c78, defaults 120, 400, 12; value read at draw time), width wrap from
                 // cg_subtitleWidthWidescreen when the aspect (0xf56a90) > 1.3333 else cg_subtitleWidthStandard (0x4a3540), both
                 // default 80; duration max(sound, cg_subtitleMinTime default 3 s). Colour: the row drawer starts from white
-                // (alpha = fade), like the game messages. TODO(spec): the console subtitle scale con_subtitleScale (0x5710ac,
-                // 0x403f43) and the channel numbering (print 3 vs draw 2).
+                // (alpha = fade), like the game messages. con_subtitleScale (0x5710ac, default 1; 0x406c60 passes it as the last
+                // argument of 0x4068e0 -> argument 7 of 0x4062d0, which multiplies the font-selection scale at 0x4062fc) scales
+                // the glyphs and the font choice, not the row pitch.
                 {
                     auto cv = [&](const char* n, float def) {
                         const std::string v = menuEnv.getCvar(n);
@@ -4517,7 +4519,8 @@ int main(int argc, char** argv) {
                     const float minT = std::max(0.0f, cv("cg_subtitleMinTime", 3.0f));
                     std::erase_if(subtitles, [&](const Subtitle& st) { return st.startNs + uint64_t(std::max(st.soundSec, minT) * 1e9f) < now; });
                     const float charH = std::clamp(cv("cg_subtitleCharHeight", 12.0f), 1.0f, 480.0f);
-                    const float subScale = charH / 48.0f * float(h) / 480.0f;
+                    const float conScale = cv("con_subtitleScale", 1.0f);
+                    const float subScale = charH / 48.0f * float(h) / 480.0f * conScale;
                     const size_t width = size_t(std::clamp(cv(float(w) / float(h) > 1.3333f ? "cg_subtitleWidthWidescreen" : "cg_subtitleWidthStandard", 80.0f), 20.0f, 256.0f));
                     if (const assets::Font* f = gate ? font(subScale <= 0.25f ? "smallFont" : subScale >= 0.55f ? "extraBigFont" : subScale < 0.4f ? "normalFont" : "bigFont") : nullptr) {
                         std::vector<WindowRow> rows;
@@ -4534,7 +4537,7 @@ int main(int argc, char** argv) {
                             if (!cur.empty()) rows.push_back({cur, st.startNs, end});
                         }
                         if (rows.size() > 10) rows.erase(rows.begin(), rows.end() - 10);
-                        drawWindow(rows, left43 + cv("cg_subtitlePosX", 120.0f) * sc, cv("cg_subtitlePosY", 400.0f), charH, *f, white, 0, charH);
+                        drawWindow(rows, left43 + cv("cg_subtitlePosX", 120.0f) * sc, cv("cg_subtitlePosY", 400.0f), charH, *f, white, 0, charH, conScale);
                     }
                 }
             }
@@ -4762,9 +4765,9 @@ int main(int argc, char** argv) {
             // Objectives screen (menu "objectiveinfo"; ownerdraws 97 list 0x4c0400 and 96 header 0x4bfdd0). Shown while +scores
             // is held (cgame 0xf791fc, set by 0x4a4d40, cleared by 0x4a4d20; both stamp the touch time 0xf79200 = cg.time); after
             // the release the alpha is (300 - elapsed) / 300 (0x4b0900 with 300 ms), nothing once elapsed >= 300 or without a touch.
-            // Both menu items are LEFT / TOP aligned (0x440e60 code 1: x * sx, y * sy). TODO(spec): the 2D hud dvar gate
-            // (0x1040c4c); the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
-            if (world && objListItem && objHeaderItem) {
+            // Both menu items are LEFT / TOP aligned (0x440e60 code 1: x * sx, y * sy). Both ownerdraws test the bool dvar
+            // cg_drawpaused (0x1040c4c, default 1) and draw nothing when it is 0. TODO(spec): the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
+            if (world && objListItem && objHeaderItem && menuEnv.getCvar("cg_drawpaused") != "0") {
                 float objAlpha = 0.0f;
                 if (hudFade.objectivesHeld) objAlpha = 1.0f;
                 else if (hudFade.objectives != 0) {
