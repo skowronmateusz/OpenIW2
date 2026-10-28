@@ -252,6 +252,21 @@ re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0
 the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
 (goal-first layout, see "Path following"). Negotiation pairs (types 16/17) are ported. TODO(spec): 0x502960's offset goal (0x542340/0x545670).
 
+0x541da0 arguments (read at every call site; the search variants 0x545840 / 0x545a70 / 0x545ca0 / 0x545f30 / 0x5461a0 /
+0x546980 / 0x546c10 pass their sixth and seventh arguments as its fifth and sixth): the fifth says whether the goal position is
+used (0: the path starts at the goal node's origin, no extra goal point); the sixth allows traversals (flag 0x10). When it is 0,
+the first negotiation pair met in the chain walk returns 0 (the block was already reset by 0x541780 and its counts zeroed): no
+path. Per caller: 0x503650 passes its third argument (0x502960 path to the goal and 0x502d00 path to a node: 1; reacquirestep
+0x548f10 at 0x549229 and the grenade throw-back path 0x51fb20 at 0x51fd89: 0); 0x503890 and 0x503a50: goal point 1, traversals
+1; the capped planner 0x503be0 -> 0x542eb0 / 0x542fb0 -> 0x546980 / 0x546c10: goal point 0 (0x542f16 / 0x54300f), traversals 1
+(the 1 pushed first at 0x503c26); the flee search 0x503ca0: goal point 0 and traversals = its fifth argument (1 from 0x51fa85),
+in both the plain (0x5429e0 -> 0x542a60 -> 0x545f30) and the plane variant (0x542b70 -> 0x542bf0 -> 0x5461a0); the second flee
+attempt 0x51faf9 passes 1; the truncated-path replan 0x542410 (from 0x544ca0 at 0x544d13) and 0x5037e0 keep the old path's flag
+0x10. Ported in `buildActorPath(…, useGoalPos, allowTraversal)` and its callers (the capped planner path no longer ends with the
+target point). Flee fallback: the plain search keeps the farthest node seen (result block +0x14 = -1.0, +0x18 node, 0x542abd);
+when no node is far enough, 0x542a60 builds the path to that node unless it is the start node (0x542ae7: no path); the plane
+variant has no fallback (0x542bf0 returns the search's 0). Ported in `World::pathAwayFrom`.
+
 **Danger planes** (observed; Ghidra decompile and objdump call sites): actor
 +0x2050 holds four 0x18-byte slots {time, source, nx, ny, dist, short-lived}. 0x54b3b0 (slot choice 0x54b370: the
 source's own slot, else the oldest) adds the half plane through the line a–b of enemy fire: n = (a.y − b.y, b.x − a.x),
@@ -266,7 +281,8 @@ the planes, 0x5428a0 requires both end nodes on the kept side (0x542710: n·p > 
 Implemented in `src/game/actorpath.cpp` (`addDangerPlane`, `expireDangerPlanes`, `removeDangerPlanesFrom`,
 `dangerPlanesOf`, `hasFreeDangerPlane`, `sentientNodePlanes`; `pathToPoint` / `pathToNodeDirect` pick the plane
 variant; the grenade take-cover path passes planes, 0x51fa49). The producers are live — the AI events below (type
-16). TODO(spec): the flee fallback 0x5429e0 gated by 0x54b610 (0x51faa0…0x51fb05).
+16). The flee fallback (the second plain search 0x5429e0 gated by 0x54b610, 0x51faa0…0x51fb05, and 0x542a60's farthest-node
+path) is ported ("Path planner" above).
 
 ## AI events (observed; call sites in the spec below)
 

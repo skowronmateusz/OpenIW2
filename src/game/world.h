@@ -855,7 +855,7 @@ private:
     bool atClaimedNode(Entity& e);
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
-    bool pathToPoint(Entity& e, const Vec3& target);
+    bool pathToPoint(Entity& e, const Vec3& target, bool allowTraversal = true); // 0x503650 (third argument)
     bool pathToSentient(Entity& e, const Vec3& target);
     // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
     void actorLearns(Entity& target, Entity& about); // 0x500c50
@@ -888,7 +888,9 @@ private:
     bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
                      std::vector<int>& chain, float capSq = -1.0f, const std::function<bool(const Vec3&)>* nodeOk = nullptr);
     bool pathToPointNear(Entity& e, const Vec3& target, float capSq);
-    void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
+    // 0x541da0: useGoalPos is its fifth argument (the goal point is added when it differs from the goal node), allowTraversal its
+    // sixth (path flag 0x10; a negotiation pair on the chain refuses the whole path when it is false). Returns false on refusal.
+    bool buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos, bool useGoalPos = true, bool allowTraversal = true);
     void dropPathGoalPoints(ActorPath& p, int n);
     void pathClearBudget(ActorPath& p, const Vec3& o);
     void pathLookReset(Entity& e, const Vec3& o, bool correct);

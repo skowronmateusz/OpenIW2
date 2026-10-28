@@ -752,7 +752,7 @@ void World::registerCoverBuiltins() {
             Vec3 at;
             const float step = e.obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f; // TODO(spec): actor +0x288
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
-            if (pathToPoint(e, at) && actorHasPath(e)) {
+            if (pathToPoint(e, at, false) && actorHasPath(e)) { // 0x549229: 0x503650(…, 0), no traversals
                 e.ai.substate = kSubReacquire;
                 e.ai.facing = 3;
                 return Value(1);

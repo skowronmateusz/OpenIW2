@@ -291,7 +291,7 @@ bool World::grenadeAcquire(Entity& e) {
         ai.throwFromTag = false;
         return false;
     }
-    pathToPoint(e, aim);
+    pathToPoint(e, aim, false); // 0x51fd89: 0x503650(…, 0), no traversals
     if (!actorHasPath(e)) return false;
     if (!enemy && thrower != &e) setEnemy(e, thrower, true);
     ai.throwPending = true;
