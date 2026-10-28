@@ -89,6 +89,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     if (u.scroll.y > 0.5) tex0.rgb += detailMap.sample(detailSampler, in.uv * u.scroll.zw).rgb - 0.5;
     float4 base = tex0 * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
+    const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
 
     if (u.params.y > 3.5) { // effect_multiply: blends the texture towards white by the vertex alpha, no light
         float4 t = colorMap.sample(colorSampler, in.uv);
@@ -115,7 +116,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
         light = float3(0.45) + ndl * u.sunColor.rgb * 0.6;
     }
-    return float4(apply_fog(base.rgb * light, length(in.eyeVec), u), base.a);
+    return float4(apply_fog(base.rgb * light, length(in.eyeVec), u), outA);
 }
 
 struct SkyOut {
@@ -252,7 +253,8 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
     float4 base = tex * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
-    if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), base.a);
+    const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
+    if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
     // Normal_GetSample (PC: channels wy = alpha, green) and Normal_DecodeNormalizedWorldSpace: N + (2x-1) T + (2y-1) B.
     const float4 ns = normalMap.sample(normalSampler, in.uv);
     const float3 n = normalize(in.normal + (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal);
@@ -269,7 +271,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     const float nh = dot(normalize(in.halfAngle), n);
     const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
     const float3 spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w; // lightSpecular0 = lightColor0 * r_specularColorScale (sunDirection.w, default 1)
-    return float4(apply_fog(base.rgb * (lm + sunDiffuse) + spec, length(in.eyeVec), u), base.a);
+    return float4(apply_fog(base.rgb * (lm + sunDiffuse) + spec, length(in.eyeVec), u), outA);
 }
 // ---- glow / bloom post chain (materials/shaders/glow_setup.hlsl, filter_symmetric_N.hlsl, glow_apply_bloom/sky_bleed.hlsl) ----
 struct GlowU {
