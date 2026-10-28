@@ -372,4 +372,97 @@ fragment float4 fs_objective(VertexOut in [[stage_in]], constant ObjectiveU& u [
     const float4 c = mix(float4(0.25, 0.15, 0.0, 1.0), float4(1.0, 1.0, 0.5, 1.0), k) * (luminance + 0.5);
     return float4(c.rgb, tex.a);
 }
+
+// $floatz from the depth buffer: lib/float_z_build.hlsl writes clip-space z; with Camera::viewProj (z_clip = f (d - n) / (f - n),
+// w = d) the depth d = n f / (f - ndc (f - n)) and clip z = ndc · d. Cleared depth (sky): floatz_clear.hlsl's 262144 · 2 · 1.732.
+struct FloatzU { float4 nearFar; };
+fragment float4 fs_floatz_build(GlowVOut in [[stage_in]], constant FloatzU& u [[buffer(0)]],
+                                depth2d<float> depthTex [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float ndc = depthTex.sample(s, in.uv);
+    if (ndc >= 1.0) return float4(u.nearFar.z);
+    const float n = u.nearFar.x, f = u.nearFar.y;
+    const float d = n * f / (f - ndc * (f - n));
+    return float4(ndc * d);
+}
+
+struct EffectVU {
+    float4x4 viewProj;
+    float4 eye;
+    float4x4 model;
+    float4 parms; // distortionScale.xy, or featherParms.x in .x
+};
+// clipSpaceLookupScale / Offset for the full-window viewport (0x1003eae0): (0.5 w / W, -0.5 h / H, 0, 1) and
+// ((x + w / 2 + 0.5) / W, (y + h / 2 + 0.5) / H, 0, 0). The +0.5 texel term is D3D9's pixel-centre convention; Metal samples
+// texel centres at (x + 0.5) / W from the same projected position, so it is left out here.
+constant float4 kLookupScale = float4(0.5, -0.5, 0.0, 1.0);
+constant float4 kLookupOffset = float4(0.5, 0.5, 0.0, 0.0);
+
+// lib/distortion.hlsl with USE_FLOAT_Z 1 (distortion_floatz.tech): tangent / binormal come in the normal / light slots.
+struct DistOut {
+    float4 position [[position]];
+    float4 color;
+    float2 uv;
+    float4 tangent;
+    float4 binormal;
+    float4 worldPos;
+    float distance;
+};
+vertex DistOut vs_distort(VertexIn in [[stage_in]], constant EffectVU& u [[buffer(0)]]) {
+    DistOut o;
+    o.position = u.viewProj * (u.model * float4(in.position, 1.0));
+    o.color = in.color;
+    o.uv = in.uv;
+    o.worldPos = o.position * kLookupScale + o.position.w * kLookupOffset;
+    const float4 flip = float4(1.0, -1.0, 1.0, 1.0);
+    o.tangent = u.parms.x * flip * kLookupScale * (u.viewProj * (u.model * float4(in.normal, 0.0)));
+    o.binormal = -u.parms.y * flip * kLookupScale * (u.viewProj * (u.model * float4(in.light, 0.0)));
+    o.distance = o.position.z;
+    return o;
+}
+fragment float4 fs_distort(DistOut in [[stage_in]], constant FragmentUniforms& fu [[buffer(0)]],
+                           texture2d<float> normalMap [[texture(0)]], texture2d<float> postSun [[texture(1)]],
+                           texture2d<float> floatZ [[texture(2)]], sampler ns [[sampler(0)]], sampler cs [[sampler(1)]],
+                           sampler zs [[sampler(2)]]) {
+    const float4 dmap = normalMap.sample(ns, in.uv);
+    const float2 distortion = dmap.xy * 2.0 - 1.0;
+    const float4 offsetPos = in.worldPos + distortion.x * in.tangent + distortion.y * in.binormal;
+    const float4 sampleOffset = postSun.sample(cs, offsetPos.xy / offsetPos.w);
+    const float4 sampleWorld = postSun.sample(cs, in.worldPos.xy / in.worldPos.w);
+    const float depthOffset = floatZ.sample(zs, offsetPos.xy / offsetPos.w).r;
+    const float4 screen = depthOffset < in.distance ? sampleWorld : sampleOffset;
+    return float4(in.color.rgb * screen.rgb, in.color.a * dmap.a);
+}
+
+// lib/z_feather.hlsl (zfeather.tech / zfeather_add.tech, no fog variants of the OUTDOOR test).
+struct FeatherOut {
+    float4 position [[position]];
+    float4 color;
+    float2 uv;
+    float z;          // texCoordsAndDist.z = clip z · featherParms.x
+    float feather;    // featherParms.x
+    float4 screen;
+    float3 eyeVec;
+};
+vertex FeatherOut vs_feather(VertexIn in [[stage_in]], constant EffectVU& u [[buffer(0)]]) {
+    FeatherOut o;
+    const float4 world = u.model * float4(in.position, 1.0);
+    o.position = u.viewProj * world;
+    o.uv = in.uv;
+    o.color = in.color;
+    o.feather = u.parms.x;
+    o.z = o.position.z * u.parms.x;
+    o.color.a *= saturate(o.z); // near-camera attenuation
+    o.screen = o.position * kLookupScale + o.position.w * kLookupOffset;
+    o.eyeVec = world.xyz - u.eye.xyz;
+    return o;
+}
+fragment float4 fs_feather(FeatherOut in [[stage_in]], constant FragmentUniforms& u [[buffer(0)]],
+                           texture2d<float> colorMap [[texture(0)]], texture2d<float> floatZ [[texture(1)]],
+                           sampler cs [[sampler(0)]], sampler zs [[sampler(1)]]) {
+    const float dist = floatZ.sample(zs, in.screen.xy / in.screen.w).r;
+    const float diff = dist * in.feather - in.z;
+    float4 c = in.color * colorMap.sample(cs, in.uv);
+    c.a *= saturate(abs(diff));
+    return float4(apply_fog(c.rgb, length(in.eyeVec), u), c.a);
+}
 )MSL"

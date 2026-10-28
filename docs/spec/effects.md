@@ -445,8 +445,27 @@ no fog, ... 0x15 emissive no fog, 0x18 emissive feathered no fog.
   distance (clip z) of the nearest opaque surface, "infinite" where only sky shows.
 - Readers: zfeather.hlsl (`floatZSampler`; alpha *= saturate(|floatz * featherParms.x - z * featherParms.x|), `pixel.color.a *=
   saturate(z * featherParms.x)` near the camera) and distortion_floatz (`USE_FLOAT_Z`: `floatZSampler` at the offset position;
-  if the offset sample is nearer than the distortion quad the unoffset scene sample is used). Not modelled in openiw2: no
-  float-z target exists in iw2view yet; its distortion material stays Skip.
+  if the offset sample is nearer than the distortion quad the unoffset scene sample is used).
+- Material constants (constant table, file offset 0x40): `distortionScale` (gfx_distortion_heat 0.01 0.01, _noise / _ring_heavy /
+  _ripple 0.15 0.15, _ring_light 0.05 0.05) and `featherParms` (0.025 40 for most effect_zfeather* materials, 0.2 5 for
+  gfx_explosion_flash). So featherParms.x = 1 / 40: the feather and near-camera fades run over 40 units of clip z (5 for the flash).
+
+### OpenIW2 (iw2view)
+- `Renderer::draw`: when an effect batch needs it (MatInfo::fxKind 1 = effect_zfeather*, 2 = distortion) and the scene goes to the
+  offscreen target, the scene render pass is split after the opaque / alpha-tested / l_point passes (before water and the
+  blended passes): `$floatz` (R32_FLOAT, window size) is computed from the depth buffer by `fs_floatz_build` (clip z = ndc · d with
+  Camera::viewProj's near 4 / far 40000, cleared depth = 262144 · 2 · 1.732), the colour target is copied to `postSunTex`
+  (resolvedPostSun), and the pass resumes with load ops. Distortion sprites draw with `vs_distort` / `fs_distort`
+  (distortion_floatz.tech implemented), zfeather sprites with `vs_feather` / `fs_feather` (lib/z_feather.hlsl without the OUTDOOR
+  test). Sprite tangent / binormal: r (= −R) and u (= V) of the quad builder, carried in the vertex normal / light slots.
+  clipSpaceLookupOffset drops D3D9's +0.5 texel (Metal samples texel centres from the same projection). `IW2_NO_POSTSUN=1`
+  turns it off.
+- Inferred / TODO(spec): $floatz comes from depth, not from the "build floatz" technique lists (surfaces without that technique
+  still count); the order of distortion / zfeather sprites inside the effect pass (drawn in the entity-item order); the Tail /
+  Line tangent rule (distortion beams get no offset); zfeather_outdoor's outdoor-map fade (outdoorFeatherParms); fogged zfeather
+  statemaps (fog applied as for other blended sprites); the post-sun copy is taken from the HDR-less scene target before glow, as
+  in the DLL, but the glow chain then also runs over the distorted pixels (order as in 0x10030ed0); only the full-window
+  offscreen path (glow / blur / ghost on, the default) has the copy.
 - TODO(spec): the matrix that makes clip z comparable to featherParms (material constant featherParms is not yet traced);
   mode 2 (dvar 0x101ce710 == 2) vertex format 0x1003f850; why the post-sun copy needs the full-window flag besides the
   r_distortion / glow gate in 0x100310a0.
