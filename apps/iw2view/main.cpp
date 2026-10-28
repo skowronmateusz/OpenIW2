@@ -3146,6 +3146,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
+        game::CompassSpring pointerSpring; // springy pointer yaw (0x4b0ce0, cg_hudCompassSpringyPointers)
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; int64_t hintStart = 0; bool hintHeldValid = false; struct { int hint = 0; std::string weapon, text; } hintHeld; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
@@ -4807,7 +4808,8 @@ int main(int argc, char** argv) {
             // 0 .. INT_MAX, registered 0x4a1163); once it is gone the last hint stays for that duration and its
             // colour alpha is remaining / 100 (1 while more than 100 ms remain), then the hint is cleared. The colour
             // (1, 1, 1, alpha) goes to the icon draw (0x4d4790 colour argument); the text takes it too (assumed, the
-            // 0x4c3790 colour argument was not traced). TODO(spec): HINT_HEALTH's key text.
+            // 0x4c3790 colour argument was not traced). HINT_HEALTH without a string index (0x4a9cc1..0x4a9ce5) uses the localized
+            // PLATFORM_PICKUPHEALTH with the +activate key substituted (same path as a hint string).
             float hintFade = 1.0f;
             if (world) {
                 const auto& cur = world->playerUseHint();
@@ -4828,6 +4830,7 @@ int main(int argc, char** argv) {
                 std::string icon;
                 bool wide = false;
                 std::string text = uh.text;
+                if (text.empty() && uh.weapon.empty() && uh.hint == 3 && loc.find("PLATFORM_PICKUPHEALTH")) text = "PLATFORM_PICKUPHEALTH";
                 if (!uh.weapon.empty()) {
                     const auto* wd = world->weapon(uh.weapon);
                     icon = wd && wd->count("hudicon") && !wd->at("hudicon").empty() ? wd->at("hudicon") : "gfx/icons/hint_usable";
@@ -5183,7 +5186,8 @@ int main(int argc, char** argv) {
             // centred (0x4bcef0). In a vehicle the vehicle's turret weapon (0x4bd000). Otherwise the hand weapon's
             // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
             // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
-            // The colours (0x4bce70, verified): see below. TODO(spec): the sway offset (0x4bc6e0).
+            // The colours (0x4bce70, verified): see below. The sway projection (0x4bc6e0) is (0, 0) except with
+            // cg_crosshairDynamic 1 or cg_drawGun 0, so nothing to draw by default.
             const bool onTurretHud = world && world->playerOnTurret();
             const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
             if (onTurretHud || inVehicleHud) {
@@ -5678,13 +5682,18 @@ int main(int argc, char** argv) {
                         // with addvehicletocompass, icon 16 (0x591e84). Entry age: an entry is drawn while its stamp >= now - 800 ms (0x4c10e8;
                         // refreshed each frame for snapshot actors, so only a removed actor would linger 800 ms: not ported). The springy
                         // yaw (cg_hudCompassSpringyPointers, 0xf569ac, default 0) swaps the view yaw for the 0x4b0ce0 spring state 0xf79a30;
-                        // at the default 0 it is the view yaw, so that variant is TODO(spec) (opt-in).
+                        // implemented below as pyaw.
                         if (it.background.empty()) continue;
                         const bool tanks = it.ownerDraw == 88;
+                        // 0x4b0ce0 (run at 4c1056): with cg_hudCompassSpringyPointers set the placement angle is the spring state
+                        // (0xf79a30) fed by the view yaw instead of the raw yaw; the arrow rotation (4c1265) keeps the raw yaw.
+                        // The spring is the 0x4b09a0 algorithm (5 ms steps, 500 ms reset) with its own angle/velocity; the exe shares
+                        // the time word 0xf79a20 between both springs (not reproduced).
+                        const float pyaw = std::atof(menuEnv.getCvar("cg_hudCompassSpringyPointers").c_str()) != 0.0 ? pointerSpring.update(int(world->timeMs()), cyaw) : cyaw;
                         const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
                         auto place = [&](float px, float py, float& ix, float& iy) {
                             const float dx = px - c.pos.x, dy = py - c.pos.y;
-                            const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
+                            const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - pyaw) * 0.0174532925f;
                             const float rad = csize * compassRadius(std::sqrt(dx * dx + dy * dy)) * 43.75f * sc;
                             ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
                         };

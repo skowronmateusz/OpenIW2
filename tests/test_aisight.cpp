@@ -3,6 +3,8 @@
 // to the target with 0x54cf40. The player's eye (0x4e8b70) is its origin raised by the pmove view height, and an
 // actor's `lastenemysightpos` (+0x203c) follows 0x4fe830 / 0x515150.
 
+#include <unistd.h>
+#include <string>
 #include "game/world.h"
 
 #include <cmath>
@@ -31,7 +33,7 @@ int main() {
         return 0;
     }
     namespace fsys = std::filesystem;
-    const fsys::path dir = fsys::temp_directory_path() / "iw2_test_aisight";
+    const fsys::path dir = fsys::temp_directory_path() / ("iw2_test_aisight_" + std::to_string(::getpid()));
     fsys::remove_all(dir);
     fsys::create_directories(dir / "maps");
     std::ofstream(dir / "maps" / "iw2test_aisight.gsc") << R"(

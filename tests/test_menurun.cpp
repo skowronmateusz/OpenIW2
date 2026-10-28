@@ -1,4 +1,6 @@
 // Menu event scripts: the invert-axis popup of moscow (synthetic copy of the structure of ui/scriptmenus/invert_axis1.menu).
+#include <unistd.h>
+#include <string>
 #include "ui/menurun.h"
 
 #include <filesystem>
@@ -18,7 +20,7 @@ int failures = 0;
 } // namespace
 
 int main() {
-    const auto dir = std::filesystem::temp_directory_path() / "iw2_test_menurun";
+    const auto dir = std::filesystem::temp_directory_path() / ("iw2_test_menurun_" + std::to_string(::getpid()));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir / "ui");
     std::ofstream(dir / "ui/popup.menu") << R"({

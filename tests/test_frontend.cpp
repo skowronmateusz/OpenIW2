@@ -1,4 +1,6 @@
 // MenuStack: open stack, dvar-driven visibility, focus by dvar, mouse/keyboard input (synthetic menus).
+#include <unistd.h>
+#include <string>
 #include "ui/frontend.h"
 
 #include <filesystem>
@@ -19,7 +21,7 @@ int failures = 0;
 } // namespace
 
 int main() {
-    const auto dir = std::filesystem::temp_directory_path() / "iw2_test_frontend";
+    const auto dir = std::filesystem::temp_directory_path() / ("iw2_test_frontend_" + std::to_string(::getpid()));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir / "ui");
     std::ofstream(dir / "ui/t.menu") << R"({

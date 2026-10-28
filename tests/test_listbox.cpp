@@ -1,4 +1,6 @@
 // LISTBOX and EDITFIELD behaviour of MenuStack (exe 0x4ce280 paint, 0x4c9c60 keys, 0x4c9880 hover, 0x4cb100 mouse, 0x4ca820 text).
+#include <unistd.h>
+#include <string>
 #include "ui/frontend.h"
 
 #include <filesystem>
@@ -19,7 +21,7 @@ int failures = 0;
 
 int main() {
     using Key = iw2::ui::MenuStack::Key;
-    const auto dir = std::filesystem::temp_directory_path() / "iw2_test_listbox";
+    const auto dir = std::filesystem::temp_directory_path() / ("iw2_test_listbox_" + std::to_string(::getpid()));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir / "ui");
     std::ofstream(dir / "ui/l.menu") << R"({

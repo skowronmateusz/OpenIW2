@@ -1,6 +1,8 @@
 // Tests for the .menu preprocessor and parser using synthetic files. Set IW2_MAIN to a game main directory to
 // also load the shipped single-player menu lists.
 
+#include <unistd.h>
+#include <string>
 #include "ui/menu.h"
 
 #include <filesystem>
@@ -27,7 +29,7 @@ void write(const std::filesystem::path& p, const std::string& text) {
 } // namespace
 
 int main() {
-    const auto dir = std::filesystem::temp_directory_path() / "iw2_test_menu";
+    const auto dir = std::filesystem::temp_directory_path() / ("iw2_test_menu_" + std::to_string(::getpid()));
     std::filesystem::remove_all(dir);
     write(dir / "ui/defs.h", "#define SIZE 160\n#define COLOR .5 .25 1 1 // comment\n#define HORIZONTAL_ALIGN_LEFT 1\n");
     write(dir / "ui/list.txt", "{\n loadMenu { \"ui/a.menu\" }\n}\n");
