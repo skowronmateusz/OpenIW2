@@ -81,7 +81,7 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   error text "SlavePercentage"). 3141 rows are masters (dialogue); 0.7 / 0.5 slaves are ducked while a master plays, fading
   over `snd_slaveFadeTime` ms (see Round 3).
 - Occlusion: the exe imports no Miles occlusion/obstruction call (mss32 imports checked: only `AIL_set_3D_sample_effects_level`, `set_*_reverb_levels`, `set_*_room_type`) and the voice path has no geometry trace, so there is no occlusion to port (evidence by absence). See Round 5 for reverb.
-- TODO(spec): `speakermap`, per-channel voice priority; `lfe percentage`.
+- `speakermap` / `lfe percentage` / voice priority: see Round 7.
 
 ## Round 3: ducking, falloff curves
 
@@ -149,3 +149,29 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   (it was never stepped before, so `soundfade` / the mission-end `snd_fade 0` never changed the volume).
 - Still TODO(spec): looping-alias lifetime (stamp refresh 0x441f80 / sweep 0x443550), `speakermap`, `lfe percentage`,
   per-channel voice priority and the sample slot limits (0x4423d0), the Miles reverb DSP.
+
+## Round 7: slots, priority, loops, columns (exe evidence)
+
+- Alias columns (name table 0x59b2b4, 1-based; parser switch 0x4291c0 -> 0x4295cc): `startdelay` (col 20) is atoi -> alias +0x3c, passed to the 2D / 3D /
+  stream start (0x441d79, 0x441dcc, 0x441f28): with a zero start offset the sample is not started now but after the delay (0x49f685..0x49f691);
+  the slot end time includes it. `lfe percentage` (col 23) is clamped 0..1 -> alias +0x38 and has no reader anywhere in the sound code (evidence by absence).
+  `speakermap` (col 21) is handled by an empty case (0x4295c3): parsed and ignored. `type` (0x428e70): "streamed" (also the string at 0x5757e8) = 2, "loaded" = 1
+  (default); 20,909 shipped rows are `streamed` (nearly all dialogue).
+- Slot pools (0x49eb80, 0x49ecec): slot indices 0..31 are 2D samples (count from the Miles driver, capped at 32), 32..44 are 13 streams (32..34 are the
+  dedicated music / ambient slots of 0x442df0), 45..52 are 8 3D samples. A play picks the pool by `type` (streamed -> stream pool, 0x441e10) and else by channel
+  (0x441d1c, table bytes at 0x441dfc): auto, weapon, voice, item, body use 3D (0x49f740, snd_enable3D); auto2d, menu, local, music, announcer, shellshock use 2D (0x49f470).
+- Channel numbers (0x59b334): auto 0, auto2d 1, menu 2, weapon 3, voice 4, item 5, body 6, local 7, music 8, announcer 9, shellshock 10. A slot stores owner (+0:
+  entity number, 0x7ff / 0x7fe for world sounds), channel (+4, 0x4417d1), loop stamp (+0xc), end time (+0x10).
+- Voice priority = the channel number. Free slot first (0x441990 / 0x441a30 / 0x441ad0); else the steal choice 0x441910(base, count, owner, priority): candidates are slots with
+  priority <= the new sound's (the stream window is 10 slots: 0x441e32 uses base 0x23, count 13 - 3); a slot of the new sound's own owner wins over another owner's
+  (and an owner-matching best is kept); otherwise the lowest priority, then the earlier end time (a loop's end is 0, 0x49f6db). No candidate: the play fails (handle -1 -> 0).
+- Generic play 0x4423d0 order: secondary alias first (recursion, 0x442401..0x44243e; an error if the secondary has one itself, 0x578df8); 3D channels are culled when
+  dist^2 > dist_max^2 (0x4424e6; 2D channels are not); loop refresh 0x441f80 (a running loop slot with the same owner, alias and second alias name is updated and its stamp
+  set to 0x793db8, the call returns 0); for channels other than auto / auto2d / menu and an alias WITHOUT a secondary, 0x441b50 stops the owner's running sounds of the
+  same channel in all three pools; then volume/pitch draw (0x442310) and the start.
+- Loop lifetime: the per-frame sweep 0x443510 (called from 0x42edfe; skipped while paused, 0x443522) stops every looping slot whose stamp (+0xc) differs from 0x793db8, then
+  sets 0x793db8 = 0x793db4 (the sound time in ms). So a loop started through the generic play lives only while its caller keeps re-playing it each frame. Slot stamps start
+  as 0x793db8 (0x44182b). Entity loops (`playloopsound`) store a configstring index in the entity state (Round 4) and the client replays them each frame.
+  Implemented in `Mixer` as an opt-in: `PlayOptions{owner, dedicated, refresh}` + `sweepLoops(soundTimeMs)`; the port's script/turret loops keep their handle instead.
+  TODO(spec): which cgame callers of 0x4423d0 (about 30) pass which owner / re-play per frame (the entity loop caller was not identified); the port's own callers only
+  pass `dedicated` for music / ambient, so pools and exclusivity are exercised by tests, and by live play only through the pool caps and distance culling.

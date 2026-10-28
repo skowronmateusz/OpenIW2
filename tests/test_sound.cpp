@@ -60,6 +60,16 @@ void testMixer() {
               "linear,c.wav,1,1,100,300,,\n"
               "boss,c.wav,1,1,,,,master\n"
               "minion,c.wav,1,1,,,,0.5\n");
+    writeFile(dir / "soundaliases" / "p.csv",
+              "name,file,vol_min,vol_max,dist_min,dist_max,channel,type,loop,startdelay,secondaryaliasname,lfe percentage,speakermap\n"
+              "w3d,c.wav,1,1,100,200,weapon,,,,,,\n"
+              "v3d,c.wav,1,1,100,200,voice,,,,,,\n"
+              "bodyx,c.wav,1,1,100,200,body,,,,,0.5,radio\n"
+              "stream,c.wav,1,1,100,200,voice,streamed,,,,,\n"
+              "lp,c.wav,1,1,100,200,weapon,,looping,,,,\n"
+              "dly,c.wav,1,1,100,200,local,,,10,,,\n"
+              "sec,c.wav,1,1,100,200,weapon,,,,secsub,,\n"
+              "secsub,c.wav,1,1,100,200,weapon,,,,,,\n");
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(dir);
     iw2::audio::SoundAliases al;
@@ -105,6 +115,80 @@ void testMixer() {
     CHECK(std::fabs(out[2 * 2399] - (0.25f * 0.75f + 0.25f)) < 1e-3f);
     m.mix(out.data(), 2400); // full duck: slave factor 0.5
     CHECK(std::fabs(out[2 * 2399] - (0.25f * 0.5f + 0.25f)) < 1e-3f);
+    // Slot pools, steal priority, culling, channel exclusivity, loop refresh/sweep, startdelay (0x4423d0 family).
+    {
+        using iw2::audio::Mixer;
+        iw2::audio::Mixer p(vfs, al, 48000);
+        p.masterVolume = 1.0f;
+        p.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        const iw2::audio::Vec3 near{50, 0, 0};
+        CHECK(al.exists("bodyx"));
+        // culled beyond dist_max (200): no voice, handle 0; a local-channel sound is never culled
+        CHECK(p.play("w3d", iw2::audio::Vec3{500, 0, 0}) == 0 && p.active() == 0);
+        CHECK(p.play("dly", iw2::audio::Vec3{500, 0, 0}) != 0);
+        p.stop(1);
+        // 3D pool of 8: the ninth equal-priority sound steals the earliest-ending one; a lower-priority (voice=4 vs weapon=3 is higher) rules:
+        for (int i = 0; i < Mixer::kPool3D; i++) CHECK(p.play("v3d", near) != 0);
+        CHECK(p.play("w3d", near) == 0); // weapon (3) < voice (4): nothing stealable
+        CHECK(p.active() == Mixer::kPool3D);
+        CHECK(p.play("v3d", near) != 0 && p.active() == Mixer::kPool3D); // equal priority steals
+        std::vector<float> o2(2 * 480);
+        p.mix(o2.data(), 480);
+        iw2::audio::Mixer q(vfs, al, 48000);
+        q.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        for (int i = 0; i < Mixer::kPool3D; i++) q.play("w3d", near);
+        CHECK(q.play("v3d", near) != 0 && q.active() == Mixer::kPool3D); // voice (4) steals a weapon (3) voice
+        // owner preference: with the pool full, a sound steals the voice of its own owner first
+        iw2::audio::Mixer r(vfs, al, 48000);
+        r.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        std::vector<int> hs;
+        for (int i = 0; i < Mixer::kPool3D; i++) hs.push_back(r.play("bodyx", near, nullptr, {.owner = 100 + i}));
+        const int fresh = r.play("bodyx", near, nullptr, {.owner = 105});
+        CHECK(fresh != 0);
+        r.mix(o2.data(), 1); // the owner-105 voice (index 5) is gone, owner 100 (first, lowest) stayed
+        r.stop(hs[5]); // already replaced by the same-owner exclusivity: no change
+        CHECK(r.active() == Mixer::kPool3D);
+        r.stop(hs[0]);
+        CHECK(r.active() == Mixer::kPool3D - 1);
+        // channel exclusivity: same owner + channel replaces; auto / secondary-less rule
+        iw2::audio::Mixer x(vfs, al, 48000);
+        x.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        x.play("w3d", near, nullptr, {.owner = 7});
+        x.play("w3d", near, nullptr, {.owner = 7});
+        CHECK(x.active() == 1);
+        x.play("w3d", near, nullptr, {.owner = 8});
+        CHECK(x.active() == 2);
+        x.play("sec", near, nullptr, {.owner = 9}); // secondary first, the primary (with a secondary) does not stop it
+        CHECK(x.active() == 4);
+        // stream pool of 10; dedicated music/ambient voices are outside it
+        iw2::audio::Mixer y(vfs, al, 48000);
+        y.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        for (int i = 0; i < 3; i++) y.play("stream", near, nullptr, {.dedicated = true});
+        for (int i = 0; i < Mixer::kPoolStream; i++) CHECK(y.play("stream", near) != 0);
+        CHECK(y.active() == 3 + Mixer::kPoolStream);
+        CHECK(y.play("stream", near) != 0 && y.active() == 3 + Mixer::kPoolStream);
+        // loop refresh / sweep (0x441f80, 0x443510)
+        iw2::audio::Mixer l(vfs, al, 48000);
+        l.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        const int h1 = l.play("lp", near, nullptr, {.owner = 3, .refresh = true});
+        CHECK(h1 != 0 && l.play("lp", near, nullptr, {.owner = 3, .refresh = true}) == h1 && l.active() == 1); // refreshed, not restarted
+        CHECK(l.play("lp", near, nullptr, {.owner = 4, .refresh = true}) != h1 && l.active() == 2);       // another owner: its own loop
+        l.sweepLoops(10); // both carry the initial stamp: survive; the stamp becomes 10
+        CHECK(l.active() == 2);
+        l.play("lp", near, nullptr, {.owner = 3, .refresh = true}); // refresh owner 3 only
+        l.sweepLoops(20);
+        CHECK(l.active() == 1);
+        l.sweepLoops(30);
+        CHECK(l.active() == 0);
+        // startdelay 10 ms: silent for 480 frames at 48 kHz, then plays
+        iw2::audio::Mixer d(vfs, al, 48000);
+        d.masterVolume = 1.0f;
+        d.play("dly");
+        std::vector<float> od(2 * 960);
+        d.mix(od.data(), 960);
+        CHECK(od[2 * 479] == 0.0f && od[2 * 480 + 2] > 0.1f);
+    }
+
     // snd_fade (0x4431a0 / 0x443a21): the master scale moves linearly to the target over the given ms and stops there.
     m.fade(0.0f, 1000);
     m.mix(out.data(), 2400); // 50 ms of 1000

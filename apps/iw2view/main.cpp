@@ -7094,7 +7094,7 @@ int main(int argc, char** argv) {
                         slowEndNs = slowStartNs + uint64_t(std::max(ms, 0)) * 1000000ull;
                     } else if (cmd.name == "mu_play") { // mu_play <alias> (0x4a6e2b -> 0x443030): the music slot; a new one replaces it
                         if (musicHandle) mixer.stop(musicHandle);
-                        musicHandle = mixer.play(cmd.arg);
+                        musicHandle = mixer.play(cmd.arg, std::nullopt, nullptr, {.dedicated = true});
                     } else if (cmd.name == "ambient_play") { // ambient_play <alias> <fade ms> (client side of configstring 3, 0x443080)
                         std::string alias;
                         int ms = 0;
@@ -7102,7 +7102,7 @@ int main(int argc, char** argv) {
                         // The same alias keeps playing; a different one fades the old track out and its own in over the fade time.
                         if (!(ambientHandle && alias == ambientAlias)) {
                             if (ambientHandle) mixer.fadeOut(ambientHandle, ms);
-                            ambientHandle = mixer.play(alias);
+                            ambientHandle = mixer.play(alias, std::nullopt, nullptr, {.dedicated = true});
                             ambientAlias = alias;
                             if (ambientHandle) mixer.fadeIn(ambientHandle, ms);
                         }
