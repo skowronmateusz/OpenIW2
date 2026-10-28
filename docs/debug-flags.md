@@ -80,6 +80,7 @@ described in the code that reads them.
 - Env `IW2_ACC_DEBUG=1` (iw2game/iw2view): prints one `ACC #<ent> (<origin>) <weapon> <ai|player> dist <d> chance <c> hit|miss` line per AI/player shot (combat.cpp).
 - Env `IW2_NO_DLIGHT=1` (iw2view): disables the dynamic point-light (l_point) pass, for before/after comparisons of explosion lighting. The count is the `r_dlightLimit` cvar (default 4, max 32).
 - Env `IW2_PMOVE_FORWARD=1` (iw2game `--pmove` / fall test): the test pmove holds forward, so footstep events reach the AI (stats line "player noise events").
+- Env `IW2_PMOVE_JUMP=1` (iw2game `--pmove`): jump for 0.1 s every 1.5 s; with `--pmove` the player-state events now also start their sounds (World::applyPlayerEvent, visible with `IW2_SOUND_LOG=1`).
 - iw2game stats line also prints "actor noise events" (the 500 ms movement noise of actors, 0x5485a0).
 | `IW2_SHOT_KEYS=a,b,...` | Applied before the screenshot of a `--shot` run when `--menu` or `IW2_SHOT_MENU` is set. Tokens: `open:name`, `click:X/Y`, `hover:X/Y`, `up`, `down`, `esc`, `left`, `right`, `enter`, `bindkey:NAME` (feeds the key to a BIND item that waits for one, e.g. `bindkey:PGUP`; also valid in `IW2_MENU_KEYS`). Also in both: `text:abc` (typed into an edit field), `bs`, `del`, `home`, `end`, `ins`, `pgup`, `pgdn`, `tab`, `wheelup`, `wheeldown`, `dbl:X/Y` (double click), `uiscript:name` (run a uiScript, e.g. `uiscript:addPlayerProfiles`). |
 - Env `IW2_GROUND_DEBUG=1` (iw2game): counts the actor ground-trace hits/misses of the movement noise (stats line "ground trace hit/miss"); toujane 40 s: 24444/1123.
@@ -122,3 +123,8 @@ described in the code that reads them.
   fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
   `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
 - Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads).
+- iw2game `<main> <map> --ladder-test x,y,z`: finds a ladder surface (flag 8) within 64 units around x,y,z in the running level's collision,
+  puts a pmove player 20 units in front of it and holds forward looking up for 4 s; exit 0 when it climbed > 40 units. Env
+  `IW2_LADDER_RAISE=targetname` first puts that entity back at its realOrigin (maps/_utility.gsc triggerOn, e.g. moscow's `regroup_ladder`),
+  `IW2_LADDER_DEBUG=1` prints the probe hits and the ladder clips, `IW2_LADDER_MASK=0x..` the probe mask (default 0x2810011),
+  `IW2_LADDER_SCAN=1` lists spots with headroom above. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.

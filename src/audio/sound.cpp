@@ -428,6 +428,13 @@ float Mixer::voiceWetLevel(int handle) const {
     return 0.0f;
 }
 
+void Mixer::setPaused(bool paused) {
+    std::lock_guard lock(mutex_);
+    if (paused == paused_) return;
+    paused_ = paused;
+    for (Voice& v : voices_) v.held = paused && v.chan != 2; // channel 2 = menu, the only one not paused by default
+}
+
 void Mixer::mix(float* out, int frames) {
     std::fill(out, out + size_t(frames) * 2, 0.0f);
     std::lock_guard lock(mutex_);
@@ -445,6 +452,7 @@ void Mixer::mix(float* out, int frames) {
         else duck_ = std::clamp(duck_ + (masterPlaying ? 1.0f : -1.0f) * float(frames) * 1000.0f / (float(rate_) * float(slaveFadeMs)), 0.0f, 1.0f);
     }
     for (Voice& v : voices_) {
+        if (v.held) continue;
         float gl, gr;
         gains(v, gl, gr);
         const float cs = v.chan >= 0 ? channelScale[v.chan] : 1.0f;

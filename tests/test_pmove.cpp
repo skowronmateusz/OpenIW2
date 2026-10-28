@@ -91,6 +91,25 @@ int main() {
             std::cout << "shell-shocked walk " << m << " units in 2 s\n";
             CHECK(m > 0.3f * moved && m < 0.45f * moved);
         }
+        // One jump gives exactly one landing event (0x5d..0x8a), none while standing afterwards.
+        {
+            PlayerState jp;
+            jp.origin = floor;
+            for (int i = 0; i < 30; ++i) playerMove(cw, jp, {}, 1.0f / 60.0f);
+            PlayerInput ji;
+            ji.jump = true;
+            int lands = 0, seq = jp.eventSeq;
+            for (int i = 0; i < 240; ++i) {
+                playerMove(cw, jp, i < 150 ? ji : PlayerInput{}, 1.0f / 60.0f);
+                for (; seq < jp.eventSeq; ++seq) {
+                    const int ev = jp.events[seq & 3] & 0xff;
+                    if (ev >= 0x5d && ev < 0x8b) ++lands;
+                    if (ev) std::cout << "jump test event " << std::hex << ev << std::dec << " at frame " << i << "\n";
+                }
+            }
+            std::cout << "jump: " << lands << " landing events\n";
+            CHECK(lands <= 1);
+        }
         // Half a unit into the ground: the player must not sink or fall through.
         PlayerState in0;
         in0.origin = {floor[0], floor[1], floor[2] - 0.5f};
@@ -161,6 +180,33 @@ int main() {
         }
     }
 
+    // moscow's basement ladder (script_brushmodel regroup_ladder, submodel *59, contents 0x8010000, ladder surface flag 8): standing on
+    // the floor in front of it, forward while looking up must climb. On a ladder the step slide move ignores the ground plane
+    // (0x54f2f8), otherwise the stick-to-ground pulled the player back every frame (bug: "cannot climb the ladder").
+    if (const char* main = std::getenv("IW2_MAIN")) {
+        iw2::fs::Vfs vfs;
+        vfs.mountDirectory(main);
+        if (const auto bytes = vfs.read("maps/moscow.d3dbsp")) {
+            const iw2::assets::D3dBsp bsp(*bytes);
+            CollisionWorld cw(bsp);
+            EntityClip ladder;
+            ladder.id = 1;
+            ladder.model = 59;
+            ladder.contents = 0x8010000;
+            cw.setEntityClips({ladder});
+            PlayerState lp;
+            lp.origin = {642.0f, 785.0f, -258.0f};
+            for (int i = 0; i < 30; ++i) playerMove(cw, lp, {}, 1.0f / 60.0f);
+            const float z0 = lp.origin[2];
+            PlayerInput li;
+            li.forward = 1;
+            li.yaw = 270.0f;
+            li.pitch = -60.0f;
+            for (int i = 0; i < 60; ++i) playerMove(cw, lp, li, 1.0f / 60.0f);
+            std::cout << "moscow ladder: rose " << lp.origin[2] - z0 << " (on ladder " << lp.onLadder << ")\n";
+            CHECK(lp.onLadder && lp.origin[2] - z0 > 40.0f);
+        }
+    }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;
 }

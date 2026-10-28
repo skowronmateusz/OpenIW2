@@ -395,6 +395,80 @@ int main(int argc, char** argv) {
             std::printf("mantle test: %d hints, %d starts, %d run, %d bad\n", hints, starts, ran, bad);
             return bad ? 1 : 0;
         }
+        if (argc > 4 && std::string(argv[3]) == "--ladder-test") {
+            // Ladder climb check: around x,y,z (e.g. a ladder model's origin) find a surface with flag 0x8 (ladder) in the running
+            // level's collision, put the player 20 units in front of it facing it, hold forward looking up for 4 s (pmove).
+            world.start();
+            for (int f = 0; f < 20; ++f) world.frame();
+            iw2::game::Vec c{};
+            std::sscanf(argv[4], "%f,%f,%f", &c[0], &c[1], &c[2]);
+            // IW2_LADDER_RAISE=targetname: put that entity back at its realOrigin (maps/_utility.gsc triggerOn), e.g. moscow's
+            // regroup_ladder, which the level script moves 10000 units down (triggerOff) until the ladder-setup animation ends.
+            if (const char* tn = std::getenv("IW2_LADDER_RAISE"))
+                for (const auto& e : world.entities())
+                    if (e->obj && e->obj->get("targetname").toString() == tn) {
+                        const auto ro = e->obj->get("realorigin");
+                        e->obj->set("origin", ro.isVector() ? ro : iw2::script::Value(iw2::script::Vec3{0, 0, 0}));
+                    }
+            for (int f = 0; f < 5; ++f) world.frame();
+            const auto& cw = world.collision();
+            if (std::getenv("IW2_LADDER_DEBUG"))
+                for (const auto& ec : cw.entityClips())
+                    if (ec.model == 59 || ec.model == 60)
+                        std::printf("clip model %d id %d origin %.0f %.0f %.0f contents 0x%x\n", ec.model, ec.id, ec.origin[0], ec.origin[1], ec.origin[2], ec.contents);
+            bool found = false;
+            for (int dz = 0; dz <= 96 && !found; dz += 16)
+                for (int a = 0; a < 32 && !found; ++a) {
+                    const float yaw = float(a) * 3.14159265f / 16.0f;
+                    const iw2::game::Vec from{c[0], c[1], c[2] + float(dz)};
+                    const auto tr = cw.trace(from, {c[0] + std::cos(yaw) * 64.0f, c[1] + std::sin(yaw) * 64.0f, c[2] + float(dz)}, {0, 0, 0}, {0, 0, 0}, std::getenv("IW2_LADDER_MASK") ? uint32_t(std::strtoul(std::getenv("IW2_LADDER_MASK"), nullptr, 0)) : 0x2810011u, -1);
+                    if (std::getenv("IW2_LADDER_DEBUG") && tr.fraction < 1.0f)
+                        std::printf("hit dz %d a %d: surf 0x%x contents 0x%x entity %d at %.0f %.0f %.0f\n", dz, a, tr.surfaceFlags, tr.contents, tr.entity,
+                                    tr.endPos[0], tr.endPos[1], tr.endPos[2]);
+                    if (tr.fraction >= 1.0f || !(tr.surfaceFlags & 8)) continue;
+                    found = true;
+                    std::printf("ladder surface at %.1f %.1f %.1f normal %.2f %.2f %.2f entity %d contents 0x%x\n", tr.endPos[0], tr.endPos[1],
+                                tr.endPos[2], tr.normal[0], tr.normal[1], tr.normal[2], tr.entity, tr.contents);
+                    iw2::game::PlayerState ps;
+                    ps.origin = {tr.endPos[0] + tr.normal[0] * 20.0f, tr.endPos[1] + tr.normal[1] * 20.0f, c[2] + 1.0f};
+                    for (int k = 0; k < 30; ++k) iw2::game::playerMove(cw, ps, {}, 1.0f / 60.0f, {});
+                    const float z0 = ps.origin[2];
+                    iw2::game::PlayerInput in;
+                    in.forward = 1;
+                    in.yaw = std::atan2(-tr.normal[1], -tr.normal[0]) * 180.0f / 3.14159265f;
+                    in.pitch = -60.0f;
+                    iw2::game::MoveParams mp;
+                    mp.passEntity = world.player() ? world.player()->number : -1;
+                    bool climbed = false;
+                    for (int k = 0; k < 240; ++k) {
+                        iw2::game::playerMove(cw, ps, in, 1.0f / 60.0f, mp);
+                        climbed = climbed || ps.onLadder;
+                        if (k % 30 == 0 || k < 4) std::printf("t=%.2f pos %.1f %.1f %.1f vz=%.1f onLadder=%d onGround=%d\n", k / 60.0f, ps.origin[0], ps.origin[1], ps.origin[2], ps.velocity[2], ps.onLadder, ps.onGround);
+                    }
+                    {
+                        const auto up = cw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] + 64}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                        if (std::getenv("IW2_LADDER_SCAN"))
+                            for (float yy = 680; yy <= 840; yy += 4)
+                                for (float xx = 590; xx <= 700; xx += 4) {
+                                    const iw2::game::Vec o{xx, yy, ps.origin[2]};
+                                    const auto t0 = cw.trace(o, o, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                                    if (t0.startSolid) continue;
+                                    const auto t1 = cw.trace(o, {xx, yy, o[2] + 120}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                                    if (t1.fraction > 0.9f) std::printf("open above at %.0f %.0f (%.2f)\n", xx, yy, t1.fraction);
+                                }
+                        for (float yy : {700.0f, 720.0f, 740.0f, 750.0f}) {
+                            const auto dn = cw.trace({644, yy, 100}, {644, yy, -300}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                            std::printf("floor at y %.0f: z %.1f (start %d)\n", yy, dn.endPos[2], dn.startSolid);
+                        }
+                        std::printf("above: fraction %.2f entity %d contents 0x%x surf 0x%x normal %.2f %.2f %.2f start %d\n", up.fraction, up.entity, up.contents,
+                                    up.surfaceFlags, up.normal[0], up.normal[1], up.normal[2], up.startSolid);
+                    }
+                    std::printf("ladder test: climbed %d, rose %.1f units\n", climbed, ps.origin[2] - z0);
+                    return climbed && ps.origin[2] - z0 > 40.0f ? 0 : 1;
+                }
+            std::printf("ladder test: no ladder surface found near %s\n", argv[4]);
+            return 1;
+        }
         if (argc > 3 && std::string(argv[3]) == "--fall-test") {
             // Random walks from the spawn point and the path nodes. Reports a walk whose lower capsule sphere centre
             // crosses world geometry (tunnel), that ends up inside solid, or that drops below the map's lowest vertex.
@@ -551,6 +625,7 @@ int main(int argc, char** argv) {
         int turretTest = -1; // --turret N: stand behind the N-th usable turret, F at 1 s, aim + fire 2–3 s, F at 4 s
         iw2::game::Entity* testTurret = nullptr;
         bool pmove = false;
+        int pmoveEventsDone = 0;
         iw2::game::PlayerState pmoveState;
         bool pmoveInit = false;
         std::vector<std::pair<float, iw2::game::Vec3>> playerPath; // --player-at T x,y,z: player origin from time T (linear between)
@@ -1224,7 +1299,12 @@ int main(int argc, char** argv) {
                 iw2::game::PlayerInput in;
                 in.yaw = world.player()->obj->get("angles").asVector()[1];
                 if (std::getenv("IW2_PMOVE_FORWARD")) in.forward = 1; // walk ahead to make footstep noise
+                // IW2_PMOVE_JUMP=1: hold jump for 0.1 s every 1.5 s (landing / footstep event sounds via applyPlayerEvent).
+                if (std::getenv("IW2_PMOVE_JUMP")) in.jump = world.timeMs() % 1500 < 100;
                 for (int k = 0; k < 3; ++k) iw2::game::playerMove(world.collision(), pmoveState, in, 1.0f / 60.0f, mp);
+                for (; pmoveEventsDone < pmoveState.eventSeq; ++pmoveEventsDone) // as iw2view: the step's events, last 4 kept
+                    if (pmoveState.eventSeq - pmoveEventsDone <= 4)
+                        world.applyPlayerEvent(pmoveState.events[pmoveEventsDone & 3], pmoveState.eventParms[pmoveEventsDone & 3]);
                 world.setPlayerOrigin({pmoveState.origin[0], pmoveState.origin[1], pmoveState.origin[2]}, world.player()->obj->get("angles").asVector());
                 world.playerPmEvents(pmoveState.eventSeq, pmoveState.events, pmoveState.stance == iw2::game::Stance::Crouch);
             }

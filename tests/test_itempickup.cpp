@@ -1,6 +1,10 @@
 // Tests for the weapon item pickup helpers (BG_PlayerTouchesItem 0x4facc0, BG_CanItemBeGrabbed 0x4fad50, Pickup_Weapon 0x521170).
 
 #include "game/itempickup.h"
+#include "game/world.h"
+#include "fs/vfs.h"
+
+#include <cstdlib>
 
 #include <iostream>
 
@@ -49,5 +53,34 @@ int main() {
 
     if (failures) return 1;
     std::cout << "ok\n";
-    return 0;
+        // World (IW2_MAIN): an emptied MP40 swapped for a kar98k keeps its (empty) counters on the dropped item; an NPC's MP40 picked up
+    // afterwards brings its own clip (Pickup_Weapon sets the clip slot to the item's clip, 0x521611), not the old empty one.
+    if (const char* main = std::getenv("IW2_MAIN")) {
+        iw2::fs::Vfs vfs;
+        vfs.mountDirectory(main);
+        World world(vfs, "toujane");
+        world.start();
+        for (int i = 0; i < 5; ++i) world.frame();
+        Inventory& inv = world.inventory(*world.player());
+        inv = Inventory{};
+        world.debugUseWeaponItem("mp40", 0, 0);
+        world.debugUseWeaponItem("enfield", 0, 0); // second slot
+        CHECK(inv.owned.count("mp40") && inv.owned.count("enfield"));
+        const auto mp = world.debugAmmo("mp40");
+        std::cout << "mp40 from an unset item: stock " << mp.first << " clip " << mp.second << "\n";
+        CHECK(mp.second > 0);
+        world.debugSetClip("mp40", 0);
+        inv.ammo[world.weapon("mp40")->at("ammoname")] = 0;
+        world.player()->obj->set("$weapon", iw2::script::Value("mp40"));
+        Entity* dropped = world.debugUseWeaponItem("kar98k", 0, 0); // full slots: the held (empty) MP40 is dropped
+        CHECK(dropped && dropped->classname == "weapon_mp40");
+        if (dropped) CHECK(dropped->obj->get("$ammoStock").asInt() == -1 && dropped->obj->get("$ammoClip").asInt() == -1);
+        CHECK(!inv.owned.count("mp40") && inv.owned.count("kar98k"));
+        world.player()->obj->set("$weapon", iw2::script::Value("kar98k"));
+        world.debugUseWeaponItem("mp40", 40, 32); // an NPC's MP40 with its own rounds
+        const auto mp2 = world.debugAmmo("mp40");
+        std::cout << "npc mp40: stock " << mp2.first << " clip " << mp2.second << "\n";
+        CHECK(mp2.second == 32 && mp2.first == 40);
+    }
+    return failures ? 1 : 0;
 }

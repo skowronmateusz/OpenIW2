@@ -324,8 +324,10 @@ void capJumpStep(PlayerState& ps, float startZ, const MoveParams& mp) {
 // back down; on the ground the result sticks to ground up to 9 units below. The step is kept when it got further
 // along the velocity.
 void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool gravity, const MoveParams& mp) {
-    const bool onGroundPlane = pml.groundPlane;
-    if (!onGroundPlane && ps.jumping && ps.pmTimeMs != 0) {
+    // On a ladder (pm_flags 0x20, 0x54f2f8) the ground plane counts as absent (no stick-to-ground, so the climb can lift the
+    // player off the floor) and the jump flag 0x80000 / jump origin ps+0x74 are cleared at once (0x54f338).
+    const bool onGroundPlane = pml.groundPlane && !ps.onLadder;
+    if (ps.onLadder || (!onGroundPlane && ps.jumping && ps.pmTimeMs != 0)) {
         ps.jumping = false;
         ps.jumpOriginZ = 0;
     }

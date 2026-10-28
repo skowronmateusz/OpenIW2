@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -63,6 +64,11 @@ public:
     std::function<float(const std::string&)> animLength;
     // 0x4dc6d0: the first owned weapon of an offhand class ("Frag Grenade", "Smoke Grenade") with ammo, or "".
     std::function<std::string(const std::string& offhandClass)> findOffhand;
+    // The player state's ammunition (ps+0x318 clip by clipName index, ps+0x118 stock by ammoName index; the world inventory):
+    // read before each update and on equip, written back after; nullopt (weapon not owned there) keeps the local counters.
+    // Without these callbacks the local per-weapon-name memory is used (tests).
+    std::function<std::optional<std::pair<int, int>>(const std::string& weapon)> readAmmo; // {clip, stock}
+    std::function<void(const std::string& weapon, int clip, int stock)> writeAmmo;
     // 0x4dc660: the first registered weapon whose weaponType is binoculars (def +0x78 == 3), nullptr when none.
     std::function<const Def*()> binocularDef;
 
@@ -71,6 +77,7 @@ public:
 
     // Advances by dt seconds; returns the number of shots fired during this step.
     int update(float dt, const Input& in);
+    int updateImpl(float dt, const Input& in);
 
     const std::string& name() const { return name_; }
     bool equipped() const { return !name_.empty(); }
