@@ -120,5 +120,70 @@ int main() {
             std::cout << "no wall near the player start; wall throw skipped\n";
         }
     }
+    // 4. Rocket destabilization (0x526960): a panzerfaust rocket (destabilizeDistance 1000, projectileSpeed 2800: +0x168 = 357 ms
+    // after trTime = launch - 50 ms) turns by at most destabilizationAngleMax (10 deg) once, keeps its speed, and the next
+    // interval is destabilizationBaseTime * 1000 = 100 ms. The offset tan(10 deg) * (c1, c2, c3), |c| <= 1, turns it by at most
+    // atan(tan(10 deg) * sqrt(3)) = 17 deg.
+    {
+        const Vec3 start{p[0], p[1], p[2] + 60.0f};
+        const float s = 1.0f / std::sqrt(1.25f);
+        const Vec3 dir{s, 0, 0.5f * s};
+        Entity& r = w.debugSpawnRocket("panzerfaust", start, dir);
+        const int64_t t0 = w.timeMs();
+        CHECK(r.rocket && std::fabs(r.rocket->destabMs - 1000.0f / 2800.0f * 1000.0f) < 0.01f);
+        int64_t at = -1;
+        for (int i = 0; i < 12 && !r.obj->removed; ++i) {
+            w.frame();
+            if (r.obj->removed) break;
+            if (r.rocket->destabilized && at < 0) {
+                at = w.timeMs();
+                const Vec3 d = r.rocket->trDelta;
+                const float l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                const float cosA = (d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2]) / l;
+                std::cout << "rocket destabilized at +" << (at - t0) << " ms, turned " << std::acos(std::min(1.0f, cosA)) * 180.0f / float(M_PI)
+                          << " deg, speed " << l << ", next " << r.rocket->destabMs << " ms\n";
+                CHECK(std::fabs(l - 2800.0f) < 0.5f);
+                CHECK(cosA >= std::cos(17.5f * float(M_PI) / 180.0f) && cosA < 1.0f);
+                CHECK(r.rocket->trTime == at);
+                CHECK(std::fabs(r.rocket->destabMs - 100.0f) < 0.01f);
+            }
+        }
+        // The first frame whose level time is past trTime + 357 = t0 - 50 + 357.
+        CHECK(at > 0 && at > t0 + 307 && at <= t0 + 357);
+    }
+    // 5. Missile water entry (0x526b40): a grenade falling (trDelta.z = -200) onto a water surface near the rhine player start
+    // sends the splash (event 0xb8) once and goes on below the surface.
+    {
+        iw2::fs::Vfs v2;
+        v2.mountDirectory(main);
+        World r(v2, "rhine");
+        r.start();
+        for (int i = 0; i < 3; ++i) r.frame();
+        const Vec3 q = r.player()->obj->get("origin").asVector();
+        bool found = false;
+        Vec3 water{};
+        for (int dx = -30; dx <= 30 && !found; ++dx)
+            for (int dy = -30; dy <= 30 && !found; ++dy) {
+                const Vec3 top{q[0] + dx * 100.0f, q[1] + dy * 100.0f, q[2] + 400.0f};
+                if (r.collision().trace(top, top, {0, 0, 0}, {0, 0, 0}, 0x21).startSolid) continue;
+                const TraceResult t = r.collision().trace(top, {top[0], top[1], top[2] - 3000.0f}, {0, 0, 0}, {0, 0, 0}, 0x21);
+                if (t.fraction < 1.0f && (t.surfaceFlags & 0x1f00000u) == 0x1400000u) {
+                    water = {t.endPos[0], t.endPos[1], t.endPos[2]};
+                    found = true;
+                }
+            }
+        CHECK(found);
+        if (found) {
+            r.debugSpawnGrenade("fraggrenade", {water[0], water[1], water[2] + 60.0f}, {0, 0, -200.0f}, 5000);
+            int splashFrame = -1;
+            for (int i = 1; i <= 20; ++i) {
+                r.frame();
+                if (splashFrame < 0 && r.stats.waterSplashes > 0) splashFrame = i;
+            }
+            std::cout << "water at " << water[0] << " " << water[1] << " " << water[2] << ": splash at frame " << splashFrame << ", splashes "
+                      << r.stats.waterSplashes << "\n";
+            CHECK(splashFrame > 0 && r.stats.waterSplashes == 1);
+        }
+    }
     return failures ? 1 : 0;
 }

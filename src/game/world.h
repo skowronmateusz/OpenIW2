@@ -188,6 +188,8 @@ struct RocketState {
     int64_t explodeMs = 0;           // +0x138 think
     int64_t trTime = 0;              // s.pos: linear (2)
     Vec3 trBase{}, trDelta{};
+    float destabMs = 0;              // +0x168: ms after trTime until the next destabilization (0x526960)
+    bool destabilized = false;       // +0x128 & 0x10000: destabilized at least once
 };
 
 // A grenade missile entity (0x5275f0; s.pos trajectory at +0x14, fuse +0x138, AI fields +0x150 … +0x164).
@@ -614,6 +616,11 @@ public:
     // Test hook: a weapon item of `weapon` at `origin` flying with `velocity` (TR_GRAVITY from now), run by G_RunItem (runItems).
     Entity& debugDropItem(const std::string& weapon, const Vec3& origin, const Vec3& velocity);
     static constexpr int kItemNoGround = 0x7ff; // groundEntityNum (+0xc) ENTITYNUM_NONE
+    // Test hook: a rocket of `weapon` fired by the player from `start` along `dir` (G_FireRocket 0x527810).
+    Entity& debugSpawnRocket(const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(*player_, weapon, start, dir); }
+    Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
+        return spawnGrenade(*player_, weapon, start, velocity, fuseMs);
+    }
     // Test hook: a weapon item of `weapon` with the given item ammo (stock, clip; 0 = unset) at the player, used like F (0x5341a0 ->
     // Pickup_Weapon). Returns the dropped item (the swapped-out weapon), or nullptr.
     Entity* debugUseWeaponItem(const std::string& weapon, int stock, int clip);
@@ -754,7 +761,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, floatingActors = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, floatingActors = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0, waterSplashes = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -1076,6 +1083,7 @@ private:
     // Impact effects (cgame 0x4b9090): impact type (0 bullet_small_normal … 9 grenade_explode, 10 rocket_explode)
     // × surface type (0 default … 22 asphalt) → effect file, "" for none.
     const std::string& impactEffect(int type, int surface);
+    TraceResult missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta); // 0x526d6b..0x526df7
     std::vector<std::array<std::string, 23>> impactEffects_;
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
@@ -1084,6 +1092,7 @@ private:
     void missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface);
     void rocketImpact(Entity& e, const TraceResult& tr);
     void runRockets();
+    void destabilizeRocket(Entity& e); // 0x526960
     // Weapon items (classname weapon_*): LaunchItem (0x521f70 → 0x521e00) gives a dropped item a gravity
     // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
     // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.
@@ -1113,7 +1122,8 @@ private:
     int grenadeCoverNode(Entity& e, float r);
     bool pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes = false);
     bool grenadeAcquire(Entity& e);
-    bool grenadeGiveUp(Entity& e);
+    bool grenadeGiveUp(Entity& e, bool skipAcquire);
+    void grenadeHitCharacter(Entity& grenade, Entity* hit);
     int grenadeAcquireThink(Entity& e);
     int grenadeThrowBackThink(Entity& e);
     void grenadeCower(Entity& e);

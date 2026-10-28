@@ -130,8 +130,8 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
 // surface's bounce factor, interpolated from the parallel to the perpendicular factor by the impact angle. Resting on
 // ground (normal z > 0.7) slower than 20 units/s stops it; otherwise it moves 0.1 along the normal (never upwards)
 // and flies on. Returns true for a bounce that changed the velocity by more than 100 (the bounce event).
-// Angular trajectory: grenadeRebaseAngles (0x525cb0). TODO(spec): 0x520230 (actors re-planning when the grenade
-// hits a character).
+// Angular trajectory: grenadeRebaseAngles (0x525cb0). A flying bounce off a character re-plans the actors handling the
+// grenade (0x520230, grenadeHitCharacter).
 bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
     GrenadeState& g = *e.grenade;
     const Vec3 v = grenadeVelocity(g, hitMs);
@@ -172,6 +172,7 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
     g.trTime = timeMs_;
     g.trDelta = nv;
     e.obj->set("origin", Value(p));
+    grenadeHitCharacter(e, tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr); // 0x526198
     return tr.entity < 0 && len(sub(nv, v)) > 100.0f;
 }
 
@@ -291,7 +292,8 @@ void World::forgetGrenade(Entity& g) {
 // G_RunMissile (0x526c30) for grenades: the grenade_ping event every 500 ms (0x526bd0), a resting grenade that lost
 // its ground starts falling, a flying one moves along its trajectory with a point trace (clipmask 0x280e891, the
 // thrower passes) and bounces off what it hits, or is removed when it hits the sky (surface flag 0x10). Then the fuse.
-// TODO(spec): water surfaces (0x526b40), the 1.5-unit ground settle, whizby (0x5297b0) and the in-flight rotation.
+// Water entry: missileTrace (0x526b40). TODO(spec): the 1.5-unit ground settle and the in-flight rotation. 0x5297b0 is not a whizby
+// but the trigger_damage segment test (below).
 void World::runGrenade(Entity& e) {
     GrenadeState& g = *e.grenade;
     if (timeMs_ - g.pingMs > 499) {
@@ -314,8 +316,15 @@ void World::runGrenade(Entity& e) {
         }
         if (g.trType == 5) {
             const Vec3 to = grenadePosition(g, timeMs_);
-            const TraceResult tr = collision_->trace(o, to, {0, 0, 0}, {0, 0, 0}, kGrenadeClip, pass);
+            const TraceResult tr = missileTrace(o, to, kGrenadeClip, pass, g.trDelta);
             e.obj->set("origin", Value(tr.endPos));
+            // 0x526f90..0x526fbb: missiles of handler type 3 (grenades, table 0x5a5754) pass the segment from the origin before
+            // the move to the new origin to 0x5297b0, the missile twin of 0x5295f0: every trigger_damage on it gets "damage"
+            // (explosionInnerDamage +0x37c, attacker = the grenade itself) and the action with MOD_GRENADE (3), before the
+            // impact is handled. TODO(spec): the z adjustments of 0x526e94..0x526f84 to the end point and the +0x128 & 0x8000
+            // hit-entity call 0x5268b0 (0x526e01..0x526e23).
+            triggerDamageSegment(&e, o, {tr.endPos[0], tr.endPos[1], tr.endPos[2]}, weaponInt(g.weapon, "explosionInnerDamage"), 3);
+            if (e.obj->removed) return;
             if (tr.fraction < 1.0f) {
                 if (tr.surfaceFlags & 0x10) {
                     forgetGrenade(e);
@@ -989,6 +998,35 @@ Entity& World::debugDropItem(const std::string& weaponName, const Vec3& origin, 
     item.obj->set("$trdelta", Value(velocity));
     item.obj->set("$groundent", Value(int32_t(kItemNoGround)));
     return item;
+}
+
+// G_RunMissile's move trace (0x526d6b..0x526df7), for every missile: when |trDelta.z| > 30 (0x591e08) and the origin is not in
+// water (point contents 0x20, 0x44c840), the trace (0x526840) also stops at water (clipmask | 0x20). When the trace's surface is
+// water ((surfaceFlags & 0x1f00000) == 0x1400000), 0x526b40 sends the splash and the move is traced again with the clipmask alone.
+// 0x526b40: temp entity event 0xb8 (0x4d7f40) at the missile's origin before the move, with +4 the trace normal and +3 the
+// normalised trDelta whose z is negated when negative (0x591e48 = -1), both as direction bytes (0x420c30), +1 the surface type,
+// +0xa the missile's number. The client handles 0xb8 as a small bullet impact (jump table 0x4bb74c, case 0x4bb260 ->
+// 0x4b81d0, the same case as Bullet_Fire's event 0xb8): bullet_small_water and the impact table's bullet_small normal (type 0)
+// along +4 and reflect (type 1) along +3. TODO(spec): the direction-byte quantisation.
+TraceResult World::missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta) {
+    uint32_t mask = clip;
+    if (std::fabs(trDelta[2]) > 30.0f && !collision_->trace(from, from, {0, 0, 0}, {0, 0, 0}, 0x20).startSolid) mask |= 0x20;
+    TraceResult tr = collision_->trace(from, to, {0, 0, 0}, {0, 0, 0}, mask, pass);
+    if ((tr.surfaceFlags & 0x1f00000u) == 0x1400000u) {
+        Vec3 d = trDelta;
+        const float l = len(d);
+        if (l != 0.0f) d = scale(d, 1.0f / l);
+        if (d[2] < 0.0f) d[2] = -d[2];
+        startSound("bullet_small_water", &from);
+        const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+        const std::string& normalFx = impactEffect(0, 20);
+        const std::string& reflectFx = impactEffect(1, 20);
+        if (!normalFx.empty()) fxEvents_.push_back({normalFx, from, n});
+        if (!reflectFx.empty()) fxEvents_.push_back({reflectFx, from, d});
+        ++stats.waterSplashes;
+        tr = collision_->trace(from, to, {0, 0, 0}, {0, 0, 0}, clip, pass);
+    }
+    return tr;
 }
 
 } // namespace iw2::game

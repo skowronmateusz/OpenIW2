@@ -128,10 +128,41 @@ safe, else cower), 0x12d take cover (0x520860: at a covering claimed node that i
 "ai classname '%s' at (%g %g %g) finished the grenade return script without throwing a grenade").
 React 0x51f900, acquire 0x51fb20, cover node 0x54c110, flee search 0x545f30: see the comments in `src/game/actorgrenade.cpp`.
 
-TODO(spec): the qsort tie order of 0x51f320, 0x51fe90's last test, 0x4f9f30 /
-0x4fa070, 0x520230 (re-planning when a grenade hits a character), water (0x526b40), the 1.5-unit grenade ground settle,
-whizby (0x5297b0), the bounce sounds, the targets of 0x5285b0's five traces (Q3 CanDamage pattern assumed: the point
-and four ±15 offsets), the danger planes (+0x2050).
+Give up (0x51fff0, eax = skipAcquire): with skipAcquire 0 and the grenade within 96 units of the actor (2D d² <= 9216,
+0x59239c; the `jp` at 0x520041 skips the acquire when d² > 9216), the acquire 0x51fb20 is tried (success → false); holding the
+grenade (+0x150 == the actor) at a safe position (0x51f8b0) → grenade +0x150 = 0, actor +0x20c4 = 0, push exposed (state 1)
+(0x520083..0x5200bc) → true; otherwise react 0x51f900(actor, 1) → false. The acquire think's give-ups (moved more than 16 units
+2D / 32 in z from the goal, 0x520b1e / 0x520b5b) pass skipAcquire 1; 0x520a90 passes 0 for another actor (the +0x72c branch of
+the acquire think, not ported). The port's earlier "> 96 units → acquire again" was inverted and is fixed.
+
+Grenade hits a character (0x520230, called from the flying bounce 0x526198 with eax = g_entities[trace entity], ebx = the
+grenade): when the hit entity's contents (+0xc0) & 0x200c000, the grenade's landing (+0x154..+0x15c) is cleared and predicted
+again (0x51f7c0); every actor (0x4fe2c0 / 0x4fe310) in the grenade state (+0x8c == 3) whose grenade (+0x20c4) it is runs the
+give-up above with skipAcquire 0 (inlined, result ignored). Port: `grenadeHitCharacter` (live bounces only; the landing
+prediction 0x527080 has its own bounce loop and does not call it).
+
+trigger_damage on the flight path (0x5297b0; it is not a whizby): G_RunMissile calls it for handler type 3 (grenades; the
+handler table 0x5a5750 + 0x2c·handler + 4: grenade handler 14 → 3, rocket handler 0xf → 5) every frame with ecx = the origin
+before the move, then (attacker = the grenade entity, end = the new origin, damage = explosionInnerDamage +0x37c, mod 3
+MOD_GRENADE) (0x526f90..0x526fbb), before the impact is handled. It lists entities with contents 0x400000 in the segment's
+bounds (0x424560, 0x419ea0), keeps classname trigger_damage (0x1c7f0ea) with +0x128 & 0x4000 whose model the zero-box segment
+touches (0x44c5b0), notifies "damage" (damage, attacker), runs the action 0x5293c0 and, without an accumulate value (+0x158),
+resets the health to 32000: the missile twin of the bullet test 0x5295f0. Port: `triggerDamageSegment` from `runGrenade`.
+TODO(spec): the port (like its bullet twin) filters by classname only, not by the +0x128 & 0x4000 gate.
+
+Missile water entry (0x526d6b..0x526df7, all missiles): when |trDelta.z| > 30 (0x591e08) and the origin's point contents
+(0x44c840) have no 0x20, the move trace uses clipmask | 0x20. A trace whose surface is water ((surfaceFlags & 0x1f00000) ==
+0x1400000) calls 0x526b40 and the move is traced again with the clipmask alone. 0x526b40: dir = normalize(trDelta), z negated
+when negative (0x591e48 = −1); temp entity event 0xb8 (0x4d7f40) at the missile's origin before the move: +4 = DirToByte(trace
+normal), +3 = DirToByte(dir) (0x420c30), +1 = surface type, +0xa = the missile's number. The client's event switch 0x4ba8d0
+(index event − 0x8b, jump table 0x4bb74c) sends 0xb8 to case 0x4bb260 → 0x4b81d0, the small-bullet impact (docs/spec/effects.md
+"Bullet impacts"): bullet_small_water and the impact table's bullet_small normal / reflect effects for water. Port:
+`missileTrace` (grenades and rockets); test: tests/test_itemdrop.cpp (rhine).
+
+TODO(spec): the qsort tie order of 0x51f320, 0x51fe90's last test, 0x4f9f30 / 0x4fa070, the 1.5-unit grenade ground settle,
+the bounce sounds, the targets of 0x5285b0's five traces (Q3 CanDamage pattern assumed: the point and four ±15 offsets), the
+danger planes (+0x2050), the end-point z adjustments 0x526e94..0x526f84 and the hit-entity call 0x5268b0 (handler type 3,
+hit entity +0x128 & 0x8000), the direction-byte quantisation of event 0xb8.
 
 ## Cooked fuse and bounce angular re-base (decoded)
 - Spawn 0x5275f0: if the thrower has a client and client +0x3c (ps grenade fuse, ms) is non-zero, the entity fuse +0x138 =
@@ -178,8 +209,19 @@ TR_GRAVITY from the origin at the level time; no owner is set. FinishSpawningIte
 groundEntityNum = the drop trace's entity (0x52283f). Port: a ground entity counts as moving while its mover position channel is
 active; passEnt is the item itself (owner unset); only weapon items run.
 
-## Open findings (water), not ported
-- Missile water entry: G_RunMissile (0x526c6c..0x526dd4) traces twice (0x526840); when the second trace's surface type
-  ((surfaceFlags & 0x1f00000) == 0x1400000, water) it calls 0x526b40, which creates a temp entity event 0xb8 (0x4d7f40) holding the
-  quantised direction (bytes at +4/+3 from 0x420c30), the surface type (+1) and the entity number (+0xa). Client handling of event 0xb8
-  is not decoded.
+## Rockets (G_FireRocket 0x527810, G_RunMissile, decoded)
+- +0x168 = destabilizeDistance (+0x5ac, int) / projectileSpeed (+0x384, int) · 1000 (0x52795d..0x527973); the shooter's +0x128 &
+  0x20000 is copied (0x527979..0x52798d) and disables the destabilization (no writer of that flag found; the port leaves it clear).
+  0x4d6110 (end of G_FireRocket and LaunchItem) builds the server dobj from the model index +0x114 and attachments +0x1d4: no
+  gameplay beyond the model.
+- G_RunMissile without a hit (0x527017..0x527061): |trDelta| != 0 → groundEntityNum = 0x7ff, and for weaponType (+0x78) 2
+  (projectile) without +0x128 & 0x20000: 0x526960. Then the think.
+- 0x526960 (ebx = missile): when trTime + ftol(+0x168) < levelTime: dir = normalize(trDelta) + tan(destabilizationAngleMax +0x5a8 ·
+  π/180) · (c1, c2, c3), c = 2·rand15/32768 − 1 for three consecutive rand() (0x5a56f4); normalised again; trDelta = dir ·
+  projectileSpeed, trBase = currentOrigin, trTime = levelTime; currentAngles = vectoangles(dir) (0x421b30), apos stationary
+  with that base. +0x168 = destabilizationBaseTime (+0x5a0) · 1000 the first time (sets +0x128 |= 0x10000), afterwards
+  +0x168 · destabilizationTimeReductionRatio (+0x5a4). Shipped: panzerfaust 1000 / 2800 → 357 ms, then 100, 80, 64 … ms,
+  angle 10°; tank turrets angle 0 (only re-based). Port: `destabilizeRocket`, test in tests/test_itemdrop.cpp.
+- projectileDLight (client, CG_Missile 0x4ab3fe..0x4ab43c): when weapon info +0x14c (float of projectileDLight +0x45c, 0x4b3cab)
+  is not 0, *0x617b1c(lerp origin, radius, info +0x150, +0x154, +0x158). TODO(spec): the writer of info +0x150..+0x158 was not
+  found (projectileRed / Green / Blue are weapon +0x460 / +0x464 / +0x468; panzerfaust / panzerschreck: 200, (0.75, 0.3, 1)).
