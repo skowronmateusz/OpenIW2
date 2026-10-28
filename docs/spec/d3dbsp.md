@@ -56,7 +56,7 @@ Names in *italics* are inferred.
 | 32 | 28 | collision borders | collision | `FUN_004121d0` |
 | 33 | 12 | collision partitions | collision | `FUN_00412340` |
 | 34 | 32 | collision AABB trees | collision | `FUN_004123e0` |
-| 35 | 48 | models (brush submodels) | both | `FUN_00410740`; `FUN_10002df0` |
+| 35 | 48 | models (brush submodels, see below) | both | `FUN_00410740`; `FUN_10002df0` |
 | 36 | – | visibility; must be empty in single player ("do not compile the bsp with visibility") | collision | `FUN_00412770` |
 | 37 | 1 | entity string (text, `{ "key" "value" … }`) | collision | `FUN_00412770` |
 | 38 | – | *path nodes / AI data* (binary, not decoded yet) | game | observed in data |
@@ -93,6 +93,29 @@ bytes 44–55 and 56–67 (`FUN_10002a00`). The field meaning is inferred from t
 | 36 | float[2] | lightmap coordinates |
 | 44 | float[3] | *tangent* |
 | 56 | float[3] | *binormal* |
+
+## Brush models (lump 35, 48 bytes)
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | float[3] | mins |
+| 12 | float[3] | maxs |
+| 24 | int32 | first triangle soup (lump 7) |
+| 28 | int32 | triangle soup count |
+| 32 | int32[2] | first / count of collision AABB trees (lump 34) |
+| 40 | int32[2] | first / count of brushes (lump 6) |
+
+The 1.3 renderer loader `0x10002df0` (lump 0x23, element 0x30) copies each row into a 32-byte runtime model: bounds,
+soup count at +0x18 and first soup at +0x1c (−1 when the count is 0). Model 0 is the static world (on every shipped
+map it owns the soups `[0, n)`); each submodel `*N` owns a contiguous soup range after it, in model order (checked on all 54 shipped maps). Submodel vertices and
+bounds are relative to the entity origin (demolition `*73`, origin 6488 480 272: bounds −137..188, soup vertices
+−136..160), so a brush model without an `origin` key is in world space.
+
+OpenIW2 (iw2view): with a running level the soups of `script_brushmodel` submodels are not baked into the world; they
+are drawn by the world passes (same shaders, lightmaps, `lmap_s` path) at the entity's interpolated origin/angles,
+and not while the entity is hidden (`hide` 0x4efd10 sets bit 0x80 of ent+0x128, `show` 0x4efcb0 clears it) or
+deleted. Marks and the outdoor bounds use model 0's soups only. TODO(spec): the client draw path of brush entities
+(cgame → renderer) was not traced; marks on brush models; sky/water soups in brush models (skipped).
 
 ## Not yet specified
 

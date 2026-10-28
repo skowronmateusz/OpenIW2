@@ -364,6 +364,10 @@ struct Scene {
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
     std::unordered_map<std::string, std::optional<GpuModel>> models;
+    // Brush submodels "*N" of script_brushmodel entities (lump 35 index → batches into `vertices` / `indices`, in model
+    // space), drawn with the world shaders per entity at its origin/angles while the entity is not hidden
+    // (docs/spec/d3dbsp.md "Brush models"). Empty without a level (then they are baked into `batches`).
+    std::unordered_map<int, std::vector<Batch>> brushBatches;
     // CPU-side models for skinned (animated) drawing.
     struct CpuModel {
         assets::XModelParts parts;
@@ -1261,17 +1265,41 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         std::memcpy(g.lmUv, v.lightmapUv.data(), 8);
     }
 
+    // Brush submodels (lump 35, 48-byte rows; the 1.3 renderer loader 0x10002df0 keeps the soup count from +0x1c and
+    // the first soup from +0x18, -1 when the count is 0). Model 0 is the static world; the soups of a submodel are
+    // stored relative to its entity origin. With a running level, the submodels of script_brushmodel entities are not
+    // baked into the world but drawn per entity (hide() sets bit 0x80 of ent+0x128, 0x4efd10; show() clears it,
+    // 0x4efcb0), so hidden exploder / collapse pieces and moving brush models show their scripted state.
+    // TODO(spec): the client-side draw path (entity → brush model → R_Add*) was not traced; drawing at the entity's
+    // lerped origin/angles mirrors the collision model trace (0x417c20).
+    std::vector<int> soupOwner(bsp.soups().size(), 0);
+    if (!staticScriptModels) {
+        for (const auto& e : bsp.entities()) {
+            const std::string* cls = e.get("classname");
+            const std::string* model = e.get("model");
+            if (!cls || *cls != "script_brushmodel" || !model || model->size() < 2 || (*model)[0] != '*') continue;
+            const int n = std::atoi(model->c_str() + 1);
+            if (n <= 0) continue;
+            const auto [first, count] = bsp.modelSoups(n);
+            for (size_t k = 0; k < count; ++k) soupOwner[first + k] = n;
+        }
+    }
+
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
     std::map<std::tuple<int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
-    for (const auto& s : bsp.soups()) {
+    std::map<int, std::map<std::tuple<int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>>> brushGroups;
+    for (size_t si = 0; si < bsp.soups().size(); ++si) {
+        const auto& s = bsp.soups()[si];
         const MatInfo& mi = mats[s.material];
         if (mi.pass == Pass::Skip) continue;
+        // TODO(spec): sky and water soups of brush models (none found on the shipped script_brushmodels' draw path here).
+        if (soupOwner[si] > 0 && (mi.pass == Pass::Sky || mi.pass == Pass::Water)) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
         // Specular only on lightmapped soups with both maps present (lmap_s); IW2_NO_SPEC disables it.
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = groups[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail}];
+        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
     }
     // Sun from worldspawn (needed for baking model light).
@@ -1373,7 +1401,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     std::cout << "placed " << modelCount << " static models (" << modelCache.size() << " unique)\n";
 
     std::vector<uint32_t> indices;
-    for (const auto& [key, idx] : groups) {
+    auto emitBatches = [&](const auto& grouped, std::vector<Batch>& out) {
+    for (const auto& [key, idx] : grouped) {
         Batch b;
         b.pass = Pass(std::get<0>(key));
         b.texture = std::get<1>(key);
@@ -1388,8 +1417,11 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
-        scene.batches.push_back(b);
+        out.push_back(b);
     }
+    };
+    emitBatches(groups, scene.batches);
+    for (const auto& [n, bgroups] : brushGroups) emitBatches(bgroups, scene.brushBatches[n]);
 
     SDL_GPUBufferCreateInfo vb{};
     vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -1533,6 +1565,9 @@ struct FragmentUniforms {
 // An entity model to draw this frame.
 struct DrawItem {
     const GpuModel* model = nullptr;
+    // Brush model (Scene::brushBatches): batches into the world buffers, drawn by the world passes with `transform`;
+    // `model` is null then.
+    const std::vector<Batch>* worldBatches = nullptr;
     Mat4 transform{};
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
@@ -2086,6 +2121,12 @@ struct Renderer {
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
         struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 0}, kIdentity};
+        // World surface groups: the static world, then each visible brush model at its entity transform (same shaders,
+        // lightmaps and buffers).
+        struct WorldGroup { const std::vector<Batch>* batches; Mat4 model; };
+        std::vector<WorldGroup> worldGroups{{&scene.batches, kIdentity}};
+        for (const DrawItem& it : items)
+            if (it.worldBatches) worldGroups.push_back({it.worldBatches, it.transform});
         // Binds the pass pipeline for a batch's polygon offset level; w of eye carries the constant depth bias.
         // lib/shade.hlsl USE_DETAIL: texture slot 3 + detailScale in FragmentUniforms.scroll.yzw (white texture when absent).
         auto detailBinding = [&](int d) {
@@ -2126,10 +2167,12 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 for (const DLight& dl : dlights)
                     for (Pass dp : {Pass::Opaque, Pass::AlphaTest})
-                        for (const Batch& b : scene.batches) {
+                        for (const WorldGroup& wg : worldGroups)
+                        for (const Batch& b : *wg.batches) {
                             if (b.pass != dp || b.lightmap == -3) continue;
                             SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
                             VU du = vu;
+                            du.model = wg.model;
                             du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                             SDL_PushGPUVertexUniformData(cmd, 0, &du, sizeof(du));
                             SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
@@ -2147,6 +2190,7 @@ struct Renderer {
                 // Entity models (the sort list holds every entity type; 0x10014fe0 asks the per-type bounds getter), same state.
                 for (const DLight& dl : dlights)
                     for (const DrawItem& it : items) {
+                        if (!it.model) continue;
                         if (it.depthMax < 1.0f) {
                             const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
                             SDL_SetGPUViewport(pass, &vpDepth);
@@ -2207,9 +2251,13 @@ struct Renderer {
             }
             }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
-            for (const Batch& b : scene.batches) {
+            for (const WorldGroup& wg : worldGroups) {
+            VU gu = vu;
+            gu.model = wg.model;
+            if (wg.batches != &scene.batches) SDL_PushGPUVertexUniformData(cmd, 0, &gu, sizeof(gu));
+            for (const Batch& b : *wg.batches) {
                 if (b.pass != p || b.specTex >= 0) continue;
-                if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, vu);
+                if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, gu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[4] = {
                     {scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
@@ -2224,12 +2272,15 @@ struct Renderer {
                 if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
-                if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, vu);
+                if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, gu);
             }
+            }
+            SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             // lmap_s world batches (lib/phong.hlsl specular): tangent frame from vertex buffer 1.
             if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
                 bool any = false;
-                for (const Batch& b : scene.batches) {
+                for (const WorldGroup& wg : worldGroups)
+                for (const Batch& b : *wg.batches) {
                     if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
                     if (!any) {
                         SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
@@ -2239,6 +2290,7 @@ struct Renderer {
                     SDL_BindGPUGraphicsPipeline(pass, specPipelines[int(p)][b.polygonOffset][b.cull]);
                     const float specColorScale = specColorScaleDvar();
                     struct SVU { VU base; float sun[4]; } svu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
+                    svu.base.model = wg.model;
                     svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                     SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
                     const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
@@ -2266,6 +2318,7 @@ struct Renderer {
             }
             // Entity models of this pass.
             for (const DrawItem& it : items) {
+                if (!it.model) continue;
                 bool bound = false;
                 if (it.depthMax < 1.0f) {
                     const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
@@ -2964,6 +3017,26 @@ int main(int argc, char** argv) {
             for (const auto& e : world->entities()) {
                 if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");
+                if (m.isString() && e->classname == "script_brushmodel" && m.asString().size() > 1 && m.asString()[0] == '*') {
+                    // Brush model at the entity's interpolated origin/angles (vertices are model-local; loadScene).
+                    const auto bm = scene.brushBatches.find(std::atoi(m.asString().c_str() + 1));
+                    const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
+                    if (bm == scene.brushBatches.end() || !o.isVector()) continue;
+                    auto ov = o.asVector();
+                    auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
+                    if (auto pv = lerpPrev.find(e->number); pv != lerpPrev.end()) {
+                        for (int k = 0; k < 3; ++k) {
+                            ov[size_t(k)] = pv->second.first[size_t(k)] + (ov[size_t(k)] - pv->second.first[size_t(k)]) * lerpFrac;
+                            const float d = std::remainder(av[size_t(k)] - pv->second.second[size_t(k)], 360.0f);
+                            av[size_t(k)] = pv->second.second[size_t(k)] + d * lerpFrac;
+                        }
+                    }
+                    DrawItem it; // drawn by the world passes (Renderer::draw), with its baked lightmaps
+                    it.worldBatches = &bm->second;
+                    it.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                    items.push_back(it);
+                    continue;
+                }
                 if (!m.isString() || m.asString().rfind("xmodel/", 0) != 0) continue;
                 const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                 if (!o.isVector()) continue;

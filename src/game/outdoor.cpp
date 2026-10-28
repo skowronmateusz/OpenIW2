@@ -17,7 +17,10 @@ void OutdoorMap::setBounds(const assets::D3dBsp& bsp, const fs::Vfs& vfs) {
     std::array<float, 3> mins{131072.0f, 131072.0f, 131072.0f}, maxs{-131072.0f, -131072.0f, -131072.0f};
     const auto& verts = bsp.vertices();
     const auto& idx = bsp.indices();
-    for (const auto& soup : bsp.soups()) {
+    // World surfaces only: model 0's soups (lump 35; brush models are entities and stored in model space).
+    const auto [worldFirst, worldCount] = bsp.modelSoups(0);
+    for (size_t si = worldFirst; si < worldFirst + worldCount; ++si) {
+        const auto& soup = bsp.soups()[si];
         if (soup.material < skip.size() && skip[soup.material]) continue;
         // Surface bounds (the surface reference's bounds pointer, +8): the soup's vertex bounds.
         std::array<float, 3> smin{1e30f, 1e30f, 1e30f}, smax{-1e30f, -1e30f, -1e30f};
