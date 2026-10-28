@@ -90,16 +90,22 @@ void World::touchFriendlyChain(Entity& trigger, Entity& other) {
     print("ERROR: Friendly chain node '" + id + "' does not exist");
 }
 
-// 0x505ed0: an actor with a goal entity that is a sentient follows it along the friendly chain.
+// 0x505ed0: an actor with a goal entity that is a sentient follows it along the friendly chain. Without one (no goal entity,
+// or one that is not a sentient: gentity +0x104 null) the chain node +0x78c is cleared (0x505f5e); the path update calls this
+// unconditionally (0x503547).
 void World::followFriendlyChain(Entity& e) {
     Entity* S = entityOf(e.obj->get("$goalent"));
-    if (!S || !isSentient(*S)) return;
+    if (!S || !isSentient(*S)) {
+        e.chainNode = -1;
+        return;
+    }
     const Value minV = e.obj->get("followmin"), maxV = e.obj->get("followmax");
     const int minOff = minV.isNumber() ? minV.asInt() : 0, maxOff = maxV.isNumber() ? maxV.asInt() : 0;
     if (enemyTeams(e, *S)) {
         SentientInfo& in = e.sentientInfo[S->obj.get()]; // 0x500c50
         in.lastKnownMs = timeMs_;
         in.lastKnownPos = originOf(S->obj);
+        in.lastKnownNode = S->cachedNode;
         in.ownPosThen = originOf(e.obj);
         e.chainNode = -1;
     } else if (minOff > maxOff) {
@@ -156,7 +162,11 @@ float num(const ObjectPtr& o, const char* key, float def) {
 // followmin <= followmax gives mode 2 (the actor's own origin without a chain node; else the chain node's origin, whose
 // non-zero radius sets radius = max(radius, 4) and height = max(goalheight, 80), a zero one leaves both as they were);
 // any other goal entity gives its origin (mode 1) and no entity the position of setgoalpos / setgoalnode (mode 0); those
-// take radius max(goalradius, 4) and height max(goalheight, 80). TODO(spec): the other caller 0x54ad05.
+// take radius max(goalradius, 4) and height max(goalheight, 80). The working goal volume (+0x75c) is the script volume
+// (+0x778) in mode 0 and none in modes 1, 2, 3 (0x505fda / 0x50605c store 0, 0x506195 copies +0x778); the in-goal test
+// 0x5026d0, isingoal (0x540c7e) and the cover filter (0x54c492) read the working one. At spawn the working goal is the script
+// goal block set to (origin, radius 4, height 80) (0x4fc80d..0x4fc837: 0x5061f0 / 0x506220 clamp 0 to 4 / 80), which is what a
+// zero-radius chain node leaves in place on the first update.
 void World::updateWorkingGoal(Entity& e) {
     Entity::WorkGoal& g = e.workGoal;
     auto tail = [&] {
@@ -169,6 +179,7 @@ void World::updateWorkingGoal(Entity& e) {
         g.set = true;
         g.pos = e.sentientInfo[enemy->obj.get()].lastKnownPos;
         g.mode = 3;
+        g.scriptVolume = false;
         const float d = num(e.obj, "pathenemyfightdist", 0.0f);
         g.radius = std::max(d, 4.0f);
         g.height = std::max(d > 80.0f ? 512.0f : 80.0f, 80.0f);
@@ -181,6 +192,7 @@ void World::updateWorkingGoal(Entity& e) {
         g.set = true;
         g.pos = gp.asVector();
         g.mode = 0;
+        g.scriptVolume = true;
         tail();
         return;
     }
@@ -191,10 +203,12 @@ void World::updateWorkingGoal(Entity& e) {
         g.set = true;
         g.pos = originOf(G->obj);
         g.mode = 1;
+        g.scriptVolume = false;
         tail();
         return;
     }
     g.mode = 2;
+    g.scriptVolume = false;
     if (e.chainNode < 0) {
         g.set = true;
         g.pos = originOf(e.obj);
@@ -205,9 +219,12 @@ void World::updateWorkingGoal(Entity& e) {
     g.set = true;
     g.pos = originOf(n.obj);
     const float nr = num(n.obj, "radius", 0.0f);
-    if (nr != 0.0f || first) { // TODO(spec): the radius and height with a zero-radius node stay as the last update left them
+    if (nr != 0.0f) { // 0x5061f0 / 0x506220
         g.radius = std::max(nr, 4.0f);
         g.height = std::max(num(e.obj, "goalheight", 0.0f), 80.0f);
+    } else if (first) { // the spawn values (0x4fc823 / 0x4fc82a)
+        g.radius = 4.0f;
+        g.height = 80.0f;
     }
 }
 

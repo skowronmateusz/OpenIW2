@@ -61,7 +61,10 @@ void World::syncEntityClips() {
     std::vector<EntityClip> clips;
     for (const auto& ep : entities_) {
         const Entity& e = *ep;
-        if ((e.isActor || e.isPlayer) && isAlive(e)) {
+        // A dying actor (death state, not yet a corpse) keeps its box: the living contents until the death think writes
+        // 0x4002000 (actorstate.cpp deathThink, 0x548bc0).
+        const bool dying = e.isActor && !e.isSpawner && !e.obj->removed && !e.ai.corpse && !isAlive(e) && e.ai.stack[size_t(e.ai.depth)] == AiDeath;
+        if (((e.isActor || e.isPlayer) && isAlive(e)) || dying) {
             const Value o = e.obj->get("origin");
             if (!o.isVector()) continue;
             EntityClip c;
@@ -69,7 +72,7 @@ void World::syncEntityClips() {
             c.origin = o.asVector();
             c.mins = {-15, -15, 0};
             c.maxs = {15, 15, e.isActor ? 72.0f : 70.0f};
-            c.contents = entityContents(e); // 0xc0: 0x4000 actor (0x4fc74f), 0x2000000 player (0x4e90e2), or what setcontents stored
+            c.contents = e.isActor && e.ai.dyingContents ? e.ai.dyingContents : entityContents(e); // 0xc0: 0x4000 actor (0x4fc74f), 0x2000000 player (0x4e90e2), what setcontents stored, or the death think's 0x4002000 (0x548bc0)
             if (!c.contents) continue;      // 0x44b2d0 unlinks an entity without contents: no trace sees it
             c.hitBoxes = e.isActor;
             clips.push_back(c);

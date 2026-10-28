@@ -460,7 +460,7 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
     for (auto [node, score] : list) {
         if (node == ignore || !nodeUsable(e, node) || !nodeFacesEnemy(e, node)) continue;
         if (coverScriptAt(e, node, true, script) && script.empty()) continue;
-        if (!goalVolumeHolds(e, vecField(nodes_[size_t(node)].obj, "origin"))) continue; // 0x54c310: outside the goal volume
+        if (!workGoalVolumeHolds(e, vecField(nodes_[size_t(node)].obj, "origin"))) continue; // 0x54c310: outside the working goal volume (+0x75c, 0x54c492)
         if (node == prefer) {
             score = 16.0f;
         } else {
@@ -914,7 +914,7 @@ void World::registerCoverBuiltins() {
             Vec3 at;
             const float step = e.ai.prone.tilt ? 10.0f : 18.0f; // actor +0x288 (prone tilt byte, 0x5491bf)
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
-            if (pathToPoint(e, at) && actorHasPath(e)) {
+            if (pathToPoint(e, at, false) && actorHasPath(e)) { // 0x549229: 0x503650(…, 0), no traversals
                 e.ai.substate = kSubReacquire;
                 e.ai.facing = 3;
                 return Value(1);

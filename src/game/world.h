@@ -109,7 +109,7 @@ struct ActorProne {
 struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
     int depth = 0;
-    int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); IW2_ACTOR_SLIDE only
+    int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); slide move only (default on)
     int groundEnt = 0x7fe;                    // block +0x18 (ground entity of the actor slide move; 0x7fe at init, 0x500d27)
     int64_t baseStateMs = 0;                  // +0x20 time the bottom state was last set
     struct Request { int type, state; };      // 1 replace, 2 push, 3 pop
@@ -119,8 +119,13 @@ struct ActorAi {
     int substate = 0;                         // +0x28
     int64_t perceptionFrameMs = -1;           // +0x24
     int64_t painStartMs = 0;                  // +0xa4
-    int facing = 0;                           // +0x104 (TODO(spec): its effect on the actor's yaw)
+    int facing = 0;                           // +0x104 facing mode of the base block (actorfacing.cpp)
     int orient = 0;                           // +0x114 orientmode override (0 = none, else a facing mode 1..6)
+    float lookAngles[2] = {0, 0};             // +0xd8 / +0xdc look pitch / yaw (lookforward +0xe0 from them, 0x5049a0)
+    int64_t threatCheckMs = 0;                // +0x204c next nearest-threat facing check (0x505790)
+    Vec3 blockVel{};                          // +0x230 block velocity of the previous physics step (read by 0x505b80 / 0x505cb0)
+    int64_t walkedMs = -1;                    // level time of the last mode-1 path walk (moveActor)
+    bool facingInit = false;
     int64_t meleeFrameMs = -1;                // +0xcc: level time of the last melee blow (one per frame, 0x550c7a)
     float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
     // Facing look blocks (0x504950 / 0x5055d0): base +0x108 pitch / +0x10c yaw / +0x110 turn target, override +0x118 / +0x11c
@@ -140,6 +145,7 @@ struct ActorAi {
     int trimCount = 0;     // +0x70c: set to path count + 1 by findreacquire*path (0x5492f9); consumed by trimpathtoattack
     int trimState = 0;     // +0x710: set to -2 by findreacquire*path (0x5492e7)                  // sentient +0x40: next node-facing check (0x515390), every 4950 ms
     int moveNoiseMs = 0;                      // actor +0x23c.. (0x224 struct +0x1c): the movement noise accumulator 0x5485a0
+    int64_t lastFoliageMs = 0;                // actor +0x290 (0x224 struct +0x6c): time of the last foliage sound event (0x548650)
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
@@ -153,6 +159,7 @@ struct ActorAi {
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
     std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
     bool corpse = false;                      // turned into a corpse (0x4fdba0)
+    uint32_t dyingContents = 0;               // gentity +0xc0 written by the death think 500 ms into the state (0x548bc0: 0x4002000); 0 = unchanged
     bool badPlace = false;                    // +0x2128: noticed a bad place (→ badplace state)
     struct Entity* grenade = nullptr;         // +0x20c4: grenade it reacts to (script field "grenade")
     bool throwPending = false;                // +0x20d0: a solved throw waits for throwGrenade
@@ -264,6 +271,7 @@ struct Entity {
         Vec3 pos{};
         float radius = 0, height = 0;
         int mode = 0;
+        bool scriptVolume = true; // +0x75c: the script goal volume (+0x778) in mode 0, none otherwise
     } workGoal;
     // Perception (src/game/perception.cpp): what this actor knows about each sentient, and how many actors have
     // this sentient as their enemy (sentient +0x24).
@@ -679,7 +687,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -810,6 +818,7 @@ private:
     void releaseTurret(Entity& turret);
     bool actorInGoal(Entity& e, float extra);
     bool goalVolumeHolds(Entity& e, const Vec3& p);
+    bool workGoalVolumeHolds(Entity& e, const Vec3& p); // the working goal volume (+0x75c)
     bool turretStateStart(Entity& e);
     int turretStateThink(Entity& e);
     void turretStateFinish(Entity& e);
@@ -831,6 +840,7 @@ private:
     void actorPain(Entity& e, Entity* attacker);
     void actorPainNode(Entity& e, Entity* attacker, bool nodeRelease);
     void actorMoveNoise(Entity& e);
+    void actorFoliageSound(Entity& e); // 0x548650
     void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);
@@ -846,6 +856,16 @@ private:
     void setFacingDir(Entity& e, bool override, const Vec3& dir);      // 0x5055d0
     void faceMotion(Entity& e, bool override);                         // 0x505630
     bool mayFaceEnemyMoving(const Entity& e, const Vec3& dir) const;   // 0x545580
+    // The rest of the move frame (actorfacing.cpp; the selector above is actorFacing).
+    void setLookAngles(Entity& e, float pitch, float yaw);            // 0x5049a0
+    void initActorFacing(Entity& e);                                  // spawn 0x4fc7c9..0x4fc806
+    void faceBlockToAngles(Entity& e, bool look);                     // 0x53e237 / 0x54b1f3: base block from the entity angles
+    void turnActorByDelta(Entity& e, float yawDelta);                 // 0x504aa0
+    void actorLookTurn(Entity& e);                                    // 0x504be0
+    bool nodesSeeEachOther(int a, int b) const;                       // 0x517e40
+    int enemyPositionNode(Entity& e, Entity& target, const SentientInfo* rec); // 0x5432f0 / 0x547330
+    bool faceThreat(Entity& e, bool override);                        // 0x505790
+    void actorMoveFrame(Entity& e);                                   // 0x504450 / 0x504160
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);
@@ -900,7 +920,7 @@ private:
     void updateClaimedNode(Entity& e);
     void updateClaimedNodeCore(Entity& e); // 0x4fe740
     bool nearClaimedNodeOf(const Entity& a, const Vec3& pos) const; // 0x502660
-    bool pathToPoint(Entity& e, const Vec3& target);
+    bool pathToPoint(Entity& e, const Vec3& target, bool allowTraversal = true); // 0x503650 (third argument)
     bool pathToSentient(Entity& e, const Vec3& target);
     // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
     void actorLearns(Entity& target, Entity& about); // 0x500c50
@@ -933,7 +953,9 @@ private:
     bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
                      std::vector<int>& chain, float capSq = -1.0f, const std::function<bool(const Vec3&)>* nodeOk = nullptr);
     bool pathToPointNear(Entity& e, const Vec3& target, float capSq);
-    void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
+    // 0x541da0: useGoalPos is its fifth argument (the goal point is added when it differs from the goal node), allowTraversal its
+    // sixth (path flag 0x10; a negotiation pair on the chain refuses the whole path when it is false). Returns false on refusal.
+    bool buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos, bool useGoalPos = true, bool allowTraversal = true);
     void dropPathGoalPoints(ActorPath& p, int n);
     void pathClearBudget(ActorPath& p, const Vec3& o);
     void pathLookReset(Entity& e, const Vec3& o, bool correct);

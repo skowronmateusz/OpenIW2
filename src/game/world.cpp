@@ -566,17 +566,26 @@ void World::thinkActors() {
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
         if (!e.isActor || e.obj->removed || e.ai.corpse) continue;
-        {
-            // lookforward: unit vector of the actor's facing (native field, docs/spec/ai.md).
-            const Value ang = e.obj->get("angles");
-            const float yaw = ang.isVector() ? ang.asVector()[1] * float(M_PI) / 180.0f : 0.0f;
-            e.obj->set("lookforward", Value(Vec3{std::cos(yaw), std::sin(yaw), 0}));
-        }
+        if (!e.ai.facingInit) initActorFacing(e); // lookforward (+0xe0) follows the look angles (actorfacing.cpp)
         e.ai.thoughtMs = timeMs_;
+        e.ai.blockVel = e.velocity; // the block velocity of the previous physics step (+0x230, read by 0x505b80 / 0x505cb0)
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
         actorThink(e);
-        if (!e.ai.corpse) actorFacing(e);
-        if (!e.ai.corpse) actorMoveNoise(e);
+        // The move frame 0x504450 (anim-mode step, turn, facing) runs from the thinks of the exposed, grenade, badplace, death,
+        // pain, animcustom and negotiation states (0x4fe8d0, 0x520a3e, 0x548b60, 0x54b358, 0x54b8ab, 0x54d483), not from the
+        // turret (0x54aba0) or animscripted (0x54b0a0) thinks.
+        if (!e.ai.corpse) {
+            const int st = e.ai.stack[size_t(e.ai.depth)];
+            if (st != AiTurret && st != AiScripted) actorMoveFrame(e);
+        }
+        // 0x4ff0b5..0x4ff1b8: when the origin differs from the one stored at the previous think (sentient +0x10), the entity
+        // is relinked and the move block runs the movement noise 0x5485a0 (alive actors, +0x25c) and the foliage sound
+        // 0x548650; an actor that did not move runs neither (its noise sum is kept, not cleared).
+        const Value ov = e.obj->get("origin");
+        if (!e.ai.corpse && e.ai.prone.haveLast && ov.isVector() && ov.asVector() != e.ai.prone.lastOrigin) {
+            actorMoveNoise(e);
+            actorFoliageSound(e);
+        }
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
     }
@@ -655,6 +664,7 @@ void World::moveActor(Entity& e, float dt) {
         e.ai.trail.v[size_t(e.ai.trail.idx)] = f2;
         e.ai.trail.advance();
     }
+    if (p.count > 0 && !followed) e.ai.walkedMs = timeMs_;
     if (step > 0.0f) {
         // The yaw is not written here: the facing selector (actorFacing, 0x505d80) and turn (0x504ca0) set it and desiredangle.
         const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
@@ -678,7 +688,7 @@ void World::moveActor(Entity& e, float dt) {
         pm.gravity = gravity();
         pm.mask = e.ai.noPush ? 0x2820011u : 0x820011u; // actor +0x28c, see actorMoveNoise
         pm.groundEnt = uint16_t(e.ai.groundEnt);
-        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.velocity[a];
+        for (int a = 0; a < 3; ++a) pm.velocity[a] = e.ai.blockVel[size_t(a)]; // the block velocity persists between frames (+0x230)
         const SlideTraceFn fn = [&](const float s[3], const float en[3]) {
             const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 72}, pm.mask, e.number);
             SlideTrace t;
@@ -1107,16 +1117,29 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("weaponisboltaction", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "boltaction") == "1"); });
     vm_.registerBuiltin("weapontype", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weapontype")); });
     vm_.registerBuiltin("weaponclass", [weaponField](CallContext& c) { return Value(weaponField(c.arg(0), "weaponclass")); });
-    // Angle of the actor's motion relative to its facing, in degrees (0 = moving forward). Inferred from
-    // animscripts/utility.gsc QuadrantAnimWeights(getMotionAngle() + 180) picking "front" for forward motion.
-    vm_.registerBuiltin("getmotionangle", [](CallContext& c) {
-        const auto o = c.self.asObject();
-        const Value mv = o->get("$motionyaw"), an = o->get("angles");
-        if (!mv.isNumber() || !an.isVector()) return Value(0.0f);
-        float d = mv.asFloat() - an.asVector()[1];
-        while (d > 180) d -= 360;
-        while (d < -180) d += 360;
-        return Value(d);
+    // getmotionangle (0x53f770): with a block velocity (+0x230) of more than 1 unit (2D, squared) its yaw (0x421890) minus the
+    // entity yaw (0x423f50); else with a path the look direction's yaw (+0x6c8) minus the entity yaw; else 0.
+    vm_.registerBuiltin("getmotionangle", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("not an actor");
+        const Value an = e->obj->get("angles");
+        const float yaw = an.isVector() ? an.asVector()[1] : 0.0f;
+        auto vecYaw = [](float x, float y) {
+            if (x == 0.0f && y == 0.0f) return 0.0f;
+            float a = std::atan2(y, x) * 180.0f / float(M_PI);
+            if (a < 0.0f) a += 360.0f;
+            return a;
+        };
+        auto sub = [](float a, float b) {
+            float d = a - b;
+            while (d > 180.0f) d -= 360.0f;
+            while (d < -180.0f) d += 360.0f;
+            return d;
+        };
+        const Vec3& v = e->velocity;
+        if (v[0] * v[0] + v[1] * v[1] > 1.0f) return Value(sub(vecYaw(v[0], v[1]), yaw));
+        if (e->path.count > 0) return Value(sub(vecYaw(e->path.lookDir[0], e->path.lookDir[1]), yaw));
+        return Value(0.0f);
     });
     vm_.registerBuiltin("getentitynumber", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
@@ -1129,7 +1152,7 @@ void World::registerBuiltins() {
         return Value(int32_t(e->number));
     });
     // gethitenttype 0x5400c0: "none" for 0x7ff, "obstacle" when the bumped entity's r.contents (ent +0x128) has bit 0x400, else "world".
-    // The bumped entity (+0x318) is only tracked with IW2_ACTOR_SLIDE (World::moveActor), so it is "none" otherwise.
+    // The bumped entity (+0x318) is written by the actor slide move (World::moveActor; off only with IW2_ACTOR_SLIDE=0).
     vm_.registerBuiltin("gethitenttype", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("gethitenttype on a non-actor");

@@ -36,8 +36,8 @@ std::vector<std::string> playerEventSounds(int ev, bool footsteps) {
         out.push_back("land_damage");
     } else if (ev == 0x8b) {
         // 0x4bac0b (jump table 0x4bb74c entry 0): only the alias loaded at 0x4a29f0 ("movement_foliage"), no footsteps gate.
-        // The generator (PM_FoliageSounds 0x50ac30 -> event 0x8b at 0x50ad73, timed by dvars and a trace 0x507b00)
-        // is not ported: TODO(spec) dvar identities 0x1c7efb4/0x1c7eff4/0x1c7f03c/0x1c7efd0/0x1c7f000.
+        // The generators: PM_FoliageSounds 0x50ac30 (pmove.cpp foliageSounds) for the player and 0x548650
+        // (World::actorFoliageSound) for actors; dvars bg_foliagesnd_* (0x1c7efb4 .. 0x1c7f03c, see docs/spec/ai.md).
         out.push_back("movement_foliage");
     }
     return out;

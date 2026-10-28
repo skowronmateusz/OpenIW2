@@ -178,8 +178,12 @@ int World::grenadeCoverNode(Entity& e, float r) {
 }
 
 // 0x503ca0 → 0x5429e0 / 0x542a60 / 0x545f30: from the sentient's node, a best-first search over the graph (team-blocked
-// links skipped) for the first node at least `dist` (2D) from `p`, preferring nodes far from it (h = dist − distance);
-// failing that, the farthest node seen. The path ends at that node.
+// links skipped) for the first node at least `dist` (2D) from `p`, preferring nodes far from it (h = dist − distance).
+// The search keeps the farthest node seen in its result block (+0x14 best distance², starting at -1.0, +0x18 the node,
+// 0x542abd / 0x542ac5). The fallback 0x542a60 (0x542ae3..0x542b18): when the search finds no node far enough, no path is
+// built if that farthest node is the start node itself; otherwise the path is built to it with 0x541da0 (goal point 0,
+// traversals = the wrapper's last argument, 1 from both callers 0x503ca0 / 0x51faf9). The path ends at that node. The plane
+// variant (0x542b70 -> 0x542bf0 -> 0x5461a0, goal point 0, traversals 1) has no such fallback.
 bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes) {
     clearActorPath(e);
     e.nodeCached = false;
@@ -197,7 +201,7 @@ bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes) {
     const int id = ++searchId_;
     const int team = teamOf(e);
     int head = start, found = -1, far = -1;
-    float farD = 0.0f;
+    float farD = -1.0f; // 0x542abd: best distance² starts at -1.0
     s[size_t(start)] = {id, -1, kHead, -1, 0.0f, 0.0f, true};
     auto setNext = [&](int node, int next) { (node == kHead ? head : s[size_t(node)].next) = next; };
     while (head >= 0) {
@@ -246,12 +250,14 @@ bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes) {
         s[size_t(cur)].queued = false;
     }
     const int goal = found >= 0 ? found : far;
-    if (goal < 0) return false;
+    // The plane variant (0x542b70 -> 0x542bf0 -> 0x5461a0) has no fallback: 0x542bf0 returns the search result, 0 when it ran
+    // out of nodes. The plain one (0x542a60) falls back to the farthest node unless it is the start node (0x542ae7).
+    if (found < 0 && !planes.empty()) return false;
+    if (goal < 0 || (found < 0 && goal == start)) return false;
     std::vector<int> chain;
     for (int c = goal; c >= 0; c = c == start ? -1 : s[size_t(c)].parent) chain.push_back(c);
     std::reverse(chain.begin(), chain.end());
-    buildActorPath(e, chain, paths_.position(size_t(goal)));
-    return true;
+    return buildActorPath(e, chain, paths_.position(size_t(goal)), false, true);
 }
 
 // 0x51fb20: going for a grenade of the enemy team to throw it back: it must land within 96 units (2D) of the actor;
@@ -292,7 +298,7 @@ bool World::grenadeAcquire(Entity& e) {
         ai.throwFromTag = false;
         if (!grenadeHintFromLanding(e, landing, vel)) return false;
     }
-    pathToPoint(e, aim);
+    pathToPoint(e, aim, false); // 0x51fd89: 0x503650(…, 0), no traversals
     if (!actorHasPath(e)) return false;
     if (!enemy && thrower != &e) setEnemy(e, thrower, true);
     // 0x51fded..0x51fe45: the kept start is the landing point itself (not the arm-offset start of 0x51f490); the

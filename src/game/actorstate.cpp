@@ -1,6 +1,7 @@
 // The actor state machine (docs/spec/ai.md "AI states"): the state stack and its request queue, the per-frame
 // actor think, the exposed / pain / death / animcustom states and the engine's choice of animscript.
 #include "game/world.h"
+#include "game/pmove.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -316,6 +317,10 @@ void World::killActorAnimScript(Entity& e) {
 }
 
 // The script thread is gone or finished (thread type 0x17 in the script variable table).
+// The animscript thread (+0x200) has ended: id 0, or the VM variable of that id has type 0x17 (0x8bee88 is the VM variable
+// table, stride 16, type in the low 5 bits; the three thread-end paths 0x464990 / 0x46ca60 / 0x46d1f0 turn a thread's type into
+// 0x17 with `& ~8 | 0x17`). Every actor-code reader (0x520973, 0x53ac25, 0x548b09, 0x54b122, 0x54b2d1, 0x54b7c3, 0x54d377)
+// tests only 0x17; no other type is consumed by the actor code.
 bool World::actorAnimScriptDone(Entity& e) {
     return !e.animScriptThread || !vm_.isThreadAlive(e.animScriptThread);
 }
@@ -443,6 +448,7 @@ int World::painThink(Entity& e) {
     actorPerceive(e);
     ai.facing = 1;
     setActorAnimScript(e, "pain", 0, 4);
+    ai.animDeltaGoalWeights = false; // 0x54d47c
     return 0;
 }
 
@@ -467,7 +473,13 @@ int World::deathThink(Entity& e) {
     }
     ai.facing = 1;
     setActorAnimScript(e, "death", 0, 4);
-    // TODO(spec): 500 ms after death the entity's contents become 0x4002000 (corpse); collision does not model it.
+    ai.animDeltaGoalWeights = false; // 0x548b59
+    // 0x548bac..0x548bcd: while the death script runs, from 500 ms after the state was set (+0x20) the entity's contents
+    // (+0xc0) are 0x4002000 and it is relinked. Of the trace masks only bit 0x2000 is hit: bullets / melee / bullettrace
+    // (0x280e831), grenades and rockets (0x280e891), the use trace (0x280e801); not the actor move (0x2820011), the player
+    // (0x281c011) or sight (0x280d803) masks, which do hit the living contents 0x4000 it had until then (syncEntityClips).
+    // The corpse (0x4fdba0, 0x4fdc75) gets 0x4000000, which no mask in the exe holds, so a corpse has no clip here.
+    if (timeMs_ >= ai.baseStateMs + 500) ai.dyingContents = 0x4002000u;
     if (e.ai.prone.corpseBlend) corpseProneFit(e, true); // 0x548b96: smoothed ground fit while the blend runs
     return 0;
 }
@@ -481,6 +493,7 @@ int World::customThink(Entity& e) {
     if (e.claimedNode >= 0) releaseNode(e);
     clearActorPath(e);
     setActorAnimScript(e, "<custom>", 0, 4);
+    e.ai.animDeltaGoalWeights = true; // 0x54b2c2
     if (!actorAnimScriptDone(e)) {
         actorPerceive(e);
         return 0;
@@ -501,30 +514,7 @@ int World::negotiationThink(Entity& e) {
     setActorAnimScript(e, "traverse/" + ai.negotiationScript, 0, mode);
     ai.animDeltaGoalWeights = true;
     if (!actorAnimScriptDone(e)) {
-        if (e.anim) {
-            // 0x504160 modes 4-6: the delta (0x503e40 -> 0x478550) fills the velocity +0x250 (z 0 in mode 4) and its yaw
-            // (0x423900 of the relative quaternion) turns the actor (0x504aa0: angles[1] and the turn targets += yaw). The physics
-            // 0x501d00 rotates the velocity by the yaw +0x124 (x forward, y left), then the actor block moves it (kind 2/3/4).
-            const AnimDelta d = e.anim->delta(true);
-            Value av = e.obj->get("angles");
-            Vec3 ang = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
-            float yawDelta = 0.0f;
-            const float sq = d.rot[0] * d.rot[0] + d.rot[1] * d.rot[1];
-            if (sq > 0.0f) {
-                const float k = 2.0f / sq;
-                yawDelta = std::atan2(d.rot[1] * d.rot[0] * k, 1.0f - k * d.rot[0] * d.rot[0]) * 57.2957763671875f;
-            }
-            if (yawDelta != 0.0f) {
-                ang[1] = std::fmod(ang[1] + yawDelta + 720.0f, 360.0f);
-                e.obj->set("angles", Value(ang));
-                const Value dv = e.obj->get("desiredangle");
-                if (dv.isNumber()) e.obj->set("desiredangle", Value(std::fmod(dv.asFloat() + yawDelta + 720.0f, 360.0f)));
-            }
-            const float yaw = ang[1] * float(M_PI) / 180.0f;
-            const float c = std::cos(yaw), s = std::sin(yaw);
-            const float vz = mode == 4 ? 0.0f : d.trans[2];
-            moveActorKind(e, mode - 2, {d.trans[0] * c - d.trans[1] * s, d.trans[0] * s + d.trans[1] * c, vz}, 0.05f);
-        }
+        // The anim delta, its yaw and the physics of modes 4-6 run in the move frame (actorfacing.cpp actorMoveFrame, 0x54b8ab).
         actorPerceive(e);
         return 0;
     }
@@ -730,6 +720,7 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
         ai.movemode = 0;
     }
     const int r = stepActorPath(e, wide, run);
+    ai.animDeltaGoalWeights = false; // the stop / move script choices 0x53ac90 callers 0x53ae15..0x53b12e clear +0x220
     if (r == 1) {
         standOrFollow(e, "stop"); // 0x5523d2: script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
         if (ai.followed) moveActor(e, 0.05f); // the 0x504160 branch that skips the path walk (0x5041a3 -> 0x504228)
@@ -749,15 +740,6 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
     moveActor(e, 0.05f);
 }
 
-// Goal facing (FUN_00505d80, run by the movement frame FUN_00504160 right before FUN_00504ca0).
-// The facing mode (+0x104) selects the turn target: 6 -> the claimed node's yaw (node +0x20) when it is flagged 0x8000
-// (0x505dcc); 3 without an enemy -> the same node yaw when the actor stands at the node (0x502660: height within 80,
-// 2D distance within 30), after the hostile check 0x505790 (0x50596c..0x5059af). The target is stored by 0x504950 as a
-// 16-bit binary angle (trunc(deg * 65536/360) & 0xffff, * 360/65536) and 0x504ca0 turns the entity towards it, at most
-// 0.4 * 50 = 20 degrees per frame, re-quantising the yaw (pitch and roll 0), and refreshes desiredangle.
-// TODO(spec): modes 2, 4, 5 and 3 with an enemy / hostile target (0x505630, 0x505b80, 0x505cb0, 0x505790, 0x505a80), the
-// pair update by the path move (0x504aa0), orientmode (+0x114), the override angle (+0x159..0x160, 1.8 degrees/frame) and
-// the target while a path is followed (moveActor writes the yaw there).
 static Vec3 vecField(const ObjectPtr& o, const char* key) {
     const Value v = o->get(key);
     return v.isVector() ? v.asVector() : Vec3{0, 0, 0};
@@ -768,13 +750,6 @@ static std::string lowerStr(std::string s) {
     return s;
 }
 
-// Yaw of a direction vector (0x421b30, the same as vectortoangles: 0..360).
-static float yawOfVector(const Vec3& v) {
-    float yaw = v[0] != 0.0f ? std::atan2(v[1], v[0]) * 57.2957795f : (v[1] > 0 ? 90.0f : 270.0f);
-    if (yaw < 0) yaw += 360.0f;
-    return yaw;
-}
-
 static float quantYaw(float deg) { return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f; } // 0x591e68, 0x591f10
 
 void World::actorFacing(Entity& e) {
@@ -782,26 +757,17 @@ void World::actorFacing(Entity& e) {
     const bool ovr = ai.orient != 0;
     const int m = ovr ? ai.orient : ai.facing; // 0x505d80: the orientmode override (+0x114 block), else the facing mode (+0x104)
     const Vec3 o = vecField(e.obj, "origin");
-    // Mode 3 (0x505960). Enemy visible now (record byte 0): face it (0x505a80 -> 0x5055d0; ignored when the 2D distance² < 1.0,
-    // 0x591e20). Not visible: with no path and the enemy seen (record +8) less than 5000 ms ago nothing changes (0x505a08);
-    // otherwise (never seen, or seen long ago) the node facing (0x505a16 -> 0x505920).
-    // TODO(spec): the path branch (0x505a22: +0x6ec time gate, 0x5432f0 position when not seen for > 500 ms); nothing changes.
-    auto faceEnemy = [&]() {
-        Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (enemy) {
-            if (e.path.count > 0) return;
-            const auto it = e.sentientInfo.find(enemy->obj.get());
-            if (it != e.sentientInfo.end() && it->second.visible) {
-                const Vec3 eo = vecField(enemy->obj, "origin");
-                const float dx = eo[0] - o[0], dy = eo[1] - o[1];
-                if (dx * dx + dy * dy < 1.0f) return;
-                setFacing(e, ovr, 0.0f, yawOfVector({dx, dy, 0}));
-                return;
-            }
-            if (it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000) return;
-        }
-        // 0x505920: the claimed node's yaw while standing at a node flagged 0x8000 (0x502660: height within 80, 2D within 30).
-        if (e.path.count > 0 || e.claimedNode < 0) return;
+    // Mode 3 (0x505960, re-read in the exe; disagreements with the earlier decode noted in docs/spec/ai.md "Facing blend").
+    // Without an enemy: the nearest-threat facing 0x505790 (faceThreat), else the claimed node (inline, 0x505982..0x5059b7).
+    // With one, its sight record decides: visible now -> face the enemy's origin. Not visible: never seen (+8 == 0) ->
+    // 0x505920 (threat, then node); no path -> nothing while seen less than 5000 ms ago, else 0x505920; with a path (the earlier
+    // port returned here, but 0x5059f6 only branches to 0x505a22): when the path is older than 300 ms (+0x6ec + 300, 0x591f4c)
+    // and the enemy was not seen for more than 500 ms, the node 0x5432f0 gives (with the record) is faced, else the enemy's
+    // origin (0x505a80). The direction is 3D (0x5055d0 also sets the look pitch); shorter than 1 unit in 2D leaves the block.
+    auto faceNode = [&](bool threatFirst) {
+        if (threatFirst && faceThreat(e, ovr)) return;
+        // 0x502660: the claimed node flagged 0x8000, height within 80, 2D within 30; 0x504950 with pitch 0.
+        if (e.claimedNode < 0) return;
         const PathNode& n = nodes_[size_t(e.claimedNode)];
         if (!(n.spawnflags & 0x8000)) return;
         const Vec3 np = vecField(n.obj, "origin");
@@ -809,10 +775,34 @@ void World::actorFacing(Entity& e) {
         if (dz * dz > 6400.0f || dx * dx + dy * dy > 900.0f) return; // 0x591fdc, 0x591fd4
         setFacing(e, ovr, 0.0f, vecField(n.obj, "angles")[1]);
     };
+    auto faceEnemy = [&]() {
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (!enemy) {
+            if (faceThreat(e, ovr)) return;
+            faceNode(false);
+            return;
+        }
+        SentientInfo& rec = e.sentientInfo[enemy->obj.get()];
+        Vec3 t = vecField(enemy->obj, "origin");
+        if (!rec.visible) {
+            if (rec.lastSeenMs == 0) return faceNode(true);
+            if (e.path.count <= 0) {
+                if (timeMs_ - rec.lastSeenMs < 5000) return;
+                return faceNode(true);
+            }
+            if (float(e.path.planMs) + 300.0f < float(timeMs_) && timeMs_ - rec.lastSeenMs > 500) {
+                const int node = enemyPositionNode(e, *enemy, &rec);
+                if (node >= 0) t = vecField(nodes_[size_t(node)].obj, "origin");
+            }
+        }
+        const Vec3 d{t[0] - o[0], t[1] - o[1], t[2] - o[2]};
+        if (d[0] * d[0] + d[1] * d[1] >= 1.0f) setFacingDir(e, ovr, d);
+    };
     // Modes 4 / 5 while a path is followed with a non-zero velocity (+0x230 / +0x234): face the enemy when 0x545580 allows it
     // for the unit direction to the enemy, else face the motion (0x505630). Mode 4 only tries when the enemy was seen
     // within 250 ms (0x54ce10; it then sets +0x130 = now + 500) and is within 256 (dist² <= 65536, 0x591e24).
-    const bool movingOnPath = e.path.count > 0 && (e.velocity[0] != 0.0f || e.velocity[1] != 0.0f);
+    // The block velocity read here is the previous physics step's (0x505b80 runs inside 0x504160, before 0x501d00).
+    const bool movingOnPath = e.path.count > 0 && (ai.blockVel[0] != 0.0f || ai.blockVel[1] != 0.0f);
     auto enemyDir = [&](Entity* enemy, Vec3& d) {
         const Vec3 eo = vecField(enemy->obj, "origin");
         d = {eo[0] - o[0], eo[1] - o[1], eo[2] - o[2]};
@@ -889,6 +879,7 @@ void World::actorFacing(Entity& e) {
     d = std::max(rate * -50.0f, std::min(rate * 50.0f, d)); // 0x592030 / 0x592034
     e.obj->set("angles", Value(Vec3{0, quantYaw(a[1] + d), 0}));
     e.obj->set("desiredangle", Value(target));
+    actorLookTurn(e); // 0x504be0 (0x50431b)
     if (static const char* fl = std::getenv("IW2_FACING_LOG"); fl && (std::atoi(fl) == e.number || std::atoi(fl) < 0)) {
         const Value mv = e.obj->get("$motionyaw");
         const auto ts = ai.trail.sum();
@@ -948,7 +939,7 @@ void World::registerActorStateBuiltins() {
         if (c.argc() > 1 && c.arg(1).isVector()) {
             const float yaw = quantYaw(c.arg(1).asVector()[1]);
             a->obj->set("angles", Value(Vec3{0, yaw, 0}));
-            a->obj->set("desiredangle", Value(yaw));
+            faceBlockToAngles(*a, true); // 0x53e237 / 0x53e24c: base block and look angles from the new angles
         }
         clearActorPath(*a);
         a->ai.detourMs = 0; // +0x724
@@ -969,15 +960,16 @@ void World::registerActorStateBuiltins() {
         const std::string mode = lowerStr(c.arg(0).toString());
         if (mode == "face angle") {
             ai.orient = 1;
-            ai.orientTarget = quantYaw(c.arg(1).asFloat());
+            setFacing(*e, true, 0.0f, c.arg(1).asFloat()); // 0x53f58c: 0x5048b0(0, angle), +0x120 = the angle
         } else if (mode == "face current") {
             ai.orient = 1;
-            ai.orientTarget = quantYaw(vecField(e->obj, "angles")[1]);
+            const Value da = e->obj->get("desiredangle"); // 0x53f5ce: +0x120 = +0x124
+            ai.orientTarget = da.isNumber() ? da.asFloat() : 0.0f;
         } else if (mode == "face direction") {
             const Vec3 v = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
             if (v[0] == 0.0f && v[1] == 0.0f) throw std::runtime_error("cannot face (0, 0, *)");
             ai.orient = 1;
-            ai.orientTarget = quantYaw(yawOfVector(v));
+            setFacingDir(*e, true, v); // 0x53f646: 0x5055d0 (look pitch from the vector too)
         } else if (mode == "face enemy") {
             ai.orient = 3;
         } else if (mode == "face enemy or motion") {
@@ -991,9 +983,16 @@ void World::registerActorStateBuiltins() {
             const Vec3 o = vecField(e->obj, "origin");
             const Vec3 d{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
             ai.orient = 1;
-            if (d[0] * d[0] + d[1] * d[1] >= 1.0f) ai.orientTarget = quantYaw(yawOfVector(d)); // 0x591e20 = 1.0
+            if (d[0] * d[0] + d[1] * d[1] >= 1.0f) setFacingDir(*e, true, d); // 0x53f730, 0x591e20 = 1.0
         } else if (mode == "face default") {
-            ai.orient = 0; // the base pair keeps the override target; the base target is not modelled
+            // 0x5063f0: with an override the base block takes it over; the override is cleared.
+            if (ai.orient != 0) {
+                ai.facing = ai.orient;
+                ai.basePitch = ai.overridePitch;
+                ai.baseYaw = ai.overrideYaw;
+                ai.baseTarget = ai.orientTarget;
+            }
+            ai.orient = 0;
         } else {
             throw std::runtime_error("orientMode must be 'face angle', 'face current', 'face direction', 'face enemy', 'face enemy or motion', 'face goal', 'face motion', 'face point', or 'face default'");
         }
@@ -1055,6 +1054,36 @@ void World::actorMoveNoise(Entity& e) {
     ++stats.actorNoise;
     aiEventPoint(e, 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
     ai.moveNoiseMs %= 500;
+}
+
+// 0x548650 (after the movement noise, same move gate; block +0x6c the time of the last event): the actor's foliage sound,
+// the same rule as the player's PM_FoliageSounds (0x50ac30, pmove.cpp foliageSounds) with the same dvars
+// (bg_foliagesnd_minspeed 0x1c7efb4, maxspeed 0x1c7f03c, slowinterval 0x1c7f000, fastinterval 0x1c7efd0, resetinterval
+// 0x1c7eff4; registered at 0x4fa6f3..0x4fa7de): the 2D speed of the block velocity below minspeed clears the time once the
+// reset interval has passed; otherwise when slow + (fast - slow) * min((speed - min) / (max - min), 1) ms (truncated, 0x565994)
+// have passed, a box of 0.75 x the block box (maxs z 0.9 x) at the origin traced with contents mask 2 (G_LocationalTrace
+// 0x44bf00, pass entity = the actor) that starts solid (result +0x23) gives the actor event 0x8b (0x4d8020; the client plays
+// "movement_foliage" at the entity, playerevents.cpp) and the time becomes now.
+void World::actorFoliageSound(Entity& e) {
+    static const MoveParams mp; // the bg_foliagesnd_* defaults
+    ActorAi& ai = e.ai;
+    const float speed = std::sqrt(e.velocity[0] * e.velocity[0] + e.velocity[1] * e.velocity[1]);
+    if (speed < mp.foliageMinSpeed) {
+        if (ai.lastFoliageMs + mp.foliageResetInterval < timeMs_) ai.lastFoliageMs = 0;
+        return;
+    }
+    float frac = (speed - mp.foliageMinSpeed) / (mp.foliageMaxSpeed - mp.foliageMinSpeed);
+    if (!(frac <= 1.0f)) frac = 1.0f;
+    const int interval = int(float(mp.foliageFastInterval - mp.foliageSlowInterval) * frac + float(mp.foliageSlowInterval));
+    if (ai.lastFoliageMs + interval >= timeMs_) return;
+    const Value ov = e.obj->get("origin");
+    if (!ov.isVector()) return;
+    const Vec3 o = ov.asVector();
+    const TraceResult tr = collision_->trace(o, o, {-15 * 0.75f, -15 * 0.75f, 0}, {15 * 0.75f, 15 * 0.75f, 72 * 0.9f}, 2u, e.number);
+    if (!tr.startSolid) return;
+    ++stats.actorFoliage;
+    startSound("movement_foliage", &o);
+    ai.lastFoliageMs = timeMs_;
 }
 
 } // namespace iw2::game

@@ -24,6 +24,13 @@ bool World::goalVolumeHolds(Entity& e, const Vec3& p) {
     return !vol || triggerContact(*vol, p, p);
 }
 
+// The working goal's volume (+0x75c, 0x505f70): the script volume while the working goal is the script's goal (mode 0), none
+// for a goal entity or the path to the enemy.
+bool World::workGoalVolumeHolds(Entity& e, const Vec3& p) {
+    if (e.workGoal.set && !e.workGoal.scriptVolume) return true;
+    return goalVolumeHolds(e, p);
+}
+
 // 0x5026d0 (extra 0): the height and the radius around the goal position, then the goal volume (0x447830) when set.
 // With an extra radius (0x502760) there is no volume test.
 bool World::actorInGoal(Entity& e, float extra) {
@@ -35,7 +42,7 @@ bool World::actorInGoal(Entity& e, float extra) {
     if (h * h < dz * dz) return false;
     const float dx = gp[0] - o[0], dy = gp[1] - o[1];
     if (!(dx * dx + dy * dy <= (extra + r) * (extra + r))) return false;
-    return extra != 0.0f || goalVolumeHolds(e, o);
+    return extra != 0.0f || workGoalVolumeHolds(e, o);
 }
 
 // Start (0x549960): take the recorded turret unless someone else uses it. TODO(spec): the actor is linked to the

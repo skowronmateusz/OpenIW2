@@ -123,6 +123,7 @@ bool World::sightCheck(Entity& actor, Entity& target) {
     auto remember = [this](Entity& who, Entity& about, SentientInfo& in) { // 0x500c50
         in.lastKnownMs = timeMs_;
         in.lastKnownPos = about.obj->get("origin").asVector();
+        in.lastKnownNode = about.cachedNode; // 0x500ca2
         in.ownPosThen = who.obj->get("origin").asVector();
     };
     remember(actor, target, info);

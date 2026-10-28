@@ -16,6 +16,7 @@ struct SentientInfo {
     int64_t lastKnownMs = 0;      // +0x10 time of the last known position
     int64_t ignoreUntilMs = 0;    // +0x14
     script::Vec3 lastKnownPos{};  // +0x18 the sentient's origin then
+    int lastKnownNode = -1;       // +0x24 the sentient's node (+0x38) then (0x500ca2)
     script::Vec3 ownPosThen{};    // +0x28 the actor's origin then
 };
 
