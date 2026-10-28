@@ -59,7 +59,9 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
             shownOverrides_.emplace_back(it, true);
         }
     };
-    // setitemcolor (0x4c7ba0): the named colour of every matching item. TODO(spec): the handler's other effects (flag bits) are not read.
+    // setitemcolor (0x4c7ba0): the named colour of every matching item: backcolor -> item +0x1dc, forecolor -> +0x1cc plus item flag
+    // 0xe8 |= 0x10000 (0x4c7c94), bordercolor -> +0x1ec. The 0x10000 flag only decides whether the item background paint (0x4c7346,
+    // 0x4c7478) passes the forecolor on or null. TODO(spec): bordercolor and that flag have no consumer here (needs the item paint decode).
     env_.setItemColor = [this](const std::string& n, const std::string& which, const Color& c) {
         for (const Item* it : matching(n)) {
             auto& r = runtime_[it];
@@ -72,7 +74,14 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
 void MenuStack::settleFades() {
     for (auto& [it, r] : runtime_) {
         if (r.fadingOut) shownOverrides_.emplace_back(it, false);
-        if (r.fadingIn) (r.hasFore ? r.fore : r.back)[3] = 1.0f; // TODO(spec): fadeClamp of the item's menu
+        if (r.fadingIn) {
+            // The fade-in of 0x4cc450 ends with alpha = the item's menu fadeClamp (menu +0x234, parsed by 0x4d1760).
+            float clamp = 1.0f;
+            for (const Menu* m : stack_)
+                for (const auto& mi : m->items)
+                    if (mi.get() == it) clamp = m->fadeClamp;
+            (r.hasFore ? r.fore : r.back)[3] = clamp;
+        }
         r.fadingIn = r.fadingOut = false;
     }
 }
@@ -140,7 +149,9 @@ void MenuStack::close(const std::string& name) {
     if (it == stack_.end()) return;
     const bool wasTop = stack_.back() == m;
     stack_.erase(it);
-    // TODO(spec): the exe's stop/fade of the loop on close (0x4cf92c); here it stops when no open menu names the same loop.
+    // The exe has no explicit stop on close: Menu_Paint (0x4cf92c, 0x4cfb40, 0x4cfd20) re-submits the loop through 0x40fff0 ->
+    // 0x4423d0 for every open menu (flag 0xe8 bit 2) with a soundLoop (+0x254), so it ends when the last such menu is gone.
+    // TODO(spec): the fade tail of the sound system after the last submit (needs the 0x4423d0 sound-start decode).
     if (!loopAlias_.empty() && lower(m->soundLoop) == loopAlias_) {
         bool still = false;
         for (const Menu* o : stack_) still = still || lower(o->soundLoop) == loopAlias_;
@@ -170,8 +181,10 @@ bool MenuStack::itemVisible(const Item& it) const {
     if (!flag) return false;
     if (!it.dvarTest.empty()) {
         const std::string v = env_.getCvar ? env_.getCvar(it.dvarTest) : std::string();
-        // TODO(spec): the exe handler of showDvar/hideDvar; the shipped menus show an item when the value is listed in
-        // showDvar and hide it when listed in hideDvar.
+        // 0x4d4070(item, 4): showDvar (flag 0x4) and hideDvar (0x8) share one list (item +0x2cc, parsed by 0x4d2cb0 / 0x4d2ce0) and
+        // the dvarTest name (+0x2c4); both must be non-empty. The dvar string is compared case-insensitively with each list entry
+        // (";" entries skipped). With showDvar the item shows only when listed; with hideDvar alone it hides when listed. An item
+        // with both keys would use the last list read (no shipped menu has both active).
         if (!it.showDvar.empty() && !inList(it.showDvar, v)) return false;
         if (!it.hideDvar.empty() && inList(it.hideDvar, v)) return false;
     }
@@ -262,8 +275,10 @@ size_t MenuStack::strIndex(const Item& it) const {
 std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
     if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
-        // TODO(spec): the dvar type test (float only) and the language id source (0xc4d2ec+8); here a numeric
-        // dvar (or the unset default) is formatted, other strings are shown as they are.
+        // 0x4cd0e0 formats only a dvar whose type byte (+6) is 1 (float); any other dvar type, or a missing dvar, leaves the label empty
+        // (0x4cd13e). The language id is the value of dvar loc_language (pointer 0xc4d2ec, registered at 0x4968a2..0x4968df, int 0..14),
+        // which env_.language mirrors. TODO(spec): the port's cvars carry no type; here a numeric dvar (or the unset default) is
+        // formatted and other strings are shown as they are.
         const std::string raw = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
         char* end = nullptr;
         double v = std::strtod(raw.c_str(), &end);
@@ -438,7 +453,14 @@ void MenuStack::key(Key k) {
         k == Key::PageDown || k == Key::WheelUp || k == Key::WheelDown)
         return;
     if (k == Key::Escape) {
-        runItem(*m, m->onEsc); // TODO(spec): menus without onESC (main) simply ignore ESC
+        // UI_KeyEvent (0x4c63c0) on ESC down: when no open visible menu is fullScreen (0x4cf6a0, menu +0x214) and the focused menu has
+        // no onESC (+0x24c), every menu is closed (0x4c8080); otherwise the key goes to the menu handler (0x4cbf2a), which runs onESC if
+        // set (nothing for a fullScreen menu without one, e.g. main). TODO(spec): after closing the last menu the exe also clears the
+        // UI key catcher and, when the byte behind pointer 0x59b724 is 0, sets cl_paused to 0 (0x4c6455).
+        bool fullScreenVisible = false;
+        for (const Menu* o : stack_) fullScreenVisible = fullScreenVisible || o->fullScreen;
+        if (m->onEsc.empty() && !fullScreenVisible) closeAll();
+        else runItem(*m, m->onEsc);
         return;
     }
     const auto sel = selectable(*m);
@@ -573,7 +595,9 @@ void MenuStack::listClampVisible(const Item& it, ListState& st) const {
 }
 
 // Vertical listbox keys (0x4c9c60): up/down (and the wheel) move the selection, Home/End/PageUp/PageDown jump; the selection stays
-// visible and the feeder is told. TODO(spec): the exact scroll of End/PageUp/PageDown.
+// visible and the feeder is told. Checked against 0x4c9ee2 (PageDown), 0x4c9f54 (PageUp), 0x4c9f7b (End) and 0x4c9fe1 (Home):
+// PageDown/PageUp move the cursor by the visible row count (clamped to 0..count-1) and the first shown row follows; End puts the
+// cursor on the last row and scrolls so it is the bottom one; Home resets both.
 bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
     ListState& st = lists_[&it];
     const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
@@ -619,7 +643,8 @@ bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
 // a row above the first shown one scrolls up to it.
 void MenuStack::setFeederSelection(int feeder, int row) {
     // The profile scripts (0x4c4c42..0x4c4c7f) walk the open menus from the top of the stack down and select in each one
-    // (a popup may be on top of the list's menu). TODO(spec): the exe only visits menus whose flag word 0xe8 bit 2 is set.
+    // (a popup may be on top of the list's menu). The exe only visits menus whose flag word 0xe8 bit 2 (visible) is set; Menu_Open
+    // sets bits 1 and 2 (0x4cb7e0, orl 6), so every menu on this stack qualifies.
     for (size_t mi = stack_.size(); mi-- > 0;) {
         Menu* m = stack_[mi];
         for (const auto& itp : m->items) {
@@ -725,7 +750,10 @@ void MenuStack::textInput(const std::string& text) {
     if (!editItem()) return;
     const Item& it = *editItem_;
     for (unsigned char c : text) {
-        if (c < 0x20 || c > 0x7e) continue; // TODO(spec): characters above 0x7f
+        // The exe accepts any character code >= 0x20 (0x4ca993) and stores its low byte (0x4caa5a). Characters above 0x7f are kept out
+        // here: the exe gets them as single code-page bytes from the Win32 char message and the port receives UTF-8 text, so
+        // copying the bytes would not reproduce it. TODO(spec): the code-page mapping of the input layer.
+        if (c < 0x20 || c > 0x7f) continue;
         if (it.type == 16 && !(std::isalnum(c) || c == '_' || c == '-')) continue;
         std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
         const int len = int(s.size());

@@ -1090,6 +1090,7 @@ void World::registerCombatBuiltins() {
         if (ms <= 0) throw std::runtime_error("duration must be greater than 0");
         if (radius <= 0) throw std::runtime_error("Radius must be greater than 0");
         earthquakes_.push_back({scale, ms, c.arg(2).asVector(), radius, timeMs_});
+        shakeEvents_.push_back({c.arg(2).asVector(), scale, ms, radius, timeMs_}); // event 0xc7 -> cgame 0x4bf5e0
         return Value();
     });
     // viewkick(damage percent, origin) (0x4f7a40): client +0x8658 = (percent * maxhealth + 50) / 100 (error "viewkick: damage %g < 0"),

@@ -479,8 +479,16 @@ void World::loadState(StateReader& r) {
     pmFlags_ = r.u32();
 
     // The exe writes only the dvars with flag 0x400 (0x4e2e00 -> 0x433200(buffer, 0x400) tests dvar flags & mask), so campaign
-    // progress (mis_01..mis_10 / mis_difficulty, flags 0x1001) is never taken back from a save. openiw2 keeps no dvar flags:
-    // TODO(spec) the full 0x400 set; here every cvar is restored except those known to be outside it, which keep the live value.
+    // progress (mis_01..mis_10 / mis_difficulty, flags 0x1001) is never taken back from a save. openiw2 keeps no dvar flags; the set
+    // with bit 0x400 is read from the register calls (0x431bf0 int / 0x431d00 string / 0x431f60 bool / 0x432020 float, 0x432260 for
+    // string dvars; the flag word is the first pushed argument) and has these members: sv_saveOnStartMap 0x449db0 (0x1404),
+    // cg_fov 0x4a11b3, cg_viewVehicleInfluence 0x4a121b, cg_drawHUD 0x4a1247, cg_hudCompassMaxRange 0x4a1347, ui_campaign
+    // 0x446a61 / 0x4c3222, ui_nextMission 0x4c3267, g_speed 0x4d87bf, g_friendlyNameDist 0x4d8a30, g_friendlyfireDist 0x4d8a50,
+    // g_friendlyfireUseDist 0x4d8a70, g_friendlyfireUseTime 0x4d8aac. Dvars made by the script builtin setcvar (0x4ec4c0, create call
+    // 0x431bf0 with flag word 0) are outside the set, so the exe would not take them back from a save either; this port still
+    // restores them, because its world round trip assumes main() does not run again on a load. TODO(spec): the load sequence that
+    // refills those dvars (needs a decode of the level start after G_ReadGame); until then every cvar except the known-outside ones
+    // below is restored. g_gameskill is registered with 0x1064 / 0x1066, so it is outside the set too.
     {
         auto keepLive = [](const std::string& k) {
             std::string l = k;
@@ -1032,7 +1040,7 @@ void World::registerSaveBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("savegamenocommit", [request](CallContext& c) { return Value(int32_t(request(c, 1))); });
-    // commitsave(id) (0x4f3db0): writes the uncommitted save of that id. TODO(spec): the role of byte 0x1b15ac1 (cleared here).
+    // commitsave(id) (0x4f3db0): writes the uncommitted save of that id. Byte 0x1b15ac1 (set by 0x4d5830 and G_WriteGame 0x4e3ffc..0x4e40c0): when set, the exe clears it and returns without committing. TODO(spec): model it (needs the G_WriteGame caller flow).
     vm_.registerBuiltin("commitsave", [this](CallContext& c) {
         const int id = c.arg(0).asInt();
         commitRequested_ = false;

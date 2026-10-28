@@ -3400,6 +3400,7 @@ int main(int argc, char** argv) {
         };
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
+        game::ViewShake viewShake; // cgame 0x4bf5e0 / 0x4bf700: MG42 fire and earthquake shake
         game::AimBlend aimBlend; // the view model aim layers' cross-fade (0x4b25e0)
         std::string aimBlendWeapon;
         game::ViewImpulses viewImp; // damage kick, landing dip
@@ -4260,6 +4261,19 @@ int main(int argc, char** argv) {
                         q.texture = materialTexture(shader);
                         if (shader == "black") q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
                         dst.push_back(q);
+                        if (o->get("$clockdur").isNumber()) {
+                            // Clock needle (cgame 0x4c2c30): material + "needle" over the same box, rotated by the angle of the
+                            // remaining (or elapsed) time: R * 360 / duration (or one turn per minute without a duration), in 1/65536 turns.
+                            const float endMs = o->get("$timerend").asFloat();
+                            float r = o->get("$clockup").asInt() ? float(world->timeMs()) - endMs : endMs - float(world->timeMs());
+                            r = std::max(0.0f, r);
+                            const float dur = o->get("$clockdur").asFloat();
+                            const int a16 = (dur != 0.0f ? int(r * 360.0f / dur * 182.04444885f) : int(r * 1.0922666f)) & 0xffff;
+                            Quad2D n = q;
+                            n.texture = materialTexture(shader + "needle");
+                            n.rotDeg = float(a16) * 0.0054931640625f; // TODO(spec): rotation sign / pivot of 0x4b0310 as called by 0x4c2d7a
+                            dst.push_back(n);
+                        }
                         continue;
                     }
                     // Text: label, set text, value or timer.
@@ -4273,7 +4287,9 @@ int main(int argc, char** argv) {
                     };
                     std::string text = str(o->get("$text"));
                     if (o->get("$timerend").isNumber()) {
-                        const int secs = std::max(0, int(std::ceil((o->get("$timerend").asFloat() - float(world->timeMs())) / 1000.0f)));
+                        const bool up = o->get("$timerup").isNumber(); // 0x4c1f6a: now - start
+                        const int secs = std::max(0, up ? int((float(world->timeMs()) - o->get("$timerend").asFloat()) / 1000.0f)
+                                                        : int(std::ceil((o->get("$timerend").asFloat() - float(world->timeMs())) / 1000.0f)));
                         text = std::to_string(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + std::to_string(secs % 60);
                     } else if (o->get("$value").isDefined()) {
                         const script::Value v = o->get("$value");
@@ -7240,6 +7256,15 @@ int main(int argc, char** argv) {
             const Camera camBase = cam;
             cam.pitch += recoil.viewKick()[0]; // view kick spring (0x4ae327)
             cam.yaw += recoil.viewKick()[1];
+            if (world) { // screen shake (0x4bf700, after the view offsets): pitch, yaw, roll
+                const game::V3 eye{cam.pos.x, cam.pos.y, cam.pos.z};
+                for (const auto& ev : world->takeShakeEvents())
+                    viewShake.add({ev.origin[0], ev.origin[1], ev.origin[2]}, ev.scale, ev.durationMs, ev.radius, ev.startMs, eye);
+                const game::V3 sh = viewShake.update(world->timeMs(), eye);
+                cam.pitch += sh[0];
+                cam.yaw += sh[1];
+                cam.roll += sh[2];
+            }
             if (world)
                 if (const game::ShockRecord* rec = world->shellShockRecord()) { // shell shock view kick (0x4b2380), render only
                     const auto& ss = world->shellShock();

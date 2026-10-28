@@ -294,7 +294,8 @@ void World::shootTurret(Entity& t) {
     fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user, ts.weapon);
     // EV_FIRE_WEAPON_MG42 (0xaf, sent at 0x51afc1) → cgame 0x4b7800: for an entity that is not the local client
     // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
-    // (empty for the MG42s) plays too. TODO(spec): the view shake 0x4bf5e0 (0.05, 100, 100) of the event. The effect is bolted on tag_flash of the turret entity.
+    // (empty for the MG42s) plays too. The event also shakes the view (0x4bf5e0 with scale 0.05, 100 ms, radius 100 at the entity origin, ViewShake). The effect is bolted on tag_flash of the turret entity.
+    shakeEvents_.push_back({t.obj->get("origin").asVector(), 0.05f, 100, 100.0f, timeMs_});
     const std::string flash = weaponField(ts.weapon, "worldFlashEffect");
     if (!flash.empty()) fxEvents_.push_back({flash, muzzle, dir, t.number, "tag_flash"});
     // Shell eject: the same handler 0x4b7800 calls CG_EjectWeaponBrass (0x4b7730, 0x4b79dc) unless boltAction (+0x328) is set:

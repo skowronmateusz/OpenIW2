@@ -670,6 +670,10 @@ public:
     // vehicle tags, whose rotation the bone-control path does not provide.
     bool entityTagOrientation(int number, const std::string& tag, Vec3& origin, std::array<Vec3, 3>& axes, bool& hasAxes);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
+    // Screen-shake events for the front end (ViewShake, cgame 0x4bf5e0): MG42 fire (event 0xaf: 0.05, 100 ms, radius 100) and earthquake (0xc7).
+    struct ShakeEvent { Vec3 origin; float scale; int durationMs; float radius; int64_t startMs; };
+    std::vector<ShakeEvent> takeShakeEvents() { return std::exchange(shakeEvents_, {}); }
+    std::vector<ShakeEvent> shakeEvents_;
     std::vector<FxEvent> fxEvents_;
     // Bullet tracers requested by impact events (0x4b8140): muzzle point and impact point; the host applies the
     // cg_tracerchance roll and draws them (FxSystem::addTracer).

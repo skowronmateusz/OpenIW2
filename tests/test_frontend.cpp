@@ -217,6 +217,12 @@ int main() {
     CHECK(st.top()->name == "main");
     st.closeAll();
     CHECK(st.empty());
+    // ESC on a non-fullScreen menu without onESC closes every menu (0x4c63f8 -> 0x4c8080).
+    st.open("main");
+    st.open("diff");
+    st.close("diff");
+    st.key(iw2::ui::MenuStack::Key::Escape);
+    CHECK(st.empty());
 
     // Options widgets: origin adds to the rect (exe 0x4d1dd0); slider, yes/no and multi items.
     {

@@ -430,6 +430,7 @@ void World::actorDie(Entity& e, Entity* attacker) {
 // 0x4fdba0: the actor becomes a corpse (entity type 0xb, contents 0x4000000) and is notified "death".
 // TODO(spec): corpse contents are not modelled. The prone block goes to the corpse slot (proneCorpseStart).
 void World::actorBecomeCorpse(Entity& e) {
+    turretStateFinish(e); // 0x4fdc69 (0x4fc960): the turret the dying actor owns is released and the reference cleared
     proneCorpseStart(e, true); // 0x4fdc0c..0x4fdd94: the prone block goes to the corpse slot
     e.ai.corpse = true;
     clearActorPath(e);

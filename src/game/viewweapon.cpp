@@ -505,3 +505,60 @@ void RecoilKick::update(const Field& w, int ms, bool hasWeapon, float adsFrac) {
 }
 
 } // namespace iw2::game
+
+namespace iw2::game {
+// ---- Screen shake (0x4bf540 / 0x4bf5e0 / 0x4bf700) ----
+float ViewShake::rand01() {
+    seed_ = seed_ * 1103515245u + 12345u;
+    return float((seed_ >> 16) & 0x7fff) / 32768.0f;
+}
+
+bool ViewShake::eval(Slot& s, int64_t nowMs, const V3& eye) const {
+    const int64_t t = nowMs - s.start;
+    if (t < 0 || !(float(t) < s.duration)) return false;
+    const float dx = eye[0] - s.origin[0], dy = eye[1] - s.origin[1], dz = eye[2] - s.origin[2];
+    const float a = 1.0f - std::sqrt(dx * dx + dy * dy + dz * dz) / s.radius;
+    const float b = (1.0f - float(t) / s.duration) * s.scale;
+    if (!(b > 0.0f)) return false;
+    s.out1 = a < 0.0f ? a / b : a * b;
+    s.b = b;
+    return true;
+}
+
+void ViewShake::add(const V3& origin, float scale, int durationMs, float radius, int64_t nowMs, const V3& eye) {
+    Slot n;
+    n.start = nowMs;
+    n.scale = scale;
+    n.duration = float(durationMs);
+    n.radius = radius;
+    n.origin = origin;
+    eval(n, nowMs, eye);
+    int idx = -1;
+    for (int i = 0; i < 4; ++i) {
+        const Slot& s = slots_[i];
+        if (s.start > nowMs || float(s.start) + s.duration <= float(nowMs)) { idx = i; break; }
+    }
+    if (idx < 0) {
+        float running = n.out1;
+        for (int i = 0; i < 4; ++i)
+            if (slots_[i].out1 < running) { idx = i; running = slots_[i].out1; }
+        if (idx < 0) return;
+    }
+    slots_[idx] = n;
+}
+
+V3 ViewShake::update(int64_t nowMs, const V3& eye) {
+    float m = 0, b = 0;
+    for (Slot& s : slots_)
+        if (eval(s, nowMs, eye) && s.out1 > m) { m = s.out1; b = s.b; }
+    if (!(m > 0.0f)) {
+        phase_ = (rand01() * 2.0f - 1.0f) * 3.14159274f;
+        return {0, 0, 0};
+    }
+    if (m > 1.0f) m = 1.0f;
+    const float T = float(nowMs) / 600.0f;
+    return {std::sin(T * 25.1327419f + phase_) * m * b * 18.0f, std::sin(T * 47.1238899f + phase_) * m * b * 16.0f,
+            std::sin(T * 37.6991119f + phase_) * m * b * 10.0f};
+}
+
+} // namespace iw2::game
