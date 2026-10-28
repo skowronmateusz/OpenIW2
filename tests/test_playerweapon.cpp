@@ -42,6 +42,63 @@ void boltAction() {
     CHECK(w.clip() == 3);
 }
 
+// Bolt-action brass (0x4b79d1, 0x4dd700, 0x4dd8c0 / 0x4ddfa0): no casing on the shot; event 0xa2 rechamberBoltTime into the
+// rechamber, or min(rechamberBoltTime, add delay) into the reload after the last round. Other weapons never send it.
+int brassAt(PlayerWeapon& w, float seconds, bool fire, std::vector<int>& at, int& tick) {
+    int shots = 0;
+    for (int i = 0; i < int(seconds * 100 + 0.5f); ++i, ++tick) {
+        shots += w.update(0.01f, {fire, false});
+        for (const auto& e : w.takeEvents())
+            if (e.kind == PlayerWeapon::Event::EjectBrass) at.push_back(tick);
+    }
+    return shots;
+}
+
+void boltBrass() {
+    {
+        PlayerWeapon w;
+        w.equip("kar", {{"semiauto", "1"}, {"boltaction", "1"}, {"firetime", "0.33"}, {"rechambertime", "1"},
+                        {"rechamberbolttime", "0.65"}, {"clipsize", "5"}, {"startammo", "20"}, {"raisetime", "0.5"},
+                        {"reloadtime", "2"}, {"fireanim", "fire"}, {"rechamberanim", "rechamber"}});
+        std::vector<int> at;
+        int tick = 0;
+        brassAt(w, 0.6f, false, at, tick);
+        CHECK(brassAt(w, 0.01f, true, at, tick) == 1); // the shot at tick 60
+        CHECK(at.empty());
+        brassAt(w, 0.30f, false, at, tick);              // firing (0.33 s)
+        CHECK(at.empty());
+        brassAt(w, 1.2f, false, at, tick);               // rechamber starts ~0.33 s after the shot, brass 0.65 s into it
+        CHECK(at.size() == 1);
+        if (at.size() == 1) CHECK(at[0] >= 60 + 33 + 64 && at[0] <= 60 + 33 + 67);
+        CHECK(w.anim() != "fire");
+    }
+    {
+        PlayerWeapon w; // last round: no rechamber, the casing comes out during the reload
+        w.equip("kar", {{"semiauto", "1"}, {"boltaction", "1"}, {"firetime", "0.33"}, {"rechambertime", "1"},
+                        {"rechamberbolttime", "0.65"}, {"clipsize", "1"}, {"startammo", "5"}, {"raisetime", "0.5"},
+                        {"reloadtime", "2"}, {"reloademptytime", "2"}, {"reloadaddtime", "1.5"}, {"weapontype", "bullet"}});
+        std::vector<int> at;
+        int tick = 0;
+        brassAt(w, 0.6f, false, at, tick);
+        CHECK(brassAt(w, 0.01f, true, at, tick) == 1);
+        brassAt(w, 0.33f, false, at, tick);
+        CHECK(at.empty());
+        brassAt(w, 1.0f, false, at, tick);
+        CHECK(at.size() == 1);
+        if (at.size() == 1) CHECK(at[0] >= 60 + 33 + 63 && at[0] <= 60 + 33 + 68);
+    }
+    {
+        PlayerWeapon w; // automatic: brass with the shot (cgame), never event 0xa2
+        w.equip("smg", {{"firetime", "0.1"}, {"clipsize", "30"}, {"startammo", "60"}, {"raisetime", "0.1"}, {"reloadtime", "1"}});
+        std::vector<int> at;
+        int tick = 0;
+        brassAt(w, 0.2f, false, at, tick);
+        CHECK(brassAt(w, 1.0f, true, at, tick) == 10);
+        brassAt(w, 1.0f, false, at, tick);
+        CHECK(at.empty());
+    }
+}
+
 // The clip emptied by the last shot reloads by itself once the shot is over (PM_Weapon 0x4de370), without a new press.
 void autoReload() {
     PlayerWeapon w;
@@ -434,6 +491,7 @@ int main() {
     segmentedReload();
     weaponSounds();
     boltAction();
+    boltBrass();
     automatic();
     autoReload();
     weaponChange();
