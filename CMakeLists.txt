@@ -79,7 +79,7 @@ add_library(iw2_game
   src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
-  src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp
+  src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
   src/game/prone.cpp src/game/proneworld.cpp)
@@ -272,3 +272,6 @@ add_test(NAME roq COMMAND test_roq)
 add_executable(test_triggerdamage tests/test_triggerdamage.cpp)
 target_link_libraries(test_triggerdamage PRIVATE iw2_game)
 add_test(NAME triggerdamage COMMAND test_triggerdamage)
+add_executable(test_grenadehint tests/test_grenadehint.cpp)
+target_link_libraries(test_grenadehint PRIVATE iw2_game)
+add_test(NAME grenadehint COMMAND test_grenadehint)
