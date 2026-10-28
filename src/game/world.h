@@ -720,6 +720,7 @@ private:
     void spawnMapEntities();
     void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
     void dropSpawners();  // 0x5325f0: spawners put on the ground at level start
+    bool mapStartSpawn_ = false; // spawnActor runs for the map-start placed actors (their drop sees the earlier entities only)
     void setLevelStartDropClips();
     void registerBuiltins();
     void registerMissingStubs();
