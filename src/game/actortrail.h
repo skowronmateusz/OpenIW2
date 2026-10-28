@@ -1,5 +1,5 @@
 // The follower trail ring of an actor (+0x214c index, +0x2150 ten (x, y) entries). Exe 0x505520 (add), 0x504f60 (advance),
-// 0x504e70 (sum), 0x504de0 (clear). Only the facing blend 0x505630 reads the sum (TODO(spec): not modelled).
+// 0x504e70 (sum), 0x504de0 (clear). The facing blend 0x505630 (World::faceMotion) reads the sum.
 #pragma once
 
 #include <array>

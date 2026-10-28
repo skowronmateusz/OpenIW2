@@ -123,6 +123,11 @@ struct ActorAi {
     int orient = 0;                           // +0x114 orientmode override (0 = none, else a facing mode 1..6)
     int64_t meleeFrameMs = -1;                // +0xcc: level time of the last melee blow (one per frame, 0x550c7a)
     float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
+    // Facing look blocks (0x504950 / 0x5055d0): base +0x108 pitch / +0x10c yaw / +0x110 turn target, override +0x118 / +0x11c
+    // (its target is orientTarget). All 16-bit quantised degrees. The base target starts at the spawn yaw (0x4fc7dd).
+    float basePitch = 0, baseYaw = 0, baseTarget = 0;
+    float overridePitch = 0, overrideYaw = 0;
+    int64_t faceEnemyUntilMs = 0;             // +0x130: now + 500 when mode 4 sees its enemy while moving (0x505bee). TODO(spec): reader
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
     bool animDeltaGoalWeights = false;        // +0x220 anim deltas weigh by goal weights (TODO(spec): the states that set it)
@@ -140,7 +145,7 @@ struct ActorAi {
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
     struct Entity* followed = nullptr;        // +0x2148 the entity this actor yields to (0x501620 steps it aside)
     int sideBits = 0;                         // gentity FLAGS bits 8 / 0x10 (+0x128, not contents +0xc0): the side the last yield step slid to (read back by the yield step of other actors only)
-    ActorTrail trail;                         // +0x214c / +0x2150: the follower trail ring (inert: its reader, the facing blend 0x505630, is not modelled)
+    ActorTrail trail;                         // +0x214c / +0x2150: the follower trail ring (read by the facing blend 0x505630)
     int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
     float goalSide = 0;                       // +0x73c sideways goal offset (0x502960); only ever 0 in the exe (4fc7ab)
@@ -834,6 +839,10 @@ private:
     void exposedCombat(Entity& e);
     void exposedNoncombat(Entity& e);
     void actorFacing(Entity& e); // 0x505d80 + 0x504ca0 (goal facing)
+    void setFacing(Entity& e, bool override, float pitch, float yaw);  // 0x504950
+    void setFacingDir(Entity& e, bool override, const Vec3& dir);      // 0x5055d0
+    void faceMotion(Entity& e, bool override);                         // 0x505630
+    bool mayFaceEnemyMoving(const Entity& e, const Vec3& dir) const;   // 0x545580
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);

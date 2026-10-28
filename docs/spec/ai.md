@@ -774,9 +774,48 @@ goal is dead code (see actorcover.cpp).
   A/B with `IW2_NO_PRONE_TILT`): with the control the body lies on the rising ground beside the wall (right side raised),
   without it the right arm sinks into the slope. Live prone pitches seen so far are a few degrees (not visible).
 
-Open (follower): consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
 TODO(spec): the corpse prone blend (0x4fdba0 copies the block, sets the corpse byte, 500 ms, zero pitches; client mode 2
 with the second rotation 0x423a10 / product 0x4235e0) is not ported; the reader of +0x288; the client draws with its own
 time (0xf708dc), here the server time is used. Not visually checked in iw2view yet.
 Consumers (decoded): 0x4fe8d0 (the end of the exposed / pain / death / grenade / flee thinks: 0x504450, 0x4fe740 = `updateClaimedNodeCore`) and 0x548b60.. then give up the claimed node (0x4fe670) when the FOLLOWED entity stands at it (0x502660: dz^2 <= 6400, 2D distance^2 <= 900; 0x4fe6ca / 0x4fe8eb) - `updateClaimedNode` does this after the core. 0x4fe6c0 is the same check with no caller found. 0x50081d is only the debug text of the actor debug draw ("close: %d" for +0x2148, with "blockee: %d, blocker: %d" and "dontavoidplayer" next to it): no gameplay. 0x501e06 is the physics dispatch already modelled (anim mode 1, movemode set, path count > 0, not followed -> the path mover 0x501e48; followed with anim mode 1 or 7 -> 0x501620). TODO(spec): 0x504450 (placing the entity from the linked parent +0x1c8) before the node update; a path-less / movemode-0 actor goes through the block move at 0x501f22 (clears contents bits 0x18 first), not modelled.
-Open: the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
+Resolved: the facing blend (see "Facing blend"). Open (from before): the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
+
+## Facing blend (ported; src/game/actorfacing.cpp, World::actorFacing)
+
+- Look blocks: base at actor +0x104 (mode, +0x108 pitch, +0x10c yaw, +0x110 turn target), override at +0x114 (orientmode;
+  +0x118, +0x11c, +0x120). 0x5048b0 stores trunc(a * 65536/360) & 0xffff back in degrees for pitch / yaw; 0x504950(pitch,
+  yaw) also sets the target to the quantised yaw; 0x5055d0(dir) does the same from vectoangles(dir) (0x421b30). The spawn
+  (0x4fc7dd) sets the base block from the spawn angles.
+- Selector 0x505d80 (jump table 0x505dec, mode - 2): 2 -> 0x505630, 3 -> 0x505960, 4 -> 0x505b80, 5 -> 0x505cb0, 6 ->
+  0x504950(0, claimed node yaw) when the node has flag 0x8000 (0x505dcc); mode 1 and others: nothing. The override block is
+  used when +0x114 is set.
+- 0x505630 (motion): only with a path (+0x6b0 > 0) in anim mode 1. Moving (movemode +0x214 != 0), path direct (+0x6e8 & 1),
+  lookahead distance (+0x6dc) < 60 (0x591e4c) and lookahead direction (+0x6c8) behind lookforward (+0xe0, dot < 0): keep
+  (0x504950 with the entity pitch / yaw). Else the trail sum (0x504e70); zero: keep; moving: 0x5055d0(sum); standing: the
+  sum normalised (0x421160) and compared with (cos, sin) of the block target: dot < 0.9 (0x59200c) faces it, else keep.
+- 0x505b80 (mode 4): path and a non-zero velocity (+0x230 / +0x234): with an enemy seen within 250 ms (0x54ce10) +0x130 =
+  now + 500 and, within 256 (dist² <= 65536, 0x591e24) and 0x545580(unit direction) true, 0x505960; every other case
+  0x505630. Without a path or standing: 0x505960.
+- 0x505cb0 (mode 5): path and moving: 0x545580(unit direction to the enemy) ? 0x505960 : 0x505630 (the exe reads the enemy
+  without a null check; the port faces the motion without one); otherwise 0x505960.
+- 0x545580: true when the path was planned (+0x6ec) under 300 ms ago, or 0x543ae0 says the path ahead is not longer than
+  128; else with h = (1 + lookDir . dir) / 2: false when 72 - 48 h (0x591f3c, 0x591f40) > lookahead distance, else
+  age < 1500 + 3500 h (0x591f34, 0x591f38).
+- Trail ring: 0x505230 (the path walk) writes every frame ring[idx] = F, then 0x504f60 advances. F = lookahead direction
+  when w = (dist * 20 - 95) / 95 <= 0 (0x591e18, 0x592364, 0x592360), the far direction (+0x6d4) when w >= 1, else the
+  normalised blend w * far + (1 - w) * look (the side offset branch +0x73c is dead). The followed branch (0x504248) adds
+  through 0x505520. 0x5523a2..0x5523c4: when the walk script starts from standing in anim mode 1 with movemode set, the ring
+  is cleared (0x504de0), gentity +0x128 &= ~0x18 and +0x704 = 0. The spawn clears it too (0x4fc806).
+- 0x504ca0 (turn): +0x124 = the active target; yaw turns by at most rate * 50 (0x592030 / 0x592034), rate 0.4, or 0.036
+  (0x3d1374bc) while prone (with the 0x514970 bookkeeping inline); pitch 0; re-quantised. The port no longer writes the yaw
+  in moveActor (it was inferred); the selector + turn do it. Measured on toujane (30 s, IW2_FACING_LOG=-1, moving actors
+  after 3 s): yaw within 3 degrees of the motion in mode 2, 6 in mode 4 (where the enemy facing applies).
+- TODO(spec): the 0x505960 path branch (0x505a22, the +0x6ec gate and 0x5432f0) leaves the target unchanged; the look
+  pitch / yaw (+0x108 / +0x10c) are stored but not read here; +0x130 has no reader found; 0x504aa0 (anim yaw delta into
+  the pairs) belongs to the anim-mode work.
+- 0x504450 (decoded, not wired; called at the end of the exposed / pain / death / grenade / flee thinks and 0x520a3e):
+  anim mode 8: nothing. Linked (gentity +0x1c8): origin and yaw from the parent tag frame (0x4d6ad0, 0x422770, 0x421890),
+  path cleared (0x541780, +0x380 / +0x382 = 0, +0x724 = 0), movement frame 0x504160, velocity +0x230.. and delta +0x250..
+  zeroed, 0x4d6ca0(entity, 1). Otherwise 0x504160, the physics 0x501d00, +0x720 = now + 500 when the bumped entity
+  (+0x318) has a sentient, then 0x4e7150(+0x294, +0x298) (not identified). The port runs these pieces from the state code
+  (moveActor, followActorPath); wiring 0x504450 as one frame is TODO(spec).

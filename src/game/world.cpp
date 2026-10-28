@@ -390,6 +390,11 @@ Entity* World::spawnActor(Entity& spawner, bool force) {
     } catch (const std::exception& ex) {
         print(std::string("animscripts/init: ") + ex.what());
     }
+    { // 0x4fc7dd: the base look block starts at the spawn angles
+        const Value av = a.obj->get("angles");
+        const Vec3 sa = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+        setFacing(a, false, sa[0], sa[1]);
+    }
     a.ai.baseStateMs = timeMs_;
     aiStart(a, a.ai.stack[0]);
     vm_.notify(spawner.obj, "spawned", {Value(a.obj)});
@@ -606,7 +611,7 @@ void World::moveActor(Entity& e, float dt) {
     // flag 0x500d80(bumped entity), the desired delta stays zero (0x504262..0x504268), the mode word is 1 and neither the facing
     // nor the stop-soon check 0x503ec0 run. The physics 0x501d00 then calls the yield step 0x501620 (anim mode 1 or 7), which
     // moves the actor out of the followed entity's way (yieldFollowed); it runs with or without a path.
-    // TODO(spec): the trail 0x505520 / 0x504f60 (+0x2150 ring) only feeds the facing blend (0x504e70 / 0x505630), which is not modelled.
+    // The trail ring (+0x2150) is fed here (0x505520 when followed, 0x505230 otherwise) and read by the facing blend 0x505630.
     const bool followed = e.ai.followed != nullptr;
     const bool yieldNow = followed && e.ai.animMode == 1 && actorSlideEnabled() && e.ai.yieldMs != timeMs_;
     if (p.count <= 0 && !yieldNow) return;
@@ -632,16 +637,28 @@ void World::moveActor(Entity& e, float dt) {
         o[1] += p.lookDir[1] * step;
         o[2] += p.lookDir[2] * step;
     }
+    if (!followed && p.count > 0) {
+        // 0x505230 facing direction F, written into the trail ring every walk frame (then 0x504f60 advances it): the
+        // lookahead direction, or the far direction (+0x6d4), or their normalised blend by w = (dist * 20 - 95) / 95
+        // (0x591e18, 0x592364, 0x592360) clamped to 0..1. The side offset branch (+0x73c) is dead (always 0).
+        const float w = (dist * 20.0f - 95.0f) * 0.010526316f;
+        std::array<float, 2> f2{p.lookDir[0], p.lookDir[1]};
+        if (w > 0.0f) {
+            if (!(w < 1.0f)) {
+                f2 = p.farDir;
+            } else {
+                f2 = {w * p.farDir[0] + (1.0f - w) * p.lookDir[0], w * p.farDir[1] + (1.0f - w) * p.lookDir[1]};
+                const float l = std::sqrt(f2[0] * f2[0] + f2[1] * f2[1]); // 0x421160
+                if (l != 0.0f) f2 = {f2[0] / l, f2[1] / l};
+            }
+        }
+        e.ai.trail.v[size_t(e.ai.trail.idx)] = f2;
+        e.ai.trail.advance();
+    }
     if (step > 0.0f) {
+        // The yaw is not written here: the facing selector (actorFacing, 0x505d80) and turn (0x504ca0) set it and desiredangle.
         const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
-        e.obj->set("angles", Value(Vec3{0, yaw, 0}));
         e.obj->set("$motionyaw", Value(yaw));
-        // desiredangle (actor +0x124): the engine refreshes it at the end of every movement frame from the
-        // active turn-target pair (FUN_00504ca0, called by FUN_00504160 after its turn; degrees, the units of
-        // angles[1] — animscripts/stop.gsc:555 reads AngleClamp(desiredangle - angles[1])). We have no turn
-        // pairs yet (TODO(spec): facing modes, FUN_00504aa0), so while path-moving the target is the look
-        // direction, like the angles write above.
-        e.obj->set("desiredangle", Value(yaw));
     }
     bool grounded = false;
     if (actorSlideEnabled()) {
