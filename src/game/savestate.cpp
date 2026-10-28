@@ -209,6 +209,13 @@ void World::saveState(StateWriter& w) {
         w.f32(b.left);
         w.f32(b.right);
     }
+    // links blocked by bad places, per link and team (+8); restored as is, so a bad place expiring after the load gives back
+    // exactly the counts it took
+    w.u32(uint32_t(linkBlock_.size()));
+    for (const auto& lb : linkBlock_) {
+        w.u32(uint32_t(lb.size()));
+        if (!lb.empty()) w.raw(lb.data(), lb.size() * sizeof lb[0]);
+    }
     w.u32(uint32_t(movers_.size()));
     for (const auto& [n, m] : movers_) {
         w.i32(n);
@@ -526,6 +533,13 @@ void World::loadState(StateReader& r) {
         b.halfHeight = r.f32();
         b.left = r.f32();
         b.right = r.f32();
+    }
+    {
+        linkBlock_.resize(r.u32()); // allocated on first use (badplace.cpp), so the fresh world may not have it yet
+        for (auto& lb : linkBlock_) {
+            lb.resize(r.u32());
+            if (!lb.empty()) r.raw(lb.data(), lb.size() * sizeof lb[0]);
+        }
     }
     movers_.clear();
     for (uint32_t i = 0, n = r.u32(); i < n; ++i) {
