@@ -212,6 +212,21 @@ void World::spawnMapEntities() {
             n.typeNum = pathNodeTypeNum(cls);
             const Value sf = n.obj->get("spawnflags");
             n.spawnflags = sf.isInt() ? sf.asInt() : 0;
+            // Node key parse (0x52d280 via 0x52d0b0, key table 0x5a9670): the yaw (+0x20) starts at the sentinel -1; the
+            // "angles" key (type 0xb, 0x52d1f4) is read as "%f %f %f" and only AngleNormalize360(angles[1]) (0x4240a0) is
+            // stored. A yaw still at -1 becomes 0, any other yaw sets spawnflag 0x8000 (0x52d2ba..0x52d2cd): "node has an
+            // angle", which the node facing (0x505dcc, 0x505935) and the goal check (0x4fef89) test. The script field
+            // `angles` (type 0xb, getter 0x4f9e21) is (0, yaw, 0).
+            bool hasAngles = false;
+            for (const auto& [k, v] : be.fields) hasAngles = hasAngles || lower(k) == "angles";
+            if (hasAngles) {
+                float yaw = n.obj->get("angles").isVector() ? n.obj->get("angles").asVector()[1] : 0.0f;
+                while (yaw < 0.0f) yaw += 360.0f;
+                while (yaw >= 360.0f) yaw -= 360.0f;
+                n.obj->set("angles", Value(Vec3{0.0f, yaw, 0.0f}));
+                n.spawnflags |= 0x8000;
+                n.obj->set("spawnflags", Value(int32_t(n.spawnflags)));
+            }
             nodes_.push_back(std::move(n));
         } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
@@ -1074,7 +1089,6 @@ void World::registerBuiltins() {
         if (c.arg(0).isObject()) {
             o->set("$goalpos", c.arg(0).asObject()->get("origin"));
             o->set("$goalent", Value()); // 0x540880 clears the goal entity (+0x77c)
-            o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
         }
         return Value();
     });
@@ -1082,7 +1096,6 @@ void World::registerBuiltins() {
         if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal
         c.self.asObject()->set("$goalpos", c.arg(0));
         c.self.asObject()->set("$goalent", Value());
-        c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });
     vm_.registerBuiltin("setgoalentity", [this](CallContext& c) {

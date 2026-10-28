@@ -259,7 +259,7 @@ struct PathNode {
     ObjectPtr obj;
     std::string type;               // classname, e.g. node_pathnode
     int typeNum = 0;                // +0x0: 1…18 (spawn table 0x56fea8), 0 unknown
-    int spawnflags = 0;             // +0x4: 0x40 priority (setnodepriority), 0x8000 see 0x54bb30, 1 not a cover candidate
+    int spawnflags = 0;             // +0x4: 0x40 priority (setnodepriority), 0x8000 node has an angle (set by the key parse 0x52d2cd), 1 not a cover candidate
     Entity* owner = nullptr;        // +0x40: sentient that claimed it (or just left it)
     int64_t ownerUntilMs = 0;       // +0x44: kNodeClaimed while claimed, else the owner keeps it until then
     std::array<int64_t, 4> teamBlockedMs{}; // +0x44 + 4·team: unusable for that team until then (1 axis, 2 allies)
@@ -347,7 +347,6 @@ public:
                 if (seen++ != which) continue;
                 a.obj->set("origin", nodes_[size_t(from)].obj->get("origin"));
                 a.obj->set("$goalpos", nodes_[size_t(to)].obj->get("origin"));
-                a.obj->set("$goalnodeangles", Value());
                 a.obj->set("$goalfrozen", Value(true));
                 a.nodeCached = false;
                 clearActorPath(a);

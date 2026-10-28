@@ -37,7 +37,6 @@ described in the code that reads them.
 | `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time. For walking mission flows. |
 | `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). |
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
-| `IW2_DEV_SNAP_GOAL_YAW=1` | iw2game/iw2view | DEV-ONLY BYPASS, not original behaviour: an actor whose goal was set with `setgoalnode` is turned to that node's angles right before it is notified "goal". Lets moscow's `letlev.angles != node.angles` loop (moscow.gsc:5031, the commissar yaw stall) pass so later stages can be walked. |
 | `IW2_ACTOR_DUMP=<team\|all>` | iw2game | At the end of the run prints `actor #N classname (origin) script_noteworthy` for every living actor of the team (`axis`, `allies`, ...) or of all. Used to aim `--player-fire-at`. |
 | `IW2_CHAIN_LOG=1` | iw2game | Prints a line whenever a `trigger_friendlychain` changes the player's friendly chain node (trigger entity number, node name, time). Also prints `setgoalentity at <ms> from <file:line function>` for every `setgoalentity` call. |
 | `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname or `target` starts with the prefix (printed as `targetname -> target`) (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
@@ -84,7 +83,7 @@ described in the code that reads them.
 - Env `IW2_SCENE_COVER=1` (with `IW2_COMBAT_SCENE`): the scene is built around a cover node (victim beside it with the goal volume set, shooter in front) and logs the distance to the node. Env `IW2_COVER_LOG=1`: stderr `[cover ms] #n ...` lines for findcovernode / findbestcovernode / usecovernode, and the scene log adds the victim's animscript thread wait site and animation nodes. Debug only.
 - Env `IW2_TRAVERSE_SCENE=<s>[,<pair>]` (iw2game): at sim time `<s>` takes the first living non-scripted actor, places it at the outer link node before the pair on the shortest route, freezes its goal (`$goalfrozen`, setgoal* ignored) on the far side, neutral team, and prints `[trav]` setup and `[trav t]` state/path/traversal lines every `IW2_TRAVERSE_EVERY` frames (default 10). Debug only.
 
-- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos` for one actor (default every 20 frames). Debug only.
+- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` for one actor (default every 20 frames). Debug only.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 
