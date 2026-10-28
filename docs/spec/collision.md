@@ -251,3 +251,13 @@ G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero prio
   0x1c7f05c death.
 - Used by `maps/_load.gsc` explodable barrels (prop_barrel_benzin): every hit adds to self.damageTaken; burning
   (barrel_ignite / barrel_fire) until level.barrelHealth, then barrelExp, the broken model and radiusdamage 250.
+
+## Static models (misc_model) in bullet and sight traces
+
+`misc_model` entities are baked into the BSP by the compiler; their collision is the model-0 brushes and triangle soups. The
+fallen trees on rhine (`xmodel/tree_destroyed_fallen_tree_a`, e.g. at 363 13332 99) are material `clip_nosight` (lump 0
+contents 0x28031640, 0x8031640 after the 0xdffffffb mask, surface flags 0x15440a0): 0x10000 / 0x20000 player and AI clip, 0x1000 (in
+the sight mask 0x280d803) and bits that are in no bullet mask. Bullet_Fire's mask 0x280e831 (exe 0x5313c7, the same for AI and
+player shots) therefore passes through the trunk while sight traces and movement are blocked: the tree is sight and movement
+cover, not bullet cover (tests/test_rhinecover.cpp). TODO(spec): whether the original has any further bullet-blocking
+collision for static models (none is reachable from the server-side trace code that was read).
