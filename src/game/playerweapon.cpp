@@ -28,12 +28,12 @@ std::string PlayerWeapon::defValue(const Def& d, const char* key) {
 float PlayerWeapon::defNumber(const Def& d, const char* key) { return float(std::atof(defValue(d, key).c_str())); }
 
 std::string PlayerWeapon::gunModel() const {
-    const std::string m = defValue(offhandActive_ ? offDef_ : def_, "gunModel");
+    const std::string m = defValue(binocActive_ ? binocDef_ : offhandActive_ ? offDef_ : def_, "gunModel");
     return m.empty() ? m : "xmodel/" + m;
 }
 
 std::string PlayerWeapon::handModel() const {
-    const std::string m = defValue(offhandActive_ ? offDef_ : def_, "handModel");
+    const std::string m = defValue(binocActive_ ? binocDef_ : offhandActive_ ? offDef_ : def_, "handModel");
     return m.empty() ? m : "xmodel/" + m;
 }
 
@@ -178,8 +178,170 @@ bool PlayerWeapon::viewAiming() const {
     return adsHeld_;
 }
 
+// 0x4df7f0: the binoculars come up: pm_flags |= 0x20000, state 0x13 for the binocular weapon's adsTransInTime, event 0xa8,
+// view animation 0 (the binocular idle).
+void PlayerWeapon::binocularEnter() {
+    if (const Def* d = binocularDef ? binocularDef() : nullptr) binocDef_ = *d;
+    binocActive_ = true;
+    state_ = State::BinocEnter;
+    timer_ = defNumber(binocDef_, "adsTransInTime");
+    delay_ = 0;
+    events_.push_back({Event::BinocularEnter, std::string()});
+    anim_ = defValue(binocDef_, "idleAnim");
+    animTime_ = 0;
+    pendingIdle_ = false;
+}
+
+// 0x4df0a0 from a binocular state: offhand flags 0x810 cleared; 0x4df6c0: aim fraction 0, event 0x95, pm_flags &= ~0x20040,
+// event 0xa9; timers 0, state 0, view animation 0; with attack held weaponTime 1 ms (0x4dfabd).
+void PlayerWeapon::binocularCancel(bool attackHeld) {
+    offhandActive_ = false;
+    adsFrac_ = 0;
+    zoomingIn_ = true;
+    events_.push_back({Event::ReloadBegin, std::string()}); // 0x95: the cgame clears the toggled aim
+    binocActive_ = false;
+    events_.push_back({Event::BinocularExit, std::string()});
+    state_ = State::Ready;
+    timer_ = attackHeld ? 0.001f : 0.0f;
+    delay_ = 0;
+    anim_ = fieldValue("idleAnim");
+    animTime_ = 0;
+    pendingIdle_ = false;
+}
+
+void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
+    // Cancel mask: attack 1, melee 4, reload 0x10, frag / smoke 0x30000; without attack in a vehicle (eFlags 0x20000).
+    const bool maskHeld = in.melee || in.reload || in.frag || in.smoke || (!in.inVehicle && in.fire);
+    const int st = int(state_);
+    if (!inBinoc()) {
+        const std::string ret = fieldValue("adsOverlayReticle");
+        if (adsFrac_ > 0 && !ret.empty() && ret != "none") return; // scoped aim (0x4df9da)
+        if (maskHeld) return;
+        if (st >= 1 && st <= 16) return; // only from the ready state (0x4df9fb..0x4dfa60)
+    }
+    // TODO(spec): ps+0x104 != 0 and the command byte +0xd also cancel (0x4dfa6c..0x4dfa90); not modelled (taken as 0 / unchanged).
+    const bool cancel = in.weapon != prevCmdWeapon_ || maskHeld;
+    if (inBinoc() && cancel) {
+        binocularCancel(in.fire);
+        return;
+    }
+    bool enter = false, exit = false;
+    const bool exitable = st > 0x11 && st < 0x15; // 0x12, 0x13, 0x14 (0x4dfbe1)
+    if (in.fire) goto sw; // attack held (0x4dfac9; in a binocular state only reached in a vehicle)
+    if (state_ == State::BinocUp) { // use pressed / released (0x4dfad6..0x4dfb4c)
+        if (!usePrev_ && in.use) events_.push_back({Event::BinocularFire, std::string()});
+        else if (usePrev_ && !in.use) events_.push_back({Event::BinocularRelease, std::string()});
+    }
+    if (!in.toggleBinoculars) { // hold mode
+        enter = in.binoculars && !inBinoc();
+        exit = !in.binoculars && exitable;
+    } else { // toggle mode: a fresh press enters, or leaves when up
+        const bool pressed = !binocPrev_ && in.binoculars;
+        if (pressed && !inBinoc()) enter = true;
+        else if (pressed) exit = exitable;
+    }
+    if (enter) {
+        if (!binocularDef || !binocularDef()) goto sw;
+        if (in.weapon.empty() && name_.empty()) { // command weapon 0: straight up (0x4dfbb6)
+            binocularEnter();
+            goto sw;
+        }
+        if (!in.ads) { // quick-drop the hand weapon first (0x4dfbc4)
+            state_ = State::BinocDrop;
+            timer_ = time("quickDropTime", 0);
+            delay_ = 0;
+            const std::string a = fieldValue("quickDropAnim");
+            anim_ = a.empty() ? fieldValue("idleAnim") : a;
+            animTime_ = 0;
+            pendingIdle_ = false;
+            goto sw;
+        }
+        // Aiming: leave the aim first (event 0x95, pm_flags &= ~0x40), wait the hand weapon's adsTransOutTime + player_adsExitDelay.
+        events_.push_back({Event::ReloadBegin, std::string()});
+        timer_ = 0;
+        delay_ = time("adsTransOutTime", 0) + in.adsExitDelay;
+        state_ = State::BinocAdsOut;
+        goto sw;
+    }
+    if (exit) {
+        if (state_ == State::BinocDrop) { // still dropping the hand weapon (0x4dfc2b)
+            binocActive_ = false;
+            state_ = State::BinocRaise;
+            events_.push_back({Event::BinocularExit, std::string()});
+            if (!in.weapon.empty() || !name_.empty()) {
+                timer_ = time("quickRaiseTime", 0);
+                delay_ = 0;
+                const std::string a = fieldValue("quickRaiseAnim");
+                anim_ = a.empty() ? fieldValue("idleAnim") : a;
+                animTime_ = 0;
+                pendingIdle_ = false;
+            } else {
+                timer_ = 0;
+                delay_ = 0.001f;
+            }
+            goto sw;
+        }
+        // 0x4df890: lowering, the binocular weapon's adsTransOutTime + player_adsExitDelay, event 0xac, view animation 0.
+        state_ = State::BinocExit;
+        timer_ = defNumber(binocDef_, "adsTransOutTime") + in.adsExitDelay;
+        delay_ = 0;
+        events_.push_back({Event::BinocularDrop, std::string()});
+        goto sw;
+    }
+    // PM_Weapon's switch for 0x11-0x16 once the timers ran out (0x4dfc30 cases; the delay flag is the one taken before 0x4df9b0).
+sw:
+    if (!inBinoc() || !(delayDone || (timer_ <= 0 && delay_ <= 0))) return;
+    switch (state_) {
+    case State::BinocAdsOut: // -> quick drop
+        state_ = State::BinocDrop;
+        timer_ = time("quickDropTime", 0);
+        delay_ = 0;
+        anim_ = fieldValue("quickDropAnim").empty() ? fieldValue("idleAnim") : fieldValue("quickDropAnim");
+        animTime_ = 0;
+        pendingIdle_ = false;
+        break;
+    case State::BinocDrop:
+        binocularEnter();
+        break;
+    case State::BinocEnter:
+        state_ = State::BinocUp;
+        timer_ = delay_ = 0;
+        break;
+    case State::BinocUp:
+        break;
+    case State::BinocExit: // pm_flags &= ~0x20000, 0x16, event 0xa9, quick raise (or a 1 ms delay without a weapon)
+        binocActive_ = false;
+        state_ = State::BinocRaise;
+        events_.push_back({Event::BinocularExit, std::string()});
+        if (!in.weapon.empty() || !name_.empty()) {
+            timer_ = time("quickRaiseTime", 0);
+            delay_ = 0;
+            anim_ = fieldValue("quickRaiseAnim").empty() ? fieldValue("idleAnim") : fieldValue("quickRaiseAnim");
+            animTime_ = 0;
+            pendingIdle_ = false;
+        } else {
+            timer_ = 0;
+            delay_ = 0.001f;
+        }
+        break;
+    case State::BinocRaise: // 0x4df0a0
+        state_ = State::Ready;
+        timer_ = delay_ = 0;
+        anim_ = fieldValue("idleAnim");
+        animTime_ = 0;
+        pendingIdle_ = false;
+        break;
+    default:
+        break;
+    }
+}
+
 int PlayerWeapon::update(float dt, const Input& in) {
-    if (name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster))) return 0;
+    const bool binocPossible = inBinoc() || (in.binoculars && binocularDef && binocularDef());
+    if (!binocPossible && name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster))) {
+        binocPrev_ = in.binoculars, usePrev_ = in.use, prevCmdWeapon_ = in.weapon;
+        return 0;
+    }
     if (name_.empty() && holstered_ && state_ == State::Ready) startDrop(in.weapon); // no weapon: raise at once
     adsHeld_ = in.ads;
     const bool fireEdge = in.fire && !firePrev_; // the press against the old command (0x4de3d3)
@@ -187,13 +349,21 @@ int PlayerWeapon::update(float dt, const Input& in) {
     // Aiming (0x4dd0d0): only weapons with aimDownSight; not while reloading, nor while rechambering unless
     // rechamberWhileAds. The fraction moves by ms / adsTransInTime (or adsTransOutTime) and is clamped to 0..1.
     {
-        const bool can = time("aimDownSight", 0) != 0;
-        const bool want = can && in.ads && state_ != State::Reloading && state_ != State::ReloadStart &&
-                          !(state_ == State::ReloadEnd && timer_ - time("adsReloadTransTime", 0) > 0) &&
-                          !(state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0);
+        // The aim weapon is the binocular one while pm_flags 0x20000 is set (0x4dcf8d); in the binocular states the aim
+        // flag is forced in 0x13 / 0x14 (0x4dd044) and impossible in 0x11, 0x12, 0x15, 0x16 (0x4dcfe5 -> 0x4dcf50).
+        auto adsNum = [&](const char* k, float fb) {
+            if (!binocActive_) return time(k, fb);
+            const std::string v = defValue(binocDef_, k);
+            return v.empty() ? fb : float(std::atof(v.c_str()));
+        };
+        const bool can = adsNum("aimDownSight", 0) != 0;
+        bool want = can && in.ads && state_ != State::Reloading && state_ != State::ReloadStart &&
+                    !(state_ == State::ReloadEnd && timer_ - time("adsReloadTransTime", 0) > 0) &&
+                    !(state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0);
+        if (inBinoc()) want = can && (state_ == State::BinocEnter || state_ == State::BinocUp);
         if (!can) adsFrac_ = 0;
-        else if (want) adsFrac_ += dt / std::max(0.001f, time("adsTransInTime", 0.3f));
-        else adsFrac_ -= dt / std::max(0.001f, time("adsTransOutTime", 0.3f));
+        else if (want) adsFrac_ += dt / std::max(0.001f, adsNum("adsTransInTime", 0.3f));
+        else adsFrac_ -= dt / std::max(0.001f, adsNum("adsTransOutTime", 0.3f));
         adsFrac_ = std::clamp(adsFrac_, 0.0f, 1.0f);
         if (adsFrac_ == 0) zoomingIn_ = true;
         if (adsFrac_ == 1) zoomingIn_ = false;
@@ -227,6 +397,17 @@ int PlayerWeapon::update(float dt, const Input& in) {
     if (offhandActive_ && defValue(offDef_, "weaponType") == "grenade" && fuse_ > 0) {
         if (defNumber(offDef_, "cookOffHold") != 0) fuse_ -= dt;
         if (fuse_ <= 0) events_.push_back({Event::OffhandExplode, offhand_});
+    }
+
+    // Binoculars (0x4df9b0, before the offhand step in PM_Weapon 0x4dfc8f) and the binocular cases of the state switch.
+    {
+        const State before = state_;
+        binocularStep(in, delayDone);
+        binocPrev_ = in.binoculars, usePrev_ = in.use, prevCmdWeapon_ = in.weapon;
+        if (inBinoc() || before != state_) {
+            offhandHeldPrev_ = offhandHeld;
+            if (inBinoc()) return 0;
+        }
     }
 
     // Offhand (0x4df470): +frag / +smoke pick the first grenade of that class with ammo. Not during the throw

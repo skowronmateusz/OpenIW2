@@ -27,6 +27,11 @@ public:
         std::string weapon;  // the command's weapon (cg.weaponSelect); empty = keep the current one
         bool proneMoving = false; // prone with a forward/right command (0x4de46e: no automatic reload then)
         bool holster = false; // 0x4de880: mantling (mantleLowersWeapon), on a ladder or in a vehicle: weapon 0
+        bool binoculars = false;  // usercmd 0x4000 (+binoculars / +breath_binoculars)
+        bool use = false;         // usercmd 0x28 (+activate 0x8 | +usereload 0x20): the binocular "fire"
+        bool inVehicle = false;   // ps eFlags 0x20000: the binocular cancel mask lacks attack (0x30014 instead of 0x30015)
+        bool toggleBinoculars = true; // player_toggleBinoculars (0x1c7f004, registered 0x4faaac, default 1)
+        float adsExitDelay = 0;   // player_adsExitDelay (0x1c7efb8, int ms 0..1000, default 0) in seconds
     };
 
     // Things the game side acts on (player-state events of PM_Weapon).
@@ -41,6 +46,11 @@ public:
             NoAmmo,          // 0x92: fired an empty non-grenade weapon (the cgame shows the WEAPON_NO_AMMO hint)
             OutOfAmmo,       // 0x92 (0x4baec1): the cgame auto-switches weapon (0x4b7090)
             WeaponRaised,    // the player state's weapon changed (end of the drop)
+            BinocularEnter,  // 0xa8: script notify "binocular_enter" on the player (ClientEvents 0x4e76e0)
+            BinocularExit,   // 0xa9: "binocular_exit" (0x4e76fd)
+            BinocularFire,   // 0xaa: "binocular_fire" (0x4e7706)
+            BinocularRelease,// 0xab: "binocular_release" (0x4e7723)
+            BinocularDrop,   // 0xac: "binocular_drop" (0x4e7740)
         } kind;
         std::string weapon;
     };
@@ -51,6 +61,8 @@ public:
     std::function<float(const std::string&)> animLength;
     // 0x4dc6d0: the first owned weapon of an offhand class ("Frag Grenade", "Smoke Grenade") with ammo, or "".
     std::function<std::string(const std::string& offhandClass)> findOffhand;
+    // 0x4dc660: the first registered weapon whose weaponType is binoculars (def +0x78 == 3), nullptr when none.
+    std::function<const Def*()> binocularDef;
 
     // `def` is the parsed weapon file (World::weapon). Starts raising the weapon.
     void equip(const std::string& name, const Def& def);
@@ -90,14 +102,30 @@ public:
     // Fields of the weapon the client shows: the offhand's while flag 0x10 is set (ps+0xac), else the player
     // state's weapon (ps+0xb0), as cgame selects it (e.g. 0x4b6420, 0x4bc8a0). This feeds the view model's aim
     // animations, so a grenade throw is not blended with the hand weapon's adsDownAnim.
+    // With pm_flags 0x20000 (binoculars up) the client uses the binocular weapon (0x4dc660; e.g. 0x4bc8a0, 0x4ae210, 0x4bd760).
     float number(const char* key) const {
+        if (binocActive_) return float(std::atof(defValue(binocDef_, key).c_str()));
         return offhandActive_ ? float(std::atof(defValue(offDef_, key).c_str())) : time(key, 0.0f);
     }
-    std::string field(const char* key) const { return offhandActive_ ? defValue(offDef_, key) : fieldValue(key); }
+    std::string field(const char* key) const {
+        if (binocActive_) return defValue(binocDef_, key);
+        return offhandActive_ ? defValue(offDef_, key) : fieldValue(key);
+    }
+    // The same without the binocular switch: the HUD ammo / name ownerdraws read the player state's weapon (0xf70998,
+    // 0x4a7855) even while the binoculars are up.
+    float hudNumber(const char* key) const {
+        return offhandActive_ ? float(std::atof(defValue(offDef_, key).c_str())) : time(key, 0.0f);
+    }
+    std::string hudField(const char* key) const { return offhandActive_ ? defValue(offDef_, key) : fieldValue(key); }
+    // pm_flags 0x20000: set when the binoculars come up (0x4df7f0 / 0x4df640), cleared when they go down (0x4df680, 0x4df6c0,
+    // states 0x15 / 0x12 exit).
+    bool binocularsUp() const { return binocActive_; }
     // 0x4dcf70 for a player on foot: the weapon has aimDownSight (def +0x32c) and the state is not raising,
-    // dropping, melee or offhand (1, 2, 10, 11, 12–16). TODO(spec): binocular states 0x11–0x16 (0x4dcf50).
+    // dropping, melee or offhand (1, 2, 10, 11, 12–16); in the binocular states 0x11–0x16 only 0x13 / 0x14 (0x4dcf50), with the
+    // binocular weapon's aimDownSight while pm_flags 0x20000 is set.
     bool adsAllowed() const {
         const int s = int(state_);
+        if (s >= 0x11 && s <= 0x16) return (s == 0x13 || s == 0x14) && binocActive_ && defNumber(binocDef_, "aimDownSight") != 0;
         return equipped() && time("aimDownSight", 0) != 0 && s != 1 && s != 2 && s != 10 && s != 11 && !(s >= 12 && s <= 16);
     }
     bool animLoops() const { return state_ == State::Ready; }
@@ -105,8 +133,16 @@ public:
 private:
     enum class State {
         Ready = 0, Raising = 1, Dropping = 2, Firing = 3, Rechamber = 4, Reloading = 5, ReloadStart = 7, ReloadEnd = 9, Melee = 10, MeleeEnd = 11,
-        OffhandInit = 12, OffhandPrepare = 13, OffhandHold = 14, OffhandThrow = 15, OffhandEnd = 16
+        OffhandInit = 12, OffhandPrepare = 13, OffhandHold = 14, OffhandThrow = 15, OffhandEnd = 16,
+        // Binoculars (0x4df9b0 and PM_Weapon's switch): 0x11 waits for the aim to go out, 0x12 quick-drops the hand weapon,
+        // 0x13 raises the binoculars (aim in), 0x14 up, 0x15 lowering (aim out), 0x16 quick-raises the hand weapon.
+        BinocAdsOut = 0x11, BinocDrop = 0x12, BinocEnter = 0x13, BinocUp = 0x14, BinocExit = 0x15, BinocRaise = 0x16
     };
+    bool inBinoc() const { return int(state_) >= 0x11 && int(state_) <= 0x16; }
+    // Returns true when PM_Weapon returns after the binocular step (0x4df9b0 and the 0x11-0x16 cases of the switch).
+    void binocularStep(const Input& in, bool delayDone);
+    void binocularEnter();   // 0x4df7f0
+    void binocularCancel(bool attackHeld); // 0x4df0a0 (+ 0x4df6c0) from a binocular state
     std::string fieldValue(const char* key) const;
     void playFirst(std::initializer_list<const char*> keys);
     float time(const char* key, float fallback) const;
@@ -153,6 +189,11 @@ private:
     float fuse_ = 0;               // ps+0x3c, seconds
     std::vector<std::string> sounds_;
     std::vector<Event> events_;
+    bool binocActive_ = false;     // pm_flags 0x20000
+    Def binocDef_;
+    bool binocPrev_ = false;       // previous command's 0x4000
+    bool usePrev_ = false;         // previous command's 0x28
+    std::string prevCmdWeapon_;    // previous command's weapon (the 0x4df9b0 cancel test)
     float adsFrac_ = 0;
     bool adsHeld_ = false; // the last update's aim command
     bool zoomingIn_ = true;

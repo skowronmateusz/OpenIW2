@@ -2867,6 +2867,7 @@ int main(int argc, char** argv) {
                 return an && !an->looping ? an->length() : 0.0f;
             };
             pweapon.findOffhand = [&](const std::string& cls) { return world->playerOffhandFor(cls); };
+            pweapon.binocularDef = [&]() { return world->binocularWeapon(); };
             if (world->player()->obj->get("$weapontaken").truthy()) {
                 world->player()->obj->set("$weapontaken", script::Value());
                 pweapon.weaponTaken();
@@ -4242,7 +4243,7 @@ int main(int argc, char** argv) {
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
             // TODO(spec): that def +0x1d4 / +0x1d8 are maxAmmo / clipSize (matches the usage: stock vs max, clip vs clip size).
-            const float maxAmmo = std::min(pweapon.number("maxAmmo"), 999.0f), clipSize = std::min(pweapon.number("clipSize"), 999.0f);
+            const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
             const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
             const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
@@ -4307,8 +4308,8 @@ int main(int argc, char** argv) {
                 if (a > 0.0f)
                     if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
                         auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                        std::string text = name(pweapon.field("displayName"));
-                        const std::string mode = pweapon.field("modeName");
+                        std::string text = name(pweapon.hudField("displayName"));
+                        const std::string mode = pweapon.hudField("modeName");
                         if (!mode.empty()) text += " / " + name(mode);
                         const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
                         float tw = 0;
@@ -5110,14 +5111,22 @@ int main(int argc, char** argv) {
                     else if (act == "frag+" || act == "frag-") shotIn.frag = act == "frag+";
                     else if (act == "smoke+" || act == "smoke-") shotIn.smoke = act == "smoke+";
                     else if (act == "melee+" || act == "melee-") shotIn.melee = act == "melee+";
+                    else if (act == "binoc+" || act == "binoc-") shotIn.binoculars = act == "binoc+";
+                    else if (act == "use+" || act == "use-") shotIn.use = act == "use+";
                     else if (act.rfind("weapon=", 0) == 0) shotIn.weapon = act.substr(7);
                 }
-                const int shotsFired = pweapon.update(0.02f, shotIn);
+                game::PlayerWeapon::Input stepIn = shotIn;
+                if (pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14) stepIn.ads = true; // forced aim (0x409af0)
+                const int shotsFired = pweapon.update(0.02f, stepIn);
                 if (shotsFired > 0 && (shotScript.empty() || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
                 if (!shotScript.empty()) {
                     for (const auto& e : pweapon.takeEvents()) {
                         const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                         if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds();
+                        else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop && world) {
+                            static const char* const kN[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release", "binocular_drop"};
+                            world->notifyPlayer(kN[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
+                        }
                         else if (e.kind == game::PlayerWeapon::Event::MeleeHit && world) world->playerMelee(eye, angles);
                         else if (e.kind == game::PlayerWeapon::Event::OffhandThrow && world) world->playerThrowGrenade(e.weapon, eye, angles, {0, 0, 0});
                         std::cout << "shot-script t=" << tNow << " event " << int(e.kind) << " " << e.weapon << "\n";
@@ -5760,6 +5769,9 @@ int main(int argc, char** argv) {
                 wi.weapon = weaponSelect;
                 wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
                 wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
+                wi.binoculars = (buttons & game::Button::Binoculars) != 0;
+                wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
+                wi.inVehicle = inVehicle;
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
@@ -5803,6 +5815,11 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop) {
+                        static const char* const kBinocNotify[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release",
+                                                                   "binocular_drop"}; // 0xa8..0xac (ClientEvents 0x4e76e0..0x4e7740)
+                        world->notifyPlayer(kBinocNotify[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
+                    }
                     else if (e.kind == game::PlayerWeapon::Event::OutOfAmmo && world->player()) { // event 0x92 (0x4baec1 -> 0x4b7090)
                         const std::string next = world->outOfAmmoSwitch(world->inventory(*world->player()), e.weapon);
                         if (!next.empty()) weaponSelect = next;
