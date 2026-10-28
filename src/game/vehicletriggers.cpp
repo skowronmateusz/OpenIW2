@@ -7,8 +7,14 @@
 // opening's flak shot at the lead tank.
 // The vehicle's r.mins / r.maxs are those of its collmap brush model (SV_SetBrushModel, docs/spec/vehicles.md "Collmap");
 // a vehicle without a collmap has a zero box.
-// TODO(spec): trigger_hurt (contents include 8 but its touch 0x5291d0 acts on a damageable toucher), trigger_friendlychain
-// and the rotated bounds of the vehicle box (unrotated model bounds used, as the original adds r.mins to the origin).
+// trigger_hurt (spawn 0x5292a0: contents 0x405c0008, so it always matches mask 8): touch 0x5291d0 needs the toucher's
+// take-damage (+0x111); spawnflags 2 skips only a toucher with +0x100 set (a vehicle has none); it waits for +0x15c
+// (spawnflags 0x10: +1000 ms, else +50 ms), records the touch (0x528cb0), then G_Damage(vehicle, trigger, trigger, dmg,
+// flags (spawnflags & 8) << 2, MOD_TRIGGER_HURT) and spawnflags 0x20 switches it off: the same as for the player.
+// The box is the unrotated r.mins / r.maxs added to the origin (0x4e7440..0x4e7472 read ent+0xa8..0xbc, no rotation);
+// that these are the unrotated model bounds is inferred.
+// TODO(spec): trigger_friendlychain: its touch 0x529140 passes the toucher's sentient (+0x104) to 0x518bf0, which
+// dereferences it (+0x30) when a squad mode flag is on, so it cannot be meant for a vehicle (null); not run for vehicles.
 #include "world.h"
 
 namespace iw2::game {
@@ -24,6 +30,19 @@ void World::vehicleTouchTriggers(Entity& v) {
     std::vector<Entity*> fired;
     for (const auto& e : entities_) {
         if (e->obj->removed || e->isSpawner) continue;
+        if (e->classname == "trigger_hurt") {
+            if (e->obj->get("$hurtOff").truthy() || !takesDamage(v) || !triggerContact(*e, amin, amax)) continue;
+            const Value nt = e->obj->get("$hurtNext");
+            if (nt.isNumber() && nt.asInt() > timeMs_) continue;
+            const int flags = e->obj->get("spawnflags").isNumber() ? e->obj->get("spawnflags").asInt() : 0;
+            e->obj->set("$hurtNext", Value(int32_t(timeMs_ + ((flags & 0x10) ? 1000 : 50))));
+            vm_.notify(e->obj, "trigger", {Value(v.obj)});
+            const Value dv = e->obj->get("dmg");
+            damage(v, e.get(), dv.isNumber() ? dv.asInt() : 5, Vec3{0, 0, 0}, Vec3{0, 0, 0}, "MOD_TRIGGER_HURT");
+            if (flags & 0x20) e->obj->set("$hurtOff", Value(true));
+            if (v.obj->removed) return;
+            continue;
+        }
         if (e->classname != "trigger_multiple" && e->classname != "trigger_once" && e->classname != "trigger_radius") continue;
         if (e->obj->get("$disabled").truthy()) continue;
         const Value sf = e->obj->get("spawnflags");
