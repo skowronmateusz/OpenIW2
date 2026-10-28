@@ -47,6 +47,19 @@ int main() {
         }
     }
     CHECK(found);
+    // breakout's negotiation End node (194.331 8859.31 2): the drop sphere (radius 15, centre 16 above the node) is 13.5
+    // units from the corner of an AI clip brush, so the drop starts in solid and the node becomes a BAD NODE (0x515f6f),
+    // keeping its map origin.
+    if (!std::getenv("IW2_NODE_DROP_STRICT")) {
+        iw2::game::World b(vfs, "breakout");
+        b.prepareStart();
+        bool bad = false;
+        for (const auto& n : b.nodes()) {
+            const auto o = n.obj->get("origin").asVector();
+            if (std::fabs(o[0] - 194.331f) < 0.01f && std::fabs(o[1] - 8859.31f) < 0.01f && o[2] == 2.0f) bad = n.typeNum == 0;
+        }
+        CHECK(bad);
+    }
     if (failures) std::cerr << failures << " failure(s)\n";
     else std::cout << "nodedrop ok\n";
     return failures ? 1 : 0;

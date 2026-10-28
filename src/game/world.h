@@ -320,6 +320,9 @@ public:
     // start() = prepareStart() (cvars, map entities, vehicle nodes, turrets, path disconnects) + runLevelMain() (the level script's
     // main() and the first frame). A savegame load runs prepareStart() and then loadState() instead of runLevelMain().
     void prepareStart();
+    // 0x4fc550: the actor drop to floor of every actor spawn and of the level-start spawner drop (0x5325f0); true when the
+    // trace is allsolid (the origin is then left 1 higher).
+    bool dropActorToFloor(Entity& e);
     void runLevelMain();
     // Savegame state (src/game/savestate.cpp, docs/spec/savegame.md section 5). saveState only between frames.
     void saveState(script::StateWriter& w);
@@ -716,6 +719,8 @@ private:
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
+    void dropSpawners();  // 0x5325f0: spawners put on the ground at level start
+    void setLevelStartDropClips();
     void registerBuiltins();
     void registerMissingStubs();
     void runTriggers();
