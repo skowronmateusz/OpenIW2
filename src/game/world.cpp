@@ -608,12 +608,22 @@ void World::frame(bool advanceTime) {
             fxEvents_.push_back({fxNames_[size_t(l.id)], l.origin, Vec3{0, 0, 1}});
             l.nextMs = timeMs_ + int64_t(l.delayS * 1000.0f);
         }
-    for (const auto& e : entities_) {
+    // G_RunFrame's entity loop (0x4dacd0..0x4daeb8): every entity with an animation tree steps it (0x476c80 / 0x476490)
+    // and, after each step that ends at a notetrack, runs the threads that notify woke at once (0x46d560 at 0x4dadc3,
+    // 0x4da692) before the next entity's animation moves. So a script that waits for one entity's "end" can start
+    // waiting for another entity's "end" in the same frame (duhoc_assault: the drag camera and the dragging soldier end
+    // together). TODO(spec): the exe splits the step at every notetrack; here the threads run after the whole 50 ms step.
+    vm_.setTime(timeMs_);
+    for (size_t ei = 0; ei < entities_.size(); ++ei) {
+        Entity* e = entities_[ei].get();
         if (!e->anim || e->obj->removed) continue;
         ObjectPtr obj = e->obj;
-        e->anim->update(0.05f, [this, obj](const std::string& notifyName, const std::string& note) {
+        bool notified = false;
+        e->anim->update(0.05f, [this, obj, &notified](const std::string& notifyName, const std::string& note) {
             vm_.notify(obj, notifyName, {Value(note)});
+            notified = true;
         });
+        if (notified) vm_.drainReady();
     }
     runTriggers();
     touchItems();
