@@ -740,6 +740,7 @@ private:
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
     bool actorInGoal(Entity& e, float extra);
+    bool goalVolumeHolds(Entity& e, const Vec3& p);
     bool turretStateStart(Entity& e);
     int turretStateThink(Entity& e);
     void turretStateFinish(Entity& e);

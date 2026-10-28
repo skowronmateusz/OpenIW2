@@ -370,7 +370,7 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
     for (auto [node, score] : list) {
         if (node == ignore || !nodeUsable(e, node) || !nodeFacesEnemy(e, node)) continue;
         if (coverScriptAt(e, node, true, script) && script.empty()) continue;
-        // TODO(spec): nodes outside the goal volume (+0x75c, 0x447830) are dropped too.
+        if (!goalVolumeHolds(e, vecField(nodes_[size_t(node)].obj, "origin"))) continue; // 0x54c310: outside the goal volume
         if (node == prefer) {
             score = 16.0f;
         } else {
