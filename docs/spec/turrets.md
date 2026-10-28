@@ -58,7 +58,8 @@ Errors: "entity type [%s] is not a turret" (0x5872f8) or "entity is not a turret
 - `stopuseturret()` (0x53f200 → 0x549a60): notifies the turret "turret_deactivate" if it was active, clears the
   in-use flag and owner, notifies "turretownerchange".
 - `getturret()` (0x53f8e0): the turret if the actor is its owner.
-- `setturretanim(anim)` (0x53f860): the gunner's turret animation.
+- `setturretanim(anim)` (0x53f860): the animation's node in the actor's tree (0x46e530) at actor +0x2118 and the flag
+  +0x211a = 1; the turret pose step below drives that node.
 
 ## Turret think (0x51d250; implemented in `src/game/turretthink.cpp`)
 
@@ -98,7 +99,45 @@ every 0.1 s while `isfiringturret()`.
 `useturret` records the turret on the actor (+0x2114). The actor's exposed state (0x5496f0) then enters the turret
 state (state 2 of the table at 0x56f720): start 0x549960 takes the free turret, think 0x54aba0 keeps it while the
 actor is inside its goal + 92 units (0x502760; not checked with `setturretignoregoals`) and runs the turret weapon's
-`script` animscript; 0x549a60 releases it. Implemented in `src/game/actorturret.cpp`.
+`script` animscript (movemode 0, anim mode 1, 0x54ae56); 0x549a60 releases it. After the script start the actor must
+still own the turret (0x54afd0; the mg42 animscripts call `stopuseturret` when the gunner is more than 90 units away),
+else it gives the turret up (0x54b020) and becomes exposed. Then +0x220 = 0 and the pose step runs. Implemented in
+`src/game/actorturret.cpp`.
+
+### Gunner pose step (0x549ba0, from 0x54ae93; `World::turretPoseStep`)
+
+Without it the setturretanim blend node has no weighted leaf and the gunner shows the reference pose (T-pose).
+- Aborts (exposed state, return 1): the turret model has no `tag_weapon` ("WARNING: aborting turret behavior since
+  'tag_weapon' does not exist", turret released when owned, +0x2114 cleared); no setturretanim ("... no turret animation
+  specified", 0x54b020); no `tag_aim` when the gunner is outside the animated height range ("... 'tag_aim' does not
+  exist"). A node or height child without children is the error "anim '%s' has no children".
+- Input: `tag_weapon` in the turret model's space with its bone controls (0x4725f0 / 0x4d7460: quaternion + origin), its yaw
+  (0x420270 frame, 0x421920 `atan2(f.y, f.x)`), h = the gunner's link offset height (tagInfo +0x3c: the actor is linked to
+  the turret by the state start 0x549960) minus the tag's height, weapon `animHorRotateInc` (+0x564).
+- Children in the exe's order, which is the reverse of the .atr file (docs/spec/animtree.md "Child order"): the node's
+  children are gunner heights (ascending delta height), theirs turret yaw steps.
+- Probe (descendants zeroed at once, 0x4789a0 with 0): child i to weight 1 (blend 1, rate 1); f = count·0.5 − yaw / inc
+  clamped to [0, count − 1] (the centre is half a step off the middle grandchild, as in the exe), grandchild trunc(f) to
+  1 − frac, the next to frac (when not 0), weights < 0.001 → 0; the child's delta at its current time by goal weights
+  (0x4785d0) gives z; stop at the first child with z ≥ h.
+- Final weights (zeroed again; blend time 1 / (|weight − goal| · 20), 0 when equal, the weight read after the zeroing):
+  the probed child's two grandchildren; 0 < i < count: child i = t = (h − z(i−1)) / (z(i) − z(i−1)), child i−1 = 1 − t
+  and its two grandchildren; else the probed child = 1 and, once the gunner has arrived (turret flag 0x20, offsets 0),
+  the pitch bound +0xa8: angle = acos of the dot of (2D dist, tag_weapon.z − tag_aim.z) and (2D dist, h' − tag_aim.z)
+  normalized (h' = link z − last probed z; 90 when the dot < 0, 0 when > 1), i = 0: pitch − angle with flags
+  0x200 / ~0x400, i = count: pitch + angle with 0x600. Inside the range +0xa8 moves back by 0.1 per step and 0x200 is
+  cleared once it passes topArc (0x400 set) or bottomArc; not arrived clears 0x200.
+- Pose: the node's delta (0x4785d0) turned by the tag yaw (0x423570) + tag_weapon, yaw = delta yaw (0x423900) + tag yaw,
+  into the turret entity frame (0x424ad0 / 0x422770 / 0x424b70). First step (flag 0x20 clear): flag set, offsets gunner −
+  pose at turret info +0x90 (origin) / +0x9c (angles, 0x423fd0); every step they slide (0x53b9a0 / 0x53ba60, 0.05 s,
+  540°/s). Entity angles = the result, facing blocks 0x504950 / 0x5049a0. Unlinked turret: +0x264 = 1, +0x250 = xy
+  difference, physics 0x501d00; linked turret: origin = pose (0x54ab68). Velocities +0x230 / +0x250 zeroed, return 0.
+- TODO(spec): the consumer of +0xa8 / 0x200 / 0x400 (turret turn 0x51b610 / 0x51b7a3, bone-control drop e+0x78) is not
+  ported, so the bound has no effect yet; the obstruction check 0x54a8bc..0x54ab4d (gunner on another entity for 1 s:
+  left/right arc capped by 1°, on a client: "detaching from turret due to obstruction"); 0x4e7150(+0x294, +0x298); the
+  actor-turret link itself (the port computes the link height from the current origins); the start's in-use test is
+  stricter in the exe (0x54997c refuses any turret with +0x112 set); the debug string at actor +0x21a0; savegames do not
+  store +0x2118 / +0x211a or the turret's +0x90..+0xa8.
 
 ## Not implemented (TODO)
 

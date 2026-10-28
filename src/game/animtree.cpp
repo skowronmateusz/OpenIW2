@@ -456,8 +456,9 @@ bool AnimState::looping(int n) const {
 // translation from its old to its new time (0x475960: a looping anim whose time went back adds one whole cycle) and
 // adds its weight. A node with one weighted child hands it its own weight. Several weighted children are summed with
 // their own weights; nested, the sum is normalized and added with the node's weight, at the top it is divided by the
-// weight sum. The weights are the current ones, or the goal weights with `goalWeights`.
-void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, AnimDelta& out) const {
+// weight sum. The weights are the current ones, or the goal weights with `goalWeights`. With `absolute` (tree byte +6,
+// 0x4785d0) a leaf adds its delta tracks at the current time instead (0x475aa0).
+void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, bool absolute, AnimDelta& out) const {
     const auto& node = tree_.nodes()[size_t(n)];
     if (first) out = AnimDelta{};
     if (node.children.empty()) {
@@ -466,6 +467,24 @@ void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goa
         const AnimNodeState& s = nodes_[size_t(n)];
         const int keys = a->keyCount();
         const float span = float(keys - 1);
+        if (absolute) {
+            // 0x475aa0 (tree byte +6 set): the delta tracks at the current time, the raw yaw quaternion (z, w) (no track:
+            // (0, 1)) and the translation, each times the weight, and the weight.
+            const float frame = s.time * span;
+            float qz = 0.0f, qw = 1.0f;
+            if (!a->deltaRot.keys.empty()) {
+                const assets::Quat q = assets::sampleRotRaw(a->deltaRot, frame, keys);
+                qz = q.z;
+                qw = q.w;
+            }
+            std::array<float, 3> t{0, 0, 0};
+            if (!a->deltaTrans.keys.empty()) t = assets::sampleTrans(a->deltaTrans, frame, keys);
+            out.weight += weight;
+            for (int k = 0; k < 3; ++k) out.trans[size_t(k)] += t[size_t(k)] * weight;
+            out.rot[0] += qz * weight;
+            out.rot[1] += qw * weight;
+            return;
+        }
         const auto from = assets::sampleTrans(a->deltaTrans, s.oldTime * span, keys);
         auto to = assets::sampleTrans(a->deltaTrans, s.time * span, keys);
         if (a->looping && s.time < s.oldTime && !a->deltaTrans.keys.empty()) {
@@ -504,12 +523,12 @@ void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goa
         if (w(c) != 0) active.push_back(c);
     if (active.empty()) return;
     if (active.size() == 1) {
-        deltaNode(active[0], weight, first, nested, goalWeights, out);
+        deltaNode(active[0], weight, first, nested, goalWeights, absolute, out);
         return;
     }
     AnimDelta local;
     AnimDelta& sum = first ? out : local;
-    for (size_t i = 0; i < active.size(); ++i) deltaNode(active[i], w(active[i]), i == 0, true, goalWeights, sum);
+    for (size_t i = 0; i < active.size(); ++i) deltaNode(active[i], w(active[i]), i == 0, true, goalWeights, absolute, sum);
     if (!nested) {
         if (out.weight == 0) return;
         for (float& v : out.trans) v /= out.weight;
@@ -533,19 +552,14 @@ void AnimState::nodeDelta(int n, float& qz, float& qw, std::array<float, 3>& tra
     qz = 0.0f;
     qw = 1.0f;
     trans = {0, 0, 0};
-    if (n <= 0 || size_t(n) >= nodes_.size() || !tree_.nodes()[size_t(n)].children.empty()) return;
-    const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
-    if (!a || !a->delta) return;
-    const int keys = a->keyCount();
-    const float frame = nodes_[size_t(n)].time * float(keys - 1);
-    if (!a->deltaRot.keys.empty()) {
-        const assets::Quat q = assets::sampleRotRaw(a->deltaRot, frame, keys);
-        if (q.z != 0.0f || q.w != 0.0f) {
-            qz = q.z;
-            qw = q.w;
-        }
+    if (n <= 0 || size_t(n) >= nodes_.size()) return;
+    AnimDelta d;
+    deltaNode(n, 1.0f, true, false, true, true, d);
+    trans = d.trans;
+    if (d.rot[0] != 0.0f || d.rot[1] != 0.0f) { // 0x4785d0: a zero rotation becomes (0, 1)
+        qz = d.rot[0];
+        qw = d.rot[1];
     }
-    if (!a->deltaTrans.keys.empty()) trans = assets::sampleTrans(a->deltaTrans, frame, keys);
 }
 
 // The exe's "no state" (entry index 0) is taken as a node at weight and goal weight 0 (inferred: entries are
@@ -559,7 +573,7 @@ bool AnimState::playedThrough(int n) const {
 
 AnimDelta AnimState::delta(bool goalWeights) const {
     AnimDelta d;
-    deltaNode(0, 1.0f, true, false, goalWeights, d);
+    deltaNode(0, 1.0f, true, false, goalWeights, false, d);
     return d;
 }
 
