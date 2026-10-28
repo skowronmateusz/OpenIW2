@@ -20,6 +20,7 @@
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
+#include "game/hudfade.h"
 #include "game/textmessage.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
@@ -2935,7 +2936,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; int64_t hintStart = 0; bool hintHeldValid = false; struct { int hint = 0; std::string weapon, text; } hintHeld; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -4512,10 +4513,29 @@ int main(int argc, char** argv) {
             // only for turret-class weapons. Rect: menu "Cursorhints" "0 70 40 40" centred → (320, 310) virtual.
             // With text: x = rect.x − (icon width + text width)/2, text baseline rect.y + text height/2, icon right of
             // it at y = rect.y − h/2; without: icon at x = rect.x − icon width/2, y = rect.y. cg_cursorHints default
-            // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). TODO(spec): the fade (cg_hintFadeTime, 0x4b0900), the
-            // weapon pickup text (0x4a99b0), HINT_HEALTH's key text.
-            if (world && cursorHintItem && !world->playerOnTurret()) {
-                const auto& uh = world->playerUseHint();
+            // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). Fade (0x4a9b50 → 0x4b0900 with 100 ms): while a hint is
+            // set (0x4a9960) its start time is the current time and the duration cg_hintFadeTime (int, default 100 ms,
+            // 0 .. INT_MAX, registered 0x4a1163); once it is gone the last hint stays for that duration and its
+            // colour alpha is remaining / 100 (1 while more than 100 ms remain), then the hint is cleared. The colour
+            // (1, 1, 1, alpha) goes to the icon draw (0x4d4790 colour argument); the text takes it too (assumed, the
+            // 0x4c3790 colour argument was not traced). TODO(spec): HINT_HEALTH's key text.
+            float hintFade = 1.0f;
+            if (world) {
+                const auto& cur = world->playerUseHint();
+                const int64_t hnow = world->timeMs();
+                constexpr int64_t hintFadeTime = 100, hintFadeSpan = 100; // cg_hintFadeTime default; the 0x4b0900 argument
+                if (cur.hint != 0 || !cur.weapon.empty()) {
+                    hudFade.hintStart = hnow;
+                    hudFade.hintHeldValid = true;
+                    hudFade.hintHeld = {cur.hint, cur.weapon, cur.text};
+                } else if (hudFade.hintHeldValid) {
+                    const float a = game::hudFadeAlpha(hudFade.hintStart, hnow, hintFadeTime, hintFadeSpan);
+                    if (a < 0.0f) hudFade.hintHeldValid = false;
+                    else hintFade = a;
+                }
+            }
+            if (world && cursorHintItem && !world->playerOnTurret() && hudFade.hintHeldValid) {
+                const auto& uh = hudFade.hintHeld;
                 std::string icon;
                 bool wide = false;
                 std::string text = uh.text;
@@ -4529,7 +4549,7 @@ int main(int argc, char** argv) {
                 if (!icon.empty()) {
                     const float rx = 320.0f, ry = 310.0f, rw = 40.0f, rh = 40.0f;
                     const float iw = (wide ? 2.0f : 1.0f) * rw;
-                    const uint8_t white[4] = {255, 255, 255, 255};
+                    const uint8_t white[4] = {255, 255, 255, uint8_t(hintFade * 255.0f)};
                     float ix = rx - iw * 0.5f, iy = ry;
                     if (!text.empty()) {
                         const std::string* t = loc.find(text);
@@ -4565,8 +4585,8 @@ int main(int argc, char** argv) {
             // material hit_direction as a quad of cg_hudDamageIconWidth 128 × cg_hudDamageIconHeight 64 screen pixels,
             // cg_hudDamageIconOffset 128 below the screen centre, turned clockwise by view yaw − icon yaw about the
             // centre (0x4b0490); alpha 2 − 2 · elapsed / duration, at most 1. Not under a scope overlay
-            // (cg_hudDamageIconInScope 0). TODO(spec): the corner-to-UV order of the gfx quad draw (0x617b68) is
-            // taken as (0,0) (1,0) (1,1) (0,1).
+            // (cg_hudDamageIconInScope 0). The corner-to-UV order of the gfx quad draw (0x617b68, render command 0x12, handler
+            // 0x1002f280) is (0,0) (1,0) (1,1) (0,1) for the corners in the order given.
             if (world && !(scopeAlpha() > 0)) {
                 const int64_t nowMs = world->timeMs();
                 const float W = 128.0f, H = 64.0f, O = 128.0f;
@@ -4874,8 +4894,7 @@ int main(int argc, char** argv) {
             // centred (0x4bcef0). In a vehicle the vehicle's turret weapon (0x4bd000). Otherwise the hand weapon's
             // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
             // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
-            // TODO(spec): the friend / enemy colours (ps flags 0x100000 / 0x200000), the reticleCenter +
-            // four reticleSide drawing with the spread (0x4bd2c0, 0x4bd520) and the sway offset (0x4bc6e0).
+            // The colours (0x4bce70, verified): see below. TODO(spec): the sway offset (0x4bc6e0).
             const bool onTurretHud = world && world->playerOnTurret();
             const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
             if (onTurretHud || inVehicleHud) {
@@ -4904,7 +4923,7 @@ int main(int argc, char** argv) {
             // grenade). Sides: reticleSide, reticleSideSize · scale square, at d = max(reticleMinOfs,
             // tan(spread · scale) / tan(fov_y / 2) · 240) − hipReticleSidePos · size from the centre, spread = hip min
             // + (max − min) · aim spread / 255 (0x4bd3a0, 0x4dceb0); top 0°, right 90°, bottom 180°, left 270°, with
-            // the 0.125 · size placement terms of 0x4bd4a0. TODO(spec): the friend / enemy colours.
+            // the 0.125 · size placement terms of 0x4bd4a0.
             if (pweapon.equipped() && drawCross) {
                 auto num = [&](const char* k) { return pweapon.number(k); };
                 float scale = 1.0f, offY = 0.0f;
@@ -5172,16 +5191,25 @@ int main(int argc, char** argv) {
             // hud_health_pulserate_injured (1.0 s), below hud_health_startpulse_critical (0.33) pulserate_critical (0.5 s).
             // Both ownerdraws draw nothing unless the bool dvar cg_drawHealth (0xf48cf8, registered at 0x4a125d with default 0, flags
             // 0x1080; no shipped default.cfg / config sets it, only developer cfgs) is on, so the stock SP HUD has no health bar.
-            // TODO(spec): the pm_type == 4 case of 0x4a8790, other health touches, the texcoords of the trail (assumed
-            // fraction..trail), the hud_health_pulserate dvar flags.
+            // Fraction (0x4a8790): health / maxhealth (cg snapshot ps +0x108 / +0x110 = copies of the entity's health /
+            // maxhealth, world.h) clamped to 0..1, and 0 (not 1) when either is 0 or pm_type is 4 (spectator; the port
+            // has no pm_type 4 for the player). Per-frame touch (0x4be720): below hud_health_startpulse_injured (1.0)
+            // the health fade is touched whenever its touch time is older than now (and the Health menu flagged), at
+            // full health, once hud_fade_healthbar (2 s) has passed since the touch, the touch is cleared. The trail
+            // quad (0x4a8a0f) spans x = fraction .. trail with texcoords s fraction .. trail, t 0 .. 1, colour (1, 0, 0,
+            // fade alpha) as implemented.
             if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player() && std::atof(menuEnv.getCvar("cg_drawHealth").c_str()) != 0.0) {
                 const int64_t now = world->timeMs();
                 const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
                 hudFade.lastHudMs = now;
                 const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
-                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // TODO(spec): player maxhealth source
-                float frac = 1.0f;
-                if (hp != 0 && maxHp != 0) frac = std::clamp(float(hp) / float(maxHp), 0.0f, 1.0f);
+                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // entity maxhealth (+0x140)
+                const float frac = game::hudHealthFraction(hp, maxHp); // 0x4a8790
+                if (frac < 1.0f) {
+                    if (hudFade.health < now) hudFade.health = now;
+                } else if (hudFade.health != 0 && now - hudFade.health > 2000) {
+                    hudFade.health = 0; // hud_fade_healthbar 2.0 s (0x4a7300)
+                }
                 const float fa = fadeAlpha(hudFade.health, 2.0f, 2000);
                 if (fa > 0.0f) {
                     // trail state machine (0x4a8988..0x4a8a00)
@@ -5276,8 +5304,9 @@ int main(int argc, char** argv) {
             // vehicle's angles[1] (centity +0x158) for the body, the tag_barrel forward yaw (0x4ab9e0) for the barrel. The body quad
             // turns about its centre (0x4b0310); the barrel quad (x ± w/2, y - 0.75 h .. y + 0.25 h; constants 0x591e38, 0x591fe0) turns
             // about the item's top-left corner (0x4b0490), which is the body's centre. The x offset (cg_hudCompassSize - 1) * 0xf5bcc8 * 0.7
-            // is 0 at the default size 1. TODO(spec): the centity flag test (+0xb0 & 0x10000), the corner-to-UV order of 0x617b68
-            // (taken as (0,0) (1,0) (1,1) (0,1) like the damage indicator).
+            // is 0 at the default size 1. The centity needs eFlags & 0x10000 (set at vehicle spawn for info type 1, "tank", see
+            // World::playerVehicleHudYaws). The quad draw 0x617b68 queues render command 0x12 (cgame 0x10021940, handler
+            // 0x1002f280): its four corners get texcoords (0,0) (1,0) (1,1) (0,1) in the order given.
             if (const ui::Menu* tm = hudMenus.find("tankstatus"); tm && world) {
                 float bodyYaw = 0, barrelYaw = 0;
                 bool hasBarrel = false;
@@ -5309,9 +5338,9 @@ int main(int argc, char** argv) {
                     }
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
-            // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
-            // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
+            // edges (0x440e60), like the ammo counter. The compass fade (0x4a90f3, 0x4a9375: hud_fade_compass default 8 s, touch
+            // 0xf79a38, CG_FadeColor 0x4b0900 with a 700 ms span) is written into the item colour alpha; the touches are spawn
+            // (0x4a6220), the console command → 0x4a6130 case 2 and the objective ring below.
             // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
             // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
             constexpr int ringNum = 10, ringTime = 10000;
@@ -5357,8 +5386,10 @@ int main(int argc, char** argv) {
                         // Friendly actors (4c0f20): R = size * r * 43.75 (double @0x591e90), icon size*10 (0x591e8c), r from
                         // compassRadius; placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor -
                         // view yaw; the arrow turns by (view yaw - actor yaw). 88 tanks (4c1700): the same formulas over the vehicles
-                        // with addvehicletocompass, icon 16 (0x591e84). TODO(spec): the 800 ms entry age (the exe refreshes an entry
-                        // only for entities in the client snapshot, 0xf5bd28 +0x85cc), springy yaw (cg_hudCompassSpringyPointers 0).
+                        // with addvehicletocompass, icon 16 (0x591e84). Entry age: an entry is drawn while its stamp >= now - 800 ms (0x4c10e8;
+                        // refreshed each frame for snapshot actors, so only a removed actor would linger 800 ms: not ported). The springy
+                        // yaw (cg_hudCompassSpringyPointers, 0xf569ac, default 0) swaps the view yaw for the 0x4b0ce0 spring state 0xf79a30;
+                        // at the default 0 it is the view yaw, so that variant is TODO(spec) (opt-in).
                         if (it.background.empty()) continue;
                         const bool tanks = it.ownerDraw == 88;
                         const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
@@ -5422,7 +5453,8 @@ int main(int argc, char** argv) {
                     }
                     // Pointers: centre (x + w*size/2, y + h*size/2 - (size-1)*h); K = 43.75 (double @0x591e90); icon 16*size.
                     const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f;
-                    const float maxR = cMaxRange, minR = cMinRange, minRad = cMinRadius, objMax = 2048.0f, minAlpha = 1.0f;
+                    const float maxR = cMaxRange, minR = cMinRange, minRad = cMinRadius;
+                    const float objMax = compassDvar("cg_hudObjectiveMaxRange", 2048.0f), minAlpha = compassDvar("cg_hudObjectiveMinAlpha", 1.0f);
                     const float icon = 16.0f * csize * sc;
                     for (const auto& ob : world->objectives()) {
                         // An objective without an icon uses the default material "objective" (0xf5b6cc, registered at 0x4a2d62
@@ -5432,14 +5464,20 @@ int main(int argc, char** argv) {
                             if (p[0] == 0 && p[1] == 0 && p[2] == 0) continue;
                             const float dx = p[0] - c.pos.x, dy = p[1] - c.pos.y, d = std::sqrt(dx * dx + dy * dy);
                             const float a = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
-                            float alpha = 1.0f;
-                            if (objMax > maxR) alpha = (minAlpha - 1.0f) * (std::clamp(d, maxR, objMax) - maxR) / (objMax - maxR) + 1.0f;
+                            // Pointer alpha (0x4a953f..0x4a958c): d clamped to at most objMax then at least maxR; 0 when the two
+                            // are equal. The drawn alpha is the smaller of it and the compass fade (0x4a96e0), not the product.
+                            float alpha = 0.0f;
+                            if (objMax != maxR) {
+                                const float dc = std::max(std::min(d, objMax), maxR);
+                                alpha = (minAlpha - 1.0f) * ((dc - maxR) / (objMax - maxR)) + 1.0f;
+                            }
+                            const float ptrAlpha = std::min(compassAlpha, alpha);
                             const float t = (std::clamp(d, minR, maxR) - minR) / (maxR - minR);
                             const float rad = csize * ((1.0f - minRad) * t + minRad) * 43.75f * sc;
                             const float ix = ccx - icon * 0.5f - std::sin(a) * rad, iy = ccy - icon * 0.5f - std::cos(a) * rad;
                             Quad2D q{ix, iy, ix + icon, iy + icon};
                             std::memcpy(q.rgba, col, 4);
-                            q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
+                            q.rgba[3] = uint8_t(std::clamp(ptrAlpha, 0.0f, 1.0f) * 255.0f);
                             q.texture = materialTexture(ob.icon.empty() ? std::string("objective") : ob.icon);
                             out.push_back(q);
                             // Ring pulse (0x4a9748..0x4a9915): period = RingTime / NumRings; phase = (elapsed mod period) / period;
@@ -5457,7 +5495,7 @@ int main(int argc, char** argv) {
                                 const float rx2 = ccx - rs * 0.5f - std::sin(a) * rad, ry2 = ccy - rs * 0.5f - std::cos(a) * rad;
                                 Quad2D rq{rx2, ry2, rx2 + rs, ry2 + rs};
                                 std::memcpy(rq.rgba, col, 4);
-                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, alpha * compassAlpha), 0.0f, 1.0f) * 255.0f);
+                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, compassAlpha) /* 0x4a981f: the ring is limited by the fade only */, 0.0f, 1.0f) * 255.0f);
                                 rq.texture = materialTexture(ob.icon.empty() ? std::string("objective_ring") : ob.icon);
                                 out.push_back(rq);
                             }
