@@ -257,6 +257,8 @@ struct Entity {
     int usingVehicle = -1;                 // player: the vehicle it rides (entity +0xf4 / client +0x568)
     std::unique_ptr<TurretState> turret;   // misc_turret / misc_mg42 / spawnturret (src/game/turrets.cpp)
     ObjectPtr usingTurret;                 // actor: turret it uses (actor +0x2114)
+    int turretAnim = 0;                    // actor +0x2118: setturretanim's node in the actor's tree
+    bool turretAnimSet = false;            // actor +0x211a: setturretanim was called
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
     std::array<DangerPlane, 4> dangerPlanes; // actor +0x2050 (src/game/actorpath.cpp)
     struct Entity* lastAttacker = nullptr; // sentient +0x28 (G_Damage 0x5284dd; AI events 5/6 reveal it, pain clears it)
@@ -879,6 +881,7 @@ private:
     bool workGoalVolumeHolds(Entity& e, const Vec3& p); // the working goal volume (+0x75c)
     bool turretStateStart(Entity& e);
     int turretStateThink(Entity& e);
+    int turretPoseStep(Entity& e, Entity& turret); // 0x549ba0
     void turretStateFinish(Entity& e);
     // Actor state machine (src/game/actorstate.cpp)
     void aiRequest(Entity& e, int type, int state);

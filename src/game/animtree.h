@@ -117,8 +117,9 @@ public:
     // Translation of the delta tracks between the old and new time of every weighted leaf (0x478550). With
     // `goalWeights` the goal weights pick and weigh the animations instead of the current ones (actor byte +0x220).
     AnimDelta delta(bool goalWeights) const;
-    // Delta of one animation at its current time (0x4785d0 → 0x477b80 with +6 set → 0x475aa0): the yaw quaternion
-    // (z, w), (0, 1) without rotation, and the translation. TODO(spec): blend nodes (0x477b80's child walk) give none.
+    // Delta of a node at its current time (0x4785d0 → 0x477b80 with tree bytes +6 and +7 set): leaves sample their delta
+    // tracks at the current time (0x475aa0), blend nodes combine their children by goal weight as delta() does; the
+    // yaw quaternion (z, w), (0, 1) without rotation, and the translation.
     void nodeDelta(int n, float& qz, float& qw, std::array<float, 3>& trans) const;
     // 0x478020: the node has played through (its time reached 1, went back or completed a cycle since the last
     // update), or has no state.
@@ -138,7 +139,7 @@ private:
     void updateTime(int n, float dt, bool notes, const NoteFn& onNote);
     void syncTo(int n, const AnimNodeState& top, bool notes, const NoteFn& onNote);
     void advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote);
-    void deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, AnimDelta& out) const;
+    void deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, bool absolute, AnimDelta& out) const;
     void calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const;
 
     const AnimTree& tree_;

@@ -281,9 +281,15 @@ void World::registerTurretBuiltins() {
         if (t && t->turret && t->turret->owner == a.obj) return Value(t->obj);
         return Value();
     });
+    // setturretanim (0x53f860): the animation's node in the actor's tree (0x46e530) at actor +0x2118, flag +0x211a = 1.
     vm_.registerBuiltin("setturretanim", [actorOf](CallContext& c) {
         Entity& a = actorOf(c);
-        if (std::holds_alternative<AnimRef>(c.arg(0).v)) a.obj->set("$turretanim", c.arg(0));
+        if (!std::holds_alternative<AnimRef>(c.arg(0).v)) throw std::runtime_error("expected an animation, got " + c.arg(0).typeName());
+        const std::string& name = std::get<AnimRef>(c.arg(0).v).name;
+        const int n = a.anim ? a.anim->tree().find(name) : -1;
+        if (n < 0) throw std::runtime_error("animation " + name + " is not in animtree " + a.animTree);
+        a.turretAnim = n;
+        a.turretAnimSet = true;
         return Value();
     });
 }

@@ -44,6 +44,10 @@ struct TurretState {
     int savedStance = -1;        // +0x68: the user's stance when it got on (prone 2, crouch 1, stand 0), −1 none
     script::Vec3 savedOrigin{};  // +0x74: the user's origin when it got on
     int fireTimerMs = 0;         // +0x0c: time until the player's next shot
+    // The AI gunner's pose step (0x549ba0, flag 0x20 = the offsets below are set).
+    script::Vec3 gunnerOriginOffset{}; // +0x90: gunner origin − posed origin, slides to 0 (0x53b9a0)
+    script::Vec3 gunnerAnglesOffset{}; // +0x9c: gunner angles − posed angles, slides to 0 (0x53ba60)
+    float pitchLimit = 0;              // +0xa8: pitch bound outside the gunner's animation range (flags 0x200 / 0x400)
 };
 
 } // namespace iw2::game

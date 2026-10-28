@@ -297,6 +297,9 @@ add_executable(test_grenadehint tests/test_grenadehint.cpp)
 target_link_libraries(test_grenadehint PRIVATE iw2_game)
 add_test(NAME grenadehint COMMAND test_grenadehint)
 
+add_executable(test_turretpose tests/test_turretpose.cpp)
+target_link_libraries(test_turretpose PRIVATE iw2_game)
+
 add_executable(test_savestate tests/test_savestate.cpp)
 target_link_libraries(test_savestate PRIVATE iw2_game)
 add_test(NAME savestate COMMAND test_savestate)
@@ -313,6 +316,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(barrelclip_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME itempickup_world COMMAND test_itempickup)
   set_tests_properties(itempickup_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME turretpose_world COMMAND test_turretpose)
+  set_tests_properties(turretpose_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
 add_executable(test_nodedrop tests/test_nodedrop.cpp)

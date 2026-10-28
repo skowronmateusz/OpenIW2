@@ -2,6 +2,7 @@
 // (docs/spec/animscripted.md). The rules mirror 0x4f5d50 (the shared built-in), 0x53b190 (start), 0x53baf0 (the
 // per-frame pose) and the state functions 0x54b060 / 0x54b070 / 0x54b0a0.
 #include "game/world.h"
+#include "game/poseslide.h"
 
 #include <cctype>
 #include <cmath>
@@ -17,60 +18,12 @@ namespace {
 
 constexpr float kFrameTime = 0.05f;      // 0x3d4ccccd
 constexpr float kBlendTime = 0.2f;       // 0x3e4ccccd
-constexpr float kOffsetSlide = 300.0f;   // 0x591f4c: inches per second the origin offset shrinks by
 constexpr float kAngleLerpRate = 540.0f; // entity +0x1f0, set by G_InitGentity (0x4d79b2)
 
-// 0x4240a0: into [0, 360).
-float angleNormalize360(float a) {
-    while (a < 0.0f) a += 360.0f;
-    while (a >= 360.0f) a -= 360.0f;
-    return a;
-}
-
-// 0x423900: yaw in degrees of the delta quaternion (z, w).
-float deltaYaw(float z, float w) {
-    const float n = 2.0f / (z * z + w * w);
-    return std::atan2(w * z * n, 1.0f - n * z * z) * 57.2957763671875f; // 0x591fd8
-}
-
-// 0x53b9a0: the offset shrinks by 300 · dt inches (the exe's fast inverse square root with one Newton step);
-// what is left is added to the origin, or the offset ends.
-void slideOffset(Vec3& offset, Vec3& origin, float dt) {
-    const float len2 = offset[2] * offset[2] + offset[1] * offset[1] + offset[0] * offset[0];
-    if (len2 == 0.0f) return;
-    int32_t bits;
-    std::memcpy(&bits, &len2, 4);
-    bits = 0x5f3759df - (bits >> 1);
-    float y;
-    std::memcpy(&y, &bits, 4);
-    const float f = 1.0f - (1.5f - len2 * 0.5f * y * y) * y * dt * kOffsetSlide;
-    if (f > 0.0f) {
-        for (int i = 0; i < 3; ++i) {
-            offset[size_t(i)] *= f;
-            origin[size_t(i)] += offset[size_t(i)];
-        }
-        return;
-    }
-    offset = {0, 0, 0};
-}
-
-// 0x53ba60: each angle offset moves towards 0 by rate · dt degrees; a non-zero rest is added to the angle.
-void slideAngles(Vec3& offset, Vec3& angles, float dt, float rate) {
-    const float step = dt * rate;
-    for (int i = 0; i < 3; ++i) {
-        float& o = offset[size_t(i)];
-        if (o == 0.0f) continue;
-        if (o > step) {
-            o -= step;
-            angles[size_t(i)] = angleNormalize360(o + angles[size_t(i)]);
-        } else if (o < -step) {
-            o += step;
-            angles[size_t(i)] = angleNormalize360(o + angles[size_t(i)]);
-        } else {
-            o = 0.0f;
-        }
-    }
-}
+using pose::angleNormalize360;
+using pose::deltaYaw;
+using pose::slideAngles;
+using pose::slideOffset;
 
 std::string lowerStr(std::string s) {
     for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
