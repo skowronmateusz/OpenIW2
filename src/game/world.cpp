@@ -867,6 +867,14 @@ void World::moveActor(Entity& e, float dt) {
             t.allSolid = tr.allSolid;
             return t;
         };
+        // 0x503ec0 runs inside the path step, before the physics: on the pre-move origin and the block velocity of the previous
+        // frame. When it pushes the negotiation state the move delta (+0x250) is replaced by (begin point - origin), so this
+        // frame's move lands on the begin point (0x503fb0..0x503fda), not short of it.
+        if (!followed && e.ai.stopSoonMs == 0 && p.count > 0 && p.traversal > 0 && (p.flags & 0x40) && e.ai.groundEnt != 0x7ff &&
+            negotiationTrigger(e, before, true)) {
+            const Vec3& bp = p.pts[size_t(p.traversal)].pos;
+            for (int a = 0; a < 3; ++a) pm.moveDelta[a] = bp[size_t(a)] - before[a];
+        }
         if (yieldNow) {
             e.ai.yieldMs = timeMs_;
             if (!yieldFollowed(e, pm, fn, before)) {
@@ -896,10 +904,7 @@ void World::moveActor(Entity& e, float dt) {
     if (followed) return; // 0x503ec0 is part of the path walk
     if (e.ai.stopSoonMs == 0) {
         if (!grounded || !(p.flags & 0x40)) return; // 0x503ee..0x503ef5: not on the ground or no flag 0x40
-        if (p.traversal > 0) {
-            negotiationTrigger(e, o, true);
-            return;
-        }
+        if (p.traversal > 0) return; // the trigger ran before the move (above)
     }
     const PathPoint& end = p.pts[size_t(p.traversal)];
     const float ex = end.pos[0] - o[0], ey = end.pos[1] - o[1];
@@ -957,10 +962,10 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
 // 0x501d00 after the move block (0x5487c0) returned 0 (the step could not be placed): the block's origin is dropped for
 // the entity origin and nudged vertically towards the nearest path node (0x516950: radius 384, height 128, at most 64,
 // any type; the nearest by 3D distance², the first on a tie). With dz = node z - origin z (0x592010 = 8, 0x591e00 = 0,
-// 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz, dz < -18 gives -8, otherwise 0. The block's velocity is kept
-// and no node found leaves the origin as it was.
+// 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz, dz < -18 gives -8, otherwise 0. The block's vertical velocity (0x238) is cleared; with no node
+// found the block's own (partially moved) origin stays.
 void World::stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before) {
-    for (int a = 0; a < 3; ++a) pm.origin[a] = before[a];
+    pm.velocity[2] = 0.0f; // 0x238
     const auto near = nodesInRange(before, 384.0f, 128.0f, 64, 0xffffffffu);
     int best = -1;
     float bestD = 3.4028235e38f;
@@ -970,9 +975,10 @@ void World::stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before) {
         const float d = d2 + dz * dz;
         if (bestD > d) { bestD = d; best = i; }
     }
-    if (best < 0) return;
+    if (best < 0) return; // no node: the block's partially moved origin stays
+    for (int a = 0; a < 3; ++a) pm.origin[a] = before[a];
     const float dz = nodes_[size_t(best)].obj->get("origin").asVector()[2] - before[2];
-    pm.origin[2] = before[2] + (dz > 8.0f ? 8.0f : dz > 0.0f ? dz : dz < -18.0f ? -8.0f : 0.0f);
+    pm.origin[2] = before[2] + stuckNudge(dz);
     (void)e;
 }
 
@@ -981,8 +987,8 @@ bool World::negotiationTrigger(Entity& e, const Vec3& o, bool grounded) {
     if (!grounded) return false;
     const PathPoint& b = p.pts[size_t(p.traversal)];
     const float dx = b.pos[0] - o[0], dy = b.pos[1] - o[1];
-    const float v2 = e.velocity[0] * e.velocity[0] + e.velocity[1] * e.velocity[1] + e.velocity[2] * e.velocity[2];
-    if (dx * dx + dy * dy > v2 * 0.005f + 0.000001f) return false;
+    const float v2 = e.ai.slideVel[0] * e.ai.slideVel[0] + e.ai.slideVel[1] * e.ai.slideVel[1] + e.ai.slideVel[2] * e.ai.slideVel[2];
+    if (!negotiationInRange(dx * dx + dy * dy, v2)) return false;
     if (!aiPushState(e, AiNegotiation)) return false;
     if (b.node >= 0) {
         const Value k = nodes_[size_t(b.node)].obj->get("animscript");

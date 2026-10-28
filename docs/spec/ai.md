@@ -959,3 +959,7 @@ With dz = node z - origin z (constants 0x592010 = 8, 0x591e00 = 0, 0x592390 = -1
 dz < -18 gives -8, otherwise 0. Ported as `World::stuckRecovery`. It does not free the demolition actors that wall_hop
 leaves in the actor-clip slab near (6383, 523): they sit on the node height (dz in [-18, 0]), so the nudge is 0.
 TODO(spec): the escape from that slab is still unknown (the move block there returns 0 every frame).
+
+### Negotiation trigger snap (0x503ec0, 0x503fb0..0x503fda)
+
+The trigger runs inside the path step, before the physics move, on the pre-move origin and the previous frame's block velocity (+0x230..0x238): 2D distance² to the begin point <= |velocity|² · 0.005 + 1e-6. When it pushes state 9 the move delta (+0x250..0x258) is replaced by (begin point - origin), so the move block carries the actor exactly onto the begin point. The port used to test after the move, starting wall_hop up to ~13 units early; the hop then ended inside the 15-thick AI-clip wall of demolition (x 6383) and the actors never reached `end_left`. Now `World::moveActor` triggers first and overrides the delta. Failed move block (0x501d00): block vz (+0x238) is cleared; with no node in range the block's partially moved origin stays.

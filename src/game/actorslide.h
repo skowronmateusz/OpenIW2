@@ -79,6 +79,13 @@ int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace);
 int moveBlock(ActorSlide& pm, const SlideTraceFn& trace);
 
 // Default on; IW2_ACTOR_SLIDE=0 switches World::moveActor back to the plain ground snap.
+// 0x501d00 after a failed move block: the vertical nudge towards the nearest node, from dz = node z - origin z
+// (constants 0x592010 = 8, 0x591e00 = 0, 0x592390 = -18).
+float stuckNudge(float dz);
+// 0x503ec0 (stop soon unset): the negotiation state is pushed when the 2D squared distance to the begin point is within
+// |block velocity|^2 * 0.005 + 1e-6 (0x503fb0).
+bool negotiationInRange(float dist2, float speed2);
+
 bool actorSlideEnabled();
 
 } // namespace iw2::game

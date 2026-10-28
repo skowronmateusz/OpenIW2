@@ -207,6 +207,11 @@ int main() {
         moveBlock(b, floor0);
         CHECK(b.velocity[0] == 0.0f && b.origin[0] == 0.0f);
     }
+    {
+        CHECK(stuckNudge(20) == 8 && stuckNudge(3) == 3 && stuckNudge(0) == 0 && stuckNudge(-10) == 0 && stuckNudge(-30) == -8);
+        // trigger threshold at walking speed 160: 160^2 * 0.005 = 128 -> within ~11.3 units, not 13
+        CHECK(negotiationInRange(127.0f, 25600.0f) && !negotiationInRange(129.0f, 25600.0f) && negotiationInRange(0.0f, 0.0f));
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }
