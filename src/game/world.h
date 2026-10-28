@@ -27,6 +27,7 @@
 #include <cctype>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <random>
@@ -578,6 +579,8 @@ public:
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
+    // Called-by-scripts names that have no implementation (registered as counting no-ops by registerMissingStubs).
+    const std::set<std::string>& stubbedBuiltins() const { return stubbed_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
 
     // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
@@ -1260,6 +1263,7 @@ private:
     struct LoopedFx { int id; float delayS; Vec3 origin; int64_t nextMs; };
     std::vector<LoopedFx> loopedFx_;
     std::map<std::string, int> missing_;
+    std::set<std::string> stubbed_;
     std::vector<std::pair<Vec3, Vec3>> submodels_;
     std::unique_ptr<CollisionWorld> collision_;
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;
