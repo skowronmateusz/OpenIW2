@@ -424,9 +424,14 @@ Pass classify(const std::string& techset) {
     // target (0x1003eae0, constants at 0x1070c2e0 / 0x1070c2f0); sampler resolvedPostSun (code sampler 0xe, switch
     // 0x10038dd0) is the render target 0x1070eb54, which render command 0x100310a0 sets by a StretchRect of the back buffer
     // (0x1002eeb0) when r_distortion (default 1) or the glow chain needs it, else "none" (0xe).
-    // Still missing: (a) where that command sits in the frame (which passes precede it); (b) the tangent / binormal the
-    // effects code gives sprite vertices (code.tangent / code.binormal); (c) which technique type the effect drawer selects
-    // (emissive or emissive feathered, the latter needing the $floatz target).
+    // Frame order (scene builder 0x100254a9..0x10025671; commands dispatch through the table at 0x10190518, 0x1003417c): draw
+    // lists with technique type 1 "sky" and 6 "lightmap no fog" (0x10021cf0), then 0x10021d80, then the post-sun resolve
+    // (command 0x19 = 0x100310a0, emitted by 0x10022510 at 0x100255b9 when the view flag +4 is set), later the effects with
+    // technique type 0x18 "emissive feathered no fog" when r_zFeather (0x101ce694, default 1) is on and $floatz (0x101d489c)
+    // exists, else 0x15 "emissive no fog" (types: name table built at 0x1001c0d1..). So distortion samples the opaque scene
+    // and, with the default r_zFeather, runs distortion_floatz.tech, which needs the float-z target.
+    // Still missing: (b) the tangent / binormal the effects code gives sprite vertices (code.tangent / code.binormal);
+    // the $floatz contents (build floatz pass, technique type 2).
     if (techset == "distortion") return Pass::Skip;
     // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
     // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
@@ -4978,8 +4983,10 @@ int main(int argc, char** argv) {
             // The ammo ownerdraws (0x4a7818 …) special-case only vehicles (pm_flags 0x20000), not turrets, so the hand
             // weapon's ammo stays on a turret. Text rule (handler 0x4a7930, both clip and stock valid): clip "%2i"
             // left at rect.x, stock "%3i" right-aligned at rect.x + rect.w, "|" centred in the rect minus 5 (0x591ef0);
-            // baseline at rect.y (4c3790 gets the item rect y unchanged). TODO(spec): low-ammo red (0.89 0.18 0.01,
-            // 0x4a76b0: stock < clip size * 0x592020), the hud fade alpha (0x4a7600), the firemode icon (ownerdraw 83).
+            // baseline at rect.y (4c3790 gets the item rect y unchanged). Low-ammo red, the fade alpha and the firemode icon are
+            // below. 0x4a76b0 reads maxAmmo from the def registered for the weapon's ammo index (0x1c64750[def +0x1c8] +0x1d4);
+            // here the current weapon's own maxAmmo is used. TODO(spec): which def owns a shared ammo index (registration order),
+            // the preselected weapon (0xf796e0, see the weapon name).
             // Fade (0x4a7600 / 0x4b0900): dvar seconds 0 -> 1; else touch == 0 or elapsed >= ticks -> 0, else min(1, (ticks - elapsed) / 700).
             // Ammo backdrop / text use hud_fade_ammodisplay (default 2 s, 0x10438d8) from the ammo touch time; the firemode icon the same dvar
             // but a fixed 0x708 = 1800 ms window from the weapon change time (0xf796e4); the compass hud_fade_compass (default 8 s).
@@ -4994,7 +5001,8 @@ int main(int argc, char** argv) {
             const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
-            // TODO(spec): that def +0x1d4 / +0x1d8 are maxAmmo / clipSize (matches the usage: stock vs max, clip vs clip size).
+            // def +0x1d4 / +0x1d8 are maxAmmo / clipSize: weapon field table 0x5a7e80 (docs/spec/inventory.md; the table is in the
+            // packed .data, read at run time), and givemaxammo (0x538020) reads +0x1d4 at 0x538109 for the stock limit.
             const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
             const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
             const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
