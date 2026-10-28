@@ -551,9 +551,18 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
         CompassMarker m;
         m.pos = org.asVector();
         if (ang.isVector()) m.yaw = ang.asVector()[1];
+        m.pingEndMs = compassPings_.endMs(e->number);
         out.push_back(m);
     }
     return out;
+}
+
+void World::compassPing(const Entity& actor, const Vec3& pos, int durationMs) {
+    // 0x4c0e20: team = the actor's sentient team (0x1c6421c, copied from sentient +4 by the server pass 0x4db387).
+    const Value tv = actor.obj->get("team");
+    const std::string t = tv.isString() ? tv.asString() : std::string();
+    const int team = t == "axis" ? 1 : t == "allies" ? 2 : t == "neutral" ? 3 : 0;
+    compassPings_.ping(actor.number, team, pos[0], pos[1], timeMs_, durationMs);
 }
 
 void World::debugSpawnItem(const std::string& weapon) {

@@ -500,7 +500,14 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
             if (ls == def->end() || ls->second.empty()) ls = def->find("lastshotsound");
             if (ls != def->end() && !ls->second.empty()) snd = &ls->second;
         }
-        if (snd) startSound(*snd, shooter.isPlayer ? nullptr : &start);
+        if (snd) {
+            float seconds = 0;
+            playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds);
+            // EV_FIRE_WEAPON (0x4b7800): for an actor (entity type 9, 0x4b79ac) whose fire alias resolved (0x4b792a), 0x4c0e20 pings
+            // the compass with the length of the started sound (0x4a35c0 -> 0x4423d0, ms) at the sound position (0x4b79b7).
+            // TODO(spec): actor projectile weapons send the same event; no actor projectile fire path exists here yet.
+            if (!shooter.isPlayer && shooter.obj->kind == "actor") compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
+        }
     }
     if (hit) {
         ++stats.hits;
