@@ -5847,7 +5847,7 @@ int main(int argc, char** argv) {
                         if (!e->vehicle || e->obj->removed) continue;
                         const script::Vec3 o = e->obj->get("origin").asVector(), an = e->obj->get("angles").asVector();
                         std::cout << "vehicle " << n << " (" << e->obj->get("targetname").toString() << "): " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
-                                  << " yaw " << an[1] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
+                                  << " angles " << an[0] << "/" << an[1] << "/" << an[2] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
                                   << " jolt " << e->vehicle->joltPitch << "/" << e->vehicle->joltRoll << " speed " << e->vehicle->speed
                                   << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << " compass " << e->vehicle->onCompass
                                   << " lookat '" << e->vehicle->lookAtText << "'/'" << e->vehicle->lookAtText2 << "'\n";
