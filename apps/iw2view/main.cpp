@@ -3576,6 +3576,18 @@ int main(int argc, char** argv) {
                         execText(t);
                     }
                 }
+                // "fade <r> <g> <b> <a> <seconds>" (cgame console command, table 0x56e4d0 -> 0x4a4d60): needs all 5 arguments; only the alpha is
+                // kept: the screen fade (the scr_fade state 0xf79a50..5c drawn by 0x4bda70) goes to atoi(a) / 255 from the current alpha over
+                // atoi(seconds) * 1000 ms from cg.time, at once when that is 0 (0x4a4ea7). r, g, b are parsed and dropped.
+                else if (c == "fade") {
+                    std::istringstream fa(a1 + " " + a2);
+                    std::vector<std::string> t;
+                    for (std::string x; fa >> x;) t.push_back(x);
+                    if (t.size() >= 5) {
+                        const int64_t now = world ? world->timeMs() : 0;
+                        screenFade.command(float(std::atoi(t[3].c_str())) * 0.003921568859368563f, int(now), std::atoi(t[4].c_str()) * 1000, now);
+                    }
+                }
                 else if (c == "set" || c == "seta" || c == "sets") menuEnv.setCvar(a1, a2);
                 else if (c == "map" || c == "spmap" || c == "devmap" || c == "spdevmap") pendingLevel = std::make_pair(a1, false), pendingPersistent = false;
                 // nextlevel (console 0x446fa0 / menu command 0x4c8e10 -> 0x4d9f00): `spmap <stored map>` (`spdevmap` with sv_cheats) or,
@@ -3660,8 +3672,7 @@ int main(int argc, char** argv) {
         menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
             if (name == "quit") execText("quit");
             // "playerstart" (0x4c5ab3 -> 0x4c54c0): cl_paused 0, console "fade 0 0 0 0 3" (0x581044), close every menu.
-            // TODO(spec): the `fade` console command (string 0x57f3ec) is not decoded and does nothing here.
-            else if (name == "playerstart") { menuEnv.setCvar("cl_paused", "0"); if (frontPtr) frontPtr->closeAll(); }
+            else if (name == "playerstart") { menuEnv.setCvar("cl_paused", "0"); execText("fade 0 0 0 0 3"); if (frontPtr) frontPtr->closeAll(); }
             // "Loadgame" uiScript: "loadgame %s" of ui_savegame (0x580f98 / 0x580fa8).
             else if (name == "loadgame") { const std::string sv = menuEnv.getCvar("ui_savegame"); if (!sv.empty()) execText("loadgame " + sv); }
             // "DelSavegame": deletes save/<ui_savegame>.svg ("Deleted savegame: %s.svg" / "Unable to delete savegame: %s.svg", 0x5812d0 / 0x5812a0).

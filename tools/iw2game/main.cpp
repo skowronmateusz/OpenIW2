@@ -440,8 +440,13 @@ int main(int argc, char** argv) {
                     iw2::game::MoveParams mp;
                     mp.passEntity = world.player() ? world.player()->number : -1;
                     bool climbed = false;
+                    const bool jumpTop = std::getenv("IW2_LADDER_JUMP") != nullptr; // hold jump (the mantle button) from 1.4 s
                     for (int k = 0; k < 240; ++k) {
+                        in.jump = jumpTop && k >= 84;
                         iw2::game::playerMove(cw, ps, in, 1.0f / 60.0f, mp);
+                        if (std::getenv("IW2_LADDER_DEBUG") && k >= 70 && k < 130 && k % 4 == 0)
+                            std::printf("  k %d z %.1f y %.1f onLadder %d mantleFlags %d mantling %d\n", k, ps.origin[2], ps.origin[1], ps.onLadder,
+                                        ps.mantleFlags, ps.mantling);
                         climbed = climbed || ps.onLadder;
                         if (k % 30 == 0 || k < 4) std::printf("t=%.2f pos %.1f %.1f %.1f vz=%.1f onLadder=%d onGround=%d\n", k / 60.0f, ps.origin[0], ps.origin[1], ps.origin[2], ps.velocity[2], ps.onLadder, ps.onGround);
                     }
@@ -456,9 +461,20 @@ int main(int argc, char** argv) {
                                     const auto t1 = cw.trace(o, {xx, yy, o[2] + 120}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
                                     if (t1.fraction > 0.9f) std::printf("open above at %.0f %.0f (%.2f)\n", xx, yy, t1.fraction);
                                 }
-                        for (float yy : {700.0f, 720.0f, 740.0f, 750.0f}) {
-                            const auto dn = cw.trace({644, yy, 100}, {644, yy, -300}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                        for (float yy : {700.0f, 720.0f, 740.0f, 750.0f, 770.0f, 790.0f, 810.0f}) {
+                            const float top = std::getenv("IW2_LADDER_FLOORZ") ? std::stof(std::getenv("IW2_LADDER_FLOORZ")) : 100.0f;
+                            const auto dn = cw.trace({644, yy, top}, {644, yy, -300}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
                             std::printf("floor at y %.0f: z %.1f (start %d)\n", yy, dn.endPos[2], dn.startSolid);
+                        }
+                        if (std::getenv("IW2_LADDER_SHAFT")) {
+                            const auto up2 = cw.trace({646, 788, -201}, {646, 788, 200}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                            std::printf("shaft up from z -201: ends at %.1f\n", up2.endPos[2]);
+                            for (float zz = -200; zz <= up2.endPos[2]; zz += 10)
+                                for (int a = 0; a < 8; ++a) {
+                                    const float ya = a * 3.14159265f / 4.0f;
+                                    const auto side = cw.trace({646, 788, zz}, {646 + std::cos(ya) * 60, 788 + std::sin(ya) * 60, zz}, {-15, -15, 0}, {15, 15, 70}, 0x2810011u, mp.passEntity);
+                                    if (side.fraction > 0.99f) std::printf("side opening at z %.0f dir %d\n", zz, a);
+                                }
                         }
                         std::printf("above: fraction %.2f entity %d contents 0x%x surf 0x%x normal %.2f %.2f %.2f start %d\n", up.fraction, up.entity, up.contents,
                                     up.surfaceFlags, up.normal[0], up.normal[1], up.normal[2], up.startSolid);
