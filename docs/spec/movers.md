@@ -22,11 +22,15 @@ Evidence: addresses in CoD2SP_s.exe 1.3. Implemented in
 - When done (0x532960): position → notify `movedone`; angles are normalised to [−180, 180] → notify `rotatedone`.
 - `movex/y/z` and `rotatepitch/yaw/roll` add the argument to one axis. `rotateto` adds the shortest angle
   difference per axis (0x423f50: d = a − b, then −360 while > 180 and +360 while < −180).
+- `rotatevelocity(angular velocity, total[, accel, decel])` (0x533db0 → planner 0x532e20): accel = decel = 0 is a type 3
+  trajectory of the total time with delta = the velocity (it stops at base + v·total, then `rotatedone`); otherwise
+  lin = total − accel − decel, accel > 0: type 7 up to |v|, accel = 0: type 3 for lin (type 8 when lin = 0), then the
+  common phase step; final angles = phase2End (+ v·decel/2 when decel > 0).
 - `movegravity(velocity, time)`: type 5 from the current origin.
 
 ## Not specified yet (TODO in code)
 
-`rotatevelocity` accel/decel phases (0x532e20), `vibrate` (0x533b90), the per-frame mover runner and linked
+`vibrate` (0x533b90), the per-frame mover runner and linked
 entity update order, the body of `linkto` (0x4ed770: tag offsets), `istouching` shape tests (0x4f9f50,
 0x447830), and collision of moving brush models (submodel traces).
 OpenIW2's linkto keeps the child at the parent (or tag) plus the given offsets, rotated by the parent's yaw
