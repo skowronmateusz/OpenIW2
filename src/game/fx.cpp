@@ -241,7 +241,8 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             if (!(*bolt)(t)) continue;
         }
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
-                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud" || e.type == "Cylinder";
+                           e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud" || e.type == "Cylinder" ||
+                           e.type == "CameraShake";
         if (!known) { // TODO(spec): other element types
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
@@ -262,6 +263,15 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             const int64_t startMs = nowMs + int64_t(elementDelay(e, i, count));
             if (e.type == "Decal") {
                 spawnDecals(e, flags, origin, ax, startMs);
+                continue;
+            }
+            if (e.type == "CameraShake") {
+                // Type 10 (name 0x57c920, parser 0x4868b7) spawns through 0x48db80: the spawn point (0x48c290), then `life` (+0x58),
+                // `radius` (+0xe8) and `bounce` (+0x280) drawn and discarded (fstp). No instance is created and nothing shakes.
+                (void)spawnPoint(e, origin, ax);
+                (void)range(e.numbers("life"), 0);
+                (void)range(e.numbers("radius"), 0);
+                (void)range(e.numbers("bounce"), 0);
                 continue;
             }
             if (e.type == "FxRunner") {

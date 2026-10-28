@@ -205,6 +205,15 @@ mid(r) = (max − min) · 0.5 + min:
   smaller than the cube's half diagonal, so clouds near the screen edge disappear. OpenIW2 tests the four side planes
   (`FxSystem::viewPlanes`); TODO(spec): the exact plane set of view +0x20.
 
+## CameraShake elements (type 10)
+
+- The parser names the type `cameraShake` (0x57c920, id 10 at 0x4868b7); the spawn dispatch (0x485d10, table 0x485dec entry 9)
+  calls 0x48db80, which computes the spawn point (0x48c290) and draws `life` (def +0x58), `radius` (+0xe8) and `bounce` (+0x280)
+  with 0x48a2c0, discarding all three (fstp). No element instance is allocated, so a CameraShake element only consumes effect
+  generator draws; it shakes nothing in SP 1.3 (the only shipped one is in fx/explosions/mortarexp_dirt.efx).
+- OpenIW2: `FxSystem::playAxes` makes the same draws and spawns nothing.
+- Type 11 `flash` (0x57c918) spawns through 0x48ddb0 (0xfc-byte object, vtable 0x57d428); no shipped effect uses it (not decoded).
+
 ## Outdoor map ("$outdoor", 1.3 DLL 0x10020c80)
 
 - Built when the world loads unless the dvar at 0x101ce710 is 2: bounds 0x100208a0 over the world surface references
