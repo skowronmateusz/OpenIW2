@@ -212,6 +212,11 @@ int main() {
         // trigger threshold at walking speed 160: 160^2 * 0.005 = 128 -> within ~11.3 units, not 13
         CHECK(negotiationInRange(127.0f, 25600.0f) && !negotiationInRange(129.0f, 25600.0f) && negotiationInRange(0.0f, 0.0f));
     }
+    {
+        // stop soon: r = 50 / 500 = 0.1 -> k = 0.19; at 50 ms k = 1; with a contact the factor is divided by the normal z
+        CHECK(near(stopSoonScale(500, 0.0f), 0.19f, 1e-5f) && near(stopSoonScale(50, 0.0f), 1.0f, 1e-5f));
+        CHECK(near(stopSoonScale(500, 0.5f), 0.38f, 1e-5f));
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }

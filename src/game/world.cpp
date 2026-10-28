@@ -838,6 +838,7 @@ void World::moveActor(Entity& e, float dt) {
         e.obj->set("$motionyaw", Value(yaw));
     }
     bool grounded = false;
+    bool preMoveStop = false; // the slide branch ran 0x503ec0 before the move
     if (actorSlideEnabled()) {
         // The actor slide move (actorslide.cpp, exe 0x5487c0 and callees) instead of the ground snap below. Block set-up from
         // the exe: init 0x500cd0 gives mask 0x2820011 (+0x68), pass entity = the gentity number (+0x3c), ground entity 0x7fe,
@@ -868,13 +869,49 @@ void World::moveActor(Entity& e, float dt) {
             t.allSolid = tr.allSolid;
             return t;
         };
-        // 0x503ec0 runs inside the path step, before the physics: on the pre-move origin and the block velocity of the previous
-        // frame. When it pushes the negotiation state the move delta (+0x250) is replaced by (begin point - origin), so this
-        // frame's move lands on the begin point (0x503fb0..0x503fda), not short of it.
-        if (!followed && e.ai.stopSoonMs == 0 && p.count > 0 && p.traversal > 0 && (p.flags & 0x40) && e.ai.groundEnt != 0x7ff &&
-            negotiationTrigger(e, before, true)) {
-            const Vec3& bp = p.pts[size_t(p.traversal)].pos;
-            for (int a = 0; a < 3; ++a) pm.moveDelta[a] = bp[size_t(a)] - before[a];
+        // 0x503ec0 runs inside the path step (after the delta 0x505230), before the physics: on the pre-move origin and the
+        // block velocity of the previous frame (2D for stop soon, 3D for the trigger).
+        if (!followed) {
+            preMoveStop = true;
+            const bool gate = e.ai.slideContact || e.ai.groundEnt != 0x7ff; // 0x503ed5: block +0x20 or ground entity != 0x7ff
+            if (e.ai.stopSoonMs == 0 && (!gate || !(p.flags & 0x40))) {
+                // 0x50414e: nothing (neither trigger nor stop soon)
+            } else if (e.ai.stopSoonMs == 0 && p.traversal > 0) {
+                // The trigger: the negotiation state is pushed and the move delta (+0x250) is replaced by (begin point - origin),
+                // so this frame's move lands on the begin point (0x503fb0..0x503fda), not short of it.
+                if (negotiationTrigger(e, before, true)) {
+                    const Vec3& bp = p.pts[size_t(p.traversal)].pos;
+                    for (int a = 0; a < 3; ++a) pm.moveDelta[a] = bp[size_t(a)] - before[a];
+                }
+            } else {
+                // Stop soon (0x503fe5..0x50414b). vec = end point - origin (3D). Once the 2D distance is within v2D^2 * 0.0625
+                // (and exactly 0 or flag 1) the timer is set to now + 500 ms; while it runs the delta is vec * k with
+                // r = 50 / remaining ms and k = (2 - r) * r (divided by the contact normal z with a ground contact), and when it
+                // has run out the path is cleared and the delta is vec.
+                const PathPoint& end = p.pts[size_t(p.traversal)];
+                const float vx = end.pos[0] - before[0], vy = end.pos[1] - before[1], vz = end.pos[2] - before[2];
+                const float d2 = vx * vx + vy * vy;
+                bool run = true;
+                if (e.ai.stopSoonMs == 0) {
+                    if (d2 != 0.0f && !(p.flags & 1)) run = false;
+                    else if ((e.ai.slideVel[1] * e.ai.slideVel[1] + e.ai.slideVel[0] * e.ai.slideVel[0]) * 0.0625f < d2) run = false;
+                    else e.ai.stopSoonMs = timeMs_ + 500;
+                }
+                if (run) {
+                    const int64_t left = e.ai.stopSoonMs - timeMs_;
+                    float k = 1.0f;
+                    if (left <= 0) {
+                        pathClearBudget(p, before);
+                        p.count = p.planned = 0;
+                        e.ai.detourMs = 0;
+                    } else {
+                        k = stopSoonScale(int(left), e.ai.slideContact ? e.ai.slideContactNz : 0.0f);
+                    }
+                    pm.moveDelta[0] = vx * k;
+                    pm.moveDelta[1] = vy * k;
+                    pm.moveDelta[2] = vz * k;
+                }
+            }
         }
         if (yieldNow) {
             e.ai.yieldMs = timeMs_;
@@ -887,7 +924,9 @@ void World::moveActor(Entity& e, float dt) {
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a]; // written back in place (block +0xc)
         e.ai.groundEnt = pm.groundEnt;
-        grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground
+        e.ai.slideContact = pm.contact;
+        e.ai.slideContactNz = pm.contactNormalZ;
+        grounded = pm.groundEnt != 0x7ff;
         linkBumpedActor(e, pm.hitEnt);
         // groundtype (actor +0x24c = move block +0x28, the surface type of the ground probe); getter 0x5367b0: 0 is undefined,
         // 1..22 the surface table 0x5a0344 (the pmove names), anything else "default".
@@ -902,7 +941,7 @@ void World::moveActor(Entity& e, float dt) {
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     // 0x503ec0: the negotiation branch (stop soon unset, on the ground, flag 0x40, a traversal point): within the squared
     // distance |velocity|^2 * 0.005 + 1e-6 (2D) of the begin point the negotiation state is pushed.
-    if (followed) return; // 0x503ec0 is part of the path walk
+    if (followed || preMoveStop) return; // 0x503ec0 is part of the path walk (the slide branch ran it before the move)
     if (e.ai.stopSoonMs == 0) {
         if (!grounded || !(p.flags & 0x40)) return; // 0x503ee..0x503ef5: not on the ground or no flag 0x40
         if (p.traversal > 0) return; // the trigger ran before the move (above)
@@ -956,6 +995,8 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
     e.obj->set("origin", Value(o));
     for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a];
     e.ai.groundEnt = pm.groundEnt;
+    e.ai.slideContact = pm.contact;
+    e.ai.slideContactNz = pm.contactNormalZ;
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     linkBumpedActor(e, pm.hitEnt);
 }

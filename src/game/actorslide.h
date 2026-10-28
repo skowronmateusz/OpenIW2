@@ -86,6 +86,10 @@ float stuckNudge(float dz);
 // |block velocity|^2 * 0.005 + 1e-6 (0x503fb0).
 bool negotiationInRange(float dist2, float speed2);
 
+// 0x504113..0x504145 (stop soon, timer running): the move delta is (end - origin) * k, k = (2 - r) * r with r = 50 / remaining ms,
+// divided by the contact normal z when the block has a ground contact (contactNz 0 = none).
+float stopSoonScale(int remainingMs, float contactNz);
+
 bool actorSlideEnabled();
 
 } // namespace iw2::game

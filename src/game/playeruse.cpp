@@ -122,7 +122,7 @@ bool World::playerTurretEye(Vec3& eye) {
 // distance + (1 − (dir · forward + 1) / 2) · 144, −144 more for a trigger_use. Sorted; then each one but a
 // trigger_use_touch gets +10000 and drops off the end when the eye → absbox centre line (a turret: its tag_player)
 // is blocked (mask 0x11); sorted again.
-// Weapon items are candidates (pick: 0x534c80). TODO(spec): other items and actors (+0x211b); trigger absboxes
+// Weapon items are candidates (pick: 0x534c80), and so are actors with useable (+0x211b). TODO(spec): other items; trigger absboxes
 // ignore the entity angles.
 std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3& forward) {
     const Vec3 po = player_->obj->get("origin").asVector();
@@ -146,6 +146,13 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
             const Vec3 o = e.obj->get("origin").asVector();
             mn = {o[0] - 1, o[1] - 1, o[2] - 1};
             mx = {o[0] + 1, o[1] + 1, o[2] + 1};
+        } else if (e.isActor) {
+            // An actor with the script field useable (+0x211b) set (0x5346ae..0x5346c4): its absbox, r.mins/maxs (-15, -15, 0)..(15, 15, 72)
+            // (the spawn writes them once, 0x4fc709..0x4fc731) widened by 1 as every linked entity.
+            if (!isAlive(e) || !e.obj->get("useable").isDefined() || e.obj->get("useable").toString() == "0" || e.obj->get("useable").toString() == "false") continue;
+            const Vec3 o = e.obj->get("origin").asVector();
+            mn = {o[0] - 16, o[1] - 16, o[2] - 1};
+            mx = {o[0] + 16, o[1] + 16, o[2] + 73};
         } else if (trigUse || trigTouch) {
             const Value m = e.obj->get("model");
             if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) continue;
@@ -187,6 +194,10 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
             else if (c.e->classname.rfind("weapon_", 0) == 0) {
                 const Vec3 o = c.e->obj->get("origin").asVector();
                 mn = mx = o;
+            } else if (c.e->isActor) {
+                const Vec3 o = c.e->obj->get("origin").asVector();
+                mn = {o[0] - 16, o[1] - 16, o[2] - 1};
+                mx = {o[0] + 16, o[1] + 16, o[2] + 73};
             } else {
                 submodelBounds(c.e->obj->get("model").asString(), mn, mx);
                 const Value ov = c.e->obj->get("origin");
@@ -287,6 +298,19 @@ void World::findPlayerUseEntity() {
             const Value h = e.obj->get("$cursorhint"), str = e.obj->get("$hintstring");
             playerUseHint_.hint = h.isNumber() ? h.asInt() : 2;
             if (str.isString()) playerUseHint_.text = str.asString();
+            return;
+        }
+        if (e.isActor) {
+            // 0x534ec5: an actor whose sentient team (+4) is 2 (allies) or 3 (neutral) is the target with hint 4 and its hint string
+            // (+0x2124, sethintstring); another team clears the target. Either way the search ends.
+            const Value tm = e.obj->get("team");
+            const std::string ts = tm.isString() ? tm.asString() : std::string();
+            if (ts == "allies" || ts == "neutral") {
+                playerUseEntity_ = e.number;
+                playerUseHint_.hint = 4;
+                const Value str = e.obj->get("$hintstring");
+                if (str.isString()) playerUseHint_.text = str.asString();
+            }
             return;
         }
         if (e.classname.rfind("weapon_", 0) == 0) {

@@ -997,3 +997,17 @@ TODO(spec): the escape from that slab is still unknown (the move block there ret
 ### Negotiation trigger snap (0x503ec0, 0x503fb0..0x503fda)
 
 The trigger runs inside the path step, before the physics move, on the pre-move origin and the previous frame's block velocity (+0x230..0x238): 2D distance² to the begin point <= |velocity|² · 0.005 + 1e-6. When it pushes state 9 the move delta (+0x250..0x258) is replaced by (begin point - origin), so the move block carries the actor exactly onto the begin point. The port used to test after the move, starting wall_hop up to ~13 units early; the hop then ended inside the 15-thick AI-clip wall of demolition (x 6383) and the actors never reached `end_left`. Now `World::moveActor` triggers first and overrides the delta. Failed move block (0x501d00): block vz (+0x238) is cleared; with no node in range the block's partially moved origin stays.
+
+### Stop soon (0x503fe5..0x50414b) and actor use
+
+Stop soon runs in the same pre-move function (0x503ec0), on the pre-move origin and the previous block velocity.
+vec = path end point - origin (3D); d2 is its 2D distance squared. Start: if d2 != 0 and the actor flag 1 is not set,
+return; if 2D speed² * 0.0625 (0x5920cc) < d2, return; otherwise stopSoon = now + 500. While left = stopSoon - now > 0
+the move delta (+0x250..0x258) is vec * k, with k = (1 / contactNormalZ if the block reported a contact (+0x244), else 1)
+* (2 - r) * r and r = 50 (0x592034) / left (2.0 = 0x591ed0). When left <= 0: path clear (0x541780), path count and planned
+= 0, detour (+0x724) = 0 and the delta is vec. Ported in `World::moveActor` (`stopSoonScale` in actorslide.cpp).
+
+Player use of actors (scripts such as demolition's offerExplosives set `useable`): the scan (0x534490) takes an entity with
+an actor (+0x100) whose field +0x211b is non-zero; the pick (0x534d40, byte table 0x534fb4, case 3 at 0x534ec5) gives the
+hint (type 4, string +0x2124) for sentient team 2 or 3 and ends the search; the press (0x5341a0) notifies "trigger" with
+the player. TODO(spec): the sentient callback at +0x2c (0x519050) is not ported.
