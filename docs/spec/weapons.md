@@ -11,6 +11,7 @@ case-insensitively (`World::weapon()` lower-cases them). Fields used by the engi
 | `fireTime` | seconds between shots |
 | `semiAuto`, `boltAction` | `semiAuto 0` fires while the trigger is held; `boltAction 1` rechambers after each shot |
 | `rechamberTime`, `reloadTime`, `reloadEmptyTime`, `raiseTime` | state durations in seconds |
+| `rechamberBoltTime` | (+0x20c, ms) when a boltAction casing is ejected, see "Bolt-action brass" below |
 | `clipSize`, `startAmmo`, `maxAmmo` | ammunition |
 | `gunModel`, `handModel` | view-model xmodels (without the `xmodel/` prefix) |
 | `idleAnim`, `fireAnim`, `lastShotAnim`, `rechamberAnim`, `reloadAnim`, `reloadEmptyAnim`, `raiseAnim`, … | view-model xanims |
@@ -71,3 +72,32 @@ adsFireAnim, adsLastShotAnim, adsRechamberAnim, adsUpAnim, adsDownAnim; slots 1�
   per bone (the XAnim blend itself is not implemented yet). With this the hip pose of every weapon (also the
   Enfield, Sten, Bren, Springfield and Mosin, whose idle and adsDown poses are turned ±90° in opposite directions)
   and the aimed sight picture match screenshots of the original.
+
+## Hit-location damage multiplier (G_Damage 0x528100..0x528143)
+
+For a sentient target the damage is `trunc(amount × table[location])` (`_ftol`); a result <= 0 leaves G_Damage before any
+state change. The table is the attacker's weapon table (weapon def +0x5b0 + 4·location: the weapon-file keys `locNone`,
+`locHelmet`, `locHead`, `locNeck`, `locTorsoUpper`, `locTorsoLower`, `locRightArmUpper`, `locLeftArmUpper`,
+`locRightArmLower`, `locLeftArmLower`, `locRightHand`, `locLeftHand`, `locRightLegUpper`, `locLeftLegUpper`,
+`locRightLegLower`, `locLeftLegLower`, `locRightFoot`, `locLeftFoot`, `locGun`; field table entry at file 0x1a8eac) when
+the entity's weapon (inflictor byte +2, else the attacker's) is defined and its `weaponType` (+0x78) is 0 (`bullet`).
+Otherwise the default table 0x1c91328 is used: 19 floats initialised to 1.0 (0x527a08) and loaded from
+`info/ai_lochit_dmgtable` (`LOCDMGTABLE\name\value\...`, 0x527b73..0x527ba1; e.g. head 4, torso_upper 0.9, gun 0).
+Location order: none, helmet, head, neck, torso_upper, torso_lower, right_arm_upper, left_arm_upper, right_arm_lower,
+left_arm_lower, right_hand, left_hand, right_leg_upper, left_leg_upper, right_leg_lower, left_leg_lower, right_foot,
+left_foot, gun (name table 0x5a9538). OpenIW2 uses the attacker's `$weapon` since damage() has no inflictor argument.
+## Bolt-action brass (exe evidence)
+
+Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): `rechamberTime` +0x208, `rechamberBoltTime` +0x20c (type 7, ms), `boltAction` +0x328.
+- EV_FIRE_WEAPON (cgame 0x4b7800) ejects the brass (CG_EjectWeaponBrass 0x4b7730) only when boltAction is 0 (0x4b79c0..0x4b79dc).
+- A shot of a boltAction weapon leaves its ps+0x530 bit set (the casing still in the chamber). Entering the rechamber (0x4dd851):
+  weaponTime = rechamberTime, weaponDelay = rechamberBoltTime when non-zero and below rechamberTime, else 1 ms (0x4dd864..0x4dd87b).
+  When that delay expires in state 4 (0x4de720 returns 1) with the bit set, 0x4dd700 clears it and adds event 0xa2 (0x4dd799).
+- A reload started with the bit set (the last round, no rechamber) takes weaponDelay = min(rechamberBoltTime, the add delay or
+  weaponTime), at least 1 ms (0x4dd930..0x4dd970); at its end 0x4ddfa0 clears the bit, adds event 0xa2 (0x4de00a) and re-arms
+  the delay for the ammo add minus rechamberBoltTime (0x4de0b6).
+- Event 0xa2 (jump table 0x4bb74c, case 0x4bb113) calls 0x4b7730: shellEjectEffect bolted on tag_brass.
+- Stock values: kar98k rechamberTime 1, rechamberBoltTime 0.65; enfield 1.0677 / 0.65 (fireTime 0.33): the casing comes out
+  0.65 s into the bolt cycle. Only the pmove writes event 0xa2, so AI bolt-action rifles never eject brass (combat.cpp).
+- OpenIW2: `PlayerWeapon::Event::EjectBrass` with its own timer (`brassTimer_`); TODO(spec): the exe's ps weaponDelay also
+  gates melee / other actions during that time, and the bit is kept per weapon across switches (cleared on equip here).

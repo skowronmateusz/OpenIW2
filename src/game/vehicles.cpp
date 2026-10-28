@@ -411,6 +411,21 @@ void World::linkVehicleNodes() {
 }
 
 // Loads vehicles/<type> (0x50cf60); an unknown type falls back to "defaultvehicle" (0x50d1b0).
+// 0x5122f0 (G_Damage 0x528050 leaves before any state change when it returns nonzero): bullets (mods 1, 2) hurt only with
+// bulletDamage, or with armorPiercingDamage when the shot has dflags 2; grenades (3, 4) need grenadeDamage, MOD_PROJECTILE
+// projectileDamage, MOD_PROJECTILE_SPLASH projectileSplashDamage; MOD_EXPLOSIVE (14) always hurts; every other mod
+// (0, 7..13, > 14) is ignored.
+bool World::vehicleIgnoresDamage(const VehicleInfo& info, int mod, int dflags) {
+    switch (mod) {
+    case 1: case 2: return !(info.bulletDamage || ((dflags & 2) && info.armorPiercingDamage));
+    case 3: case 4: return !info.grenadeDamage;
+    case 5: return !info.projectileDamage;
+    case 6: return !info.projectileSplashDamage;
+    case 14: return false;
+    default: return true;
+    }
+}
+
 const VehicleInfo* World::vehicleInfo(const std::string& type) {
     const std::string key = lowerCopy(type);
     auto it = vehicleInfos_.find(key);
@@ -459,6 +474,11 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "highenginesnd") info->highEngineSnd = v;
                 else if (k == "texurescroll") info->texScroll = std::atoi(v.c_str());
                 else if (k == "texurescrollscale") info->texScrollScale = f;
+                else if (k == "bulletdamage") info->bulletDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "armorpiercingdamage") info->armorPiercingDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "grenadedamage") info->grenadeDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "projectiledamage") info->projectileDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "projectilesplashdamage") info->projectileSplashDamage = std::atoi(v.c_str()) != 0;
                 else if (k == "quadbarrel") info->quadBarrel = std::atoi(v.c_str()) != 0;
             }
         }
@@ -729,8 +749,8 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     if (v.owner >= 0 && player_ && v.owner == player_->number) {
         pmFlags_ |= 0x40000;
         // ps+0xc 0x8000 (freezecontrols, client +0x8630 via ClientThink 0x4e7bc0) also zeroes the command.
-        // TODO(spec): the second source, client +0x8698.
-        if (!(pmFlags_ & 0x80000) && !controlsFrozen_) {
+        // The second source (0x4e7be6: client +0x8698 = an absolute playerlinkto) is playerControlsFrozen().
+        if (!(pmFlags_ & 0x80000) && !playerControlsFrozen()) {
             cmd.forward = playerCmd_.forward;
             cmd.right = playerCmd_.right;
             cmd.jump = (playerCmd_.buttons & 0x400) ? 127 : 0;
@@ -780,8 +800,8 @@ void World::vehiclePlayerAim(Entity& e) {
     Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr;
     if (!owner || owner != player_ || (pmFlags_ & 0x80000)) return;
     if (v.fireTimerMs < 1) {
-        // ps+0xc bit 0x8000 (freezecontrols) also blocks firing. TODO(spec): the second source, client +0x8698.
-        if ((playerCmd_.buttons & 1) && !controlsFrozen_) vm_.notify(e.obj, "turret_fire");
+        // ps+0xc bit 0x8000 (freezecontrols, or an absolute playerlinkto: client +0x8698, 0x4e7be6) also blocks firing.
+        if ((playerCmd_.buttons & 1) && !playerControlsFrozen()) vm_.notify(e.obj, "turret_fire");
     } else {
         v.fireTimerMs -= 50;
     }
@@ -1255,7 +1275,7 @@ void World::registerVehicleBuiltins() {
     // useby(user) (0x4ef020): notifies "trigger" with the user, then runs the entity type's use function
     // (table 0x5a5740). For vehicles (0x512f00) a player gets in, or out when already using a vehicle.
     // The use function 0x529280 (handlers 6 / 7) is trigger_hurt's on/off toggle (its touch 0x5291d0 calls G_Damage with
-    // MOD_TRIGGER_HURT). TODO(spec): the use function 0x529450 of entity type 8.
+    // MOD_TRIGGER_HURT). The use function of entity type 8 (trigger_damage) is 0x529450 (triggerDamageUse).
     vm_.registerBuiltin("useby", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         Entity* user = entityOf(c.arg(0));
@@ -1267,6 +1287,7 @@ void World::registerVehicleBuiltins() {
             vm_.notify(e->obj, "trigger", {Value(user->obj)});
             // trigger_hurt (handlers 6 / 7, use function 0x529280) toggles between off (6) and on (7).
             if (e->classname == "trigger_hurt") e->obj->set("$hurtOff", Value(!e->obj->get("$hurtOff").truthy()));
+            if (e->classname == "trigger_damage") triggerDamageUse(*e); // entity type 8 use function 0x529450
         }
         return Value();
     });

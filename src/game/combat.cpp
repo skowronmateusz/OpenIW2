@@ -3,7 +3,9 @@
 
 #include "game/world.h"
 #include "game/bulletdamage.h"
+#include "game/itempickup.h"
 #include "game/vehicles.h"
+#include "game/triggerdamage.h"
 
 #include <algorithm>
 #include <cctype>
@@ -168,15 +170,67 @@ Value World::attackerValue(Entity* attacker) {
     return Value(worldEntityObj_);
 }
 
+// Hit-location damage multiplier (0x528100..0x528143). The attacker's weapon table (weapon +0x5b0 + 4·location, the keys
+// locNone, locHelmet, ... of the weapon file) applies when the weapon is a bullet weapon (weaponType +0x78 == 0);
+// otherwise, and with no weapon, the default table loaded from info/ai_lochit_dmgtable (0x527b30..0x527ba1:
+// "LOCDMGTABLE\name\value\..." for the 19 locations, initialised to 1.0 at 0x527a08). A key a weapon file leaves out
+// is taken as 1.0 (TODO(spec): the descriptor default).
+float World::hitLocationMultiplier(const Entity* attacker, const std::string& location) {
+    static const char* const kLocKeys[19] = {"none", "helmet", "head", "neck", "torso_upper", "torso_lower", "right_arm_upper",
+                                             "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand", "left_hand",
+                                             "right_leg_upper", "left_leg_upper", "right_leg_lower", "left_leg_lower",
+                                             "right_foot", "left_foot", "gun"};
+    int idx = 0;
+    for (int i = 0; i < 19; ++i)
+        if (location == kLocKeys[i]) idx = i;
+    if (attacker) {
+        const std::string w = lowerStr(attacker->obj->get("$weapon").toString());
+        const auto* def = w.empty() || w == "none" ? nullptr : weapon(w);
+        if (def) {
+            auto type = def->find("weapontype");
+            if (type == def->end() || type->second.empty() || lowerStr(type->second) == "bullet") {
+                std::string key = "loc";
+                for (const char c : std::string(kLocKeys[idx]))
+                    if (c != '_') key += c;
+                auto it = def->find(key);
+                return it != def->end() ? float(std::atof(it->second.c_str())) : 1.0f;
+            }
+        }
+    }
+    if (!locDmgTableLoaded_) {
+        locDmgTableLoaded_ = true;
+        locDmgTable_.assign(19, 1.0f);
+        if (auto d = vfs_.read("info/ai_lochit_dmgtable")) {
+            const std::string text(d->begin(), d->end());
+            std::vector<std::string> tok;
+            size_t p = 0;
+            while (p <= text.size()) {
+                const size_t q = text.find('\\', p);
+                tok.push_back(text.substr(p, q == std::string::npos ? std::string::npos : q - p));
+                if (q == std::string::npos) break;
+                p = q + 1;
+            }
+            if (!tok.empty() && tok[0] == "LOCDMGTABLE")
+                for (size_t i = 1; i + 1 < tok.size(); i += 2)
+                    for (int k = 0; k < 19; ++k)
+                        if (tok[i] == kLocKeys[k]) locDmgTable_[size_t(k)] = float(std::atof(tok[i + 1].c_str()));
+        }
+    }
+    return locDmgTable_[size_t(idx)];
+}
+
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
-                   const std::string& location) {
+                   const std::string& location, int dflags) {
     if (!takesDamage(target)) return;
+    // 0x528050: an entity with vehicle info (ent+0x108) first asks the vehicle filter (0x5122f0) and leaves when it ignores
+    // the means of death. The info is attached when a script_vehicle is initialised (0x50da80).
+    if (target.vehicle && target.vehicle->info && vehicleIgnoresDamage(*target.vehicle->info, modNumber(mod), dflags)) return;
     // Entities without a client or actor (0x528050 with ent+0xfc and ent+0x100 zero): "damage" (0x1c7f058: amount,
     // attacker, direction, point, means of death; 0x527fd0) whenever the amount is not 0, health (ent+0x13c) minus the
     // amount, kept above −1000 (0x528466); below 1 "death" (0x1c7f05c) with the attacker and the means-of-death name
     // (0x5a95ac). Script models (handler 0xd) and brush models (0xc) have no pain or die callback (0x5a5744 /
-    // 0x5a5748), so they stay damageable. TODO(spec): the spawn health of these entities (OpenIW2 starts from the
-    // "health" key or 0), the team kill counter (0x82552c) for actor deaths.
+    // 0x5a5748), so they stay damageable. Spawn health: "health" is an int spawn key stored at ent+0x13c (field tables 0x16f518 / 0x170868), the
+    // entity memory is zeroed otherwise, so the key or 0 is exact. TODO(spec): the team kill counter (0x82552c) for actor deaths.
     if (!target.isActor && !target.isPlayer) {
         if (amount == 0) return;
         const Value hv = target.obj->get("health");
@@ -191,7 +245,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
     // table +0x5b0, else the default table 0x1c91328) and truncated; a result <= 0 leaves G_Damage (0x52857f) before any
     // state changes, so no "damage" notify and no pain (a radius-damage edge of 0 gave animscripts/pain.gsc:101 a
-    // divide by zero in health / damageTaken). TODO(spec): the multiplier tables (taken as 1.0 here).
+    // divide by zero in health / damageTaken). The multiplier tables: hitLocationMultiplier; the product is truncated (_ftol).
+    amount = int(float(amount) * hitLocationMultiplier(attacker, location));
     if (amount <= 0) return;
     // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage
     // (0x5282b3). TODO(spec): the knockback computed before that check still applies in the exe.
@@ -453,7 +508,15 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         // Damage by weapon, target and distance start → impact (0x531090, called at 0x531787).
         const auto* dmgDef = weaponName.empty() ? def : weapon(weaponName);
         if (dmgDef) damageAmount = bulletDamageAtDistance(*dmgDef, hit->isPlayer, len(sub(tr.endPos, start)));
-        damage(*hit, attacker, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
+        // Bullet_Fire_Extended (0x531379..0x5313a3): rifleBullet (weapon +0x31c) gives MOD_RIFLE_BULLET and dflags 0x40, else
+        // MOD_PISTOL_BULLET and 0; armorPiercing (+0x320) adds dflags 2.
+        bool ap = false;
+        if (def) {
+            auto apIt = def->find("armorpiercing");
+            ap = apIt != def->end() && std::atoi(apIt->second.c_str()) != 0;
+        }
+        damage(*hit, attacker, damageAmount, dir, tr.endPos, rifle ? "MOD_RIFLE_BULLET" : "MOD_PISTOL_BULLET", hitLocationName(location),
+               (rifle ? 0x40 : 0) | (ap ? 2 : 0));
     }
     return hit;
 }
@@ -1082,8 +1145,8 @@ void World::registerCombatBuiltins() {
         return Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]});
     });
     // dropweapon(weapon, hand, throwSpeed) (0x53da50): hand "left"/"right" picks tag_weapon_left/right, other
-    // values no tag; the weapon item is spawned there by 0x5220f0. TODO(spec): the throw velocity (applied when
-    // throwSpeed != 0) and the item entity's physics.
+    // values no tag; the weapon item is spawned there by 0x5220f0. The throw velocity is applied below (exe-checked);
+    // the item falls under G_RunItem (World::runItems).
     vm_.registerBuiltin("dropweapon", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("not an entity");
@@ -1102,6 +1165,13 @@ void World::registerCombatBuiltins() {
         if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
         // 0x5220f0 → 0x521f70: the item is launched and falls (G_RunItem). TODO(spec): from the hand tag, as above.
         launchItem(item, *e);
+        // A non-player dropper fixes the item's ammunition at drop time (0x5220f0, 0x522185..0x52231f: actorDropAmmo), so the
+        // pickup does not resolve it again.
+        if (!e->isPlayer) {
+            const ItemAmmo a = actorDropAmmo(weaponInt(w, "dropAmmoMin"), weaponInt(w, "dropAmmoMax"), weaponInt(w, "clipSize"), meleeSeed_);
+            item.obj->set("$ammoStock", Value(a.stock));
+            item.obj->set("$ammoClip", Value(a.clip));
+        }
         // 0x53da50 / 0x5220f0: the item starts where a 0x491 trace from the body centre
         // (origin + half the box height) to the hand tag ends (the dropper passes), and flies with dir × throwSpeed, dir =
         // normalize(tag − centre) with 2.0 added to z; throwSpeed 0 gives a zero velocity (it just falls).

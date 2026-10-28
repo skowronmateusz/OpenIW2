@@ -602,6 +602,13 @@ public:
     Entity* debugUseWeaponItem(const std::string& weapon, int stock, int clip);
     void debugSetClip(const std::string& weapon, int rounds);
     std::pair<int, int> debugAmmo(const std::string& weapon);
+    // Tests: the hit-location multiplier (0x528100) for an attacker holding `weapon` ("" = no weapon).
+    // Vehicle immunity filter of G_Damage (0x5122f0, called at the top of 0x528050 when ent+0x108 is set): true = ignored.
+    static bool vehicleIgnoresDamage(const VehicleInfo& info, int mod, int dflags);
+    float debugLocMultiplier(const std::string& weapon, const std::string& location) {
+        player_->obj->set("$weapon", script::Value(weapon));
+        return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
+    }
     void debugDamage(Entity& e, int amount);
     // Test hooks (iw2game IW2_TOUCH_TEST / IW2_ROCKET_TEST): the vehicle touch callback with the vehicle placed 100 units
     // behind `t` moving at 400 units/s towards it; a vehicle rocket fired from 300 units away at `t`.
@@ -616,6 +623,8 @@ public:
     const std::vector<std::string>& menuNames() const { return menus_; }
     // freezecontrols(): client +0x8630 (0x5392e0); the front end ignores movement and button input while it is set.
     bool controlsFrozen() const { return controlsFrozen_; }
+    // ClientThink 0x4e7bc0: pm_flags 0x8000 is set by freezecontrols (client +0x8630) or an absolute playerlinkto (+0x8698).
+    bool playerControlsFrozen() const { return controlsFrozen_ || (playerLink_ && playerLink_->absolute); }
     // A level change requested by changelevel/missionsuccess/missionfailed that is due now (empty otherwise).
     std::optional<LevelChange> dueLevelChange() const {
         if (levelChange_.pending && timeMs_ >= levelChange_.atMs) return levelChange_;
@@ -707,6 +716,7 @@ public:
     void spawnTriggerDamage(Entity& e);
     void triggerDamageApply(Entity& e, Entity* attacker, int damage, int mod);
     void triggerDamageHit(Entity& e, Entity* attacker, int amount, const std::string& mod);
+    void triggerDamageUse(Entity& e); // 0x529450
     void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity);
     std::string playerOffhandFor(const std::string& offhandClass);
@@ -760,7 +770,7 @@ private:
                                 int& location);
     Vec3 eyePosition(Entity& e);
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
-                const std::string& location = "none");
+                const std::string& location = "none", int dflags = 0);
     // attacker: the entity credited with the damage (nullptr = the world).
     bool playerLastShot_ = false;
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
@@ -1237,6 +1247,9 @@ private:
     uint32_t entityContents(const Entity& e) const;          // gentity +0xc0 (setcontents 0x4efd70; spawn values 0x4fc74f / 0x4e90e2 / 0x533440 / 0x533480 / 0x5334d0)
     static bool isScriptMover(const Entity& e);              // eType 5 (0x5332b0): script_model, script_brushmodel, script_origin
     void vehicleTouchDamage(Entity& vehicle, Entity& other); // 0x512d40 (src/game/vehicles.cpp)
+    float hitLocationMultiplier(const Entity* attacker, const std::string& location); // 0x528100 (combat.cpp)
+    std::vector<float> locDmgTable_;
+    bool locDmgTableLoaded_ = false;
     Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};

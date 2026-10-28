@@ -53,6 +53,7 @@ public:
             BinocularFire,   // 0xaa: "binocular_fire" (0x4e7706)
             BinocularRelease,// 0xab: "binocular_release" (0x4e7723)
             BinocularDrop,   // 0xac: "binocular_drop" (0x4e7740)
+            EjectBrass,      // 0xa2: the cgame ejects the brass (0x4bb113 -> CG_EjectWeaponBrass 0x4b7730, shellEjectEffect)
         } kind;
         std::string weapon;
         bool alt = false; // WeaponRaised: the new weapon is the old one's altWeapon (aim spread kept at >= 128, 0x4dde9f)
@@ -167,6 +168,7 @@ private:
     bool canLoadMore() const;
     bool startReload();
     void beginRound();
+    void scheduleBrass();
     void endReload();
     void applyReloadAdd();
     bool inReloadStates() const { return state_ == State::Reloading || state_ == State::ReloadStart; }
@@ -188,6 +190,10 @@ private:
     float addTimer_ = 0;             // time until the reload adds its rounds (ps weaponDelay in 7/8 and 5/6)
     bool addPending_ = false;
     bool needsRechamber_ = false;
+    // boltAction casing still in the chamber (ps+0x530 bit of the weapon, set by a shot): ejected (event 0xa2) when the
+    // weapon delay set at the rechamber / reload start runs out (0x4dd700 / 0x4ddfa0). The exe uses ps weaponDelay (+0x38).
+    bool brassInChamber_ = false;
+    float brassTimer_ = 0;
     bool meleeLatch_ = false;      // ps+0xc 0x2000
     bool offhandActive_ = false;   // ps+0xc 0x10
     bool offhandHeldPrev_ = false; // previous command's 0x30000
