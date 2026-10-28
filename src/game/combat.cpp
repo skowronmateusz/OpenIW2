@@ -3,6 +3,7 @@
 
 #include "game/world.h"
 #include "game/bulletdamage.h"
+#include "game/itempickup.h"
 #include "game/vehicles.h"
 
 #include <algorithm>
@@ -1083,6 +1084,13 @@ void World::registerCombatBuiltins() {
         if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
         // 0x5220f0 → 0x521f70: the item is launched and falls (G_RunItem). TODO(spec): from the hand tag, as above.
         launchItem(item, *e);
+        // A non-player dropper fixes the item's ammunition at drop time (0x5220f0, 0x522185..0x52231f: actorDropAmmo), so the
+        // pickup does not resolve it again.
+        if (!e->isPlayer) {
+            const ItemAmmo a = actorDropAmmo(weaponInt(w, "dropAmmoMin"), weaponInt(w, "dropAmmoMax"), weaponInt(w, "clipSize"), meleeSeed_);
+            item.obj->set("$ammoStock", Value(a.stock));
+            item.obj->set("$ammoClip", Value(a.clip));
+        }
         // 0x53da50 / 0x5220f0: the item starts where a 0x491 trace from the body centre
         // (origin + half the box height) to the hand tag ends (the dropper passes), and flies with dir × throwSpeed, dir =
         // normalize(tag − centre) with 2.0 added to z; throwSpeed 0 gives a zero velocity (it just falls).
