@@ -138,7 +138,7 @@ struct ActorAi {
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
     struct Entity* followed = nullptr;        // +0x2148 the entity this actor yields to (0x501620 steps it aside)
-    int sideBits = 0;                         // gentity contents bits 8 / 0x10 (+0x128): the side the last yield step slid to; 0x10 is in the actor clip masks
+    int sideBits = 0;                         // gentity FLAGS bits 8 / 0x10 (+0x128, not contents +0xc0): the side the last yield step slid to (read back by the yield step of other actors only)
     ActorTrail trail;                         // +0x214c / +0x2150: the follower trail ring (inert: its reader, the facing blend 0x505630, is not modelled)
     int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
@@ -1116,6 +1116,8 @@ private:
     std::map<std::string, std::pair<Vec3, Vec3>> modelBounds_;
     std::map<std::string, std::vector<assets::XCollSurf>> collSurfs_; // xmodel collision surfaces, filled by skeleton()
     ObjectPtr worldEntityObj_; // the world entity (g_entities[2046] = 0x1c13b08), the attacker of damage without one
+    uint32_t entityContents(const Entity& e) const;          // gentity +0xc0 (setcontents 0x4efd70; spawn values 0x4fc74f / 0x4e90e2 / 0x533440 / 0x533480 / 0x5334d0)
+    static bool isScriptMover(const Entity& e);              // eType 5 (0x5332b0): script_model, script_brushmodel, script_origin
     void vehicleTouchDamage(Entity& vehicle, Entity& other); // 0x512d40 (src/game/vehicles.cpp)
     Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()

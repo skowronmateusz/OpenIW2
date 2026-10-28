@@ -858,7 +858,7 @@ bool World::tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const V
 // 2D direction to the other entity: dot < 0.8 does nothing; a prone player (pm_flags 1) takes 999999; otherwise
 // (dot - 0.8) * min(1, |forward speed| / collisionSpeed) * 5 * collisionDamage, truncated, as damage (MOD_CRUSH 9,
 // inflictor and attacker the vehicle, direction the velocity direction, point the other's origin) when positive.
-// TODO(spec): script movers (eType 5, 999999 at once), the actor touch callback 0x4ff2f0.
+// A script mover (eType 5) with take-damage takes 999999 at once (0x512dd1). TODO(spec): the actor touch callback 0x4ff2f0.
 void World::vehicleTouchDamage(Entity& e, Entity& t) {
     if (!e.vehicle || !e.vehicle->info || e.vehicle->info->collisionDamage <= 0.0f) return;
     if (links_.count(t.number) || (t.isPlayer && playerLinked())) return; // +0x1c8 (taken as the link, as in the push 0x50fe40)
@@ -867,6 +867,10 @@ void World::vehicleTouchDamage(Entity& e, Entity& t) {
     if (vl < 0.001f) return;
     const Vec3 dir{v[0] / vl, v[1] / vl, v[2] / vl};
     const Vec3 to = t.obj->get("origin").asVector(), from = e.obj->get("origin").asVector();
+    if (isScriptMover(t)) { // 0x512dd1: eType 5 is crushed at once (999999, MOD 9), before the direction test
+        damage(t, &e, 999999, dir, to, "MOD_CRUSH", "none");
+        return;
+    }
     float dx = to[0] - from[0], dy = to[1] - from[1];
     const float dl = std::sqrt(dx * dx + dy * dy);
     if (dl != 0.0f) { dx /= dl; dy /= dl; }
@@ -886,7 +890,10 @@ void World::vehicleTouchDamage(Entity& e, Entity& t) {
 // zero-length box trace against contents 0x800000 that starts in the vehicle) are notified "touch" (and the vehicle
 // with them); then, unless linked or the vehicle neither moved nor turned (≥ 0.001 squared), they are pushed and
 // one that cannot be pushed is crushed (999999, MOD_CRUSH = 9) — not an actor in the animscripted or negotiation
-// state (0x4ff310). TODO(spec): script movers (eType 5) and the touch callbacks; the entity list box.
+// state (0x4ff310). Script movers (eType 5: script_model 0x2080, script_brushmodel 1, or what setcontents stored; mask 0x2006081)
+// are notified the same way and take 999999 from the touch callback; they are not pushed. TODO(spec): the bounds of a script_model
+// (taken as a point at its origin) and of a rotated brush model (the unrotated bounds), the entity list box, the touch callbacks of
+// players and actors (0x4ff2f0).
 void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles) {
     if (vehicleCollmap(e).empty()) return;
     const Vec3 o = e.obj->get("origin").asVector(), a = e.obj->get("angles").asVector();
@@ -898,14 +905,23 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
     const int owner = e.vehicle ? e.vehicle->owner : -1;
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& t = *entities_[i];
-        if (&t == &e || t.number == owner || t.obj->removed || !(t.isPlayer || t.isActor) || !isAlive(t)) continue;
-        const Vec3 to = t.obj->get("origin").asVector();
-        const Vec3 mins{-15, -15, 0}, maxs{15, 15, t.isActor ? 72.0f : 70.0f};
+        if (&t == &e || t.number == owner || t.obj->removed) continue;
+        const bool mover = isScriptMover(t);
+        if (mover ? !(entityContents(t) & 0x2006081u) : !(t.isPlayer || t.isActor) || !isAlive(t)) continue; // 0x50ff00: contents mask 0x2006081
+        const Value ov = t.obj->get("origin");
+        if (!ov.isVector()) continue;
+        const Vec3 to = ov.asVector();
+        Vec3 mins{-15, -15, 0}, maxs{15, 15, t.isActor ? 72.0f : 70.0f};
+        if (mover) { // the candidate box (+0xc4 / +0xd0): a brush model's bounds, a script_model a point
+            mins = {0, 0, 0}; maxs = {0, 0, 0};
+            if (t.classname == "script_brushmodel") submodelBounds(t.obj->get("model").isString() ? t.obj->get("model").asString() : std::string(), mins, maxs);
+        }
         const TraceResult tr = collision_->trace(to, to, mins, maxs, 0x800000u, t.number);
         if (!tr.startSolid || tr.entity != e.number) continue;
         vm_.notify(e.obj, "touch", {Value(t.obj)});
         vm_.notify(t.obj, "touch", {Value(e.obj)});
         vehicleTouchDamage(e, t);
+        if (mover) continue; // 0x50fe40 pushes only eType 1 (or an entity with a client at +0x100): not a script mover
         if (links_.count(t.number) || (t.isPlayer && playerLinked()) || !moving) continue;
         if (t.isActor && (std::find(t.ai.predicted.begin(), t.ai.predicted.begin() + t.ai.predictedDepth + 1, int(AiScripted)) !=
                               t.ai.predicted.begin() + t.ai.predictedDepth + 1 ||

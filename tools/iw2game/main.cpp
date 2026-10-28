@@ -1025,6 +1025,12 @@ int main(int argc, char** argv) {
                     for (const auto& ep : world.entities())
                         if (!pl && ep->isActor && !ep->obj->removed && ep->obj->get("health").asInt() > 0) pl = ep.get();
                 }
+                if (std::getenv("IW2_TEST_MOVER")) { // target the first script_model: take-damage on (setcandamage), health 100
+                    pl = nullptr;
+                    for (const auto& ep : world.entities())
+                        if (!pl && ep->classname == "script_model" && !ep->obj->removed && ep->obj->get("origin").isVector()) pl = ep.get();
+                    if (pl) { pl->obj->set("$takedamage", iw2::script::Value(true)); pl->obj->set("health", iw2::script::Value(int32_t(100))); }
+                }
                 decltype(world.player()) veh = nullptr;
                 for (const auto& ep : world.entities())
                     if (!veh && ep->vehicle && ep->vehicle->info && !ep->obj->removed && (rocket || ep->vehicle->info->collisionDamage > 0)) veh = ep.get();

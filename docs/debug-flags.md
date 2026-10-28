@@ -30,6 +30,7 @@ described in the code that reads them.
 | `IW2_CROSSHAIR_DEBUG=1` | iw2game/iw2view | Prints the crosshair trace eye/yaw and the hit entity/target name. |
 | `IW2_PRONE_LOG=1` | iw2game/iw2view | Prints each `checkprone` call (actor, origin, yaw, alreadyProne, the answer and the two pitch outputs of the fit test 0x4fb530), each `enterprone` (length, fit result, pitches) and each `exitprone`. |
 | `IW2_TOUCH_TEST=<s>` | iw2game | At sim time `<s>` runs the vehicle touch callback (0x512d40) for the first vehicle with collisionDamage > 0 placed 100 units behind the player, moving at 400 units/s at it; prints the target health before and after; `IW2_TEST_ACTOR=1` targets the first living actor instead of the player. |
+| `IW2_TEST_MOVER=1` | iw2game | With `IW2_TOUCH_TEST`: targets the first script_model (take-damage on, health 100) to check the eType 5 crush (0x512dd1, 999999 at once). |
 | `IW2_ROCKET_TEST=<s>` | iw2game | At sim time `<s>` fires the first vehicle's turret rocket at the player from 300 units away; prints the player health before and 3 s after. |
 | `IW2_KILL_VERBOSE=1` | iw2game | With `IW2_KILL_VEHICLES`, also prints each vehicle's model and health before the kill. |
 | `IW2_FIRE_VEHICLES=<s>` | iw2game | At sim time `<s>` sends the script notify `turret_fire` to every vehicle (the AI tank fire loop in `_tank.gsc`), to test vehicle weapons headless. |
