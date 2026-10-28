@@ -330,6 +330,7 @@ private:
             else if (k == "accept") it.accept = parseScript(blk);
             else if (k == "elementwidth") it.elementWidth = num(a, 0);
             else if (k == "elementheight") it.elementHeight = num(a, 0);
+            else if (k == "notselectable") it.notSelectable = true;
             else if (k == "elementtype") it.elementType = int(num(a, 0));
             else if (k == "feeder") it.feeder = int(num(a, 0));
             else if (k == "doubleclick") it.doubleClick = parseScript(blk);

@@ -67,6 +67,7 @@ struct Item : Window {
     Script action, mouseEnter, mouseExit, onFocus, leaveFocus, accept;
     // LISTBOX (type 6, exe listbox def at item+0x2ec): `elementwidth/elementheight/elementtype/feeder/columns/doubleclick`.
     float elementWidth = 0, elementHeight = 0;
+    bool notSelectable = false; // `notselectable` (0x4d1eb0: listbox def +0x108 = 1): the keys scroll instead of moving the cursor
     int elementType = 0; // LISTBOX_TEXT 0, LISTBOX_IMAGE 1
     int feeder = 0;      // FEEDER_*
     struct Column { int pos = 0, width = 0, maxChars = 0; };

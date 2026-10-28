@@ -443,8 +443,12 @@ MenuStack::ListLayout MenuStack::listLayout(const Item& it) const {
 
 float MenuStack::listThumbY(const Menu& m, const Item& it) const {
     const float y = m.rect.y + it.rect.y;
-    // TODO(spec): the clamp bounds of the dragged thumb (0x4c9480); here the track between the arrows.
-    if (listDrag_.item == &it) return std::clamp(listDrag_.mouseY - 8.0f, y + 17.0f, y + it.rect.h - 17.0f);
+    // 0x4c9480: while dragged the thumb is drawn at pointerY - 8 as long as ftol(y+17)+8 <= pointerY <= ftol(y+h-34)+8, else at the startPos position.
+    if (listDrag_.item == &it) {
+        const int lo = int(y + 17.0f) + 8, hi = int(y + it.rect.h - 32.0f - 2.0f) + 8;
+        const int my = int(listDrag_.mouseY);
+        if (my >= lo && my <= hi) return float(my - 8);
+    }
     const int maxScroll = listMaxScroll(it);
     const float step = maxScroll > 0 ? (it.rect.h - 32.0f - 2.0f - 16.0f) / float(maxScroll) : 0.0f;
     return float(int(float(listState(it).startPos) * step + y + 17.0f)); // 0x4c93a0
@@ -495,11 +499,30 @@ bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
     ListState& st = lists_[&it];
     const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
     const int vis = listVisible(it);
+    if (it.notSelectable) { // 0x4c9c60 with def+0x108 set: the keys move startPos only
+        const int maxScroll = listMaxScroll(it);
+        switch (k) {
+        case Key::Up:
+        case Key::Left:
+        case Key::WheelUp: st.startPos = std::max(st.startPos - 1, 0); break;
+        case Key::Down: // 0x4c9d9a: clamped to count - 1
+        case Key::WheelDown: st.startPos = std::min(st.startPos + 1, count - 1); break;
+        case Key::Right: st.startPos = std::min(st.startPos + 1, maxScroll); break; // 0x4ca166
+        case Key::PageUp: st.startPos = std::max(st.startPos - vis, 0); break;
+        case Key::PageDown: st.startPos = std::min(st.startPos + vis, maxScroll); break;
+        case Key::Home: st.startPos = 0; break;
+        case Key::End: st.startPos = maxScroll; break;
+        default: return false;
+        }
+        return true;
+    }
     int cur = st.cursor;
     switch (k) {
     case Key::Up:
+    case Key::Left: // 0x9a/0xb7/0xce go to the same code as Up/Down (0x4ca183 / 0x4ca0e5)
     case Key::WheelUp: --cur; break;
     case Key::Down:
+    case Key::Right:
     case Key::WheelDown: ++cur; break;
     case Key::PageUp: cur -= vis; break;
     case Key::PageDown: cur += vis; break;
@@ -539,13 +562,35 @@ void MenuStack::startEdit(const Item* it) {
     overstrike_ = true;
 }
 
+// "^N" colour code at i: '^' followed by a digit 0..9 (0x4d41c0: not '^', not NUL).
+static bool isColorCode(const std::string& s, int i) {
+    return i >= 0 && i + 1 < int(s.size()) && s[size_t(i)] == '^' && s[size_t(i) + 1] >= '0' && s[size_t(i) + 1] <= '9';
+}
+
+// 0x4d41c0: moves the edit cursor by n visible characters, colour code pairs count for nothing. n > 0 (right): skip the codes at the cursor,
+// stop at the end of the text, else step one character and repeat; n <= 0 (left): while the cursor is above 0, a code pair right before it is
+// skipped for free, any other character costs one step.
+int MenuStack::editStep(const std::string& s, int cur, int n) {
+    if (n > 0) {
+        while (true) {
+            while (isColorCode(s, cur)) cur += 2;
+            if (cur >= int(s.size())) return cur;
+            ++cur;
+            if (--n == 0) return cur;
+        }
+    }
+    while (cur != 0 && n != 0) {
+        if (cur >= 2 && isColorCode(s, cur - 2)) cur -= 2;
+        else --cur, ++n;
+    }
+    return cur;
+}
+
 void MenuStack::editStore(const Item& it, const std::string& v) {
     if (env_.setCvar) env_.setCvar(it.dvar, v);
-    // TODO(spec): the paint window (0x4cc170); here the window follows the cursor.
-    if (it.maxPaintChars > 0) {
-        if (editCursor_ < editOffset_) editOffset_ = editCursor_;
-        if (editCursor_ >= editOffset_ + it.maxPaintChars) editOffset_ = editCursor_ - it.maxPaintChars + 1;
-    }
+    // 0x4ca7e0: the paint offset never passes the cursor and never lags more than maxPaintChars visible characters behind it.
+    if (editOffset_ > editCursor_) editOffset_ = editCursor_;
+    else if (it.maxPaintChars > 0) editOffset_ = std::max(editOffset_, editStep(v, editCursor_, -it.maxPaintChars));
 }
 
 void MenuStack::moveFocus(const Menu& m, int dir) {
@@ -568,15 +613,15 @@ bool MenuStack::editKey(const Menu& m, Key k) {
     switch (k) {
     case Key::Escape: editing_ = false; return false;
     case Key::Enter: editing_ = false; runItem(m, it.accept); return true;
-    case Key::Left: if (editCursor_ > 0) --editCursor_; break;
-    case Key::Right: if (editCursor_ < len) ++editCursor_; break;
+    case Key::Left: editCursor_ = editStep(s, editCursor_, -1); break; // 0x4cad02
+    case Key::Right: editCursor_ = editStep(s, editCursor_, 1); break; // 0x4cad6a
     case Key::Home: editCursor_ = 0; editOffset_ = 0; break;
     case Key::End: editCursor_ = len; break;
     case Key::Insert: overstrike_ = !overstrike_; return true;
-    case Key::Backspace: // TODO(spec): the "^N" colour code pairs are treated as one unit by the exe; here plain characters
+    case Key::Backspace: // 0x4ca8c0: removes the character before the cursor, then the cursor steps left by one visible character on the new text
         if (editCursor_ > 0) {
             s.erase(size_t(editCursor_ - 1), 1);
-            --editCursor_;
+            editCursor_ = editStep(s, editCursor_, -1);
             editStore(it, s);
         }
         return true;
@@ -614,7 +659,7 @@ void MenuStack::textInput(const std::string& text) {
             if (editCursor_ < len) s[size_t(editCursor_)] = char(c);
             else s.push_back(char(c));
         }
-        ++editCursor_;
+        editCursor_ = editStep(s, editCursor_, 1); // 0x4caa9b
         editStore(it, s);
     }
 }
