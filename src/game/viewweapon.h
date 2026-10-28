@@ -65,6 +65,36 @@ private:
     unsigned seed_ = 1;
 };
 
+// Screen shake (cgame 0x4bf5e0 add, per-frame combine 0x4bf700 called at 0x4af609 after the view offsets). Fed by the
+// EV_FIRE_WEAPON_MG42 event 0xaf (scale 0.05, 100 ms, radius 100, at the turret entity origin) and the earthquake event
+// 0xc7 (scale, ms, radius from the event; origin of the event entity). Four slots {start, scale, duration, radius,
+// origin, out1, b}: with a = 1 - dist(eye, origin)/radius and b = scale * (1 - elapsed/duration) (needs b > 0, elapsed
+// in [0, duration)), out1 = a*b for a >= 0 (a/b for a < 0, never selected). The frame takes the slot with the largest
+// out1 > 0: m = min(out1, 1), then adds to the view pitch, yaw and roll sin(T*8pi + phase) * m * b * 18, sin(T*15pi +
+// phase) * m * b * 16 and sin(T*12pi + phase) * m * b * 10 with T = time / 600 ms. The phase (rand * 2 - 1) * pi is
+// re-rolled on every frame without a shake. A new shake takes the first free slot (start in the future or already
+// ended), else the weakest slot when that one is weaker than the new out1, else it is dropped.
+class ViewShake {
+public:
+    void add(const V3& origin, float scale, int durationMs, float radius, int64_t nowMs, const V3& eye);
+    // The pitch, yaw, roll degrees to add to the view this frame (also advances the phase when idle).
+    V3 update(int64_t nowMs, const V3& eye);
+    void reset() { *this = ViewShake{}; }
+
+private:
+    struct Slot {
+        int64_t start = 0;
+        float scale = 0, duration = 0, radius = 0;
+        V3 origin{};
+        float out1 = 0, b = 0;
+    };
+    bool eval(Slot& s, int64_t nowMs, const V3& eye) const; // 0x4bf540
+    float rand01();
+    Slot slots_[4];
+    float phase_ = 0;
+    unsigned seed_ = 7;
+};
+
 // Gun bob angles (cgame 0x4b4a90, added to the weapon angles by 0x4b4d10): pitch, yaw, roll in degrees from the
 // player state's bob cycle (0..255), the horizontal speed and the view height target (11 prone, 40 crouched).
 // adsBobFactor: the weapon's; reticle: the weapon has an adsOverlayReticle (then also × (1 − adsFrac)).

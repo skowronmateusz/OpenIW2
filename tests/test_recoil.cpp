@@ -2,6 +2,7 @@
 
 #include "game/viewweapon.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -43,6 +44,23 @@ int main() {
     for (int i = 0; i < 200; ++i) r.update(f, 16, true, 0.0f);
     CHECK(std::fabs(r.viewKick()[0]) < 1e-3f && std::fabs(r.viewKick()[1]) < 1e-3f); // springs settle at zero
     CHECK(std::fabs(r.gunKick()[0]) < 0.25f);
+    {   // Screen shake (0x4bf5e0): none without events, bounded by scale, gone after the duration, radius-limited.
+        ViewShake sh;
+        const V3 eye{0, 0, 0};
+        CHECK(sh.update(1000, eye)[0] == 0.0f);
+        sh.add({0, 0, 0}, 0.4f, 1000, 100.0f, 1000, eye);
+        float peak = 0;
+        for (int t = 1001; t < 1900; t += 10) {
+            const V3 v = sh.update(t, eye);
+            peak = std::max({peak, std::fabs(v[0]), std::fabs(v[1]), std::fabs(v[2])});
+        }
+        CHECK(peak > 0.5f && peak <= 0.4f * 0.4f * 18.0f + 1e-3f);
+        const V3 gone = sh.update(2100, eye);
+        CHECK(gone[0] == 0.0f && gone[1] == 0.0f && gone[2] == 0.0f);
+        sh.add({0, 0, 0}, 0.4f, 1000, 100.0f, 3000, {200, 0, 0}); // outside the radius: a < 0, never selected
+        const V3 far = sh.update(3100, {200, 0, 0});
+        CHECK(far[0] == 0.0f && far[1] == 0.0f && far[2] == 0.0f);
+    }
     if (failures) return 1;
     std::cout << "recoil ok\n";
     return 0;
