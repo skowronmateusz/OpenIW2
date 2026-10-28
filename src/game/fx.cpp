@@ -569,7 +569,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // Then axis rows = rotation about +0x24c by the angle (0x423a50 quaternion, 0x423680 matrix), refEntity scale
             // (+0x98) = size, width (+0x88) = size2 result, height (+0x8c) = length with useLength else the size2 result; A (+0x7c)
             // = the position (through the bolt with relative, 0x4404f0). TODO(spec): `wind` (+0xf8) and affectedByWind 0x800000
-            // have no reader in the exe's effect code; the view cull 0x4827e0 (sphere: size + max(width, height)) is not applied.
+            // have no reader in the exe's effect code.
             const FVec before = p.pos;
             stepEmitter(p, nowMs);
             const uint32_t flags = e.flagBits();
@@ -610,7 +610,16 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             c.rgba[3] = flags & 0x80 ? uint8_t(alpha * 255.0f) : 255;
             const auto shaders = e.list("shaders");
             if (!shaders.empty()) c.shader = shaders[std::min(p.shader, shaders.size() - 1)];
-            clouds_.push_back(std::move(c));
+            // Cull slot 0x4827e0 -> 0x486e30: skipped when n·A − d < −r for a view plane (view +0x20, stride 0x10, count +0x80,
+            // at most 5 with disableFarPlaneCulling 0x2000000), r = size + max(width, height) (the larger of +0x88 / +0x8c,
+            // plus +0x98). TODO(spec): the exe's plane set; viewPlanes holds the four side planes (no far plane).
+            bool culled = false;
+            if (viewValid) {
+                const float r = (width - height < 0.0f ? height : width) + size;
+                for (const auto& pl : viewPlanes)
+                    if (pl[0] * c.origin[0] + pl[1] * c.origin[1] + pl[2] * c.origin[2] - pl[3] < -r) culled = true;
+            }
+            if (!culled) clouds_.push_back(std::move(c));
             continue;
         }
         if (p.emitter) {

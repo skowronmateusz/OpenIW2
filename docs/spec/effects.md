@@ -89,7 +89,11 @@ mid(r) = (max − min) · 0.5 + min:
   point is below the outdoor map (worldOutdoorLookupMatrix, sampler.outdoor).
 - OpenIW2: `FxSystem::clouds()` and iw2view `cloudModel` (CPU expansion of the same geometry, view x / y = right / up).
   The outdoor test: see "Outdoor map". TODO(spec): `wind` and
-  affectedByWind (no reader in the exe's effect code); the view cull 0x4827e0 (sphere radius size + max(width, height)).
+  affectedByWind (no reader in the exe's effect code).
+- View cull (slot 3, 0x4827e0 → 0x486e30): the cloud is not drawn when n·A − d < −r for any plane of the view's plane set
+  (view +0x20, stride 0x10, count +0x80, at most 5 with disableFarPlaneCulling), r = max(width, height) + size. The radius is
+  smaller than the cube's half diagonal, so clouds near the screen edge disappear. OpenIW2 tests the four side planes
+  (`FxSystem::viewPlanes`); TODO(spec): the exact plane set of view +0x20.
 
 ## Outdoor map ("$outdoor", 1.3 DLL 0x10020c80)
 
