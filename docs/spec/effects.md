@@ -88,8 +88,27 @@ mid(r) = (max − min) · 0.5 + min:
   (u − 0.5)·m.xy + (v − 0.5)·m.zw; colour = colorMap · particleCloudColor; the _outdoor variant zeroes alpha where the
   point is below the outdoor map (worldOutdoorLookupMatrix, sampler.outdoor).
 - OpenIW2: `FxSystem::clouds()` and iw2view `cloudModel` (CPU expansion of the same geometry, view x / y = right / up).
-  TODO(spec): the outdoor map ("$outdoor", r_outdoorDownBias / r_outdoorAwayBias) so flakes still show indoors; `wind` and
+  The outdoor test: see "Outdoor map". TODO(spec): `wind` and
   affectedByWind (no reader in the exe's effect code); the view cull 0x4827e0 (sphere radius size + max(width, height)).
+
+## Outdoor map ("$outdoor", 1.3 DLL 0x10020c80)
+
+- Built when the world loads unless the dvar at 0x101ce710 is 2: bounds 0x100208a0 over the world surface references
+  (12 bytes {material, lightmap, bounds}): surfaces whose material byte +0xc has bit 8 are skipped; mins start at 131072,
+  maxs at −131072 (0x48000000 / 0xc8000000); an axis still at 131072 becomes 0..0; an axis narrower than 1 grows by 0.5 per
+  side. Image size 512 × 512 × 256 levels (0x10190398); per axis scale = (size − 1) / (max − min), bias = −scale · min
+  (0x100209f0). worldOutdoorLookupMatrix (0x10020a50, material constants +0x1c0): identity with diagonal 1 / (max − min) and
+  translation −min / (max − min), i.e. p → (p − min) / (max − min).
+- Image (0x10020cd0 → 0x10020bb0, L8 format 0x32): for row r (y) and column c (x), world x = (c + 0.5 − bias.x) / scale.x,
+  y likewise; 0x100207f0 traces a point from (x, y, max.z + 1) to (x, y, min.z − 1) through the exe's CM_BoxTrace import
+  (refimport 0x101d4b40, model 0, contents 0x2001) and takes z = start + (end − start) · fraction; the texel is
+  clamp(fistp(z · scale.z + bias.z − 0.4999999990686774), 0, 255).
+- particle_cloud_outdoor.hlsl: outdoorMapPos = vertex position · worldOutdoorLookupMatrix; alpha 0 when outdoorMapPos.z is
+  below the image value at outdoorMapPos.xy. The position is the flake's point (shared by its four vertices), so the test
+  hides whole flakes.
+- OpenIW2: `game/OutdoorMap`, built in iw2view on the first Cloud; covered flakes are skipped (`IW2_OUTDOOR_DUMP`,
+  `IW2_NO_OUTDOOR`). TODO(spec): the outdoor sampler's filter / address mode (point sampling, clamped here); surface
+  bounds are taken from the soup's indexed vertices; the zfeather_outdoor effect shaders that also read this map.
 
 ## Cylinder elements (type 4, no shipped effect uses one)
 

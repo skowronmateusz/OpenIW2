@@ -76,7 +76,7 @@ add_library(iw2_game
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/triggerdamage.cpp
-  src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/perception.cpp
+  src/game/vehicles.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp

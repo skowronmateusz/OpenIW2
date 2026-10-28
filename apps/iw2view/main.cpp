@@ -30,6 +30,7 @@
 #include "game/fx.h"
 #include "game/fog.h"
 #include "game/marks.h"
+#include "game/outdoor.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
 #include "game/turrets.h"
@@ -356,6 +357,7 @@ struct Scene {
     std::vector<WaterMat> waters;
     std::unique_ptr<game::CollisionWorld> collision;
     game::MarkSystem marks;
+    game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
@@ -842,10 +844,15 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
     for (const auto& c : clouds) byShader[c.shader].push_back(&c);
     std::vector<GpuVertex> verts;
     std::vector<Batch> batches;
-    size_t drawn = 0;
+    size_t drawn = 0, coveredFlakes = 0;
     for (const auto& [shader, list] : byShader) {
         const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
         if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        bool outdoorTest = false; // technique set particle_cloud_outdoor -> particle_cloud_outdoor.hlsl (OUTDOOR 1)
+        if (const auto md = vfs.read("materials/" + shader)) {
+            try { outdoorTest = assets::parseMaterial(*md).techniqueSet == "particle_cloud_outdoor"; } catch (...) {}
+        }
+        const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
         b.texture = mi.texture;
@@ -886,6 +893,9 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
             }
             for (const auto& pt : points) {
                 const Vec3 ctr = A + ax0 * pt[0] + ax1 * pt[1] + ax2 * pt[2];
+                // The outdoor map coordinate comes from the point alone (all four vertices share it), so a covered flake has
+                // alpha 0 over its whole quad: it is left out.
+                if (useOutdoor && scene.outdoor.covered({ctr.x, ctr.y, ctr.z})) { ++coveredFlakes; continue; }
                 for (int k = 0; k < 4; ++k) {
                     GpuVertex g{};
                     const Vec3 w = ctr + off[k];
@@ -901,6 +911,7 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         b.indexCount = uint32_t(verts.size() / 4 * 6) - b.firstIndex;
         if (b.indexCount) batches.push_back(b);
     }
+    if (std::getenv("IW2_FX_DEBUG")) std::cerr << "fx clouds " << drawn << " flakes drawn " << verts.size() / 4 << " covered " << coveredFlakes << "\n";
     if (verts.empty()) return nullptr;
     up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
     it->second.batches = batches;
@@ -1136,6 +1147,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     const assets::D3dBsp bsp(*data);
     scene.collision = std::make_unique<game::CollisionWorld>(bsp);
     scene.marks.setWorld(bsp, vfs);
+    scene.outdoor.setBounds(bsp, vfs);
     Uploader up(dev);
 
     // White fallback texture.
@@ -2821,6 +2833,24 @@ int main(int argc, char** argv) {
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
                 items.push_back(it);
+            }
+            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
+                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
+                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
+                scene.outdoor.build([&](float x, float y, float top, float bottom) {
+                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
+                    return top + (bottom - top) * tr.fraction;
+                });
+                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
+                    if (FILE* f = std::fopen(dump, "wb")) {
+                        std::fprintf(f, "P5 512 512 255\n");
+                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
+                        std::fclose(f);
+                    }
+                }
+                if (std::getenv("IW2_FX_DEBUG"))
+                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
+                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
             }
             if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
                 DrawItem it;
