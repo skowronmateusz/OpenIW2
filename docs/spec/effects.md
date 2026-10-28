@@ -39,6 +39,11 @@ the piecewise-linear curve), used for velocities.
   (0x47faa0 / 0x48a870 at 0x48d964, see "Emitter physics").
   The particle velocity axes (+0xd0, 0x4803f0) are the effect's axes as given, i.e. the tag axes in world space; the
   velocity / gravity offsets are added to the tag-space position as they are.
+- Frame order (view flash): the frame stamp 0x6221a8 is bumped at the client frame start (0x4afca3), the effect system gets
+  cg.time 0xf708dc there (0x486b30: +0x0 = time, +0x4 advanced by the clamped delta <= 200 ms, read as "now" by plays, e.g.
+  0x4855e4), then the view weapon is added (0x4b026f -> 0x4b6d40) and plays viewFlashEffect inside it after posing the gun
+  (0x4b6c37 -> 0x4b6660 -> 0x4853f0, no time argument), and the effects are drawn after that. So the flash starts at the frame's
+  effect time and its relative particles follow this frame's tag_flash.
 - Update: 0x47fcd0 returns the attachment orientation (refreshed by 0x48abb0 when the frame stamp 0x6221a8 changed; failure
   ends the element) and 0x4404f0 maps the tag-space position back: origin + x·row0 + y·row1 + z·row2 (Particle 0x48037a,
   Line 0x482dd8 / 0x482de9, Cloud A 0x482b0f (B stays tag-space), Cylinder 0x4834a9 / 0x4834df, Tail 0x483202, Emitter
