@@ -101,3 +101,21 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
   0.65 s into the bolt cycle. Only the pmove writes event 0xa2, so AI bolt-action rifles never eject brass (combat.cpp).
 - OpenIW2: `PlayerWeapon::Event::EjectBrass` with its own timer (`brassTimer_`); TODO(spec): the exe's ps weaponDelay also
   gates melee / other actions during that time, and the bit is kept per weapon across switches (cleared on equip here).
+
+## Reload variant and projectile fire (panzerschreck, exe evidence)
+
+- Reload round (0x4dd980): the empty variant (anim 0xc, `reloadEmptyTime` +0x21c, event 0x97) is chosen only when the clip is
+  0 AND `weaponType` (+0x78) is 0 (bullet) (0x4dd997..0x4dd9d8); otherwise anim 0xb, `reloadTime` +0x218, event 0x96
+  (0x4dd9e5..0x4dda14). The add delay (0x4dd8c0) uses the same pair. So an empty panzerschreck (projectile, no
+  `reloadEmptyAnim`) plays `reloadAnim` for `reloadTime` 4 s, the round added at `reloadAddTime` 2.3 s. (OpenIW2 had picked
+  the empty anim for every weapon type, i.e. the idle pose for the panzerschreck.)
+- FireWeapon (game 0x531c40) dispatches on `weaponType`: 0 bullet 0x5312b0, 1 grenade 0x531990, 2 projectile 0x531a40, which
+  turns the view forward by the spread (0x531170), launches G_FireRocket (0x527810) from the muzzle point of 0x531b90 (eye
+  0x4e8b70 plus client +0x864c..0x8654) and subtracts forward · 64 (0x56f6e0) from the client velocity (0x531b1b).
+  OpenIW2 `World::playerFire` spawns the rocket from the eye along the view forward. TODO(spec): the muzzle offset, the
+  projectile spread and the velocity kick.
+- CG_Missile (0x4ab3af): `projTrailEffect` (+0x458, weapon info +0x170) is played once per missile (cent +0x143) bolted on
+  its `tag_origin` (scr const 0x1c7f144); `projectileDLight` (+0x45c, info +0x14c) with `projectileRed/Green/Blue` adds a
+  dynamic light (0x4ab404 → *0x617b1c). OpenIW2 queues the trail at the launch (rockets.cpp). TODO(spec): the dlight.
+- The view flash (`viewFlashEffect` panzerschreck_flash.efx) already played on the view model's tag_flash; in first person
+  that tag lies outside the default field of view, so the visible launch effect is mostly the rocket and its trail.

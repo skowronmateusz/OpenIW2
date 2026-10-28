@@ -99,6 +99,24 @@ void boltBrass() {
     }
 }
 
+// An empty projectile weapon reloads with reloadAnim / reloadTime: the empty variant is only for weaponType bullet
+// (0x4dd997..0x4dda14). The panzerschreck has no reloadEmptyAnim; before, its reload showed the idle pose.
+void projectileReload() {
+    PlayerWeapon w;
+    w.equip("schreck", {{"weapontype", "projectile"}, {"firetime", "0.8"}, {"clipsize", "1"}, {"startammo", "4"},
+                        {"raisetime", "0.6"}, {"reloadtime", "4"}, {"reloademptytime", "1"}, {"reloadaddtime", "2.3"},
+                        {"idleanim", "idle"}, {"fireanim", "idle"}, {"reloadanim", "reload"}});
+    run(w, 0.7f, false);
+    CHECK(run(w, 0.01f, true) == 1);
+    CHECK(w.clip() == 0);
+    run(w, 0.85f, false); // fire time, then the automatic reload
+    CHECK(w.stateNumber() == 5 && w.anim() == "reload");
+    run(w, 2.0f, false);
+    CHECK(w.clip() == 0);                  // reloadTime 4 (not reloadEmptyTime 1); the add comes at 2.3 s
+    run(w, 0.5f, false);
+    CHECK(w.clip() == 1 && w.stock() == 2);
+}
+
 // The clip emptied by the last shot reloads by itself once the shot is over (PM_Weapon 0x4de370), without a new press.
 void autoReload() {
     PlayerWeapon w;
@@ -492,6 +510,7 @@ int main() {
     weaponSounds();
     boltAction();
     boltBrass();
+    projectileReload();
     automatic();
     autoReload();
     weaponChange();
