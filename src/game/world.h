@@ -930,6 +930,7 @@ private:
     void scanFollowed(Entity& e);                      // 0x504630
     void standOrFollow(Entity& e, const std::string& script); // 0x504630 + 0x53ae40 / 0x53ade0            // 0x4fedc0
     void linkBumpedActor(Entity& e, int hit);  // +0x318 bookkeeping only
+    void stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before); // 0x501d00 after a failed move block
     bool yieldFollowed(Entity& e, ActorSlide& pm, const SlideTraceFn& fn, const Vec3& before); // 0x501620
     bool followClear(Entity& e, const Vec3& newPos); // 0x501380
     bool nearClaimedNode(const Entity& a) const; // 0x504610

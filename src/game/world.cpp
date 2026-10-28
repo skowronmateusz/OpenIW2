@@ -872,8 +872,8 @@ void World::moveActor(Entity& e, float dt) {
             if (!yieldFollowed(e, pm, fn, before)) {
                 for (int a = 0; a < 3; ++a) pm.origin[a] = before[a]; // 0x501620 returned 0: no move this frame
             }
-        } else {
-            moveBlock(pm, fn);
+        } else if (!moveBlock(pm, fn)) {
+            stuckRecovery(e, pm, before);
         }
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a]; // written back in place (block +0xc)
@@ -945,20 +945,35 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
         t.allSolid = tr.allSolid;
         return t;
     };
-    const ActorSlide pm0 = pm; // TMPDEBUG
-    moveBlock(pm, fn);
-    if (static const char* tl = std::getenv("IW2_TMP_STUCK"); tl && std::atoi(tl) == e.number && timeMs_ > 6500 && timeMs_ < 7000) { // TMPDEBUG
-        float en[3] = {before[0]+delta[0], before[1]+delta[1], before[2]+delta[2]};
-        float st[3] = {before[0], before[1], before[2]};
-        SlideTrace t = fn(st, en);
-        std::fprintf(stderr, "[kind %d t=%d] before %.1f %.1f %.1f delta %.2f %.2f %.2f -> after %.1f %.1f %.1f | direct frac %.3f ss %d all %d | gEnt %x gPlane %d gValid %d flag87 %d hitEnt %x\n", kind, timeMs_, before[0], before[1], before[2], delta[0], delta[1], delta[2], pm.origin[0], pm.origin[1], pm.origin[2], t.fraction, int(t.startSolid), int(t.allSolid), unsigned(pm.groundEnt), int(pm.groundPlane), int(pm.groundEntValid), int(pm.flag87), unsigned(pm.hitEnt));
-    }
+    if (!moveBlock(pm, fn)) stuckRecovery(e, pm, before);
     const Vec3 o{pm.origin[0], pm.origin[1], pm.origin[2]};
     e.obj->set("origin", Value(o));
     for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a];
     e.ai.groundEnt = pm.groundEnt;
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     linkBumpedActor(e, pm.hitEnt);
+}
+
+// 0x501d00 after the move block (0x5487c0) returned 0 (the step could not be placed): the block's origin is dropped for
+// the entity origin and nudged vertically towards the nearest path node (0x516950: radius 384, height 128, at most 64,
+// any type; the nearest by 3D distance², the first on a tie). With dz = node z - origin z (0x592010 = 8, 0x591e00 = 0,
+// 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz, dz < -18 gives -8, otherwise 0. The block's velocity is kept
+// and no node found leaves the origin as it was.
+void World::stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before) {
+    for (int a = 0; a < 3; ++a) pm.origin[a] = before[a];
+    const auto near = nodesInRange(before, 384.0f, 128.0f, 64, 0xffffffffu);
+    int best = -1;
+    float bestD = 3.4028235e38f;
+    for (const auto& [i, d2] : near) {
+        const Vec3 p = nodes_[size_t(i)].obj->get("origin").asVector();
+        const float dz = p[2] - before[2];
+        const float d = d2 + dz * dz;
+        if (bestD > d) { bestD = d; best = i; }
+    }
+    if (best < 0) return;
+    const float dz = nodes_[size_t(best)].obj->get("origin").asVector()[2] - before[2];
+    pm.origin[2] = before[2] + (dz > 8.0f ? 8.0f : dz > 0.0f ? dz : dz < -18.0f ? -8.0f : 0.0f);
+    (void)e;
 }
 
 bool World::negotiationTrigger(Entity& e, const Vec3& o, bool grounded) {

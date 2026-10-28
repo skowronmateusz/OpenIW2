@@ -950,3 +950,12 @@ Resolved: the facing blend (see "Facing blend"). Open (from before): the ring ad
   versus 5 spread out, against 500 health that regenerates. The cause is the shared random sequence shifting when other
   actors move differently, not a facing fault, so this is not a regression. breakout, duhoc_defend and hill400_assault
   end with the player dead in both builds.
+
+## Failed actor move block (0x501d00)
+
+When the move block (0x5487c0) returns 0, the physics step discards the block origin and nudges the entity origin
+vertically towards the nearest node (0x516950, radius 384, height 128, at most 64, any type; nearest by 3D distance²).
+With dz = node z - origin z (constants 0x592010 = 8, 0x591e00 = 0, 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz,
+dz < -18 gives -8, otherwise 0. Ported as `World::stuckRecovery`. It does not free the demolition actors that wall_hop
+leaves in the actor-clip slab near (6383, 523): they sit on the node height (dz in [-18, 0]), so the nudge is 0.
+TODO(spec): the escape from that slab is still unknown (the move block there returns 0 every frame).
