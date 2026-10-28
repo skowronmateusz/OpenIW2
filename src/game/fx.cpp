@@ -350,6 +350,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
     }
+    if (e.type == "Particle") p.rot0 = range(e.numbers("rotation"), 0); // 0x48ce70 (after the material, 0x48cb00)
     if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
         // +0x94 is never written for a Line: the pool (0x47f0a0) reuses freed slots without clearing, so the frame is the value
         // a previous element left there, 0 in never-used pool memory (0xa32380, zero-initialised data). Frame 0 here.
@@ -711,6 +712,22 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
         s.rgba[3] = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
+        if (e.type == "Particle") {
+            // Particle update 0x480330: size (0x4818b0), then (size ≠ 0) size2 (0x481940: the size2 channel with nonUniformScale,
+            // else = size) and (size2 ≠ 0) rgb, alpha, angle += frame ms · rotationDelta · 0.01 (0x481b90), frame. The per-frame
+            // sum is taken as its continuous limit: rot0 + 0.01 · life ms · ∫rotationDelta du (rand lerp 0x40000, scale).
+            const auto nus = e.numbers("nonuniformscale");
+            const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
+            s.size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
+            float rd = 0;
+            if (const auto* g = graph(e, "rotationdelta")) {
+                rd = g->integral(u);
+                if (flags & 0x40000)
+                    if (const auto* rg = graph(e, "rotationdeltarand")) rd += (rg->integral(u) - rd) * p.rnd[5];
+                rd *= p.scale[5];
+            }
+            s.rotation = p.rot0 + 0.01f * life * rd;
+        }
         if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite
             FxLight l;
             l.origin = pos;

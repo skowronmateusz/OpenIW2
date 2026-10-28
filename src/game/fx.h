@@ -28,6 +28,7 @@ struct FxParticle {
     float rnd[8]{};                     // per-channel lerp randoms: rgb, alpha, size, size2, length, rotation, vel, vel2
     float velRnd[3]{}, vel2Rnd[3]{};
     float gravity = 0;
+    float rot0 = 0;                     // Particle start angle (+0x44, drawn from `rotation` by 0x48ce70)
     std::shared_ptr<FxBolt> bolt;       // relative (0x2) particle of a bolted effect: follows the tag
     FVec bolt0{};                       // the tag position at spawn
     float scale[8]{};                   // per-channel scale picked from the scale range
@@ -84,6 +85,10 @@ struct FxSprite {
     float size = 0;
     std::string shader;
     float uv[4]{0, 0, 1, 1}; // atlas frame rectangle u0, v0, u1, v1 (renderer 0x1003fa60)
+    // Particle quad (renderer type 4, 1.3 DLL 0x1003ff20 -> 0x1003fb00): half width `size` (+0x64), half height `size2`
+    // (+0x68; < 0 = size) and the angle in degrees (+0x6c, element +0x44).
+    float size2 = -1;
+    float rotation = 0;
     // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
     // `position` / `size` are unused.
     bool beam = false;

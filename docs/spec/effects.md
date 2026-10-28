@@ -29,6 +29,20 @@ adds a point at time 0 when the first row's time is not 0 and a point at time 1 
 both new points copy the values of the file's first row. `FUN_0047ecf0` integrates a graph up to t (area under
 the piecewise-linear curve), used for velocities.
 
+## Particle quads (renderer type 4)
+
+- Particle update 0x480330: Emitter step (0x480bd0), A (+0x7c) = position (through the bolt), size (0x4818b0); only when
+  size ≠ 0 size2 (0x481940: the size2 channel with nonUniformScale, else = size); only when size2 ≠ 0 rgb, alpha, angle
+  (0x481b90: +0x44 += frame ms · rotationDelta · 0.01, useRandomRotationDelta 0x40000) and frame (0x481c30). The start angle
+  +0x44 is drawn from `rotation` by 0x48ce70 (spawn 0x48d2f0: 0x48cb00, 0x48ce70, 0x48cd20, 0x48caa0).
+- refEntity (0x480010): +0x64 = size, +0x68 = size2 result, +0x6c = angle (degrees), +0x70 = 0. DLL 0x1003ff90 (entity flag
+  0x2000 never set by effects) → 0x1003ff20 (+0x70 = 0, so no screen-size clamp) → 0x1003fb00: with the view's left L and up U
+  axes (view +0x18 / +0x24, normal −forward +0xc) and a = angle · π/180: R = size(cos a · L − sin a · U), V = size2(cos a · U +
+  sin a · L); corners C + R + V (u0, v0), C − R + V (u1, v0), C − R − V (u1, v1), C + R − V (u0, v1) (0x1003f560, indices 0 1 3,
+  3 1 2), uv from the atlas rectangle 0x1003fa60, colour bytes. So `size` is the half width and `size2` the half height.
+- OpenIW2: `FxSprite::size2` / `rotation`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its continuous limit
+  (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the size = 0 / size2 = 0 skips; OrientedParticle (type 7, 0x1003ffe0).
+
 ## Legacy channel syntax (start / end / parm / flags)
 
 Seven shipped files (minefield, elalamein_trenchdust, large_smoke_plume, fireheavysmoke, flare, grenade_flash,
@@ -164,7 +178,7 @@ meaning of the flag bits.
 Particles and oriented particles are spawned by `playfx`, `playfxontag` and `playloopedfx` and drawn as
 camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
 the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
-the per-particle velocity scale, sprite size meaning (half width),
+the per-particle velocity scale,
 other element types (CameraShake, Cylinder; see the sections below for the decoded ones), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
 

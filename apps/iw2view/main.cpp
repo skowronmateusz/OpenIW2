@@ -803,7 +803,12 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
                 continue;
             }
             const Vec3 c{s->position[0], s->position[1], s->position[2]};
-            const Vec3 r = right * s->size, u = upv * s->size;
+            // 1.3 DLL 0x1003fb00: with L / U the view's left / up axes (view +0x18 / +0x24) and angle a: R = w(cos a · L − sin a · U),
+            // V = h(cos a · U + sin a · L); corners C + R + V (u0, v0), C − R + V (u1, v0), C − R − V (u1, v1), C + R − V (u0, v1).
+            // Here right = −L, so r = −R = w(cos a · right + sin a · up), u = V = h(cos a · up − sin a · right).
+            const float hw = s->size, hh = s->size2 >= 0 ? s->size2 : s->size;
+            const float ra = s->rotation * 0.017453292f, rc = std::cos(ra), rs = std::sin(ra);
+            const Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
             Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
             float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};
