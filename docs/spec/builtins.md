@@ -505,8 +505,8 @@ handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, develope
 | `getgroundenttype` | 2 | animscripts/death.gsc, traverse/window.gsc | exe 0x5401c0 |
 | `getcommandfromkey` | 1 | moscow_str | key-binding text (table 0x5d2730) for hint strings |
 | `buttonpressed` | 1 | _briefing | key-name keyed query (binding table 0x5d2728) |
-| `setstablemissile` | 1 | crossroads | sets entity flag 0x20000 (+0x128); consumer not traced |
-| `enablegrenadetouchdamage` | 1 | tankhunt | sets entity flag 0x4000 (+0x128); consumer not traced |
+| `setstablemissile` | 1 | crossroads | sets entity flag 0x20000 (+0x128); G_FireRocket copies it, no destabilization (implemented) |
+| `enablegrenadetouchdamage` | 1 | tankhunt | sets entity flag 0x4000 (+0x128); gate of the grenade path test 0x5297b0 (implemented) |
 | `setdebugorigin`, `setdebugangles`, `getdebugeye` | 1 | _load, utility | developer only |
 | `getviewmodel`, `isonground` | 0-1 | | |
 

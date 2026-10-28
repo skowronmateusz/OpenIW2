@@ -1219,6 +1219,23 @@ void World::registerCombatBuiltins() {
     });
     // issuppressed (0x53e6a0): actor only; true when one of the 4 danger plane slots (actor +0x2050, stride 0x18) is in use
     // (+0x0 time != 0) and not short-lived (+0x14 == 0), i.e. a hostile suppression line is currently held.
+    // setstablemissile(bool) (0x4efde0): only eType 9 (actor), 0xc (vehicle) or 1 (player), else the script error "Type should be a
+    // sentient or a vehicle" (0x586e80); sets (true) or clears entity flag 0x20000 (+0x128), which G_FireRocket copies to the missile
+    // (0x527979) and which keeps it from destabilizing (0x527053).
+    vm_.registerBuiltin("setstablemissile", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !(e->isActor || e->isPlayer || e->vehicle)) throw std::runtime_error("Type should be a sentient or a vehicle");
+        e->obj->set("$stablemissile", Value(c.arg(0).truthy()));
+        return Value();
+    });
+    // enablegrenadetouchdamage() (0x4f8000): only on a trigger_damage (classname 0x1c7f0ea), else the script error "Currently on
+    // supported on damage triggers" (0x58542c); sets +0x128 |= 0x4000, the gate of the grenade path test 0x5297b0.
+    vm_.registerBuiltin("enablegrenadetouchdamage", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || e->classname != "trigger_damage") throw std::runtime_error("Currently on supported on damage triggers");
+        e->obj->set("$grenadetouchdamage", Value(true));
+        return Value();
+    });
     vm_.registerBuiltin("issuppressed", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("not an actor");

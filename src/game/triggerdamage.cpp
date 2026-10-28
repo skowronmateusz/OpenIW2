@@ -78,10 +78,13 @@ void World::triggerDamageHit(Entity& e, Entity* attacker, int amount, const std:
 
 // 0x5295f0: every trigger_damage whose brush the segment start -> end crosses gets a "damage" notify (damage,
 // attacker), then the action (0x5293c0, 0x529769).
-void World::triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod) {
+// grenadeTouchOnly (the missile twin 0x5297b0, 0x529874..0x52987d): only triggers whose +0x128 has 0x4000, which
+// enablegrenadetouchdamage (0x4f8000) sets; the bullet / melee test 0x5295f0 has no such gate.
+void World::triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod, bool grenadeTouchOnly) {
     for (const auto& ep : entities_) {
         Entity& e = *ep;
         if (e.obj->removed || e.isSpawner || e.classname != "trigger_damage") continue;
+        if (grenadeTouchOnly && !e.obj->get("$grenadetouchdamage").truthy()) continue;
         const Value m = e.obj->get("model");
         if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') continue;
         const Value ov = e.obj->get("origin"), av = e.obj->get("angles");

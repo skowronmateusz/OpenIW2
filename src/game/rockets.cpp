@@ -39,7 +39,7 @@ int explosionType(const std::string& v) {
 // trajectory from `start` at projectileSpeed along `dir` starting 50 ms ago, angles of the direction, the weapon's
 // projectileModel. +0x168 = destabilizeDistance (+0x5ac, int) / projectileSpeed (+0x384, int) * 1000 (0x52795d..0x527973),
 // the time to the first destabilization (destabilizeRocket). The shooter's +0x128 & 0x20000 is copied (0x527979..0x52798d) and
-// disables the destabilization; TODO(spec): no writer of that flag was found, the port leaves it clear. 0x4d6110 (also called by
+// disables the destabilization; setstablemissile (0x4efde0) sets / clears it on actors, vehicles and the player. 0x4d6110 (also called by
 // LaunchItem) builds the server dobj of the entity's model and attachments: nothing beyond the model to port here.
 Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const Vec3& start, const Vec3& dir) {
     Entity& e = spawnEntity("rocket");
@@ -52,6 +52,7 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
     r.trBase = start;
     const float speed = float(std::atoi(weaponField(weaponName, "projectileSpeed").c_str()));
     r.trDelta = {dir[0] * speed, dir[1] * speed, dir[2] * speed};
+    r.stable = parent.obj->get("$stablemissile").truthy(); // +0x128 & 0x20000 copied from the shooter (0x527979..0x52798d)
     if (speed != 0.0f) r.destabMs = float(weaponInt(weaponName, "destabilizeDistance")) / speed * 1000.0f;
     e.obj->set("origin", Value(start));
     const float yaw = std::atan2(dir[1], dir[0]) * 180.0f / float(M_PI);
@@ -63,10 +64,12 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
     ++stats.rockets;
     // CG_Missile (0x4ab3af): the weapon's projTrailEffect (+0x458, handle weapon info +0x170) is played once (cent +0x143),
     // bolted (0x4853f0) on the missile's tag_origin (scr const 0x1c7f144, 0x47eec0). Queued here at the launch.
-    // TODO(spec): projectileDLight: CG_Missile (0x4ab3fe..0x4ab43c) adds, when the weapon info's radius +0x14c (float of
-    // projectileDLight +0x45c, 0x4b3cab) is not 0, a light at the missile's lerp origin through *0x617b1c(origin, radius, info
-    // +0x150, +0x154, +0x158). The writer of +0x150..+0x158 (presumably projectileRed / Green / Blue, weapon +0x460..+0x468) was
-    // not found; panzerfaust / panzerschreck set 200 and (0.75, 0.3, 1).
+    // projectileDLight: CG_Missile (0x4ab3fe..0x4ab43c) adds, when the weapon info's radius +0x14c is not 0,
+    // a light at the missile's lerp origin through *0x617b1c(origin, radius, info +0x150, +0x154, +0x158). CG_RegisterWeapon
+    // (0x4b2cb8..) zeroes the 0x1b8-byte info (rep stosl 0x6e dwords, 0x4b2cd7) and of these fields writes only +0x14c = (float)
+    // projectileDLight (+0x45c, 0x4b3cab); weapon +0x460..+0x468 (projectileRed / Green / Blue) have no register-relative reader in the executable
+    // and no store to info +0x150..+0x158 (or to the absolute 0xf48ed0..) exists, so the light is black: nothing is ported.
+    // TODO(spec): only a store through a computed pointer could contradict this.
     const std::string trail = weaponField(weaponName, "projTrailEffect");
     if (!trail.empty() && !model.empty()) fxEvents_.push_back({trail, start, dir, e.number, "tag_origin"});
     return e;
@@ -151,7 +154,7 @@ void World::runRocket(Entity& e) {
                 if (tr.surfaceFlags & 0x10) e.obj->removed = true;
                 else rocketImpact(e, tr);
             } else {
-                if (vlen(r.trDelta) != 0.0f && weaponField(r.weapon, "weaponType") == "projectile") destabilizeRocket(e);
+                if (vlen(r.trDelta) != 0.0f && weaponField(r.weapon, "weaponType") == "projectile" && !r.stable) destabilizeRocket(e);
                 if (timeMs_ >= r.explodeMs) {
                     missileExplosionEvent(r.weapon, tr.endPos, {0, 0, 1}, 0);
                     const float inner = weaponFloat(r.weapon, "explosionInnerDamage");

@@ -192,7 +192,8 @@ struct RocketState {
     int64_t trTime = 0;              // s.pos: linear (2)
     Vec3 trBase{}, trDelta{};
     float destabMs = 0;              // +0x168: ms after trTime until the next destabilization (0x526960)
-    bool destabilized = false;       // +0x128 & 0x10000: destabilized at least once
+    bool destabilized = false;
+    bool stable = false;             // +0x128 & 0x20000 (setstablemissile on the shooter): never destabilizes       // +0x128 & 0x10000: destabilized at least once
 };
 
 // A grenade missile entity (0x5275f0; s.pos trajectory at +0x14, fuse +0x138, AI fields +0x150 … +0x164).
@@ -761,7 +762,7 @@ public:
     void triggerDamageApply(Entity& e, Entity* attacker, int damage, int mod);
     void triggerDamageHit(Entity& e, Entity* attacker, int amount, const std::string& mod);
     void triggerDamageUse(Entity& e); // 0x529450
-    void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod);
+    void triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3& end, int damage, int mod, bool grenadeTouchOnly = false);
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity,
                             int cookedFuseMs = 0);
     std::string playerOffhandFor(const std::string& offhandClass);
@@ -1130,6 +1131,7 @@ private:
     // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
     // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.
     void launchItem(Entity& item, const Entity& dropper);
+    void scriptSpawnItem(Entity& item); // G_SpawnItem 0x522c70, runtime branch
     void runItems();
     void predictGrenadeLanding(Entity& e);
     bool solveThrow(Entity& actor, const std::string& method, const Vec3& start, const Vec3& aim, Vec3& vel);

@@ -1510,6 +1510,7 @@ void World::registerBuiltins() {
         Entity& e = spawnEntity(c.arg(0).toString());
         if (c.arg(1).isDefined()) e.obj->set("origin", c.arg(1));
         if (c.arg(2).isDefined()) e.obj->set("spawnflags", c.arg(2));
+        if (e.classname.size() > 7 && lower(e.classname.substr(0, 7)) == "weapon_") scriptSpawnItem(e); // G_SpawnItem 0x522c70
         return Value(e.obj);
     });
     // spawnvehicle(model, targetname, vehicletype, origin, angles): a script_vehicle entity; its path state is
