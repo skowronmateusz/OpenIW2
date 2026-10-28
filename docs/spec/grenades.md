@@ -146,3 +146,14 @@ and four ±15 offsets), the danger planes (+0x2050).
     for d < 80, adds d / 4; otherwise (d < 45 or resting) the pitch lies on the slope: slope if |pitch| <= 90, else slope + 180.
   - Flying caller (0x52615e): apos.base = out, apos.time = level time (not the hit time). Rest caller (0x5260d2): 0x4d8380 stops
     the position, 0x4d83c0 stops the angular trajectory (type, time, duration, delta = 0) with base = currentAngles = out.
+
+## Item slide (G_RunItem 0x523040, 0x5231b2..0x52327f, decoded)
+- Each frame an item evaluates its position 50 ms ahead (0x4fae80, now + 0x32) and traces the entity box from the current origin
+  (owner as passEnt, mask 0x491 when clipmask is 0). If that move is shorter than 0.1 (0x420d90, 0x59202c) the end z drops by 1.
+- No hit: origin = end. Hit: endpos = cur + (end - cur) * fraction. If the trace did not start solid, fraction < 0.01 and normal z
+  < 0.5: end' = end + n * (1 - (end - cur) . n); a second trace from endpos to end' (0x4db7f0 -> 0x44bf00) overwrites the result and
+  endpos = endpos + (end' - endpos) * fraction2 (0x47f390). Port: `itemSlideEnd` (src/game/itemslide.h, tests/test_grenadeangles.cpp).
+- Then the position trajectory becomes type 3 (stop), duration 50 ms, base = old origin, delta = (endpos - origin) * 20; the
+  currentOrigin is set to endpos at once. Settling (0x523315..0x5233a9) needs fraction < 0.01 and normal z > 0, else the item is freed;
+  no-drop contents 0x80000000 at the origin free it too. Open (multi-function): the entity flag byte +0xa4 gating it, and the exe's
+  per-frame gravity re-base (0x523086), which the port replaces with "settle on the first hit".

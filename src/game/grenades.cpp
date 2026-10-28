@@ -3,6 +3,7 @@
 // (0x527270), the throw solvers behind checkGrenadeThrowPos (0x51f490) and throwGrenade / MagicGrenade(Manual) /
 // pickUpGrenade.
 #include "game/grenadeangles.h"
+#include "game/itemslide.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -857,7 +858,19 @@ void World::runItems() {
         const float t = (float(timeMs_) - e.obj->get("$trtime").asFloat()) * 0.001f;
         const Vec3 cur = e.obj->get("origin").asVector();
         const Vec3 next{base[0] + delta[0] * t, base[1] + delta[1] * t, base[2] + delta[2] * t - 400.0f * t * t};
-        const TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
+        TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
+        // Slide (0x5231b2..0x523278): a hit that barely moved (fraction < 0.01, 0x591ea0) on a steep surface (normal z < 0.5) that
+        // did not start solid pushes the end point out along the normal, next + n · (1 − (next − cur)·n), traces again from the
+        // hit point to it and takes the point at that second fraction (0x47f390 lerp); the second trace replaces the first.
+        if (tr.fraction < 1.0f && !tr.startSolid && tr.fraction < 0.01f && tr.normal[2] < 0.5f) {
+            const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+            const Vec3 end2 = itemSlideEnd(cur, next, n);
+            const Vec3 from{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
+            TraceResult tr2 = collision_->trace(from, end2, mins, maxs, 0x491, e.number);
+            const float f2 = tr2.fraction;
+            tr2.endPos = {from[0] + (end2[0] - from[0]) * f2, from[1] + (end2[1] - from[1]) * f2, from[2] + (end2[2] - from[2]) * f2};
+            tr = tr2;
+        }
         if (tr.fraction < 1.0f) {
             const Vec3 at{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
             if (collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
@@ -867,10 +880,11 @@ void World::runItems() {
             // 0x522ea0 (called from 0x523387 for every resting item that is not type 0xb): the item's forward vector
             // (its pitch and yaw) is projected onto the plane of the hit normal, (n × f) × n, and the angles become its
             // vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
-            // trajectory is cleared and currentAngles (+0xe8..) set. TODO(spec): the slide branch 0x5231b2-0x52327b
-            // (taken when the trace fraction is < 0.01 and the normal z < 0.5, 0x4db7f0 clip + 0x47f390), the 50 ms
-            // ease (TR 3, 0x52327f; the server origin is already the hit point and the view lerps 50 ms), the owner
-            // as the trace's passEnt (item+0xf4).
+            // trajectory is cleared and currentAngles (+0xe8..) set. The exe eases the view to the hit point (TR 3, 50 ms, delta = 20 x
+            // the offset, 0x52327f); the server origin is already there. TODO(spec): the exe settles only when a trace of the next
+            // frame (gravity trajectory re-based on the origin each frame, 0x523086) hits with fraction < 0.01 and normal z > 0
+            // (else frees the item), with an entity flag at +0xa4; the port settles on the first hit. The owner as the trace's
+            // passEnt (item+0xf4).
             {
                 const Value av = e.obj->get("angles");
                 const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};

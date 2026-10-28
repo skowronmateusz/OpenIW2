@@ -1,5 +1,6 @@
 // Tests for the grenade bounce angular re-base (exe 0x525cb0).
 #include "game/grenadeangles.h"
+#include "game/itemslide.h"
 
 #include <cmath>
 #include <iostream>
@@ -55,6 +56,13 @@ int main() {
     CHECK(near(grenadeRebaseAngles({80, 5, 0}, 600.0f, {0, 0, 1}, true, [] { return 0; }).angles[0], 0.0f, 0.01f));
     CHECK(near(grenadeRebaseAngles({100, 5, 0}, 600.0f, {0, 0, 1}, true, [] { return 0; }).angles[0], 180.0f, 0.01f));
     CHECK(near(grenadeRebaseAngles({30, 5, 7}, 600.0f, {0, 0, 1}, true, [] { return 0; }).angles[2], 7.0f, 0.001f));
+    // Item slide end (0x5231b2): a move of (0,0,-1) onto a wall-like normal (1,0,0) pushes the end out by 1 along the normal.
+    {
+        const auto e = itemSlideEnd({0, 0, 0}, {0, 0, -1}, {1, 0, 0});
+        CHECK(near(e[0], 1.0f) && near(e[1], 0.0f) && near(e[2], -1.0f));
+        const auto e2 = itemSlideEnd({0, 0, 0}, {-2, 0, -1}, {1, 0, 0}); // moving into the wall: 1 - (-2) = 3
+        CHECK(near(e2[0], 1.0f) && near(e2[2], -1.0f));
+    }
     if (failures) return 1;
     std::cout << "grenadeangles ok\n";
     return 0;
