@@ -126,6 +126,7 @@ struct ActorAi {
     Vec3 blockVel{};                          // +0x230 block velocity of the previous physics step (read by 0x505b80 / 0x505cb0)
     int64_t walkedMs = -1;                    // level time of the last mode-1 path walk (moveActor)
     bool facingInit = false;
+    int floatFrames = 0;                      // IW2_FLOAT_LOG: frames in a row without ground within 16 units
     int64_t meleeFrameMs = -1;                // +0xcc: level time of the last melee blow (one per frame, 0x550c7a)
     float orientTarget = 0;                   // +0x120 override turn target (degrees, 16-bit quantised)
     // Facing look blocks (0x504950 / 0x5055d0): base +0x108 pitch / +0x10c yaw / +0x110 turn target, override +0x118 / +0x11c
@@ -687,7 +688,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, floatingActors = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
