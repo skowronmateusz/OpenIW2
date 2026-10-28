@@ -57,6 +57,10 @@ std::string registeredDefault(const std::string& n) {
     static const std::pair<const char*, const char*> defaults[] = {
         {"cg_drawCrosshair", "1"},  // 0x40e400
         {"cg_subtitles", "1"},      // 0x40e418
+        {"cg_subtitleMinTime", "3"},          // 0x4a1ea6 (float 0..FLT_MAX)
+        {"cg_subtitleWidthStandard", "80"},   // 0x4a1e.. (int 20..256)
+        {"cg_subtitleWidthWidescreen", "80"}, // 0x4a1e.. (int 20..256)
+        {"cg_subtitlePosX", "120"}, {"cg_subtitlePosY", "400"}, {"cg_subtitleCharHeight", "12"}, // 0xf48cf0 / 0xf48cf4 / 0x1040c78
         {"cg_blood", "1"},          // 0x40e5f9
         {"cg_drawHealth", "0"},     // 0x4a125d (bool, flags 0x1080; gates the health bar ownerdraws 0x4a8800 / 0x4a8ab0)
         {"monkeytoy", "1"},         // 0x4037ba

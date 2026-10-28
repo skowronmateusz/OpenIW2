@@ -2930,7 +2930,7 @@ int main(int argc, char** argv) {
         // A level's game world. game[] survives only a persistent level change (changelevel / missionsuccess with persistent set:
         // G_ShutdownGame 0x4d9d3c -> 0x46e1c0 -> 0x4689e0 frees the game object 0x9bef30 otherwise, and G_InitGame 0x4da481 creates
         // a new one); then its fields are copied into the new world before its script starts (maps/_loadout.gsc "gaveweapons").
-        struct Subtitle { std::string key; uint64_t untilNs; };
+        struct Subtitle { std::string key; uint64_t startNs; float soundSec; }; // shown for max(soundSec, cg_subtitleMinTime)
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
@@ -2963,8 +2963,7 @@ int main(int argc, char** argv) {
                 const int handle = mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, &dur);
                 if (duration) *duration = dur;
                 // A started alias with a subtitle column shows its caption for max(sound length, cg_subtitleMinTime 3 s) (0x4a3540).
-                if (handle && !mixer.lastSubtitle().empty())
-                    subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS() + uint64_t(std::max(dur, 3.0f) * 1e9f)});
+                if (handle && !mixer.lastSubtitle().empty()) subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS(), dur});
                 return handle;
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
@@ -4408,38 +4407,6 @@ int main(int argc, char** argv) {
                 }
             }
             {
-                // Subtitles (cgame 0x4bf2e0): x 120, y 400, char height 12 on the 640x480 screen, wrapped at 80 characters.
-                // Anchor: 0x406c60 calls 0x4068e0 with horizontal and vertical code 1, i.e. x·scale + 0x793974 = the left edge of the 4:3 area (left43) in widescreen, as here. TODO(spec): colour, cg_subtitles off.
-                const uint64_t now = SDL_GetTicksNS();
-                std::erase_if(subtitles, [&](const Subtitle& st) { return st.untilNs < now; });
-                const uint8_t white[4] = {255, 255, 255, 255};
-                // The console text drawer 0x4062d0 picks the font from the scale = charHeight / 48 (0x591f90) * the screen scale
-                // (0x793944 = h / 480): <= ui_smallFont (0.25, 0x58156c) $smallfont, >= ui_extraBigFont (0.55) $extrabigfont,
-                // < ui_bigFont (0.4) $font (normalFont), else $bigfont (0x4063a0..0x4063e2; the same rule as menu items), so
-                // the glyphs stay close to the font's native size instead of one font being stretched.
-                // TODO(spec): the second selection path at 0x40631a (no extra-big font) for a non-zero flag argument.
-                const float subScale = 12.0f / 48.0f * float(h) / 480.0f;
-                if (const assets::Font* f = font(subScale <= 0.25f ? "smallFont" : subScale >= 0.55f ? "extraBigFont" : subScale < 0.4f ? "normalFont" : "bigFont")) {
-                    float sy = 400.0f;
-                    for (const auto& st : subtitles) {
-                        const std::string* t = loc.find(st.key);
-                        std::string text = t ? *t : st.key; // an untranslated key is shown as it is
-                        std::vector<std::string> lines;
-                        std::string cur;
-                        std::istringstream words(text);
-                        for (std::string wd; words >> wd;) {
-                            if (!cur.empty() && cur.size() + 1 + wd.size() > 80) { lines.push_back(cur); cur.clear(); }
-                            cur += (cur.empty() ? "" : " ") + wd;
-                        }
-                        if (!cur.empty()) lines.push_back(cur);
-                        for (const auto& ln : lines) {
-                            hudText(out, ln, left43 + 120.0f * sc, sy * sc, 12.0f / float(f->pixelHeight) * sc, *f, white, 0, 0, 3);
-                            sy += 12.0f;
-                        }
-                    }
-                }
-            }
-            {
                 const uint64_t now = SDL_GetTicksNS();
                 std::erase_if(screenMessages, [&](const ScreenMessage& m) { return m.untilNs < now; });
                 // Game messages (client commands obj_update / obj_complete, 0x4a6c7f): the string "^2%s" (0x57f6a0, ^2 = green
@@ -4478,7 +4445,7 @@ int main(int argc, char** argv) {
                 // row younger than +0x18 (250 ms) moves the whole window down by (1 − age / 250) × the row pitch, so the
                 // rows slide up when a new row is added.
                 auto drawWindow = [&](const std::vector<WindowRow>& rows, float x, float yBottom, float pitch, const assets::Font& f,
-                                      const uint8_t base[4], float alignX) {
+                                      const uint8_t base[4], float alignX, float charH = 12.0f) {
                     auto ms = [&](uint64_t a, uint64_t b) { return a >= b ? 0.0f : float(b - a) / 1.0e6f; };
                     float shift = 0;
                     for (const auto& r : rows) {
@@ -4495,7 +4462,7 @@ int main(int argc, char** argv) {
                             else if (left < 500.0f) a = left / 500.0f;
                         }
                         const uint8_t col[4] = {base[0], base[1], base[2], uint8_t(base[3] * a)};
-                        hudText(out, it->text, x, ry * sc, 12.0f / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
+                        hudText(out, it->text, x, ry * sc, charH / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
                     }
                 };
                 // The rows keep per-character colours from the ^ codes; plain text is white (only obj_update / obj_complete are
@@ -4518,6 +4485,45 @@ int main(int argc, char** argv) {
                     if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
                         const uint8_t white[4] = {255, 255, 255, 255};
                         drawWindow(windowRows(true, 60, 10), left43 + 320.0f * sc, 180.0f, 16.0f, *f, white, 0);
+                    }
+                }
+                // Subtitles (alias subtitle column, 0x4a3540 -> 0x401d60 -> 0x404830 into the third text window, struct
+                // 0x5cc2b0 + 0xd40 with 10 lines and fade times 250 / 250 / 500 ms, init 0x403c00; drawn each frame by 0x4bf2e0 ->
+                // 0x406c60 -> 0x4068e0 with the same row drawer as the game messages, horizontal and vertical code 1 = left / top
+                // of the 4:3 area). Draw gate (0x4bf2e0): cl_paused (0x104309c) == 0, the objectives screen flag (0xf791fc) clear
+                // and cg_subtitles (0xf569b8, default 1) set. Position / height from the dvars cg_subtitlePosX / PosY /
+                // CharHeight (0xf48cf0 / 0xf48cf4 / 0x1040c78, defaults 120, 400, 12; value read at draw time), width wrap from
+                // cg_subtitleWidthWidescreen when the aspect (0xf56a90) > 1.3333 else cg_subtitleWidthStandard (0x4a3540), both
+                // default 80; duration max(sound, cg_subtitleMinTime default 3 s). Colour: the row drawer starts from white
+                // (alpha = fade), like the game messages. TODO(spec): the console subtitle scale con_subtitleScale (0x5710ac,
+                // 0x403f43) and the channel numbering (print 3 vs draw 2).
+                {
+                    auto cv = [&](const char* n, float def) {
+                        const std::string v = menuEnv.getCvar(n);
+                        return v.empty() ? def : float(std::atof(v.c_str()));
+                    };
+                    const bool gate = menuEnv.getCvar("cl_paused") != "1" && !input.objectivesHeld() && cv("cg_subtitles", 1) != 0.0f;
+                    const float minT = std::max(0.0f, cv("cg_subtitleMinTime", 3.0f));
+                    std::erase_if(subtitles, [&](const Subtitle& st) { return st.startNs + uint64_t(std::max(st.soundSec, minT) * 1e9f) < now; });
+                    const float charH = std::clamp(cv("cg_subtitleCharHeight", 12.0f), 1.0f, 480.0f);
+                    const float subScale = charH / 48.0f * float(h) / 480.0f;
+                    const size_t width = size_t(std::clamp(cv(float(w) / float(h) > 1.3333f ? "cg_subtitleWidthWidescreen" : "cg_subtitleWidthStandard", 80.0f), 20.0f, 256.0f));
+                    if (const assets::Font* f = gate ? font(subScale <= 0.25f ? "smallFont" : subScale >= 0.55f ? "extraBigFont" : subScale < 0.4f ? "normalFont" : "bigFont") : nullptr) {
+                        std::vector<WindowRow> rows;
+                        for (const auto& st : subtitles) {
+                            const std::string* t = loc.find(st.key);
+                            const std::string text = t ? *t : st.key; // an untranslated key is shown as it is
+                            const uint64_t end = st.startNs + uint64_t(std::max(st.soundSec, minT) * 1e9f);
+                            std::string cur;
+                            std::istringstream words(text);
+                            for (std::string wd; words >> wd;) {
+                                if (!cur.empty() && cur.size() + 1 + wd.size() > width) { rows.push_back({cur, st.startNs, end}); cur.clear(); }
+                                cur += (cur.empty() ? "" : " ") + wd;
+                            }
+                            if (!cur.empty()) rows.push_back({cur, st.startNs, end});
+                        }
+                        if (rows.size() > 10) rows.erase(rows.begin(), rows.end() - 10);
+                        drawWindow(rows, left43 + cv("cg_subtitlePosX", 120.0f) * sc, cv("cg_subtitlePosY", 400.0f), charH, *f, white, 0, charH);
                     }
                 }
             }
@@ -4685,7 +4691,7 @@ int main(int argc, char** argv) {
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
             // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
             // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
-            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
+            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && menuEnv.getCvar("cl_paused") != "1" /* 0x104309c */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
