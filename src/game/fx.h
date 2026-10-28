@@ -43,6 +43,17 @@ struct FxParticle {
     // position at the start of the update (+0x24c), tailB the end point (+0x9c, 0x483160).
     bool tail = false;
     FVec prev{}, tailB{};
+    // Line element (type 2, class vtable 0x57c708, spawn 0x48d3c0): fixed end points A (the spawn point, +0x4) and B (+0x24c,
+    // from `origin2`, 0x48c850), drawn as a renderer type 8 quad like Tail (update 0x482da0, draw 0x482d90).
+    bool line = false;
+    FVec lineB{};
+    // Cloud element (type 12, class vtable 0x57c78c, spawn 0x48de90): moves like an Emitter (0x480bd0) and spins its
+    // 1024-point cube about a random unit axis (+0x24c, 0x482850) by the angle +0x44 (start: `rotation`, advanced by the
+    // rotationDelta channel, 0x481b90). lengthRnd is the useRandomLength lerp random (+0x260, 0x426250(0, 1)).
+    bool cloud = false;
+    FVec cloudAxis{1, 0, 0};
+    float cloudAngle = 0, lengthRnd = 0;
+    int64_t cloudLastMs = 0;
     std::string model;                  // chosen from `models` at random when useModel (0x10) is set
     FVec pos{};                         // current position (+0x4)
     FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
@@ -81,6 +92,18 @@ struct FxSprite {
     bool beamTail = false;
     FVec beamA{}, beamB{}, beamPerp{};
     float widthA = 0, widthB = 0;
+};
+
+// A Cloud element as handed to the renderer (draw slot 0x482960 -> 0x480010 with renderer type 6 -> 1.3 DLL 0x10041370):
+// the world matrix of the shared 1024-point cube (0x1005a7a0: rows axis[k] * size, translation origin), the flake quad
+// width / height (refEntity +0x64 / +0x68) and the previous position B (+0x48) that stretches the flakes into streaks
+// (0x10041230), colour = the rgb / alpha bytes / 255 (particleCloudColor).
+struct FxCloud {
+    std::string shader;
+    FVec origin{}, prev{};
+    FVec axis[3]{};
+    float size = 0, width = 0, height = 0;
+    uint8_t rgba[4]{255, 255, 255, 255};
 };
 
 // A live particle of a blocksSight (0x1000) element as entered in the sight-blocker list (0x480970 → 0xc3ed80,
@@ -143,6 +166,8 @@ public:
     // Light elements alive at the last sprites() call (DLL keeps at most r_dlightLimit = 4 of them, TODO(spec): the order
     // 0x10015180 chooses when there are more).
     const std::vector<FxLight>& lights() const { return lights_; }
+    // Cloud elements alive at the last sprites() call.
+    const std::vector<FxCloud>& clouds() const { return clouds_; }
     size_t count() const { return particles_.size(); }
     // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
@@ -180,6 +205,7 @@ private:
     std::vector<FxSightBlocker> sightBlockers_;
     std::vector<FxModelInst> models_;
     std::vector<FxLight> lights_;
+    std::vector<FxCloud> clouds_;
     FVec velocityAt(const FxParticle& p, float u) const;
     void stepEmitter(FxParticle& p, int64_t nowMs);
 };

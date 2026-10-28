@@ -38,6 +38,28 @@ int main() {
     CHECK(size.points[0][1] == 2 && size.points[2][1] == 2);
     CHECK(size.scaleMin == 10 && size.scaleMax == 20);
 
+    // Legacy channel syntax (0x487910 -> 0x47eb10): minefield.efx style `start` / `end` / `flags linear`.
+    {
+        const char* leg =
+            "Line\n{\n\tlife 1422\n"
+            "\talpha\n\t{\n\t\tend\t0\n\t\tflags\tlinear\n\t}\n"
+            "\tsize\n\t{\n\t\tstart\t32 74\n\t\tend\t442 342\n\t\tflags\tlinear\n\t}\n"
+            "\tlength\n\t{\n\t\tstart\t2\n\t\tend\t3\n\t}\n}\n";
+        const auto lfx = iw2::assets::parseEfx(leg);
+        const auto& le = lfx.elements.at(0);
+        const auto& a = le.graphs.at("alpha"); // alpha: M = 1, start defaults to 1 -> rows {0, 1}, {1, 0}
+        CHECK(a.points.size() == 2 && a.points[0][1] == 1.0f && a.points[1][1] == 0.0f);
+        CHECK(a.scaleMin == 1.0f && a.scaleMax == 1.0f);
+        const auto& sz = le.graphs.at("size"); // M = 392 * 4/3, scale M -/+ 21, values mid / M
+        const float M = 392.0f * 1.3333334f;
+        CHECK(sz.points.size() == 2);
+        CHECK(std::fabs(sz.points[0][1] - 53.0f / M) < 1e-5f && std::fabs(sz.points[1][1] - 392.0f / M) < 1e-5f);
+        CHECK(std::fabs(sz.scaleMin - (M - 21.0f)) < 1e-3f && std::fabs(sz.scaleMax - (M + 21.0f)) < 1e-3f);
+        const auto& ln = le.graphs.at("length"); // no flags: 16 rows of the constant start value (f = 1)
+        CHECK(ln.points.size() == 16 && std::fabs(ln.points[15][0] - 1.0f) < 1e-6f);
+        CHECK(std::fabs(ln.points[7][1] * 4.0f - 2.0f) < 1e-5f); // M = max(1, 3 * 4/3) = 4
+    }
+
     // blocksSight particles become sight blockers: radius² from the size, visibility 1 − alpha byte / 255 with
     // useAlpha (alpha · 255 truncated) and 0 without it (0x481a40, 0x480970).
     const char* smoke =
