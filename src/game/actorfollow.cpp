@@ -100,6 +100,7 @@ bool World::aiReach(const Vec3& start, const Vec3& target, int passEnt, uint32_t
         out = tr.endPos;
         if (!tr.startSolid && tr.fraction == 1.0f) break;
         Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+        if (static const bool dbg = std::getenv("IW2_REACH_LOG") != nullptr; dbg) std::fprintf(stderr, "[reach %lld] from %.0f %.0f %.0f to %.0f %.0f frac %.2f startsolid %d entity %d normal %.2f %.2f %.2f contents %x\n", (long long)timeMs_, cur[0], cur[1], cur[2], target[0], target[1], tr.fraction, int(tr.startSolid), tr.entity, tr.normal[0], tr.normal[1], tr.normal[2], unsigned(tr.contents));
         if (!hit || !isSentient(*hit)) {
             if (dist2d(cur, out) < 225.0f) return false;
         } else {
