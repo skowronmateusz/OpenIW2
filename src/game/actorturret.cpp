@@ -5,6 +5,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -51,7 +52,7 @@ bool World::actorInGoal(Entity& e, float extra) {
     return extra != 0.0f || workGoalVolumeHolds(e, o);
 }
 
-// Start (0x549960): take the recorded turret unless someone else uses it. TODO(spec): the actor is linked to the
+// Start (0x549960): take the recorded turret unless it is in use. TODO(spec): the actor is linked to the
 // turret there (0x4d6540, no tag) and the link offset is set (0x4d6ca0); the pose step reads the offset's height, which
 // the port computes from the current origins instead (World::turretPoseStep).
 bool World::turretStateStart(Entity& e) {
@@ -61,10 +62,9 @@ bool World::turretStateStart(Entity& e) {
         return false;
     }
     TurretState& ts = *t->turret;
-    if (ts.inUse && ts.owner != e.obj) {
-        e.usingTurret.reset();
-        return false;
-    }
+    // 0x54997c: any turret in use (+0x112) is refused, also one this actor already owns; the recorded turret (+0x2114)
+    // stays (0x549a50 returns 0 without clearing it; the exposed state then drops it).
+    if (ts.inUse) return false;
     ts.inUse = true;
     ts.owner = e.obj;
     vm_.notify(t->obj, "turretownerchange");
@@ -73,6 +73,11 @@ bool World::turretStateStart(Entity& e) {
     ts.rightArc = ts.setupRightArc;
     ts.leftArc = ts.setupLeftArc;
     ts.flags &= ~0x10u;
+    // 0x549a28..0x549a3c: keepclaimednode / keepclaimednodeingoal (+0x740 / +0x741) cleared and a claimed node released
+    // (0x5191a0). TODO(spec): 0x54e3f0 and 0x503e10, and the start argument that keeps flag 0x10 / +0x60 when it is 6.
+    e.obj->set("keepclaimednode", Value(int32_t(0)));
+    e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
+    if (e.claimedNode >= 0) releaseNode(e);
     return true;
 }
 
@@ -117,6 +122,55 @@ int World::turretStateThink(Entity& e) {
     if (!(ts.inUse && ts.owner == e.obj)) return leave();
     e.ai.animDeltaGoalWeights = false; // +0x220 = 0
     return turretPoseStep(e, *t);
+}
+
+// Obstruction check of the pose step (0x54a8bc..0x54ab4d), after the move: the move bumped an entity (+0x318 not 0x7ff), the
+// state was set at least 1 s ago (+0x20), the turret pitch / yaw lie inside its arcs (topArc..bottomArc,
+// rightArc..leftArc) and the slide offsets (turret info +0x90..+0xa4) are 0. A bumped entity without a sentient (+0x104;
+// the world entity 0x7fe has none) narrows the arc on the side the gun points to by 1 degree (yaw < 0: rightArc + 1, else
+// leftArc - 1, with a "capping" warning); an arc that crosses 0 is set to 0 and the gunner detaches with the warning
+// "... detaching from turret due to obstruction". Bumping a sentient detaches at once. Detaching gives the turret up
+// (0x54b020) and replaces the state with exposed (0x4feb00, think again). TODO(spec): for a bumped sentient of another
+// team the exe also calls 0x4f9f30 and 0x4fa070 (0x54aafa..0x54ab45), not ported.
+bool World::turretObstruction(Entity& e, Entity& t) {
+    TurretState& ts = *t.turret;
+    if (e.ai.bumpedEnt == 0x7ff || timeMs_ - e.ai.baseStateMs < 1000) return false;
+    if (!(ts.pitch <= ts.bottomArc) || !(ts.pitch >= ts.topArc) || !(ts.yaw <= ts.leftArc) || !(ts.yaw >= ts.rightArc)) return false;
+    for (int a = 0; a < 3; ++a)
+        if (ts.gunnerOriginOffset[size_t(a)] != 0.0f || ts.gunnerAnglesOffset[size_t(a)] != 0.0f) return false;
+    Entity* g = e.ai.bumpedEnt == 0x7fe ? nullptr : entityByNumber(e.ai.bumpedEnt);
+    auto detach = [&] {
+        turretStateFinish(e);     // 0x54b020
+        aiSetState(e, AiExposed); // 0x4feb00 with 1
+        return true;
+    };
+    if (g && isSentient(*g)) return detach();
+    const Value tov = t.obj->get("origin");
+    const Vec3 to = tov.isVector() ? tov.asVector() : Vec3{0, 0, 0};
+    char buf[256];
+    bool crossed;
+    if (ts.yaw < 0.0f) {
+        ts.rightArc += 1.0f;
+        crossed = !(ts.rightArc <= 0.0f);
+        if (crossed) ts.rightArc = 0.0f;
+        else std::snprintf(buf, sizeof buf, "WARNING: capping rightarc of turret at (%.2f, %.2f, %.2f) to %.2f\n", to[0], to[1], to[2], -ts.rightArc);
+    } else {
+        ts.leftArc -= 1.0f;
+        crossed = ts.leftArc < 0.0f;
+        if (crossed) ts.leftArc = 0.0f;
+        else std::snprintf(buf, sizeof buf, "WARNING: capping leftarc of turret at (%.2f, %.2f, %.2f) to %.2f\n", to[0], to[1], to[2], ts.leftArc);
+    }
+    if (!crossed) {
+        print(buf);
+        return false;
+    }
+    const Value eov = e.obj->get("origin");
+    const Vec3 eo = eov.isVector() ? eov.asVector() : Vec3{0, 0, 0};
+    std::snprintf(buf, sizeof buf,
+                  "WARNING: AI %d at (%.2f, %.2f, %.2f) with turret angles (%.2f, %.2f) detaching from turret due to obstruction\n",
+                  e.number, eo[0], eo[1], eo[2], ts.pitch, ts.yaw);
+    print(buf);
+    return detach();
 }
 
 namespace {
@@ -171,8 +225,8 @@ void normalize2(float& x, float& y) {
 // 5. Turret pitch bound (flags 0x200 / 0x400, info +0xa8), only while the offsets are 0: outside the range the angle between
 //    tag_aim->tag_weapon and tag_aim->the needed gun height (both as (2D distance, height); acos of the dot, 90 when negative)
 //    sets +0xa8 = pitch - angle with 0x200 (below the range) or pitch + angle with 0x600 (above); inside the range +0xa8 moves
-//    back by 0.1 per step and 0x200 is cleared once it passes topArc (0x400) or bottomArc. TODO(spec): the turret turn that
-//    reads +0xa8 (0x51b610 / 0x51b7a3, the bone control drop e+0x78) is not ported, so the bound has no effect yet.
+//    back by 0.1 per step and 0x200 is cleared once it passes topArc (0x400) or bottomArc. The turret turn reads it
+//    (World::turretTurn, 0x51b779: the pitch beyond it becomes the bone-control drop e+0x78).
 int World::turretPoseStep(Entity& e, Entity& t) {
     TurretState& ts = *t.turret;
     if (!e.anim) return 0;
@@ -345,10 +399,9 @@ int World::turretPoseStep(Entity& e, Entity& t) {
     faceBlockToAngles(e, true); // 0x504950 + 0x5049a0
     if (links_.find(t.number) == links_.end()) {
         // +0x264 = 1, +0x250 = (dx, dy, 0), then the physics 0x501d00 (kind 1 is not turned by desiredangle).
-        // TODO(spec): 0x4e7150(+0x294, +0x298), the link offset update 0x4d6ca0, and the obstruction check 0x54a8bc..0x54ab4d
-        // (a gunner standing on another entity for 1 s with the turret inside its arcs and the pose arrived caps the turret's
-        // left/right arc by 1 degree, or, standing on a client, leaves the turret: "detaching from turret due to obstruction").
+        // TODO(spec): 0x4e7150(+0x294, +0x298) and the link offset update 0x4d6ca0.
         moveActorKind(e, 1, {pos[0] - eOrigin[0], pos[1] - eOrigin[1], 0.0f}, kPoseFrameTime);
+        if (turretObstruction(e, t)) return 1;
     } else {
         e.obj->set("origin", Value(pos)); // 0x54ab68 (then 0x4d6ca0 with 1)
     }

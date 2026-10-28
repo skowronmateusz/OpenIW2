@@ -185,8 +185,9 @@ becomes exposed and starts.
 
 **Actor think** (0x4ff030, every 50 ms): loop {apply requests if any; r = think(current)} while
 r = 1. r = 2 → corpse (0x4fdba0: entity type 0xb, contents 0x4000000, notify "death"); otherwise
-when 0x4fef50 holds the actor is notified "goal": inside the goal (0x5026d0: |dz| ≤
-goalheight, 2D distance ≤ goalradius, inside the goal volume if any) and the path, if any, ends inside it (facing 6 at
+when 0x4fef50 holds the actor is notified "goal": inside the SCRIPT goal block (0x4fef53: 0x5026d0 with actor +0x764 = setgoalpos / setgoalnode
+position (spawn origin at spawn, 0x4fc80d), +0x770 goalradius, +0x774 goalheight, +0x778 goal volume; not the working goal
++0x748: `World::inScriptGoal`) and the path, if any, ends inside it (facing 6 at
 a cover node also needs the yaw near the node's angle). At spawn animscripts/init runs as a plain thread, then the
 bottom state starts (0x4fdee0).
 

@@ -240,11 +240,21 @@ void World::turretTurn(Entity& t, bool tracking) {
         rate[0] = std::clamp(rate[0], weaponNumber(w, "minvertturnspeed"), std::max(weaponNumber(w, "minvertturnspeed"), weaponNumber(w, "maxvertturnspeed")));
         rate[1] = std::clamp(rate[1], weaponNumber(w, "minhorturnspeed"), std::max(weaponNumber(w, "minhorturnspeed"), weaponNumber(w, "maxhorturnspeed")));
     }
+    // 0x51b6e8: while the gunner's pitch bound is active (0x200) and the drop pitch is in use (0x100), pitch turns at 360°/s.
+    if ((ts.flags & 0x200u) && (ts.flags & 0x100u)) rate[0] = 360.0f;
     const float d[2] = {dPitch, dYaw};
     float* cur[2] = {&ts.pitch, &ts.yaw};
     for (int i = 0; i < 2; ++i) {
         const float step = rate[i] * 0.05f;
         *cur[i] += std::clamp(d[i], -step, step);
+    }
+    // 0x51b779..0x51b7c5: the AI gunner's pitch bound (+0xa8, set by the pose step 0x549ba0). Beyond it (above with 0x400,
+    // below without) the excess becomes the bone-control drop e+0x78 (0x51b7a3); within it the drop-pitch flag 0x100 is
+    // cleared.
+    if (ts.flags & 0x200u) {
+        const bool beyond = (ts.flags & 0x400u) ? ts.pitch < ts.pitchLimit : ts.pitch > ts.pitchLimit;
+        if (beyond) ts.drop = ts.pitch - ts.pitchLimit;
+        else ts.flags &= ~0x100u;
     }
     t.obj->set("$turretangles", Value(Vec3{ts.pitch, ts.yaw, 0}));
 }
@@ -379,6 +389,7 @@ void World::restoreDefaultDropPitch(Entity& t) {
 // Turret think for one turret (0x51d250).
 void World::thinkTurret(Entity& t) {
     TurretState& ts = *t.turret;
+    ts.drop = 0.0f; // 0x51d279: e+0x78, set again by the turn (0x51b7a3)
     if (!ts.dropPitchDone) { // the first think (0x51ced0) computes the drop pitch
         ts.dropPitchDone = true;
         restoreDefaultDropPitch(t);

@@ -3351,7 +3351,7 @@ int main(int argc, char** argv) {
                         tp = playerTurretPose->first;
                         ty = playerTurretPose->second;
                     }
-                    const assets::XPose tpose = assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty));
+                    const assets::XPose tpose = assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty, e->turret->drop));
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm, tpose);
                     if (it.model) items.push_back(it);

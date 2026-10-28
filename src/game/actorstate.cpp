@@ -350,15 +350,13 @@ void World::actorThink(Entity& e) {
     }
     // 0x501d00: the physics of a followed actor in anim mode 1 that no path step moved this think: the yield step 0x501620.
     if (ai.followed && ai.animMode == 1 && e.path.count <= 0) moveActor(e, 0.05f);
-    // 0x4fef50: inside the goal and the path (if any) ends inside it.
-    if (actorInGoal(e, 0.0f)) {
+    // 0x4fef50: inside the script goal and the path (if any) ends inside it.
+    const Value originV = e.obj->get("origin");
+    if (inScriptGoal(e, originV.isVector() ? originV.asVector() : Vec3{0, 0, 0})) {
         bool pathInGoal = true;
         if (actorHasPath(e)) {
-            const Value saved = e.obj->get("origin");
             const Vec3 end = pathEnd(e);
-            e.obj->set("origin", Value(Vec3{end[0], end[1], end[2]}));
-            pathInGoal = actorInGoal(e, 0.0f);
-            e.obj->set("origin", saved);
+            pathInGoal = inScriptGoal(e, Vec3{end[0], end[1], end[2]});
         }
         // 0x4fef89..0x4feff9: with facing mode 6 (+0x104) and no orient override (+0x114), a claimed node (sentient +0x2c) of a
         // non-cover type with spawnflag 0x8000 also needs the actor's yaw (+0xec) within 20 degrees of the node's (+0x20).
@@ -375,6 +373,32 @@ void World::actorThink(Entity& e) {
             vm_.notify(e.obj, "goal");
         }
     }
+}
+
+// The goal test of the "goal" notify (0x4fef50 -> 0x5026d0 with ecx = actor +0x764): the SCRIPT goal block (+0x764 the
+// setgoalpos / setgoalnode position, set to the spawn origin at spawn 0x4fc80d; +0x770 goalradius; +0x774 goalheight; +0x778
+// the goal volume), not the working goal (+0x748) that the movement code and the turret think read. So a goal set by script
+// earlier in the frame counts at once, and the working goal of the last path update (still the previous goal) does not.
+// |dz| <= goalheight, 2D distance <= goalradius, then the volume. Without a script goal position the port falls back to the
+// working goal. TODO(spec): the port does not store the spawn origin as the initial script goal (+0x764).
+bool World::inScriptGoal(Entity& e, const Vec3& p) {
+    const Value gv = e.obj->get("$goalpos");
+    if (!gv.isVector()) {
+        Vec3 gp{};
+        float r = 0, h = 0;
+        if (!actorGoal(e, gp, r, h)) return true;
+        const float dz = gp[2] - p[2], dx = gp[0] - p[0], dy = gp[1] - p[1];
+        return !(h * h < dz * dz) && dx * dx + dy * dy <= r * r && workGoalVolumeHolds(e, p);
+    }
+    const Vec3 gp = gv.asVector();
+    const Value rv = e.obj->get("goalradius"), hv = e.obj->get("goalheight");
+    // The field setters store at least 4 / 80 (0x5061f0 / 0x506220); the port's fields keep the raw script value.
+    const float r = std::max(rv.isNumber() ? rv.asFloat() : 0.0f, 4.0f), h = std::max(hv.isNumber() ? hv.asFloat() : 0.0f, 80.0f);
+    const float dz = gp[2] - p[2];
+    if (h * h < dz * dz) return false;
+    const float dx = gp[0] - p[0], dy = gp[1] - p[1];
+    if (!(dx * dx + dy * dy <= r * r)) return false;
+    return goalVolumeHolds(e, p);
 }
 
 // The pain callback (0x4ff3b0) after damage that leaves the actor alive: the attacker counts as having attacked

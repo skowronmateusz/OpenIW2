@@ -569,7 +569,8 @@ public:
     // Client prone tilt of an actor's tag_origin at client time `nowMs` (0x4c1cc0): mode 1 (prone) pitch = f x +0x168,
     // roll 0; mode 2 (corpse blend) pitch f x +0x168, roll f x +0x16c; lift f x +0x164; false when neither applies.
     bool actorProneTilt(const Entity& e, int64_t nowMs, float& pitch, float& roll, float& lift) const;
-    static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
+    static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw,
+                                                                         float drop = 0.0f);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
     // The tank direction ownerdraws' (90 / 91, cgame 0x4aa1b0 / 0x4aa360) world yaws: the ridden vehicle's angles[1] (centity +0x158)
@@ -917,9 +918,11 @@ private:
     bool actorInGoal(Entity& e, float extra);
     bool goalVolumeHolds(Entity& e, const Vec3& p);
     bool workGoalVolumeHolds(Entity& e, const Vec3& p); // the working goal volume (+0x75c)
+    bool inScriptGoal(Entity& e, const Vec3& p);         // 0x4fef50's test of the script goal block (+0x764)
     bool turretStateStart(Entity& e);
     int turretStateThink(Entity& e);
     int turretPoseStep(Entity& e, Entity& turret); // 0x549ba0
+    bool turretObstruction(Entity& e, Entity& turret); // 0x54a8bc..0x54ab4d
     void turretStateFinish(Entity& e);
     // Actor state machine (src/game/actorstate.cpp)
     void aiRequest(Entity& e, int type, int state);

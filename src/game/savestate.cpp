@@ -342,6 +342,8 @@ void World::saveState(StateWriter& w) {
         w.i64(e.nodeCacheMs);
         w.i32(e.usingVehicle);
         w.i32(t.indexOf(e.usingTurret));
+        w.i32(e.turretAnim); // actor +0x2118 / +0x211a (version 4)
+        w.b(e.turretAnimSet);
         w.i32(num(e.lastAttacker));
         w.i32(e.claimedNode);
         w.i32(e.friendlyChain);
@@ -409,6 +411,10 @@ void World::saveState(StateWriter& w) {
             w.i32(tu->savedStance);
             w.vec3(tu->savedOrigin);
             w.i32(tu->fireTimerMs);
+            w.vec3(tu->gunnerOriginOffset); // turret info +0x90 / +0x9c / +0xa8, entity +0x78 (version 4)
+            w.vec3(tu->gunnerAnglesOffset);
+            w.f32(tu->pitchLimit);
+            w.f32(tu->drop);
         }
         w.b(e.vehicle != nullptr);
         if (const VehicleState* v = e.vehicle.get()) {
@@ -726,6 +732,10 @@ void World::loadState(StateReader& r) {
         e->nodeCacheMs = r.i64();
         e->usingVehicle = r.i32();
         e->usingTurret = t.object(r.i32());
+        if (r.version >= 4) {
+            e->turretAnim = r.i32();
+            e->turretAnimSet = r.b();
+        }
         Fix fx{e, r.i32(), -1, -1, -1};
         e->claimedNode = r.i32();
         e->friendlyChain = r.i32();
@@ -800,6 +810,12 @@ void World::loadState(StateReader& r) {
             tu.savedStance = r.i32();
             tu.savedOrigin = r.vec3();
             tu.fireTimerMs = r.i32();
+            if (r.version >= 4) {
+                tu.gunnerOriginOffset = r.vec3();
+                tu.gunnerAnglesOffset = r.vec3();
+                tu.pitchLimit = r.f32();
+                tu.drop = r.f32();
+            }
         }
         if (r.b()) {
             VehicleState& v = vehicleState(script::Value(e->obj)); // created from vehicletype / spawnflags for one spawned during play
@@ -981,7 +997,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 

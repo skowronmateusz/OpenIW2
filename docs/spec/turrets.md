@@ -132,12 +132,22 @@ Without it the setturretanim blend node has no weighted leaf and the gunner show
   pose at turret info +0x90 (origin) / +0x9c (angles, 0x423fd0); every step they slide (0x53b9a0 / 0x53ba60, 0.05 s,
   540°/s). Entity angles = the result, facing blocks 0x504950 / 0x5049a0. Unlinked turret: +0x264 = 1, +0x250 = xy
   difference, physics 0x501d00; linked turret: origin = pose (0x54ab68). Velocities +0x230 / +0x250 zeroed, return 0.
-- TODO(spec): the consumer of +0xa8 / 0x200 / 0x400 (turret turn 0x51b610 / 0x51b7a3, bone-control drop e+0x78) is not
-  ported, so the bound has no effect yet; the obstruction check 0x54a8bc..0x54ab4d (gunner on another entity for 1 s:
-  left/right arc capped by 1°, on a client: "detaching from turret due to obstruction"); 0x4e7150(+0x294, +0x298); the
-  actor-turret link itself (the port computes the link height from the current origins); the start's in-use test is
-  stricter in the exe (0x54997c refuses any turret with +0x112 set); the debug string at actor +0x21a0; savegames do not
-  store +0x2118 / +0x211a or the turret's +0x90..+0xa8.
+- Turret turn (0x51b610, `World::turretTurn`): with flags 0x200 and 0x100 the pitch turns at 360°/s; after the step, with 0x200,
+  a pitch beyond +0xa8 (above it with 0x400, below without) becomes the bone-control drop e+0x78 = pitch − (+0xa8) (0x51b7a3;
+  tag_aim / tag_aim_animated turn by pitch − drop, tag_flash by drop), otherwise 0x100 is cleared. e+0x78 is zeroed at the start of
+  every turret think (0x51d279).
+- Obstruction check (0x54a8bc..0x54ab4d, `World::turretObstruction`, unlinked turret only, after the move): the move bumped an
+  entity (+0x318 ≠ 0x7ff), the state was set ≥ 1 s ago (+0x20), topArc ≤ pitch ≤ bottomArc, rightArc ≤ yaw ≤ leftArc and the
+  slide offsets are 0. A bumped non-sentient (gentity +0x104 = 0; the world 0x7fe included): yaw < 0 → rightArc + 1, else
+  leftArc − 1 ("WARNING: capping rightarc/leftarc of turret at (%.2f, %.2f, %.2f) to %.2f"); an arc crossing 0 is set to 0 and
+  the gunner detaches ("WARNING: AI %d at (...) with turret angles (%.2f, %.2f) detaching from turret due to obstruction").
+  A bumped sentient detaches at once. Detach = 0x54b020 + exposed (return 1).
+- Start (0x549960): refuses any turret in use (+0x112), keeping the recorded turret; clears keepclaimednode /
+  keepclaimednodeingoal and releases a claimed node (0x5191a0).
+- Savegame version 4 stores +0x2118 / +0x211a and the turret's +0x90 / +0x9c / +0xa8 / e+0x78.
+- TODO(spec): 0x4e7150(+0x294, +0x298); the bumped-sentient team branch 0x54aafa..0x54ab45 (0x4e7010, 0x4f9f30, 0x4fa070); the
+  actor-turret link itself (the port computes the link height from the current origins); 0x54e3f0 / 0x503e10 and the start
+  argument that keeps flag 0x10 / +0x60 at 6; the debug string at actor +0x21a0.
 
 ## Not implemented (TODO)
 
