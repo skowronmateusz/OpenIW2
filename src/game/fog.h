@@ -33,6 +33,22 @@ inline bool shadowHintBits(const std::string& s, uint32_t& bits) {
     return false;
 }
 
+// Far-plane distance of the renderer (gfx dll 0x1000aaa0, exe export slot 0x617af0; set from configstring 8 by 0x1000ab00): the r_zfar
+// dvar when nonzero, else the linear fog far distance while a linear fog is active, else 0; then the larger of that and the setculldist
+// value. 0 = no far plane. TODO(spec): the exponential-fog case (only linear fog is modelled as contributing).
+// The plane culls by depth along the view direction (see FxSystem::beyondFar), it is not the projection far clip.
+inline float farPlaneDistance(bool linearFogActive, float fogFar, float rZfar, float cullDist) {
+    float d = rZfar != 0.0f ? rZfar : (linearFogActive ? fogFar : 0.0f);
+    return std::max(d, cullDist);
+}
+// Shadow-caster score of the gfx dll's selection (0x10028150): distance / largest bounds extent, scaled by the entity hint (always 0,
+// high_priority x0.25, low_priority x4); never and the receiver-less skip rules live in the caller. Lower scores win (top 24).
+inline float shadowCasterScore(uint32_t hintBits, float dist, float maxExtent) {
+    if (hintBits == 0x8000) return 0.0f;
+    const float s = dist / maxExtent;
+    return hintBits == 0x6000 ? s * 0.25f : hintBits == 0x4000 ? s * 4.0f : s;
+}
+
 struct FogParams {
     bool active = false;
     bool exponential = false; // R_SetFog type != 1 (client 0x4a5770: third value < 1 is the density)

@@ -361,6 +361,8 @@ public:
     script::VM& vm() { return vm_; }
     const assets::D3dBsp& bsp() const { return *bsp_; }
     int64_t timeMs() const { return timeMs_; }
+    // setculldist value (configstring 8; 0 = unset). The renderer folds it into its far plane (farPlaneDistance in fog.h).
+    float cullDist() const { return cullDist_; }
 
     Entity* player() { return player_; }
     const std::vector<std::unique_ptr<Entity>>& entities() const { return entities_; }
@@ -1295,7 +1297,7 @@ private:
     bool playerMoved_ = false;                // client byte +0x86b6: the player moved 0.1 units or more (xy) since the last frame (0x4e81e5)
     int64_t timeMs_ = 0;
     float fogSightSq_ = 3.4028235e38f;    // 0x1c61038: ((far - near) * 0.828 + near)² of linear fog, else FLT_MAX (0x4e96e0)
-    float cullDist_ = 0;                  // setculldist (configstring 8), unused
+    float cullDist_ = 0;                  // setculldist (configstring 8): renderer far-plane distance, docs/spec/render-hints.md
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
     CompassPings compassPings_;

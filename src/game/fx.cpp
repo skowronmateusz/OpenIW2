@@ -241,7 +241,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             bool outside = false;
             for (const auto& pl : viewPlanes)
                 if (pl[0] * origin[0] + pl[1] * origin[1] + pl[2] * origin[2] - pl[3] < -radius) outside = true;
-            if (outside) continue;
+            if (outside || beyondFar(origin, radius)) continue;
         }
         const uint32_t flags = e.flagBits();
         if (bolt && (flags & 0x2)) { // 0x485bf0: a relative element needs a valid attachment
@@ -972,12 +972,13 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!shaders.empty()) c.shader = shaders[std::min(p.shader, shaders.size() - 1)];
             // Cull slot 0x4827e0 -> 0x486e30: skipped when n·A − d < −r for a view plane (view +0x20, stride 0x10, count +0x80,
             // at most 5 with disableFarPlaneCulling 0x2000000), r = size + max(width, height) (the larger of +0x88 / +0x8c,
-            // plus +0x98). TODO(spec): the exe's plane set; viewPlanes holds the four side planes (no far plane).
+            // plus +0x98). The near plane is not modelled; the far plane is beyondFar.
             bool culled = false;
             if (viewValid) {
                 const float r = (width - height < 0.0f ? height : width) + size;
                 for (const auto& pl : viewPlanes)
                     if (pl[0] * c.origin[0] + pl[1] * c.origin[1] + pl[2] * c.origin[2] - pl[3] < -r) culled = true;
+                if (!(flags & 0x2000000) && beyondFar(c.origin, r)) culled = true; // far plane (disableFarPlaneCulling skips it)
             }
             if (!culled) clouds_.push_back(std::move(c));
             continue;
@@ -1075,6 +1076,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
                 if (viewValid)
                     for (const auto& pl : viewPlanes)
                         if (pl[0] * pos[0] + pl[1] * pos[1] + pl[2] * pos[2] - pl[3] < -s.size) hidden = true;
+                if (viewValid && !(flags & 0x2000000) && beyondFar(pos, s.size)) hidden = true; // far plane
             }
         }
         if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite

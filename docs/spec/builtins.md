@@ -133,7 +133,7 @@ rows start at 0x5a5c20; the method tables are read the same way.
 | `getfxvisibility` | 0x4f53b0 | 0 | yes |
 | `setcullfog` | 0x4f5580 | 0 | yes |
 | `setexpfog` | 0x4f5630 | 0 | yes |
-| `setculldist` | 0x4f5700 | 0 | yes |
+| `setculldist` | 0x4f5700 | 0 | yes (far plane, render-hints.md) |
 | `setsunlight` | 0x4f5750 | 0 | yes |
 | `resetsunlight` | 0x4f57c0 | 0 | yes |
 | `radiusdamage` | 0x4f3e70 | 0 | yes |

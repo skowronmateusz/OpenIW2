@@ -137,6 +137,14 @@ struct Camera {
     }
 };
 
+// The renderer far plane (farPlaneDistance: linear fog far or setculldist, whichever is larger; r_zfar is taken as 0, its default is
+// not decoded) as a depth-along-view test for the effect culls. The projection far clip stays at 40000.
+static void setFxFar(game::FxSystem& fx, const Camera& cam, const game::FogParams& fog, float cullDist) {
+    const Vec3 f = cam.forward();
+    fx.viewForward = {f.x, f.y, f.z};
+    fx.farDist = game::farPlaneDistance(fog.active && !fog.exponential, fog.farDist, 0.0f, cullDist);
+}
+
 // The four side planes of the view frustum for the effect gate frustumCull (0x486e90): inward normals through the eye;
 // the vertical field of view is fixed by fovX43 at 4:3 (viewProj above), the horizontal one follows the aspect.
 static void setFxFrustum(game::FxSystem& fx, const Camera& cam, float aspect) {
@@ -6438,6 +6446,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
+            setFxFar(fxSystem, cam, fogState.current(world ? world->timeMs() : 0), world ? world->cullDist() : 0.0f);
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
@@ -7691,6 +7700,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
+            setFxFar(fxSystem, cam, fogState.current(world ? world->timeMs() : 0), world ? world->cullDist() : 0.0f);
             // The view model is posed (and its flash / brass played) before the effects are drawn: the exe adds the view weapon
             // (0x4b026f) before the effect draw, and the bolted particles re-read tag_flash / tag_brass through 0x47fcd0 ->
             // 0x48abb0 once per frame stamp 0x6221a8 (bumped at the frame start, 0x4afca3), i.e. this frame's gun pose. Posing it
