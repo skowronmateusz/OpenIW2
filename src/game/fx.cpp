@@ -121,7 +121,9 @@ FxAxes angleAxes(const FVec& ang) {
 // row1 = normalise(up × forward) (up = z, or y when |forward.z| ≥ 0.999) and row2 = forward × row1 (0x420f30, 0x4210d0).
 FVec FxSystem::spawnPoint(const assets::EfxElement& e, const FVec& origin, FxAxes& ax) {
     const uint32_t sf = e.spawnFlagBits();
-    const auto org = e.numbers("origin");
+    // 0x487e70 -> 0x4879b0: `origin` holds 6 numbers (min xyz, max xyz) or 3 (fixed: min = max).
+    auto org = e.numbers("origin");
+    if (org.size() >= 3 && org.size() < 6) org = {org[0], org[1], org[2], org[0], org[1], org[2]};
     float x = 0, y = 0, z = 0;
     if (org.size() >= 6) {
         z = range({org[2], org[5]}, 0);
@@ -371,7 +373,8 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
         // the tag's translation, like relative particles.
         p.line = true;
         const uint32_t sf = e.spawnFlagBits();
-        const auto o2 = e.numbers("origin2");
+        auto o2 = e.numbers("origin2"); // 0x487ed0 -> 0x4879b0: 3 numbers = fixed
+        if (o2.size() >= 3 && o2.size() < 6) o2 = {o2[0], o2[1], o2[2], o2[0], o2[1], o2[2]};
         auto org2 = [&] {
             float x = 0, y = 0, z = 0;
             if (o2.size() >= 6) {
