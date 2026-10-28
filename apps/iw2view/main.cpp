@@ -3295,6 +3295,7 @@ int main(int argc, char** argv) {
         };
         { // the UI loads ui/menus.txt at start regardless of a level (the in-level ESC opens "main" as the pause menu)
             scriptMenus.loadList("ui/menus.txt");
+            scriptMenus.loadList("ui/ingame.txt"); // pregame, victoryscreen (exe 0x581314 list)
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
         }
         // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
