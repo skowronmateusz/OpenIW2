@@ -164,7 +164,32 @@ void World::claimNode(Entity& e, int node) {
     n.ownerUntilMs = kNodeClaimed;
     e.claimedNode = node;
     e.obj->set("node", Value(n.obj));
-    // TODO(spec): 0x515390 (every 4950 ms, flagged 0x8000 nodes within 80 units that face it are blocked).
+}
+
+// 0x515390 (every frame from 0x4ff1d9 / 0x4e8276, due every 4950 ms = 0x1356): with a claimed node flagged 0x8000 the
+// nodes within 80 x 80 (0x516950, mask 0x41ffc, at most 64) that are not claimed (+0x44 != 0x7fffffff), are flagged 0x8000
+// too, lie on the far side of it (dot(claimed - node, facing) <= -0.5 on the normalised xy offset) and look back at it
+// (dot(offset, own facing) > 0.5) are blocked for the actor's team (0x519300). TODO(spec): the facing is taken as
+// (cos, sin) of the node yaw (+0x20), the vector the exe reads at node +0x24 / +0x28.
+void World::blockFacingNodes(Entity& e) {
+    if (timeMs_ - e.ai.nodeBlockMs < 0) return;
+    e.ai.nodeBlockMs = timeMs_ + 4950;
+    if (e.claimedNode < 0 || !(nodes_[size_t(e.claimedNode)].spawnflags & 0x8000)) return;
+    const PathNode& cn = nodes_[size_t(e.claimedNode)];
+    const Vec3 co = vecField(cn.obj, "origin");
+    const float cyaw = vecField(cn.obj, "angles")[1] * float(M_PI) / 180.0f;
+    const float cfx = std::cos(cyaw), cfy = std::sin(cyaw);
+    for (const auto& [i, d2] : nodesInRange(co, 80.0f, 80.0f, 64, 0x41ffc)) {
+        const PathNode& n = nodes_[size_t(i)];
+        if (!(n.spawnflags & 0x8000) || n.ownerUntilMs == kNodeClaimed) continue;
+        const Vec3 no = vecField(n.obj, "origin");
+        float dx = co[0] - no[0], dy = co[1] - no[1];
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len > 0.0f) dx /= len, dy /= len; // 0x421160
+        if (dx * cfx + dy * cfy > -0.5f) continue;
+        const float nyaw = vecField(n.obj, "angles")[1] * float(M_PI) / 180.0f;
+        if (dx * std::cos(nyaw) + dy * std::sin(nyaw) > 0.5f) blockNodeForTeam(i, e);
+    }
 }
 
 // 0x4fe670: give up the claimed node: drop a path that ends at it and block it for the team (0x519300).

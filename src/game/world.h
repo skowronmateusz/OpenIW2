@@ -109,6 +109,7 @@ struct ActorAi {
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
+    int64_t nodeBlockMs = 0;                  // sentient +0x40: next node-facing check (0x515390), every 4950 ms
     int moveNoiseMs = 0;                      // actor +0x23c.. (0x224 struct +0x1c): the movement noise accumulator 0x5485a0
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
@@ -759,6 +760,7 @@ private:
     void actorPerceive(Entity& e);
     void actorPain(Entity& e, Entity* attacker);
     void actorMoveNoise(Entity& e);
+    void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);
     void setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode);
