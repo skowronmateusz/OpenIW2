@@ -5821,6 +5821,8 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
+                        ps.aimSpread = e.alt ? std::max(ps.aimSpread, 128.0f) : 255.0f;
                     else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop) {
                         static const char* const kBinocNotify[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release",
                                                                    "binocular_drop"}; // 0xa8..0xac (ClientEvents 0x4e76e0..0x4e7740)

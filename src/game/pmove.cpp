@@ -939,7 +939,7 @@ void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, f
 // A footstep event (PM_FootstepEvent 0x50a6d0) fires whenever bit 7 of (cycle + 64) changes, on the walking or ground
 // plane (0x50abe6): the event of 0x508f20 for the ground's surface type: none for surface 0 (or flag 0x2000), prone
 // 0x2f + surface, walking (pm_flags 0x100 or leaning) 0x18 + surface, else the run step 1 + surface.
-// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf) and the ladder case.
+// TODO(spec): the stance-transition blends (0x509760 and the prone-to-crouch lerp at 0x50aaaf). The ladder case is below.
 void updateBobCycle(const CollisionWorld& w, PlayerState& ps, const Pml& pml, float f, float r, int ms, const MoveParams& mp) {
     // Ladder branch (0x50a8c5..0x50a94c, airborne with pm_flags 0x20, pm_type != 1): no bob within 300 ms of a jump, else
     // the cycle advances by the vertical speed · 0.010499 · 0.45 (0.026247 · 0.35 with pm_flags 0x100 or leaning) · msec.

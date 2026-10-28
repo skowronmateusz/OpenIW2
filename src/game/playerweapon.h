@@ -54,6 +54,7 @@ public:
             BinocularDrop,   // 0xac: "binocular_drop" (0x4e7740)
         } kind;
         std::string weapon;
+        bool alt = false; // WeaponRaised: the new weapon is the old one's altWeapon (aim spread kept at >= 128, 0x4dde9f)
     };
 
     // Weapon definitions for weapon changes and offhands (World::weapon).

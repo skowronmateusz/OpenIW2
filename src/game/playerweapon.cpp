@@ -160,7 +160,7 @@ void PlayerWeapon::finishDrop() {
     equip(next_, *d);
     if (alt) enter(State::Raising, "altRaiseAnim", time("altRaiseTime", 0));
     else enter(State::Raising, "raiseAnim", time("raiseTime", 0));
-    events_.push_back({Event::WeaponRaised, name_});
+    events_.push_back({Event::WeaponRaised, name_, alt});
 }
 
 // The melee blow lands (0x4dee30): the remaining time is at least meleeTime − meleeDelay.
