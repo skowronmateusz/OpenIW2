@@ -4,6 +4,7 @@
 #include "game/bulletdamage.h"
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
+#include "game/actorslide.h"
 #include "game/animtree.h"
 #include "game/axis.h"
 #include "game/inventory.h"
@@ -12,6 +13,7 @@
 #include "game/fx.h"
 #include "game/collision.h"
 #include "game/friendlychain.h"
+#include "game/grenadehint.h"
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
@@ -83,6 +85,25 @@ struct Attachment {
 // AI states (state table 0x56f720; docs/spec/ai.md "AI states").
 enum AiState { AiNone, AiExposed, AiTurret, AiGrenade, AiBadplace, AiDeath, AiPain, AiScripted, AiCustom, AiNegotiation };
 
+// Prone state of an actor (actor +0x140 .. +0x16c, +0x288; docs/spec/ai.md "Prone"). The 24 bytes +0x158 .. +0x16f
+// travel to the client, which pitches tag_origin by them (0x4c1cc0 / 0x4c1b90).
+struct ActorProne {
+    int nodeDown = 0, nodeStraight = 0, nodeUp = 0; // +0x140 / +0x142 / +0x144 leg blend nodes (0 = not set)
+    float invDown = 0, invUp = 0;                   // +0x148 / +0x14c: 1 / down angle, 1 / up angle
+    float lastBend = 0;                             // +0x150 bend the leg weights were last set for (360 forces a refresh)
+    int fits = 0;                                   // +0x154 last fit result (script field proneok)
+    bool corpseBlend = false;                       // +0x158 (set only on corpses, 0x4fdd75)
+    bool prone = false;                             // +0x159
+    int64_t startMs = 0;                            // +0x15c transition start
+    int durMs = 0;                                  // +0x160 transition length; negative while leaving, 0 when settled
+    int out = 0;                                    // +0x164 (the fit writes 0)
+    float pitchBody = 0, pitchLegs = 0;             // +0x168 / +0x16c fit pitches
+    bool tilt = false;                              // +0x288 set by enterprone, cleared by the think when not prone
+    // The think compares the entity's origin and angles with the values of its previous think (0x4ff0b5..0x4ff16e).
+    bool haveLast = false;
+    Vec3 lastOrigin{}, lastAngles{};
+};
+
 // The actor's state machine (actor +0x8 … +0xa4, +0x104, +0x204 … +0x220, +0x25c, +0x704).
 struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
@@ -116,7 +137,9 @@ struct ActorAi {
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
-    struct Entity* followed = nullptr;        // +0x2148 actor being followed (TODO(spec): set from +0x318)
+    struct Entity* followed = nullptr;        // +0x2148 the entity this actor yields to (0x501620 steps it aside)
+    int sideBits = 0;                         // gentity contents bits 8 / 0x10 (+0x128): the side the last yield step slid to; 0x10 is in the actor clip masks
+    int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
     bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, TODO(spec))
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
@@ -133,6 +156,7 @@ struct ActorAi {
     float potentialThreatDir[2] = {0, 0};
     int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (TODO(spec): consumer)
     bool noPhysicsFlag = false;               // gentity flag 0x1000 (+0x128): animmode("nophysics") sets it, every other mode clears it
+    ActorProne prone;                         // +0x140 .. +0x16c, +0x288 (src/game/proneworld.cpp)
 };
 
 // A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
@@ -262,10 +286,12 @@ struct PathNode {
     ObjectPtr obj;
     std::string type;               // classname, e.g. node_pathnode
     int typeNum = 0;                // +0x0: 1…18 (spawn table 0x56fea8), 0 unknown
-    int spawnflags = 0;             // +0x4: 0x40 priority (setnodepriority), 0x8000 see 0x54bb30, 1 not a cover candidate
+    int spawnflags = 0;             // +0x4: 0x40 priority (setnodepriority), 0x8000 node has an angle (set by the key parse 0x52d2cd), 1 not a cover candidate
     Entity* owner = nullptr;        // +0x40: sentient that claimed it (or just left it)
     int64_t ownerUntilMs = 0;       // +0x44: kNodeClaimed while claimed, else the owner keeps it until then
     std::array<int64_t, 4> teamBlockedMs{}; // +0x44 + 4·team: unusable for that team until then (1 axis, 2 allies)
+    std::array<int, 2> link{-1, -1};        // +0x30 / +0x32: the overlapping nodes (0x52d990), -1 = none
+    int linkClaims = 0;                     // +0x56: the claims by the nodes linked to this one
 };
 
 class World {
@@ -372,7 +398,6 @@ public:
                 if (seen++ != which) continue;
                 a.obj->set("origin", nodes_[size_t(from)].obj->get("origin"));
                 a.obj->set("$goalpos", nodes_[size_t(to)].obj->get("origin"));
-                a.obj->set("$goalnodeangles", Value());
                 a.obj->set("$goalfrozen", Value(true));
                 a.nodeCached = false;
                 clearActorPath(a);
@@ -499,6 +524,9 @@ public:
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
     // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
+    // Client prone tilt of an actor's tag_origin (0x4c1cc0 mode 1): rotation about y by fraction x body pitch, lift
+    // fraction x +0x164; false when the actor is not prone.
+    bool actorProneTilt(const Entity& e, float& pitch, float& lift) const;
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
@@ -588,6 +616,7 @@ public:
     void setFxSightBlockers(std::vector<FxSightBlocker> b) { fxSightBlockers_ = std::move(b); }
     // Visibility (0..1) through sight-blocking effects between two points (0x48b090).
     float fxVisibility(const Vec3& start, const Vec3& end) const;
+    bool actorSightClear(Entity& actor, Entity& target, const Vec3& from, const Vec3& to, float maxDistSq);
 
     // The player's weapon inventory (throws for non-players).
     // Out-of-ammo weapon switch (cgame 0x4b7090): the weapon to select, or empty to keep the current one.
@@ -784,6 +813,7 @@ private:
     void actorThink(Entity& e);
     void actorPerceive(Entity& e);
     void actorPain(Entity& e, Entity* attacker);
+    void actorPainNode(Entity& e, Entity* attacker, bool nodeRelease);
     void actorMoveNoise(Entity& e);
     void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
@@ -806,10 +836,14 @@ private:
     void retargetFollowed(Entity& e, Entity& player); // 0x4fec50
     void scanFollowed(Entity& e);                      // 0x504630
     void standOrFollow(Entity& e, const std::string& script); // 0x504630 + 0x53ae40 / 0x53ade0            // 0x4fedc0
-    void linkBumpedActor(Entity& e, int hit);  // 0x501c6f..0x501c8b
+    void linkBumpedActor(Entity& e, int hit);  // +0x318 bookkeeping only
+    bool yieldFollowed(Entity& e, ActorSlide& pm, const SlideTraceFn& fn, const Vec3& before); // 0x501620
+    bool followClear(Entity& e, const Vec3& newPos); // 0x501380
+    bool nearClaimedNode(const Entity& a) const; // 0x504610
     Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);
     std::string stopScript(Entity& e);
+    bool enemyEyeTraceOk(Entity& e);
     bool seesEnemyRecently(Entity& e, int64_t withinMs);
     int painThink(Entity& e);
     int deathThink(Entity& e);
@@ -821,6 +855,7 @@ private:
     void registerActorStateBuiltins();
     // Cover nodes and claiming (src/game/actorcover.cpp)
     bool nodeUsable(Entity& e, int node);
+    void linkOverlappingNodes();                    // 0x52d990 (lazily, once)
     void claimNode(Entity& e, int node);
     void releaseNode(Entity& e);
     void giveUpClaimedNode(Entity& e);
@@ -844,6 +879,7 @@ private:
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
     bool pathToPoint(Entity& e, const Vec3& target);
+    bool pathToSentient(Entity& e, const Vec3& target);
     // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
     void actorLearns(Entity& target, Entity& about); // 0x500c50
     bool actorKnowsRecently(const Entity& target, const Entity& about, int64_t ms) const; // 0x54ddc0
@@ -873,7 +909,8 @@ private:
     int queryNode(const Vec3& pos, float radius, bool lowered, uint32_t typeMask, const std::vector<PathPlane>& planes,
                   int* first);
     bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
-                     std::vector<int>& chain);
+                     std::vector<int>& chain, float capSq = -1.0f, const std::function<bool(const Vec3&)>* nodeOk = nullptr);
+    bool pathToPointNear(Entity& e, const Vec3& target, float capSq);
     void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
     void dropPathGoalPoints(ActorPath& p, int n);
     void pathClearBudget(ActorPath& p, const Vec3& o);
@@ -933,6 +970,12 @@ private:
     bool throwArcClear(Entity& actor, const Vec3& start, const Vec3& vel, const Vec3& target);
     bool throwSolution(Entity& actor, const Vec3& from, const Vec3& armOffset, const std::string& method, const Vec3& target,
                        bool anyway, Vec3& start, Vec3& vel);
+    Vec3 bounceAim(Entity& actor, const std::string& weapon, const Vec3& start, const Vec3& target); // 0x51ebe0
+    float randomRange(float lo, float hi);                       // flrand 0x4d8480 on the rand() state 0x5a56f4
+    float grenadeHintArc() const;                                // ai_debugGrenadeHintArc (0x1c13f58)
+    bool grenadeHintLobThrow(Entity& actor, const Vec3& start, const Vec3& target, Vec3& vel);  // 0x51f050
+    bool grenadeHintFromLanding(Entity& actor, const Vec3& landing, Vec3& vel);                // 0x51f320
+    std::vector<Vec3> grenadeHints_;  // info_grenade_hint origins in spawn order (0x1c8f180, count 0x1c6103c), max 512
     void releaseHeldGrenade(Entity& actor);
     void registerGrenadeBuiltins();
     float grenadeDangerRadius(Entity& g);
@@ -969,6 +1012,11 @@ private:
     bool pathToGoal(Entity& e);
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
     void registerCoverBuiltins();
+    void registerProneBuiltins(); // src/game/proneworld.cpp
+    void proneEnter(Entity& e, int ms);      // 0x514b30
+    void proneExit(Entity& e, int ms);       // 0x514c40
+    void proneRefit(Entity& e, bool fit);    // 0x5022b0
+    void actorProneFrame(Entity& e);         // the prone part of the actor think 0x4ff030
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void turretFireSound(Entity& t, bool playerOwner);
@@ -1059,10 +1107,19 @@ private:
     std::vector<std::unique_ptr<Entity>> entities_;
     std::unordered_map<const script::Object*, Entity*> byObject_;
     std::vector<PathNode> nodes_;
+    bool nodeLinksDone_ = false;
+    // The node kd-tree (built once by 0x52de40): `nodeTreeOrder_` is the node array as the build permutes it, the tree
+    // nodes are {axis (-1 = leaf), split, left, right} or, for a leaf, {-1, -, count, first}.
+    struct NodeTreeEnt { int axis; float split; int a, b; };
+    mutable std::vector<int> nodeTreeOrder_;
+    mutable std::vector<NodeTreeEnt> nodeTree_;
+    mutable size_t nodeTreeFor_ = ~size_t(0);
+    int buildNodeTree(int first, int count) const;
     FriendlyChains chains_;
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
     int64_t timeMs_ = 0;
+    float fogSightSq_ = 3.4028235e38f;    // 0x1c61038: ((far - near) * 0.828 + near)² of linear fog, else FLT_MAX (0x4e96e0)
     float cullDist_ = 0;                  // setculldist (configstring 8), unused
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
@@ -1084,6 +1141,7 @@ private:
     Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
+    std::shared_ptr<std::mt19937> scriptRng_; // randomint / randomfloat (registerCoreBuiltins)
     int perceptionTick_ = 0;
     PathGraph paths_;
     struct NodeSearch { int id = 0; int next = -1, prev = -1; int parent = -1; float g = 0, h = 0; bool queued = false; };

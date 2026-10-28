@@ -103,52 +103,143 @@ bool World::inActorGoal(Entity& e, const Vec3& p) {
     return in;
 }
 
+// Overlapping nodes are linked in pairs at load (0x52d990): a node j before i within 31 units (xy, 961 on the squared
+// distance) and 73 units of height (either way) is a link of i, and i of j, in the first free of the two slots
+// (+0x30 / +0x32); a third overlap is only a warning.
+void World::linkOverlappingNodes() {
+    if (nodeLinksDone_) return;
+    nodeLinksDone_ = true;
+    for (size_t i = 0; i < nodes_.size(); ++i) {
+        const Vec3 pi = vecField(nodes_[i].obj, "origin");
+        for (size_t j = 0; j < i; ++j) {
+            const Vec3 pj = vecField(nodes_[j].obj, "origin");
+            const float dx = pi[0] - pj[0], dy = pi[1] - pj[1], dz = pi[2] - pj[2];
+            if (dx * dx + dy * dy > 961.0f || dz < -73.0f || dz > 73.0f) continue;
+            for (int k = 0; k < 2; ++k)
+                if (nodes_[i].link[size_t(k)] < 0) {
+                    nodes_[i].link[size_t(k)] = int(j);
+                    break;
+                }
+            for (int k = 0; k < 2; ++k)
+                if (nodes_[j].link[size_t(k)] < 0) {
+                    nodes_[j].link[size_t(k)] = int(i);
+                    break;
+                }
+        }
+    }
+}
+
+// 0x518d80: the first owner of the node or of its linked nodes.
+static Entity* firstNodeOwner(const std::vector<PathNode>& nodes, const PathNode& n) {
+    if (n.owner) return n.owner;
+    for (int l : n.link)
+        if (l >= 0 && nodes[size_t(l)].owner) return nodes[size_t(l)].owner;
+    return nullptr;
+}
+
 // Node usable by this sentient (0x518f20): its own node; not while the node is blocked for its team; free when the
-// owner's hold has expired. TODO(spec): taking a claimed node from another actor (0x518e80 / 0x518d80) and the
-// distance rule of priority nodes (0x518dc0: 0x420f00 against 225) are not implemented.
+// owner's hold has expired. A node held for good (+0x44 = 0x7fffffff) is taken over (0x518e80, then 0x518d80 /
+// 0x5191a0: the owner lets go of it) when neither it nor its linked nodes have an owner, or, with at most one claim
+// on its links, by a sentient without a node that is not walking (0x5055b0) and stands at the node (0x502660) while
+// the owner does not. A priority node (spawnflag 0x40) is also usable (0x518dc0) when nobody has it, or when its
+// owner, of the same team, is dying, or is farther from it than this sentient by more than 15 units (xy; 225 on the
+// squared distance 0x420f00, the owner at least 225 away).
 bool World::nodeUsable(Entity& e, int node) {
+    linkOverlappingNodes();
     PathNode& n = nodes_[size_t(node)];
     if (n.owner == &e) return true;
     const int team = teamIndex(e.obj->get("team"));
     if (team > 0 && timeMs_ <= n.teamBlockedMs[size_t(team)]) return false;
     if (n.ownerUntilMs < timeMs_) return true;
-    if ((n.spawnflags & 0x40) && n.owner && n.owner->isActor && n.owner->ai.stack[size_t(n.owner->ai.depth)] == AiDeath)
-        return true; // 0x518dc0: the owner of a priority node is dying
+    const Vec3 no = vecField(n.obj, "origin");
+    Entity* o = firstNodeOwner(nodes_, n);
+    if (n.ownerUntilMs == kNodeClaimed) {
+        if (!o) return true;
+        if (n.linkClaims <= 1 && o->isActor && e.isActor && e.claimedNode < 0 && !(e.ai.animMode == 1 && e.ai.movemode != 0) &&
+            nearPoint(no, vecField(e.obj, "origin")) && !nearPoint(no, vecField(o->obj, "origin"))) {
+            releaseNode(*o);
+            return true;
+        }
+    }
+    if (n.spawnflags & 0x40) {
+        if (!o) return true;
+        if (n.linkClaims > 1) return false;
+        if (o == &e) return true;
+        if (!o->isActor || teamIndex(o->obj->get("team")) != team) return false;
+        if (o->ai.stack[size_t(o->ai.depth)] == AiDeath) return true;
+        const Vec3 mo = vecField(e.obj, "origin"), oo = vecField(o->obj, "origin");
+        const float d1 = dist2d(no, oo);
+        return d1 >= 225.0f && dist2d(no, mo) + 225.0f < d1;
+    }
     return false;
 }
 
-// Release the claimed node (0x5191a0): owner and hold cleared. TODO(spec): the linked nodes (+0x30 / +0x32).
+// Release the claimed node (0x5191a0): owner and hold cleared; each linked node loses a claim and, with none left, its
+// owner and hold too.
 void World::releaseNode(Entity& e) {
     if (e.claimedNode < 0) return;
+    linkOverlappingNodes();
     PathNode& n = nodes_[size_t(e.claimedNode)];
     n.owner = nullptr;
     n.ownerUntilMs = 0;
+    for (int l : n.link) {
+        if (l < 0) continue;
+        PathNode& L = nodes_[size_t(l)];
+        if (--L.linkClaims == 0) {
+            L.owner = nullptr;
+            L.ownerUntilMs = 0;
+        }
+    }
     e.claimedNode = -1;
     e.obj->set("node", Value());
 }
 
-// 0x519300: the node failed for the sentient's team (no path, given up): its owner of that team leaves it with a
-// 5 s hold (0x519200), and the team may not use it for 5 s.
+// 0x519300: the node failed for the sentient's team (no path, given up): its owner of that team leaves it (0x519200:
+// the owner keeps the node and its linked ones with a 5 s hold) and the team may not use it for 5 s. With no claims on
+// its links (+0x56 = 0) the hold is cleared again, and so are the owner and hold of the linked nodes that have no
+// claims and are not held for good, when their owner is of that team.
 void World::blockNodeForTeam(int node, Entity& e) {
+    linkOverlappingNodes();
     PathNode& n = nodes_[size_t(node)];
     const int team = teamIndex(e.obj->get("team"));
     if (n.owner && teamIndex(n.owner->obj->get("team")) == team) {
         Entity* owner = n.owner;
-        if (owner->claimedNode == node) {
+        if (owner->claimedNode >= 0) { // 0x519200
+            PathNode& on = nodes_[size_t(owner->claimedNode)];
             owner->claimedNode = -1;
             owner->obj->set("node", Value());
-            n.ownerUntilMs = timeMs_ + 5000;
+            on.owner = owner;
+            on.ownerUntilMs = timeMs_ + 5000;
+            for (int l : on.link) {
+                if (l < 0) continue;
+                PathNode& L = nodes_[size_t(l)];
+                if (--L.linkClaims == 0) {
+                    L.owner = owner;
+                    L.ownerUntilMs = timeMs_ + 5000;
+                }
+            }
         }
         n.owner = nullptr;
     }
     if (team > 0) n.teamBlockedMs[size_t(team)] = timeMs_ + 5000;
-    // TODO(spec): with no claims on its linked nodes (+0x56 = 0) +0x44 and those nodes are cleared too.
+    if (n.linkClaims == 0) {
+        n.ownerUntilMs = 0;
+        for (int l : n.link) {
+            if (l < 0) continue;
+            PathNode& L = nodes_[size_t(l)];
+            if (L.linkClaims == 0 && L.ownerUntilMs < kNodeClaimed) {
+                if (L.owner && teamIndex(L.owner->obj->get("team")) == team) L.owner = nullptr;
+                L.ownerUntilMs = 0;
+            }
+        }
+    }
 }
 
 // Claim a node (0x5152f0): the previous one is released; a normal node (or a priority one whose hold expired) is
 // taken (0x518fa0); a held priority node is taken over (0x519050), evicting a claiming owner (0x515330: its path is
 // dropped when it ends at the node, then 0x519300).
 void World::claimNode(Entity& e, int node) {
+    linkOverlappingNodes();
     if (e.claimedNode == node) return;
     if (e.claimedNode >= 0) releaseNode(e);
     if (node < 0) return;
@@ -162,6 +253,13 @@ void World::claimNode(Entity& e, int node) {
     }
     n.owner = &e;
     n.ownerUntilMs = kNodeClaimed;
+    for (int l : n.link) { // 0x518fa0: the linked nodes are held for good without an owner
+        if (l < 0) continue;
+        PathNode& L = nodes_[size_t(l)];
+        ++L.linkClaims;
+        L.owner = nullptr;
+        L.ownerUntilMs = kNodeClaimed;
+    }
     e.claimedNode = node;
     e.obj->set("node", Value(n.obj));
 }
@@ -356,16 +454,8 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
     Vec3 goal = vecField(e.obj, "origin");
     float r = floatField(e.obj, "goalradius", 0.0f), h = floatField(e.obj, "goalheight", 0.0f);
     actorGoal(e, goal, r, h);
-    std::vector<std::pair<int, float>> list;
-    // TODO(spec): the original walks a node tree (0x516820), so which 256 nodes are taken when more qualify differs.
-    for (size_t i = 0; i < nodes_.size() && list.size() < 256; ++i) {
-        const PathNode& n = nodes_[i];
-        if (!(kCoverTypes >> n.typeNum & 1) || (n.spawnflags & 1)) continue;
-        const Vec3 no = vecField(n.obj, "origin");
-        const float dz = no[2] - goal[2];
-        if (dist2d(no, goal) > r * r || dz * dz > h * h) continue;
-        list.push_back({int(i), 0.0f});
-    }
+    // The node tree query (0x516950 / 0x516820), 256 nodes at most, in the tree order.
+    std::vector<std::pair<int, float>> list = nodesInRange(goal, r, h, 256, kCoverTypes & ~1u);
     std::vector<std::pair<int, float>> kept;
     for (auto [node, score] : list) {
         if (node == ignore || !nodeUsable(e, node) || !nodeFacesEnemy(e, node)) continue;
@@ -627,9 +717,7 @@ void World::registerCoverBuiltins() {
         // 0x54c7d0 with no distance limit: a sight trace (0x54c760) from the node origin raised by 64 (0x56f6e0)
         // to the enemy's eye.
         const Vec3 no = vecField(nodes_[size_t(node)].obj, "origin");
-        if (collision_->sightBlocked({no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), {0, 0, 0}, {0, 0, 0},
-                                     Contents::SightMask, e.number, enemy->number))
-            return Value(0);
+        if (!actorSightClear(e, *enemy, {no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), 0.0f)) return Value(0);
         if (!pathToNode(e, node) || !actorHasPath(e)) return Value(0);
         claimNode(e, node);
         e.ai.reacquireNodes.clear();
@@ -659,8 +747,8 @@ void World::registerCoverBuiltins() {
             const float ox = dy * dist * side, oy = -dx * dist * side;
             const Vec3 from{eye[0] + ox, eye[1] + oy, eye[2]};
             const float ex = enemyEye[0] - from[0], ey = enemyEye[1] - from[1], ez = enemyEye[2] - from[2];
-            if (maxd != 0.0f && ex * ex + ey * ey + ez * ez >= maxd) continue;
-            if (collision_->sightBlocked(from, enemyEye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) continue;
+            (void)ex; (void)ey; (void)ez;
+            if (!actorSightClear(e, *enemy, from, enemyEye, maxd)) continue; // 0x54c7d0: distance² <= maxsightdistsqrd
             Vec3 at;
             const float step = e.obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f; // TODO(spec): actor +0x288
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
@@ -675,9 +763,7 @@ void World::registerCoverBuiltins() {
     // findreacquiredirectpath (0x549280) / findreacquireproximatepath (0x549340): a path towards the enemy, cut
     // to the goal (0x5047c0) unless the enemy's origin is itself inside the goal (0x5492c5: 0x5026d0 on the enemy
     // origin); without an enemy in the exposed state the path is cleared. A path left behind sets the trim state
-    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 uses 0x503be0 (distance
-    // capped search through 0x542fb0 / 0x546980). TODO(spec): 0x503be0 / 0x546980 and the consumer of the trim state
-    // (trimpathtoattack 0x543580 via 0x54c7d0 / 0x5433e0 / 0x503e10).
+    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 follows below.
     auto reacquirePath = [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
@@ -686,7 +772,7 @@ void World::registerCoverBuiltins() {
             return Value();
         }
         const Vec3 eo = vecField(enemy->obj, "origin");
-        pathToPoint(e, eo);
+        pathToSentient(e, eo); // 0x503a50 (keeps a path that already leads there)
         // 0x5434e0: drop the path when its start is outside the goal, else cut it after the last point in the goal.
         if (actorHasPath(e) && !inActorGoal(e, eo)) {
             ActorPath& p = e.path;
@@ -705,20 +791,63 @@ void World::registerCoverBuiltins() {
         return Value();
     };
     vm_.registerBuiltin("findreacquiredirectpath", reacquirePath);
-    vm_.registerBuiltin("findreacquireproximatepath", reacquirePath);
-    // trimpathtoattack (0x504830 → 0x543580): shorten the path by one point per call until the enemy's eye is
-    // visible from its end. TODO(spec): the original's trim state (+0x70c / +0x710) and 0x5433e0.
+    // findreacquireproximatepath (0x549340): the path ends at the first node within sqrt(cap) of the enemy, cap =
+    // min(0.25 · distance² to the enemy (0x591fe0), maxsightdistsqrd · 0.0625 (0x5920cc)) (0x503be0); no goal cut.
+    vm_.registerBuiltin("findreacquireproximatepath", [=, this](CallContext& c) {
+        Entity& e = actor(c);
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (!enemy || !exposed(e)) {
+            clearActorPath(e);
+            return Value();
+        }
+        const Vec3 eo = vecField(enemy->obj, "origin"), o = vecField(e.obj, "origin");
+        const float dx = eo[0] - o[0], dy = eo[1] - o[1], dz = eo[2] - o[2];
+        const float a = (dz * dz + dy * dy + dx * dx) * 0.25f, bcap = floatField(e.obj, "maxsightdistsqrd", 0.0f) * 0.0625f;
+        pathToPointNear(e, eo, a <= bcap ? a : bcap);
+        if (actorHasPath(e)) {
+            e.ai.trimState = -2;
+            e.ai.trimCount = e.path.count + 1;
+        }
+        return Value();
+    });
+    // trimpathtoattack (0x504830 → 0x543580): a search along the path from its start end for the furthest point from
+    // which the enemy's eye is visible (0x54c7d0 from the point raised by 64, maxsightdistsqrd as the limit), driven by
+    // the trim state of findreacquire*path: idx = +0x70c (count + 1), mode = +0x710 (−2). One call tests the candidate
+    // idx + mode (the start end uses the stored start position +0x3c8); returns 1 while the search goes on.
+    //   visible, mode −2, candidate not the start end: idx = candidate, mode = 1 (next: one point back), return 1.
+    //   visible otherwise: drop `candidate` points from the goal end (0x5433e0), return 0.
+    //   not visible, mode 1: drop idx points, return 0; candidate 0: clear the path (0x503e10), return 0;
+    //   else idx = candidate (mode −1 when it is 1, so that the next candidate is point 0), return 1.
     vm_.registerBuiltin("trimpathtoattack", [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
-        if (!enemy || e.path.count < 2) return Value(0);
-        const Vec3 eye = sightEye(*enemy, nullptr);
-        const Vec3 end = e.path.pts[1].pos;
-        if (!collision_->sightBlocked({end[0], end[1], end[2] + 64.0f}, eye, {0, 0, 0}, {0, 0, 0}, Contents::SightMask, e.number, enemy->number)) {
-            dropPathGoalPoints(e.path, 1);
+        ActorPath& p = e.path;
+        if (!enemy || p.count <= 0) return Value(0);
+        const int cand = e.ai.trimCount + e.ai.trimState;
+        if (cand >= p.count) return Value(0);
+        const bool atStart = cand == p.count - 1;
+        const Vec3 pos = atStart ? p.start : p.pts[size_t(cand)].pos;
+        const bool visible = actorSightClear(e, *enemy, {pos[0], pos[1], pos[2] + 64.0f}, sightEye(*enemy, nullptr),
+                                             floatField(e.obj, "maxsightdistsqrd", 0.0f));
+        if (visible) {
+            if (e.ai.trimState == -2 && !atStart) {
+                e.ai.trimCount = cand;
+                e.ai.trimState = 1;
+                return Value(1);
+            }
+            dropPathGoalPoints(p, cand);
             return Value(0);
         }
-        dropPathGoalPoints(e.path, 1);
+        if (e.ai.trimState == 1) {
+            dropPathGoalPoints(p, e.ai.trimCount);
+            return Value(0);
+        }
+        if (cand == 0) {
+            clearActorPath(e);
+            return Value(0);
+        }
+        e.ai.trimCount = cand;
+        if (cand == 1) e.ai.trimState = -1;
         return Value(1);
     });
     // reacquiremove (0x53ccb0): with an enemy, in the exposed state and with a path: substate reacquire.

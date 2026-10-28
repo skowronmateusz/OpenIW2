@@ -39,24 +39,79 @@ current origin).
 
 ## Throws
 
-checkGrenadeThrowPos(armOffset, method, target) (0x53ead0, raw): needs grenadeammo ≥ 1; target → +0x20e8; 0x51f490:
-fails while g (g_gravity, 0x1b15ee8) ≤ 0, while the actor already handles a grenade, or with a sentient of its team
-within 1.1 × explosionRadius of the target (0x51f6e0); start = origin + forward·x − right·y + up·z (0x51eb00); the aim
-point moves back from the target by the bounce off its surface (0x51ebe0: (target − start)·(1 − (par + (perp − par)·
-0.9397)) + start); methods (strings 0x1c7f094…09c): min energy 0x51efb0 (t = √(2|d|/g), fails when (dz + |d|)·g >
-810000), min time / max time 0x51ee30 (b = 810000 − dz·g, t = √(2(b ∓ √(b² − g²|d|²)))/g), infinite energy 0x51ef20;
-v = d/t + (0, 0, g·t/2). The arc check 0x51e710 traces start → half rise → apex → halfway down
-with boxes of the sag (g·t²/8 + 1), then to the target with a 2-unit box (clear, or ending within 4 units on the world
-or on an enemy sentient). Success keeps start, velocity and the method (+0x20dc, +0x20f4, +0x20cc) and sets +0x20d0.
+checkGrenadeThrowPos(armOffset, method, target) (0x53ead0) and checkGrenadeThrow(armOffset, method) (0x53e720) both inline
+the throw logic of 0x51f490. checkGrenadeThrowPos needs grenadeammo ≥ 1 and stores the target in +0x20e8 first.
+checkGrenadeThrow returns nothing without an enemy sentient (sentient +0x1c) or without grenadeammo; with g ≤ 0 or a
+grenade already handled it clears the pending throw (+0x20d0 = 0) and returns nothing; otherwise its target is the
+enemy's origin plus the enemy's velocity (0x514ed0: an actor's +0x230, a player's ps velocity +0x20, i.e. one second of
+lead), stored in +0x20e8 together with +0x20d4 = 1 (re-solve from the hand at throwGrenade) and the method (+0x20cc).
+
+0x51f490 (also called by the throw back and by throwGrenade's re-solve): fails while g (g_gravity, 0x1b15ee8) ≤ 0,
+while the actor already handles a grenade (unless the last argument says to go on anyway), or with a sentient of its
+team within 1.1 × explosionRadius of the target (0x51f6e0); start = from + forward·x − right·y + up·z (0x51eb00, the
+actor's yaw). Then a line trace between start and target (0x526840: no box, mask 0x811, pass entity 0x7ff = none; only
+"fraction == 1" is read, so the direction does not matter for the decision) picks the aim point:
+- clear, or blocked with an empty hint table, or blocked with no hint picked: the bounce-adjusted target (0x51ebe0:
+  (target − start)·(1 − (par + (perp − par)·0.9397)) + start, the surface from a ±1 trace at the target);
+- blocked and a hint picked by 0x51ece0 (below): the hint moved by flrand(hint − 15, hint + 15) on x, then y, then z
+  (0x5a94b0 = 15.0; flrand 0x4d8480 = one draw of rand() at 0x5a56f4, (seed >> 17)·(hi − lo)/32768 + lo).
+A zero aim distance fails. Methods (strings 0x1c7f09a "min energy", 0x1c7f09c "min time", 0x1c7f094 "max time",
+0x1c7f096 "infinite energy"; other text: script error 0x58de30): min energy 0x51efb0 (t = √(2|d|/g), fails when
+(dz + |d|)·g > 810000), min time / max time 0x51ee30 (flag 0 / 1; fails when |d|² < 1; b = 810000 − dz·g,
+t = √(2(b ∓ √(b² − g²|d|²)))/g), infinite energy 0x51ef20; v = d/t + (0, 0, g·t/2). The arc check 0x51e710 traces start → half rise → apex → halfway down with boxes of the sag (g·t²/8 + 1), then to the target
+with a 2-unit box (clear, or ending within 4 units on the world or on an enemy sentient). Success keeps start, velocity
+and the method (+0x20dc, +0x20f4, +0x20cc) and sets +0x20d0; checkGrenadeThrow(Pos) return the velocity.
 
 throwGrenade (0x53ee10, raw): dead → the pending throw is dropped. With a grenade or a pending throw: re-solved from
-the hand when +0x20d4 is set; in the grenade state the held grenade is thrown back (released 0x520470, new trajectory,
-the actor becomes its parent), otherwise a new grenade of grenadeweapon with a 5 s fuse, grenadeammo − 1.
-MagicGrenadeManual(origin, velocity [, fuse s]) (0x4ee5e0) and MagicGrenade(origin, target [, fuse s]) (0x4ee3d0: min
-energy, min time, max time, then 0x51f050) fire the actor's grenade weapon (default fuse 5000 ms; errors "MagicGrenade
-only supports actors", "Actor [%s] doesn't have a grenade weapon set."). pickUpGrenade (0x53f0a0 → 0x5203c0): the
+`tag_weapon_right` (no arm offset, anyway = 1, the kept target and method, through 0x51f490 including the hint choice)
+when +0x20d4 is set, falling back to the kept start and velocity; in the grenade state the held grenade is thrown back
+(released 0x520470, new trajectory, the actor becomes its parent), otherwise a new grenade of grenadeweapon with a 5 s
+fuse, grenadeammo − 1. MagicGrenadeManual(origin, velocity [, fuse s]) (0x4ee5e0) fires the actor's grenade weapon.
+MagicGrenade(origin, target [, fuse s]) (0x4ee3d0) does NOT go through 0x51f490: no gravity, held-grenade, friendly or
+line-of-sight test and no hint pick; the bounce-adjusted aim 0x51ebe0 from the origin, then min energy, min time, max
+time, then the hint lob 0x51f050 towards that aim; the grenade leaves from the origin (default fuse 5000 ms; failure
+prints "MagicGrenade: None of the methods worked …" 0x587480; errors "MagicGrenade only supports actors", "Actor [%s]
+doesn't have a grenade weapon set." — the weapon test comes after the solve). pickUpGrenade (0x53f0a0 → 0x5203c0): the
 weapon's world model on `tag_weapon_right`, the actor turns to the throw velocity, facing 1, the grenade stops and is in
 hand with the actor as parent.
+
+## Grenade hint nodes
+
+**Table.** `info_grenade_hint` (spawn 0x51e6a0) appends the entity origin (+0xdc) to a table of vec3 at 0x1c8f180,
+count 0x1c6103c, limit 512 (ERR_DROP "MAX_GRENADE_HINTS (%i) exceeded", string 0x58de94), and then frees the entity
+(0x4d7c30), so scripts never see hint entities. The only other writer of the table is the in-place sort of 0x51f320.
+Where the count is reset between levels was not located (no direct store of 0 to 0x1c6103c in the executable; it is
+presumably part of a cleared level block); the port keeps the table per World (one map load). Maps with hints (entity
+string counts): trainyard 230, silotown_assault 160, breakout 144, newvillers 143, hill400_defend 109, cityhall 97,
+toujane / toujane_ride 87, duhoc_assault 67, downtown_assault 61, crossroads 54, hill400_assault / downtown_sniper 45,
+decoytown 34, bergstein 17, eldaba 16, demolition 7, decoytrenches 6, credits / duhoc_defend 5, beltot / rhine 1.
+
+**Pick (0x51ece0, args start, target, out).** Arc = dvar ai_debugGrenadeHintArc (registered 0x4d9196: float, default
+150, range 0..180, flags 0x1080; pointer 0x1c13f58); limit = cos((arc·0.5 + 180)·π/180) (= −cos(arc/2)). For each hint
+in table order: skip unless target.z ≤ hint.z − 10; a = 2D unit(hint − target), dist = its length (0x421160 normalises
+in place, leaves a zero vector alone); skip when dist > 192; b = 2D unit(hint − start); skip when a·b > limit; keep the
+hint with the smallest dist (strictly smaller replaces, so ties keep the earlier entry). Writes the hint, returns true.
+
+**MagicGrenade lob (0x51f050, args actor, start (edi), target (ebx), velocity out).** d = target − start,
+D = |d.xy|. For each hint in table order, h = hint − start: skip when h·d < 0 (3D); L = |h.xy| with h.xy normalised; skip
+unless L < D and L ≠ 0; the landing point P = start.xy + h.xy·D at z = target.z; skip when |target − P|² (2D) > 36864
+(192²); A = L·dz − h.z·D, skip unless A < 0 (the hint is above the straight line); K = −0.5·g/A; horizontal speed
+S = √((D − L)·K·L·D), vertical speed V = K·(h.z·D² − L²·dz)/S (the parabola through (L, h.z) and (D, dz) in the vertical
+plane of the hint direction); skip when V² + S² > 810000; velocity = (h.x·S, h.y·S, V); the first one whose arc check
+0x51e710(actor, start, velocity, P) passes is used (true), else false. (x87 `fsubrp %st,%st(1)` at 0x51f1e5 is the
+bytes DE E9 = st(1) − st(0), consistent with the parabola algebra.)
+
+**Throw-back fallback (0x51f320, eax = landing point, args actor, velocity out; called from 0x51fd7c).** The throw back
+0x51fb20 tries min energy, min time, max time through 0x51f490 from the landing point with arm offset (0, 0, 80) at the
+enemy (or the thrower) with +0x20d4 = 1; when all fail it clears +0x20d4 and calls 0x51f320: with hints, the table is
+sorted in place by CRT qsort (0x552f40, 12-byte entries, comparator 0x51f280: squared 3D distance from the landing
+point stored in 0x1c8f104, nearest first; the sorted order persists for 0x51ece0 / 0x51f050 later); then for each hint
+the min time solver 0x51ee30 (flag 0) from the landing point itself (no arm offset, no bounce adjustment) to the hint;
+the first success gives the velocity. On success the throw back keeps start = the landing point (+0x20dc, from the
+local copy of grenade +0x154 — also in the normal three-method case, where the arm-offset start of 0x51f490 is not
+kept), the velocity (+0x20f4), and only with +0x20d4 set the target (+0x20e8).
+
+0x51f3b0 (enemy-lead variant calling 0x51f490 with +0x20d4 = 1) has no caller or pointer in the executable (dead).
 
 ## AI
 
@@ -73,7 +128,7 @@ safe, else cower), 0x12d take cover (0x520860: at a covering claimed node that i
 "ai classname '%s' at (%g %g %g) finished the grenade return script without throwing a grenade").
 React 0x51f900, acquire 0x51fb20, cover node 0x54c110, flee search 0x545f30: see the comments in `src/game/actorgrenade.cpp`.
 
-TODO(spec): grenade hint nodes (info_grenade_hint, 0x51ece0 / 0x51f320), 0x51f050, 0x51fe90's last test, 0x4f9f30 /
+TODO(spec): the qsort tie order of 0x51f320, 0x51fe90's last test, 0x4f9f30 /
 0x4fa070, 0x520230 (re-planning when a grenade hits a character), water (0x526b40), the ground settle and rotation,
 whizby (0x5297b0), the bounce sounds, the targets of 0x5285b0's five traces (Q3 CanDamage pattern assumed: the point
 and four ±15 offsets), the player's cooked fuse, the danger planes (+0x2050).

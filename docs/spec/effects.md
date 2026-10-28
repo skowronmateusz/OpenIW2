@@ -29,6 +29,77 @@ adds a point at time 0 when the first row's time is not 0 and a point at time 1 
 both new points copy the values of the file's first row. `FUN_0047ecf0` integrates a graph up to t (area under
 the piecewise-linear curve), used for velocities.
 
+## Legacy channel syntax (start / end / parm / flags)
+
+Seven shipped files (minefield, elalamein_trenchdust, large_smoke_plume, fireheavysmoke, flare, grenade_flash,
+coolaidmanbrick) describe a channel with keys instead of a curve. The channel parser (0x489450) writes them into a
+24 × 0x40-byte scratch record per element (start 3 × {min, max} at +0, end at +0x18, parm at +0x30, flags at +0x38, "set"
+byte +0x3c), initialised to start = end = parm = 1 (0x4878c0). `start` / `end` of rgb (channel index 0) read 3 numbers
+(fixed) or 6 (min xyz, max xyz) unsorted (0x488c30 / 0x488ca0); other channels read "%f %f" sorted (0x488d10 / 0x488d90);
+`parm`/`parms` one or two numbers (0x488e10); `flags`/`flag` up to four names (0x487a30, names at 0x57d1d8): linear 0x1,
+random 0x2, nonlinear 0x4, wave 0x8, clamp 0xc. Channel indices follow the group key order (0x489d92..): rgb 0, rgbRand 1,
+alpha 2, alphaRand 3, size 4, …, velocity2ZRand 23.
+
+When the element is complete, 0x487910 converts every touched record (overriding a `curve` of that channel) with 0x47eb10,
+mid(r) = (max − min) · 0.5 + min:
+- M = 1 for alpha; otherwise M = max(1, larger of mid(start), mid(end) · 4/3) (component 0, 0x59212c). Scale range =
+  M ∓ (start.max − start.min) / 2. Start / end / parm values are divided by M; p = 0.01 · parm/M, w = parm/M · mid(life) ·
+  0.0031415929 (0x592158).
+- linear only (0x47e780): rows {0, start}, {1, end}. Nonlinear only (0x47e7f0): {0, start}, {p, start}, {1, end}.
+- anything else, including no flags (0x47e870): 16 rows at t = k/15 (0x5920a4, clamped to 1); f = 1 (1 − t with linear);
+  nonlinear g = t > p ? 1 − (t − p)/(1 − p) : 1, clamp g = t < p ? (p − t)/p : 0, f = linear ? (f + g)/2 : g; wave
+  f ·= cos(t · w); value = (1 − f) · end + f · start, 0 when negative, 1 when f > 1; random multiplies by a generator draw.
+- OpenIW2: `src/assets/efx.cpp` (`legacyGraph`). TODO(spec): rgbRand converts with one component (left as parsed), the
+  generator state for `random` at load time.
+
+## Line elements (type 2)
+
+- Spawn 0x48d3c0 (vtable 0x57c708, 0x258 bytes): A (+0x4) = the spawn shape point (0x48c290); B (+0x24c) from 0x48c850:
+  origin2 ranges drawn z, y, x (+0xe0 / +0xd8 / +0xd0), world axes with cheapOrg2Calc 0x80 else x·row0 + y·row1 + z·row2
+  of the instance axes (0x424a70), plus the effect origin; material from `shaders` (0x485110); random lerp draws for
+  useRandomColors / Alpha / Size / Size2 (+0x118..+0x124). With org2fromTrace 0x8 B comes from a trace (not implemented).
+- Update 0x482da0: +0x7c = A, +0x9c = B (through the bolt for relative), then size (0x4818b0 → +0x88), rgb, alpha. No
+  frame step. Draw 0x482d90: renderer type 8, the Tail quad (half width = size).
+- OpenIW2: `FxSystem` emits a `beamTail` sprite. TODO(spec): the frame value (+0x94) of a Line (never written by its spawn
+  or update), org2fromTrace / traceImpactFx, the bolt transform of B. The only Line effect (minefield.efx) names materials
+  that do not ship and is not played by any script.
+
+## Cloud elements (type 12)
+
+- Spawn 0x48de90 (vtable 0x57c78c, 0x27c bytes): random unit axis +0x24c (0x482850: up to 4 tries of x, y, z = draw·2 − 1,
+  rejected when |v|² < 0.01 or > 1, else normalised; fallback (1, 0, 0)), common init, randoms (0x48ce70: start angle +0x44
+  from `rotation`, nonUniformScale copied to +0x104, `wind` drawn into +0xf8), +0x260 = draw in [0, 1), +0x25c = useLength.
+- Update 0x482a30: B (+0x9c) = position before the step; Emitter step 0x480bd0; size → +0x88 (0x4818b0); size2 (0x481940:
+  the size2 channel with nonUniformScale, else = size); length (0x4829d0, only with useLength; useRandomLength lerps by
+  +0x260); rgb / alpha bytes; angle += frame ms · rotationDelta · 0.01 (0x481b90). Axis rows (+0x48..+0x68) = rotation of
+  the identity about +0x24c by the angle (0x423a50 quaternion (sin(a·π/360)·axis, cos), 0x423680 matrix). Then +0x98 = size,
+  +0x88 = width (size2 result), +0x8c = height (length with useLength, else width); A (+0x7c) = position (bolt-transformed).
+- Draw 0x482960: renderer type 6 → refEntity (0x480010: +0x14..+0x34 axis, +0x38 scale, +0x3c A, +0x48 B, +0x58 colour
+  bytes, +0x64 width, +0x68 height). DLL 0x1002fb5f builds the world matrix (0x1005a7a0: rows axis·scale, translation A);
+  0x10041370 → 0x10041230 sets particleCloudColor = bytes / 255 and particleCloudMatrix: (width, 0, 0, height) when
+  width == height or A ≈ B (0x1003f260, per component d² ≤ 1e-6); else d = normalize(B − A)·height turned into view space
+  (0x100410e0) and 0x10041180: (width, 0, 0, height) again when d.x < 0.001 and d.y < 0.001 (signed), else (d.y, −d.x, d.x,
+  d.y) with .xy scaled to length width and .zw scaled by the same factor when |d.xy| < width. One indexed draw of 2048
+  triangles / 4096 vertices of the static buffer 0x101d49b4 (0x10011ca0, 20-byte vertices): quad q = i·128 + j·16 + k
+  (i, j < 8, k < 16) at ((r·(1/32767) + i)·0.25 − 1, (r·(1/32767) + j)·0.25 − 1, (r·(1/32767) + k)·0.125 − 1), three CRT
+  rand() per quad (no srand anywhere in the DLL, so the sequence starts from 1), texcoords (0,0) (0,1) (1,0) (1,1), indices
+  0 1 2 2 1 3.
+- Shader (iw_07.iwd, materials/shaders/lib/particle_cloud.hlsl): the point is transformed to view space and offset by
+  (u − 0.5)·m.xy + (v − 0.5)·m.zw; colour = colorMap · particleCloudColor; the _outdoor variant zeroes alpha where the
+  point is below the outdoor map (worldOutdoorLookupMatrix, sampler.outdoor).
+- OpenIW2: `FxSystem::clouds()` and iw2view `cloudModel` (CPU expansion of the same geometry, view x / y = right / up).
+  TODO(spec): the outdoor map ("$outdoor", r_outdoorDownBias / r_outdoorAwayBias) so flakes still show indoors; `wind` and
+  affectedByWind (no reader in the exe's effect code); the view cull 0x4827e0 (sphere radius size + max(width, height)).
+
+## Cylinder elements (type 4, no shipped effect uses one)
+
+- Update 0x483450: size → +0x88, size2 → +0x8c (= size without nonUniformScale), length → +0x258 (0x4830d0), rgb, alpha;
+  A (+0x7c) = position, B (+0x9c) = position + length · axis row 0 (+0x48), both through the bolt. Draw 0x483440: renderer
+  type 9. Cull 0x4833f0: capsule A–B (0x486ef0) with the two radii.
+- DLL 0x100401f0 (0x100405e0 when the dvar at 0x101ce710 is 2): n = clamp(round((1 − (|mid(A, B) − view| · [0x1070c3d8] +
+  [0x1070c3dc]) / 1024) · 32), 8, 32) segments, angle step 2π / n, ring vertices around A and B from a perpendicular basis
+  (0x10059bd0) scaled by ent+0x68 … TODO(spec): the rest of the ring / texcoord build and the spawn 0x48d6c0; not implemented.
+
 ## Flags
 
 `flags` and `spawnFlags` names map to bits through one table of `{name, element flag, spawn flag}` (0x56d528):
@@ -50,7 +121,7 @@ Particles and oriented particles are spawned by `playfx`, `playfxontag` and `pla
 camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
 the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
 the per-particle velocity scale, sprite size meaning (half width),
-other element types (Emitter, FxRunner, Decal, Light, Cloud, CameraShake, Line), and the argument order of
+other element types (CameraShake, Cylinder; see the sections below for the decoded ones), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
 
 ## Visibility through effects

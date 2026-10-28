@@ -335,6 +335,8 @@ void World::actorThink(Entity& e) {
         actorBecomeCorpse(e);
         return;
     }
+    // 0x501d00: the physics of a followed actor in anim mode 1 that no path step moved this think: the yield step 0x501620.
+    if (ai.followed && ai.animMode == 1 && e.path.count <= 0) moveActor(e, 0.05f);
     // 0x4fef50: inside the goal and the path (if any) ends inside it.
     if (actorInGoal(e, 0.0f)) {
         bool pathInGoal = true;
@@ -357,14 +359,6 @@ void World::actorThink(Entity& e) {
             }
         }
         if (pathInGoal) {
-            // DEV-ONLY BYPASS (IW2_DEV_SNAP_GOAL_YAW=1, docs/debug-flags.md): turns the actor to its goal node's angles before
-            // "goal". NOT original behaviour: the exe has no such step. It only lets
-            // moscow's `while (letlev.angles != node.angles)` (moscow.gsc:5031) pass so that later stages can be walked.
-            static const bool snap = std::getenv("IW2_DEV_SNAP_GOAL_YAW") != nullptr;
-            if (snap) {
-                const Value na = e.obj->get("$goalnodeangles");
-                if (na.isVector()) e.obj->set("angles", na);
-            }
             vm_.notify(e.obj, "goal");
         }
     }
@@ -374,10 +368,33 @@ void World::actorThink(Entity& e) {
 // (+0x1780 of its sentient entry), then the pain state is pushed; when it is, the current animscript is killed.
 // The current state's damaged slot runs first (0x4ff4c7). The common one, 0x5498c0, ignores an attacker whose sentient
 // has the actor's own team; otherwise a claimed node within 30 units (xy) and 80 units (z) of the actor is given up
-// (0x502660 limits 900 / 6400, then 0x4fe670). TODO(spec): the turret state's own handler 0x54af30.
+// (0x502660 limits 900 / 6400, then 0x4fe670).
 static Vec3 vecField(const ObjectPtr& o, const char* key);
+// The turret state's handler 0x54af30 (the gunner of a turret it owns, hit by a sentient of the enemy team table
+// {0, 2, 1, 0, 0}): the first hit sets flag 0x10 and remembers the attacker (+0x60), the next one lets go of the turret
+// (0x54b020: release 0x549a60, forget it).
 void World::actorPain(Entity& e, Entity* attacker) {
-    if (e.claimedNode >= 0) {
+    if (attacker && isSentient(*attacker) && e.ai.stack[size_t(e.ai.depth)] == AiTurret && e.usingTurret) {
+        Entity* t = entityOf(Value(e.usingTurret));
+        static constexpr int kEnemy[5] = {0, 2, 1, 0, 0};
+        auto teamOf = [](const Entity& x) { const std::string t = x.obj->get("team").toString(); return t == "axis" ? 1 : t == "allies" ? 2 : t == "neutral" ? 3 : 0; };
+        const int own = teamOf(e);
+        if (t && t->turret && t->turret->owner == e.obj && own >= 0 && own < 5 && teamOf(*attacker) == kEnemy[own]) {
+            if (t->turret->flags & 0x10u) {
+                releaseTurret(*t);
+                e.usingTurret.reset();
+            } else {
+                t->turret->flags |= 0x10u;
+                t->turret->hitBy = attacker->obj;
+            }
+        }
+        return actorPainNode(e, attacker, false);
+    }
+    actorPainNode(e, attacker, true);
+}
+
+void World::actorPainNode(Entity& e, Entity* attacker, bool nodeRelease) {
+    if (nodeRelease && e.claimedNode >= 0) {
         const bool friendly = attacker && isSentient(*attacker) && attacker->obj->get("team").toString() == e.obj->get("team").toString();
         const Vec3 n = vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), o = vecField(e.obj, "origin");
         const float dx = n[0] - o[0], dy = n[1] - o[1], dz = o[2] - n[2];
@@ -530,6 +547,23 @@ bool World::seesEnemyRecently(Entity& e, int64_t withinMs) {
     return sightCheck(e, *enemy);
 }
 
+// 0x54d010 → 0x54cf40: a point trace (mask 0x200c861, ignoring the actor) between the enemy's eye lowered by 16 (actor:
+// 0x500910 +0x174, player: 0x4e8b70) and the actor's own eye (0x500b40). Beyond the fog sight limit 0x1c61038 it fails;
+// a clear trace passes; a trace that ends on a sentient of another team passes too (gentity +0x104 sentient, +4 team).
+bool World::enemyEyeTraceOk(Entity& e) {
+    Entity* enemy = entityOf(e.obj->get("enemy"));
+    if (!enemy) return false;
+    Vec3 target = sightEye(*enemy, nullptr);
+    target[2] -= 16.0f;
+    const Vec3 eye = sightEye(e, nullptr);
+    const Vec3 d = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
+    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > fogSightSq_) return false;
+    const TraceResult tr = collision_->trace(target, eye, {0, 0, 0}, {0, 0, 0}, 0x200c861, e.number);
+    if (tr.fraction == 1.0f) return true;
+    Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+    return hit && isSentient(*hit) && hit->obj->get("team").toString() != e.obj->get("team").toString();
+}
+
 // Exposed think (0x5496f0): a grenade (+0x20c4) → grenade state, a recorded free turret (+0x2114) → turret state;
 // else perception, the substate (0x548d50) and its behaviour.
 int World::exposedThink(Entity& e) {
@@ -575,8 +609,10 @@ void World::exposedSubstate(Entity& e) {
     if (ai.substate == kSubNoncombat) {
         if (seesEnemyRecently(e, 250)) ai.substate = kSubCombat;
     } else if (ai.substate == kSubReacquire) {
-        // TODO(spec): with a path, combat also when the enemy is seen and 0x54d010 (eye trace + 0x54cf40) passes.
-        if (!actorHasPath(e)) ai.substate = kSubCombat;
+        // 0x548d50 state 0x66: no path (+0x6b0 <= 0) → combat; with a path, combat when the enemy was seen within
+        // 250 ms (0x54ce70) and 0x54d010 passes. TODO(spec): a blocking actor (+0x728) or followed actor (+0x2148)
+        // also gives combat directly (not modelled).
+        if (!actorHasPath(e) || (seesEnemyRecently(e, 250) && enemyEyeTraceOk(e))) ai.substate = kSubCombat;
     }
 }
 
@@ -793,6 +829,7 @@ void World::registerActorStateBuiltins() {
     registerCoverBuiltins();
     registerBadPlaceBuiltins();
     registerGrenadeBuiltins();
+    registerProneBuiltins();
     // orientmode(mode[, angle | vector]) (0x53f510): sets the override facing +0x114 and, for the explicit modes, the
     // override target +0x120 (16-bit quantised yaw). "face enemy" 3, "face enemy or motion" 4, "face goal" 6, "face
     // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and

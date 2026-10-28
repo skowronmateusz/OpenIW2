@@ -31,7 +31,7 @@ bool startsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0
 // Classes from the executable's spawn table (docs/spec/entities.md) that remain script-visible entities.
 // misc_model, misc_prefab, script_struct, func_group, info_null and light are consumed at load (inferred).
 const std::set<std::string> kEntityClasses = {
-    "info_player_start", "info_notnull", "info_notnull_big", "info_grenade_hint", "info_volume", "trigger_use",
+    "info_player_start", "info_notnull", "info_notnull_big", "info_volume", "trigger_use",
     "trigger_use_touch", "trigger_multiple", "trigger_radius", "trigger_disk", "trigger_friendlychain", "trigger_hurt",
     "trigger_once", "trigger_damage", "trigger_lookat", "misc_mg42", "misc_turret", "corona", "sound_blend",
     "script_brushmodel", "script_model", "script_origin", "script_vehicle", "script_vehicle_collmap"};
@@ -126,7 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
         submodels_.push_back({mn, mx});
     }
     vm_.print = [this](const std::string& s) { print(s); };
-    registerCoreBuiltins(vm_);
+    scriptRng_ = registerCoreBuiltins(vm_, std::getenv("IW2_SCRIPT_SEED") ? uint32_t(std::strtoul(std::getenv("IW2_SCRIPT_SEED"), nullptr, 10)) : 1u); // IW2_SCRIPT_SEED: debug only, varies script randomness
     registerBuiltins();
     registerAnimBuiltins();
     registerCombatBuiltins();
@@ -213,7 +213,31 @@ void World::spawnMapEntities() {
             n.typeNum = pathNodeTypeNum(cls);
             const Value sf = n.obj->get("spawnflags");
             n.spawnflags = sf.isInt() ? sf.asInt() : 0;
+            // Node key parse (0x52d280 via 0x52d0b0, key table 0x5a9670): the yaw (+0x20) starts at the sentinel -1; the
+            // "angles" key (type 0xb, 0x52d1f4) is read as "%f %f %f" and only AngleNormalize360(angles[1]) (0x4240a0) is
+            // stored. A yaw still at -1 becomes 0, any other yaw sets spawnflag 0x8000 (0x52d2ba..0x52d2cd): "node has an
+            // angle", which the node facing (0x505dcc, 0x505935) and the goal check (0x4fef89) test. The script field
+            // `angles` (type 0xb, getter 0x4f9e21) is (0, yaw, 0).
+            bool hasAngles = false;
+            for (const auto& [k, v] : be.fields) hasAngles = hasAngles || lower(k) == "angles";
+            if (hasAngles) {
+                float yaw = n.obj->get("angles").isVector() ? n.obj->get("angles").asVector()[1] : 0.0f;
+                while (yaw < 0.0f) yaw += 360.0f;
+                while (yaw >= 360.0f) yaw -= 360.0f;
+                n.obj->set("angles", Value(Vec3{0.0f, yaw, 0.0f}));
+                n.spawnflags |= 0x8000;
+                n.obj->set("spawnflags", Value(int32_t(n.spawnflags)));
+            }
             nodes_.push_back(std::move(n));
+        } else if (cls == "info_grenade_hint") {
+            // 0x51e6a0: the origin goes into the hint table (0x1c8f180, at most 512: ERR_DROP "MAX_GRENADE_HINTS (%i)
+            // exceeded"), then the entity is freed (0x4d7c30), so scripts never see it.
+            if (int(grenadeHints_.size()) >= kMaxGrenadeHints)
+                throw std::runtime_error("MAX_GRENADE_HINTS (" + std::to_string(kMaxGrenadeHints) + ") exceeded");
+            auto o = vm_.newObject(cls);
+            fill(o);
+            const Value org = o->get("origin");
+            grenadeHints_.push_back(org.isVector() ? org.asVector() : Vec3{0, 0, 0});
         } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
             fill(o);
@@ -542,6 +566,7 @@ void World::thinkActors() {
         if (!e.ai.corpse) actorFacing(e);
         if (!e.ai.corpse) actorMoveNoise(e);
         if (!e.ai.corpse) blockFacingNodes(e);
+        if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
     }
     // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
     if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
@@ -570,30 +595,35 @@ void World::thinkActors() {
 // (+0x2150), the side offset (+0x73c) and the actor physics (0x501xxx) that clips the move.
 void World::moveActor(Entity& e, float dt) {
     ActorPath& p = e.path;
-    if (p.count <= 0) return;
-    auto o = e.obj->get("origin").asVector();
-    float dist = 0.0f;
     // A followed actor (+0x2148) skips the path walk (0x5041a3 -> 0x504228): 0x544ca0 only updates the lookahead, with the shrink
     // flag 0x500d80(bumped entity), the desired delta stays zero (0x504262..0x504268), the mode word is 1 and neither the facing
-    // nor the stop-soon check 0x503ec0 run; the physics still applies gravity and ground. TODO(spec): the trail 0x505520 / 0x504f60
-    // (+0x2150 ring) only feeds the facing blend (0x504e70 / 0x505630), which is not modelled.
+    // nor the stop-soon check 0x503ec0 run. The physics 0x501d00 then calls the yield step 0x501620 (anim mode 1 or 7), which
+    // moves the actor out of the followed entity's way (yieldFollowed); it runs with or without a path.
+    // TODO(spec): the trail 0x505520 / 0x504f60 (+0x2150 ring) only feeds the facing blend (0x504e70 / 0x505630), which is not modelled.
     const bool followed = e.ai.followed != nullptr;
+    const bool yieldNow = followed && e.ai.animMode == 1 && actorSlideEnabled() && e.ai.yieldMs != timeMs_;
+    if (p.count <= 0 && !yieldNow) return;
+    auto o = e.obj->get("origin").asVector();
+    float dist = 0.0f;
     if (e.anim && !followed) {
         const AnimDelta d = e.anim->delta(e.ai.animDeltaGoalWeights);
         dist = std::sqrt(d.trans[0] * d.trans[0] + d.trans[1] * d.trans[1]);
     }
     const Vec3 before = o;
-    updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
-    if (p.count <= 0) return;
-    float turn = p.farDir[1] * p.lookDir[1] + p.farDir[0] * p.lookDir[0];
-    if (turn < 1e-6f) turn = 1e-6f;
-    float f = std::pow(turn, 0.333f);
-    if (f < 0.6f) f = 0.6f;
-    float step = followed ? 0.0f : f * dist;
-    if (step > p.lookDist) step = p.lookDist;
-    o[0] += p.lookDir[0] * step;
-    o[1] += p.lookDir[1] * step;
-    o[2] += p.lookDir[2] * step;
+    if (p.count > 0) updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
+    if (p.count <= 0 && !yieldNow) return;
+    float step = 0.0f;
+    if (p.count > 0) {
+        float turn = p.farDir[1] * p.lookDir[1] + p.farDir[0] * p.lookDir[0];
+        if (turn < 1e-6f) turn = 1e-6f;
+        float f = std::pow(turn, 0.333f);
+        if (f < 0.6f) f = 0.6f;
+        step = followed ? 0.0f : f * dist;
+        if (step > p.lookDist) step = p.lookDist;
+        o[0] += p.lookDir[0] * step;
+        o[1] += p.lookDir[1] * step;
+        o[2] += p.lookDir[2] * step;
+    }
     if (step > 0.0f) {
         const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
         e.obj->set("angles", Value(Vec3{0, yaw, 0}));
@@ -636,7 +666,14 @@ void World::moveActor(Entity& e, float dt) {
             t.allSolid = tr.allSolid;
             return t;
         };
-        moveBlock(pm, fn);
+        if (yieldNow) {
+            e.ai.yieldMs = timeMs_;
+            if (!yieldFollowed(e, pm, fn, before)) {
+                for (int a = 0; a < 3; ++a) pm.origin[a] = before[a]; // 0x501620 returned 0: no move this frame
+            }
+        } else {
+            moveBlock(pm, fn);
+        }
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         e.ai.groundEnt = pm.groundEnt;
         grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground
@@ -1086,7 +1123,6 @@ void World::registerBuiltins() {
             o->set("$goalpos", c.arg(0).asObject()->get("origin"));
             o->set("$goalent", Value()); // 0x540880 clears the goal entity (+0x77c)
             if (Entity* self = entityOf(c.self); self && !goalVolumeHolds(*self, c.arg(0).asObject()->get("origin").isVector() ? c.arg(0).asObject()->get("origin").asVector() : Vec3{0, 0, 0})) o->set("$goalvolume", Value()); // 0x5408fe..: the volume must contain the new goal
-            o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
         }
         return Value();
     });
@@ -1095,7 +1131,6 @@ void World::registerBuiltins() {
         c.self.asObject()->set("$goalpos", c.arg(0));
         c.self.asObject()->set("$goalent", Value());
         if (Entity* self = entityOf(c.self); self && c.arg(0).isVector() && !goalVolumeHolds(*self, c.arg(0).asVector())) c.self.asObject()->set("$goalvolume", Value()); // 0x5409bd
-        c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });
     vm_.registerBuiltin("setgoalentity", [this](CallContext& c) {
@@ -1159,8 +1194,10 @@ void World::registerBuiltins() {
         if (!e) throw std::runtime_error("delete on a non-entity");
         if (e->isPlayer) throw std::runtime_error("cannot delete the player");
         connectEntityPaths(*e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
-        e->obj->removed = true;
+        // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
+        // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
         vm_.notify(e->obj, "death");
+        vm_.freeObject(e->obj);
         return Value();
     });
     vm_.registerBuiltin("setmodel", [](CallContext& c) {

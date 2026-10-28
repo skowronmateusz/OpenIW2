@@ -87,7 +87,12 @@ model; which bones take the second order is not yet specified (OpenIW2 uses pare
   top's old time). A new time is only taken when it does not go back.
 - Sync flags (0x479260 / 0x479120): a blend node with `loopsync` gets flags 1|4, with `nonloopsync` 2|4; every blend
   node below it gets the same 1 or 2 without 4. A synced subtree may hold only looping (loopsync) or non-looping
-  (nonloopsync) leaves (TODO(spec): the `void_loop` / `void` replacement of mismatched leaves, 0x479154).
+  (nonloopsync) leaves. Decode of the leaf case of 0x479120 (arg: 1 loopsync, 0 nonloopsync): a leaf whose anim loop byte (+2)
+  already equals the wanted value is kept. A mismatched leaf whose anim has the byte +0x28 set (the engine's placeholder
+  anim) is replaced by the loaded anim "void_loop" (0x57a864, 0x426bb0; a failed load is the fatal "Cannot find
+  xanim/void_loop"); a real mismatched anim only prints "animation '%s' in '%s' cannot be sync looping and nonlooping" (loopsync) or
+  "... nonlooping and looping" (nonloopsync) and stays. A node that already carries a sync flag prints "duplicate
+  specification of animation sync in '%s', %d nodes above '%s'". No "void" replacement exists in this function.
 - Restart (0x4793c0, the `…restart` calls): the node or its nearest ancestor with flag 4 restarts that subtree (time
   and cycle 0) unless it already stands at 0; outside a synced subtree only a leaf restarts. `setanimknoball…restart`
   (0x478c40) restarts each ancestor it sets as well.

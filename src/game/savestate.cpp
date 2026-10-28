@@ -3,7 +3,7 @@
 // Saved: the script object graph (every entity's script object carries origin, angles, health, targetname, ... as fields), all
 // script threads, the level time, cvars, entity numbering and per-entity engine fields listed in World::saveState (attachments,
 // anim tree and per-node playback, scripted animation block, actor path, AI state stack, velocity, node cache and claim, friendly chain, working goal, attackers, missile states, vehicle / turret use),
-// movers, links, inventories, hud elements, pending notifies, objectives, looped effects, earthquakes, bad places, path
+// movers, links, inventories, hud elements, the script and engine random generators, pending notifies, objectives, looped effects, earthquakes, bad places, path
 // disconnects, node claims, the random generator states.
 //
 // TODO(spec) (not restored; rebuilt or reset on load):
@@ -119,6 +119,9 @@ void World::saveState(StateWriter& w) {
         std::ostringstream os;
         os << rng_;
         w.str(os.str());
+        std::ostringstream ss;
+        if (scriptRng_) ss << *scriptRng_;
+        w.str(ss.str());
     }
     w.i32(perceptionTick_);
     w.vec3(playerPrev_);
@@ -427,6 +430,8 @@ void World::loadState(StateReader& r) {
     {
         std::istringstream is(r.str());
         is >> rng_;
+        std::istringstream ss(r.str());
+        if (scriptRng_ && ss.rdbuf()->in_avail() > 0) ss >> *scriptRng_;
     }
     perceptionTick_ = r.i32();
     playerPrev_ = r.vec3();
