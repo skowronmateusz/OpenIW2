@@ -25,6 +25,12 @@ public:
     void sway(const Field& weapon, int ms, float viewPitch, float viewYaw, float adsFrac, int stance, bool reticle,
               float shock = 0.0f);
 
+    // Scope sway of the view angles (CG_... 0x4ae060, reticle weapons only; called from the view offset 0x4ae290): returns
+    // {pitch, yaw} degrees to add to the view angles. Shares the idle phase (0xf79774) and the stance factor (0xf79068)
+    // with sway(); breathScale is ps+0x590 (hold-breath damping). Zero for a weapon without a reticle or at aim fraction 0.
+    // stance: 0 stand, 1 crouch, 2 prone.
+    std::array<float, 2> scopeSway(const Field& weapon, int ms, float adsFrac, int stance, float breathScale, bool reticle);
+
     // Offsets to add: forward/right/up and pitch/yaw/roll, already faded for aiming down the sights.
     const V3& move() const { return outMove_; }
     const V3& rot() const { return outRot_; }
