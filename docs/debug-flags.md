@@ -88,3 +88,8 @@ described in the code that reads them.
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 
 - `IW2_ACTOR_FOLLOW=1`: lets a bumped actor start following the bumper (0x501c8b). Off by default: the follower trail (0x505520) that moves a followed actor is not ported, so a followed actor would stand still.
+
+- Env `IW2_SCRIPT_SEED=<n>` (iw2game/iw2view): seeds the script `randomint`/`randomfloat` generator with n instead of 1. Debug only; used to vary a
+  headless run (the moscow melee assert only showed with some seeds).
+- Env `IW2_FIELD_LOG=<text>`: prints `[field T ms] kind#id.field = value at file:line` for every script store to a field whose name contains
+  <text>. Debug only. `IW2_SCRIPT_BACKTRACE=1` now also lists each frame's self and the object locals (`{kind#id removed}`).

@@ -126,7 +126,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
         submodels_.push_back({mn, mx});
     }
     vm_.print = [this](const std::string& s) { print(s); };
-    registerCoreBuiltins(vm_);
+    registerCoreBuiltins(vm_, std::getenv("IW2_SCRIPT_SEED") ? uint32_t(std::strtoul(std::getenv("IW2_SCRIPT_SEED"), nullptr, 10)) : 1u); // IW2_SCRIPT_SEED: debug only, varies script randomness
     registerBuiltins();
     registerAnimBuiltins();
     registerCombatBuiltins();
@@ -1145,8 +1145,10 @@ void World::registerBuiltins() {
         if (!e) throw std::runtime_error("delete on a non-entity");
         if (e->isPlayer) throw std::runtime_error("cannot delete the player");
         connectEntityPaths(*e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
-        e->obj->removed = true;
+        // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
+        // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
         vm_.notify(e->obj, "death");
+        vm_.freeObject(e->obj);
         return Value();
     });
     vm_.registerBuiltin("setmodel", [](CallContext& c) {
