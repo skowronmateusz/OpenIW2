@@ -837,7 +837,7 @@ private:
     // Cover nodes and claiming (src/game/actorcover.cpp)
     bool nodeUsable(Entity& e, int node);
     void linkOverlappingNodes();                    // 0x52d990 (lazily, once)
-    void claimNode(Entity& e, int node);
+    void claimNode(Entity& e, int node, bool takeOver = false);  // takeOver: 0x519050 (evicts a claiming owner without the 0x40 flag test)
     void releaseNode(Entity& e);
     void giveUpClaimedNode(Entity& e);
     void blockNodeForTeam(int node, Entity& e);
@@ -1095,6 +1095,8 @@ private:
     FriendlyChains chains_;
     std::vector<ObjectPtr> vehicleNodes_;
     Entity* player_ = nullptr;
+    Vec3 playerLastPos_{};                    // sentient +0x10: the player's origin at the last frame (0x4e8194)
+    bool playerMoved_ = false;                // client byte +0x86b6: the player moved 0.1 units or more (xy) since the last frame (0x4e81e5)
     int64_t timeMs_ = 0;
     float fogSightSq_ = 3.4028235e38f;    // 0x1c61038: ((far - near) * 0.828 + near)² of linear fog, else FLT_MAX (0x4e96e0)
     float cullDist_ = 0;                  // setculldist (configstring 8), unused

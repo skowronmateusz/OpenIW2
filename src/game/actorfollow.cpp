@@ -198,8 +198,9 @@ void World::updateFollowed(Entity& e) {
 // +0x28c & 0x2000000), not a turret gunner (state 2), whose team is not the one the player's team fights (table {0, 2, 1, 0, 0}),
 // and whose box overlaps the player's box shifted by its velocity * 0.1 (0x59202c; 0x447830, an AABB test for an actor), follows
 // the player: +0x2148 = the player gentity. When it stands at its claimed node (0x504610: node set, 0x502660 close) it is skipped
-// while the client byte +0x86b6 is set. TODO(spec): that byte (taken as 0), the node hand-over 0x519050 to the player's
-// sentient (the claimed node stays with the actor), the player's mins/maxs (+0x540/+0x54c; the standing box is used).
+// while the client byte +0x86b6 (the player moved 0.1 units or more since the last frame, 0x4e81e5) is set; otherwise its claimed node
+// is taken over by the player (0x519050). TODO(spec): 0x519050 also evicts the owners of the linked nodes, which is not modelled;
+// the player's mins/maxs (+0x540/+0x54c; the standing box is used).
 void World::retargetFollowed(Entity& e, Entity& player) {
     ActorAi& ai = e.ai;
     const Value dap = e.obj->get("dontavoidplayer");
@@ -209,6 +210,12 @@ void World::retargetFollowed(Entity& e, Entity& player) {
     const Vec3 po = originOf(player.obj), ao = originOf(e.obj);
     const float px = po[0] + player.velocity[0] * 0.1f, py = po[1] + player.velocity[1] * 0.1f, pz = po[2] + player.velocity[2] * 0.1f;
     if (px + 15 < ao[0] - 15 || px - 15 > ao[0] + 15 || py + 15 < ao[1] - 15 || py - 15 > ao[1] + 15 || pz + 70 < ao[2] || pz > ao[2] + 72) return;
+    // 0x4fed74: standing at its claimed node (0x504610) the actor is skipped while the player moves (+0x86b6); otherwise a claimed node
+    // is handed over to the player's sentient (0x4fed9f: 0x519050, the player takes it over and the actor is evicted).
+    if (nearClaimedNode(e)) {
+        if (playerMoved_) return;
+        if (e.claimedNode >= 0) claimNode(player, e.claimedNode, true);
+    }
     ai.followed = &player;
     ++stats.followLinks;
 }

@@ -238,13 +238,13 @@ void World::blockNodeForTeam(int node, Entity& e) {
 // Claim a node (0x5152f0): the previous one is released; a normal node (or a priority one whose hold expired) is
 // taken (0x518fa0); a held priority node is taken over (0x519050), evicting a claiming owner (0x515330: its path is
 // dropped when it ends at the node, then 0x519300).
-void World::claimNode(Entity& e, int node) {
+void World::claimNode(Entity& e, int node, bool takeOver) {
     linkOverlappingNodes();
     if (e.claimedNode == node) return;
     if (e.claimedNode >= 0) releaseNode(e);
     if (node < 0) return;
     PathNode& n = nodes_[size_t(node)];
-    if ((n.spawnflags & 0x40) && n.ownerUntilMs >= timeMs_ && n.owner && n.owner != &e && n.ownerUntilMs == kNodeClaimed) {
+    if (((n.spawnflags & 0x40) || takeOver) && n.ownerUntilMs >= timeMs_ && n.owner && n.owner != &e && n.ownerUntilMs == kNodeClaimed) {
         Entity* owner = n.owner;
         if (owner->isActor && owner->claimedNode == node) {
             if (actorHasPath(*owner) && samePoint(vecField(n.obj, "origin"), pathEnd(*owner))) clearActorPath(*owner);
