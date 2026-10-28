@@ -2887,6 +2887,14 @@ int main(int argc, char** argv) {
         std::map<int, game::AnimState> prevAnim;
         std::map<int, std::pair<float, float>> prevTurret; // turret pitch/yaw before the last server frame (drawn interpolated)
         float lerpFrac = 1.0f;
+        // The effect system's time of this rendered frame: cg.time (0xf708dc) fed to the system each frame by 0x486b30 (system +0x0,
+        // advanced copy +0x4 that plays read, e.g. 0x4855e4) before the view weapon is added (0x4afd17, then 0x4b026f). Both the view
+        // flash play (0x4b6c37 -> 0x4853f0, no time argument) and the particle draw use it. The shot-script turn steps override it.
+        std::optional<int64_t> fxTimeOverride;
+        auto fxTime = [&]() -> int64_t {
+            if (fxTimeOverride) return *fxTimeOverride;
+            return world ? world->timeMs() - 50 + int64_t(lerpFrac * 50.0f) : 0;
+        };
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
@@ -2972,7 +2980,7 @@ int main(int argc, char** argv) {
             }
             // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
             // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
-            const int64_t fxNow = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
+            const int64_t fxNow = fxTime();
             const auto fxSprites = fxSystem.sprites(fxNow);
             if (std::getenv("IW2_FX_DEBUG"))
                 for (size_t i = 0; i < fxSprites.size(); i += std::max<size_t>(1, fxSprites.size() / 12))
@@ -3392,7 +3400,7 @@ int main(int argc, char** argv) {
                                 });
                                 const auto& m = base.transform;
                                 const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
-                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, fxTime() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
                             }
                         }
                         if (viewFlash->pending && world) {
@@ -3406,7 +3414,7 @@ int main(int argc, char** argv) {
                                     return vf->valid;
                                 });
                                 const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
-                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
+                                fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, fxTime() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
                             }
                         }
                     }
@@ -5720,6 +5728,11 @@ int main(int argc, char** argv) {
                     if (const auto c = tok.find(':'); c != std::string::npos) shotScript.push_back({std::stof(tok.substr(0, c)), tok.substr(c + 1)});
             }
             const int shotSteps = shotScript.empty() ? 100 : int(50.0f * (std::getenv("IW2_SHOT_SECONDS") ? std::stof(std::getenv("IW2_SHOT_SECONDS")) : 3.0f));
+            // `turn=<deg/s>` turns the view each 20 ms step. A script with it also runs the effects per step like client frames:
+            // every shot plays the view flash / brass at that step's time with that step's gun pose, and the particles are updated
+            // each step, so firing while turning can be checked headlessly (bolted particles must stay on tag_flash).
+            float shotTurnRate = 0;
+            const bool shotTurnSim = world && std::any_of(shotScript.begin(), shotScript.end(), [](const auto& a) { return a.second.rfind("turn=", 0) == 0; });
             for (int i = 0; i < shotSteps; ++i) {
                 const float tNow = float(i) * 0.02f;
                 for (auto& [t, act] : shotScript) {
@@ -5734,11 +5747,13 @@ int main(int argc, char** argv) {
                     else if (act == "binoc+" || act == "binoc-") shotIn.binoculars = act == "binoc+";
                     else if (act == "use+" || act == "use-") shotIn.use = act == "use+";
                     else if (act.rfind("weapon=", 0) == 0) shotIn.weapon = act.substr(7);
+                    else if (act.rfind("turn=", 0) == 0) shotTurnRate = std::stof(act.substr(5));
                 }
+                cam.yaw += shotTurnRate * 0.02f;
                 game::PlayerWeapon::Input stepIn = shotIn;
                 if (pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14) stepIn.ads = true; // forced aim (0x409af0)
                 const int shotsFired = pweapon.update(0.02f, stepIn);
-                if (shotsFired > 0 && (shotScript.empty() || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
+                if (shotsFired > 0 && (shotScript.empty() || shotTurnSim || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
                 if (!shotScript.empty()) {
                     for (const auto& e : pweapon.takeEvents()) {
                         const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
@@ -5758,6 +5773,22 @@ int main(int argc, char** argv) {
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
                 aimBlend.update(pweapon.viewAiming(), 0.02f);
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, 20, 0.0f, 190.0f, shotViewHeight, pweapon.adsFrac(), shotLean);
+                if (shotTurnSim) {
+                    const std::string ret = pweapon.field("adsOverlayReticle");
+                    vmMotion.sway([&](const char* k) { return pweapon.number(k); }, 20, cam.pitch, cam.yaw, pweapon.adsFrac(), 0, !ret.empty() && ret != "none");
+                    // This step as a client frame: the camera as the shot will place it, the view model posed first (plays the
+                    // pending flash at this step's time), then the effect update.
+                    Camera stepCam = cam;
+                    stepCam.pos.z += shotViewHeight - 60.0f;
+                    const game::Vec lo = game::leanOffset(stepCam.yaw, shotLean);
+                    stepCam.pos = stepCam.pos + Vec3{lo[0], lo[1], lo[2]};
+                    fxTimeOverride = world->timeMs() - int64_t(shotSteps - 1 - i) * 20;
+                    std::vector<DrawItem> scratch;
+                    addViewModel(scratch, stepCam);
+                    (void)fxSystem.sprites(*fxTimeOverride);
+                    if (shotsFired > 0) std::cout << "shot-script t=" << tNow << " turn flash yaw " << cam.yaw << " tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << "\n";
+                    fxTimeOverride.reset();
+                }
             }
             if (shotIn.frag) std::cout << "shot weapon state " << pweapon.stateNumber() << " anim " << pweapon.anim() << " t " << pweapon.animTime() << "\n";
             cam.pos.z += shotViewHeight - 60.0f;
@@ -5793,15 +5824,19 @@ int main(int argc, char** argv) {
                     fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100));
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
-            if (viewFlash->pending && !(world && world->playerOnTurret())) {
+            // Pose the view model before the effects are drawn, as the live loop does (plays a pending view flash, refreshes the
+            // tag the bolted particles follow).
+            std::vector<DrawItem> shotVmItems;
+            if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotVmItems, cam);
+            else if (viewFlash->pending && !(world && world->playerOnTurret())) {
                 std::vector<DrawItem> scratch;
-                addViewModel(scratch, cam); // plays the view flash (the live loop shows it one frame later)
+                addViewModel(scratch, cam);
             }
             auto shotItems = gatherItems(cam);
+            shotItems.insert(shotItems.end(), shotVmItems.begin(), shotVmItems.end());
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
-            if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotItems, cam);
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             renderer.fog = fogState.consts(world ? world->timeMs() : 0);
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
@@ -7007,14 +7042,20 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
-            auto items = gatherItems(cam);
+            // The view model is posed (and its flash / brass played) before the effects are drawn: the exe adds the view weapon
+            // (0x4b026f) before the effect draw, and the bolted particles re-read tag_flash / tag_brass through 0x47fcd0 ->
+            // 0x48abb0 once per frame stamp 0x6221a8 (bumped at the frame start, 0x4afca3), i.e. this frame's gun pose. Posing it
+            // after gatherItems left the particles on the previous frame's tag (the flash trailed the gun while turning).
+            std::vector<DrawItem> vmItems;
             // No view model on a turret (cgame 0x4b6d40 returns with eFlags & 0x300); in a vehicle only in the
             // binocular weapon states 0x11–0x16.
             const int wstate = pweapon.stateNumber();
             if (!(world && world->playerOnTurret()) &&
                 !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
                 if (!(world && scopeAlpha() > 0) && !(world && world->playerDeadWeaponless())) // scope overlay (0x4b6d7c); dead: entity weapon 0 (0x4b6a0a)
-                    addViewModel(items, cam);
+                    addViewModel(vmItems, cam);
+            auto items = gatherItems(cam);
+            items.insert(items.end(), vmItems.begin(), vmItems.end());
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;

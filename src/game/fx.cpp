@@ -990,6 +990,11 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
                 s.oriented = true;
                 s.orientDir = p.axis[0];
                 if (relative) s.orientDir = sub(fromTagSpace(tagNow, dirToTagSpace(p.tag0, p.axis[0])), tagNow.origin);
+                // Cull slot 0x4825e0 -> 0x486e30: sphere at +0x7c with radius +0x88 (size), skipped when n·pos − d < −size for a
+                // view plane (count system +0x80, at most 5 with disableFarPlaneCulling 0x2000000). viewPlanes: the four side planes.
+                if (viewValid)
+                    for (const auto& pl : viewPlanes)
+                        if (pl[0] * pos[0] + pl[1] * pos[1] + pl[2] * pos[2] - pl[3] < -s.size) hidden = true;
             }
         }
         if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite
