@@ -355,6 +355,9 @@ void World::usePlayerEntity(Entity& e) {
         useVehicle(e, *player_);
         return;
     }
+    // 0x534223: an actor (eType 9) whose sentient holds a node (+0x2c) hands it to the player's sentient before the notify
+    // (0x519050 with ESI = that node, EDI = the player's sentient: the player takes it over and the actor is evicted).
+    if (e.isActor && e.claimedNode >= 0) claimNode(*player_, e.claimedNode, true);
     vm_.notify(e.obj, "trigger", {Value(player_->obj)});
     if (e.obj->removed) return;
     if (e.turret) playerUseTurret(e);
