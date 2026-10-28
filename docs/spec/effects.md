@@ -130,7 +130,7 @@ the piecewise-linear curve), used for velocities.
   (cos a · q + sin a · p); corners by 0x1003f560 as the particle quad (0x1003f850 instead when the dvar at 0x101ce710 is 2).
 - OpenIW2: `FxSprite::size2` / `rotation` / `oriented`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its
   continuous limit (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the angle sum skips frames where size or size2 is 0;
-  the OrientedParticle cull (0x4825e0) and the mode-2 corner builder 0x1003f850. Check: `IW2_NO_HUD=1
+  the mode-2 corner builder 0x1003f850. The OrientedParticle cull (0x4825e0) is applied against `viewPlanes` (side planes). Check: `IW2_NO_HUD=1
   IW2_FX_TEST=fx/explosions/grenadeexp_water.efx IW2_FX_TEST_DIST=200 IW2_FX_MS=600 IW2_FX_STEP=16 iw2view <main> toujane
   --sim-seconds 1 --pos 480,-600,140 --yaw 0 --pitch 30 --shot x.png` (flat ripple rings).
 
