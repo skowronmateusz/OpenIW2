@@ -1072,5 +1072,5 @@ the move delta (+0x250..0x258) is vec * k, with k = (1 / contactNormalZ if the b
 
 Player use of actors (scripts such as demolition's offerExplosives set `useable`): the scan (0x534490) takes an entity with
 an actor (+0x100) whose field +0x211b is non-zero; the pick (0x534d40, byte table 0x534fb4, case 3 at 0x534ec5) gives the
-hint (type 4, string +0x2124) for sentient team 2 or 3 and ends the search; the press (0x5341a0) notifies "trigger" with
-the player. TODO(spec): the sentient callback at +0x2c (0x519050) is not ported.
+hint (type 4, string +0x2124) for sentient team 2 or 3 and ends the search; the press (0x5341a0) hands the actor's held node to the player (0x519050, as the follow retarget) and notifies "trigger" with
+the player.
