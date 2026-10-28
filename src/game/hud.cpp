@@ -53,7 +53,34 @@ void World::registerHudBuiltins() {
     };
     vm_.registerBuiltin("settimer", timer);
     vm_.registerBuiltin("settenthstimer", timer);
-    vm_.registerBuiltin("setclock", timer);
+    // settimerup / settenthstimerup (0x530780, 0x5307a0, types 5 and 7): the counter shows now - start (0x4c1f30, 0x4c1f6a).
+    auto timerUp = [this](CallContext& c) {
+        c.self.asObject()->set("$timerend", Value(float(timeMs_) + c.arg(0).asFloat() * 1000.0f));
+        c.self.asObject()->set("$timerup", Value(int32_t(1)));
+        c.self.asObject()->set("$shader", Value());
+        return Value();
+    };
+    vm_.registerBuiltin("settimerup", timerUp);
+    vm_.registerBuiltin("settenthstimerup", timerUp);
+    // setclock / setclockup (0x5307b0, 0x5307c0 -> 0x530510, types 8 and 9): setClock(seconds, duration, material, width, height).
+    // The element end (+0x68) is now + seconds, +0x6c the duration in ms (rounded), +0x34 / +0x38 the size, the material is the
+    // face; cgame 0x4c2c30 draws it and the material named material + "needle" rotated by the clock angle. A clock counts
+    // down (end - now) or up (now - end).
+    auto clock = [this](bool up) {
+        return [this, up](CallContext& c) {
+            const auto h = c.self.asObject();
+            h->set("$timerend", Value(float(timeMs_) + float(int(c.arg(0).asFloat() * 1000.0f + 0.5f))));
+            h->set("$clockdur", Value(int32_t(c.arg(1).asFloat() * 1000.0f + 0.5f)));
+            h->set("$clockup", Value(int32_t(up ? 1 : 0)));
+            h->set("$shader", Value(c.arg(2).toString()));
+            h->set("$width", c.args.size() > 3 ? c.arg(3) : Value(int32_t(0)));
+            h->set("$height", c.args.size() > 4 ? c.arg(4) : Value(int32_t(0)));
+            h->set("$text", Value());
+            return Value();
+        };
+    };
+    vm_.registerBuiltin("setclock", clock(false));
+    vm_.registerBuiltin("setclockup", clock(true));
     vm_.registerBuiltin("fadeovertime", [this](CallContext& c) {
         const auto h = c.self.asObject();
         h->set("$fadestart", Value(float(timeMs_)));

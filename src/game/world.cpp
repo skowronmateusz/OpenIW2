@@ -1379,6 +1379,11 @@ void World::registerBuiltins() {
         // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
         // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
         vm_.notify(e->obj, "death");
+        // G_FreeEntity (0x4d7c30) resets the entity (call 0x419700 at 0x4d7ce3; TODO(spec): confirm it is the memset), whose state holds the loop sound index (ent+6, set by playloopsound
+        // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
+        if (const Value h = e->obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
+        e->obj->set("$loopsound", Value());
+        e->obj->set("$loopalias", Value());
         vm_.freeObject(e->obj);
         return Value();
     });
