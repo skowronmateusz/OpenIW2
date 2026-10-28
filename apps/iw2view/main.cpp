@@ -3464,6 +3464,16 @@ int main(int argc, char** argv) {
                 saveDetail = ui::saveDetailText(saveRows[size_t(row)].info, [&](const std::string& k) { return saveLoc(k); });
             }
         };
+        // savegameshow / savegamehide: the save named by sv_lastSaveGame is loadable (0x4e06e0: a whole 0x4d8-byte header with
+        // version 0x99). TODO(spec): that menurun's show/hide rule matches the exe's caller of 0x4e06e0 exactly.
+        menuEnv.savegameExists = [&] {
+            const std::string last = menuEnv.getCvar("sv_lastSaveGame");
+            if (last.empty()) return false;
+            std::ifstream f(saveDir / (last + ".svg"), std::ios::binary);
+            std::vector<uint8_t> hdr(ui::kSaveHeaderSize);
+            f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
+            return size_t(f.gcount()) == hdr.size() && ui::saveHeaderLoadable(hdr);
+        };
         menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
@@ -6255,6 +6265,7 @@ int main(int argc, char** argv) {
                     if (ok && !ui::saveNameInternal(f.name)) {
                         uiCvars["sv_lastSaveGame"] = f.name;
                         world->cvars["sv_lastSaveGame"] = f.name;
+                        profileDirty = true; // archived dvar (flags 0x1001): goes into the profile's config.cfg
                     }
                     for (const char* r : {"vid_restart", "snd_restart"}) // 0x44a050 (exact names, 0x15 bytes compared)
                         if (ok && f.name == std::string("internal/") + r) {

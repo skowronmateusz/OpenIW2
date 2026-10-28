@@ -104,7 +104,8 @@ described in the code that reads them.
 ## Savegames (docs/spec/savegame.md section 5)
 - `iw2game <main> <map> <secs> --save-dir DIR`: writes the level's saves (script `savegame` autosaves, `--save-at`) to `DIR/<name>.svg`
   (autosaves land in `DIR/autosave/`). Without it the saves are built and only reported.
-- `iw2game ... --save-at T name`: queues a manual save (type 0, flags 6, the console-save path) at sim time T seconds.
+- `iw2game ... --save-at T name`: queues a manual save (type 0, flags 6) at sim time T seconds: an openiw2 stand-in, the exe's console
+  `savegame` / `devsave` handlers (0x4474xx) are not decoded.
 - `iw2game <main> <map> <secs> --load FILE`: starts from that save (map must match) instead of running the level script.
 - Env `IW2_MAIN=<game main dir>` (test_savestate): also runs the World round trip on a real map (save after 5 s, load into a
   fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).

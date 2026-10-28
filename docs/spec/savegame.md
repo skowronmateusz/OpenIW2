@@ -30,6 +30,8 @@ moscow `nextmission` at skill 1 gives `mis_01=2`, `mis_difficulty[0]='2'`; demol
 
 ## 2. Savegame files
 
+- `sv_lastSaveGame` is registered with flags 0x1001 (archived, 0x449d78), so it survives a restart in the profile's config.cfg;
+  `sv_saveOnStartMap` (0x449da6, default 0, flags 0x1404). TODO(spec): the consumer of sv_saveOnStartMap.
 - Path: `save/<name>.svg` (reader format 0x5812ec; writer `save\%s.svg` 0x5837c8, built by 0x4e02b0 with the name rule below), screenshot
   `save/<name>.jpg` (0x5812c4). The dvar `sv_lastSaveGame` (0x5799d4, global 0x8254a4) names the last committed save; `loadgame_continue`
   loads it. Autosaves use the `autosave` prefix (0x5810fc), `ui_savegameListAutosave` toggles their listing.
@@ -141,8 +143,8 @@ They are raw images of the original's memory structures, which openiw2 does not 
 - Processing (0x44a230, once per server frame): nothing while `g_reloading` is set (the queue stays); otherwise each entry is written
   (0x4e4050 -> G_WriteGame; flags & 2 commits, & 6 writes the file) and then 0x44a050 checks its name; the queue and the per-frame
   autosave byte are cleared.
-- snd/vid restart while a level runs (`vid_restart` 0x40cd10, `snd_restart` 0x40ce30): when the dvar at 0x747f04 is set (a level is
-  running) the command queues a save named `internal/vid_restart` / `internal/snd_restart` (type 0, flags 4, empty description and image)
+- snd/vid restart while a level runs (`vid_restart` 0x40cd10, `snd_restart` 0x40ce30): when `sv_running` (dvar global 0x747f04,
+  registered at 0x42e0f6 with flags 0x1040) is set the command queues a save named `internal/vid_restart` / `internal/snd_restart` (type 0, flags 4, empty description and image)
   instead of restarting. After that save is written 0x44a050 prints "Game saved for vid_restart" / "Game saved for snd_restart" and adds
   `disconnect;vid_restart;loadgame internal/vid_restart` / `disconnect;snd_restart;loadgame internal/snd_restart` to the command buffer:
   the level is saved, the subsystem restarts with no level loaded, and the save is loaded back. Without a level, `snd_restart` restarts
