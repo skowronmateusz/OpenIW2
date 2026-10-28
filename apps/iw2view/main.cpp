@@ -5320,7 +5320,22 @@ int main(int argc, char** argv) {
                     if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = world->timeMs();
             const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
-                const float csize = 1.0f; // cg_hudCompassSize
+                // Compass dvars from the world's dvar table (maps set cg_hudCompassMaxRange with setsavedcvar: demolition 700/400,
+                // downtown_assault 1000, moscow 900, libya 7000), else the exe defaults: cg_hudCompassSize 1 (0x1040c38),
+                // MaxRange 1500 (0xf48b54), MinRange 0 (0xf569dc), MinRadius 0 (0x1040b8c), SoundPingFadeTime 2 s (0xf48ce4).
+                auto compassDvar = [&](const char* n, float def) {
+                    const auto it = world->cvars.find(n);
+                    return it == world->cvars.end() || it->second.empty() ? def : float(std::atof(it->second.c_str()));
+                };
+                const float csize = compassDvar("cg_hudCompassSize", 1.0f);
+                const float cMaxRange = compassDvar("cg_hudCompassMaxRange", 1500.0f), cMinRange = compassDvar("cg_hudCompassMinRange", 0.0f);
+                const float cMinRadius = compassDvar("cg_hudCompassMinRadius", 0.0f), pingFade = compassDvar("cg_hudCompassSoundPingFadeTime", 2.0f);
+                // Radius factor of an actor / tank at horizontal distance d (0x4c1148..0x4c11e4): d clamped to MaxRange (beyond it
+                // on the rim, no culling), t = (d - MinRange) / (MaxRange - MinRange), r = (1 - MinRadius) * t + MinRadius.
+                auto compassRadius = [&](float d) {
+                    const float t = (std::min(d, cMaxRange) - cMinRange) / (cMaxRange - cMinRange);
+                    return (1.0f - cMinRadius) * t + cMinRadius;
+                };
                 const float cyaw = c.yaw, north = world->northYaw();
                 auto wrap360 = [](float a) { a = std::fmod(a, 360.0f); return a < 0 ? a + 360.0f : a; };
                 const auto& mr = compassMenu->rect;
@@ -5335,28 +5350,61 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < 4; ++k) col[k] = uint8_t(std::clamp(it.foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
                     col[3] = uint8_t(std::clamp(compassAlpha, 0.0f, 1.0f) * 255.0f);
                     if (it.ownerDraw == 87 || it.ownerDraw == 88) {
-                        // Friendly actors (4c0f20): R = size * r * 43.75, icon size*10 (0x591e8c), r from the distance between
-                        // cg_hudCompassMinRange 0 and MaxRange 1500 (0xf48b54) clamped to the rim (no culling), minRadius 0;
-                        // placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor - view yaw;
-                        // the arrow turns by (view yaw - actor yaw). TODO(spec): the 800 ms entry age, springy yaw
-                        // (cg_hudCompassSpringyPointers 0), the sound ping rings (cg_hudCompassSoundPingFadeTime).
+                        // Friendly actors (4c0f20): R = size * r * 43.75 (double @0x591e90), icon size*10 (0x591e8c), r from
+                        // compassRadius; placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor -
+                        // view yaw; the arrow turns by (view yaw - actor yaw). 88 tanks (4c1700): the same formulas over the vehicles
+                        // with addvehicletocompass, icon 16 (0x591e84). TODO(spec): the 800 ms entry age (the exe refreshes an entry
+                        // only for entities in the client snapshot, 0xf5bd28 +0x85cc), springy yaw (cg_hudCompassSpringyPointers 0).
                         if (it.background.empty()) continue;
-                                                // 88 tanks (4c1700): the same formulas over the vehicles with addvehicletocompass, icon 16 (0x591e84).
                         const bool tanks = it.ownerDraw == 88;
                         const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
-                        const int tex = materialTexture(it.background);
-                        for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
-                            const float dx = m.pos[0] - c.pos.x, dy = m.pos[1] - c.pos.y;
+                        auto place = [&](float px, float py, float& ix, float& iy) {
+                            const float dx = px - c.pos.x, dy = py - c.pos.y;
                             const float th = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
-                            const float t = std::clamp(std::sqrt(dx * dx + dy * dy) / 1500.0f, 0.0f, 1.0f);
-                            const float rad = csize * t * 43.75f * sc;
-                            const float ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
-                            Quad2D q{ix, iy, ix + icon, iy + icon};
-                            std::memcpy(q.rgba, col, 4);
-                            q.texture = tex;
-                            q.rotDeg = wrap360(cyaw - m.yaw);
-                            out.push_back(q);
+                            const float rad = csize * compassRadius(std::sqrt(dx * dx + dy * dy)) * 43.75f * sc;
+                            ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
+                        };
+                        const int tex = materialTexture(it.background);
+                        const int64_t now = world->timeMs();
+                        for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
+                            float ix, iy;
+                            place(m.pos[0], m.pos[1], ix, iy);
+                            // Friendly sound ping (0x4c1279..0x4c1371): while active, alpha = min(ping alpha, compass alpha); at full
+                            // ping alpha the arrow itself is skipped, otherwise drawn first; then compassping_friendlyfiring
+                            // (0xf5bca0) in the same rotated rect with the item colour and the ping alpha. Tanks (4c1700) have none.
+                            const float pa = tanks ? -1.0f : game::compassPingAlpha(m.pingEndMs, now, pingFade);
+                            const float pingA = std::min(pa, compassAlpha);
+                            const float rot = wrap360(cyaw - m.yaw);
+                            if (pa < 0.0f || pingA != 1.0f) {
+                                Quad2D q{ix, iy, ix + icon, iy + icon};
+                                std::memcpy(q.rgba, col, 4);
+                                q.texture = tex;
+                                q.rotDeg = rot;
+                                out.push_back(q);
+                            }
+                            if (pa >= 0.0f) {
+                                Quad2D q{ix, iy, ix + icon, iy + icon};
+                                std::memcpy(q.rgba, col, 4);
+                                q.rgba[3] = uint8_t(std::clamp(pingA, 0.0f, 1.0f) * 255.0f);
+                                q.texture = materialTexture("compassping_friendlyfiring");
+                                q.rotDeg = rot;
+                                out.push_back(q);
+                            }
                         }
+                        // Enemy sound pings (second pass 0x4c1480..0x4c16e6, ownerdraw 87 only): every entry with the enemy byte and an
+                        // active ping, at the position stored by the shot, icon size*10, alpha = min(ping alpha, compass alpha), item
+                        // colour, material compassping_enemyfiring (0xf5bca8, a red dot), drawn unrotated (0x4d4790).
+                        if (!tanks)
+                            for (const auto& p : world->compassPings().activeEnemyPings(now, pingFade)) {
+                                float ix, iy;
+                                place(p.pos[0], p.pos[1], ix, iy);
+                                Quad2D q{ix, iy, ix + icon, iy + icon};
+                                std::memcpy(q.rgba, col, 4);
+                                const float ea = std::min(game::compassPingAlpha(p.endMs, now, pingFade), compassAlpha);
+                                q.rgba[3] = uint8_t(std::clamp(ea, 0.0f, 1.0f) * 255.0f);
+                                q.texture = materialTexture("compassping_enemyfiring");
+                                out.push_back(q);
+                            }
                         continue;
                     }
                     if (it.ownerDraw != 86) {
@@ -5370,7 +5418,7 @@ int main(int argc, char** argv) {
                     }
                     // Pointers: centre (x + w*size/2, y + h*size/2 - (size-1)*h); K = 43.75 (double @0x591e90); icon 16*size.
                     const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f;
-                    const float maxR = 1500.0f, minR = 0.0f, minRad = 0.0f, objMax = 2048.0f, minAlpha = 1.0f;
+                    const float maxR = cMaxRange, minR = cMinRange, minRad = cMinRadius, objMax = 2048.0f, minAlpha = 1.0f;
                     const float icon = 16.0f * csize * sc;
                     for (const auto& ob : world->objectives()) {
                         // An objective without an icon uses the default material "objective" (0xf5b6cc, registered at 0x4a2d62

@@ -13,6 +13,7 @@
 #include "game/campaign.h"
 #include "game/fx.h"
 #include "game/collision.h"
+#include "game/compassping.h"
 #include "game/friendlychain.h"
 #include "game/grenadehint.h"
 #include "game/hitboxes.h"
@@ -597,8 +598,14 @@ public:
     float northYaw() const { return float(std::atof(northYaw_.c_str())); }
     // Compass friendlies (ownerdraw 87, server 0x4db2ee..0x4db37b): with drawcompassfriendlies (0x4f4450, flag 0x1c61050) on, every
     // living ally actor whose `drawoncompass` field (actor +0x2120) is set is listed with its origin and yaw.
-    struct CompassMarker { Vec3 pos{}; float yaw = 0; };
+    // pingEndMs: the entry's sound-ping end (0xf79a88 +16, 0 = none), read by the friendly pass of 0x4c0f20.
+    struct CompassMarker { Vec3 pos{}; float yaw = 0; int64_t pingEndMs = 0; };
     std::vector<CompassMarker> compassFriendlies() const;
+    // Compass sound pings (0x4c0e20): an actor's weapon fire (EV_FIRE_WEAPON 0x4b7800 -> 0x4b79bb, length of the fire sound) and an
+    // actor's MG42 fire (0x4bb0b6, 50 ms at the turret origin). Axis actors' pings are drawn by ownerdraw 87 (compassping_enemyfiring).
+    const CompassPings& compassPings() const { return compassPings_; }
+    // Registers a ping for an actor (team string from its `team` field) at pos lasting durationMs (0x4c0e20).
+    void compassPing(const Entity& actor, const Vec3& pos, int durationMs);
     // Compass tanks (ownerdraw 88, 0x4c1700): vehicles with addvehicletocompass set (+0x190), entity type 0xc: origin and yaw.
     std::vector<CompassMarker> compassVehicles() const;
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
@@ -1243,6 +1250,7 @@ private:
     float cullDist_ = 0;                  // setculldist (configstring 8), unused
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
+    CompassPings compassPings_;
     std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;

@@ -296,6 +296,10 @@ void World::shootTurret(Entity& t) {
     // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
     // (empty for the MG42s) plays too. The event also shakes the view (0x4bf5e0 with scale 0.05, 100 ms, radius 100 at the entity origin, ViewShake). The effect is bolted on tag_flash of the turret entity.
     shakeEvents_.push_back({t.obj->get("origin").asVector(), 0.05f, 100, 100.0f, timeMs_});
+    // The same event (0x4bb069..0x4bb0b6) pings the compass for the entity at es +0xa4 (the turret user) when it is an actor (type 9): 50 ms
+    // at the turret's origin (centity +0x148) through 0x4c0e20. TODO(spec): the user's centity byte +0x140 test and the skip when
+    // the turret is the one at the local playerstate +0x570 (a player user is not an actor, so it never pings here).
+    if (user && !user->isPlayer && user->obj->kind == "actor") compassPing(*user, t.obj->get("origin").asVector(), 50);
     const std::string flash = weaponField(ts.weapon, "worldFlashEffect");
     if (!flash.empty()) fxEvents_.push_back({flash, muzzle, dir, t.number, "tag_flash"});
     // Shell eject: the same handler 0x4b7800 calls CG_EjectWeaponBrass (0x4b7730, 0x4b79dc) unless boltAction (+0x328) is set:
