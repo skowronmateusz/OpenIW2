@@ -479,8 +479,11 @@ entities with flags 0x100 saved, zeroed and restored, 0x532620..0x532660 / 0x532
 TODO(spec): the reader of that bit, not modelled). The actor physics does not lower a stationary actor: the move block
 starts with ground entity 0x7fe (0x500d27) and 0x5487c0 returns at once while the ground entity is 0x7fe and the move delta
 is zero (0x5487c3..0x548823), so before this drop was modelled actors without a delta kept their spawner height (cityhall
-spawner (4386 −4304 64) over terrain at 35.4). TODO(spec): map-start placed actors are dropped by the exe inside the entity
-spawn 0x4fa550 with only the entities spawned before them linked; the port drops them at the end of `prepareStart`.
+spawner (4386 −4304 64) over terrain at 35.4). Map-start placed actors are dropped by the exe inside the entity spawn (0x4fa550 → G_CallSpawn 0x4f9770 → 0x4fc640) in
+entity-string order, with only the entities before them linked; of those only script_brushmodels are in the mask (script_model
+0x2080, actors 0x4000, the player and vehicle collmaps later). The port spawns them at the end of `prepareStart` and drops them
+against the script_brushmodels with a lower entity number. On the 39 maps (127 placed actors) this gives the same heights as
+dropping against all clips.
 
 No instruction in `.text` stores to actor offsets 0x780/0x784 (byte scan for `mov`/`fstp` with those
 displacements), so `pathenemylookahead` and `pathenemyfightdist` start at 0 and change only from script.

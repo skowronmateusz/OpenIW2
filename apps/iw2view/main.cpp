@@ -419,11 +419,14 @@ Pass classify(const std::string& techset) {
     // material's blend) and the feathered ones to distortion_floatz.tech; the vertex shader offsets the projected position by
     // du·T' + dv·B' with T' = distortionScale.x · (1,-1,1,1) · clipSpaceLookupScale · clip(tangent), B' likewise with
     // -distortionScale.y and the binormal (non-float-z: map in [0,1], start shifted by -(T' + B'), T' and B' doubled).
-    // Still missing: (a) the frame point where resolvedPostSun is copied; (b) the
-    // values of code constants clipSpaceLookupScale / clipSpaceLookupOffset (ids 0xae / 0xaf, entries 20 / 21 of the name
-    // table at 0x1018f040; the writer was not found); (c) the tangent / binormal the effects code gives sprite vertices
-    // (code.tangent / code.binormal); (d) plumbing of the material constant distortionScale (Material::constants); (e) which technique type the
-    // effect drawer selects (emissive or emissive feathered); (f) the floatZ target for distortion_floatz.
+    // Found in the 1.3 DLL: clipSpaceLookupScale = (0.5 w / W, -0.5 h / H, 0, 1) and
+    // clipSpaceLookupOffset = ((x + w / 2 + 0.5) / W, (y + h / 2 + 0.5) / H, 0, 0) for the viewport (x, y, w, h) in a W x H
+    // target (0x1003eae0, constants at 0x1070c2e0 / 0x1070c2f0); sampler resolvedPostSun (code sampler 0xe, switch
+    // 0x10038dd0) is the render target 0x1070eb54, which render command 0x100310a0 sets by a StretchRect of the back buffer
+    // (0x1002eeb0) when r_distortion (default 1) or the glow chain needs it, else "none" (0xe).
+    // Still missing: (a) where that command sits in the frame (which passes precede it); (b) the tangent / binormal the
+    // effects code gives sprite vertices (code.tangent / code.binormal); (c) which technique type the effect drawer selects
+    // (emissive or emissive feathered, the latter needing the $floatz target).
     if (techset == "distortion") return Pass::Skip;
     // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
     // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
@@ -558,7 +561,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 auto it = scene.imageIndex.find(image);
                 if (it == scene.imageIndex.end()) {
                     SDL_GPUTexture* t = nullptr;
-                    if (image == "$black") { // built-in image (string "$black" in gfx_d3d_x86_s.dll 0x193510); TODO(spec): its exact pixels, here 1x1 opaque black
+                    if (image == "$black") { // built-in image: 1.3 DLL 0x10010920 fills "$black" with one colour (0, 0, 0, 0xff) via 0x10010170 ("$white": 255, 255, 255, 0xff); a 1x1 texture samples the same
                         const uint8_t black[4] = {0, 0, 0, 255};
                         t = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1);
                         up.texture(t, 0, 0, 1, 1, black, 4);
@@ -2308,7 +2311,8 @@ struct Renderer {
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
             if (p == Pass::Blend) {
-            // Water (water_l_sun.tech): after the opaque passes, before the blended ones. Polygon offset not applied (TODO(spec)).
+            // Water (water_l_sun.tech): after the opaque passes, before the blended ones. No polygon offset: every shipped
+            // water material (iw_13.iwd materials/water_*) has polygon-offset level 0 (state byte 0x30 bits 4-5).
             // Also the water soups of visible brush models (duhoc_assault / duhoc_defend water_section) at their entity transform.
             for (const WorldGroup& wg : worldGroups)
             for (const Batch& b : *wg.batches) {
@@ -2462,11 +2466,12 @@ struct Renderer {
                 }
             }
         }
-        // Objective technique (Pass::Objective, shaders fs_objective) after the other passes. gameTime.z is code constant 0x82
-        // (name table 0x1018f040 entry 23); the cgame stores (cg.time - materialTime) * 0.001-style values per entity only for
-        // vehicles (0x4ac839, refEntity +0x5c, zero otherwise after the memset at 0x4ac7b0), so for these script models it is taken
-        // as the game time in seconds. TODO(spec): the DLL step that fills gameTime.z per draw, and this pass's place in the
-        // sort order (drawn last here).
+        // Objective technique (Pass::Objective, shaders fs_objective) after the other passes. gameTime is code constant 0x82,
+        // stored at 0x1070c020 (code constants 0x80.. live at 0x1070c000 + (id - 0x80) * 16, 0x100394d0). 0x1002f6a0 sets it per
+        // draw from t = scene time (0x1070c3bc, seconds) - the refEntity's material time (+0x5c, 0x1002fa49): gameTime =
+        // (sin 2 pi f, cos 2 pi f, f, t) with f = t - floor(t). The cgame writes a material time only for vehicles (0x4ac839;
+        // zero for other entities after the memset at 0x4ac7b0), so here gameTime.z = frac(game seconds) (the shader's sin has
+        // period 1, so the fraction is the same pulse). TODO(spec): this pass's place in the sort order (drawn last here).
         {
             const Vec3 fwd = cam.forward();
             const struct { float forward[4]; } ou{{fwd.x, fwd.y, fwd.z, gameTimeSeconds}};
@@ -2574,7 +2579,10 @@ struct Renderer {
                 SDL_BindGPUFragmentSamplers(p2, 0, &cb, 1);
                 SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
             }
-            if (glowOn && scene.sky) { // TODO(spec): maps without a sky cube get no glow (texturecube binding required)
+            // Code sampler "sky" (0x10, 1.3 DLL switch 0x10038dd0 case 0x10038f4f) is the world's sky image (world +0x20); without one
+            // the DLL reports "Tried to use 'sampler.sky' when it isn't valid", so glow_apply_sky_bleed never runs without a sky.
+            // TODO(spec): whether the DLL then skips only sky bleed or the whole glow chain (here: no glow).
+            if (glowOn && scene.sky) {
                 SDL_BindGPUGraphicsPipeline(p2, glowApplyPipe);
                 // glow_apply_sky_bleed.hlsl: skyCoords = nearPlaneOrg + (u - 0.5) * nearPlaneDx + (v - 0.5) * nearPlaneDy.
                 const Vec3 f = cam.forward(), r = cam.right(), up = cross(r, f);
@@ -4227,9 +4235,30 @@ int main(int argc, char** argv) {
                         text = text.substr(0, b) + keys + text.substr(e + 2);
                     }
                     if (text.empty()) continue;
+                    // Font and size (cgame 0x4c27b8, hudelem font +0x14): 0 "default": textScale = fontScale * 0.25 (0x591fe0),
+                    // s = textScale * h / 480 (0x793944); s <= ui_smallFont $smallfont, >= ui_extraBigFont $extrabigfont,
+                    // < ui_bigFont $font, else $bigfont. 1 "bigfixed": textScale = fontScale * 0.5 (0x591e10); s <= ui_smallFont
+                    // $smallfont, < ui_bigFont $font, else $boldfont. 2 "smallfixed": $consolefont, textScale = fontScale / 3
+                    // (0x592250). Handles: 0x1107448 $bigfont, 0x110744c $smallfont, 0x1107450 $consolefont, 0x1107454 $boldfont,
+                    // 0x1107458 $font, 0x110745c $extrabigfont (0x4c3493..0x4c34fe). Glyphs: textScale * 48 / font height virtual
+                    // units per font pixel, as menu text. Before, every hudelem used $font stretched (blurry intro text).
                     const std::string fontName = o->get("font").toString();
-                    const assets::Font* f = font(fontName == "bigfixed" || fontName == "big" ? "bigfont" : "normalfont");
-                    if (f) hudText(dst, text, px, py, field(o, "fontscale", 1) * sc * 0.75f, *f, rgba, fx, fy);
+                    const int fontType = fontName == "bigfixed" ? 1 : fontName == "smallfixed" ? 2 : 0;
+                    auto uiF = [&](const char* k, float def) {
+                        auto it = world->cvars.find(k);
+                        return it == world->cvars.end() ? def : float(std::atof(it->second.c_str()));
+                    };
+                    const float fsc = field(o, "fontscale", 1);
+                    const float textScale = fsc * (fontType == 0 ? 0.25f : fontType == 1 ? 0.5f : 1.0f / 3.0f);
+                    const float s = textScale * sc;
+                    const char* hudFont = "consoleFont";
+                    if (fontType == 0)
+                        hudFont = s <= uiF("ui_smallFont", 0.25f) ? "smallFont" : s >= uiF("ui_extraBigFont", 0.55f) ? "extraBigFont"
+                                : s < uiF("ui_bigFont", 0.4f) ? "normalFont" : "bigFont";
+                    else if (fontType == 1)
+                        hudFont = s <= uiF("ui_smallFont", 0.25f) ? "smallFont" : s < uiF("ui_bigFont", 0.4f) ? "normalFont" : "boldFont";
+                    const assets::Font* f = font(hudFont);
+                    if (f) hudText(dst, text, px, py, textScale * 48.0f / float(f->pixelHeight) * sc, *f, rgba, fx, fy);
                 }
             }
             {
@@ -5135,7 +5164,11 @@ int main(int argc, char** argv) {
                         if (hudFade.stanceChange + 1000 > now) {
                             const float fa = std::min(sa, float(hudFade.stanceChange + 1000 - now) * 0.001f * 0.8f);
                             Quad2D f = q;
-                            for (int k = 0; k < 3; ++k) f.rgba[k] = 255; // cg_hudStanceFlash default (1 1 1 1); TODO(spec): dvar override
+                            // Colour: the dvar cg_hudStanceFlash (default 1 1 1 1); its rgb, the alpha from the fade above.
+                            float flash[4] = {1, 1, 1, 1};
+                            if (const std::string fs = menuEnv.getCvar("cg_hudStanceFlash"); !fs.empty())
+                                std::sscanf(fs.c_str(), "%f %f %f %f", &flash[0], &flash[1], &flash[2], &flash[3]);
+                            for (int k = 0; k < 3; ++k) f.rgba[k] = uint8_t(std::clamp(flash[k], 0.0f, 1.0f) * 255.0f);
                             f.rgba[3] = uint8_t(std::clamp(fa, 0.0f, 1.0f) * 255.0f);
                             f.texture = materialTexture("stance_flash");
                             out.push_back(f);
@@ -7200,7 +7233,7 @@ int main(int argc, char** argv) {
                 const uint64_t profB = SDL_GetTicksNS();
                 updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
-                renderer.gameTimeSeconds = world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f;
+                renderer.gameTimeSeconds = float(((world ? world->timeMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
                 profWater += double(profC - profB) * 1e-6;
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;

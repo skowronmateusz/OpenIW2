@@ -228,6 +228,10 @@ std::optional<World::CarriedPlayer> World::carriedPlayerState() {
     c.inventory = inventory(*player_);
     const Value w = player_->obj->get("$weapon");
     if (w.isString()) c.weapon = w.toString();
+    const Value h = player_->obj->get("health"), mh = player_->obj->get("maxhealth");
+    if (h.isNumber()) c.health = h.asInt();
+    if (mh.isNumber()) c.maxhealth = mh.asInt();
+    c.deadYaw = playerDeadYaw_;
     return c;
 }
 
