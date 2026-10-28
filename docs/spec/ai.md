@@ -676,8 +676,8 @@ a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; 
   sin(a/2), 0, cos(a/2)) (a pitch about y, the same as `anglesQuat(a, 0, 0)`), translation (0, 0, lift). Mode 1 is drawn by
   iw2view through `World::actorProneTilt`.
 
-Verified: 28-map sweep (40 s, `--spawn-all`, `IW2_PRONE_LOG=1`): no unimplemented built-ins; checkprone / enterprone /
-exitprone run on 25 maps; runtime errors only the known ones (elalamein / matmata setbattlechatter, matmata roof_guys,
+Verified: 27-map sweep (all SP maps, 40 s, `--spawn-all`, `IW2_PRONE_LOG=1`): no unimplemented built-ins; checkprone / enterprone /
+exitprone run on 24 of the 27 maps; runtime errors only the known ones (elalamein / matmata setbattlechatter, matmata roof_guys,
 silotown_assault field_charge spawn), none from prone code.
 TODO(spec): the corpse prone blend (0x4fdba0 copies the block, sets the corpse byte, 500 ms, zero pitches; client mode 2
 with the second rotation 0x423a10 / product 0x4235e0) is not ported; the reader of +0x288; the client draws with its own
