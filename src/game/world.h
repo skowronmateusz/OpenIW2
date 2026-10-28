@@ -12,6 +12,7 @@
 #include "game/fx.h"
 #include "game/collision.h"
 #include "game/friendlychain.h"
+#include "game/grenadehint.h"
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
@@ -913,6 +914,12 @@ private:
     bool throwArcClear(Entity& actor, const Vec3& start, const Vec3& vel, const Vec3& target);
     bool throwSolution(Entity& actor, const Vec3& from, const Vec3& armOffset, const std::string& method, const Vec3& target,
                        bool anyway, Vec3& start, Vec3& vel);
+    Vec3 bounceAim(Entity& actor, const std::string& weapon, const Vec3& start, const Vec3& target); // 0x51ebe0
+    float randomRange(float lo, float hi);                       // flrand 0x4d8480 on the rand() state 0x5a56f4
+    float grenadeHintArc() const;                                // ai_debugGrenadeHintArc (0x1c13f58)
+    bool grenadeHintLobThrow(Entity& actor, const Vec3& start, const Vec3& target, Vec3& vel);  // 0x51f050
+    bool grenadeHintFromLanding(Entity& actor, const Vec3& landing, Vec3& vel);                // 0x51f320
+    std::vector<Vec3> grenadeHints_;  // info_grenade_hint origins in spawn order (0x1c8f180, count 0x1c6103c), max 512
     void releaseHeldGrenade(Entity& actor);
     void registerGrenadeBuiltins();
     float grenadeDangerRadius(Entity& g);

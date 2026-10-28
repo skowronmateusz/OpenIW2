@@ -31,7 +31,7 @@ bool startsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0
 // Classes from the executable's spawn table (docs/spec/entities.md) that remain script-visible entities.
 // misc_model, misc_prefab, script_struct, func_group, info_null and light are consumed at load (inferred).
 const std::set<std::string> kEntityClasses = {
-    "info_player_start", "info_notnull", "info_notnull_big", "info_grenade_hint", "info_volume", "trigger_use",
+    "info_player_start", "info_notnull", "info_notnull_big", "info_volume", "trigger_use",
     "trigger_use_touch", "trigger_multiple", "trigger_radius", "trigger_disk", "trigger_friendlychain", "trigger_hurt",
     "trigger_once", "trigger_damage", "trigger_lookat", "misc_mg42", "misc_turret", "corona", "sound_blend",
     "script_brushmodel", "script_model", "script_origin", "script_vehicle", "script_vehicle_collmap"};
@@ -213,6 +213,15 @@ void World::spawnMapEntities() {
             const Value sf = n.obj->get("spawnflags");
             n.spawnflags = sf.isInt() ? sf.asInt() : 0;
             nodes_.push_back(std::move(n));
+        } else if (cls == "info_grenade_hint") {
+            // 0x51e6a0: the origin goes into the hint table (0x1c8f180, at most 512: ERR_DROP "MAX_GRENADE_HINTS (%i)
+            // exceeded"), then the entity is freed (0x4d7c30), so scripts never see it.
+            if (int(grenadeHints_.size()) >= kMaxGrenadeHints)
+                throw std::runtime_error("MAX_GRENADE_HINTS (" + std::to_string(kMaxGrenadeHints) + ") exceeded");
+            auto o = vm_.newObject(cls);
+            fill(o);
+            const Value org = o->get("origin");
+            grenadeHints_.push_back(org.isVector() ? org.asVector() : Vec3{0, 0, 0});
         } else if (cls == "info_vehicle_node" || cls == "info_vehicle_node_rotate") {
             auto o = vm_.newObject(cls);
             fill(o);

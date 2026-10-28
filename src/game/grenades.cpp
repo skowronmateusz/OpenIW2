@@ -455,11 +455,70 @@ bool World::throwArcClear(Entity& actor, const Vec3& start, const Vec3& vel, con
     return hit && (hit->isActor || hit->isPlayer) && teamOf(*hit) == enemyTeam(teamOf(actor));
 }
 
-// 0x51f490: a throw from `from` + the arm offset (turned by the actor's yaw, 0x51eb00: forward·x − right·y + up·z) to
-// the target: none while g ≤ 0, while the actor already handles a grenade (unless `anyway`) or with friends of the
-// thrower within 1.1 × explosionRadius of the target (0x51f6e0). The aim point is moved back towards the start by the
-// bounce off the target's surface (0x51ebe0: 1 − (parallel + (perpendicular − parallel) · 0.9397)).
-// TODO(spec): the grenade hint nodes (info_grenade_hint, 0x51ece0) tried when the start is blocked.
+// 0x51ebe0: the aim point moved back from the target towards the start by the bounce off the target's surface
+// (1 − (parallel + (perpendicular − parallel) · 0.9397) of the way, the surface from a ±1 trace at the target).
+Vec3 World::bounceAim(Entity& actor, const std::string& weapon, const Vec3& start, const Vec3& target) {
+    const TraceResult dn = collision_->trace({target[0], target[1], target[2] + 1.0f}, {target[0], target[1], target[2] - 1.0f},
+                                             {0, 0, 0}, {0, 0, 0}, kGrenadeClip, actor.number);
+    const int surf = dn.fraction == 1.0f ? 0 : int(dn.surfaceFlags >> 20 & 0x1f);
+    const char* name = surf < 23 ? kSurfaces[surf] : "Default";
+    const float par = weaponFloat(weapon, ("parallel" + std::string(name) + "Bounce").c_str());
+    const float perp = weaponFloat(weapon, ("perpendicular" + std::string(name) + "Bounce").c_str());
+    const float f = 1.0f - ((perp - par) * 0.9397f + par);
+    return add(scale(sub(target, start), f), start);
+}
+
+// flrand (0x4d8480): one draw of the game's rand() (0x5a56f4: seed·0x343fd + 0x269ec3, >> 17) scaled into [lo, hi).
+float World::randomRange(float lo, float hi) {
+    meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
+    return float(meleeSeed_ >> 17) * (hi - lo) * 3.0517578125e-05f + lo;
+}
+
+// ai_debugGrenadeHintArc (registered at 0x4d9196: float, default 150, 0..180, flags 0x1080): the cone of 0x51ece0.
+float World::grenadeHintArc() const {
+    const auto it = cvars.find("ai_debugGrenadeHintArc");
+    if (it == cvars.end() || it->second.empty()) return kGrenadeHintArcDefault;
+    return std::clamp(float(std::atof(it->second.c_str())), 0.0f, 180.0f);
+}
+
+// 0x51f050 (MagicGrenade's last resort): the hint table in its current order; the first hint whose lob over it
+// (grenadeHintLob) passes the arc check 0x51e710 to its landing point gives the velocity.
+bool World::grenadeHintLobThrow(Entity& actor, const Vec3& start, const Vec3& target, Vec3& vel) {
+    for (const Vec3& h : grenadeHints_) {
+        Vec3 v, land;
+        if (!grenadeHintLob(h, start, target, gravity(), v, land)) continue;
+        if (throwArcClear(actor, start, v, land)) {
+            vel = v;
+            if (std::getenv("IW2_GRENADE_HINT_DEBUG"))
+                std::printf("grenade hint: MagicGrenade lob over (%g %g %g) lands (%g %g %g)\n", h[0], h[1], h[2], land[0], land[1], land[2]);
+            return true;
+        }
+    }
+    return false;
+}
+
+// 0x51f320 (the throw-back's last resort, 0x51fd7c): the hint table is sorted in place by distance from the landing
+// point (it stays sorted for later users); the first hint reachable from the landing point with a min time throw
+// (0x51ee30 flag 0, no arm offset, no bounce adjustment) gives the velocity.
+bool World::grenadeHintFromLanding(Entity& actor, const Vec3& landing, Vec3& vel) {
+    if (grenadeHints_.empty()) return false;
+    grenadeHintSortByDistance(grenadeHints_, landing);
+    for (const Vec3& h : grenadeHints_) {
+        if (solveThrow(actor, "min time", landing, h, vel)) {
+            if (std::getenv("IW2_GRENADE_HINT_DEBUG"))
+                std::printf("grenade hint: throw back from (%g %g %g) at hint (%g %g %g)\n", landing[0], landing[1], landing[2], h[0], h[1], h[2]);
+            return true;
+        }
+    }
+    return false;
+}
+
+// 0x51f490 (inlined as well in checkGrenadeThrow 0x53e720 and checkGrenadeThrowPos 0x53ead0): a throw from `from` +
+// the arm offset (turned by the actor's yaw, 0x51eb00: forward·x − right·y + up·z) to the target: none while g ≤ 0,
+// while the actor already handles a grenade (unless `anyway`) or with friends of the thrower within 1.1 ×
+// explosionRadius of the target (0x51f6e0). A line trace start ↔ target (0x526840: mask 0x811, no pass entity) decides
+// the aim: clear, or blocked with no hint (0x51ece0), the bounce-adjusted target (0x51ebe0); blocked with a hint, the
+// hint moved by flrand(−15, 15) on x, y, z in that order. A zero aim distance fails; then the method's solver.
 bool World::throwSolution(Entity& actor, const Vec3& from, const Vec3& armOffset, const std::string& method,
                           const Vec3& target, bool anyway, Vec3& start, Vec3& vel) {
     if (gravity() <= 0.0f) return false;
@@ -476,14 +535,21 @@ bool World::throwSolution(Entity& actor, const Vec3& from, const Vec3& armOffset
     const float yaw = (ang.isVector() ? ang.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
     const Vec3 fwd{std::cos(yaw), std::sin(yaw), 0}, right{std::sin(yaw), -std::cos(yaw), 0};
     start = add(from, add(scale(fwd, armOffset[0]), add(scale(right, -armOffset[1]), Vec3{0, 0, armOffset[2]})));
-    const TraceResult dn = collision_->trace({target[0], target[1], target[2] + 1.0f}, {target[0], target[1], target[2] - 1.0f},
-                                             {0, 0, 0}, {0, 0, 0}, kGrenadeClip, actor.number);
-    const int surf = dn.fraction == 1.0f ? 0 : int(dn.surfaceFlags >> 20 & 0x1f);
-    const char* name = surf < 23 ? kSurfaces[surf] : "Default";
-    const float par = weaponFloat(weapon, ("parallel" + std::string(name) + "Bounce").c_str());
-    const float perp = weaponFloat(weapon, ("perpendicular" + std::string(name) + "Bounce").c_str());
-    const float f = 1.0f - ((perp - par) * 0.9397f + par);
-    const Vec3 aim = add(scale(sub(target, start), f), start);
+    Vec3 aim, hint;
+    const TraceResult los = collision_->trace(start, target, {0, 0, 0}, {0, 0, 0}, 0x811, -1);
+    if (los.fraction != 1.0f && !grenadeHints_.empty() && grenadeHintPick(grenadeHints_, start, target, grenadeHintArc(), hint)) {
+        aim[0] = randomRange(hint[0] - kGrenadeHintJitter, hint[0] + kGrenadeHintJitter);
+        aim[1] = randomRange(hint[1] - kGrenadeHintJitter, hint[1] + kGrenadeHintJitter);
+        aim[2] = randomRange(hint[2] - kGrenadeHintJitter, hint[2] + kGrenadeHintJitter);
+        if (std::getenv("IW2_GRENADE_HINT_DEBUG"))
+            std::printf("grenade hint: %s blocked throw (%g %g %g) -> (%g %g %g) aims at hint (%g %g %g)\n", method.c_str(),
+                        start[0], start[1], start[2], target[0], target[1], target[2], hint[0], hint[1], hint[2]);
+    } else {
+        if (los.fraction != 1.0f && std::getenv("IW2_GRENADE_HINT_DEBUG"))
+            std::printf("grenade hint: %s blocked throw (%g %g %g) -> (%g %g %g), no hint of %zu\n", method.c_str(), start[0],
+                        start[1], start[2], target[0], target[1], target[2], grenadeHints_.size());
+        aim = bounceAim(actor, weapon, start, target);
+    }
     if (dot(sub(aim, start), sub(aim, start)) == 0.0f) return false;
     return solveThrow(actor, method, start, aim, vel);
 }
@@ -525,17 +591,21 @@ void World::registerGrenadeBuiltins() {
         spawnGrenade(*e, grenadeWeapon(*e), c.arg(0).asVector(), c.arg(1).asVector(), fuseArg(c, 2));
         return Value();
     });
-    // MagicGrenade(origin, target [, fuse seconds]) (0x4ee3d0): aim adjusted for the bounce, then min energy, min
-    // time, max time. TODO(spec): the last fallback 0x51f050 when all three fail.
+    // MagicGrenade(origin, target [, fuse seconds]) (0x4ee3d0): no gravity / held grenade / friendly / line-of-sight
+    // checks (unlike 0x51f490): the bounce-adjusted aim (0x51ebe0) from the origin, then min energy, min time, max time,
+    // then the hint lob 0x51f050 towards that aim; the grenade leaves from the origin itself.
     vm_.registerBuiltin("magicgrenade", [this, fuseArg, grenadeWeapon](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("MagicGrenade only supports actors.");
         if (c.argc() != 2 && c.argc() != 3) throw std::runtime_error("<actor> MagicGrenade <origin> <target position> [time to blow (seconds)].");
         const Vec3 from = c.arg(0).asVector(), target = c.arg(1).asVector();
-        Vec3 start, vel;
+        const std::string weapon = e->obj->get("grenadeweapon").toString();
+        const Vec3 aim = bounceAim(*e, weapon, from, target);
+        Vec3 vel;
         bool ok = false;
         for (const char* m : {"min energy", "min time", "max time"})
-            if (!ok) ok = throwSolution(*e, from, {0, 0, 0}, m, target, true, start, vel);
+            if (!ok) ok = solveThrow(*e, m, from, aim, vel);
+        if (!ok) ok = grenadeHintLobThrow(*e, from, aim, vel);
         if (!ok) {
             print("MagicGrenade: None of the methods worked (probably distance or blocked)...need a good fail safe");
             return Value();
