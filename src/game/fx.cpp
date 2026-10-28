@@ -1113,6 +1113,9 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!(cl > 0)) continue;
             s.beamPerp = mul(c, 1.0f / cl);
         }
+        // Debug: IW2_FX_SKIP=<element type or name> leaves those sprites out of the draw (the element still updates).
+        static const char* const fxSkip = std::getenv("IW2_FX_SKIP");
+        if (fxSkip && (e.type == fxSkip || e.name == fxSkip)) continue;
         if (!hidden) out.push_back(s);
     }
     // Tracer entities (0x4c0d98): the head P = base + dir * speed * age (TR_LINEAR, 0x4fae80); the streak runs from P

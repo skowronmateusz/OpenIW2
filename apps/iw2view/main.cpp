@@ -3069,35 +3069,11 @@ int main(int argc, char** argv) {
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
-        auto gatherItems = [&](const Camera& viewCam) {
-            std::vector<DrawItem> items;
-            if (!world) return items;
-            // View frustum (Gribb-Hartmann planes of the view-projection; 32:9 aspect so any window is covered) used to skip
-            // the CPU skinning of animated entities that cannot be seen. The player's view model is never culled.
-            const Mat4 cullVp = viewCam.viewProj(3.6f);
-            std::array<std::array<float, 4>, 5> cullPlanes{};
-            {
-                auto row = [&](int i) { return std::array<float, 4>{cullVp[size_t(i)], cullVp[size_t(4 + i)], cullVp[size_t(8 + i)], cullVp[size_t(12 + i)]}; };
-                const auto r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
-                for (int k = 0; k < 4; ++k) {
-                    cullPlanes[0][size_t(k)] = r3[size_t(k)] + r0[size_t(k)];
-                    cullPlanes[1][size_t(k)] = r3[size_t(k)] - r0[size_t(k)];
-                    cullPlanes[2][size_t(k)] = r3[size_t(k)] + r1[size_t(k)];
-                    cullPlanes[3][size_t(k)] = r3[size_t(k)] - r1[size_t(k)];
-                    cullPlanes[4][size_t(k)] = r2[size_t(k)]; // near (depth range 0..w)
-                }
-                for (auto& pl : cullPlanes) {
-                    const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
-                    for (float& v : pl) v /= len;
-                }
-            }
-            static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr; // debug: disable the culling above
-            auto sphereVisible = [&](float x, float y, float z, float radius) {
-                for (const auto& pl : cullPlanes)
-                    if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
-                return true;
-            };
-            Uploader up(dev, false);
+        // World effect / tracer events (server events) are played when they are taken: per rendered frame in play, and per
+        // simulated server frame in --shot mode, so a shot shows each effect at its own age rather than every queued event of
+        // the whole simulation at age 0 (cgame consumes events per frame, effect time = cg.time, 0x486b30).
+        auto playWorldFx = [&]() {
+            if (!world) return;
             for (const auto& ev : world->takeFxEvents()) {
                 if (std::getenv("IW2_MARK_DEBUG")) std::cerr << "fx event " << ev.path << "\n";
                 if (ev.entity >= 0 && !ev.tag.empty()) {
@@ -3136,6 +3112,37 @@ int main(int argc, char** argv) {
             }
             for (const auto& te : world->takeTracerEvents())
                 fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
+        };
+        auto gatherItems = [&](const Camera& viewCam) {
+            std::vector<DrawItem> items;
+            if (!world) return items;
+            // View frustum (Gribb-Hartmann planes of the view-projection; 32:9 aspect so any window is covered) used to skip
+            // the CPU skinning of animated entities that cannot be seen. The player's view model is never culled.
+            const Mat4 cullVp = viewCam.viewProj(3.6f);
+            std::array<std::array<float, 4>, 5> cullPlanes{};
+            {
+                auto row = [&](int i) { return std::array<float, 4>{cullVp[size_t(i)], cullVp[size_t(4 + i)], cullVp[size_t(8 + i)], cullVp[size_t(12 + i)]}; };
+                const auto r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+                for (int k = 0; k < 4; ++k) {
+                    cullPlanes[0][size_t(k)] = r3[size_t(k)] + r0[size_t(k)];
+                    cullPlanes[1][size_t(k)] = r3[size_t(k)] - r0[size_t(k)];
+                    cullPlanes[2][size_t(k)] = r3[size_t(k)] + r1[size_t(k)];
+                    cullPlanes[3][size_t(k)] = r3[size_t(k)] - r1[size_t(k)];
+                    cullPlanes[4][size_t(k)] = r2[size_t(k)]; // near (depth range 0..w)
+                }
+                for (auto& pl : cullPlanes) {
+                    const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
+                    for (float& v : pl) v /= len;
+                }
+            }
+            static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr; // debug: disable the culling above
+            auto sphereVisible = [&](float x, float y, float z, float radius) {
+                for (const auto& pl : cullPlanes)
+                    if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
+                return true;
+            };
+            Uploader up(dev, false);
+            playWorldFx();
             fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
             fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
             for (const auto& d : fxSystem.takeDecals(world->timeMs()))
@@ -5793,6 +5800,13 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
+                    // This server frame's effect events are played now and the effects updated at the frame time, as the client
+                    // does per frame (before, every event of the simulation was played at the shot time, all at age 0).
+                    fxSystem.viewOrigin = {cam.pos.x, cam.pos.y, cam.pos.z};
+                    fxSystem.viewValid = true;
+                    setFxFrustum(fxSystem, cam, float(width) / float(height));
+                    playWorldFx();
+                    (void)fxSystem.sprites(world->timeMs());
                     if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
                         std::array<game::Vec3, 3> body;
                         if (world->playerVehicleBodyAxis(body)) {
