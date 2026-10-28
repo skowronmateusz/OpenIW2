@@ -36,6 +36,10 @@ int main() {
     // Accumulate: the damage since the last firing (32000 - health) must reach it.
     CHECK(!triggerDamageFires(0, 100, 0, 40, 2, full - 40) && triggerDamageFires(0, 100, 0, 40, 2, full - 100));
     if (failures) return 1;
+    // trigger_disk: box 30 wide (half 15) around x=100, disk at the origin with radius 50: touches from distance 65.
+    CHECK(!triggerDiskContact(85, 115, -15, 15, 0, 0, 100));
+    CHECK(triggerDiskContact(85, 115, -15, 15, 0, 0, 50));
+    CHECK(!triggerDiskContact(85, 115, -15, 15, 0, 0, 90));
     std::cout << "triggerdamage tests passed\n";
     return 0;
 }

@@ -106,4 +106,11 @@ void World::triggerDamageUse(Entity& e) {
     if (e.obj->get("$tdRemove").truthy()) e.obj->removed = true;
 }
 
+bool triggerDiskContact(float absminX, float absmaxX, float absminY, float absmaxY, float originX, float originY, float radius) {
+    const float cx = (absminX + absmaxX) * 0.5f, cy = (absminY + absmaxY) * 0.5f;
+    const float rr = (absmaxX - cx) + (radius + 64.0f) - 64.0f; // 0x4478b6 / 0x447950
+    const float dx = cx - originX, dy = cy - originY;
+    return !(dx * dx + dy * dy < rr * rr);
+}
+
 } // namespace iw2::game

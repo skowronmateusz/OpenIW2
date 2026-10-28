@@ -60,5 +60,5 @@ baking static models into the level; that the entity is then dropped is *inferre
 - SV_EntityContact: brush models by a zero-length CM_TransformedBoxTrace (0x417c20, mask −1) of the box at the
   entity origin/angles that starts solid; shape flag 0x10 (trigger_radius, spawn 0x528ee0: mins (−r, −r, 0), maxs
   (r, r, height), flags 0x11): the box must reach above the base and below the top, and its centre lie within
-  r + half its x width of the axis; shape flag 0x20 (trigger_disk): touches when that distance ≥ r + half width − 64.
+  r + half its x width of the axis; shape flag 0x20 (trigger_disk): touches when that distance ≥ r + half width (spawn 0x529070 stores r + 64 in r.maxs, 0x447950 subtracts the 64 again; no z test, z extent ±100000).
 - `istouching` (0x4ef100) runs the same test with the shape entity and the other entity's box.
