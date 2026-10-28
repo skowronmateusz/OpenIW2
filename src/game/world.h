@@ -557,6 +557,7 @@ public:
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
     std::string vehicleCollmap(Entity& vehicle);
+    std::string lookupVehicleCollmap(Entity& vehicle);
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
     void updateVehicleEngineSound(Entity& e);
     void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
