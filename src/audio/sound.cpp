@@ -445,6 +445,7 @@ void Mixer::mix(float* out, int frames) {
         else duck_ = std::clamp(duck_ + (masterPlaying ? 1.0f : -1.0f) * float(frames) * 1000.0f / (float(rate_) * float(slaveFadeMs)), 0.0f, 1.0f);
     }
     for (Voice& v : voices_) {
+        if (paused && v.chan >= 0 && channelPausable[v.chan]) continue; // paused samples keep their position
         float gl, gr;
         gains(v, gl, gr);
         const float cs = v.chan >= 0 ? channelScale[v.chan] : 1.0f;

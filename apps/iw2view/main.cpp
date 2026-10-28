@@ -2680,8 +2680,9 @@ int main(int argc, char** argv) {
         game::ClientInput input;
         if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
         else std::cerr << "warning: default.cfg not found, no key bindings\n";
-        // A level's game world. game[] survives level changes (maps/_endmission.gsc and _loadout.gsc rely on it,
-        // docs/spec/campaign.md), so its fields are copied into the new world before its script starts.
+        // A level's game world. game[] survives only a persistent level change (changelevel / missionsuccess with persistent set:
+        // G_ShutdownGame 0x4d9d3c -> 0x46e1c0 -> 0x4689e0 frees the game object 0x9bef30 otherwise, and G_InitGame 0x4da481 creates
+        // a new one); then its fields are copied into the new world before its script starts (maps/_loadout.gsc "gaveweapons").
         struct Subtitle { std::string key; uint64_t untilNs; };
         std::vector<Subtitle> subtitles; // cg subtitle lines (cgame 0x4a3540 → console channel → 0x4bf2e0)
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
@@ -2704,7 +2705,8 @@ int main(int argc, char** argv) {
         }
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
-        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame, const game::LoadedSave* save = nullptr) {
+        auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame, const game::LoadedSave* save = nullptr,
+                             std::optional<game::World::CarriedPlayer> carriedPlayer = std::nullopt) {
             auto w = std::make_unique<game::World>(vfs, map);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
@@ -2726,6 +2728,7 @@ int main(int argc, char** argv) {
             w->setBlendSound = [&mixer](int h, float f, const game::Vec3& o) { mixer.setBlend(h, f, audio::Vec3{o[0], o[1], o[2]}); };
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
+            if (carriedPlayer) w->setCarriedPlayer(std::move(*carriedPlayer));
             // The bindings from default.cfg, reported to scripts through getkeybinding.
             for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
             if (save) { // savegame load: map entities, then the saved state instead of the level script (docs/spec/savegame.md 5)
@@ -3295,8 +3298,34 @@ int main(int argc, char** argv) {
             }
             return it->second ? &*it->second : nullptr;
         };
+        // Level material aliases: at the start of a map load (0x40ce90, also 0x4c4030 / 0x4c6356) the client reads maps/<map>.csv
+        // (0x4d0770, "^3WARNING: Could not find '%s'." when missing); each row "key,material" registers the material under the
+        // lower-cased name "$key" (0x4d0700: format "$%s", refexport +0x... alias). The menus use them as "$levelBriefing",
+        // "$victoryBackdrop" (briefing, pregame, victoryscreen).
+        std::map<std::string, std::string> materialAliases;
+        auto loadMapAliases = [&](const std::string& map) {
+            materialAliases.clear();
+            const auto csv = vfs.read("maps/" + map + ".csv");
+            if (!csv) { std::cout << "WARNING: Could not find 'maps/" << map << ".csv'.\n"; return; }
+            std::istringstream in(std::string(csv->begin(), csv->end()));
+            std::string line;
+            while (std::getline(in, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                const size_t comma = line.find(',');
+                if (comma == std::string::npos || comma == 0) continue;
+                std::string key = "$" + line.substr(0, comma);
+                for (auto& ch : key) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                materialAliases[key] = line.substr(comma + 1);
+            }
+        };
         auto materialTexture = [&](const std::string& name) {
             Uploader up(dev);
+            if (!name.empty() && name[0] == '$') {
+                std::string key = name;
+                for (auto& ch : key) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (const auto a = materialAliases.find(key); a != materialAliases.end())
+                    return sceneMaterial(scene, dev, up, vfs, a->second).texture;
+            }
             return sceneMaterial(scene, dev, up, vfs, name).texture;
         };
         // The death screen's quote item comes from the HUD menus (ui/hud.txt → ui/hud.menu, menu "deadscreen").
@@ -3345,6 +3374,11 @@ int main(int argc, char** argv) {
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
         bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
+        // The pending load comes from a persistent changelevel (0x1c60ff0): game[] and the player's weapons survive it (0x4d9d3c ->
+        // 0x46e1c0 frees the game object 0x9bef30 otherwise; 0x4d9dd1 -> 0x4e6c20 writes the client into a memory save).
+        bool pendingPersistent = false;
+        std::string deferredExec; // console text after a `wait`, run on the next frame
+        int loadScreenPhase = 0; // 1: the briefing load screen is up for one frame before the synchronous load (UI_SetActiveMenu(13))
         std::optional<std::string> pendingLoad;                   // savegame to load ("loadgame X", loadgame_continue)
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
@@ -3399,7 +3433,20 @@ int main(int argc, char** argv) {
                     }
                 }
                 else if (c == "set" || c == "seta" || c == "sets") menuEnv.setCvar(a1, a2);
-                else if (c == "map") pendingLevel = std::make_pair(a1, false);
+                else if (c == "map" || c == "spmap" || c == "devmap" || c == "spdevmap") pendingLevel = std::make_pair(a1, false), pendingPersistent = false;
+                // nextlevel (console 0x446fa0 / menu command 0x4c8e10 -> 0x4d9f00): `spmap <stored map>` (`spdevmap` with sv_cheats) or,
+                // without a stored map, `disconnect`.
+                else if (c == "nextlevel") {
+                    if (world && !world->storedNextMap().empty())
+                        pendingLevel = std::make_pair(world->storedNextMap(), false), pendingPersistent = world->storedPersistent();
+                    else pendingDisconnect = world != nullptr;
+                }
+                // "openmenu <name>" (console command registered with closemenu, string 0x581368).
+                else if (c == "openmenu") menuEnv.open(a1);
+                else if (c == "wait") { // the command buffer's wait: the rest of the text runs on the next frame (after a disconnect)
+                    deferredExec = start <= text.size() ? text.substr(start) : std::string();
+                    return;
+                }
                 // Exe commands 0x446860..0x4468c0 (difficultyEasy/Medium/Hard/Fu) call 0x432570 with 0/1/2/3 and then re-apply the skill.
                 else if (c == "difficultyeasy") menuEnv.setCvar("g_gameskill", "0");
                 else if (c == "difficultymedium") menuEnv.setCvar("g_gameskill", "1");
@@ -3468,6 +3515,9 @@ int main(int argc, char** argv) {
                                                                           : std::filesystem::path(args[0]) / "save";
         menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
             if (name == "quit") execText("quit");
+            // "playerstart" (0x4c5ab3 -> 0x4c54c0): cl_paused 0, console "fade 0 0 0 0 3" (0x581044), close every menu.
+            // TODO(spec): the `fade` console command (string 0x57f3ec) is not decoded and does nothing here.
+            else if (name == "playerstart") { menuEnv.setCvar("cl_paused", "0"); if (frontPtr) frontPtr->closeAll(); }
             // "Loadgame" uiScript: "loadgame %s" of ui_savegame (0x580f98 / 0x580fa8).
             else if (name == "loadgame") { const std::string sv = menuEnv.getCvar("ui_savegame"); if (!sv.empty()) execText("loadgame " + sv); }
             // "DelSavegame": deletes save/<ui_savegame>.svg ("Deleted savegame: %s.svg" / "Unable to delete savegame: %s.svg", 0x5812d0 / 0x5812a0).
@@ -3617,6 +3667,11 @@ int main(int argc, char** argv) {
             scriptMenus.loadList("ui/menus.txt");
             scriptMenus.loadList("ui/ingame.txt"); // pregame, victoryscreen (exe 0x581314 list)
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
+        }
+        // A level started from the command line ends its load the same way (0x449a2c): "pregame" unless ui_autoContinue (not for --shot).
+        if (world && shot.empty() && std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0) {
+            menuEnv.setCvar("cl_paused", "1");
+            frontStack.open("pregame");
         }
         // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
         // TODO(spec): the "1" (openmenunomouse) variant keeps the cursor hidden; here the cursor is always shown.
@@ -4963,6 +5018,24 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // The fade to black belongs to the cgame's 2D pass (CG_DrawActive 0x4bfaa4: 0x4bda70 after the HUD); the UI menus are drawn
+            // after the cgame (the victory screen over the level-end fade), so with menus open it goes below them.
+            bool fadeDrawn = false;
+            auto drawScreenFade = [&] {
+                screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+                if (screenFade.alpha() > 0) {
+                    Quad2D q{0, 0, float(w), float(h)};
+                    q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
+                    q.rgba[3] = uint8_t(std::min(screenFade.alpha(), 1.0f) * 255.0f + 0.5f);
+                    out.push_back(q);
+                }
+                fadeDrawn = true;
+            };
+            if (!frontStack.empty()) {
+                out.insert(out.end(), front.begin(), front.end());
+                front.clear();
+                drawScreenFade();
+            }
             if (!frontStack.empty()) {
                 // Menus on the stack (front end and script menus), items laid out relative to the menu rect in the 640x480 virtual
                 // screen. Window style 1 (FILLED) draws backColor, 3 (SHADER) the background material, 6 (DVAR_SHADER) the material
@@ -4989,11 +5062,23 @@ int main(int argc, char** argv) {
                         const ui::Item& it = *itp;
                         if (!frontStack.itemVisible(it)) continue;
                         const float ix = menu.rect.x + it.rect.x, iy = menu.rect.y + it.rect.y;
-                        if (it.style == 1) quad(ix, iy, it.rect.w, it.rect.h, col8(it.backColor), "");
+                        // Window_Paint FILLED (0x4c725c): with a background material the back colour's alpha fades (fadein / fadeout).
+                        if (it.style == 1 && !it.background.empty()) frontStack.paintFade(menu, it, true);
+                        if (it.style == 1 && !frontStack.itemVisible(it)) continue; // the fade-out just ended
+                        // An item rect with HORIZONTAL_ALIGN_FULLSCREEN (4) spans the whole window like such a menu (victoryscreen, briefing bars).
+                        auto itemQuad = [&](float rx, float ry, float rw, float rh, const std::array<uint8_t, 4>& c, const std::string& mat) {
+                            if (it.rect.horzAlign != 4 || full) return quad(rx, ry, rw, rh, c, mat);
+                            const float fx = float(w) / 640.0f, lx = rx - menu.rect.x; // the item's own x, in full-width units
+                            Quad2D q{lx * fx, ry * sc, (lx + rw) * fx, (ry + rh) * sc};
+                            std::memcpy(q.rgba, c.data(), 4);
+                            q.texture = mat.empty() ? 0 : materialTexture(mat);
+                            out.push_back(q);
+                        };
+                        if (it.style == 1) itemQuad(ix, iy, it.rect.w, it.rect.h, col8(frontStack.backColor(it)), "");
                         else if (it.style == 3 || it.style == 6) {
                             std::string mat = it.background;
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
-                            if (!mat.empty()) quad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
+                            if (!mat.empty()) itemQuad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
                         }
                         if (it.type == 6) { // LISTBOX paint, exe 0x4ce280 (vertical, text columns)
                             const assets::Font* lf = menuFont(it.textScale, it.textFont);
@@ -5040,13 +5125,21 @@ int main(int argc, char** argv) {
                         // TODO(spec): the ownerdraw / textsavegame draw handlers are not decoded; drawn with the item's text settings.
                         const bool saveText = it.ownerDraw == 262 || it.textSaveGame;
                         if (saveText && (it.ownerDraw == 262 ? saveSelName : saveDetail).empty()) continue;
-                        if (!saveText && it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
-                        const std::string text = saveText ? (it.ownerDraw == 262 ? saveSelName : saveDetail) : menuLocalized(it.text);
+                        // Item_Text_Paint (0x4ccf60): an item without text shows its dvar's value (0x2c0 -> 0x4314b0), localized when it
+                        // starts with '@' (0x4c6a20); e.g. victoryscreen's "quote" (dvar ui_victoryquote).
+                        const bool dvarText = !saveText && it.text.empty() && !it.dvar.empty() && it.type != 4 && it.type != 16 && it.type != 11 &&
+                                              it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17;
+                        if (!saveText && !dvarText && it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
+                        const std::string dv = dvarText ? menuEnv.getCvar(it.dvar) : std::string();
+                        const std::string text = saveText ? (it.ownerDraw == 262 ? saveSelName : saveDetail)
+                                                 : dvarText ? (!dv.empty() && dv[0] == '@' ? menuLocalized(dv) : dv) : menuLocalized(it.text);
+                        if (dvarText && text.empty()) continue;
+                        frontStack.paintFade(menu, it, false); // text fade on the fore colour (0x4cd025 -> 0x4cc450)
                         const float ts = it.textScale;
                         const assets::Font* f = menuFont(ts, it.textFont);
                         if (!f) continue;
                         const float gs = ts * 48.0f / float(f->pixelHeight);
-                        auto c = col8(&it == frontStack.focus() ? menu.focusColor : it.foreColor);
+                        auto c = col8(&it == frontStack.focus() ? menu.focusColor : frontStack.foreColor(it));
                         if (it.type == 14 && &it == frontStack.focus()) {
                             // BIND (exe 0x4cdee0): capturing = (0.8, 0, 0, 0.8); focused = focus colour pulsing with
                             // (sin(ms / 75) + 1) * 0.5 against focus * 0.8 (0x4c6e50). TODO(spec): argument order of the blend.
@@ -5058,8 +5151,37 @@ int main(int argc, char** argv) {
                         }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
                         if (it.autoWrapped) {
-                            // exe 0x4ccc70: autowrapped text is split only at CR (0xd) and each line is drawn by textalign; the next line
-                            // starts one line height + 5 lower. TODO(spec): exact line step (the exe adds 5 to the result of 0x4c3790).
+                            // exe 0x4cc950 (item flag 0x800000, keyword "autowrapped"): the text is broken at spaces, tabs and LF so that
+                            // each line fits the item rect width; each line is drawn by textalign one line height + 5 lower than the
+                            // previous. TODO(spec): the exact break rule and line step of 0x4cc950 (taken from the dead quote's 0x4cc6a0).
+                            auto width = [&](const std::string& str) {
+                                float wd = 0;
+                                for (unsigned char ch : str)
+                                    if (const auto* g = f->find(ch)) wd += float(g->dx) * gs;
+                                return wd;
+                            };
+                            std::vector<std::string> lines;
+                            std::string line, word;
+                            auto flushWord = [&] {
+                                if (!line.empty() && width(line + " " + word) > it.rect.w) { lines.push_back(line); line.clear(); }
+                                line += (line.empty() ? "" : " ") + word;
+                                word.clear();
+                            };
+                            for (char ch : text) {
+                                if (ch == ' ' || ch == '\t') { if (!word.empty()) flushWord(); }
+                                else if (ch == '\n') { if (!word.empty()) flushWord(); lines.push_back(line); line.clear(); }
+                                else word += ch;
+                            }
+                            if (!word.empty()) flushWord();
+                            if (!line.empty()) lines.push_back(line);
+                            float ly = iy + it.textAlignY;
+                            for (const auto& l : lines) {
+                                hudText(out, l, x0 + (ix + it.textAlignX) * xs, ly * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
+                                ly += float(int(ts * 48.0f) + 5);
+                            }
+                        } else if (it.wrapped) {
+                            // exe 0x4ccc70 (item flag 0x400000, keyword "wrapped"): split only at CR (0xd), each line drawn by textalign; the
+                            // next line starts one line height + 5 lower. TODO(spec): exact line step (the exe adds 5 to the result of 0x4c3790).
                             float ly = iy + it.textAlignY;
                             size_t pos = 0;
                             while (true) {
@@ -5133,14 +5255,8 @@ int main(int argc, char** argv) {
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
             out.insert(out.end(), front.begin(), front.end());
-            // The fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
-            screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
-            if (screenFade.alpha() > 0) {
-                Quad2D q{0, 0, float(w), float(h)};
-                q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
-                q.rgba[3] = uint8_t(std::min(screenFade.alpha(), 1.0f) * 255.0f + 0.5f);
-                out.push_back(q);
-            }
+            // Without menus the fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
+            if (!fadeDrawn) drawScreenFade();
             (void)c;
             return out;
         };
@@ -5149,6 +5265,11 @@ int main(int argc, char** argv) {
         if (yaw) cam.yaw = *yaw;
         if (pitch) cam.pitch = *pitch;
 
+        // Debug: IW2_SHOT_ALIASES=<map> loads that map's material aliases (maps/<map>.csv, "$levelBriefing" ...) for a --shot; a level
+        // shot loads its own map's.
+        if (!shot.empty() && (std::getenv("IW2_SHOT_ALIASES") || !currentMap.empty()))
+            loadMapAliases(std::getenv("IW2_SHOT_ALIASES") ? std::string(std::getenv("IW2_SHOT_ALIASES")) : currentMap);
+        else if (!currentMap.empty()) loadMapAliases(currentMap); // the first map's load (0x40ce90)
         if (!shot.empty() && (menuMode || std::getenv("IW2_SHOT_MENU"))) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
             if (const char* sets = std::getenv("IW2_SHOT_SET")) {
                 std::string rest = sets;
@@ -5190,6 +5311,7 @@ int main(int argc, char** argv) {
                     } else frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                 }
             }
+            frontStack.settleFades(); // a single-frame shot shows the menus after their fades
         }
         if (!shot.empty()) {
             if (walkSeconds > 0) {
@@ -5265,7 +5387,25 @@ int main(int argc, char** argv) {
                         // beside and 60 above the Nth one (muzzle flashes in the shot).
                         world->debugFireTurrets();
                     }
+                    // Debug: IW2_SHOT_LEVEL_CALL=<s>:file.gsc:function starts that function as a thread on level at sim time <s>
+                    // (e.g. 2:maps/_endmission.gsc:nextmission for the victory screen).
+                    if (const char* lc = std::getenv("IW2_SHOT_LEVEL_CALL")) {
+                        const std::string spec = lc;
+                        const size_t c1 = spec.find(':'), c2 = spec.rfind(':');
+                        if (c1 != std::string::npos && c2 > c1 && f == int(std::atof(spec.substr(0, c1).c_str()) * 20))
+                            world->vm().start(spec.substr(c1 + 1, c2 - c1 - 1), spec.substr(c2 + 1), {}, script::Value(world->vm().level()));
+                    }
                     world->frame();
+                    if (auto change = world->takeDueLevelChange()) { // a --shot stops at a level change; the victory screen is shown
+                        std::cout << "shot: level change to " << change->map << (change->victoryScreen ? " (victory screen)" : "") << " at "
+                                  << world->timeMs() << " ms\n";
+                        if (change->victoryScreen) {
+                            for (const auto& cmd : world->takeClientCommands()) if (cmd.name == "openvictoryscreen") break;
+                            menuMx = 320.0f, menuMy = 448.0f;
+                            frontStack.open("victoryscreen");
+                        }
+                        break;
+                    }
                     if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
                         std::array<game::Vec3, 3> body;
                         if (world->playerVehicleBodyAxis(body)) {
@@ -5312,6 +5452,7 @@ int main(int argc, char** argv) {
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm") shotMsgs.push_back({cmd.arg, world->timeMs(), false});
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
                 }
+                frontStack.settleFades(); // a single-frame shot shows the menus after their fades
                 // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
                 for (const auto& m : shotMsgs)
                     if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(world->timeMs() - m.at) * 1000000ull;
@@ -5710,6 +5851,9 @@ int main(int argc, char** argv) {
         game::BreathSounds breathSnd;
         int heartbeatLoop = 0;
         game::ShockRecord holdBreathRec;
+        // Sound volume slot 1 (setchannelvol, docs/spec/campaign.md "Victory screen"): the channel volumes of shock/victoryscreen.shock,
+        // reached linearly over `ms` from full volume. TODO(spec): the slot fade of 0x4431f0 is not decoded (linear assumed).
+        struct { bool active = false; game::ShockRecord rec; uint64_t startNs = 0; int ms = 1; } victoryVol;
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
         else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
@@ -6216,9 +6360,11 @@ int main(int argc, char** argv) {
                         const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
                         const float f = rec && rec->sound ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
                         const float bb = breathSnd.volumeBlend();
+                        const float vb = victoryVol.active ? std::clamp(float(SDL_GetTicksNS() - victoryVol.startNs) * 1e-6f / float(victoryVol.ms), 0.0f, 1.0f) : 0.0f;
                         for (int c = 0; c < 11; ++c)
                             mixer.channelScale[c] = f > 0 ? game::shockChannelVolume(*rec, c, f)
-                                                  : bb != 0 ? game::shockChannelVolume(holdBreathRec, c, bb) : 1.0f;
+                                                  : bb != 0 ? game::shockChannelVolume(holdBreathRec, c, bb)
+                                                  : victoryVol.active ? game::shockChannelVolume(victoryVol.rec, c, vb) : 1.0f;
                     }
                     if (rec && rec->sound) {
                         const int el = int(world->timeMs() - ss.startMs);
@@ -6370,6 +6516,26 @@ int main(int argc, char** argv) {
                     std::istringstream a(cmd.arg);
                     if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
+                    } else if (cmd.name == "openvictoryscreen") {
+                        // Client 0x4a6d6a: the channel pause flags become "all but menu and music" (0x4429e0 with the 11-byte block at
+                        // 0x4a6d7f), sound volume slot 1 is cleared (0x443390(1)), then 0x4022b0("victoryscreen") -> UI_SetActiveMenu(15)
+                        // (0x4c679e: no close-all, cursor to (320, 448), UI key catcher) opens the menu, whose onOpen pauses the game.
+                        // 0x4022b0 opens it only while the client is active (state 4) and not playing a timedemo.
+                        for (int c = 0; c < 11; ++c) mixer.channelPausable[c] = c != 2 && c != 8;
+                        victoryVol.active = false;
+                        menuMx = 320.0f, menuMy = 448.0f;
+                        frontStack.open("victoryscreen");
+                        std::cout << "victory screen (next map " << world->storedNextMap() << ")\n";
+                    } else if (cmd.name == "setchannelvol") { // setchannelvol <slot> <shock> <ms>: slot 1 takes the shock file's channel volumes
+                        int slot = 0, ms = 0;
+                        std::string shockName;
+                        a >> slot >> shockName >> ms;
+                        if (const auto f = vfs.read("shock/" + shockName + ".shock")) {
+                            victoryVol.rec = game::parseShockFile(std::string(f->begin(), f->end()));
+                            victoryVol.active = true;
+                            victoryVol.startNs = SDL_GetTicksNS();
+                            victoryVol.ms = std::max(ms, 1);
+                        }
                     } else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 5000000000ull, false, SDL_GetTicksNS(), SDL_GetTicksNS() + 5000000000ull}); // con_gamemessagetime 5 s (0x571118)
                     else if (cmd.name == "gmb")
@@ -6469,16 +6635,19 @@ int main(int argc, char** argv) {
                         }
                     saveRowsAt = 0;
                 }
-                if (auto change = world->dueLevelChange()) {
+                if (auto change = world->takeDueLevelChange()) {
                     const std::string last = menuEnv.getCvar("sv_lastSaveGame");
                     if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last;
-                    else pendingLevel = std::make_pair(change->map, change->failed);
+                    else if (change->victoryScreen) {} // the client command openvictoryscreen opens the menu; `nextlevel` loads the map
+                    else pendingLevel = std::make_pair(change->map, change->failed), pendingPersistent = change->persistent && !change->failed;
                 }
             }
             if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
                 // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
                 pendingDisconnect = false;
                 pendingLevel.reset();
+                pendingPersistent = false;
+                loadScreenPhase = 0;
                 world.reset();
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);
@@ -6486,7 +6655,9 @@ int main(int argc, char** argv) {
                 menuEnv.setCvar("cl_paused", "0");
                 frontStack.closeAll();
                 frontStack.open("main");
+                mixer.resetPausable();
             }
+            if (!deferredExec.empty()) execText(std::exchange(deferredExec, std::string()));
             std::optional<game::LoadedSave> loadedSave;
             if (pendingLoad) {
                 const std::filesystem::path path = saveDir / (*pendingLoad + ".svg");
@@ -6502,32 +6673,71 @@ int main(int argc, char** argv) {
                 }
                 pendingLoad.reset();
             }
-            if (pendingLevel) {
+            static std::optional<game::LoadedSave> heldSave; // a savegame load waiting for the load-screen frame
+            static script::ObjectPtr heldGame;               // game[] of a persistent change (0x9bef30 survives, 0x4d9d3c)
+            static std::optional<game::World::CarriedPlayer> heldPlayer;
+            if (pendingLevel && loadScreenPhase == 0) {
+                // Leaving the level (G_ShutdownGame 0x4d9ce0): a cinematic() recorded by the script plays first (0x4d9f90); game[] and the
+                // player's weapons are kept only for a persistent change. Then the client starts the map load (0x40ce90: maps/<map>.csv
+                // aliases, client state 5) and the cgame load progress opens the load screen (0x4a300d / 0x4b9215 -> 0x4022b0("briefing")
+                // -> UI_SetActiveMenu(13) 0x4c6730: close every menu, open "briefing"; the "loadbar" name it also opens is no menu).
+                // openiw2 loads synchronously, so the load screen is drawn for one frame before the load.
+                if (world) {
+                    const std::string movie = world->takeCinematic();
+                    if (!movie.empty()) playScripted(movie);
+                }
+                heldGame = world && pendingPersistent && !loadedSave ? world->vm().game() : script::ObjectPtr();
+                heldPlayer.reset();
+                if (world && pendingPersistent && !loadedSave) heldPlayer = world->carriedPlayerState();
+                heldSave = std::move(loadedSave);
+                loadedSave.reset();
+                world.reset();
+                releaseScene(dev, scene);
+                scene = emptyScene(dev);
+                mixer.resetPausable(); // 0x40cc80: channel pause flags back to the defaults on the new connection
+                loadMapAliases(pendingLevel->first);
+                frontStack.closeAll();
+                frontStack.open("briefing");
+                loadScreenPhase = 1;
+            } else if (pendingLevel) {
+                    loadScreenPhase = 0;
+                    loadedSave = std::move(heldSave);
+                    heldSave.reset();
                     // Level change or restart: rebuild the world and the scene for the next map.
                     currentMap = pendingLevel->first;
-                    std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap << "\n";
+                    std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap
+                              << (pendingPersistent ? " (persistent)" : "") << "\n";
                     fogState.clear();
                     screenFade.clear(); // the new level starts unfaded
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
-                    if (world) { // a cinematic() recorded by the script plays before the next level loads (0x4d9f90)
-                        const std::string movie = world->takeCinematic();
-                        if (!movie.empty()) playScripted(movie);
-                    }
-                    const script::ObjectPtr carried = world ? world->vm().game() : script::ObjectPtr();
-                    world.reset();
+                    const script::ObjectPtr carried = std::exchange(heldGame, script::ObjectPtr());
                     releaseScene(dev, scene);
+                    // The level's sound aliases are loaded before its script runs (set_ambient checks them in main()).
+                    aliases.clear();
+                    aliases.load(vfs, currentMap);
+                    aliases.load(vfs, "menu", true); // the pause menu keeps its interface sounds
                     try {
-                        world = makeWorld(currentMap, loadedSave ? nullptr : carried, loadedSave ? &*loadedSave : nullptr);
+                        world = makeWorld(currentMap, loadedSave ? nullptr : carried, loadedSave ? &*loadedSave : nullptr,
+                                          loadedSave ? std::nullopt : std::exchange(heldPlayer, std::nullopt));
                     } catch (const std::exception& e) {
                         if (!loadedSave) throw;
                         std::cout << "loadgame failed: " << e.what() << "; restarting " << currentMap << "\n";
                         world = makeWorld(currentMap, nullptr);
                     }
                     scene = loadScene(dev, vfs, currentMap, false);
+                    if (world && world->player()) { // log: the weapons the level gave (or a persistent change carried)
+                        std::cout << "player weapons:";
+                        for (const auto& wn : world->inventory(*world->player()).owned) std::cout << " " << wn;
+                        std::cout << "\n";
+                    }
                     frontStack.closeAll(); // leaving the front end / pause menu
-                    aliases.clear();
-                    aliases.load(vfs, currentMap);
-                    aliases.load(vfs, "menu", true); // the pause menu keeps its interface sounds
+                    // Load finished (0x449a2c, client state 4): with ui_autoContinue (bool, default 0, flags 0x1000, 0x4c32c4) or a
+                    // timedemo (0x4c5530) the game starts at once (0x4c54c0); otherwise cl_paused 1, every menu closed and "pregame"
+                    // ("click to start the mission") opened; its click runs uiScript playerstart.
+                    if (std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0) {
+                        menuEnv.setCvar("cl_paused", "1");
+                        frontStack.open("pregame");
+                    } else menuEnv.setCvar("cl_paused", "0");
                     cam = scene.start;
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
@@ -6554,6 +6764,7 @@ int main(int argc, char** argv) {
                     slowmo = 1;
                     mixer.fade(1.0f, 0);
                 pendingLevel.reset();
+                pendingPersistent = false;
             }
             if (const char* lim = std::getenv("IW2_EXIT_AFTER")) // debug: leave after N seconds (keeps test runs from lingering)
                 if (SDL_GetTicksNS() > uint64_t(std::atof(lim) * 1e9)) running = false;
@@ -6610,6 +6821,7 @@ int main(int argc, char** argv) {
             frontStack.tick(int(SDL_GetTicks()));
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f) * 0.75f;
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
+            mixer.paused = menuEnv.getCvar("cl_paused") == "1"; // 0x442dc0: pause / resume the pausable channels when cl_paused changes
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
                 const bool wantCursor = !frontStack.empty();
                 if (wantCursor == SDL_GetWindowRelativeMouseMode(window)) SDL_SetWindowRelativeMouseMode(window, !wantCursor);

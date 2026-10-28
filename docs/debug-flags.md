@@ -120,3 +120,13 @@ described in the code that reads them.
   fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
   `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
 - Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads).
+
+## Level end / victory screen
+| Flag | Tool | Effect |
+|---|---|---|
+| `IW2_SHOT_LEVEL_CALL=<s>:file.gsc:function` | iw2view `--shot` | Starts the function as a thread on level at sim time `<s>`; a level change that falls due ends the simulation (a victory screen is opened for the shot), e.g. `20:maps/_endmission.gsc:nextmission`. |
+| `IW2_SHOT_ALIASES=<map>` | iw2view `--shot` | Loads the material aliases of `maps/<map>.csv` (`$levelBriefing`, `$victoryBackdrop`) for the shot, e.g. with `--menu` and `IW2_SHOT_MENU=briefing` or `pregame`. |
+- iw2game prints `[<ms> ms] level change to <map> ...` when a change falls due (with `: openvictoryscreen, nextlevel loads it` for
+  `missionsuccess`) and `player weapons: ... ; current ..., offhand ...` at the end of every run.
+- iw2view logs `victory screen (next map X)`, `changing level to X (persistent)` and `player weapons: ...` after each load.
+- `--shot` runs open all menus with their fades already finished (`MenuStack::settleFades`).

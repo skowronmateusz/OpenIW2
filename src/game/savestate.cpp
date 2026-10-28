@@ -142,6 +142,7 @@ void World::saveState(StateWriter& w) {
     w.str(levelChange_.map);
     w.b(levelChange_.persistent);
     w.i64(levelChange_.atMs);
+    w.b(moviePending_);
 
     w.b(playerLink_.has_value());
     if (playerLink_) {
@@ -459,6 +460,7 @@ void World::loadState(StateReader& r) {
     levelChange_.map = r.str();
     levelChange_.persistent = r.b();
     levelChange_.atMs = r.i64();
+    moviePending_ = r.b();
 
     playerLink_.reset();
     if (r.b()) {
