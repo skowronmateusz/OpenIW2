@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <random>
 
 namespace iw2::game {
@@ -200,6 +201,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         print("DBG player damage " + std::to_string(amount) + " to " + target.classname + " (" + mod + ") at " + std::to_string(timeMs_));
     // G_Damage (0x52835c): a client accumulates the damage; with a direction the direction is kept, else the
     // target's origin and the world flag (P_DamageFeedback turns that into 255/255).
+    if (target.isPlayer && std::getenv("IW2_PLAYER_DMG_LOG"))
+        std::fprintf(stderr, "[pdmg %lld] %d from #%d %s (%s)\n", (long long)timeMs_, amount, attacker ? attacker->number : -1, attacker ? attacker->classname.c_str() : "-", mod.c_str());
     if (target.isPlayer) {
         damageBlood_ += amount;
         if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0) {
