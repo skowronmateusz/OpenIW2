@@ -59,7 +59,9 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
             shownOverrides_.emplace_back(it, true);
         }
     };
-    // setitemcolor (0x4c7ba0): the named colour of every matching item. TODO(spec): the handler's other effects (flag bits) are not read.
+    // setitemcolor (0x4c7ba0): the named colour of every matching item: backcolor -> item +0x1dc, forecolor -> +0x1cc plus item flag
+    // 0xe8 |= 0x10000 (0x4c7c94), bordercolor -> +0x1ec. The 0x10000 flag only decides whether the item background paint (0x4c7346,
+    // 0x4c7478) passes the forecolor on or null. TODO(spec): bordercolor and that flag have no consumer here (needs the item paint decode).
     env_.setItemColor = [this](const std::string& n, const std::string& which, const Color& c) {
         for (const Item* it : matching(n)) {
             auto& r = runtime_[it];
@@ -273,8 +275,10 @@ size_t MenuStack::strIndex(const Item& it) const {
 std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
     if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
-        // TODO(spec): the dvar type test (float only) and the language id source (0xc4d2ec+8); here a numeric
-        // dvar (or the unset default) is formatted, other strings are shown as they are.
+        // 0x4cd0e0 formats only a dvar whose type byte (+6) is 1 (float); any other dvar type, or a missing dvar, leaves the label empty
+        // (0x4cd13e). The language id is the value of dvar loc_language (pointer 0xc4d2ec, registered at 0x4968a2..0x4968df, int 0..14),
+        // which env_.language mirrors. TODO(spec): the port's cvars carry no type; here a numeric dvar (or the unset default) is
+        // formatted and other strings are shown as they are.
         const std::string raw = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
         char* end = nullptr;
         double v = std::strtod(raw.c_str(), &end);
