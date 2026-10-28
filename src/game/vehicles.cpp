@@ -270,7 +270,11 @@ bool projectOnPath(const std::vector<VehicleNode>& nodes, VehiclePathPos& p, con
     return passedWait;
 }
 
-// Blends the heading with rotate-node angles (0x52a6c0).
+// Blends the heading with rotate-node angles (0x52a6c0). The LerpAngle (0x423ee0) fraction is the path position's
+// segment fraction (+0x4, the field 0x52a8e0 stores with `fsts 0x4(%edx)` and 0x52a640 returns for normal -> rotate), not
+// the rotate weight (+0x10): rotate -> rotate segments turn smoothly from one node's angles to the next. With the weight
+// (1 there) a plane snapped to the next node's angles for the whole segment (hill400_defend mustang2 flew the
+// auto260 -> auto261 climb upside down, roll 179.99).
 void applyRotateNodes(const std::vector<VehicleNode>& nodes, VehiclePathPos& p) {
     const VehicleNode& node = nodes[size_t(p.node)];
     Vec3 from, to;
@@ -283,7 +287,7 @@ void applyRotateNodes(const std::vector<VehicleNode>& nodes, VehiclePathPos& p) 
     if (node.rotate && next.rotate) { from = node.angles; to = next.angles; }
     else if (node.rotate) { from = node.angles; to = p.angles; }
     else { from = p.angles; to = next.angles; }
-    for (int i = 0; i < 3; ++i) p.angles[size_t(i)] = angleNormalize180(lerpAngle(from[size_t(i)], to[size_t(i)], p.rotateFrac));
+    for (int i = 0; i < 3; ++i) p.angles[size_t(i)] = angleNormalize180(lerpAngle(from[size_t(i)], to[size_t(i)], p.frac));
 }
 
 int nodeByName(const std::vector<VehicleNode>& nodes, const std::string& name) {

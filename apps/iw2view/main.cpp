@@ -3011,6 +3011,7 @@ int main(int argc, char** argv) {
         // smoothly with the lerped origin instead of stepping at 20 Hz (the original advances anim time per client frame, 0x4afb70).
         std::map<int, game::AnimState> prevAnim;
         std::map<int, std::pair<float, float>> prevTurret; // turret pitch/yaw before the last server frame (drawn interpolated)
+        std::map<int, int> prevTexScroll; // vehicle tread accumulator (entityState +0x5c) before the last server frame
         float lerpFrac = 1.0f;
         // The effect system's time of this rendered frame: cg.time (0xf708dc) fed to the system each frame by 0x486b30 (system +0x0,
         // advanced copy +0x4 that plays read, e.g. 0x4855e4) before the view weapon is added (0x4afd17, then 0x4b026f). Both the view
@@ -3208,7 +3209,23 @@ int main(int argc, char** argv) {
                 }
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
-                if (e->vehicle) base.scrollV = game::vehicleTexScrollOffset(e->vehicle->texScroll); // TODO(spec): accumulator interpolation
+                // gameTime.z of the *_scroll techniques (texscroll.hlsl subtracts it from V): frac(t), t = scene time - the refEntity
+                // material time (gfx 0x1002f6a0 / 0x1002fa49). The cgame (0x4ac839) sets the material time only for a vehicle whose
+                // accumulator (entityState +0x5c) is >= 0: (cg.time - trunc((next - cur) * cg.frameInterpolation) - cur) * 0.001, cur /
+                // next = centity +0x5c / +0xfc (currentState at +0, nextState at +0xa0, copies at 0x4a4395 / 0x4a4480); so
+                // t = (cur + trunc((next - cur) * frac)) * 0.001. Otherwise the material time stays 0 (memset 0x4ac7b0) and t is
+                // the scene time.
+                {
+                    const double sceneMs = double(world->timeMs()) - 50.0 + double(lerpFrac) * 50.0;
+                    double t = sceneMs * 0.001;
+                    if (e->vehicle) {
+                        const int next = e->vehicle->texScroll;
+                        const auto pv = prevTexScroll.find(e->number);
+                        const int cur = pv != prevTexScroll.end() ? pv->second : next;
+                        if (cur >= 0) t = double(cur + int(double(next - cur) * double(lerpFrac))) * 0.001;
+                    }
+                    base.scrollV = float(t - std::floor(t));
+                }
                 assets::LightGridCoeffs c;
                 float sun = 1.0f;
                 if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
@@ -5830,7 +5847,7 @@ int main(int argc, char** argv) {
                         if (!e->vehicle || e->obj->removed) continue;
                         const script::Vec3 o = e->obj->get("origin").asVector(), an = e->obj->get("angles").asVector();
                         std::cout << "vehicle " << n << " (" << e->obj->get("targetname").toString() << "): " << e->obj->get("model").toString() << " at " << o[0] << "," << o[1] << "," << o[2]
-                                  << " yaw " << an[1] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
+                                  << " angles " << an[0] << "/" << an[1] << "/" << an[2] << " turret p/y " << e->vehicle->turretPitch << "/" << e->vehicle->turretYaw
                                   << " jolt " << e->vehicle->joltPitch << "/" << e->vehicle->joltRoll << " speed " << e->vehicle->speed
                                   << "/" << e->vehicle->forwardSpeed << " scroll " << e->vehicle->texScroll << " compass " << e->vehicle->onCompass
                                   << " lookat '" << e->vehicle->lookAtText << "'/'" << e->vehicle->lookAtText2 << "'\n";
@@ -6804,6 +6821,7 @@ int main(int argc, char** argv) {
                     for (const auto& e : world->entities()) {
                         if (e->turret) prevTurret[e->number] = {e->turret->pitch, e->turret->yaw};
                         if (e->vehicle) prevTurret[e->number] = {e->vehicle->turretPitch, e->vehicle->turretYaw};
+                        if (e->vehicle) prevTexScroll[e->number] = e->vehicle->texScroll;
                         if (!e->anim) continue;
                         prevAnim.erase(e->number);
                         prevAnim.emplace(e->number, *e->anim);
@@ -7105,6 +7123,7 @@ int main(int argc, char** argv) {
                     lerpPrev.clear();
                     prevAnim.clear();
                     prevTurret.clear();
+                    prevTexScroll.clear();
                     gameClock = 0;
                     // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
                     // original's reset on load is not read).

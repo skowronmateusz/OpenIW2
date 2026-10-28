@@ -61,8 +61,14 @@ One path step (0x52b290):
    and its next by the fraction. The step reports "wait node passed" when the wait node is one of the nodes
    examined (including the current one).
 5. Rotate weight (0x52a640) and angles (0x52a6c0): between two normal nodes nothing changes; last node: a rotate
-   node's angles; otherwise the heading is blended with the rotate node's angles (rotate→rotate weight 1,
-   rotate→normal 1 − fraction, normal→rotate fraction).
+   node's angles; otherwise LerpAngle (0x423ee0) per component with the segment fraction (path position +0x4)
+   from → to: rotate→rotate node angles → next node angles, rotate→normal node angles → heading, normal→rotate
+   heading → next node angles; each result goes through the 16-bit angle normalisation (×65536/360, &0xffff,
+   ×360/65536, −360 above 180). The rotate weight (+0x10: rotate→rotate 1, rotate→normal 1 − fraction,
+   normal→rotate fraction) is stored by 0x52a8e0 but not used by 0x52a6c0.
+   Afterwards the path think (0x5112b5..0x51135d) lerps the angles between the two path steps and moves them towards
+   the result from the previous frame at rates 6 / 4 / 6 per second (0x420a90, dt 0.05), for every vehicle type; the
+   ground alignment 0x50ef70 runs only for type 0 / 1 (not planes).
 6. The switched node is restored.
 
 `setswitchnode(from, to)` (0x5132a0 → 0x52b3c0) stores a copy of `from` whose next is `to` (with
