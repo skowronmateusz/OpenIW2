@@ -1,6 +1,7 @@
 #include "game/world.h"
 #include "game/actorfields.h"
 #include "game/actorslide.h"
+#include "game/playerevents.h"
 
 #include "script/builtins_core.h"
 #include "script/parser.h"
@@ -629,6 +630,9 @@ void World::moveActor(Entity& e, float dt) {
         e.ai.groundEnt = pm.groundEnt;
         grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground
         linkBumpedActor(e, pm.hitEnt);
+        // groundtype (actor +0x24c = move block +0x28, the surface type of the ground probe); getter 0x5367b0: 0 is undefined,
+        // 1..22 the surface table 0x5a0344 (the pmove names), anything else "default".
+        e.obj->set("groundtype", pm.surfaceType == 0 ? Value() : Value(std::string(surfaceAliasName(pm.surfaceType >= 23 ? 0 : pm.surfaceType))));
     } else {
         // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
         const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
