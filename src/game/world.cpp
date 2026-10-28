@@ -271,6 +271,8 @@ void World::spawnMapEntities() {
     }
     if (!starts.empty()) playerStart = &starts.front();
 
+    dropPathNodes(); // 0x4d9c3e: G_InitGame drops the nodes right after the entity spawn (0x4fa550), before the path data load
+
     std::vector<std::array<float, 3>> nodePositions;
     for (const auto& n : nodes_) nodePositions.push_back(n.obj->get("origin").isVector() ? n.obj->get("origin").asVector() : Vec3{0, 0, 0});
     try {
@@ -278,7 +280,7 @@ void World::spawnMapEntities() {
     } catch (const std::exception& e) {
         print(std::string("path data: ") + e.what());
     }
-    buildFriendlyChains(); // 0x52d630; its errors are fatal
+    buildFriendlyChains(); // 0x52d630; its errors are fatal except a bad node in a chain (printed, chains cleared)
 
     Entity& p = spawnEntity("player");
     p.isPlayer = true;
@@ -296,6 +298,63 @@ void World::spawnMapEntities() {
     // AI placed without the SPAWNER flag spawn at load (inferred from the SPAWNER flag description in the
     // aitype scripts: "makes this a spawner instead of a guy").
     for (Entity* sp : mapStartActors) spawnActor(*sp);
+}
+
+// Every path node is put on the ground once at level start (0x515f80 → 0x515d70 per node; docs/spec/ai.md "Node drop"):
+// a (-15,-15,0)..(15,15,30) box (mask 0x820011, no pass entity) is swept from 1 above the node origin to 256 below it.
+// Starting in solid gives "is in solid", no hit "is floating"; either way the node's type (+0) becomes 0 (BAD NODE).
+// Otherwise the full actor box (0x56f704 / 0x56f710, (-15,-15,0)..(15,15,72)) is tested at the hit point (start = end);
+// in solid there is the same "in solid" case, else the hit point becomes the node origin (+0x14).
+// 0x515f80 clears the contents of the entities with the DYNAMICPATH flag 0x100 (+0x128) during the drop and restores
+// them after it. Vehicle collmaps are linked later (0x50dc40 at 0x4d9c6f) and actors are not spawned yet, so the only
+// entity clips here are the other script_brushmodels. TODO(spec): the other entity classes linked at 0x4d9c3e.
+void World::dropPathNodes() {
+    syncEntityClips();
+    std::vector<EntityClip> clips;
+    for (const EntityClip& c : collision_->entityClips()) {
+        const Entity* e = entityByNumber(c.id);
+        if (!e || e->classname != "script_brushmodel") continue;
+        const Value sf = e->obj->get("spawnflags");
+        if (sf.isInt() && (sf.asInt() & 1)) continue; // DYNAMICPATH (flags 0x300, set by 0x53346c)
+        clips.push_back(c);
+    }
+    collision_->setEntityClips(std::move(clips));
+    char buf[256];
+    static const bool strict = std::getenv("IW2_NODE_DROP_STRICT") != nullptr;
+    for (PathNode& n : nodes_) {
+        const Value ov = n.obj->get("origin");
+        const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+        const Vec3 start{o[0], o[1], o[2] + 1.0f}, end{o[0], o[1], o[2] - 256.0f};
+        const TraceResult tr = collision_->trace(start, end, {-15, -15, 0}, {15, 15, 30}, 0x820011u);
+        const char* what = nullptr;
+        Vec3 hit{};
+        if (tr.startSolid || tr.allSolid) {
+            what = "is in solid";
+        } else if (tr.fraction == 1.0f) {
+            what = "is floating";
+        } else {
+            hit = {start[0], start[1], start[2] + tr.fraction * (end[2] - start[2])}; // 0x515e7e..0x515ed6
+            const TraceResult t2 = collision_->trace(hit, hit, {-15, -15, 0}, {15, 15, 72}, 0x820011u);
+            if (t2.startSolid || t2.allSolid) what = "is in solid";
+        }
+        if (what) {
+            std::snprintf(buf, sizeof buf, "^3WARNING: Pathnode (%s) at (%g %g %g) %s", pathNodeTypeName(n.type).c_str(), double(o[0]),
+                          double(o[1]), double(o[2]), what);
+            print(buf);
+            // DEVIATION (TODO(spec)): the exe sets the type to 0 here (0x515f6f). 27 of the 29 nodes our traces put "in solid"
+            // on the 39 maps are clear as a point and only the box start overlaps a brush (e.g. breakout's End node at
+            // (194 8859 2), a chain node of a map with 22 trigger_friendlychain); a bad chain node empties every friendly
+            // chain (0x52d5d0), which the shipped maps evidently do not do, so our box start-solid test probably disagrees
+            // with the exe's there. The node keeps its map origin and type unless IW2_NODE_DROP_STRICT=1.
+            if (strict) {
+                n.typeNum = 0;
+                n.obj->set("type", Value(std::string("BAD NODE"))); // the type getter 0x515b60 reads +0 (name table 0x5a9368)
+            }
+            continue;
+        }
+        n.obj->set("origin", Value(hit));
+    }
+    syncEntityClips();
 }
 
 // Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new

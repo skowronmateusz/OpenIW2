@@ -57,17 +57,15 @@ box (-15,-15,0)..(15,15,72) at 0x56f704 / 0x56f710, mask 0x820011) and plants ev
 per-frame write (0x53bd8f..0x53bdc5) stores the pose as the entity origin and angles with no z handling.
 
 Floating scripted actors (moscow, `IW2_FLOAT_LOG`): `anim_loop` / `anim_single` (maps/_anim.gsc) pass node or script_origin
-origins, and path nodes sit 16–48 units above the collision floor on every map (moscow 0x820011 box trace: mode 24–32;
-toujane 40–48; beltot 16–24). Sync animations carry that height in their delta translation (e.g.
-`mos_0_01_rs1_pickuprifle_t` delta z −37.3 at frame 0), but loop idles such as `downtown_sniper_blocking_door_idle` /
-`_twitch` and `moscow_guy*_coldidle` have the delta flag with a translation count of 0 (the exe's loader 0x47aacf..0x47aae4
-also stores no track), so the pose is the node origin and the actor stands 33 (script_origin auto8635, z 86) or 48
-(node auto8467, z 76) units above the floor, rising to it at 300 units/s through the origin-offset slide (0x53b9a0). Checked
-in the exe without finding a drop: the mode byte above; the start 0x53b190 normal branch (0x53b61d); the unlinked write;
-node spawn 0x52d2e0 / 0x52d280 (no trace); the path-data load 0x52e3c0 (lump 38: links and visibility only, no positions);
-0x447780 (brush model bounds, not a node routine). The intro shooters at z 91–105 are on the intro truck (script_vehicle
-spawned by `misc()` at 0.05 s, group 3), which is present at runtime. TODO(spec): what keeps these idles on the ground in the
-original (not found: no z handling on the scripted path for actors).
+origins, and the map files place path nodes 16–48 units above the floor. The exe puts every path node on the ground once at
+level start (0x515f80 → 0x515d70, docs/spec/ai.md "Node drop"), so idles without a delta translation (e.g.
+`downtown_sniper_blocking_door_idle`, `moscow_guy*_coldidle`, the moscow `end_cool_node` rest idles) stand on the floor; the
+openiw2 loader used to keep the raw z. The scripted path itself has no z handling (mode byte above; the normal branch 0x53b61d;
+the unlinked write). script_origins are not dropped (spawn 0x5334d0: mover init 0x5332b0, contents 0, link): moscow's
+`letlev_node` / `welcome_dialogue_node` (-2159 -734 86) is 37 above the floor because it is the reference of the sync animation
+`mos_0_01_rs1_pickuprifle_t`, whose delta translation starts at z −37.3 (feet at 48.7, the floor is 49.2). For the block idle
+the commissar plays there before the welcome dialogue starts (~1.5 s) no exe path that lowers him was found: the script_origin is
+not dropped, the scripted path has no z handling, and only the sync animation's delta covers the height from the dialogue on.
 
 ### Every frame (0x53baf0)
 

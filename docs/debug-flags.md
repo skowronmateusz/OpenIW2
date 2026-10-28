@@ -98,6 +98,8 @@ described in the code that reads them.
 
 - Env `IW2_FLOAT_LOG=1` (iw2game): an actor whose box (mask 0x820011) has no ground within 16 units below its origin for 10 frames in a row, outside the negotiation state, is printed every second (`[float ms] #n classname state script animmode at x y z ground d`, plus `linked` / `animscripted`); the end line counts them as `floating actor reports`. Debug only.
 
+- Env `IW2_NODE_DROP_STRICT=1` (iw2game/iw2view): the level-start node drop (`World::dropPathNodes`, 0x515d70) also turns a node it finds "in solid" or "floating" into a BAD NODE (type 0) as the exe does; by default such a node keeps its map origin and type because our box start-solid test is not confirmed to match the exe's (docs/spec/ai.md "Node drop"). With it, breakout and silotown_assault print "Bad node in friendly chain" and lose their friendly chains.
+
 - Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) for one actor (default every 20 frames). Debug only.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
