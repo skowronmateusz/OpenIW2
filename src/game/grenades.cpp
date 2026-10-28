@@ -805,7 +805,7 @@ const std::string& World::impactEffect(int type, int surface) {
 namespace iw2::game {
 
 // LaunchItem (0x521f70): from the dropper's origin raised by half its height, velocity (cos yaw · 150, sin yaw · 150,
-// (2·rand − 1) · 50 + 200) with the dropper's yaw; trajectory TR_GRAVITY from now (0x521e00). TODO(spec): the
+// (2·rand − 1) · 50 + 200) with the dropper yaw (ent +0xec); height = r.maxs.z − r.mins.z (0x5220a0..0x5220c2); TR_GRAVITY (0x521e00). TODO(spec): the
 // callers that pass no velocity (ecx ≠ 0) and the yaw offset argument.
 void World::launchItem(Entity& item, const Entity& dropper) {
     const Vec3 o = dropper.obj->get("origin").asVector();

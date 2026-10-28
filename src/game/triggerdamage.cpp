@@ -95,4 +95,15 @@ void World::triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3
     }
 }
 
+// Use function of entity type 8 (0x529450, via useby after its "trigger" notify): with a positive +0x154 and
+// (+0x158 + 1) below it nothing happens; with a nonzero +0x158 the damage taken (32000 - health) must reach it; then the
+// health returns to 32000 and, with flag 0x200 (+0x124), the entity is freed (0x464ea0).
+void World::triggerDamageUse(Entity& e) {
+    const int threshold = intOf(e.obj->get("$tdThreshold")), accumulate = intOf(e.obj->get("$tdAccumulate"));
+    if (threshold > 0 && accumulate + 1 < threshold) return;
+    if (accumulate != 0 && kTriggerDamageFullHealth - intOf(e.obj->get("health")) < accumulate) return;
+    e.obj->set("health", Value(int32_t(kTriggerDamageFullHealth)));
+    if (e.obj->get("$tdRemove").truthy()) e.obj->removed = true;
+}
+
 } // namespace iw2::game

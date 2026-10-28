@@ -107,5 +107,34 @@ int main() {
         std::cout << "stielhandgranate after the shared cap: clip " << st.second << " owned " << inv.owned.count("stielhandgranate") << "\n";
         CHECK(world.debugAmmo("fraggrenade").second + st.second <= 4);
     }
+    {
+        // Vehicle immunity filter (0x5122f0): a tank with only armorPiercingDamage/projectileDamage ignores plain bullets.
+        VehicleInfo tank;
+        tank.armorPiercingDamage = true;
+        tank.projectileDamage = true;
+        CHECK(World::vehicleIgnoresDamage(tank, 1, 0));    // MOD_PISTOL_BULLET (MP40)
+        CHECK(World::vehicleIgnoresDamage(tank, 2, 0x40)); // MOD_RIFLE_BULLET, not armor piercing
+        CHECK(!World::vehicleIgnoresDamage(tank, 2, 0x42)); // armor-piercing rifle bullet
+        CHECK(World::vehicleIgnoresDamage(tank, 3, 0));
+        CHECK(!World::vehicleIgnoresDamage(tank, 5, 0));
+        CHECK(World::vehicleIgnoresDamage(tank, 6, 0));
+        CHECK(!World::vehicleIgnoresDamage(tank, 14, 0));  // MOD_EXPLOSIVE
+        CHECK(World::vehicleIgnoresDamage(tank, 0, 0));    // MOD_UNKNOWN
+        CHECK(World::vehicleIgnoresDamage(tank, 9, 0));    // MOD_CRUSH
+        VehicleInfo car;
+        car.bulletDamage = true;
+        CHECK(!World::vehicleIgnoresDamage(car, 1, 0));
+    }
+    if (const char* main = std::getenv("IW2_MAIN")) {
+        // Hit-location multipliers (0x528100): a bullet weapon uses its own locXxx keys, anything else info/ai_lochit_dmgtable.
+        iw2::fs::Vfs vfs;
+        vfs.mountDirectory(main);
+        World world(vfs, "toujane");
+        world.start();
+        CHECK(std::fabs(world.debugLocMultiplier("kar98k", "head") - 1.5f) < 1e-4f);
+        CHECK(std::fabs(world.debugLocMultiplier("kar98k", "torso_upper") - 0.9f) < 1e-4f);
+        CHECK(std::fabs(world.debugLocMultiplier("", "head") - 4.0f) < 1e-4f);
+        CHECK(std::fabs(world.debugLocMultiplier("", "gun")) < 1e-4f);
+    }
     return failures ? 1 : 0;
 }
