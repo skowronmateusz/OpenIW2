@@ -4,6 +4,7 @@
 #include "game/bulletdamage.h"
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
+#include "game/hintstring.h"
 #include "game/actorslide.h"
 #include "game/actortrail.h"
 #include "game/animtree.h"
@@ -502,6 +503,7 @@ public:
         std::string weapon;
         std::string text;
     };
+    const HintStringTable& hintStrings() const { return hintStrings_; }
     const PlayerUseHint& playerUseHint() const { return playerUseHint_; }
     // The use hint of a usable vehicle (0x534d40 case 0xc, entity type 0xc): hint 2, and when its weapon (entityState +2, the vehicle's
     // turretWeapon) has a useHintString (weapon def +0x56c non-empty) that string (def +0x574); otherwise no text.
@@ -550,8 +552,9 @@ public:
     bool playerTurretAnglesFor(const Vec3& view, float& pitch, float& yaw);
     bool playerTurretEyeAt(float pitch, float yaw, Vec3& eye);
     // The weapon of the turret the player uses (ps+0x568's weaponinfo), "" when not on one.
-    // The turretWeapon of the vehicle the player rides ("" when none). TODO(spec): the original reads the weapon index from
-    // cg_entities[0xf70e50]+0xa2 (0x4bd000); that it is the vehicle's turret weapon is a hypothesis.
+    // The turretWeapon of the vehicle the player rides ("" when none). 0xf70e50 is ps+0x568 (cg ps base 0xf708e8, weapon ps+0xb0 =
+    // 0xf70998), the entity number VEH_LinkPlayer stores there (0x511774, 0x7ff = none); 0x4bd000 reads that entity's centity byte
+    // +0xa2 = entityState weapon (+2), which the vehicle setup writes (0x50d8a3) as the weapon index of its turretWeapon name.
     std::string playerVehicleTurretWeapon();
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
@@ -1234,6 +1237,7 @@ private:
     bool damageFromWorld_ = false;       // +0x8668
     void damageFeedback();
     std::optional<float> playerDeadYaw_; // ps+0x10c from LookAtKiller
+    HintStringTable hintStrings_;       // sethintstring configstrings 0x4cd..0x4ec (0x4f0da0)
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;
     std::optional<Vec3> playerTeleport_, playerViewAngles_;

@@ -4591,8 +4591,7 @@ int main(int argc, char** argv) {
                     const uint8_t white[4] = {255, 255, 255, 255};
                     float ix = rx - iw * 0.5f, iy = ry;
                     if (!text.empty()) {
-                        const std::string* t = loc.find(text);
-                        text = t ? *t : text;
+                        text = game::hintStringText(text, [&](const std::string& k) { return loc.find(k); }); // 0x14 / 0x15 pieces (0x4eb9b0)
                         auto keys = input.keysFor("+activate");
                         std::string key = keys.empty() ? std::string() : keys.front();
                         if (key.empty()) { const std::string* k = loc.find("KEY_USE"); key = k ? *k : "KEY_USE"; }

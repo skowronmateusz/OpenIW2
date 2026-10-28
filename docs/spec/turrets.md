@@ -148,3 +148,33 @@ Without it the setturretanim blend node has no weighted leaf and the gunner show
   turret weapons, and turret fire sounds/effects (0x4d8020).
 - The enemy checks of 0x51d3c0 / 0x51d640: here a free turret can always be used.
 - `restoredefaultdroppitch` (0x51cf10), player use of turrets (`useby`, `maketurretusable` effects).
+
+## Hint strings (sethintstring 0x4f0ec0)
+
+- Valid on `trigger_use`, `trigger_use_touch` (hint index byte entity +3) and actors (+0x2124); anything else errors
+  "The setHintString command only works on trigger_use entities and actors.". A plain empty-string first argument clears the
+  hint (index 0xff / -1); every other call builds the text with 0x4eb9b0 (`src/game/hintstring.h`, name "Hint String").
+- Buffer (max 1024 bytes, "<name> is too long. Max length is 1024"): a localized reference (`&"KEY"`) is validated by 0x4eb800
+  (only for references longer than one character: alphanumerics and `_`), separated from the text before it by 0x14. A plain
+  value is introduced by 0x15 when it is the first argument or follows a localized one; plain values in a row are concatenated.
+  0x14 / 0x15 / 0x16 inside plain text is the error "bad escape character (%i) present in string" (checked before the first
+  letter, 0x4eb860). Plain text with letters warns (error with dvar `loc_warningsAsErrors`; both default 0) and with dvar
+  `loc_warnings` gets the prefix "UNLOCALIZED: ". Bytes outside 0x1f..0x7f are copied as `.`.
+- The text goes into one of 32 configstrings (0x4cd + slot, 0x4f0da0): the first empty slot, or the slot already holding the
+  same text; when all 32 differ the error "Too many different hintstring values. Max allowed is 32 different strings" is raised and
+  the index stays -1. The table is shared with the weapons' useHintString / dropHintString that G_RegisterWeapon (0x522ba0)
+  registers (def +0x574 / +0x578). TODO(spec): OpenIW2 does not register weapons, so those slots are not counted.
+- Client reader 0x496e80 ("Hint String", from 0x4a9ac0): scans pieces delimited by 0x14 (localized follows) / 0x15 (plain follows)
+  / 0x16, localizes the flagged ones (0x496dd0), enforces 1024 bytes and rewrites "&&<digit>" into 0x16 markers (a `&&0` is
+  an error). `World::hintStringText` joins the pieces; TODO(spec): the &&N parameter substitution of 0x496e80 past 0x49704d
+  and where plain pieces are localized are not decoded ("&&1" is replaced by the use key in the HUD as before).
+- HINT_INHERIT (-1, only settable on trigger_use(_touch)): the cgame draw indexes the icon array at -1, which is the tracer
+  material (0xf5b4a4), and shows the hint string when its index is >= 0. TODO(spec): scripts never use it (only HINT_NONE is
+  used by shipped scripts), so it is not drawn here.
+- Every hint name in the shipped scripts is accepted by the setcursorhint rule (case-insensitive HINT_NONE, HINT_ACTIVATE,
+  HINT_HEALTH, HINT_FRIENDLY): only HINT_NONE occurs.
+- A player on a vehicle: the crosshair (0x4bd000) reads the weapon byte of the entity at ps+0x568 (cg 0xf70e50; VEH_LinkPlayer stores
+  the vehicle there, 0x511774); the vehicle setup writes it (0x50d8a3) as the weapon index of its turretWeapon.
+- restoredefaultdroppitch (0x51cf10): tag poses are the dobj's (including the turret bone controls); the points are carried to the
+  world by the full entity angles (e+0xe8) at the origin, not the yaw alone.
+- Compass ping of a turret shot (0x4bb069): the user's centity byte +0x140 is "in the current snapshot" (0x4a4336).
