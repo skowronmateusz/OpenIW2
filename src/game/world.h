@@ -129,6 +129,8 @@ struct ActorAi {
     // velocity (the airborne branch moves on it with gravity). TODO(spec): blockVel above is the frame displacement, which
     // the readers 0x505b80 / 0x505cb0 still take; the exe has only this one field.
     float slideVel[3] = {0, 0, 0};
+    bool slideContact = false;       // block +0x20 (actor +0x244): ground contact with normal z >= 0.3
+    float slideContactNz = 1.0f;     // block +0x24 (actor +0x248): its normal z
     int64_t walkedMs = -1;                    // level time of the last mode-1 path walk (moveActor)
     bool facingInit = false;
     int floatFrames = 0;                      // IW2_FLOAT_LOG: frames in a row without ground within 16 units

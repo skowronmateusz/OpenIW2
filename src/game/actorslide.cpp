@@ -378,4 +378,9 @@ int moveBlock(ActorSlide& pm, const SlideTraceFn& trace) {
 float stuckNudge(float dz) { return dz > 8.0f ? 8.0f : dz > 0.0f ? dz : dz < -18.0f ? -8.0f : 0.0f; }
 bool negotiationInRange(float dist2, float speed2) { return !(dist2 > speed2 * 0.005f + 0.000001f); }
 
+float stopSoonScale(int remainingMs, float contactNz) {
+    const float r = 50.0f / float(remainingMs);
+    return (contactNz != 0.0f ? 1.0f / contactNz : 1.0f) * ((2.0f - r) * r);
+}
+
 } // namespace iw2::game
