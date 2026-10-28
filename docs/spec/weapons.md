@@ -49,7 +49,13 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
   ms / adsTransInTime while aiming is allowed and falls by ms / adsTransOutTime otherwise, clamped to 0..1.
   Aiming is not allowed while reloading, nor while rechambering unless `rechamberWhileAds`.
   `player_adsExitDelay` (0x1c7efb8, ms): at aim 1.0 with aiming no longer allowed, ps+0xbc is set to time + delay and the aim is
-  held until it expires, then the timer is cleared (implemented). TODO(spec): `adsFire`, the 0x35c field.
+  held until it expires, then the timer is cleared (implemented). `adsFire` (+0x348, with `aimDownSight`): the fire start 0x4dea00 sets weaponDelay (ps+0x38) to
+  trunc(adsTransInTime ms * (1 - aim)) instead of `fireDelay`, and 0x4ded30 fires (event, ammo) only once the delay is 0; the
+  aim function 0x4dd0d0 forces the aim to stay requested while the delay runs in the fire state (implemented: `deferredFire_`,
+  panzerfaust / panzerschreck). Aim rates (0x5075b6): +0x588 = 1 / adsTransInTime ms (default 1/300 when not positive), +0x58c =
+  1 / adsTransOutTime ms (default 1/500). Aim allowed (0x4dd0d0): `aimDownSight` 0 never; segmented reload (+0x35c) blocks
+  states 5..8, state 9 only while weaponTime > adsReloadTransTime; otherwise state 5 under the same condition; state 4
+  blocks when `rechamberWhileAds` is 0; else the pm_flags 0x40 request. (implemented)
 - Field of view (0x4ae7d9): cg_fov (80, horizontal for 4:3) moves towards min(`adsZoomFov`, cg_fov):
   fully at aim 1; otherwise t = (adsFrac − (1 − frac)) / frac with frac = `adsZoomInFrac` while zooming in
   (flag set at aim 0, cleared at aim 1, 0x4b5ad0) or `adsZoomOutFrac`; when t > 0, fov −= (fov − zoom) · t.
@@ -113,8 +119,14 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
 - FireWeapon (game 0x531c40) dispatches on `weaponType`: 0 bullet 0x5312b0, 1 grenade 0x531990, 2 projectile 0x531a40, which
   turns the view forward by the spread (0x531170), launches G_FireRocket (0x527810) from the muzzle point of 0x531b90 (eye
   0x4e8b70 plus client +0x864c..0x8654) and subtracts forward · 64 (0x56f6e0) from the client velocity (0x531b1b).
-  OpenIW2 `World::playerFire` spawns the rocket from the eye along the view forward. TODO(spec): the muzzle offset, the
-  projectile spread and the velocity kick.
+  Spread value (0x531c40): scale = aimSpread (ps+0x5b0) / 255; aim == 1.0: (view-height hip max - adsSpread +0x4bc) * scale +
+  adsSpread, else (max - min) * scale + min, the range from 0x4dceb0 (`fireSpreadDegrees`). The same value drives the bullet and
+  the projectile. 0x531170 draws two rand() (angle = r1 * 0.010986328125 deg, radius = r2 / 32768) as (cos * radius, sin *
+  radius); the projectile direction is normalize(forward + tan(spread) * (x * left + y * up)) (AnglesToAxis 0x421da0), the bullet
+  end is origin + forward * 8192 + tan(spread) * 8192 * (x * left + y * up) (0x531210). Muzzle (0x531b90): the eye plus the
+  usercmd gun offset (client +0x864c..), zero at aim 0 and 1. OpenIW2 `World::playerFire` implements the spread, the offset
+  parameter and returns the kick (forward * 64) that the caller subtracts from the velocity. TODO(spec): the gun offset and the
+  gun angles between hip and full aim depend on the unported view-model sway, bob and kick (0x4b4a90, 0x4b4dc0, 0x4b51a0, 0x4b5d10).
 - CG_Missile (0x4ab3af): `projTrailEffect` (+0x458, weapon info +0x170) is played once per missile (cent +0x143) bolted on
   its `tag_origin` (scr const 0x1c7f144); `projectileDLight` (+0x45c, info +0x14c) with `projectileRed/Green/Blue` adds a
   dynamic light (0x4ab404 → *0x617b1c). OpenIW2 queues the trail at the launch (rockets.cpp). TODO(spec): the dlight.

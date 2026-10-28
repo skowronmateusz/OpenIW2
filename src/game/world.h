@@ -753,7 +753,9 @@ public:
 
     // Player fires the current weapon from `eye` along `forward` (unit vector).
     // lastShot: the clip ran empty with this shot (event 0xa0 instead of 0x9e: the last-shot sound replaces the fire sound).
-    void playerFire(const Vec3& eye, const Vec3& forward, bool lastShot = false);
+    // FireWeapon for the player (0x531c40). spreadDeg is the aim spread angle (fireSpreadDegrees, pmove.h), gunOffset the
+    // usercmd gun offset added to the eye. Returns the velocity the shooter loses (a projectile weapon: forward * 64).
+    Vec3 playerFire(const Vec3& eye, const Vec3& forward, bool lastShot = false, float spreadDeg = 0, const Vec3& gunOffset = {0, 0, 0});
     // Player weapon events (src/game/playeractions.cpp): the melee blow, the offhand throw and the offhand pick.
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
     void meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& weapon);

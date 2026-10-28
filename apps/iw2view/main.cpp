@@ -7346,7 +7346,18 @@ int main(int argc, char** argv) {
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
                 if (shots) viewShot(); // EV_FIRE_WEAPON -> fire flag (0x4b7800)
-                for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, pweapon.clip() == 0 && i == shots - 1);
+                for (int i = 0; i < shots; ++i) {
+                    float spreadDeg = 0;
+                    if (const auto* d = world->weapon(pweapon.name())) {
+                        auto fld = [&](const char* k) { auto it = d->find(k); return it == d->end() ? 0.0f : float(std::atof(it->second.c_str())); };
+                        game::HipSpread hs;
+                        hs.standMin = fld("hipspreadstandmin"); hs.duckedMin = fld("hipspreadduckedmin"); hs.proneMin = fld("hipspreadpronemin");
+                        hs.max = fld("hipspreadmax"); hs.duckedMax = fld("hipspreadduckedmax"); hs.proneMax = fld("hipspreadpronemax");
+                        spreadDeg = game::fireSpreadDegrees(hs, ps.viewHeight, ps.aimSpread, pweapon.adsFrac(), fld("adsspread"));
+                    }
+                    const auto kick = world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, pweapon.clip() == 0 && i == shots - 1, spreadDeg);
+                    for (int k = 0; k < 3; ++k) ps.velocity[k] -= kick[k]; // 0x531b1b
+                }
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) {
                     world->setPlayerOrigin({ps.origin[0], ps.origin[1], ps.origin[2]}, {0, cam.yaw, 0});

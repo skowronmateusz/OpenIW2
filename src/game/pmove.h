@@ -157,6 +157,9 @@ struct HipSpread {
 // The spread angle range for the current view height (0x4dceb0): between ducked (40) and stand (60) above 40,
 // between prone (11) and ducked below. Returns {min, max} in degrees.
 std::array<float, 2> hipSpreadRange(const HipSpread& h, float viewHeight);
+// The spread angle FireWeapon uses (0x531c40): scale = aimSpread / 255; fully aimed (aim == 1.0) it is
+// (hipMax - adsSpread) * scale + adsSpread (adsSpread = weapon def +0x4bc), otherwise range min + (max - min) * scale.
+float fireSpreadDegrees(const HipSpread& h, float viewHeight, float aimSpread, float adsFrac, float adsSpread);
 // A shot adds hipSpreadFireAdd · 255 to the aim spread scale unless fully aimed (0x4dece0).
 void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac);
 
