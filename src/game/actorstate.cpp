@@ -314,6 +314,10 @@ void World::killActorAnimScript(Entity& e) {
 }
 
 // The script thread is gone or finished (thread type 0x17 in the script variable table).
+// The animscript thread (+0x200) has ended: id 0, or the VM variable of that id has type 0x17 (0x8bee88 is the VM variable
+// table, stride 16, type in the low 5 bits; the three thread-end paths 0x464990 / 0x46ca60 / 0x46d1f0 turn a thread's type into
+// 0x17 with `& ~8 | 0x17`). Every actor-code reader (0x520973, 0x53ac25, 0x548b09, 0x54b122, 0x54b2d1, 0x54b7c3, 0x54d377)
+// tests only 0x17; no other type is consumed by the actor code.
 bool World::actorAnimScriptDone(Entity& e) {
     return !e.animScriptThread || !vm_.isThreadAlive(e.animScriptThread);
 }

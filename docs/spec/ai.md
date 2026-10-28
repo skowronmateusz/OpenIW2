@@ -130,6 +130,10 @@ Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "las
   since the state was set → 0x548a10 (death AI event, grenade, sentient release, clear path), substate 201; the
   `death` script's thread ended → 2 (corpse); else facing 1, `death` (0, override or 4); 500 ms after death the
   contents become 0x4002000.
+- "Script ended" (death, pain, animcustom, negotiation, grenade return, 0x53ac10): the animscript thread id +0x200 is 0, or the VM
+  variable of that id (table 0x8bee88, stride 16, type = low 5 bits) has type 0x17, which the VM's thread-end paths 0x464990 /
+  0x46ca60 / 0x46d1f0 write (`& ~8 | 0x17`). The seven actor-code readers (0x520973, 0x53ac25, 0x548b09, 0x54b122, 0x54b2d1,
+  0x54b7c3, 0x54d377) test only 0x17; every other type of that table belongs to the VM (`actorAnimScriptDone`).
 - animcustom(func) (0x540450): push 8; when pushed 0x53ac40 and +0x208 = func. Think 0x54b240:
   clear path, run func as the animscript `<custom>` (0, override or 4); when its thread ended → pop.
 - Turret 2: start 0x549960, finish 0x549b20 (release), think 0x54aba0: leaving → release, replace
