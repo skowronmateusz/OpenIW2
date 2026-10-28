@@ -421,7 +421,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             p.seqLoopTimes = int(num("sequenceLoopTimes"));
         }
     }
-    if (e.type == "Particle") p.rot0 = range(e.numbers("rotation"), 0); // 0x48ce70 (after the material, 0x48cb00)
+    if (e.type == "Particle" || e.type == "OrientedParticle") p.rot0 = range(e.numbers("rotation"), 0); // 0x48ce70 (after the material, 0x48cb00)
     if (p.line) { // the Line spawn runs no sequence setup (0x48cd20) and its update no frame step (0x481c30)
         // +0x94 is never written for a Line: the pool (0x47f0a0) reuses freed slots without clearing, so the frame is the value
         // a previous element left there, 0 in never-used pool memory (0xa32380, zero-initialised data). Frame 0 here.
@@ -972,7 +972,8 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         for (int c = 0; c < 3; ++c) s.rgba[c] = std::clamp(channel(e, "rgb", "rgbrand", flags & 0x2000, p.rnd[0], u, c, 1.0f), 0.0f, 1.0f);
         s.rgba[3] = std::clamp(channel(e, "alpha", "alpharand", flags & 0x4000, p.rnd[1], u, 0, 1.0f), 0.0f, 1.0f);
         s.size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
-        if (e.type == "Particle") {
+        bool hidden = false;
+        if (e.type == "Particle" || e.type == "OrientedParticle") {
             // Particle update 0x480330: size (0x4818b0), then (size ≠ 0) size2 (0x481940: the size2 channel with nonUniformScale,
             // else = size) and (size2 ≠ 0) rgb, alpha, angle += frame ms · rotationDelta · 0.01 (0x481b90), frame. The per-frame
             // sum is taken as its continuous limit: rot0 + 0.01 · life ms · ∫rotationDelta du (rand lerp 0x40000, scale).
@@ -987,6 +988,16 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
                 rd *= p.scale[5];
             }
             s.rotation = p.rot0 + 0.01f * life * rd;
+            // Particle draw slot 0x4802f0: nothing is drawn while size (+0x88) or size2 (+0x8c) is 0. OrientedParticle (update
+            // 0x482630 runs every channel unconditionally, draw 0x482620 always submits type 7): the quad plane comes from +0x48 =
+            // +0x24c, the instance axis row 0 at spawn (0x48dc80; relative: into tag space with 0x440650 at 0x48dd53 and back
+            // through the current orientation with 0x440540 at 0x4826ac).
+            if (e.type == "Particle" && (s.size == 0.0f || s.size2 == 0.0f)) hidden = true; // still a sight blocker (0x480970)
+            if (e.type == "OrientedParticle") {
+                s.oriented = true;
+                s.orientDir = p.axis[0];
+                if (relative) s.orientDir = sub(fromTagSpace(tagNow, dirToTagSpace(p.tag0, p.axis[0])), tagNow.origin);
+            }
         }
         if (e.type == "Light") { // submitted as a dynamic light (0x4841b0 -> AddLightToScene), not drawn as a sprite
             FxLight l;
@@ -1104,7 +1115,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!(cl > 0)) continue;
             s.beamPerp = mul(c, 1.0f / cl);
         }
-        out.push_back(s);
+        if (!hidden) out.push_back(s);
     }
     // Tracer entities (0x4c0d98): the head P = base + dir * speed * age (TR_LINEAR, 0x4fae80); the streak runs from P
     // ahead to P + dir * min(remaining distance to the impact, cg_tracerlength); 0x4b7ca0 widens each end by distance.

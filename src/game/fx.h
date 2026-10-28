@@ -113,6 +113,10 @@ struct FxSprite {
     // (+0x68; < 0 = size) and the angle in degrees (+0x6c, element +0x44).
     float size2 = -1;
     float rotation = 0;
+    // OrientedParticle (renderer type 7, 1.3 DLL 0x1003ffe0): the quad lies in the plane of the two vectors 0x10059bd0 builds from
+    // the element direction (refEntity +0x14 = element +0x48) instead of facing the view.
+    bool oriented = false;
+    FVec orientDir{};
     // Tracer beam (0x4b7d90): when set, a quad B +/- perp * widthB, A -/+ perp * widthA with u 0 at A and 1 at B, v across;
     // `position` / `size` are unused.
     bool beam = false;

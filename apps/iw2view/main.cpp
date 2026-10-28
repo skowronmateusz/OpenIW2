@@ -810,7 +810,21 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
             // Here right = −L, so r = −R = w(cos a · right + sin a · up), u = V = h(cos a · up − sin a · right).
             const float hw = s->size, hh = s->size2 >= 0 ? s->size2 : s->size;
             const float ra = s->rotation * 0.017453292f, rc = std::cos(ra), rs = std::sin(ra);
-            const Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
+            Vec3 r = (right * rc + upv * rs) * hw, u = (upv * rc + right * -rs) * hh;
+            if (s->oriented) {
+                // OrientedParticle (renderer type 7, 1.3 DLL 0x1003ffe0): from the axis row 0 d (refEntity +0x14), 0x10059bd0 gives
+                // p = normalize((d.z, −d.x, d.y) − d (d · that)) and q = p × d; R = w(cos a · p − sin a · q), V = h(cos a · q + sin a · p)
+                // (a = 0: R = w p, V = h q), then the particle corner builder 0x1003f560 (C + R + V (u0, v0), …). r = −R, u = V here.
+                const Vec3 d{s->orientDir[0], s->orientDir[1], s->orientDir[2]};
+                Vec3 pv{d.z, -d.x, d.y};
+                pv = pv + d * -(d.x * pv.x + d.z * pv.z + pv.y * d.y);
+                const float pl = std::sqrt(pv.x * pv.x + pv.y * pv.y + pv.z * pv.z);
+                if (pl != 0) pv = pv * (1.0f / pl);
+                const Vec3 qv{pv.y * d.z - pv.z * d.y, pv.z * d.x - pv.x * d.z, pv.x * d.y - pv.y * d.x};
+                const Vec3 R = s->rotation == 0 ? pv * hw : (pv * rc + qv * -rs) * hw;
+                u = s->rotation == 0 ? qv * hh : (qv * rc + pv * rs) * hh;
+                r = R * -1.0f;
+            }
             const Vec3 nr = r * -1.0f, nu = u * -1.0f;
             Vec3 corners[4] = {c + nr + nu, c + r + nu, c + r + u, c + nr + u};
             float uv[4][2] = {{s->uv[0], s->uv[3]}, {s->uv[2], s->uv[3]}, {s->uv[2], s->uv[1]}, {s->uv[0], s->uv[1]}};

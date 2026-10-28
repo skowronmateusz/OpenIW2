@@ -51,7 +51,7 @@ the piecewise-linear curve), used for velocities.
   movement +0x9c keeps its last (world) value (0x483233).
 - OpenIW2: `FxTag` (origin, axes, hasAxes) from `World::entityTagOrientation` (bone rotation; vehicle tags give the position
   only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder, Emitter, Tail. TODO(spec):
-  OrientedParticle axes (0x440540); the view-weapon flash / brass bolts pass the position only.
+  the view-weapon flash / brass bolts pass the position only.
 
 ## Emitter physics (0x480bd0) and emitFx (0x483810)
 
@@ -112,8 +112,20 @@ the piecewise-linear curve), used for velocities.
   shipped Particle elements). The analytic position 0x4816c0 is used only by 0x48caa0 for the late part of a spawn
   (pos += 0x4816c0(ms) · ms · 0.001 for ms > 0; TODO(spec): not applied, OpenIW2 steps from the scheduled spawn time).
   Light and Line / Cylinder elements do not call 0x480bd0.
-- OpenIW2: `FxSprite::size2` / `rotation`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its continuous limit
-  (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the size = 0 / size2 = 0 skips; OrientedParticle (type 7, 0x1003ffe0).
+- Draw slot 0x4802f0: a Particle is submitted only while size (+0x88) ≠ 0 and size2 (+0x8c) ≠ 0 (it still enters the sight
+  blocker list, 0x480970).
+- OrientedParticle (vtable 0x57c7e4, spawn 0x48dc80): +0x24c = the instance axis row 0 (relative: into tag space, 0x440650 at
+  0x48dd53). Update 0x482630: step 0x480bd0, size, size2 (0x481940), rgb, alpha, angle (0x481b90), frame, all unconditional;
+  +0x7c = position and +0x48 = +0x24c, through the bolt (0x4404f0) / turned by the orientation (0x440540) for relative. Cull
+  0x4825e0: sphere +0x7c, radius size. Draw 0x482620: renderer type 7 (0x480010). 1.3 DLL 0x1003ffe0: with d = refEntity +0x14
+  (row 0 = +0x48), 0x10059bd0 (the 0x4217f0 construction) gives p = normalize((d.z, −d.x, d.y) − d (d · that)) and q = p × d;
+  angle 0 (0x1019bd04): R = size · p, V = size2 · q; else a = angle · π/180: R = size (cos a · p − sin a · q), V = size2
+  (cos a · q + sin a · p); corners by 0x1003f560 as the particle quad (0x1003f850 instead when the dvar at 0x101ce710 is 2).
+- OpenIW2: `FxSprite::size2` / `rotation` / `oriented`, iw2view `spriteModel`. The per-frame angle sum is evaluated as its
+  continuous limit (rot0 + 0.01 · life · ∫rotationDelta). TODO(spec): the angle sum skips frames where size or size2 is 0;
+  the OrientedParticle cull (0x4825e0) and the mode-2 corner builder 0x1003f850. Check: `IW2_NO_HUD=1
+  IW2_FX_TEST=fx/explosions/grenadeexp_water.efx IW2_FX_TEST_DIST=200 IW2_FX_MS=600 IW2_FX_STEP=16 iw2view <main> toujane
+  --sim-seconds 1 --pos 480,-600,140 --yaw 0 --pitch 30 --shot x.png` (flat ripple rings).
 
 ## Legacy channel syntax (start / end / parm / flags)
 
