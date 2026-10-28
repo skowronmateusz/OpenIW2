@@ -1311,7 +1311,7 @@ void World::registerBuiltins() {
             while (d < -180.0f) d += 360.0f;
             return d;
         };
-        const Vec3& v = e->velocity;
+        const float* v = e->ai.slideVel; // the move block velocity, actor +0x230 (see ActorAi::slideVel)
         if (v[0] * v[0] + v[1] * v[1] > 1.0f) return Value(sub(vecYaw(v[0], v[1]), yaw));
         if (e->path.count > 0) return Value(sub(vecYaw(e->path.lookDir[0], e->path.lookDir[1]), yaw));
         return Value(0.0f);
