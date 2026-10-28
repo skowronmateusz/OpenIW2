@@ -94,6 +94,7 @@ public:
     // The offhand fuse (ps+0x3c) in ms: non-zero while a grenade is being cooked.
     int fuseMs() const { return int(fuse_ * 1000.0f); }
     // The throw consumes ps+0x3c (0x527625 stores 0 after the grenade takes it as its fuse); returns the cooked fuse in ms.
+    bool hasBrassPending() const { return brassInChamber_; } // ps+0x530 bit of the equipped weapon
     int takeFuseMs() { const int ms = fuseMs(); fuse_ = 0; return ms; }
 
     // View model: xmodel paths for the gun and hands and the current animation with its elapsed time. During an
@@ -195,6 +196,7 @@ private:
     // boltAction casing still in the chamber (ps+0x530 bit of the weapon, set by a shot): ejected (event 0xa2) when the
     // weapon delay set at the rechamber / reload start runs out (0x4dd700 / 0x4ddfa0). The exe uses ps weaponDelay (+0x38).
     bool brassInChamber_ = false;
+    std::map<std::string, bool> brassBits_; // the ps+0x530 bit of the weapons not currently equipped
     float brassTimer_ = 0;
     bool meleeLatch_ = false;      // ps+0xc 0x2000
     bool offhandActive_ = false;   // ps+0xc 0x10
@@ -212,6 +214,7 @@ private:
     bool usePrev_ = false;         // previous command's 0x28
     std::string prevCmdWeapon_;    // previous command's weapon (the 0x4df9b0 cancel test)
     float adsFrac_ = 0;
+    float adsExitTimer_ = 0; // player_adsExitDelay hold, seconds left
     bool adsHeld_ = false; // the last update's aim command
     bool zoomingIn_ = true;
 };

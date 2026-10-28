@@ -99,6 +99,7 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
     pendingIdle_ = false;
     if (!name_.empty()) {
         ammo_[name_] = {clip_, stock_};
+        brassBits_[name_] = brassInChamber_; // ps+0x530 is a per-weapon bit array (0x4dd750, 0x4ddfcf): it survives a switch
         if (writeAmmo) writeAmmo(name_, clip_, stock_);
     }
     name_ = name;
@@ -117,7 +118,7 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
         stock_ = std::max(0, start - clip_);
     }
     needsRechamber_ = false;
-    brassInChamber_ = false; // TODO(spec): the exe keeps the ps+0x530 bit per weapon across switches
+    brassInChamber_ = brassBits_.count(name) && brassBits_[name];
     brassTimer_ = 0;
     addPending_ = false;
     reloadInterrupted_ = false;
@@ -384,6 +385,13 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
                     !(state_ == State::ReloadEnd && timer_ - time("adsReloadTransTime", 0) > 0) &&
                     !(state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0);
         if (inBinoc()) want = can && (state_ == State::BinocEnter || state_ == State::BinocUp);
+        // player_adsExitDelay (0x4dd0d0): at a full aim fraction, when aiming stops being allowed, the aim is held for
+        // the delay (timer ps+0xbc = time + delay on first loss, cleared once it has run out).
+        if (can && !want && adsFrac_ >= 1.0f && in.adsExitDelay > 0) {
+            if (adsExitTimer_ <= 0) adsExitTimer_ = in.adsExitDelay;
+            if (adsExitTimer_ > dt) { adsExitTimer_ -= dt; want = true; }
+            else adsExitTimer_ = 0;
+        } else adsExitTimer_ = 0;
         if (!can) adsFrac_ = 0;
         else if (want) adsFrac_ += dt / std::max(0.001f, adsNum("adsTransInTime", 0.3f));
         else adsFrac_ -= dt / std::max(0.001f, adsNum("adsTransOutTime", 0.3f));

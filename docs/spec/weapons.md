@@ -47,8 +47,9 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
 - The offsets are forward, right, up in view space (0x4b4c50 negates the right component into the left axis).
 - Aim fraction (0x4dd0d0): weapons without `aimDownSight` stay at 0; it rises by
   ms / adsTransInTime while aiming is allowed and falls by ms / adsTransOutTime otherwise, clamped to 0..1.
-  Aiming is not allowed while reloading, nor while rechambering unless `rechamberWhileAds`. TODO(spec):
-  `player_adsExitDelay`, `adsFire`, the 0x35c field.
+  Aiming is not allowed while reloading, nor while rechambering unless `rechamberWhileAds`.
+  `player_adsExitDelay` (0x1c7efb8, ms): at aim 1.0 with aiming no longer allowed, ps+0xbc is set to time + delay and the aim is
+  held until it expires, then the timer is cleared (implemented). TODO(spec): `adsFire`, the 0x35c field.
 - Field of view (0x4ae7d9): cg_fov (80, horizontal for 4:3) moves towards min(`adsZoomFov`, cg_fov):
   fully at aim 1; otherwise t = (adsFrac − (1 − frac)) / frac with frac = `adsZoomInFrac` while zooming in
   (flag set at aim 0, cleared at aim 1, 0x4b5ad0) or `adsZoomOutFrac`; when t > 0, fov −= (fov − zoom) · t.
@@ -100,7 +101,7 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
 - Stock values: kar98k rechamberTime 1, rechamberBoltTime 0.65; enfield 1.0677 / 0.65 (fireTime 0.33): the casing comes out
   0.65 s into the bolt cycle. Only the pmove writes event 0xa2, so AI bolt-action rifles never eject brass (combat.cpp).
 - OpenIW2: `PlayerWeapon::Event::EjectBrass` with its own timer (`brassTimer_`); TODO(spec): the exe's ps weaponDelay also
-  gates melee / other actions during that time, and the bit is kept per weapon across switches (cleared on equip here).
+  gates melee / other actions during that time, and the bit is kept per weapon across switches (implemented, brassBits_).
 
 ## Reload variant and projectile fire (panzerschreck, exe evidence)
 
