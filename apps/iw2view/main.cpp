@@ -304,6 +304,8 @@ struct Batch {
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
     int detail = -1; // Scene::details index
     bool alphaOne = false; // see MatInfo::alphaOne
+    int fxKind = 0;        // see MatInfo::fxKind
+    float fxParm[2] = {0, 0};
 };
 
 struct Lightmap {
@@ -325,6 +327,11 @@ struct MatInfo {
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState
     int detail = -1; // Scene::details index (technique set *_detail)
+    // Effect techniques that read the post-sun scene copy / $floatz (docs/spec/effects.md "Sprite vertices, $floatz and the
+    // post-sun copy"): 1 = effect_zfeather* (zfeather.tech, fxParm[0] = featherParms.x), 2 = distortion (distortion_floatz.tech,
+    // fxParm = distortionScale.xy). Both are material constants (constant table at file offset 0x40).
+    int fxKind = 0;
+    float fxParm[2] = {0, 0};
     int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
     // The pixel shader writes alpha 1 instead of texture × vertex alpha: the phong_* / ambient_* replace technique sets run the
@@ -433,7 +440,8 @@ Pass classify(const std::string& techset) {
     // Sprite vertices (docs/spec/effects.md "Sprite vertices, $floatz and the post-sun copy"): tangent = -(half width vector),
     // binormal = half height vector (billboard: -width * view row 1, height * view row 2). The post-sun copy only happens when the
     // scene viewport equals the window. $floatz = R32F target of clip z built by technique type 2 "build floatz" (sky: max extent).
-    // Not implemented: the resolve copy, the float-z target and the distortion pass itself.
+    // Implemented in Renderer::draw (post-sun copy + $floatz from the depth buffer) and fs_distort; as a world / model material it
+    // stays skipped (only effect sprites carry the tangent / binormal); sprites keep it through MatInfo::fxKind 2.
     if (techset == "distortion") return Pass::Skip;
     // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
     // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
@@ -537,6 +545,12 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
+            if (m.techniqueSet == "distortion" || m.techniqueSet.rfind("effect_zfeather", 0) == 0) {
+                const bool dist = m.techniqueSet == "distortion";
+                mi.fxKind = dist ? 2 : 1;
+                for (const auto& c : m.constants)
+                    if (c.name == (dist ? "distortionScale" : "featherParms")) mi.fxParm[0] = c.value[0], mi.fxParm[1] = c.value[1];
+            }
             if (mi.pass == Pass::Water) {
                 WaterMat wm;
                 for (const auto& t : m.textures)
@@ -584,7 +598,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             };
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is a UI background
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && (mi.pass != Pass::Skip || mi.fxKind == 2)))) { // the "black" material (technique set "tools") is a UI background
                 mi.texture = imageSlot(img);
                 // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
                 if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
@@ -792,12 +806,14 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
     std::vector<Batch> batches;
     for (const auto& [shader, list] : byShader) {
         const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
-        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        if ((mi.pass == Pass::Skip && mi.fxKind != 2) || mi.pass == Pass::Sky) continue;
         Batch b;
-        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
+        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.fxKind == 2 ? Pass::Blend : mi.pass;
         b.texture = mi.texture;
         b.lightmap = -3;
         b.fullbright = true;
+        b.fxKind = mi.fxKind;
+        b.fxParm[0] = mi.fxParm[0], b.fxParm[1] = mi.fxParm[1];
         b.firstIndex = uint32_t(verts.size() / 4 * 6);
         for (const auto* s : list) {
             if (verts.size() / 4 >= kMax) break;
@@ -888,6 +904,15 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
                 g.normal[2] = 1;
+                if (mi.fxKind == 2 && !s->beam) {
+                    // Distortion reads code.tangent / code.binormal: the quad writer 0x1003f560 stores tangent = −A (minus the
+                    // width vector R) and binormal = B (the height vector V) in all four vertices; here −R = r and V = u. Carried
+                    // in the normal / light slots, which the distortion shader reads as tangent / binormal.
+                    g.normal[0] = r.x, g.normal[1] = r.y, g.normal[2] = r.z;
+                    g.light[0] = u.x, g.light[1] = u.y, g.light[2] = u.z;
+                } else if (mi.fxKind == 2) {
+                    g.normal[2] = 0; // TODO(spec): the Tail / Line (type 8) tangent and binormal rule; no offset here
+                }
                 for (int ch = 0; ch < 4; ++ch) g.color[ch] = uint8_t(std::clamp(s->rgba[ch], 0.0f, 1.0f) * 255.0f);
                 g.uv[0] = uv[k][0];
                 g.uv[1] = uv[k][1];
@@ -1676,6 +1701,13 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
+    SDL_GPUSampler* pointClampSampler = nullptr; // $floatz reads (TODO(spec): floatZSampler's filter state)
+    // Post-sun scene copy (resolvedPostSun, render command 0x100310a0) and $floatz (R32F clip z, build pass 0x10024ee0).
+    SDL_GPUTexture* postSunTex = nullptr;
+    SDL_GPUTexture* floatzTex = nullptr;
+    SDL_GPUGraphicsPipeline* floatzBuildPipe = nullptr;
+    SDL_GPUGraphicsPipeline* distortionPipe = nullptr;
+    SDL_GPUGraphicsPipeline* featherPipes[2] = {}; // Blend (zfeather.tech), Additive (zfeather_add.tech)
     SDL_GPUSampler* waterMapSampler = nullptr;
     SDL_GPUDevice* samplerDev = nullptr;
     SDL_GPUSampler* matSamplers[128] = {};
@@ -1996,7 +2028,76 @@ struct Renderer {
             glowSetupPipe = mk("fs_glow_setup", 1, 1, false, false);
             glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false);
             glowApplyPipe = mk("fs_glow_apply", 2, 1, true, true);
+            {
+                // $floatz build from the depth buffer (fs_floatz_build): R32F target, no depth.
+                SDL_GPUShaderCreateInfo gf = fs;
+                gf.entrypoint = "fs_floatz_build";
+                gf.num_samplers = 1;
+                gf.num_uniform_buffers = 1;
+                SDL_GPUShader* gfs = SDL_CreateGPUShader(dev, &gf);
+                if (!gfs) sdlFail("floatz shader");
+                SDL_GPUColorTargetDescription ct{};
+                ct.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+                SDL_GPUGraphicsPipelineCreateInfo pi{};
+                pi.vertex_shader = gvs;
+                pi.fragment_shader = gfs;
+                pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+                pi.target_info.color_target_descriptions = &ct;
+                pi.target_info.num_color_targets = 1;
+                floatzBuildPipe = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!floatzBuildPipe) sdlFail("floatz pipeline");
+                SDL_ReleaseGPUShader(dev, gfs);
+            }
             SDL_ReleaseGPUShader(dev, gvs);
+        }
+        {
+            // Effects that read the post-sun copy / $floatz: distortion_floatz.tech (stateMap nofog with the material's blend
+            // 0x65 = SrcAlpha / InvSrcAlpha, depth test, no depth write) and zfeather(_add).tech.
+            auto mkFx = [&](const char* vsEntry, const char* fsEntry, uint32_t samplers, int blend) {
+                SDL_GPUShaderCreateInfo ev = vs;
+                ev.entrypoint = vsEntry;
+                SDL_GPUShaderCreateInfo ef = fs;
+                ef.entrypoint = fsEntry;
+                ef.num_samplers = samplers;
+                ef.num_uniform_buffers = 1;
+                SDL_GPUShader* evs = SDL_CreateGPUShader(dev, &ev);
+                SDL_GPUShader* efs = SDL_CreateGPUShader(dev, &ef);
+                if (!evs || !efs) sdlFail("effect shaders");
+                SDL_GPUColorTargetDescription ct{};
+                ct.format = colorFormat;
+                ct.blend_state.enable_blend = true;
+                ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+                ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+                ct.blend_state.src_color_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+                ct.blend_state.dst_color_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                SDL_GPUGraphicsPipelineCreateInfo pi{};
+                pi.vertex_shader = evs;
+                pi.fragment_shader = efs;
+                pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                pi.vertex_input_state.num_vertex_buffers = 1;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+                pi.depth_stencil_state.enable_depth_test = true;
+                pi.depth_stencil_state.enable_depth_write = false;
+                pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+                pi.target_info.color_target_descriptions = &ct;
+                pi.target_info.num_color_targets = 1;
+                pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                pi.target_info.has_depth_stencil_target = true;
+                SDL_GPUGraphicsPipeline* gp = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!gp) sdlFail("effect pipeline");
+                SDL_ReleaseGPUShader(dev, evs);
+                SDL_ReleaseGPUShader(dev, efs);
+                return gp;
+            };
+            distortionPipe = mkFx("vs_distort", "fs_distort", 3, 0);
+            featherPipes[0] = mkFx("vs_feather", "fs_feather", 2, 0);
+            featherPipes[1] = mkFx("vs_feather", "fs_feather", 2, 1);
         }
         {
             SDL_GPUShaderCreateInfo wvs = vs;
@@ -2064,11 +2165,15 @@ struct Renderer {
         si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
         waterMapSampler = SDL_CreateGPUSampler(dev, &si);
+        si.min_filter = si.mag_filter = SDL_GPU_FILTER_NEAREST;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        pointClampSampler = SDL_CreateGPUSampler(dev, &si);
     }
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
         if (sceneTex && blurW == w && blurH == h) return;
-        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1], &ghostTex[0], &ghostTex[1]})
+        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1], &ghostTex[0], &ghostTex[1],
+                                   &postSunTex, &floatzTex})
             if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         auto make = [&](uint32_t tw, uint32_t th) {
             SDL_GPUTextureCreateInfo info{};
@@ -2092,6 +2197,20 @@ struct Renderer {
         ghostTex[0] = make(w, h);
         ghostTex[1] = make(w, h);
         ghostValid = false;
+        postSunTex = make(w, h);
+        {
+            // $floatz: D3DFMT_R32F, window size (0x10023240..0x10023276).
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = std::max(w, 1u);
+            info.height = std::max(h, 1u);
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            floatzTex = SDL_CreateGPUTexture(dev, &info);
+            if (!floatzTex) sdlFail("floatz texture");
+        }
         quarterTex = make(w / 4, h / 4); // $blurred_screen: (screenW>>2, screenH>>2) clamped >= 1 (gfx 0x100235b5)
         if (!blurVerts) {
             SDL_GPUBufferCreateInfo vb{};
@@ -2109,7 +2228,7 @@ struct Renderer {
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER; // read by the $floatz build
         info.width = w;
         info.height = h;
         info.layer_count_or_depth = 1;
@@ -2212,11 +2331,21 @@ struct Renderer {
         color.clear_color = {0.55f, 0.65f, 0.78f, post ? 0.0f : 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
         color.store_op = SDL_GPU_STOREOP_STORE;
+        // Effects that read the post-sun scene copy or $floatz (distortion, zfeather). The copy needs the scene in an offscreen
+        // target (post) and is made only when the scene viewport is the whole window (0x10025ce5 flag; always here).
+        // IW2_NO_POSTSUN=1 disables the copy and the float-z pass (distortion then skipped, zfeather drawn unfeathered).
+        static const bool noPostSun = std::getenv("IW2_NO_POSTSUN") != nullptr;
+        bool postSunWanted = false;
+        if (post && !noPostSun)
+            for (const DrawItem& it : items)
+                if (it.model)
+                    for (const Batch& b : it.model->batches) postSunWanted = postSunWanted || b.fxKind != 0;
+        bool postSunReady = false;
         SDL_GPUDepthStencilTargetInfo ds{};
         ds.texture = depth;
         ds.clear_depth = 1.0f;
         ds.load_op = SDL_GPU_LOADOP_CLEAR;
-        ds.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ds.store_op = postSunWanted ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
         ds.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
@@ -2329,6 +2458,47 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
+            if (p == Pass::Blend && postSunWanted) {
+                // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
+                // the back buffer into resolvedPostSun), then the effect lists. $floatz is built by the DLL first thing in the scene
+                // (0x10024ee0: technique "build floatz" of every opaque surface, lib/float_z_build.hlsl = clip-space z; sky / clear:
+                // floatz_clear.hlsl = 262144 · 2 · 1.732). Here it is derived from this frame's depth buffer at the same moment as
+                // the copy: clip z = ndc z · w of the same projection, the cleared depth (sky) gives the maximum extent. TODO(spec):
+                // surfaces whose technique set has no "build floatz" entry still write depth here.
+                SDL_EndGPURenderPass(pass);
+                {
+                    SDL_GPUColorTargetInfo fz{};
+                    fz.texture = floatzTex;
+                    fz.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                    fz.store_op = SDL_GPU_STOREOP_STORE;
+                    SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, nullptr);
+                    SDL_BindGPUGraphicsPipeline(fp, floatzBuildPipe);
+                    SDL_GPUTextureSamplerBinding db{depth, pointClampSampler};
+                    SDL_BindGPUFragmentSamplers(fp, 0, &db, 1);
+                    const struct { float nearFar[4]; } fzu{{4.0f, 40000.0f, 262144.0f * 2.0f * 1.732f, 0.0f}}; // Camera::viewProj near / far
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fzu, sizeof(fzu));
+                    SDL_DrawGPUPrimitives(fp, 3, 1, 0, 0);
+                    SDL_EndGPURenderPass(fp);
+                }
+                {
+                    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+                    SDL_GPUTextureLocation src{}, dst{};
+                    src.texture = sceneTex;
+                    dst.texture = postSunTex;
+                    SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+                    SDL_EndGPUCopyPass(cp);
+                }
+                SDL_GPUColorTargetInfo again = color;
+                again.load_op = SDL_GPU_LOADOP_LOAD;
+                SDL_GPUDepthStencilTargetInfo dsAgain = ds;
+                dsAgain.load_op = SDL_GPU_LOADOP_LOAD;
+                dsAgain.store_op = SDL_GPU_STOREOP_DONT_CARE;
+                pass = SDL_BeginGPURenderPass(cmd, &again, 1, &dsAgain);
+                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                postSunReady = true;
+            }
             if (p == Pass::Blend) {
             // Water (water_l_sun.tech): after the opaque passes, before the blended ones. No polygon offset: every shipped
             // water material (iw_13.iwd materials/water_*) has polygon-offset level 0 (state byte 0x30 bits 4-5).
@@ -2433,6 +2603,38 @@ struct Renderer {
                 }
                 for (const Batch& b : it.model->batches) {
                     if (b.pass != p) continue;
+                    if (b.fxKind == 2 && !postSunReady) continue; // distortion needs the post-sun copy (Skip before, docs/spec/effects.md)
+                    if (b.fxKind != 0 && postSunReady) {
+                        // distortion_floatz.tech / zfeather(_add).tech: vertex uniforms + the material constant, samplers colorMap,
+                        // resolvedPostSun / floatZ.
+                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                        SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
+                        SDL_GPUBufferBinding mib{it.model->indices, 0};
+                        SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        bound = true;
+                        SDL_BindGPUGraphicsPipeline(pass, b.fxKind == 2 ? distortionPipe : featherPipes[p == Pass::Additive ? 1 : 0]);
+                        struct EVU { VU base; float parms[4]; } evu{vu, {b.fxParm[0], b.fxParm[1], 0, 0}};
+                        evu.base.model = it.transform;
+                        SDL_PushGPUVertexUniformData(cmd, 0, &evu, sizeof(evu));
+                        if (b.fxKind == 2) {
+                            SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(b.texture)], repeatSampler}, {postSunTex, clampSampler},
+                                                                   {floatzTex, pointClampSampler}};
+                            SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                        } else {
+                            SDL_GPUTextureSamplerBinding tex[2] = {{scene.textures[size_t(b.texture)], repeatSampler}, {floatzTex, pointClampSampler}};
+                            SDL_BindGPUFragmentSamplers(pass, 0, tex, 2);
+                        }
+                        FragmentUniforms fu{};
+                        if (p == Pass::Blend) applyFog(fu); // as the other effect batches (TODO(spec): the fogged zfeather statemaps)
+                        SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                        SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                        SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
+                        VU mu = vu;
+                        mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                        SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
+                        continue;
+                    }
                     if (!bound) {
                         SDL_GPUBufferBinding mvb{it.model->vertices, 0};
                         SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
@@ -3278,9 +3480,18 @@ int main(int argc, char** argv) {
                                                                          {av[0], av[1], av[2]}, e->vehicle->info->suspensionTravel,
                                                                          e->vehicle->steerAngle, e->number))
                             ctl.push_back(wc);
+                    const assets::XPose drawnPose = assets::applyControls(vm->parts, vpose, ctl);
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, assets::applyControls(vm->parts, vpose, ctl));
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, drawnPose);
                     if (it.model) items.push_back(it);
+                    {
+                        // Vehicle flash / fx tags from the drawn pose (lerped turret controls, jolt, wheels) like actors and turrets:
+                        // 0x48abb0 reads the client entity and skeleton for every entity type (World::vehicleTagPosition is the
+                        // server-side position only).
+                        BoneMap vbones;
+                        addBones(vbones, vm->parts, drawnPose);
+                        recordDrawnTags(e->number, vbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                    }
                     continue;
                 }
                 // Actors and animated script_models (drones: spawn("script_model") + useanimtree + attach head/gun, maps/_drones.gsc) are
