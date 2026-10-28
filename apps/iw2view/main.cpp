@@ -2802,7 +2802,7 @@ int main(int argc, char** argv) {
         Vec3 fxRight{0, -1, 0}, fxUp{0, 0, 1};
         // The view weapon's muzzle flash (0x4b6c37): a shot sets the fire flag (+0x142, 0x4b7800); the next view model update
         // plays viewFlashEffect (0xf48e44) bolted to the view model's tag_flash (0x4b6660, edx = 1).
-        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; bool brassPending = false, brassValid = false; game::FVec brassPos{}; };
+        struct ViewFlash { bool pending = false, valid = false; game::FVec pos{}; game::FxAxes axes{}; bool brassPending = false, brassValid = false; game::FVec brassPos{}; game::FxAxes brassAxes{}; };
         auto viewFlash = std::make_shared<ViewFlash>();
 
         // Entity models currently visible in the game world.
@@ -3236,6 +3236,22 @@ int main(int argc, char** argv) {
                         const auto& m = base.transform; // columns: forward, left, up, origin (entityTransform)
                         const auto& q = tf->second.first;
                         for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        // The tag's own axes (0x48abb0 gives the attachment's origin AND axis rows, used as the effect axes by 0x485479):
+                        // the bone rotation applied to x / y / z, then the view model's rotation.
+                        auto tagAxes = [&](const assets::Quat& rq) {
+                            game::FxAxes ax{};
+                            for (int a = 0; a < 3; ++a) {
+                                std::array<float, 3> e{0, 0, 0};
+                                e[size_t(a)] = 1;
+                                const auto r = assets::rotate(rq, e);
+                                for (int k = 0; k < 3; ++k) ax[size_t(a)][size_t(k)] = r[0] * m[size_t(k)] + r[1] * m[size_t(4 + k)] + r[2] * m[size_t(8 + k)];
+                            }
+                            return ax;
+                        };
+                        viewFlash->axes = tagAxes(tf->second.second);
+                        if (std::getenv("IW2_FX_DEBUG"))
+                            std::cerr << "view flash tag axes f " << viewFlash->axes[0][0] << "," << viewFlash->axes[0][1] << "," << viewFlash->axes[0][2]
+                                      << " model f " << m[0] << "," << m[1] << "," << m[2] << "\n";
                         if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
                         // CG_EjectWeaponBrass (0x4b7730) for the local client: shellEjectEffect bolted on the view weapon's tag_brass.
                         const auto tb = gunBones.find("tag_brass");
@@ -3244,13 +3260,16 @@ int main(int argc, char** argv) {
                             const auto& m = base.transform;
                             const auto& q = tb->second.first;
                             for (int k = 0; k < 3; ++k) viewFlash->brassPos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                            viewFlash->brassAxes = tagAxes(tb->second.second);
                         }
                         if (viewFlash->brassPending && world) {
                             viewFlash->brassPending = false;
                             const std::string path = pweapon.field("shellEjectEffect");
                             if (viewFlash->brassValid && !path.empty() && path != "none") {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // position only (no tag axes known here)
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // tag_brass origin + axes (0x48abb0)
                                     o.origin = vf->brassPos;
+                                    o.axes = vf->brassAxes;
+                                    o.hasAxes = true;
                                     return vf->brassValid;
                                 });
                                 const auto& m = base.transform;
@@ -3262,8 +3281,10 @@ int main(int argc, char** argv) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
                             if (!path.empty()) {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // position only (no tag axes known here)
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // tag_flash origin + axes (0x48abb0)
                                     o.origin = vf->pos;
+                                    o.axes = vf->axes;
+                                    o.hasAxes = true;
                                     return vf->valid;
                                 });
                                 const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};

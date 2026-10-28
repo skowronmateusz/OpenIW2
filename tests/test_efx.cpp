@@ -225,6 +225,29 @@ int main() {
         es.sprites(200);
         CHECK(emits.size() == 2 && emits[1] == "fx/trail.efx");
     }
+    // Bug 12: a relative Tail (view muzzle flash) whose tag turns keeps pointing along the tag (both ends through the bolt).
+    {
+        const char* tailTxt = "Tail\n{\n\tflags relative\n\tlife 1000\n\torigin 29 0 0\n"
+                              "\tvelocityX\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 100\n\t}\n"
+                              "\tlength\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t]\n\t\tscale 20\n\t}\n\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n";
+        auto tailFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(tailTxt));
+        iw2::game::FxTag tag;
+        tag.hasAxes = true;
+        auto tb = std::make_shared<iw2::game::FxBolt>([&](iw2::game::FxTag& o) { o = tag; return true; });
+        iw2::game::FxSystem st;
+        st.viewValid = true;
+        st.viewOrigin = {0, 0, 50};
+        st.playBolted(tailFx, tb, iw2::game::FxAxes{}, 0);
+        st.sprites(50);
+        tag.axes = {iw2::game::FVec{0, 1, 0}, iw2::game::FVec{-1, 0, 0}, iw2::game::FVec{0, 0, 1}}; // turned 90 degrees
+        const auto sp = st.sprites(100);
+        CHECK(sp.size() == 1);
+        if (sp.size() == 1) {
+            const float dx = sp[0].beamB[0] - sp[0].beamA[0], dy = sp[0].beamB[1] - sp[0].beamA[1];
+            CHECK(std::fabs(dx) < 1e-3f && dy < -19.0f); // B behind A along the turned forward (+y)
+            CHECK(std::fabs(sp[0].beamA[0]) < 1e-3f && sp[0].beamA[1] > 29.0f);
+        }
+    }
     if (failures) return 1;
     std::cout << "efx tests passed\n";
     return 0;
