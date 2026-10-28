@@ -29,6 +29,8 @@ described in the code that reads them.
 | `IW2_RIDE_TRACE=1` | iw2view | Per-frame trace of the ridden vehicle (origin, angles, turret, camera link). |
 | `IW2_CROSSHAIR_DEBUG=1` | iw2game/iw2view | Prints the crosshair trace eye/yaw and the hit entity/target name. |
 | `IW2_PRONE_LOG=1` | iw2game/iw2view | Prints each `checkprone` call (actor, origin, yaw, alreadyProne, the answer and the two pitch outputs of the fit test 0x4fb530), each `enterprone` (length, fit result, pitches) and each `exitprone`. |
+| `IW2_NO_PRONE_TILT=1` | iw2view | Draws actors and corpses without the prone / corpse-blend tag_origin control (A/B check of 0x4c1cc0). |
+| `IW2_SHOT_ENT=N[,dist,yaw,height]` | iw2view `--shot` | Puts the shot camera `dist` (120) units from entity N at its yaw + `yaw` (90) and `height` (50) above its origin, looking at it. |
 | `IW2_TOUCH_TEST=<s>` | iw2game | At sim time `<s>` runs the vehicle touch callback (0x512d40) for the first vehicle with collisionDamage > 0 placed 100 units behind the player, moving at 400 units/s at it; prints the target health before and after; `IW2_TEST_ACTOR=1` targets the first living actor instead of the player. |
 | `IW2_ROCKET_TEST=<s>` | iw2game | At sim time `<s>` fires the first vehicle's turret rocket at the player from 300 units away; prints the player health before and 3 s after. |
 | `IW2_KILL_VERBOSE=1` | iw2game | With `IW2_KILL_VEHICLES`, also prints each vehicle's model and health before the kill. |

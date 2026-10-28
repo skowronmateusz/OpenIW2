@@ -707,7 +707,42 @@ a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; 
 Verified: 27-map sweep (all SP maps, 40 s, `--spawn-all`, `IW2_PRONE_LOG=1`): no unimplemented built-ins; checkprone / enterprone /
 exitprone run on 24 of the 27 maps; runtime errors only the known ones (elalamein / matmata setbattlechatter, matmata roof_guys,
 silotown_assault field_charge spawn), none from prone code.
-TODO(spec): the corpse prone blend (0x4fdba0 copies the block, sets the corpse byte, 500 ms, zero pitches; client mode 2
-with the second rotation 0x423a10 / product 0x4235e0) is not ported; the reader of +0x288; the client draws with its own
-time (0xf708dc), here the server time is used. Not visually checked in iw2view yet.
-Open: consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
+Actor +0x288 readers (every `0x288(%reg)` byte access; no script field: the 51-entry actor field table at 0x570530 has
+no 0x288 entry): 0x502b42 (offset goal 0x502960), 0x53defc (maymovetopoint 0x53dce0), 0x543ca4 (0x543c30, per listed
+actor), 0x5491bf (reacquirestep 0x548f10). Each takes a step height of 10 (0x41200000 / 0x591e8c) while it is set and 18
+otherwise. Ported in reacquirestep, aiReachPast and maymovetopoint (replacing the crouch-pose guess); 0x502960's offset
+goal is dead code (see actorcover.cpp).
+
+### Corpse prone blend (ported)
+
+- Death start 0x548980 (0x54899f..0x5489f9): anim mode (+0x218) not 8 ("nophysics"), not linked (gentity +0x1c8 tagInfo
+  0) and not prone (0x514970): start = now, prone 1, corpse byte 1, length 500, +0x168 = +0x16c = 0, then 0x4fd9e0(ent, 0).
+- Death think 0x548ab0 (0x548b96): while the corpse byte is set, 0x4fd9e0(ent, 1) every think.
+- Corpse conversion 0x4fdba0: the 24-byte block is copied to the corpse slot (0x1c7e5ac + 0x20 * i, block at +8, entity
+  number at +4). With "not prone, mode not 8, not linked" the blend starts (only when the corpse byte is still 0) and
+  0x4fd9e0(corpse, 0) runs. 0x523040 (item/corpse trajectory) runs 0x4fd9e0(corpse, 0) when a falling corpse lands (corpse
+  falling is not modelled here).
+- Snapshot 0x4db2b0: every frame the blocks of the actors in use and of the corpse slots are copied to 0x1c638bc (24
+  bytes each) with the index per entity at 0x1c630bc; the client reads them there.
+- 0x4fd9e0(edx = entity, smooth): block = corpse slot (eType 0xb) or actor +0x158; nothing unless the corpse byte is set;
+  mask = clip mask & 0xfdff3fff (0x820011 for actors and corpses). smooth 0: 0x4fd890 straight into +0x168 / +0x16c /
+  +0x164. smooth 1: into temporaries; each angle moves towards its target by at most 6 (0x56fcc8) per call (0x423f50
+  wrap), the lift by at most 0.6 (0x592308).
+- 0x4fd890(pass, mask, yaw, outRoll, outLift; eax = outPitch, ecx = origin): forward / right from yaw (0x421f00: (cos,
+  sin, 0) / (sin, -cos, 0)); pitch probe along forward; |pitch| >= 30 (0x591e08) gives roll 0 and height h1, else a roll
+  probe along right and height (h1 + h2) / 2. Lift = height - origin z; when negative and the box (-15,-15,0)..(15,15,72)
+  (0x56f704 / 0x56f710) cannot move 1 unit down (0x44c1b0, pass entities actor and 0x7ff) it becomes 0.
+- 0x4fd460(pass, mask, origin, fallback = origin, dir, outSlope): box (-4,-4,0)..(4,4,8); from origin + (0,0,30) a sweep of
+  10.9 (0x5922d4) along dir (fraction 0: slope 0, return fallback z); from where it stopped straight down to origin z - 30
+  (start-solid or no hit: the fallback point); the same along -dir. Slope = 0x424040(pitch(front - back)), 0 when the two
+  points are equal; returns (back z + fallback z + front z) / 3 (0x592250).
+- Client 0x4c1cc0 / 0x4c1b90: corpse byte set gives mode 2: rotation = 0x423970(f * +0x168) (pitch about y) times
+  0x423a10(f * +0x16c) (quaternion (sin(a/2), 0, 0, cos(a/2)), roll about x), product 0x4235e0 (Hamilton, pitch first) =
+  `anglesQuat(pitch, 0, roll)`; translation (0, 0, f * +0x164).
+- Client time: f uses cg.time (0xf708dc), set from the snapshot server time (0x4a4070) and lying between the previous and
+  next snapshot (frame interpolation 0x4a4c10). iw2view passes its effect time, server time - 50 + lerp * 50.
+- Visual check (iw2view, toujane `--spawn-all` 50 s, corpse #1139 with pitch -4.2 / roll 11.7, `IW2_SHOT_ENT=1139,110,0,40`,
+  A/B with `IW2_NO_PRONE_TILT`): with the control the body lies on the rising ground beside the wall (right side raised),
+  without it the right arm sinks into the slope. Live prone pitches seen so far are a few degrees (not visible).
+
+Open (follower): consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.

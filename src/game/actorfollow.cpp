@@ -120,15 +120,15 @@ bool World::aiReach(const Vec3& start, const Vec3& target, int passEnt, uint32_t
     return std::fabs(out[2] - target[2]) < 72.0f;
 }
 
-// 0x543c30: first the listed actors alone (0x44c5b0: the box, step 10 when that actor crouches, else 18, moved level
+// 0x543c30: first the listed actors alone (0x44c5b0: the box, step 10 when that actor is prone (+0x288), else 18, moved level
 // towards the target), then the move check (0x543d30, step 18). A listed actor in the way fails with `out` = start.
 bool World::aiReachPast(Vec3 start, const Vec3& target, const std::vector<int>& ents, int passEnt, uint32_t mask,
                         Vec3& out) {
     const Vec3 end{target[0], target[1], start[2]};
     for (int n : ents) {
         Entity* x = entityByNumber(n);
-        // TODO(spec): actor +0x288 (taken as the crouch pose, as in the cover code).
-        const float h = x && x->isActor && x->obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f;
+        // Actor +0x288 is the prone tilt byte (set by enterprone 0x514b8f, cleared by the think 0x4ff209).
+        const float h = x && x->isActor && x->ai.prone.tilt ? 10.0f : 18.0f;
         for (const EntityClip& c : collision_->entityClips()) {
             if (c.id != n || c.model != 0) continue;
             const TraceResult tr = collision_->traceBox(c.origin, c.mins, c.maxs, c.contents, start, end, {-15, -15, h},
