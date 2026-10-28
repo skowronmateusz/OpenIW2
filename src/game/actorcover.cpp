@@ -434,18 +434,32 @@ bool World::pathToNode(Entity& e, int node) {
     return true;
 }
 
-// 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it.
-// TODO(spec): the goal offset of 0x502960 (+0x73c) and its node-based target choice are not read.
+// 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it. A truncated path
+// (flag 4) whose planned count (+0x382) is at least four times its point count is dropped even when it ends inside
+// (0x502984..0x5029a1). The offset goal of 0x502960 (0x502a2d..0x502c4d: a node query around the goal shifted
+// sideways by actor +0x73c, planners 0x542340 / 0x5428a0 / 0x542550) only runs when min(|+0x73c|, goal radius −
+// 0x592114) > 0; the exe never writes +0x73c but 0 (4fc7ab, grep of every `0x73c(%reg)` store), so it is dead in the
+// single-player game and the plain path to the goal (0x503650) always runs. The wrapper 0x502cd0 clears the blocker
+// fields (+0x728 / +0x72c) while there is no path afterwards, and a failed plan waits 500 ms (0x502c70).
 bool World::pathToGoal(Entity& e) {
+    bool done = false;
     if (!actorHasPath(e)) {
-        if (actorInGoal(e, 0.0f)) return true;
+        done = actorInGoal(e, 0.0f);
     } else {
-        if (inActorGoal(e, pathEnd(e))) return true;
-        clearActorPath(e);
+        const bool dropped = (e.path.flags & 4) && 4 * e.path.count <= e.path.planned;
+        done = !dropped && inActorGoal(e, pathEnd(e));
+        if (!done) clearActorPath(e);
     }
-    Vec3 gp{};
-    float gr = 0, gh = 0;
-    const bool ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+    bool ok = done;
+    if (!done) {
+        Vec3 gp{};
+        float gr = 0, gh = 0;
+        ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+    }
+    if (!actorHasPath(e)) {
+        e.ai.blocker = nullptr;
+        e.ai.blockerEnt = nullptr;
+    }
     if (!ok) {
         clearActorPath(e);
         e.ai.planTimeMs = timeMs_ + 500;
