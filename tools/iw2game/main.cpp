@@ -963,6 +963,24 @@ int main(int argc, char** argv) {
                     std::printf("[trav %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f distEnd %.0f\n", f * 0.05f, tActor->ai.stack[size_t(tActor->ai.depth)], tActor->ai.substate, tActor->obj->get("$goalpos").toString().c_str(), tActor->animScript.c_str(), tActor->path.count, tActor->path.traversal, tActor->path.flags, (long long)tActor->ai.stopSoonMs, ao[0], ao[1], ao[2], std::sqrt((ao[0] - eo[0]) * (ao[0] - eo[0]) + (ao[1] - eo[1]) * (ao[1] - eo[1])));
                 }
             }
+            if (const char* tr = std::getenv("IW2_ACTOR_TRACE")) { // IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]: state/goal/path of one actor
+                int from = 0, every = 20;
+                if (const char* c1 = std::strchr(tr, ',')) { from = std::atoi(c1 + 1); if (const char* c2 = std::strchr(c1 + 1, ',')) every = std::max(1, std::atoi(c2 + 1)); }
+                if (f * 0.05f >= float(from) && f % every == 0)
+                    for (const auto& ep : world.entities())
+                        if (ep->isActor && ep->number == std::atoi(tr)) {
+                            const auto ao = ep->obj->get("origin").asVector();
+                            std::printf("[atrace %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f\n", f * 0.05f, ep->ai.stack[size_t(ep->ai.depth)], ep->ai.substate, ep->obj->get("$goalpos").toString().c_str(), ep->animScript.c_str(), ep->path.count, ep->path.traversal, ep->path.flags, (long long)ep->ai.stopSoonMs, ao[0], ao[1], ao[2]);
+                            if (std::getenv("IW2_ACTOR_TRACE_LINKS")) // links of every path point's node: node (distance)
+                                for (int i = 0; i < ep->path.count; ++i) if (ep->path.pts[size_t(i)].node >= 0) {
+                                    std::printf("    links of %d:", ep->path.pts[size_t(i)].node);
+                                    for (const auto& l : world.paths().links(size_t(ep->path.pts[size_t(i)].node))) std::printf(" %d(%.0f)", int(l.target), l.distance);
+                                    std::printf("\n");
+                                }
+                            if (ep->anim) { const auto d = ep->anim->delta(ep->ai.animDeltaGoalWeights); std::printf("    animdelta %.2f %.2f %.2f groundEnt %d look %.2f %.2f dist %.1f budget %.0f\n", d.trans[0], d.trans[1], d.trans[2], int(ep->ai.groundEnt), ep->path.lookDir[0], ep->path.lookDir[1], ep->path.lookDist, ep->path.budget); }
+                            for (int i = 0; i < ep->path.count; ++i) std::printf("    pt %d node %d (%.0f %.0f %.0f)\n", i, ep->path.pts[size_t(i)].node, ep->path.pts[size_t(i)].pos[0], ep->path.pts[size_t(i)].pos[1], ep->path.pts[size_t(i)].pos[2]);
+                        }
+            }
             if (touchTestAt >= 0 && f * 0.05f >= touchTestAt) { // IW2_TOUCH_TEST=<s> / IW2_ROCKET_TEST=<s>
                 const bool rocket = touchTestIsRocket;
                 touchTestAt = -1;
@@ -1265,6 +1283,13 @@ int main(int argc, char** argv) {
                 const auto o = e->obj->get("origin"), nw = e->obj->get("script_noteworthy");
                 std::printf("actor #%d %s %s %s health %s\n", e->number, e->classname.c_str(), o.toString().c_str(), nw.isString() ? nw.asString().c_str() : "-", e->obj->get("health").toString().c_str());
             }
+        }
+        if (const char* en = std::getenv("IW2_ENT_DUMP")) { // debug: classname, targetname, target, origin of one entity (by number)
+            for (const auto& e : world.entities())
+                if (e->number == std::atoi(en)) {
+                    const auto o = e->obj->get("origin"), tn = e->obj->get("targetname"), tg = e->obj->get("target");
+                    std::printf("entity #%d %s targetname %s target %s origin %s removed %d\n", e->number, e->classname.c_str(), tn.isString() ? tn.asString().c_str() : "-", tg.isString() ? tg.asString().c_str() : "-", o.toString().c_str(), int(e->obj->removed));
+                }
         }
         if (const char* pre = std::getenv("IW2_THREADS_PREFIX")) { // debug: every live thread whose wait site starts with the prefix
             for (const auto& d : world.vm().describeThreads())

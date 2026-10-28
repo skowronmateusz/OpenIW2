@@ -402,6 +402,15 @@ void World::start() {
     linkVehicleNodes();
     initMapTurrets();
     syncEntityClips();
+    // 0x516b70 (after the entity spawn 0x4fa5c0, 0x4fdf30; before the first frame 0x4da970): every entity with the DYNAMICPATH
+    // flags 0x300 -- set by script_brushmodel spawn 0x533440 when spawnflags bit 1 is set (0x53346c) -- disconnects its paths
+    // (0x519860). TODO(spec): that the level main() runs after this point (assumed: the map scripts rely on it, e.g. moscow's
+    // ai_table_clip_down is made solid again later without a disconnectpaths call).
+    for (const auto& ep : entities_) {
+        if (ep->classname != "script_brushmodel" || ep->obj->removed) continue;
+        const Value sf = ep->obj->get("spawnflags");
+        if (sf.isInt() && (sf.asInt() & 1)) disconnectEntityPaths(*ep);
+    }
     vm_.level()->set("script", Value(mapName_));
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
     // Threads the init code woke by notify were appended to the current frame list (counter 0x9bef20), which the first
@@ -1075,6 +1084,7 @@ void World::registerBuiltins() {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("delete on a non-entity");
         if (e->isPlayer) throw std::runtime_error("cannot delete the player");
+        connectEntityPaths(*e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
         e->obj->removed = true;
         vm_.notify(e->obj, "death");
         return Value();
