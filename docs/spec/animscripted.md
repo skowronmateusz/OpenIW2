@@ -63,8 +63,9 @@ level start (0x515f80 → 0x515d70, docs/spec/ai.md "Node drop"), so idles witho
 openiw2 loader used to keep the raw z. The scripted path itself has no z handling (mode byte above; the normal branch 0x53b61d;
 the unlinked write). script_origins are not dropped (spawn 0x5334d0: mover init 0x5332b0, contents 0, link): moscow's
 `letlev_node` / `welcome_dialogue_node` (-2159 -734 86) is 37 above the floor because it is the reference of the sync animation
-`mos_0_01_rs1_pickuprifle_t`, whose delta translation starts at z −37.3; the block idle the commissar plays there for the first
-~1.5 s (until the welcome dialogue starts) stands at the node height in the original too.
+`mos_0_01_rs1_pickuprifle_t`, whose delta translation starts at z −37.3 (feet at 48.7, the floor is 49.2). For the block idle
+the commissar plays there before the welcome dialogue starts (~1.5 s) no exe path that lowers him was found: the script_origin is
+not dropped, the scripted path has no z handling, and only the sync animation's delta covers the height from the dialogue on.
 
 ### Every frame (0x53baf0)
 

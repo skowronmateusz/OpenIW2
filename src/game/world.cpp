@@ -320,6 +320,7 @@ void World::dropPathNodes() {
     }
     collision_->setEntityClips(std::move(clips));
     char buf[256];
+    static const bool strict = std::getenv("IW2_NODE_DROP_STRICT") != nullptr;
     for (PathNode& n : nodes_) {
         const Value ov = n.obj->get("origin");
         const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
@@ -340,8 +341,15 @@ void World::dropPathNodes() {
             std::snprintf(buf, sizeof buf, "^3WARNING: Pathnode (%s) at (%g %g %g) %s", pathNodeTypeName(n.type).c_str(), double(o[0]),
                           double(o[1]), double(o[2]), what);
             print(buf);
-            n.typeNum = 0;
-            n.obj->set("type", Value(std::string("BAD NODE"))); // the type getter 0x515b60 reads +0 (name table 0x5a9368)
+            // DEVIATION (TODO(spec)): the exe sets the type to 0 here (0x515f6f). 27 of the 29 nodes our traces put "in solid"
+            // on the 39 maps are clear as a point and only the box start overlaps a brush (e.g. breakout's End node at
+            // (194 8859 2), a chain node of a map with 22 trigger_friendlychain); a bad chain node empties every friendly
+            // chain (0x52d5d0), which the shipped maps evidently do not do, so our box start-solid test probably disagrees
+            // with the exe's there. The node keeps its map origin and type unless IW2_NODE_DROP_STRICT=1.
+            if (strict) {
+                n.typeNum = 0;
+                n.obj->set("type", Value(std::string("BAD NODE"))); // the type getter 0x515b60 reads +0 (name table 0x5a9368)
+            }
             continue;
         }
         n.obj->set("origin", Value(hit));

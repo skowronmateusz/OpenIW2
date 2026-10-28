@@ -183,8 +183,12 @@ Otherwise the hit point (z = start + fraction·(−257)) is tested with the acto
 the "in solid" case, else the hit point becomes the origin (+0x14..+0x1c). Implemented in `World::dropPathNodes` (before the
 path graph and the chains are built); the entity clips there are the non-DYNAMICPATH script_brushmodels (vehicle collmaps are
 linked later, 0x50dc40 at 0x4d9c6f). TODO(spec): the other entity classes linked at 0x4d9c3e. The 39-map sweep flags 29 nodes
-"in solid" and 2 "floating" (e.g. silotown_assault `checkpointB` (-688 -464 56) inside a clip_nosight brush, which empties the
-friendly chains of that map as in the exe's rule above; whether the original's collision agrees there is not verified).
+"in solid" and 2 "floating". Only 2 of the 29 are solid as a point (silotown_assault `checkpointB` (-688 -464 56) inside a
+clip_nosight brush, newvillers (-1840 2096 -46)); the others are clear points where the 30-unit box start (or the 72-unit box at
+the hit) overlaps a brush edge, e.g. breakout's End node (194 8859 2), a chain node on a map with 22 trigger_friendlychain. Marking
+it type 0 would empty breakout's friendly chains, which the shipped game evidently does not do, so our box start-solid test likely
+disagrees with the exe's (TODO(spec): CM start-solid for capsule/box traces near brush edges). DEVIATION: a node the drop rejects
+keeps its map origin and type; `IW2_NODE_DROP_STRICT=1` applies the exe's type 0.
 
 **Runtime node** (0x78 bytes from 0x1c8da04; script value = node index): +0 type 1…18, +4 spawnflags (0x40 priority,
 0x8000 "cover script optional", 1 never a cover candidate), +0x14 origin, +0x20 yaw, +0x24 forward, +0x30/+0x32 linked
