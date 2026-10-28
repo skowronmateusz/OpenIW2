@@ -190,4 +190,6 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
 - openiw2 (apps/iw2view): saves are written to `IW2_SAVE_DIR` (default `<main dir>/save`), `save/autosave/` rows are listed as
   `autosave/<name>` while `ui_savegameListAutosave` is set (TODO(spec): the exe's directory walk), uiScripts `Loadgame` ("loadgame %s"
   of `ui_savegame`) and `DelSavegame` work, console `loadgame <name>` / `loadgame_continue` load a save, and a death / mission failure
-  (loadgame_continue 0x4d9f90) loads `sv_lastSaveGame`, restarting the level only when no such save exists.
+  (loadgame_continue 0x4d9f90) loads `sv_lastSaveGame`, restarting the level only when no such save exists. `vid_restart` /
+  `snd_restart` during a level follow section 3 (save `internal/<cmd>`, then `disconnect;<cmd>;loadgame internal/<cmd>`); the
+  subsystem restart itself is not implemented (logged), so the visible effect is a save + reload of the level state.

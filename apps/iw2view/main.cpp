@@ -3156,6 +3156,13 @@ int main(int argc, char** argv) {
                 else if (c == "closemenu") menuEnv.close(a1);
                 // TODO(spec): fast_restart (reloads the current map here).
                 else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
+                // vid_restart (0x40cd10) / snd_restart (0x40ce30) while a level runs: queue the save internal/<cmd> (type 0, flags 4);
+                // once written, "disconnect;<cmd>;loadgame internal/<cmd>" runs (0x44a050). Without a level: the restart itself, which
+                // openiw2 does not implement (TODO: renderer / mixer re-init), so it only logs.
+                else if (c == "vid_restart" || c == "snd_restart") {
+                    if (world && !pendingDisconnect) world->queueSave("internal/" + c, "", "", 0, 4);
+                    else std::cout << c << ": no subsystem restart in openiw2\n";
+                }
                 // "loadgame <name>" (exe "You must specify a savegame to load", "Can't find savegame %s") and loadgame_continue
                 // (0x447190: the save named by sv_lastSaveGame) load save/<name>.svg (docs/spec/savegame.md section 5).
                 else if (c == "loadgame") {
@@ -6110,6 +6117,11 @@ int main(int argc, char** argv) {
                         uiCvars["sv_lastSaveGame"] = f.name;
                         world->cvars["sv_lastSaveGame"] = f.name;
                     }
+                    for (const char* r : {"vid_restart", "snd_restart"}) // 0x44a050 (exact names, 0x15 bytes compared)
+                        if (ok && f.name == std::string("internal/") + r) {
+                            std::cout << "Game saved for " << r << "\n";
+                            execText(std::string("disconnect;") + r + ";loadgame internal/" + r);
+                        }
                     saveRowsAt = 0;
                 }
                 if (auto change = world->dueLevelChange()) {
@@ -6117,6 +6129,18 @@ int main(int argc, char** argv) {
                     if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last;
                     else pendingLevel = std::make_pair(change->map, change->failed);
                 }
+            }
+            if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
+                // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
+                pendingDisconnect = false;
+                pendingLevel.reset();
+                world.reset();
+                releaseScene(dev, scene);
+                scene = emptyScene(dev);
+                currentMap.clear();
+                menuEnv.setCvar("cl_paused", "0");
+                frontStack.closeAll();
+                frontStack.open("main");
             }
             std::optional<game::LoadedSave> loadedSave;
             if (pendingLoad) {
@@ -6132,18 +6156,6 @@ int main(int argc, char** argv) {
                     std::cout << path.string() << ": " << err << "\n";
                 }
                 pendingLoad.reset();
-            }
-            if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
-                // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
-                pendingDisconnect = false;
-                pendingLevel.reset();
-                world.reset();
-                releaseScene(dev, scene);
-                scene = emptyScene(dev);
-                currentMap.clear();
-                menuEnv.setCvar("cl_paused", "0");
-                frontStack.closeAll();
-                frontStack.open("main");
             }
             if (pendingLevel) {
                     // Level change or restart: rebuild the world and the scene for the next map.
