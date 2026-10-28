@@ -37,8 +37,8 @@ bool World::isSentient(const Entity& e) const {
 }
 
 // Eye position and (horizontal, unit) look direction. Actors: tag_eye (0x500910; origin + 64 without the tag, with
-// the facing as direction). Player: origin + view height (0x4e8b70; the view height is not known to the world, so
-// the stance approximation of eyePosition() is used, TODO).
+// the facing as direction). Player: origin + view height (+ lean) (0x4e8b70, playerEye() through eyePosition(); the
+// view height is the front end's pmove value, so a crouched or prone player can hide behind low cover).
 // 0x54c7d0 / 0x54c760: a sight trace (mask 0x280d803) from `from` to `to` that ignores the actor and the target and
 // must be clear, and the visibility through effects (0x48b090) must be at least 0.2 (0x592020). With a non-zero
 // `maxDistSq` (maxsightdistsqrd, +0x1770) the 3D distance² must not exceed it, nor the fog limit 0x1c61038 (FLT_MAX at
@@ -240,6 +240,26 @@ void World::setEnemy(Entity& actor, Entity* enemy, bool notify) {
     if (enemy) ++enemy->attackers;
     actor.obj->set("enemy", enemy ? Value(enemy->obj) : Value());
     if (notify) vm_.notify(actor.obj, "enemy");
+    // 0x5151ff..0x515217: an actor forgets its last enemy sight position (+0x2048 = 0; also +0x1738 and +0x1764,
+    // TODO(spec): not modelled) and takes the new enemy's eye at once when it is seen this frame.
+    if (actor.isActor) {
+        actor.obj->set("lastenemysightpos", Value());
+        updateLastEnemySightPos(actor);
+    }
+}
+
+// 0x4fe830 (after the sight check and enemy choice of every perception frame, 0x4fe8bf / 0x54d45b, and on an enemy
+// change): when the current enemy's record is visible (+0) and was seen this frame (last seen +8 == level time), the
+// actor field `lastenemysightpos` (+0x203c, defined flag +0x2048; getter 0x536940 returns undefined while the flag is
+// 0) becomes the enemy's eye (0x514f70: an actor's tag_eye 0x500910, the player's 0x4e8b70). It is not cleared when
+// the enemy goes out of sight, so the animscripts' suppression (utility.gsc hasSuppressableEnemy /
+// foundGoodSuppressSpot) fires at the place the enemy was last seen.
+void World::updateLastEnemySightPos(Entity& actor) {
+    Entity* enemy = entityOf(actor.obj->get("enemy"));
+    if (!enemy) return;
+    auto it = actor.sentientInfo.find(enemy->obj.get());
+    if (it == actor.sentientInfo.end() || !it->second.visible || it->second.lastSeenMs != timeMs_) return;
+    actor.obj->set("lastenemysightpos", Value(enemy->isActor ? sightEye(*enemy, nullptr) : eyePosition(*enemy)));
 }
 
 // Best enemy by threat (0x54e230).
@@ -299,6 +319,7 @@ void World::updatePerception(Entity& e) {
         if (sightCheck(e, *t)) break; // one sight trace per frame (trace counter actor +0xd4)
     }
     selectEnemy(e);
+    updateLastEnemySightPos(e); // 0x4fe8bf
 }
 
 } // namespace iw2::game

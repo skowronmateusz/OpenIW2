@@ -131,6 +131,10 @@ std::unordered_map<std::string, World::BoneXform> World::entityBones(Entity& e) 
 }
 
 Vec3 World::eyePosition(Entity& e) {
+    // The player's eye is 0x4e8b70: ps origin + ps view height (+0xd4, the crouch/prone height from pmove) moved by
+    // the lean (0x440380), or the turret's tag_player while on one. The player has no anim_pose, so the pose table
+    // below would always give a standing eye and a crouched or prone player could never hide behind low cover.
+    if (player_ && &e == player_ && e.obj->get("origin").isVector()) return playerEye();
     const Vec3 o = e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0};
     // Cheap approximation by pose (posing the skeleton for every sight check is too slow for 200+ AI).
     const Value pose = e.obj->get("anim_pose");
