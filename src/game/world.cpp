@@ -565,9 +565,15 @@ void World::prepareStart() {
     cvars["g_player_maxhealth"] = cvars[kSkillHealthCvar[skill]];
     cvars["player_deathInvulnerableTime"] = std::to_string(kSkillDeathInvulMs[skill]);
     spawnMapEntities();
-    if (carriedPlayer_ && player_) { // persistent level change (0x4e6c20 memory save): the player keeps his weapons
+    if (carriedPlayer_ && player_) { // persistent level change (reader 0x4e6de0 from 0x4da4d2): weapons, health, stats words
         inventory(*player_) = carriedPlayer_->inventory;
         if (!carriedPlayer_->weapon.empty()) player_->obj->set("$weapon", Value(carriedPlayer_->weapon));
+        // Entity range table 0x56eeb0 (0x4e6bc0): +0x13c health, +0x140 maxhealth replace the client spawn's g_player_maxhealth.
+        if (carriedPlayer_->health) player_->obj->set("health", Value(int32_t(*carriedPlayer_->health)));
+        if (carriedPlayer_->maxhealth) player_->obj->set("maxhealth", Value(int32_t(*carriedPlayer_->maxhealth)));
+        // Client range table 0x56eec8 (0x4e5b50): ps+0x108..+0x117; the health / max health copies follow the entity, the dead yaw
+        // (+0x10c) is restored. Not carried: stance, origin, view angles, pm_flags.
+        playerDeadYaw_ = carriedPlayer_->deadYaw;
         carriedPlayer_.reset();
     }
     linkVehicleNodes();

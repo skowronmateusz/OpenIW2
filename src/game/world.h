@@ -626,7 +626,15 @@ public:
     // Player state handed over by a persistent level change (0x4d9dd1 -> 0x4e6c20 writes the client into a memory save). Set before
     // start(); prepareStart() gives it to the new player before the level script runs. TODO(spec): the full client state of that
     // memory save (health, stance, ...); only the weapon inventory and the current weapon are carried here.
-    struct CarriedPlayer { Inventory inventory; std::string weapon; };
+    // Persistent level change (writer 0x4e6c20, reader 0x4e6de0): the player entity's +0x13c health and +0x140 maxhealth (range table
+    // 0x56eeb0), the client's stats words ps+0x108..+0x117 (range table 0x56eec8: +0x108 health copy, +0x10c dead yaw, +0x110 max
+    // health, +0x114 a byte flag) and the weapons. TODO(spec): the +0x114 byte flag (no port counterpart).
+    struct CarriedPlayer {
+        Inventory inventory;
+        std::string weapon;
+        std::optional<int> health, maxhealth; // entity +0x13c / +0x140 (the stats words +0x108 / +0x110 are copies of them)
+        std::optional<float> deadYaw;         // ps+0x10c
+    };
     void setCarriedPlayer(CarriedPlayer c) { carriedPlayer_ = std::move(c); }
     std::optional<CarriedPlayer> carriedPlayerState();
     // cinematic(name [, timeout]) (0x4f4220) only records the movie (client state 0x1c60ff4, up to 63 characters); it is played when
