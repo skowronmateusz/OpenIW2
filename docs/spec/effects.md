@@ -87,8 +87,8 @@ mid(r) = (max − min) · 0.5 + min:
 - Frame +0x94: no Line code writes it and the effect pool (0x47f0a0) hands out freed slots uncleared, so it is whatever the
   previous occupant left (0 in never-used pool memory 0xa32380). Frame 0 is used.
 - Relative Lines: the spawn stores B in tag space (0x440600), the update maps A and B through the bolt (0x4404f0).
-- OpenIW2: `FxSystem` emits a `beamTail` sprite; relative Lines follow the tag's translation (TODO(spec): its rotation, as for
-  all relative elements here). The only Line effect (minefield.efx) names materials that do not ship and is not played by
+- OpenIW2: `FxSystem` emits a `beamTail` sprite; relative Lines follow the tag's translation (TODO(spec): its rotation; the exe maps
+  relative positions through the full tag orientation, 0x47fcd0 / 0x4404f0). The only Line effect (minefield.efx) names materials that do not ship and is not played by
   any script.
 
 ## Cloud elements (type 12)
