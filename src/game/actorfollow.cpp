@@ -214,7 +214,8 @@ void World::retargetFollowed(Entity& e, Entity& player) {
 // (0x5025f0, the same test as nearnode) as its followed entity. Unless it plays grenade_cower (handle 0x1c7e120) or has a claimed
 // node it stands at (0x502660), the other must itself be blocked by a sentient (its +0x318 hit entity has a sentient, +0x104).
 void World::scanFollowed(Entity& e) {
-    if (e.ai.followed) return;
+    static const bool enabled = [] { const char* v = std::getenv("IW2_FOLLOW_SCAN"); return !(v && v[0] == '0'); }();
+    if (!enabled || e.ai.followed) return;
     const Vec3 mo = originOf(e.obj);
     bool needBlocked = true;
     if (e.animScript != "grenade_cower") {
@@ -256,28 +257,207 @@ void World::standOrFollow(Entity& e, const std::string& script) {
 }
 
 // 0x500d80 (this = actor, arg = the bumped entity number +0x318): the lookahead shrink flag of the followed branch. A bumped
-// actor (gentity +0x104 set): level time < +0x724. Otherwise 0 when its contents hold 0x400 (an obstacle, as gethitenttype).
-// TODO(spec): the last branch (actor +0x6ec > gentity +0x1ec, neither has a writer in the actor range) is taken as false.
+// gentity with a sentient (+0x104: an actor or the player): level time < +0x724. Otherwise 0 when its contents hold 0x400 (an
+// obstacle, as gethitenttype), else actor +0x6ec > gentity +0x1ec as signed integers. TODO(spec): neither field has a writer
+// that was found (+0x6ec is only read, +0x1ec is the pain point of an actor struct and zero for other gentities), so the last
+// branch is taken as false.
 bool World::followShrink(Entity& e, int bumped) {
     if (bumped < 0 || bumped >= 0x7fe) return false;
     Entity* o = entityByNumber(bumped);
     if (!o) return false;
-    if (o->isActor) return timeMs_ < e.ai.detourMs;
+    if (o->isActor || o->isPlayer) return timeMs_ < e.ai.detourMs;
     return false;
 }
 
-// 0x501c6f..0x501c8b (after the actor move 0x5487c0): +0x318 = the hit entity; when it is an actor that follows nobody it
-// starts following this actor (its +0x2148 = this gentity).
-void World::linkBumpedActor(Entity& e, int hit) {
-    e.ai.bumpedEnt = hit;
-    if (hit >= 0x7fe) return;
-    // On by default: a followed actor stands still in the exe too (the branch of 0x504160 without the path walk, ported in
-    // moveActor), and is released by updateFollowed. IW2_ACTOR_FOLLOW=0 disables the link. The actor clip mask (0x2820011) has
-    // no actor body bit (0x4000), so no trace hits another actor and the link is not reachable in the current scenes.
+// Bookkeeping after the actor move 0x5487c0: +0x318 is the block's hit entity (+0xf4). The followed link itself is written by
+// the yield step (0x501c6f..0x501c8b, yieldFollowed) from the followed entity, not from the hit entity.
+void World::linkBumpedActor(Entity& e, int hit) { e.ai.bumpedEnt = hit; }
+
+// 0x504610: the actor's sentient has a claimed node (+0x2c) and stands at it (0x502660: height within 80, 2D distance within 30).
+bool World::atClaimedNode(const Entity& a) const {
+    if (a.claimedNode < 0) return false;
+    const Vec3 mo = originOf(a.obj), no = originOf(nodes_[size_t(a.claimedNode)].obj);
+    const float dz = mo[2] - no[2];
+    return dz * dz <= 6400.0f && dist2d(no, mo) <= 900.0f;
+}
+
+// 0x501380 (this = actor, run after a yield move with the block at the new position): whether the way is clear of other actors.
+// Every other actor (not the one followed) that the move brought within 30 units (2D, 900) of the block position although it was 30
+// or more from the actor's own origin, within 80 vertically, blocks it; one that follows nobody and does not stand at its claimed
+// node (0x504610) starts following this actor.
+bool World::followClear(Entity& e, const Vec3& newPos) {
     static const bool enabled = [] { const char* v = std::getenv("IW2_ACTOR_FOLLOW"); return !(v && v[0] == '0'); }();
-    if (!enabled) return;
-    Entity* o = entityByNumber(hit);
-    if (o && o->isActor && o != &e && !o->ai.followed) o->ai.followed = &e, ++stats.followLinks;
+    bool clear = true;
+    const Vec3 me = originOf(e.obj);
+    for (auto& ep : entities_) {
+        Entity& o = *ep;
+        if (!o.isActor || &o == &e || o.obj->removed || !isAlive(o) || &o == e.ai.followed) continue;
+        const Vec3 oo = originOf(o.obj);
+        if (!(dist2d(oo, newPos) < 900.0f)) continue;
+        if (!(dist2d(oo, me) >= 900.0f)) continue;
+        if (!(std::fabs(me[2] - oo[2]) < 80.0f)) continue;
+        if (enabled && !o.ai.followed && !atClaimedNode(o)) o.ai.followed = &e, ++stats.followLinks;
+        clear = false;
+    }
+    return clear;
+}
+
+// 0x501620 (this = the actor, which has a followed entity and anim mode 1 or 7; called from the physics step 0x501d00): the actor
+// steps out of the way of the entity it follows, in up to three moves of the actor block (0x5487c0), the block starting at the
+// actor's origin each time with the velocity, ground entity and contact it had on entry.
+//  1. Away from the followed entity: for the player, sideways to its direction of movement (0x5014b0: the perpendicular of the
+//     player's horizontal velocity, or of its view direction when it stands still, on the actor's side; at least 60 * 0.05 = 3
+//     units a frame, the player's speed * 0.05 above that); for an actor, straight away from it (a random direction when they
+//     share the position) by the animation's frame distance (0x503e40, at least 1.5). The move is accepted when it did not end
+//     closer than the actor started, went more than half of the intended distance and 0x501380 finds nobody in the way.
+//  2./3. When the move hit something (and the ground entity is not "none"): the unit hit normal n (block +0x100) decides the side
+//     ((x * n.y) against (y * n.x) of the first direction); the delta is the perpendicular of n at 0.75 (then 0.5625) of the
+//     distance. The side memory is the gentity contents bits 0x10 / 8: when the other bit was set the new delta is added to
+//     0.33 of the perpendicular instead of replacing the old one. Accepted at more than 0.375 (then 0.281) of the distance moved;
+//     the bit of the side taken (0x10 for the first branch, 8 for the second) is stored.
+//  When nothing worked, +0x318 = the followed entity, an actor followed that follows nobody follows this one, the velocity is zeroed
+//  and the actor stays. Returns 0 when a move was impossible (0x5487c0 returned 0; the contents bits 0x18 are cleared).
+bool World::yieldFollowed(Entity& e, ActorSlide& pm, const SlideTraceFn& fn, const Vec3& before) {
+    static const bool enabled = [] { const char* v = std::getenv("IW2_ACTOR_FOLLOW"); return !(v && v[0] == '0'); }();
+    ActorAi& ai = e.ai;
+    Entity& f = *ai.followed;
+    const Vec3 fo = originOf(f.obj);
+    const float sv[3] = {pm.velocity[0], pm.velocity[1], pm.velocity[2]};
+    const uint16_t sGround = pm.groundEnt;
+    const bool sContact = pm.contact;
+    const float sCnz = pm.contactNormalZ;
+    float dir[2], speed, len2;
+    float s14;
+    if (f.isPlayer) {
+        // 0x5014b0
+        const float dx = fo[0] - before[0], dy = fo[1] - before[1];
+        len2 = dx * dx + dy * dy;
+        const float vx = f.velocity[0], vy = f.velocity[1];
+        const float ps = std::sqrt(vx * vx + vy * vy);
+        float ux = 0, uy = 0;
+        if (ps > 0.0f) {
+            ux = vx / ps;
+            uy = vy / ps;
+        } else {
+            const Value av = f.obj->get("angles");
+            const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+            const float pitch = a[0] * 0.017453292f, yaw = a[1] * 0.017453292f;
+            const float fx = std::cos(pitch) * std::cos(yaw), fy = std::cos(pitch) * std::sin(yaw);
+            const float fl = std::sqrt(fx * fx + fy * fy);
+            if (fl > 0.0f) ux = fx / fl, uy = fy / fl;
+        }
+        dir[0] = uy;
+        dir[1] = -ux;
+        if (dir[0] * (before[0] - fo[0]) + dir[1] * (before[1] - fo[1]) < 0.0f) dir[0] = -uy, dir[1] = ux;
+        speed = (ps < 60.0f ? 60.0f : ps) * 0.05f;
+        s14 = speed * speed;
+    } else {
+        dir[0] = before[0] - fo[0];
+        dir[1] = before[1] - fo[1];
+        const float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+        len2 = l * l;
+        if (l > 0.0f) {
+            dir[0] /= l;
+            dir[1] /= l;
+        } else {
+            meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
+            const float r1 = float(meleeSeed_ >> 0x11 & 0x7fff);
+            meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3;
+            const float r2 = float(meleeSeed_ >> 0x11 & 0x7fff);
+            dir[0] = r1 / 32768.0f * 2.0f - 1.0f;
+            dir[1] = r2 / 32768.0f * 2.0f - 1.0f;
+            const float rl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+            if (rl > 0.0f) dir[0] /= rl, dir[1] /= rl;
+            len2 = 0.0f;
+        }
+        float d2 = 0.0f;
+        if (e.anim) {
+            const AnimDelta d = e.anim->delta(ai.animDeltaGoalWeights);
+            d2 = d.trans[0] * d.trans[0] + d.trans[1] * d.trans[1];
+        }
+        if (d2 < 2.25f) d2 = 2.25f; // 0x592334
+        s14 = d2;
+        speed = std::sqrt(d2);
+    }
+    float delta[2] = {speed * dir[0], speed * dir[1]};
+    auto restore = [&] {
+        for (int a = 0; a < 3; ++a) pm.origin[a] = before[a];
+        for (int a = 0; a < 3; ++a) pm.velocity[a] = sv[a];
+        pm.groundEnt = sGround;
+        pm.contact = sContact;
+        pm.contactNormalZ = sCnz;
+    };
+    auto move = [&] {
+        pm.moveDelta[0] = delta[0];
+        pm.moveDelta[1] = delta[1];
+        return moveBlock(pm, fn) != 0;
+    };
+    auto d2f = [&](const ActorSlide& b) {
+        const float x = fo[0] - b.origin[0], y = fo[1] - b.origin[1];
+        return x * x + y * y;
+    };
+    auto moved2 = [&](const ActorSlide& b) {
+        const float x = before[0] - b.origin[0], y = before[1] - b.origin[1];
+        return x * x + y * y;
+    };
+    auto fail0 = [&] { // 0x501be3
+        ai.sideBits &= ~0x18;
+        return false;
+    };
+    // First move.
+    if (!move()) return fail0();
+    if (d2f(pm) > len2 && moved2(pm) > s14 * 0.25f && followClear(e, {pm.origin[0], pm.origin[1], pm.origin[2]})) {
+        ai.sideBits &= ~0x18;
+        return true;
+    }
+    if (pm.groundEnt == 0x7ff) return true; // 0x5018c9: no ground entity
+    int flag = 0;
+    if (pm.hitEnt != 0x7ff) {
+        static const float kMoved[2] = {0.140625f, 0.0791015625f};
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            // 0x5018e7 / 0x501a9d: the unit hit normal, a shorter step, the side of the hit.
+            float hx = pm.hitNormal[0], hy = pm.hitNormal[1];
+            const float hl = std::sqrt(hx * hx + hy * hy);
+            if (hl > 0.0f) hx /= hl, hy /= hl;
+            pm.hitNormal[0] = hx;
+            pm.hitNormal[1] = hy;
+            speed *= 0.75f;
+            if (dir[0] * hy <= dir[1] * hx) {
+                if (!(ai.sideBits & 8)) {
+                    delta[0] = -(speed * hy);
+                    delta[1] = speed * hx;
+                } else {
+                    delta[0] = delta[0] - speed * hy * 0.33f;
+                    delta[1] = delta[1] + speed * hx * 0.33f;
+                }
+                flag = 0x10;
+            } else {
+                if (!(ai.sideBits & 0x10)) {
+                    delta[0] = speed * hy;
+                    delta[1] = -(speed * hx);
+                } else {
+                    delta[0] = delta[0] + speed * hy * 0.33f;
+                    delta[1] = delta[1] - speed * hx * 0.33f;
+                }
+                flag = 8;
+            }
+            restore();
+            if (!move()) return fail0();
+            if (d2f(pm) > len2 && moved2(pm) > s14 * kMoved[attempt] && followClear(e, {pm.origin[0], pm.origin[1], pm.origin[2]})) {
+                ai.sideBits = (ai.sideBits & ~0x18) | flag;
+                return true;
+            }
+            if (pm.hitEnt == 0x7ff) break;
+        }
+    }
+    // 0x501c67: nothing worked. The followed entity becomes the bumped one, and an actor followed that follows nobody follows this one.
+    ai.bumpedEnt = f.number;
+    pm.hitEnt = uint16_t(f.number);
+    if (enabled && f.isActor && !f.ai.followed) f.ai.followed = &e, ++stats.followLinks;
+    ai.sideBits &= ~0x18;
+    restore();
+    for (int a = 0; a < 3; ++a) pm.velocity[a] = 0.0f;
+    return true;
 }
 
 // 0x5451b0: a detour past a blocker: from `o` to the corner `a`, on to `b`, and back onto the path at point `k` (or

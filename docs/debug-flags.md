@@ -88,5 +88,7 @@ described in the code that reads them.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 
-- `IW2_ACTOR_FOLLOW=0` (iw2game): disables the bump link (0x501c8b: a bumped actor follows the bumper, +0x2148). On by default; it cannot fire while no trace hits an actor body (contents 0x4000 is not in the actor clip mask 0x2820011).
+- `IW2_ACTOR_FOLLOW=0` (iw2game): keeps the yield step 0x501620 and the clear scan 0x501380 from setting the followed link (+0x2148) of other actors; the yield move itself still runs. On by default.
+- `IW2_FOLLOW_SCAN=0` (iw2game): disables the follow retarget scan 0x504630 (`scanFollowed`), so no actor starts following a blocker from the scan. On by default.
+- `IW2_FOLLOW_SCENE=<s>` (iw2game): at that time the first path-walking actor is made to follow a second actor placed ahead, to exercise the yield step 0x501620; prints `[follow ...]` lines.
 - Env `IW2_FOLLOW_SCENE=<s>` (iw2game): at sim time `<s>` takes a path-walking actor A and a second actor B pinned 20 units ahead, forces A.followed = B one second later (the link cannot fire naturally) and prints `[follow t]` lines: positions, speed, followed, bumped entity, link/release counters.
