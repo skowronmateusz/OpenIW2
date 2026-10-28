@@ -673,8 +673,11 @@ void World::registerCoverBuiltins() {
         return Value(0);
     });
     // findreacquiredirectpath (0x549280) / findreacquireproximatepath (0x549340): a path towards the enemy, cut
-    // to the goal (0x5047c0); without an enemy in the exposed state the path is cleared.
-    // TODO(spec): 0x503a50 / 0x503be0 (direct and proximate planners) and the trim fields +0x70c / +0x710.
+    // to the goal (0x5047c0) unless the enemy's origin is itself inside the goal (0x5492c5: 0x5026d0 on the enemy
+    // origin); without an enemy in the exposed state the path is cleared. A path left behind sets the trim state
+    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 uses 0x503be0 (distance
+    // capped search through 0x542fb0 / 0x546980). TODO(spec): 0x503be0 / 0x546980 and the consumer of the trim state
+    // (trimpathtoattack 0x543580 via 0x54c7d0 / 0x5433e0 / 0x503e10).
     auto reacquirePath = [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
@@ -682,9 +685,10 @@ void World::registerCoverBuiltins() {
             clearActorPath(e);
             return Value();
         }
-        pathToPoint(e, vecField(enemy->obj, "origin"));
+        const Vec3 eo = vecField(enemy->obj, "origin");
+        pathToPoint(e, eo);
         // 0x5434e0: drop the path when its start is outside the goal, else cut it after the last point in the goal.
-        if (actorHasPath(e)) {
+        if (actorHasPath(e) && !inActorGoal(e, eo)) {
             ActorPath& p = e.path;
             if (!inActorGoal(e, p.pts[size_t(p.count - 1)].pos)) {
                 clearActorPath(e);
@@ -693,6 +697,10 @@ void World::registerCoverBuiltins() {
                 while (keep >= 0 && inActorGoal(e, p.pts[size_t(keep)].pos)) --keep;
                 dropPathGoalPoints(p, keep + 1);
             }
+        }
+        if (actorHasPath(e)) {
+            e.ai.trimState = -2;
+            e.ai.trimCount = e.path.count + 1;
         }
         return Value();
     };
