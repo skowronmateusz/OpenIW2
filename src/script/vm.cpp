@@ -994,6 +994,7 @@ void VM::step(Thread& t, bool& suspended) {
         }
         t.state = ThreadState::Waiting;
         t.wakeTimeMs = nowMs_ + std::max<int64_t>(1, int64_t(std::lround(s * 1000.0f)));
+        t.waitSeq = ++waitSeq_;
         suspended = true;
         break;
     }
@@ -1105,10 +1106,12 @@ void VM::drainReady() {
 
 void VM::runFrame(int64_t nowMs) {
     nowMs_ = nowMs;
-    // Threads due this frame, in creation order.
+    // Threads due this frame. The exe files a waiting thread under its wake frame with the same head insertion
+    // (0x46a2e9 -> 0x4643a0) as a notify, and VM_RunList (0x46d560) starts at that head, so the newest wait runs first.
     std::vector<Thread*> due;
     for (auto& th : threads_)
         if (th->state == ThreadState::Waiting && th->wakeTimeMs <= nowMs_) due.push_back(th.get());
+    std::sort(due.begin(), due.end(), [](const Thread* a, const Thread* b) { return a->waitSeq > b->waitSeq; });
     for (Thread* th : due)
         if (th->state == ThreadState::Waiting) run(*th);
     drainReady(); // the notify-woken threads follow the timed ones in the current frame's list (0x46d560)

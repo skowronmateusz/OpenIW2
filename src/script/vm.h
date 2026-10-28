@@ -90,6 +90,7 @@ struct Thread {
     std::vector<Value> stack;
     std::vector<Ref> refs;
     int64_t wakeTimeMs = 0;
+    uint64_t waitSeq = 0;     // filing order of the wait (0x46a2e9 links the thread at the head of its frame's list)
     Value result;             // value of the first function's return; a thread call yields it if the thread ends at once
     // waittill / waittillmatch
     ObjectPtr waitObject;
@@ -189,6 +190,7 @@ private:
     uint64_t nextObjectId_ = 1;
     int64_t nowMs_ = 0;
     int runDepth_ = 0;
+    uint64_t waitSeq_ = 0;
     std::deque<Thread*> ready_; // woken by notify, not yet run
     bool draining_ = false;
     ObjectPtr level_, game_, anim_;
