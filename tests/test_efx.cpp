@@ -105,6 +105,18 @@ int main() {
         if (sp.size() == 1) CHECK(std::fabs(sp[0].rotation - 80.0f) < 1e-3f && sp[0].size2 == 3.0f);
     }
 
+    // Flag tables (0x56d528): spawnFlags rows 24..36 also set element bits; a name outside the key's rows fails the effect.
+    {
+        const auto ff = iw2::assets::parseEfx("Particle\n{\n\tspawnFlags absoluteAccel evenDistribution\n}\n");
+        CHECK(ff.elements.at(0).flagBits() == 0x400000u && ff.elements.at(0).spawnFlagBits() == 0x200u);
+        bool threw = false;
+        try { iw2::assets::parseEfx("Particle\n{\n\tspawnFlags rgbComponentInterpolation\n}\n"); } catch (const std::exception&) { threw = true; }
+        CHECK(threw);
+        threw = false;
+        try { iw2::assets::parseEfx("Particle\n{\n\tflags absoluteAccel\n}\n"); } catch (const std::exception&) { threw = true; }
+        CHECK(threw);
+    }
+
     // blocksSight particles become sight blockers: radius² from the size, visibility 1 − alpha byte / 255 with
     // useAlpha (alpha · 255 truncated) and 0 without it (0x481a40, 0x480970).
     const char* smoke =
@@ -136,8 +148,8 @@ int main() {
     iw2::game::FxSystem sys2;
     float tagX = 100;
     bool valid = true;
-    auto bolt = std::make_shared<iw2::game::FxBolt>([&](iw2::game::FVec& o) {
-        o = {tagX, 0, 0};
+    auto bolt = std::make_shared<iw2::game::FxBolt>([&](iw2::game::FxTag& o) {
+        o.origin = {tagX, 0, 0};
         return valid;
     });
     sys2.playBolted(boltedFx, bolt, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 0);
@@ -154,6 +166,23 @@ int main() {
     sys3.playBolted(boltedFx, bolt, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 0);
     sys3.sprites(100);
     CHECK(sys3.count() == 0);
+    // Tag rotation (0x48c290 end -> tag space, 0x47fcd0 / 0x4404f0 back through the current tag): a relative particle spawned
+    // 10 units along the tag's forward follows the tag when it turns 90 degrees about z.
+    {
+        const char* relOff = "Particle\n{\n\tflags relative blocksSight\n\tlife 1000\n\torigin 10 0 0 10 0 0\n}\n";
+        auto relFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(relOff));
+        iw2::game::FxTag tag;
+        tag.origin = {0, 0, 0};
+        tag.hasAxes = true;
+        auto rb = std::make_shared<iw2::game::FxBolt>([&](iw2::game::FxTag& o) { o = tag; return true; });
+        iw2::game::FxSystem sr;
+        sr.playBolted(relFx, rb, iw2::game::FxAxes{{{0, 0, 1}, {1, 0, 0}, {0, 1, 0}}}, 0);
+        tag.axes = {iw2::game::FVec{0, 1, 0}, iw2::game::FVec{-1, 0, 0}, iw2::game::FVec{0, 0, 1}};
+        sr.sprites(100);
+        const auto& bl = sr.sightBlockers();
+        CHECK(bl.size() == 1);
+        if (bl.size() == 1) CHECK(std::fabs(bl[0].origin[0]) < 1e-4f && std::fabs(bl[0].origin[1] - 10.0f) < 1e-4f);
+    }
     if (failures) return 1;
     std::cout << "efx tests passed\n";
     return 0;
