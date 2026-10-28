@@ -673,9 +673,7 @@ void World::registerCoverBuiltins() {
     // findreacquiredirectpath (0x549280) / findreacquireproximatepath (0x549340): a path towards the enemy, cut
     // to the goal (0x5047c0) unless the enemy's origin is itself inside the goal (0x5492c5: 0x5026d0 on the enemy
     // origin); without an enemy in the exposed state the path is cleared. A path left behind sets the trim state
-    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 uses 0x503be0 (distance
-    // capped search through 0x542fb0 / 0x546980). TODO(spec): 0x503be0 / 0x546980 and the consumer of the trim state
-    // (trimpathtoattack 0x543580 via 0x54c7d0 / 0x5433e0 / 0x503e10).
+    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 follows below.
     auto reacquirePath = [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
@@ -703,7 +701,25 @@ void World::registerCoverBuiltins() {
         return Value();
     };
     vm_.registerBuiltin("findreacquiredirectpath", reacquirePath);
-    vm_.registerBuiltin("findreacquireproximatepath", reacquirePath);
+    // findreacquireproximatepath (0x549340): the path ends at the first node within sqrt(cap) of the enemy, cap =
+    // min(0.25 · distance² to the enemy (0x591fe0), maxsightdistsqrd · 0.0625 (0x5920cc)) (0x503be0); no goal cut.
+    vm_.registerBuiltin("findreacquireproximatepath", [=, this](CallContext& c) {
+        Entity& e = actor(c);
+        Entity* enemy = entityOf(e.obj->get("enemy"));
+        if (!enemy || !exposed(e)) {
+            clearActorPath(e);
+            return Value();
+        }
+        const Vec3 eo = vecField(enemy->obj, "origin"), o = vecField(e.obj, "origin");
+        const float dx = eo[0] - o[0], dy = eo[1] - o[1], dz = eo[2] - o[2];
+        const float a = (dz * dz + dy * dy + dx * dx) * 0.25f, bcap = floatField(e.obj, "maxsightdistsqrd", 0.0f) * 0.0625f;
+        pathToPointNear(e, eo, a <= bcap ? a : bcap);
+        if (actorHasPath(e)) {
+            e.ai.trimState = -2;
+            e.ai.trimCount = e.path.count + 1;
+        }
+        return Value();
+    });
     // trimpathtoattack (0x504830 → 0x543580): a search along the path from its start end for the furthest point from
     // which the enemy's eye is visible (0x54c7d0 from the point raised by 64, maxsightdistsqrd as the limit), driven by
     // the trim state of findreacquire*path: idx = +0x70c (count + 1), mode = +0x710 (−2). One call tests the candidate

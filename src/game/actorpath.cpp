@@ -248,10 +248,14 @@ int World::sentientNodePlanes(Entity& e, const std::vector<PathPlane>& planes) {
 // byte +8 + team), and with planes the nodes beyond one of them. The open list is kept sorted by g + h (h: the 2D
 // distance to the goal position); a node is inserted before the first one whose f is not lower. A visited node is
 // re-queued when reached cheaper. The search ends when the goal node is taken from the head of the list.
+// The distance-capped variant (0x546980, `capSq` >= 0): the search ends at the first node taken from the list whose 3D
+// distance² to the goal position is below the cap, and a neighbour is only expanded when `nodeOk` accepts its origin
+// (the actor's goal, 0x5026d0 at 0x546a77; with planes 0x542f40 = the same goal test, then the plane test). Ending
+// at the start node leaves an empty chain (success without a path, 0x546bba).
 bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
-                        std::vector<int>& chain) {
+                        std::vector<int>& chain, float capSq, const std::function<bool(const Vec3&)>* nodeOk) {
     const size_t n = nodes_.size();
-    if (start < 0 || goal < 0 || size_t(start) >= n || size_t(goal) >= n || paths_.size() != n) return false;
+    if (start < 0 || (capSq < 0.0f && goal < 0) || size_t(start) >= n || (capSq < 0.0f && size_t(goal) >= n) || paths_.size() != n) return false;
     static constexpr int kHead = -2; // the list head (the original's fake node whose "next" is the head variable)
     if (search_.size() != n) search_.assign(n, {});
     auto& s = search_;
@@ -261,7 +265,19 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
     auto setNext = [&](int node, int next) { (node == kHead ? head : s[size_t(node)].next) = next; };
     while (true) {
         const int cur = head;
-        if (cur == goal) break;
+        if (capSq >= 0.0f) {
+            const Vec3& cp = paths_.position(size_t(cur));
+            const float dx = goalPos[0] - cp[0], dy = goalPos[1] - cp[1], dz = goalPos[2] - cp[2];
+            if (dx * dx + dy * dy + dz * dz < capSq) {
+                chain.clear();
+                if (cur == start) return true;
+                for (int c = cur; c >= 0; c = c == start ? -1 : s[size_t(c)].parent) chain.push_back(c);
+                std::reverse(chain.begin(), chain.end());
+                return true;
+            }
+        } else if (cur == goal) {
+            break;
+        }
         head = s[size_t(cur)].next;
         if (head >= 0) s[size_t(head)].prev = kHead;
         const auto& links = paths_.links(size_t(cur));
@@ -269,6 +285,7 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
             if (linkBlocked(size_t(cur), li, team)) continue;
             const int nb = links[li].target;
             const Vec3& p = paths_.position(size_t(nb));
+            if (nodeOk && !(*nodeOk)(p)) continue;
             bool beyond = false;
             for (const PathPlane& pl : planes) beyond = beyond || pl.dist < pl.normal[0] * p[0] + pl.normal[1] * p[1];
             if (beyond) continue;
@@ -409,6 +426,24 @@ bool World::pathToSentient(Entity& e, const Vec3& target) {
         if (!dropped && dz * dz <= 6400.0f && dx * dx + dy * dy <= 4.0f) return true;
     }
     return pathToPoint(e, target);
+}
+
+// 0x503be0: a path that ends at the first node within sqrt(capSq) of `target` (distance-capped search 0x546980 through
+// 0x542eb0, with danger planes 0x542fb0); the start node is the uncached query around the origin (0x517f90, 192 units),
+// every node on the way must be inside the actor's goal and the traversal flag of the path build is 0. The path ends at
+// the node and then the target (the build's goal point is the target; TODO(spec): the traversal flag 0 of the build,
+// 0x542f16, is not modelled — buildActorPath always allows traversals).
+bool World::pathToPointNear(Entity& e, const Vec3& target, float capSq) {
+    clearActorPath(e);
+    const std::vector<PathPlane> planes = dangerPlanesOf(e);
+    e.nodeCached = false;
+    const int start = queryNode(originOf(e.obj), 192.0f, true, 0xfffffffe, planes, nullptr);
+    if (start < 0) return false;
+    std::vector<int> chain;
+    const std::function<bool(const Vec3&)> inGoal = [&](const Vec3& p) { return inActorGoal(e, p); };
+    if (!searchNodes(teamOf(e), start, -1, target, planes, chain, capSq, &inGoal) || chain.empty()) return false;
+    buildActorPath(e, chain, target);
+    return true;
 }
 
 // A path to a node (0x503890; `withPlanes` its third argument): from the sentient's node (0x515040, or 0x5150d0 with

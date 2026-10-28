@@ -855,7 +855,8 @@ private:
     int queryNode(const Vec3& pos, float radius, bool lowered, uint32_t typeMask, const std::vector<PathPlane>& planes,
                   int* first);
     bool searchNodes(int team, int start, int goal, const Vec3& goalPos, const std::vector<PathPlane>& planes,
-                     std::vector<int>& chain);
+                     std::vector<int>& chain, float capSq = -1.0f, const std::function<bool(const Vec3&)>* nodeOk = nullptr);
+    bool pathToPointNear(Entity& e, const Vec3& target, float capSq);
     void buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos);
     void dropPathGoalPoints(ActorPath& p, int n);
     void pathClearBudget(ActorPath& p, const Vec3& o);
