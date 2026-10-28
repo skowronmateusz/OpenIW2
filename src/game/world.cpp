@@ -1,6 +1,7 @@
 #include "game/world.h"
 #include "game/actorfields.h"
 #include "game/actorslide.h"
+#include "game/playerevents.h"
 
 #include "script/builtins_core.h"
 #include "script/parser.h"
@@ -561,18 +562,23 @@ void World::moveActor(Entity& e, float dt) {
     if (p.count <= 0) return;
     auto o = e.obj->get("origin").asVector();
     float dist = 0.0f;
-    if (e.anim) {
+    // A followed actor (+0x2148) skips the path walk (0x5041a3 -> 0x504228): 0x544ca0 only updates the lookahead, with the shrink
+    // flag 0x500d80(bumped entity), the desired delta stays zero (0x504262..0x504268), the mode word is 1 and neither the facing
+    // nor the stop-soon check 0x503ec0 run; the physics still applies gravity and ground. TODO(spec): the trail 0x505520 / 0x504f60
+    // (+0x2150 ring) only feeds the facing blend (0x504e70 / 0x505630), which is not modelled.
+    const bool followed = e.ai.followed != nullptr;
+    if (e.anim && !followed) {
         const AnimDelta d = e.anim->delta(e.ai.animDeltaGoalWeights);
         dist = std::sqrt(d.trans[0] * d.trans[0] + d.trans[1] * d.trans[1]);
     }
     const Vec3 before = o;
-    updatePathLook(e, o, false, false);
+    updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
     if (p.count <= 0) return;
     float turn = p.farDir[1] * p.lookDir[1] + p.farDir[0] * p.lookDir[0];
     if (turn < 1e-6f) turn = 1e-6f;
     float f = std::pow(turn, 0.333f);
     if (f < 0.6f) f = 0.6f;
-    float step = f * dist;
+    float step = followed ? 0.0f : f * dist;
     if (step > p.lookDist) step = p.lookDist;
     o[0] += p.lookDir[0] * step;
     o[1] += p.lookDir[1] * step;
@@ -624,6 +630,9 @@ void World::moveActor(Entity& e, float dt) {
         e.ai.groundEnt = pm.groundEnt;
         grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground
         linkBumpedActor(e, pm.hitEnt);
+        // groundtype (actor +0x24c = move block +0x28, the surface type of the ground probe); getter 0x5367b0: 0 is undefined,
+        // 1..22 the surface table 0x5a0344 (the pmove names), anything else "default".
+        e.obj->set("groundtype", pm.surfaceType == 0 ? Value() : Value(std::string(surfaceAliasName(pm.surfaceType >= 23 ? 0 : pm.surfaceType))));
     } else {
         // Stand on the ground: the actor clip mask (0x2820011, without the player-only clip 0x10000 that stands in front of the moscow weapons table and made the commissar rise onto the node height).
         const TraceResult tr = collision_->trace({o[0], o[1], o[2] + 18.0f}, {o[0], o[1], o[2] - 64.0f}, {-15, -15, 0}, {15, 15, 70}, Contents::ActorClipMask);
@@ -634,6 +643,7 @@ void World::moveActor(Entity& e, float dt) {
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     // 0x503ec0: the negotiation branch (stop soon unset, on the ground, flag 0x40, a traversal point): within the squared
     // distance |velocity|^2 * 0.005 + 1e-6 (2D) of the begin point the negotiation state is pushed.
+    if (followed) return; // 0x503ec0 is part of the path walk
     if (e.ai.stopSoonMs == 0) {
         if (!grounded || !(p.flags & 0x40)) return; // 0x503ee..0x503ef5: not on the ground or no flag 0x40
         if (p.traversal > 0) {

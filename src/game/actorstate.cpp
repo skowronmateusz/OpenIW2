@@ -679,6 +679,7 @@ void World::followActorPath(Entity& e, bool run, bool wide) {
     const int r = stepActorPath(e, wide, run);
     if (r == 1) {
         setActorAnimScript(e, "stop", 0, 1); // script handle 0x1c7e118 ("stop", registered at 0x4eb33f)
+        if (ai.followed) moveActor(e, 0.05f); // the 0x504160 branch that skips the path walk (0x5041a3 -> 0x504228)
         return;
     }
     const bool runNow = r == 0 && run;
