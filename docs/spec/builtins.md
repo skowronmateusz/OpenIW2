@@ -512,3 +512,16 @@ handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, develope
 
 The remaining names (team scores, ranks, `logprint`, `obituary`, `closeingamemenu`, `setclientcvar`, ...) are only called from
 `maps/mp` / gametype scripts.
+
+### Follow-up (flags, ground entity)
+
+- `getgroundenttype` (0x5401c0): actor-only; the move block's ground entity (actor +0x23c = block +0x18) through the `gethitenttype` classifier (0x540070).
+- `enablegrenadetouchdamage` (0x4f8000): only a trigger_damage ("Currently on supported on damage triggers", 0x58542c), sets entity flag
+  0x4000. The only reader found is the grenade segment test 0x5297b0 (`testb $0x40` on +0x128 >> 8), so a grenade flying through a
+  trigger_damage only fires it when the flag is set; the bullet test 0x5295f0 has no such check. `triggerDamageSegment` mod 3 now gates on it.
+- Not done: `predictanim` (0x540020 -> 0x5045c0), `predictoriginandangles` (0x53ff50), `beginprediction` (0x53f960, snapshots the actor's
+  anim state and the +0x224 move block into a scratch actor) / `endprediction` (0x53fb80): a sandboxed actor anim + slide-move step; needs
+  the actor frame (0x5045c0) factored so it can run on a copy. `setstablemissile` (sets +0x128 bit 0x20000): no reader was found by text search of the
+  disassembly (`testl $0x20000, reg` hits are too many to attribute). `getcommandfromkey`/`buttonpressed` need the key-binding table
+  (0x5d2728/0x5d2730), which the port does not model. The aitype `spawner` handle is resolved at map load (0x4eaf9f, stored at spawn-table entry +8);
+  the call site was not located.

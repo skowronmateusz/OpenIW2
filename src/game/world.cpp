@@ -1466,6 +1466,27 @@ void World::registerBuiltins() {
                 if (k.id == b && (k.contents & 0x400)) return Value(std::string("obstacle"));
         return Value(std::string("world"));
     });
+    // enablegrenadetouchdamage (0x4f8000): sets entity flag 0x4000 (+0x128); only a trigger_damage (entity type word 0x1c7f0ea) is
+    // accepted, else "Currently on supported on damage triggers" (0x58542c). Grenade flight tests only flagged triggers
+    // (triggerDamageSegment).
+    vm_.registerBuiltin("enablegrenadetouchdamage", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || e->classname != "trigger_damage") throw std::runtime_error("Currently on supported on damage triggers");
+        e->obj->set("$grenadetouch", Value(int32_t(1)));
+        return Value();
+    });
+    // getgroundenttype 0x5401c0: actor-only; the ground entity number of the actor move block (actor +0x23c = block +0x18) run through the
+    // same classifier as gethitenttype (0x540070): 0x7ff "none", contents bit 0x400 "obstacle", else "world".
+    vm_.registerBuiltin("getgroundenttype", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("getgroundenttype on a non-actor");
+        const int g = e->ai.groundEnt;
+        if (g == 0x7ff) return Value(std::string("none"));
+        if (g != 0x7fe)
+            for (const EntityClip& k : collision_->entityClips())
+                if (k.id == g && (k.contents & 0x400)) return Value(std::string("obstacle"));
+        return Value(std::string("world"));
+    });
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
     vm_.registerBuiltin("setgoalnode", [this](CallContext& c) {
         if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal

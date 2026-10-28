@@ -77,6 +77,14 @@ int main() {
     w.vm().drainReady();
     CHECK(lv->get("attack").asInt() == 1);
     CHECK(lv->get("use").asInt() == 1);
+    // tankhunt flags its grenade trigger with enablegrenadetouchdamage; the class check must accept it (no script error).
+    {
+        iw2::game::World t(vfs, "tankhunt");
+        t.start();
+        for (int i = 0; i < 40; ++i) t.frame();
+        for (const auto& e : t.vm().errors()) CHECK(e.find("supported on damage") == std::string::npos);
+        CHECK(!t.stubbedBuiltins().count("enablegrenadetouchdamage") && !t.stubbedBuiltins().count("getgroundenttype"));
+    }
     fs::remove_all(dir);
     if (failures) std::cerr << failures << " failure(s)\n";
     else std::cout << "builtinaudit ok\n";
