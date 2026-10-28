@@ -131,7 +131,7 @@ described in the code that reads them.
   puts a pmove player 20 units in front of it and holds forward looking up for 4 s; exit 0 when it climbed > 40 units. Env
   `IW2_LADDER_RAISE=targetname` first puts that entity back at its realOrigin (maps/_utility.gsc triggerOn, e.g. moscow's `regroup_ladder`),
   `IW2_LADDER_DEBUG=1` prints the probe hits and the ladder clips, `IW2_LADDER_MASK=0x..` the probe mask (default 0x2810011),
-  `IW2_LADDER_SCAN=1` lists spots with headroom above. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.
+  `IW2_LADDER_SCAN=1` lists spots with headroom above, `IW2_LADDER_JUMP=1` holds jump from 1.4 s (exit at the top), `IW2_LADDER_SHAFT=1` / `IW2_LADDER_FLOORZ=z` print moscow shaft / floor probes. Example: `iw2game <main> moscow --ladder-test 644.5,785,-240` with `IW2_LADDER_RAISE=regroup_ladder`.
 
 ## Level end / victory screen
 | Flag | Tool | Effect |

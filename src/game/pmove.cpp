@@ -530,7 +530,10 @@ void applyFriction(PlayerState& ps, float dt, const MoveParams& mp) {
 }
 
 // Accelerate (0x507eb0): accelspeed = max(wishspeed, stopspeed) · frametime · accel, capped at the missing speed.
-// TODO(spec): the inertiaMax limit of 0x507e50.
+// The inertia limit of 0x507e50 is inert with the shipped dvars: it caps accelspeed at inertiaMax (0x1c7efec, default 50) only when pm_type
+// != 2, accelspeed > inertiaMax, the horizontal speed² > 0.0001 and 0x507d70 finds dot(normalized old xy velocity, normalized new xy
+// velocity) < inertiaAngle (0x1c7f010), which is registered with default, min and max all -1000 (0x4fa879..0x4fa88d) - never true.
+// (inertiaDebug 0x1c7efd8 only prints.) Not modelled.
 void accelerate(PlayerState& ps, const Vec& wishDir, float wishSpeed, float accel, float dt, const MoveParams& mp) {
     const float add = wishSpeed - dot(ps.velocity, wishDir);
     if (add <= 0) return;

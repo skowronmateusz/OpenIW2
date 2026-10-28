@@ -1,5 +1,7 @@
 #include "game/itempickup.h"
 
+#include <utility>
+
 #include <algorithm>
 #include <cmath>
 
@@ -38,6 +40,27 @@ ItemAmmo resolveItemAmmo(ItemAmmo item, int dropMin, int dropMax, int clipSize, 
     }
     item.clip = std::min(item.clip, clipSize);
     return item;
+}
+
+ItemAmmo actorDropAmmo(int dropMin, int dropMax, int clipSize, uint32_t& seed) {
+    int hi = dropMax, lo = dropMin;
+    if (hi < lo) std::swap(hi, lo); // 0x522198
+    ItemAmmo a;
+    if (hi == 0 && lo == 0) { // 0x5221b4..0x522272
+        const float r1 = static_cast<float>(nextRand(seed)) * 3.0517578125e-05f;
+        const int total = static_cast<int>(std::lround((r1 + 1.0f) * static_cast<float>(clipSize - 1) * 0.5f)) + 1;
+        const float r2 = static_cast<float>(nextRand(seed)) * 1.52587890625e-05f;
+        a.clip = static_cast<int>(std::lround(static_cast<float>(total) * (r2 + 0.25f)));
+        a.stock = total - a.clip;
+        return a;
+    }
+    if (hi < 0) return a; // 0x522277
+    const int total = hi == lo ? lo : nextRand(seed) % (hi - lo) + lo;
+    if (total <= 0) return a; // 0x5222c6
+    const int clip = clipSize != 0 ? nextRand(seed) % clipSize : 0;
+    if (clip >= total) a.clip = total; // 0x522311
+    else a.clip = clip, a.stock = total - clip;
+    return a;
 }
 
 ItemAmmo itemAmmoAfterPartial(ItemAmmo item, int added) {
