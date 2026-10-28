@@ -1,5 +1,7 @@
 // Tests for the zip reader and the pack search order, using synthetic packs.
 
+#include <unistd.h>
+#include <string>
 #include "fs/vfs.h"
 
 #include <zlib.h>
@@ -75,7 +77,7 @@ std::string str(const std::optional<std::vector<uint8_t>>& v) { return v ? std::
 
 int main() {
     namespace stdfs = std::filesystem;
-    const stdfs::path root = stdfs::temp_directory_path() / "iw2_test_vfs";
+    const stdfs::path root = stdfs::temp_directory_path() / ("iw2_test_vfs_" + std::to_string(::getpid()));
     stdfs::remove_all(root);
     stdfs::create_directories(root / "main" / "maps");
 

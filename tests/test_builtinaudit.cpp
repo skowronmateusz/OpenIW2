@@ -2,6 +2,8 @@
 // getnormalizedmovement (player input queries, exe 0x538600..0x538820), getammocount (0x4f4540), setspawnerteam
 // (0x4f8750) and playlooprumble (0x4f8c00). Needs the game files (IW2_MAIN).
 
+#include <unistd.h>
+#include <string>
 #include "fs/vfs.h"
 #include "game/world.h"
 
@@ -29,7 +31,7 @@ int main() {
         return 0;
     }
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "iw2_builtinaudit";
+    const fs::path dir = fs::temp_directory_path() / ("iw2_builtinaudit_" + std::to_string(::getpid()));
     fs::create_directories(dir / "maps");
     {
         std::ofstream f(dir / "maps" / "zz_builtinaudit.gsc");

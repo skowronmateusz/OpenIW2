@@ -1,5 +1,7 @@
 // Tests for WAV parsing and the mixer's distance attenuation, with synthetic data.
 
+#include <unistd.h>
+#include <string>
 #include "audio/decode.h"
 #include "audio/reverb.h"
 #include "audio/sound.h"
@@ -48,7 +50,7 @@ void writeFile(const std::filesystem::path& p, const std::string& text) {
 // Distance falloff curves (0x441590 / 0x420b40) and master/slave ducking (0x443bb0 / 0x4a0cf0) through the real mixer.
 void testMixer() {
     namespace fsys = std::filesystem;
-    const fsys::path dir = fsys::temp_directory_path() / "iw2_test_sound_main";
+    const fsys::path dir = fsys::temp_directory_path() / ("iw2_test_sound_main_" + std::to_string(::getpid()));
     fsys::remove_all(dir);
     const auto wav = makeWav(std::vector<int16_t>(48000, 16384), 48000);
     fsys::create_directories(dir / "sound");

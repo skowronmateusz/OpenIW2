@@ -1,4 +1,6 @@
 // Profile list rules proven from the exe (src/ui/profilelist.h).
+#include <unistd.h>
+#include <string>
 #include "ui/profilelist.h"
 
 #include <filesystem>
@@ -17,7 +19,7 @@ static int failures = 0;
 int main() {
     namespace fs = std::filesystem;
     using iw2::ui::ProfileList;
-    const fs::path dir = fs::temp_directory_path() / "iw2_test_profilelist";
+    const fs::path dir = fs::temp_directory_path() / ("iw2_test_profilelist_" + std::to_string(::getpid()));
     fs::remove_all(dir);
     fs::create_directories(dir / "Bravo");
     fs::create_directories(dir / "alpha");

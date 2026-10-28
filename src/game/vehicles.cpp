@@ -1188,7 +1188,7 @@ bool World::playerVehicleBodyAxis(std::array<Vec3, 3>& axis) {
 
 // Yaws for the tank status ownerdraws (cgame 0x4aa1b0 body: centity +0x158 = the vehicle's angles[1]; 0x4aa360 barrel: yaw of the
 // tag_barrel forward). Both ownerdraws also require the centity (eType 0xc) to have eFlags & 0x10000 (+0xb0, tests 0x4aa1f1 and
-// 0x4aa39f); the vehicle spawn sets that flag when the vehicle info's type word (+0x40) is 1 (0x50d8ac..0x50d8b2: "tank").
+// 0x4aa39f); the vehicle spawn sets that flag when the vehicle info's type word (+0x40) is 1 (0x50d8ac..0x50d8b2: "tank"); +0x40 is the "type" field of the vehicle field table (0x5a91e8, loader 0x50d0f6), confirmed.
 // TODO(spec): the barrel yaw uses the controlled forward (like linkPlayerToVehicle), not the full tag axis of 0x4ab9e0.
 bool World::playerVehicleHudYaws(float& bodyYaw, float& barrelYaw, bool& hasBarrel) {
     if (!player_ || player_->usingVehicle < 0 || !(pmFlags_ & 0x20000)) return false;
