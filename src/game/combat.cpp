@@ -912,15 +912,6 @@ void World::registerCombatBuiltins() {
         sunlight_.reset();
         return Value();
     });
-    // setreverb (0x539380): player only; 2..5 arguments: priority name (two accepted names), reverb alias, then optional
-    // drywet levels / fade time defaults 0.5 / 1.0 / 0. Sound-system state. TODO(spec): the reverb mixing is not modelled.
-    vm_.registerBuiltin("setreverb", [playerSelf](CallContext& c) {
-        playerSelf(c);
-        const std::string p = c.arg(0).toString();
-        if (p != "snd_enveffectsprio_level" && p != "snd_enveffectsprio_shellshock")
-            throw std::runtime_error("priority must be 'snd_enveffectsprio_level' or 'snd_enveffectsprio_shellshock'");
-        return Value();
-    });
     // setsoundblend (0x4f7d10): entity of type 6 (script_origin) with two sound aliases and a blend 0..1 (error when outside);
     // stores aliases at +0x8c / +0x8e and the blend at +0x94, then relinks (errors "Lerp must be between 0.0f and 1.0f" and
     // "Entity is not a sound_blend"). TODO(spec): the audio crossfade and the entity type check.

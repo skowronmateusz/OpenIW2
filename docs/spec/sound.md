@@ -80,7 +80,8 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
 - `masterslave` column: `master` sets alias flag 0x2, a number in 0..1 sets slave flag 0x4 with that percentage (+0x134,
   error text "SlavePercentage"). 3141 rows are masters (dialogue); 0.7 / 0.5 slaves are ducked while a master plays, fading
   over `snd_slaveFadeTime` ms (see Round 3).
-- TODO(spec): occlusion, reverb mixing, `speakermap`, per-channel voice priority; `lfe percentage`.
+- Occlusion: the exe imports no Miles occlusion/obstruction call (mss32 imports checked: only `AIL_set_3D_sample_effects_level`, `set_*_reverb_levels`, `set_*_room_type`) and the voice path has no geometry trace, so there is no occlusion to port (evidence by absence). See Round 5 for reverb.
+- TODO(spec): `speakermap`, per-channel voice priority; `lfe percentage`.
 
 ## Round 3: ducking, falloff curves
 
@@ -100,9 +101,7 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   (channel count 0x14 of the sound == 2) plays `(a, a)`. A mono wave plays `(a (1-p), a p)` with `p = (1 - dot) / 2`, `dot` = unit
   direction to the source (0x4210d0, zero vector stays zero) . listener axis[1] (the left axis, 0x793d94); a mono wave without a
   position uses `p = 0.5` (0x49f5b9 / 0x4a0d22), so a centred mono voice is half as loud per channel. Implemented in `Mixer::gains`.
-- TODO(spec): `snd_setEnvironmentEffects` /
-  `snd_deactivateEnvironmentEffects` handlers (0x441260 / 0x4413d0), `setreverb` (0x539380): reverb mixing and occlusion are not
-  decoded; no shipped script calls `setreverb` or `setsoundblend`.
+- Reverb/environment effects: see Round 5.
 - `playloopsound` / `stoploopsound` store the handle in the entity as before; the exe-side loop entity bookkeeping was not re-verified.
 
 ## Round 4: loop sounds, reverb (exe evidence)
@@ -115,6 +114,30 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   defaults dry 1.0, wet 0.5, fade 0): the priority must be `snd_enveffectsprio_level` (1) or `snd_enveffectsprio_shellshock` (2),
   otherwise "priority must be ...". It sends the client command `reverb %i "%s" %g %g %g` (priority, room, dry, wet, fade).
   The client-side `snd_setEnvironmentEffects <priority> <roomstring> <dry> <wet> <fade>` (0x441260, exactly 6 tokens) checks dry
-  and wet against 0..1 and the fade as an int, then hands them to the sound backend (0x443ec0). TODO(spec): the backend's reverb
-  DSP and the room presets are not reproduced; no shipped script calls `setreverb`, so it has no observable effect.
-- TODO(spec): occlusion is not found in the exe's 3D voice path (only the distance curve and the pan law above are applied).
+  and wet against 0..1 and the fade as an int, then hands them to the sound backend (0x443ec0); see Round 5.
+- Occlusion is not present in the exe (see Round 2).
+
+## Round 5: environment effects (reverb) state machine (exe evidence)
+
+- Server: `setreverb` sends `reverb %i "%s" %g %g %g` (priority 1 = `snd_enveffectsprio_level`, 2 = `..._shellshock`; room, dry default 1.0,
+  wet default 0.5, fade seconds default 0; args order in the command is prio, room, dry, wet, fade; 0x539380). `deactivatereverb(prio [, fade])`
+  (0x539560, 1..2 args) sends `deactivatereverb %i %g`. Both are player-only. (The earlier comment "dry 0.5, wet 1.0" was a misreading.)
+- Client `reverb` -> CG_ReverbCmd 0x4a6350: prio = atoi, dry/wet = atof, fade ms = max(0, round(fade s x 1000)) -> 0x443ec0.
+  `deactivatereverb` -> 0x4a6500 -> 0x443fd0.
+- Room table (0x5a02e8, index = Miles room type): generic, paddedcell, room, bathroom, livingroom, stoneroom, auditorium, concerthall, cave,
+  arena, hangar, carpetedhallway, hallway, stonecorridor, alley, forest, city, mountains, quarry, plain, parkinglot, sewerpipe, underwater,
+  drugged, dizzy, psychotic (26 = the EAX presets). Unknown name: error listing the names (0x4411e0).
+- State: 3 slots of 0x20 bytes at 0x793d00 (room, cur dry, tgt dry, dry rate, cur wet, tgt wet, wet rate, on); slot 0 is the default
+  (generic, dry 1, wet 0, on, 0x444aa4); `0x793d60` points at the active slot. Activate (0x443ec0): the slot stores room and targets, its current
+  values continue from the active slot's, rates = (target - cur) / max(fade ms, 1). If the slot is the active one the room type is re-applied
+  (0x49fe90); else it becomes active only when no higher slot is on. Deactivate (0x443fd0): clears `on`; if it was the active slot, the next lower
+  `on` slot becomes active, inheriting the old current values and ramping to its own targets over the fade. Per frame (0x444290..): cur += dt x rate,
+  clamped at the target (rate then 0).
+- Application: room type -> `AIL_set_digital_master_room_type` + `AIL_set_3D_room_type`; wet -> `AIL_set_digital_master_reverb_levels(drv, 1.0, wet)`
+  and `AIL_set_sample_reverb_levels(handle, 1.0, wet)` for every playing sample/stream. A voice gets wet 0 when `snd_enableReverb` is 0 or its alias has
+  flag 0x10 (`reverb` csv column contains `nowetlevel`, parser 0x429130; `fulldrylevel` sets flag 0x8). The dry level of a slot is tracked but
+  every consumer reads only the wet level (and Miles' dry arg is the constant 1.0).
+- Implemented: `audio/reverb.h` (state machine, tested in tests/test_sound.cpp), `Mixer::reverbCommand/deactivateReverbCommand/voiceWetLevel`,
+  alias `noWetLevel`/`fullDryLevel`, iw2view `reverb`/`deactivatereverb` client commands. TODO(spec): the reverb DSP itself is inside mss32.dll
+  (EAX/software presets), so the mixer does not render a reverb tail; `fulldrylevel` (flag 0x8) has no consumer found; no shipped script calls
+  `setreverb`, so nothing is audible either way.
