@@ -82,6 +82,9 @@ void World::triggerDamageSegment(Entity* attacker, const Vec3& start, const Vec3
     for (const auto& ep : entities_) {
         Entity& e = *ep;
         if (e.obj->removed || e.isSpawner || e.classname != "trigger_damage") continue;
+        // The grenade (missile) twin 0x5297b0 only touches triggers with entity flag 0x4000 (testb $0x40 on +0x128 >> 8),
+        // which enablegrenadetouchdamage (0x4f8000) sets; the bullet test 0x5295f0 has no such check.
+        if (mod == 3 && !e.obj->get("$grenadetouch").truthy()) continue;
         const Value m = e.obj->get("model");
         if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') continue;
         const Value ov = e.obj->get("origin"), av = e.obj->get("angles");

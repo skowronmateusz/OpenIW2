@@ -1364,9 +1364,26 @@ void World::registerBuiltins() {
         const std::string team = c.arg(0).toString();
         const char* prefix = team == "axis" ? "actor_axis_" : team == "allies" ? "actor_ally_" : "actor_neutral_";
         std::vector<ObjectPtr> out;
-        for (const auto& e : entities_)
-            if (e->isSpawner && !e->obj->removed && startsWith(e->classname, prefix)) out.push_back(e->obj);
+        for (const auto& e : entities_) {
+            if (!e->isSpawner || e->obj->removed) continue;
+            // The spawner's team (entity +0x154) is set by the aitype spawner() through setspawnerteam; every shipped
+            // aitype sets the team its class name names, which is the fallback while spawner() is not run.
+            const Value st = e->obj->get("$spawnerteam");
+            if (st.isDefined() ? st.toString() == team : startsWith(e->classname, prefix)) out.push_back(e->obj);
+        }
         return Value(toArray(out));
+    });
+    // setspawnerteam (0x4f8750): only for an actor spawner ("setspawnerteam can only be applied to AI spawners",
+    // 0x585324); "axis" -> entity+0x154 = 1, "allies" -> 2, "neutral" -> 3, else "unknown team '%s', should be axis,
+    // allies, or neutral" (0x5852ec).
+    vm_.registerBuiltin("setspawnerteam", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isSpawner) throw std::runtime_error("setspawnerteam can only be applied to AI spawners");
+        const std::string t = c.arg(0).toString();
+        if (t != "axis" && t != "allies" && t != "neutral")
+            throw std::runtime_error("unknown team '" + t + "', should be axis, allies, or neutral");
+        e->obj->set("$spawnerteam", Value(t));
+        return Value();
     });
     // getaiarray(team) (0x4ec9f0) lists actors whose actor +0x25c is set; the die callback (0x4ff530) clears it, so
     // dead actors are left out.
@@ -1502,6 +1519,27 @@ void World::registerBuiltins() {
                 if (k.id == b && (k.contents & 0x400)) return Value(std::string("obstacle"));
         return Value(std::string("world"));
     });
+    // enablegrenadetouchdamage (0x4f8000): sets entity flag 0x4000 (+0x128); only a trigger_damage (entity type word 0x1c7f0ea) is
+    // accepted, else "Currently on supported on damage triggers" (0x58542c). Grenade flight tests only flagged triggers
+    // (triggerDamageSegment).
+    vm_.registerBuiltin("enablegrenadetouchdamage", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || e->classname != "trigger_damage") throw std::runtime_error("Currently on supported on damage triggers");
+        e->obj->set("$grenadetouch", Value(int32_t(1)));
+        return Value();
+    });
+    // getgroundenttype 0x5401c0: actor-only; the ground entity number of the actor move block (actor +0x23c = block +0x18) run through the
+    // same classifier as gethitenttype (0x540070): 0x7ff "none", contents bit 0x400 "obstacle", else "world".
+    vm_.registerBuiltin("getgroundenttype", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("getgroundenttype on a non-actor");
+        const int g = e->ai.groundEnt;
+        if (g == 0x7ff) return Value(std::string("none"));
+        if (g != 0x7fe)
+            for (const EntityClip& k : collision_->entityClips())
+                if (k.id == g && (k.contents & 0x400)) return Value(std::string("obstacle"));
+        return Value(std::string("world"));
+    });
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
     vm_.registerBuiltin("setgoalnode", [this](CallContext& c) {
         if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal
@@ -1614,6 +1652,35 @@ void World::registerBuiltins() {
         if (!e || !e->isPlayer) throw std::runtime_error("meleebuttonpressed: entity is not a player");
         return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 4u) ? 1 : 0));
     });
+    // Player input queries, all player-only ("entity %i is not a player", 0x590ab8) and all read from the client:
+    // attackbuttonpressed (0x538820) = (client+0x8640 | client+0x8634) & 1, usebuttonpressed (0x538770) = (...) & 0x28
+    // (+activate 0x8 | +usereload 0x20, the same pair playerweapon.h calls "use"), both int 1/0 (same current|previous
+    // command pair as meleebuttonpressed above).
+    auto playerOnly = [this](CallContext& c) -> Entity& {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
+        return *e;
+    };
+    vm_.registerBuiltin("attackbuttonpressed", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 1u) ? 1 : 0));
+    });
+    vm_.registerBuiltin("usebuttonpressed", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 0x28u) ? 1 : 0));
+    });
+    // getplayerangles (0x538600): the vector at client+0xc4 (the player state's view angles).
+    vm_.registerBuiltin("getplayerangles", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        return Value(playerCmd_.viewAngles);
+    });
+    // getnormalizedmovement (0x5386a0): (forwardmove, rightmove, 0) from the signed bytes at client+0x85dc / +0x85dd,
+    // each times 0x5920d8 (1/127).
+    vm_.registerBuiltin("getnormalizedmovement", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        constexpr float kInv127 = 0.007874015718698502f;
+        return Value(Vec3{float(playerCmd_.forward) * kInv127, float(playerCmd_.right) * kInv127, 0.0f});
+    });
     // enableaimassist / disableaimassist (0x4f81c0 / 0x4f8230): set / clear the entity flag 0x800 (entity+0x10). Stored as the
     // script-invisible field $aimassist; nothing in the port reads it yet (TODO(spec): the console auto-aim consumer).
     vm_.registerBuiltin("enableaimassist", [this](CallContext& c) {
@@ -1654,6 +1721,16 @@ void World::registerBuiltins() {
     weaponStateQuery("isfiring", 1, 0, {3, 4, 10, 11});
     weaponStateQuery("isthrowinggrenade", 12, 16, {});
     weaponStateQuery("ismeleeing", 1, 0, {10, 11});
+    // islookingat (0x5399b0): player method taking an entity; true when it is the crosshair target ps+0x8678 of the last client think
+    // (0x535070: trigger_lookat hits, vehicles, actors within the name / enemy distances). Error 0x590ab8 for a non-client self; a
+    // bad entity argument raises a script error in the exe (the compare then runs against a null pointer: true when nothing is targeted).
+    vm_.registerBuiltin("islookingat", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("islookingat: entity is not a player");
+        Entity* t = entityOf(c.arg(0));
+        if (!t) throw std::runtime_error("islookingat: parameter 0 is not an entity");
+        return Value(int32_t(crosshairTarget_ >= 0 && crosshairTarget_ == t->number && !t->obj->removed ? 1 : 0));
+    });
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
     vm_.registerBuiltin("getorigin", [](CallContext& c) { return c.self.asObject()->get("origin"); });
@@ -1772,11 +1849,13 @@ void World::registerMissingStubs() {
         }
     }
     for (const auto& f : called)
-        if (!defined.count(f) && !vm_.hasBuiltin(f))
+        if (!defined.count(f) && !vm_.hasBuiltin(f)) {
+            stubbed_.insert(f);
             vm_.registerBuiltin(f, [this, f](CallContext&) {
                 ++missing_[f];
                 return Value();
             });
+        }
 }
 
 } // namespace iw2::game

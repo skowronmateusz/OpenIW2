@@ -8,6 +8,9 @@
 
 namespace iw2::game {
 
+// An arc limit as the node_turret cover test reads it (0x5159f0): (int)(deg · 65536 / 360) & 0xffff, back to degrees (· 360 / 65536).
+inline float turretArcWrapped(float deg) { return float(uint32_t(int(deg * 182.04444885253906f)) & 0xffffu) * 0.0054931640625f; }
+
 // Turret info of a turret entity (entity +0x10c). Arcs are in degrees; right and top arcs are stored negated.
 struct TurretState {
     std::string weapon;          // weaponinfo

@@ -41,6 +41,10 @@ int main(int argc, char** argv) {
         vfs.mountDirectory(argv[1]);
         if (const char* overlay = std::getenv("IW2_OVERLAY")) vfs.mountDirectory(overlay); // debug: loose test scripts override the game files
         iw2::game::World world(vfs, argv[2]);
+        if (argc > 3 && std::string(argv[3]) == "--stubs") { // built-ins called by shipped scripts with no implementation
+            for (const auto& n : world.stubbedBuiltins()) std::printf("%s\n", n.c_str());
+            return 0;
+        }
         if (argc > 3 && std::string(argv[3]) == "--item-test") {
             // Touch pickup of weapon items: items are spawned at the player's origin one after another.
             world.start();

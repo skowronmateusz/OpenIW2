@@ -304,7 +304,8 @@ void World::shootTurret(Entity& t) {
     if (!flash.empty()) fxEvents_.push_back({flash, muzzle, dir, t.number, "tag_flash"});
     // Shell eject: the same handler 0x4b7800 calls CG_EjectWeaponBrass (0x4b7730, 0x4b79dc) unless boltAction (+0x328) is set:
     // shellEjectEffect bolted on tag_brass. No shipped turret weapon (mg42_bipod_*, mg42_tank_*) defines shellEjectEffect, so
-    // nothing ejects in the shipped data. TODO(spec): lastShotEjectEffect for event 0xa0.
+    // nothing ejects in the shipped data. The turret fire event is always 0xaf (0x51afc1), never the last-shot event 0xa0, and no shipped
+    // weapon file of a turret (mg42_*) has a lastShotEjectEffect key (checked in all weapons/sp/mg42_*), so lastShotEjectEffect is moot.
     const std::string brass = weaponField(ts.weapon, "shellEjectEffect");
     Vec3 brassAt;
     if (!brass.empty() && brass != "none" && std::atoi(weaponField(ts.weapon, "boltAction").c_str()) == 0 && turretTag(t, "tag_brass", brassAt))
@@ -317,8 +318,9 @@ void World::shootTurret(Entity& t) {
 // a shot) runs it is loopFireSoundPlayer (info +0xae) when a client owns the turret and that is set, else
 // loopFireSound (+0xac). The countdown drops by 50; when it ends and stopFireSound (+0xb0) is set the loop stops and
 // stopFireSoundPlayer (+0xb2, client owner, 0x4d8360) or stopFireSound (event 0xb3) plays. Sound fields are set
-// from the weapon at turret setup (0x51df70…0x51e04c). TODO(spec): the loop also ends without a stop sound only
-// when the countdown is re-read next frame (the entity loop sound is rewritten every frame, as here).
+// from the weapon at turret setup (0x51df70…0x51e04c).
+// Every shipped turret weapon (mg42_bipod_*, mg42_tank_*) defines stopFireSound, so the case of a loop ending without a stop sound does not
+// occur in the shipped data.
 void World::turretFireSound(Entity& t, bool playerOwner) {
     TurretState& ts = *t.turret;
     std::string loop;

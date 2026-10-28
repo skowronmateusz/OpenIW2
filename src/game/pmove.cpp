@@ -169,14 +169,14 @@ bool correctAllSolid(const CollisionWorld& w, PlayerState& ps, Pml& pml, TraceRe
     return false;
 }
 
-// Ground trace (0x509480): a 0.25-unit trace above to below the origin. TODO(spec): the landing (fall damage and
-// slowdown, 0x508fe0) when the player lands, ladders (pm_flags 0x20).
-// Ladder state (decoded from the exe, not yet ported): PM_CheckLadderMove is 0x50bd90. pm_flags 0x20 is set by 0x50c04e / cleared
+// Ground trace (0x509480): a 0.25-unit trace above to below the origin; a landing runs crashLand (0x508fe0), ladders are checkLadder /
+// ladderMove below.
+// Ladder state: PM_CheckLadderMove is 0x50bd90. pm_flags 0x20 is set by 0x50c04e / cleared
 // by 0x50bd70 (which turns a cleared 0x20 into 0x40000, ladder-just-left). It is skipped for pm type >= 4, while 0x40000 is set,
 // or for 300 ms after the last jump (ps+0x70) unless the move state is 0x28 / 0xb. It traces from the origin along the horizontal
 // facing (ps+0x64 ladder normal when already on it, else a 0x4210d0 yaw vector) over the player box with the pm trace mask
 // (pml+0xa8) and needs trace fraction < 1 and surface flag 0x8 (ladder) on the hit; a new contact stores the hit normal in ps+0x64..0x6c.
-// TODO(spec): the ladder velocity/move itself (not located yet) and the distances (consts 0x41000000 / 0x41f00000 by the aim state).
+// The ladder velocity / move is ladderMove (0x50c070); the trace distances are 8 (0x41000000, walking) and 30 (0x41f00000) units.
 
 void groundTrace(const CollisionWorld& w, PlayerState& ps, Pml& pml) {
     Vec start{ps.origin[0], ps.origin[1], ps.origin[2] + kGroundTraceOffset};
@@ -821,7 +821,8 @@ void mantleMove(PlayerState& ps, const MantleAnims& m, int ms) {
     const Vec a = mantleDelta(ps, m, old), b = mantleDelta(ps, m, ps.mantleTimeMs);
     const Vec d{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     ps.origin = add(ps.origin, d);
-    // TODO(spec): with no time left the exe divides by zero; the velocity is kept then.
+    // The exe divides by the elapsed time; it is zero only for a mantle with a total time of 0 (the move starts at 0 and ends on reaching the
+    // total), which no shipped mantle animation has: the velocity is kept then.
     if (ps.mantleTimeMs != old) ps.velocity = scale(d, 1.0f / (float(ps.mantleTimeMs - old) * 0.001f));
     if (ps.mantleTimeMs == total) {
         ps.mantling = false;
@@ -1155,6 +1156,62 @@ void ladderMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const Player
     stepSlideMove(w, ps, pml, false, mp);
 }
 
+// Free-fly movement of pm_type 2 (noclip) and 3 (ufo): PmoveSingle (0x50c4a0) dispatches on ps+4 through the jump table at 0x50cbfc; type 2
+// runs 0x508a90, type 3 runs 0x508c50, both after the shared prologue (lean 0x50b120, view vectors 0x421da0 from ps+0xc4, the
+// pm_flags 0x80 update, aim spread 0x4de540) and without the ground trace, stance change, mantle check, ladder check, bob cycle
+// and PM_Weapon (0x4dfc30) of the walking path.
+//
+// Command scale of 0x507fe0: g_speed · max(|f|, |r|, |u|) / (127 · |(f, r, u)|), × 0.4 while aiming (pm_flags 0x100) or leaning,
+// × 3 (noclip) or × 6 (ufo); 0 for no command.
+float freeFlyScale(const PlayerState& ps, float f, float r, float u, const MoveParams& mp) {
+    const float m = std::max({std::fabs(f), std::fabs(r), std::fabs(u)});
+    if (m == 0.0f) return 0.0f;
+    float s = float(mp.speed) * m / (std::sqrt(f * f + r * r + u * u) * 127.0f);
+    if (ps.adsSlow || ps.lean != 0) s *= 0.4f;
+    return s * pmTypeSpeedFactor(ps.pmType);
+}
+
+// Friction of both free-fly moves (0x508a90 / 0x508cec..0x508dec): on the full 3-D speed, speed < 1 stops; otherwise
+// drop = max(speed, stopspeed) · friction · 1.5 (0x591ed4) · frametime and the velocity is scaled to speed − drop (not below 0).
+// No ground test.
+void freeFlyFriction(PlayerState& ps, float dt, const MoveParams& mp) {
+    const float speed = std::sqrt(dot(ps.velocity, ps.velocity));
+    if (speed < 1.0f) {
+        ps.velocity = {0, 0, 0};
+        return;
+    }
+    const float drop = std::max(speed, mp.stopSpeed) * (mp.friction * 1.5f) * dt;
+    ps.velocity = scale(ps.velocity, std::max(0.0f, speed - drop) / speed);
+}
+
+// The free-fly step. Up / down come from the usercmd buttons 0x80 (+127) and 0x40 (−127) (the lean buttons: pm+8 tested at 0x508b69 /
+// 0x508b73 / 0x508c75 / 0x508ca1, constant 0x591fc4 = 127). The view height target is set to 60 (ps+0xd0 = 0x3c). Noclip wishes along
+// the full view axes (AngleVectors 0x421da0 of pitch and yaw; the command angles carry no roll): forward · f + right · r + up · u; ufo
+// along the flat forward (cross of the world up with the right vector) · f + right · r + (0, 0, u), and with no command at all it stops dead
+// (0x508cd9..0x508d47) instead of only rubbing. Then accelerate with accel 9 (0x41100000) and move the origin by velocity · frametime
+// with no collision.
+void freeFlyMove(PlayerState& ps, const Pml& pml, const PlayerInput& in, float f, float r, const MoveParams& mp) {
+    ps.viewHeightTarget = 60;
+    const bool ufo = ps.pmType == 3;
+    const float u = (in.leanRight ? 127.0f : 0.0f) - (in.leanLeft ? 127.0f : 0.0f);
+    if (ufo && f == 0.0f && r == 0.0f && u == 0.0f) ps.velocity = {0, 0, 0};
+    else freeFlyFriction(ps, pml.frametime, mp);
+    const float cmdScaleF = freeFlyScale(ps, f, r, u, mp);
+    const float pitch = in.pitch * float(M_PI) / 180.0f, yaw = in.yaw * float(M_PI) / 180.0f;
+    const float sp = std::sin(pitch), cp = std::cos(pitch), sy = std::sin(yaw), cy = std::cos(yaw);
+    const Vec fwd{cp * cy, cp * sy, -sp}, right{sy, -cy, 0.0f}, up{sp * cy, sp * sy, cp};
+    Vec wish;
+    if (ufo) {
+        const Vec flat{-right[1], right[0], 0.0f};
+        wish = add(add(scale(flat, f), scale(right, r)), Vec{0, 0, u});
+    } else {
+        wish = add(add(scale(fwd, f), scale(right, r)), scale(up, u));
+    }
+    const float len = normalize(wish);
+    accelerate(ps, wish, len * cmdScaleF, 9.0f, pml.frametime, mp);
+    ps.origin = add(ps.origin, scale(ps.velocity, pml.frametime));
+}
+
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     Pml pml;
     pml.frametime = float(ms) * 0.001f;
@@ -1175,6 +1232,27 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     ps.prevCmdFwd = std::clamp(in.forward, -1.0f, 1.0f); // the next step's previous command (raw, before the zeroing above)
     ps.prevCmdRight = std::clamp(in.right, -1.0f, 1.0f);
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
+    if (ps.pmType == 2 || ps.pmType == 3) {
+        // noclip / ufo (0x50c77b / 0x50c800): lean, the pm_flags 0x80 update, the ladder flag cleared to "just left", the aim flags,
+        // the free-fly move and the pm_time countdown; nothing of the walking path runs.
+        if (fwdMove < 0) ps.movingBack = true;
+        else if (fwdMove > 0 || rightMove != 0) ps.movingBack = false;
+        updateLean(w, ps, in, float(ms), in.yaw);
+        clearLadder(ps);
+        updateAds(ps, in, fwdMove, rightMove);
+        freeFlyMove(ps, pml, in, fwdMove * 127.0f, rightMove * 127.0f, mp);
+        if (ps.pmTimeMs != 0) {
+            if (ms < ps.pmTimeMs) {
+                ps.pmTimeMs -= ms;
+            } else {
+                ps.pmTimeMs = 0;
+                ps.jumping = false;
+                ps.landTimer = false;
+                ps.spawnSlide = false;
+            }
+        }
+        return;
+    }
     // While mantling (pm_flags 4) PmoveSingle skips the stance change and the ground trace (0x50c9b7).
     if (!ps.mantling) groundTrace(w, ps, pml);
     updateLean(w, ps, in, float(ms), in.yaw);

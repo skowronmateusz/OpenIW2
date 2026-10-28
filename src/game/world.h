@@ -27,6 +27,7 @@
 #include <cctype>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <random>
@@ -190,6 +191,8 @@ struct RocketState {
     int64_t explodeMs = 0;           // +0x138 think
     int64_t trTime = 0;              // s.pos: linear (2)
     Vec3 trBase{}, trDelta{};
+    float destabMs = 0;              // +0x168: ms after trTime until the next destabilization (0x526960)
+    bool destabilized = false;       // +0x128 & 0x10000: destabilized at least once
 };
 
 // A grenade missile entity (0x5275f0; s.pos trajectory at +0x14, fuse +0x138, AI fields +0x150 … +0x164).
@@ -320,6 +323,7 @@ struct PathNode {
     std::array<int64_t, 4> teamBlockedMs{}; // +0x44 + 4·team: unusable for that team until then (1 axis, 2 allies)
     std::array<int, 2> link{-1, -1};        // +0x30 / +0x32: the overlapping nodes (0x52d990), -1 = none
     int linkClaims = 0;                     // +0x56: the claims by the nodes linked to this one
+    int turretEntity = -1;                  // +0x58 (node_turret only; -1 at spawn 0x516137): setturretnode's entity number
 };
 
 class World {
@@ -357,6 +361,8 @@ public:
     script::VM& vm() { return vm_; }
     const assets::D3dBsp& bsp() const { return *bsp_; }
     int64_t timeMs() const { return timeMs_; }
+    // setculldist value (configstring 8; 0 = unset). The renderer folds it into its far plane (farPlaneDistance in fog.h).
+    float cullDist() const { return cullDist_; }
 
     Entity* player() { return player_; }
     const std::vector<std::unique_ptr<Entity>>& entities() const { return entities_; }
@@ -538,6 +544,8 @@ public:
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
     // The crosshair name target (ps+0x8678, 0x535070) of the last update as the two HUD lines 0x534aa0 sends as configstrings
     // 0xb (name) and 0xc (weapon display name) for an actor; empty when there is no target or it has no name.
+    // ps+0x8678 as an entity number (-1 = none): the entity islookingat (0x5399b0) compares against.
+    int crosshairTarget() const { return crosshairTarget_; }
     const std::string& crosshairNameLine() const { return crosshairName_; }
     const std::string& crosshairWeaponLine() const { return crosshairWeaponLine_; }
     std::optional<float> playerDeadYaw() const { return playerDeadYaw_; }
@@ -588,6 +596,8 @@ public:
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
+    // Called-by-scripts names that have no implementation (registered as counting no-ops by registerMissingStubs).
+    const std::set<std::string>& stubbedBuiltins() const { return stubbed_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
 
     // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
@@ -621,6 +631,14 @@ public:
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
     // Debug (iw2game --item-test): a weapon item at the player's origin and the player's stock / clip of a weapon.
     void debugSpawnItem(const std::string& weapon);
+    // Test hook: a weapon item of `weapon` at `origin` flying with `velocity` (TR_GRAVITY from now), run by G_RunItem (runItems).
+    Entity& debugDropItem(const std::string& weapon, const Vec3& origin, const Vec3& velocity);
+    static constexpr int kItemNoGround = 0x7ff; // groundEntityNum (+0xc) ENTITYNUM_NONE
+    // Test hook: a rocket of `weapon` fired by the player from `start` along `dir` (G_FireRocket 0x527810).
+    Entity& debugSpawnRocket(const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(*player_, weapon, start, dir); }
+    Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
+        return spawnGrenade(*player_, weapon, start, velocity, fuseMs);
+    }
     // Test hook: a weapon item of `weapon` with the given item ammo (stock, clip; 0 = unset) at the player, used like F (0x5341a0 ->
     // Pickup_Weapon). Returns the dropped item (the swapped-out weapon), or nullptr.
     Entity* debugUseWeaponItem(const std::string& weapon, int stock, int clip);
@@ -761,7 +779,7 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
-    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, floatingActors = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0; } stats;
+    struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, floatingActors = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0, waterSplashes = 0; } stats;
     const PathGraph& paths() const { return paths_; }
 
 private:
@@ -922,6 +940,7 @@ private:
     void restoreDefaultDropPitch(Entity& t); // 0x51cf10
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
+    const TurretState* nodeTurret(const PathNode& n); // the turret set by setturretnode (node +0x58), or null
     bool actorInGoal(Entity& e, float extra);
     bool goalVolumeHolds(Entity& e, const Vec3& p);
     bool workGoalVolumeHolds(Entity& e, const Vec3& p); // the working goal volume (+0x75c)
@@ -1107,6 +1126,7 @@ private:
     // Impact effects (cgame 0x4b9090): impact type (0 bullet_small_normal … 9 grenade_explode, 10 rocket_explode)
     // × surface type (0 default … 22 asphalt) → effect file, "" for none.
     const std::string& impactEffect(int type, int surface);
+    TraceResult missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta); // 0x526d6b..0x526df7
     std::vector<std::array<std::string, 23>> impactEffects_;
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
@@ -1115,6 +1135,7 @@ private:
     void rocketImpact(Entity& e, const TraceResult& tr);
     void runRocket(Entity& e);
     void pruneMissiles(); // drops removed grenades / rockets from their lists after the entity pass
+    void destabilizeRocket(Entity& e); // 0x526960
     // Weapon items (classname weapon_*): LaunchItem (0x521f70 → 0x521e00) gives a dropped item a gravity
     // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
     // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.
@@ -1144,7 +1165,8 @@ private:
     int grenadeCoverNode(Entity& e, float r);
     bool pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes = false);
     bool grenadeAcquire(Entity& e);
-    bool grenadeGiveUp(Entity& e);
+    bool grenadeGiveUp(Entity& e, bool skipAcquire);
+    void grenadeHitCharacter(Entity& grenade, Entity* hit);
     int grenadeAcquireThink(Entity& e);
     int grenadeThrowBackThink(Entity& e);
     void grenadeCower(Entity& e);
@@ -1283,10 +1305,11 @@ private:
     bool playerMoved_ = false;                // client byte +0x86b6: the player moved 0.1 units or more (xy) since the last frame (0x4e81e5)
     int64_t timeMs_ = 0;
     float fogSightSq_ = 3.4028235e38f;    // 0x1c61038: ((far - near) * 0.828 + near)² of linear fog, else FLT_MAX (0x4e96e0)
-    float cullDist_ = 0;                  // setculldist (configstring 8), unused
+    float cullDist_ = 0;                  // setculldist (configstring 8): renderer far-plane distance, docs/spec/render-hints.md
     std::string northYaw_ = "0";
     bool drawCompassFriendlies_ = false;
     CompassPings compassPings_;
+    int crosshairTarget_ = -1; // ps+0x8678 as an entity number (updateCrosshairTarget)
     std::vector<FxSightBlocker> fxSightBlockers_;
     int nextEntityNumber_ = 0;
     int32_t nextFx_ = 0;
@@ -1294,6 +1317,7 @@ private:
     struct LoopedFx { int id; float delayS; Vec3 origin; int64_t nextMs; };
     std::vector<LoopedFx> loopedFx_;
     std::map<std::string, int> missing_;
+    std::set<std::string> stubbed_;
     std::vector<std::pair<Vec3, Vec3>> submodels_;
     std::unique_ptr<CollisionWorld> collision_;
     std::map<std::string, std::optional<assets::XModelParts>> skeletons_;

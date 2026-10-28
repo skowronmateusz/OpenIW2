@@ -20,6 +20,7 @@
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
+#include "game/hudfade.h"
 #include "game/textmessage.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
@@ -135,6 +136,14 @@ struct Camera {
         return mul(proj, view);
     }
 };
+
+// The renderer far plane (farPlaneDistance: linear fog far or setculldist, whichever is larger; r_zfar is taken as 0, its default is
+// not decoded) as a depth-along-view test for the effect culls. The projection far clip stays at 40000.
+static void setFxFar(game::FxSystem& fx, const Camera& cam, const game::FogParams& fog, float cullDist) {
+    const Vec3 f = cam.forward();
+    fx.viewForward = {f.x, f.y, f.z};
+    fx.farDist = game::farPlaneDistance(fog.active && !fog.exponential, fog.farDist, 0.0f, cullDist);
+}
 
 // The four side planes of the view frustum for the effect gate frustumCull (0x486e90): inward normals through the eye;
 // the vertical field of view is fixed by fovX43 at 4:3 (viewProj above), the horizontal one follows the aspect.
@@ -304,6 +313,8 @@ struct Batch {
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
     int detail = -1; // Scene::details index
     bool alphaOne = false; // see MatInfo::alphaOne
+    int fxKind = 0;        // see MatInfo::fxKind
+    float fxParm[2] = {0, 0};
 };
 
 struct Lightmap {
@@ -325,6 +336,11 @@ struct MatInfo {
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState
     int detail = -1; // Scene::details index (technique set *_detail)
+    // Effect techniques that read the post-sun scene copy / $floatz (docs/spec/effects.md "Sprite vertices, $floatz and the
+    // post-sun copy"): 1 = effect_zfeather* (zfeather.tech, fxParm[0] = featherParms.x), 2 = distortion (distortion_floatz.tech,
+    // fxParm = distortionScale.xy). Both are material constants (constant table at file offset 0x40).
+    int fxKind = 0;
+    float fxParm[2] = {0, 0};
     int normalTex = -1, specTex = -1; // techset `phong_*_spec*`: normalMap / specularMap images (Scene::textures indices)
     bool waterBlend = false; // mtlBlendOp != Disable (bits 8-10 of state word 0: 0 Disable, 1 Add; inferred, see nofog.sm)
     // The pixel shader writes alpha 1 instead of texture × vertex alpha: the phong_* / ambient_* replace technique sets run the
@@ -433,7 +449,8 @@ Pass classify(const std::string& techset) {
     // Sprite vertices (docs/spec/effects.md "Sprite vertices, $floatz and the post-sun copy"): tangent = -(half width vector),
     // binormal = half height vector (billboard: -width * view row 1, height * view row 2). The post-sun copy only happens when the
     // scene viewport equals the window. $floatz = R32F target of clip z built by technique type 2 "build floatz" (sky: max extent).
-    // Not implemented: the resolve copy, the float-z target and the distortion pass itself.
+    // Implemented in Renderer::draw (post-sun copy + $floatz from the depth buffer) and fs_distort; as a world / model material it
+    // stays skipped (only effect sprites carry the tangent / binormal); sprites keep it through MatInfo::fxKind 2.
     if (techset == "distortion") return Pass::Skip;
     // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
     // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
@@ -537,6 +554,12 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
+            if (m.techniqueSet == "distortion" || m.techniqueSet.rfind("effect_zfeather", 0) == 0) {
+                const bool dist = m.techniqueSet == "distortion";
+                mi.fxKind = dist ? 2 : 1;
+                for (const auto& c : m.constants)
+                    if (c.name == (dist ? "distortionScale" : "featherParms")) mi.fxParm[0] = c.value[0], mi.fxParm[1] = c.value[1];
+            }
             if (mi.pass == Pass::Water) {
                 WaterMat wm;
                 for (const auto& t : m.textures)
@@ -584,7 +607,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             };
             if (mi.pass == Pass::Sky) {
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
-            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && mi.pass != Pass::Skip))) { // the "black" material (technique set "tools") is a UI background
+            } else if (!img.empty() && (img == "$black" || (img[0] != '$' && (mi.pass != Pass::Skip || mi.fxKind == 2)))) { // the "black" material (technique set "tools") is a UI background
                 mi.texture = imageSlot(img);
                 // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
                 if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
@@ -792,12 +815,14 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
     std::vector<Batch> batches;
     for (const auto& [shader, list] : byShader) {
         const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
-        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        if ((mi.pass == Pass::Skip && mi.fxKind != 2) || mi.pass == Pass::Sky) continue;
         Batch b;
-        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
+        b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.fxKind == 2 ? Pass::Blend : mi.pass;
         b.texture = mi.texture;
         b.lightmap = -3;
         b.fullbright = true;
+        b.fxKind = mi.fxKind;
+        b.fxParm[0] = mi.fxParm[0], b.fxParm[1] = mi.fxParm[1];
         b.firstIndex = uint32_t(verts.size() / 4 * 6);
         for (const auto* s : list) {
             if (verts.size() / 4 >= kMax) break;
@@ -888,6 +913,15 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
                 GpuVertex g{};
                 g.pos[0] = corners[k].x; g.pos[1] = corners[k].y; g.pos[2] = corners[k].z;
                 g.normal[2] = 1;
+                if (mi.fxKind == 2 && !s->beam) {
+                    // Distortion reads code.tangent / code.binormal: the quad writer 0x1003f560 stores tangent = −A (minus the
+                    // width vector R) and binormal = B (the height vector V) in all four vertices; here −R = r and V = u. Carried
+                    // in the normal / light slots, which the distortion shader reads as tangent / binormal.
+                    g.normal[0] = r.x, g.normal[1] = r.y, g.normal[2] = r.z;
+                    g.light[0] = u.x, g.light[1] = u.y, g.light[2] = u.z;
+                } else if (mi.fxKind == 2) {
+                    g.normal[2] = 0; // TODO(spec): the Tail / Line (type 8) tangent and binormal rule; no offset here
+                }
                 for (int ch = 0; ch < 4; ++ch) g.color[ch] = uint8_t(std::clamp(s->rgba[ch], 0.0f, 1.0f) * 255.0f);
                 g.uv[0] = uv[k][0];
                 g.uv[1] = uv[k][1];
@@ -1676,6 +1710,13 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
+    SDL_GPUSampler* pointClampSampler = nullptr; // $floatz reads (TODO(spec): floatZSampler's filter state)
+    // Post-sun scene copy (resolvedPostSun, render command 0x100310a0) and $floatz (R32F clip z, build pass 0x10024ee0).
+    SDL_GPUTexture* postSunTex = nullptr;
+    SDL_GPUTexture* floatzTex = nullptr;
+    SDL_GPUGraphicsPipeline* floatzBuildPipe = nullptr;
+    SDL_GPUGraphicsPipeline* distortionPipe = nullptr;
+    SDL_GPUGraphicsPipeline* featherPipes[2] = {}; // Blend (zfeather.tech), Additive (zfeather_add.tech)
     SDL_GPUSampler* waterMapSampler = nullptr;
     SDL_GPUDevice* samplerDev = nullptr;
     SDL_GPUSampler* matSamplers[128] = {};
@@ -1996,7 +2037,76 @@ struct Renderer {
             glowSetupPipe = mk("fs_glow_setup", 1, 1, false, false);
             glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false);
             glowApplyPipe = mk("fs_glow_apply", 2, 1, true, true);
+            {
+                // $floatz build from the depth buffer (fs_floatz_build): R32F target, no depth.
+                SDL_GPUShaderCreateInfo gf = fs;
+                gf.entrypoint = "fs_floatz_build";
+                gf.num_samplers = 1;
+                gf.num_uniform_buffers = 1;
+                SDL_GPUShader* gfs = SDL_CreateGPUShader(dev, &gf);
+                if (!gfs) sdlFail("floatz shader");
+                SDL_GPUColorTargetDescription ct{};
+                ct.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+                SDL_GPUGraphicsPipelineCreateInfo pi{};
+                pi.vertex_shader = gvs;
+                pi.fragment_shader = gfs;
+                pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+                pi.target_info.color_target_descriptions = &ct;
+                pi.target_info.num_color_targets = 1;
+                floatzBuildPipe = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!floatzBuildPipe) sdlFail("floatz pipeline");
+                SDL_ReleaseGPUShader(dev, gfs);
+            }
             SDL_ReleaseGPUShader(dev, gvs);
+        }
+        {
+            // Effects that read the post-sun copy / $floatz: distortion_floatz.tech (stateMap nofog with the material's blend
+            // 0x65 = SrcAlpha / InvSrcAlpha, depth test, no depth write) and zfeather(_add).tech.
+            auto mkFx = [&](const char* vsEntry, const char* fsEntry, uint32_t samplers, int blend) {
+                SDL_GPUShaderCreateInfo ev = vs;
+                ev.entrypoint = vsEntry;
+                SDL_GPUShaderCreateInfo ef = fs;
+                ef.entrypoint = fsEntry;
+                ef.num_samplers = samplers;
+                ef.num_uniform_buffers = 1;
+                SDL_GPUShader* evs = SDL_CreateGPUShader(dev, &ev);
+                SDL_GPUShader* efs = SDL_CreateGPUShader(dev, &ef);
+                if (!evs || !efs) sdlFail("effect shaders");
+                SDL_GPUColorTargetDescription ct{};
+                ct.format = colorFormat;
+                ct.blend_state.enable_blend = true;
+                ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+                ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+                ct.blend_state.src_color_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+                ct.blend_state.dst_color_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+                ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                SDL_GPUGraphicsPipelineCreateInfo pi{};
+                pi.vertex_shader = evs;
+                pi.fragment_shader = efs;
+                pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+                pi.vertex_input_state.num_vertex_buffers = 1;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+                pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+                pi.depth_stencil_state.enable_depth_test = true;
+                pi.depth_stencil_state.enable_depth_write = false;
+                pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+                pi.target_info.color_target_descriptions = &ct;
+                pi.target_info.num_color_targets = 1;
+                pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                pi.target_info.has_depth_stencil_target = true;
+                SDL_GPUGraphicsPipeline* gp = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!gp) sdlFail("effect pipeline");
+                SDL_ReleaseGPUShader(dev, evs);
+                SDL_ReleaseGPUShader(dev, efs);
+                return gp;
+            };
+            distortionPipe = mkFx("vs_distort", "fs_distort", 3, 0);
+            featherPipes[0] = mkFx("vs_feather", "fs_feather", 2, 0);
+            featherPipes[1] = mkFx("vs_feather", "fs_feather", 2, 1);
         }
         {
             SDL_GPUShaderCreateInfo wvs = vs;
@@ -2064,11 +2174,15 @@ struct Renderer {
         si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
         waterMapSampler = SDL_CreateGPUSampler(dev, &si);
+        si.min_filter = si.mag_filter = SDL_GPU_FILTER_NEAREST;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        pointClampSampler = SDL_CreateGPUSampler(dev, &si);
     }
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
         if (sceneTex && blurW == w && blurH == h) return;
-        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1], &ghostTex[0], &ghostTex[1]})
+        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1], &ghostTex[0], &ghostTex[1],
+                                   &postSunTex, &floatzTex})
             if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         auto make = [&](uint32_t tw, uint32_t th) {
             SDL_GPUTextureCreateInfo info{};
@@ -2092,6 +2206,20 @@ struct Renderer {
         ghostTex[0] = make(w, h);
         ghostTex[1] = make(w, h);
         ghostValid = false;
+        postSunTex = make(w, h);
+        {
+            // $floatz: D3DFMT_R32F, window size (0x10023240..0x10023276).
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = std::max(w, 1u);
+            info.height = std::max(h, 1u);
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            floatzTex = SDL_CreateGPUTexture(dev, &info);
+            if (!floatzTex) sdlFail("floatz texture");
+        }
         quarterTex = make(w / 4, h / 4); // $blurred_screen: (screenW>>2, screenH>>2) clamped >= 1 (gfx 0x100235b5)
         if (!blurVerts) {
             SDL_GPUBufferCreateInfo vb{};
@@ -2109,7 +2237,7 @@ struct Renderer {
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER; // read by the $floatz build
         info.width = w;
         info.height = h;
         info.layer_count_or_depth = 1;
@@ -2212,11 +2340,21 @@ struct Renderer {
         color.clear_color = {0.55f, 0.65f, 0.78f, post ? 0.0f : 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
         color.store_op = SDL_GPU_STOREOP_STORE;
+        // Effects that read the post-sun scene copy or $floatz (distortion, zfeather). The copy needs the scene in an offscreen
+        // target (post) and is made only when the scene viewport is the whole window (0x10025ce5 flag; always here).
+        // IW2_NO_POSTSUN=1 disables the copy and the float-z pass (distortion then skipped, zfeather drawn unfeathered).
+        static const bool noPostSun = std::getenv("IW2_NO_POSTSUN") != nullptr;
+        bool postSunWanted = false;
+        if (post && !noPostSun)
+            for (const DrawItem& it : items)
+                if (it.model)
+                    for (const Batch& b : it.model->batches) postSunWanted = postSunWanted || b.fxKind != 0;
+        bool postSunReady = false;
         SDL_GPUDepthStencilTargetInfo ds{};
         ds.texture = depth;
         ds.clear_depth = 1.0f;
         ds.load_op = SDL_GPU_LOADOP_CLEAR;
-        ds.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ds.store_op = postSunWanted ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
         ds.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
@@ -2329,6 +2467,47 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
+            if (p == Pass::Blend && postSunWanted) {
+                // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
+                // the back buffer into resolvedPostSun), then the effect lists. $floatz is built by the DLL first thing in the scene
+                // (0x10024ee0: technique "build floatz" of every opaque surface, lib/float_z_build.hlsl = clip-space z; sky / clear:
+                // floatz_clear.hlsl = 262144 · 2 · 1.732). Here it is derived from this frame's depth buffer at the same moment as
+                // the copy: clip z = ndc z · w of the same projection, the cleared depth (sky) gives the maximum extent. TODO(spec):
+                // surfaces whose technique set has no "build floatz" entry still write depth here.
+                SDL_EndGPURenderPass(pass);
+                {
+                    SDL_GPUColorTargetInfo fz{};
+                    fz.texture = floatzTex;
+                    fz.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                    fz.store_op = SDL_GPU_STOREOP_STORE;
+                    SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, nullptr);
+                    SDL_BindGPUGraphicsPipeline(fp, floatzBuildPipe);
+                    SDL_GPUTextureSamplerBinding db{depth, pointClampSampler};
+                    SDL_BindGPUFragmentSamplers(fp, 0, &db, 1);
+                    const struct { float nearFar[4]; } fzu{{4.0f, 40000.0f, 262144.0f * 2.0f * 1.732f, 0.0f}}; // Camera::viewProj near / far
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fzu, sizeof(fzu));
+                    SDL_DrawGPUPrimitives(fp, 3, 1, 0, 0);
+                    SDL_EndGPURenderPass(fp);
+                }
+                {
+                    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+                    SDL_GPUTextureLocation src{}, dst{};
+                    src.texture = sceneTex;
+                    dst.texture = postSunTex;
+                    SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+                    SDL_EndGPUCopyPass(cp);
+                }
+                SDL_GPUColorTargetInfo again = color;
+                again.load_op = SDL_GPU_LOADOP_LOAD;
+                SDL_GPUDepthStencilTargetInfo dsAgain = ds;
+                dsAgain.load_op = SDL_GPU_LOADOP_LOAD;
+                dsAgain.store_op = SDL_GPU_STOREOP_DONT_CARE;
+                pass = SDL_BeginGPURenderPass(cmd, &again, 1, &dsAgain);
+                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+                postSunReady = true;
+            }
             if (p == Pass::Blend) {
             // Water (water_l_sun.tech): after the opaque passes, before the blended ones. No polygon offset: every shipped
             // water material (iw_13.iwd materials/water_*) has polygon-offset level 0 (state byte 0x30 bits 4-5).
@@ -2433,6 +2612,38 @@ struct Renderer {
                 }
                 for (const Batch& b : it.model->batches) {
                     if (b.pass != p) continue;
+                    if (b.fxKind == 2 && !postSunReady) continue; // distortion needs the post-sun copy (Skip before, docs/spec/effects.md)
+                    if (b.fxKind != 0 && postSunReady) {
+                        // distortion_floatz.tech / zfeather(_add).tech: vertex uniforms + the material constant, samplers colorMap,
+                        // resolvedPostSun / floatZ.
+                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                        SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
+                        SDL_GPUBufferBinding mib{it.model->indices, 0};
+                        SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        bound = true;
+                        SDL_BindGPUGraphicsPipeline(pass, b.fxKind == 2 ? distortionPipe : featherPipes[p == Pass::Additive ? 1 : 0]);
+                        struct EVU { VU base; float parms[4]; } evu{vu, {b.fxParm[0], b.fxParm[1], 0, 0}};
+                        evu.base.model = it.transform;
+                        SDL_PushGPUVertexUniformData(cmd, 0, &evu, sizeof(evu));
+                        if (b.fxKind == 2) {
+                            SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(b.texture)], repeatSampler}, {postSunTex, clampSampler},
+                                                                   {floatzTex, pointClampSampler}};
+                            SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
+                        } else {
+                            SDL_GPUTextureSamplerBinding tex[2] = {{scene.textures[size_t(b.texture)], repeatSampler}, {floatzTex, pointClampSampler}};
+                            SDL_BindGPUFragmentSamplers(pass, 0, tex, 2);
+                        }
+                        FragmentUniforms fu{};
+                        if (p == Pass::Blend) applyFog(fu); // as the other effect batches (TODO(spec): the fogged zfeather statemaps)
+                        SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                        SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                        SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
+                        VU mu = vu;
+                        mu.model = it.transform;
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                        SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
+                        continue;
+                    }
                     if (!bound) {
                         SDL_GPUBufferBinding mvb{it.model->vertices, 0};
                         SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
@@ -2935,7 +3146,7 @@ int main(int argc, char** argv) {
         // HUD fade "touch" times (world ms; 0 = never touched = hidden when the fade dvar is non-zero): ammo display 0xf79a40 and
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; int64_t hintStart = 0; bool hintHeldValid = false; struct { int hint = 0; std::string weapon, text; } hintHeld; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
@@ -3278,9 +3489,18 @@ int main(int argc, char** argv) {
                                                                          {av[0], av[1], av[2]}, e->vehicle->info->suspensionTravel,
                                                                          e->vehicle->steerAngle, e->number))
                             ctl.push_back(wc);
+                    const assets::XPose drawnPose = assets::applyControls(vm->parts, vpose, ctl);
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, assets::applyControls(vm->parts, vpose, ctl));
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, drawnPose);
                     if (it.model) items.push_back(it);
+                    {
+                        // Vehicle flash / fx tags from the drawn pose (lerped turret controls, jolt, wheels) like actors and turrets:
+                        // 0x48abb0 reads the client entity and skeleton for every entity type (World::vehicleTagPosition is the
+                        // server-side position only).
+                        BoneMap vbones;
+                        addBones(vbones, vm->parts, drawnPose);
+                        recordDrawnTags(e->number, vbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                    }
                     continue;
                 }
                 // Actors and animated script_models (drones: spawn("script_model") + useanimtree + attach head/gun, maps/_drones.gsc) are
@@ -4467,13 +4687,25 @@ int main(int argc, char** argv) {
                 };
                 // The rows keep per-character colours from the ^ codes; plain text is white (only obj_update / obj_complete are
                 // formatted "^2%s" by the client handler, 0x57f6a0), so pickup and iprintln messages are white.
+                // The game-message and bold-message windows (0x4bf1c0 / 0x4bf210) draw only with cl_paused == 0 and with alpha
+                // 1 - f, f = 0x4bfd00: 1 while the objectives screen is held (0xf791fc), else the 300 ms release fade of touch 5
+                // (0xf79200, 0x4b0900), 0 without a touch; they are skipped when 1 - f == 0. The subtitles (0x4bf2e0) ignore f.
+                // TODO(spec): the 2D hud dvar 0x1040c4c (f = 0 when it is off).
+                float objFade = 0.0f;
+                if (hudFade.objectivesHeld) objFade = 1.0f;
+                else if (world && hudFade.objectives != 0) {
+                    const int64_t el = world->timeMs() - hudFade.objectives;
+                    if (el < 300) objFade = el <= 0 ? 1.0f : float(300 - el) / 300.0f;
+                }
+                const float msgAlpha = menuEnv.getCvar("cl_paused") == "1" ? 0.0f : 1.0f - objFade;
                 const uint8_t white[4] = {255, 255, 255, 255};
+                const uint8_t whiteMsg[4] = {255, 255, 255, uint8_t(std::clamp(msgAlpha, 0.0f, 1.0f) * 255.0f)};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, white, 0);
+                    if (msgAlpha > 0) drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, whiteMsg, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
-                // 10 lines (0x5ccff4+0x10), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
+                // 9 lines (struct 0x5cc954, +0x10 = 0x5cc964; corrected: 0x5ccff4 is the subtitle window), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
                 // 0x4068e0 mode 3 at x 0, y 180, character height 12, horizontal code 7 (the centre of the window box),
                 // vertical code 1, white; the bold flag adds 4 to the row pitch (0x4065e0) and selects the flag path of
                 // the font choice (0x4062d0: scale <= 0.25 small, < ui_bigFont 0.4 normal, else bold font).
@@ -4483,8 +4715,7 @@ int main(int argc, char** argv) {
                 {
                     const float scale = 12.0f / 48.0f * float(h) / 480.0f;
                     if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
-                        const uint8_t white[4] = {255, 255, 255, 255};
-                        drawWindow(windowRows(true, 60, 10), left43 + 320.0f * sc, 180.0f, 16.0f, *f, white, 0);
+                        if (msgAlpha > 0) drawWindow(windowRows(true, 60, 9), left43 + 320.0f * sc, 180.0f, 16.0f, *f, whiteMsg, 0);
                     }
                 }
                 // Subtitles (alias subtitle column, 0x4a3540 -> 0x401d60 -> 0x404830 into the third text window, struct
@@ -4571,10 +4802,29 @@ int main(int argc, char** argv) {
             // only for turret-class weapons. Rect: menu "Cursorhints" "0 70 40 40" centred → (320, 310) virtual.
             // With text: x = rect.x − (icon width + text width)/2, text baseline rect.y + text height/2, icon right of
             // it at y = rect.y − h/2; without: icon at x = rect.x − icon width/2, y = rect.y. cg_cursorHints default
-            // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). TODO(spec): the fade (cg_hintFadeTime, 0x4b0900), the
-            // weapon pickup text (0x4a99b0), HINT_HEALTH's key text.
-            if (world && cursorHintItem && !world->playerOnTurret()) {
-                const auto& uh = world->playerUseHint();
+            // 3 (no pulse; registered 0x4a1123 with 3, 0, 4). Fade (0x4a9b50 → 0x4b0900 with 100 ms): while a hint is
+            // set (0x4a9960) its start time is the current time and the duration cg_hintFadeTime (int, default 100 ms,
+            // 0 .. INT_MAX, registered 0x4a1163); once it is gone the last hint stays for that duration and its
+            // colour alpha is remaining / 100 (1 while more than 100 ms remain), then the hint is cleared. The colour
+            // (1, 1, 1, alpha) goes to the icon draw (0x4d4790 colour argument); the text takes it too (assumed, the
+            // 0x4c3790 colour argument was not traced). TODO(spec): HINT_HEALTH's key text.
+            float hintFade = 1.0f;
+            if (world) {
+                const auto& cur = world->playerUseHint();
+                const int64_t hnow = world->timeMs();
+                constexpr int64_t hintFadeTime = 100, hintFadeSpan = 100; // cg_hintFadeTime default; the 0x4b0900 argument
+                if (cur.hint != 0 || !cur.weapon.empty()) {
+                    hudFade.hintStart = hnow;
+                    hudFade.hintHeldValid = true;
+                    hudFade.hintHeld = {cur.hint, cur.weapon, cur.text};
+                } else if (hudFade.hintHeldValid) {
+                    const float a = game::hudFadeAlpha(hudFade.hintStart, hnow, hintFadeTime, hintFadeSpan);
+                    if (a < 0.0f) hudFade.hintHeldValid = false;
+                    else hintFade = a;
+                }
+            }
+            if (world && cursorHintItem && !world->playerOnTurret() && hudFade.hintHeldValid) {
+                const auto& uh = hudFade.hintHeld;
                 std::string icon;
                 bool wide = false;
                 std::string text = uh.text;
@@ -4588,7 +4838,7 @@ int main(int argc, char** argv) {
                 if (!icon.empty()) {
                     const float rx = 320.0f, ry = 310.0f, rw = 40.0f, rh = 40.0f;
                     const float iw = (wide ? 2.0f : 1.0f) * rw;
-                    const uint8_t white[4] = {255, 255, 255, 255};
+                    const uint8_t white[4] = {255, 255, 255, uint8_t(hintFade * 255.0f)};
                     float ix = rx - iw * 0.5f, iy = ry;
                     if (!text.empty()) {
                         const std::string* t = loc.find(text);
@@ -4624,8 +4874,8 @@ int main(int argc, char** argv) {
             // material hit_direction as a quad of cg_hudDamageIconWidth 128 × cg_hudDamageIconHeight 64 screen pixels,
             // cg_hudDamageIconOffset 128 below the screen centre, turned clockwise by view yaw − icon yaw about the
             // centre (0x4b0490); alpha 2 − 2 · elapsed / duration, at most 1. Not under a scope overlay
-            // (cg_hudDamageIconInScope 0). TODO(spec): the corner-to-UV order of the gfx quad draw (0x617b68) is
-            // taken as (0,0) (1,0) (1,1) (0,1).
+            // (cg_hudDamageIconInScope 0). The corner-to-UV order of the gfx quad draw (0x617b68, render command 0x12, handler
+            // 0x1002f280) is (0,0) (1,0) (1,1) (0,1) for the corners in the order given.
             if (world && !(scopeAlpha() > 0)) {
                 const int64_t nowMs = world->timeMs();
                 const float W = 128.0f, H = 64.0f, O = 128.0f;
@@ -4933,8 +5183,7 @@ int main(int argc, char** argv) {
             // centred (0x4bcef0). In a vehicle the vehicle's turret weapon (0x4bd000). Otherwise the hand weapon's
             // with alpha (1 − scope overlay alpha) · cg_crosshairAlpha (0x4bce70) when ≥ 0.01, not at full aim
             // (cg_drawGun 1), and not in weapon states 1, 2, 5, 10, 11 (0x4bd110, cg_drawCrosshair 1).
-            // TODO(spec): the friend / enemy colours (ps flags 0x100000 / 0x200000), the reticleCenter +
-            // four reticleSide drawing with the spread (0x4bd2c0, 0x4bd520) and the sway offset (0x4bc6e0).
+            // The colours (0x4bce70, verified): see below. TODO(spec): the sway offset (0x4bc6e0).
             const bool onTurretHud = world && world->playerOnTurret();
             const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
             if (onTurretHud || inVehicleHud) {
@@ -4963,7 +5212,7 @@ int main(int argc, char** argv) {
             // grenade). Sides: reticleSide, reticleSideSize · scale square, at d = max(reticleMinOfs,
             // tan(spread · scale) / tan(fov_y / 2) · 240) − hipReticleSidePos · size from the centre, spread = hip min
             // + (max − min) · aim spread / 255 (0x4bd3a0, 0x4dceb0); top 0°, right 90°, bottom 180°, left 270°, with
-            // the 0.125 · size placement terms of 0x4bd4a0. TODO(spec): the friend / enemy colours.
+            // the 0.125 · size placement terms of 0x4bd4a0.
             if (pweapon.equipped() && drawCross) {
                 auto num = [&](const char* k) { return pweapon.number(k); };
                 float scale = 1.0f, offY = 0.0f;
@@ -5231,16 +5480,25 @@ int main(int argc, char** argv) {
             // hud_health_pulserate_injured (1.0 s), below hud_health_startpulse_critical (0.33) pulserate_critical (0.5 s).
             // Both ownerdraws draw nothing unless the bool dvar cg_drawHealth (0xf48cf8, registered at 0x4a125d with default 0, flags
             // 0x1080; no shipped default.cfg / config sets it, only developer cfgs) is on, so the stock SP HUD has no health bar.
-            // TODO(spec): the pm_type == 4 case of 0x4a8790, other health touches, the texcoords of the trail (assumed
-            // fraction..trail), the hud_health_pulserate dvar flags.
+            // Fraction (0x4a8790): health / maxhealth (cg snapshot ps +0x108 / +0x110 = copies of the entity's health /
+            // maxhealth, world.h) clamped to 0..1, and 0 (not 1) when either is 0 or pm_type is 4 (spectator; the port
+            // has no pm_type 4 for the player). Per-frame touch (0x4be720): below hud_health_startpulse_injured (1.0)
+            // the health fade is touched whenever its touch time is older than now (and the Health menu flagged), at
+            // full health, once hud_fade_healthbar (2 s) has passed since the touch, the touch is cleared. The trail
+            // quad (0x4a8a0f) spans x = fraction .. trail with texcoords s fraction .. trail, t 0 .. 1, colour (1, 0, 0,
+            // fade alpha) as implemented.
             if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player() && std::atof(menuEnv.getCvar("cg_drawHealth").c_str()) != 0.0) {
                 const int64_t now = world->timeMs();
                 const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
                 hudFade.lastHudMs = now;
                 const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
-                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // TODO(spec): player maxhealth source
-                float frac = 1.0f;
-                if (hp != 0 && maxHp != 0) frac = std::clamp(float(hp) / float(maxHp), 0.0f, 1.0f);
+                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // entity maxhealth (+0x140)
+                const float frac = game::hudHealthFraction(hp, maxHp); // 0x4a8790
+                if (frac < 1.0f) {
+                    if (hudFade.health < now) hudFade.health = now;
+                } else if (hudFade.health != 0 && now - hudFade.health > 2000) {
+                    hudFade.health = 0; // hud_fade_healthbar 2.0 s (0x4a7300)
+                }
                 const float fa = fadeAlpha(hudFade.health, 2.0f, 2000);
                 if (fa > 0.0f) {
                     // trail state machine (0x4a8988..0x4a8a00)
@@ -5335,8 +5593,9 @@ int main(int argc, char** argv) {
             // vehicle's angles[1] (centity +0x158) for the body, the tag_barrel forward yaw (0x4ab9e0) for the barrel. The body quad
             // turns about its centre (0x4b0310); the barrel quad (x ± w/2, y - 0.75 h .. y + 0.25 h; constants 0x591e38, 0x591fe0) turns
             // about the item's top-left corner (0x4b0490), which is the body's centre. The x offset (cg_hudCompassSize - 1) * 0xf5bcc8 * 0.7
-            // is 0 at the default size 1. TODO(spec): the centity flag test (+0xb0 & 0x10000), the corner-to-UV order of 0x617b68
-            // (taken as (0,0) (1,0) (1,1) (0,1) like the damage indicator).
+            // is 0 at the default size 1. The centity needs eFlags & 0x10000 (set at vehicle spawn for info type 1, "tank", see
+            // World::playerVehicleHudYaws). The quad draw 0x617b68 queues render command 0x12 (cgame 0x10021940, handler
+            // 0x1002f280): its four corners get texcoords (0,0) (1,0) (1,1) (0,1) in the order given.
             if (const ui::Menu* tm = hudMenus.find("tankstatus"); tm && world) {
                 float bodyYaw = 0, barrelYaw = 0;
                 bool hasBarrel = false;
@@ -5368,9 +5627,9 @@ int main(int argc, char** argv) {
                     }
             }
             // Compass (ownerdraw 85/84/86, exe 4a91f0 / 4a90b0 / 4a9310). LEFT/BOTTOM alignment is relative to the window
-            // edges (0x440e60), like the ammo counter. TODO(spec): the fade alpha (hud_fade_compass 8 s after a touch event,
-            // 4a6130 case 2; alpha 1 for now), the default pointer material when an objective has no icon, ownerdraw 87/88.
-            // The compass fade (0x4a90f3..: hud_fade_compass default 8 s, touch 0xf79a38) is written into the item colour alpha.
+            // edges (0x440e60), like the ammo counter. The compass fade (0x4a90f3, 0x4a9375: hud_fade_compass default 8 s, touch
+            // 0xf79a38, CG_FadeColor 0x4b0900 with a 700 ms span) is written into the item colour alpha; the touches are spawn
+            // (0x4a6220), the console command → 0x4a6130 case 2 and the objective ring below.
             // Objective ring pulse touch (0x4a9775..0x4a97b8): while a pointer's ring is active (cg_hudObjectiveNumRings 10 > 0,
             // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
             constexpr int ringNum = 10, ringTime = 10000;
@@ -5416,8 +5675,10 @@ int main(int argc, char** argv) {
                         // Friendly actors (4c0f20): R = size * r * 43.75 (double @0x591e90), icon size*10 (0x591e8c), r from
                         // compassRadius; placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor -
                         // view yaw; the arrow turns by (view yaw - actor yaw). 88 tanks (4c1700): the same formulas over the vehicles
-                        // with addvehicletocompass, icon 16 (0x591e84). TODO(spec): the 800 ms entry age (the exe refreshes an entry
-                        // only for entities in the client snapshot, 0xf5bd28 +0x85cc), springy yaw (cg_hudCompassSpringyPointers 0).
+                        // with addvehicletocompass, icon 16 (0x591e84). Entry age: an entry is drawn while its stamp >= now - 800 ms (0x4c10e8;
+                        // refreshed each frame for snapshot actors, so only a removed actor would linger 800 ms: not ported). The springy
+                        // yaw (cg_hudCompassSpringyPointers, 0xf569ac, default 0) swaps the view yaw for the 0x4b0ce0 spring state 0xf79a30;
+                        // at the default 0 it is the view yaw, so that variant is TODO(spec) (opt-in).
                         if (it.background.empty()) continue;
                         const bool tanks = it.ownerDraw == 88;
                         const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
@@ -5481,7 +5742,8 @@ int main(int argc, char** argv) {
                     }
                     // Pointers: centre (x + w*size/2, y + h*size/2 - (size-1)*h); K = 43.75 (double @0x591e90); icon 16*size.
                     const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f;
-                    const float maxR = cMaxRange, minR = cMinRange, minRad = cMinRadius, objMax = 2048.0f, minAlpha = 1.0f;
+                    const float maxR = cMaxRange, minR = cMinRange, minRad = cMinRadius;
+                    const float objMax = compassDvar("cg_hudObjectiveMaxRange", 2048.0f), minAlpha = compassDvar("cg_hudObjectiveMinAlpha", 1.0f);
                     const float icon = 16.0f * csize * sc;
                     for (const auto& ob : world->objectives()) {
                         // An objective without an icon uses the default material "objective" (0xf5b6cc, registered at 0x4a2d62
@@ -5491,14 +5753,20 @@ int main(int argc, char** argv) {
                             if (p[0] == 0 && p[1] == 0 && p[2] == 0) continue;
                             const float dx = p[0] - c.pos.x, dy = p[1] - c.pos.y, d = std::sqrt(dx * dx + dy * dy);
                             const float a = wrap360(std::atan2(dy, dx) * 180.0f / float(M_PI) - cyaw) * 0.0174532925f;
-                            float alpha = 1.0f;
-                            if (objMax > maxR) alpha = (minAlpha - 1.0f) * (std::clamp(d, maxR, objMax) - maxR) / (objMax - maxR) + 1.0f;
+                            // Pointer alpha (0x4a953f..0x4a958c): d clamped to at most objMax then at least maxR; 0 when the two
+                            // are equal. The drawn alpha is the smaller of it and the compass fade (0x4a96e0), not the product.
+                            float alpha = 0.0f;
+                            if (objMax != maxR) {
+                                const float dc = std::max(std::min(d, objMax), maxR);
+                                alpha = (minAlpha - 1.0f) * ((dc - maxR) / (objMax - maxR)) + 1.0f;
+                            }
+                            const float ptrAlpha = std::min(compassAlpha, alpha);
                             const float t = (std::clamp(d, minR, maxR) - minR) / (maxR - minR);
                             const float rad = csize * ((1.0f - minRad) * t + minRad) * 43.75f * sc;
                             const float ix = ccx - icon * 0.5f - std::sin(a) * rad, iy = ccy - icon * 0.5f - std::cos(a) * rad;
                             Quad2D q{ix, iy, ix + icon, iy + icon};
                             std::memcpy(q.rgba, col, 4);
-                            q.rgba[3] = uint8_t(std::clamp(alpha * compassAlpha, 0.0f, 1.0f) * 255.0f); // TODO(spec): fade x pointer alpha
+                            q.rgba[3] = uint8_t(std::clamp(ptrAlpha, 0.0f, 1.0f) * 255.0f);
                             q.texture = materialTexture(ob.icon.empty() ? std::string("objective") : ob.icon);
                             out.push_back(q);
                             // Ring pulse (0x4a9748..0x4a9915): period = RingTime / NumRings; phase = (elapsed mod period) / period;
@@ -5516,7 +5784,7 @@ int main(int argc, char** argv) {
                                 const float rx2 = ccx - rs * 0.5f - std::sin(a) * rad, ry2 = ccy - rs * 0.5f - std::cos(a) * rad;
                                 Quad2D rq{rx2, ry2, rx2 + rs, ry2 + rs};
                                 std::memcpy(rq.rgba, col, 4);
-                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, alpha * compassAlpha), 0.0f, 1.0f) * 255.0f);
+                                rq.rgba[3] = uint8_t(std::clamp(std::min(tri, compassAlpha) /* 0x4a981f: the ring is limited by the fade only */, 0.0f, 1.0f) * 255.0f);
                                 rq.texture = materialTexture(ob.icon.empty() ? std::string("objective_ring") : ob.icon);
                                 out.push_back(rq);
                             }
@@ -6178,6 +6446,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
+            setFxFar(fxSystem, cam, fogState.current(world ? world->timeMs() : 0), world ? world->cullDist() : 0.0f);
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
@@ -7431,6 +7700,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
+            setFxFar(fxSystem, cam, fogState.current(world ? world->timeMs() : 0), world ? world->cullDist() : 0.0f);
             // The view model is posed (and its flash / brass played) before the effects are drawn: the exe adds the view weapon
             // (0x4b026f) before the effect draw, and the bolted particles re-read tag_flash / tag_brass through 0x47fcd0 ->
             // 0x48abb0 once per frame stamp 0x6221a8 (bumped at the frame start, 0x4afca3), i.e. this frame's gun pose. Posing it

@@ -82,8 +82,8 @@ void World::registerSoundBuiltins() {
         fogSightSq_ = d >= 1.0f ? 0.828f * 0.828f : 3.4028235e38f;
         return Value();
     });
-    // setculldist(distance) (0x4f5700): exactly 1 argument; configstring 8 = "%g" (the renderer's far cull distance). TODO(spec): the
-    // renderer's consumer of configstring 8 (gfx dll) is not decoded, so the value is only stored.
+    // setculldist(distance) (0x4f5700): exactly 1 argument; configstring 8 = "%g" (the renderer's far cull distance). Consumer: client
+    // 0x4a56d0 -> R_SetCullDist (gfx dll 0x1000ab00) -> farPlaneDistance (fog.h, docs/spec/render-hints.md); read via World::cullDist().
     vm_.registerBuiltin("setculldist", [this](CallContext& c) {
         if (c.args.size() != 1) throw std::runtime_error("Incorrect number of parameters\n");
         cullDist_ = c.arg(0).asFloat();
@@ -93,7 +93,8 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("soundexists", [this](CallContext& c) { return Value(soundExists(c.arg(0).toString())); });
     // setshadowhint(name) (0x4ef700): replaces the entity state bits 0x2000..0xe000 by the hint's value (shadowHintBits in fog.h); an unknown
     // name is the script error 0x587058. Render only: the bits are stored in Entity::shadowHint.
-    // TODO(spec): the renderer's consumer of these bits (gfx dll) and their savegame round trip.
+    // Consumers: the client maps the bits to refEntity render flags (0x4c1e2a, 0x4aacb0) and the gfx dll's shadow-caster selection
+    // scores them (shadowCasterScore in fog.h, docs/spec/render-hints.md). TODO(spec): their savegame round trip; no shadow pass here.
     vm_.registerBuiltin("setshadowhint", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("setshadowhint: not an entity");
@@ -109,6 +110,7 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("stoprumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("playrumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("playrumbleonpos", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("playlooprumble", [](CallContext&) { return Value(); }); // 0x4f8c00: a single `ret` as well
     vm_.registerBuiltin("giveachievement", [](CallContext&) { return Value(); });
     // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): exactly 6 arguments, then the fogArgError checks; sends
     // "fog <near> <far> 1 <r> <g> <b> <time*1000>" (format "%g %g %g %g %g %g %.0f" 0x585bd4). Same 0x1c61048 TODO(spec) as setexpfog.

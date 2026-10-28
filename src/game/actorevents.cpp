@@ -70,8 +70,7 @@ bool World::actorKnowsRecently(const Entity& target, const Entity& about, int64_
 // The 0x535d70 dispatch of one actor (`target`) receiving an event of `type` from `source`. Types 7 (grenade cook),
 // 12 (door open) and 13 (door kick) only print "not yet handled" in the exe; 11 does nothing; 8/9 (grenade ping) are
 // implemented as the per-actor loop of `grenadePing` (0x526c07 → 0x5200e0), not through this dispatch.
-// TODO(spec): the turret's entity +0x10c field of the pain/death handler (only the "is on a turret" part is
-// modelled), the movement noise 0x5485a0 is ported (actorMoveNoise), the plane-limited grenade flee (0x542b70 -> 0x5461a0) is ported (pathAwayFrom). Player events 2/3 are ported (playerPmEvents).
+// The turret state's damaged handler 0x54af30 (turret info +0x08 flag 0x10 and +0x60 hitBy) is ported in actorstate.cpp. The movement noise 0x5485a0 is ported (actorMoveNoise), the plane-limited grenade flee (0x542b70 -> 0x5461a0) is ported (pathAwayFrom). Player events 2/3 are ported (playerPmEvents).
 void World::aiEventDispatch(Entity& source, Entity& target, int type) {
     switch (type) {
     case 2:
