@@ -476,10 +476,25 @@ void World::loadState(StateReader& r) {
     playerEFlags_ = r.u32();
     pmFlags_ = r.u32();
 
-    cvars.clear();
-    for (uint32_t i = 0, n = r.u32(); i < n; ++i) {
-        std::string k = r.str();
-        cvars[k] = r.str();
+    // The exe writes only the dvars with flag 0x400 (0x4e2e00 -> 0x433200(buffer, 0x400) tests dvar flags & mask), so campaign
+    // progress (mis_01..mis_10 / mis_difficulty, flags 0x1001) is never taken back from a save. openiw2 keeps no dvar flags:
+    // TODO(spec) the full 0x400 set; here every cvar is restored except those known to be outside it, which keep the live value.
+    {
+        auto keepLive = [](const std::string& k) {
+            std::string l = k;
+            for (auto& ch : l) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile";
+        };
+        std::map<std::string, std::string, CvarNameLess> live;
+        for (const auto& [k, v] : cvars)
+            if (keepLive(k)) live[k] = v;
+        cvars.clear();
+        for (uint32_t i = 0, n = r.u32(); i < n; ++i) {
+            std::string k = r.str();
+            std::string v = r.str();
+            if (!keepLive(k)) cvars[k] = std::move(v);
+        }
+        for (auto& [k, v] : live) cvars[k] = v;
     }
     fxNames_.clear();
     for (uint32_t i = 0, n = r.u32(); i < n; ++i) fxNames_.push_back(r.str());

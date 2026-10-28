@@ -104,7 +104,9 @@ G_WriteGame (0x4e3ef0, "G_WriteGame '%s' '%s'") resets the memory file and write
    - dword 0x12345678 placeholder, patched to the size of the level block; dword 0x12345678; level dwords [0x1c60534], [0x1c60530],
      [0x1c61070], words [0x1c610b0], [0x1c610b2], dwords [0x1c60fe0], [0x1c60fec], [0x1c60ff0], [0x1c60fe4], [0x1c60fe8], 0x40 bytes
      0x1c57d88, dword [0x1c61058] (the radius-damage ignore flag).
-   - 0x4e2e00: the SAVED dvars as text (0x433200 with buffer 0x400: dword length, then the text).
+   - 0x4e2e00: the SAVED dvars as text: 0x433200(buffer, mask 0x400) walks the dvar hash table 0x7805d0 and, for every dvar with
+     `flags & 0x400`, appends `name\0value\0` (value text 0x42fe80); written as a dword length, then the text (first call measures).
+     So only flag-0x400 dvars come back with a save: `ui_campaign` (flags 0x1400) does, the campaign dvars `mis_*` (0x1001) do not.
    - 0x8000 bytes of 0x1cb2c00; dwords [0x1c61034], [0x1c61038], [0x1c61050]; the values of the dvars `g_gameskill` (0x1c13f7c),
      [0x1c13f88], [0x1c13f34].
    - 0x515570: 0x28 bytes of 0x1c8d990 (path code state); 0x402d60; patch of the first size.
@@ -173,7 +175,9 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   compressed size keeps G_LoadGame's 0x280000; the uncompressed openiw2 stream is allowed up to 64 MB (our stream is more verbose than
   the original's raw images, e.g. toujane after 5 s is about 3 MB raw / 0.2 MB compressed).
 - Contents (src/game/savestate.cpp): the script VM (objects, arrays, threads with frames, locals, stacks, references, wait/endon state,
-  the woken-thread queue, time and id counters; functions by file + name) and the World state listed there. Per-entity runtime that is
+  the woken-thread queue, time and id counters; functions by file + name) and the World state listed there. Cvars: openiw2 keeps
+  no dvar flags, so it restores every saved cvar except `mis_*`, `sv_lastSaveGame` and `com_playerProfile` (outside the 0x400 set,
+  they keep their live values); TODO(spec): the complete 0x400 set. Per-entity runtime that is
   rebuilt rather than restored (animation playback, AI state machine, paths, vehicles, turrets, missiles, perception) is listed as
   TODO(spec) in the header of savestate.cpp.
 
