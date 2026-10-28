@@ -3834,7 +3834,7 @@ int main(int argc, char** argv) {
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
             // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
             // TODO(spec): the dvars it also tests.
-            if (world && mantleHint && mantleHintItem) {
+            if (world && mantleHint && mantleHintItem && !input.objectivesHeld()) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
                 const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
@@ -3871,7 +3871,7 @@ int main(int argc, char** argv) {
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
             // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
             // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
-            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
+            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
