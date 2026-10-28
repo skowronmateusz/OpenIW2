@@ -228,9 +228,11 @@ reacquire), `flagenemyunattackable` (0x53cd90: ignore-until 0x7fffffff, substate
 types 18, 2, 3, 5, 10, 11, 12, 6, 7). `findbestcovernode` options are the constant strings set at 0x506e95…: 0x1c7f12a
 "prefer", 0x1c7f128 "ignore", 0x1c7f12c "better".
 
-Implemented in `src/game/actorcover.cpp`. TODO(spec): node take-over 0x518e80/0x518dc0, linked nodes, 0x515390, goal
-volumes, 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move check's continuation after a
-block, the trim state of the reacquire paths (+0x70c/+0x710), `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
+Implemented in `src/game/actorcover.cpp`. Done since: node blocking 0x515390 (blockFacingNodes), goal volumes
+(goalVolumeHolds), the 0x502960 offset goal (dead: +0x73c is only ever written 0), the damaged handler 0x5498c0, the trim
+state set by the reacquire paths. TODO(spec): node take-over 0x518e80/0x518dc0, linked nodes, 0x505ed0/0x505f70 (goal
+entity, path to enemy), the rest of 0x503200, the move check's continuation after a block, the consumer of the trim
+state (trimpathtoattack 0x543580), the planners 0x503a50 / 0x503be0 / 0x546980, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
 0x502960's offset goal (0x542340/0x545670, see "Path planner").
 
 ## Path planner (observed)
@@ -314,7 +316,7 @@ off its centre (0x5451b0, corners 75 apart, stepping back to 37.5 first when clo
 blocked (+0x728 = self, 500 ms); when a detour was already tried the path is dropped every 2 s. Implemented in
 `src/game/actorfollow.cpp` and `src/game/actorpath.cpp`.
 TODO(spec): +0x318 (the bumped entity: following and 0x500d80), +0x250 move delta vs velocity, the actor clip mask
-+0x28c, +0x288, 0x504630 crowding, 0x53ade0, negotiation (+0x244, flag 0x40), the facing blend +0x2150, +0x73c, the
++0x28c, +0x288, 0x504630 crowding, 0x53ade0, negotiation (+0x244, flag 0x40), the facing blend +0x2150, the
 actor physics 0x501xxx.
 
 ## Native actor fields (observed)
@@ -430,7 +432,7 @@ mode 2: the actor's own origin without a chain node (radius and height untouched
 radius sets radius = max(node radius, 4) and height = max(goalheight, 80) (a zero one leaves them as the last update set them). Any other goal
 entity gives its origin (mode 1); no goal entity the setgoalpos / setgoalnode position (mode 0, `setgoalpos` and `setgoalnode` clear the goal
 entity); modes 0 and 1 take radius max(goalradius, 4) and height max(goalheight, 80). The cover search, `pathToGoal` and the in-goal test read it
-(`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (the goal volume test 0x447830 is TODO(spec)).
+(`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (plus the goal volume, 0x447830 = World::triggerContact on the point).
 
 The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
 

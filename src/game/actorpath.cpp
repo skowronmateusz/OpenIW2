@@ -381,7 +381,7 @@ void World::buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3&
 // lowered); the node cache is reset first. Without danger planes this is 0x5424d0 (plain 0x545840); with them
 // (0x54b670) the start comes from the uncached plane query 0x5150d0, the goal query keeps the planes (0x542810) and
 // 0x5428a0 requires both end nodes to be on the actor's side of every plane (0x542710) before the plane-limited
-// search 0x545ca0. TODO(spec): the planes only appear through the AI events (0x535770 → 0x54b3b0), not implemented.
+// search 0x545ca0. The planes come from the AI events (0x535770 / 0x535860 → 0x54b3b0, actorevents.cpp).
 bool World::pathToPoint(Entity& e, const Vec3& target) {
     clearActorPath(e);
     const std::vector<PathPlane> planes = dangerPlanesOf(e);

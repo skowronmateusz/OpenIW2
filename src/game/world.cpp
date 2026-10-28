@@ -531,6 +531,7 @@ void World::thinkActors() {
         actorThink(e);
         if (!e.ai.corpse) actorFacing(e);
         if (!e.ai.corpse) actorMoveNoise(e);
+        if (!e.ai.corpse) blockFacingNodes(e);
     }
     // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
     if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
@@ -1068,20 +1069,22 @@ void World::registerBuiltins() {
         return Value(std::string("world"));
     });
     // AI goals are stored for the movement code; the actor notifies "goal" when it arrives (not implemented yet).
-    vm_.registerBuiltin("setgoalnode", [](CallContext& c) {
+    vm_.registerBuiltin("setgoalnode", [this](CallContext& c) {
         if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal
         auto o = c.self.asObject();
         if (c.arg(0).isObject()) {
             o->set("$goalpos", c.arg(0).asObject()->get("origin"));
             o->set("$goalent", Value()); // 0x540880 clears the goal entity (+0x77c)
+            if (Entity* self = entityOf(c.self); self && !goalVolumeHolds(*self, c.arg(0).asObject()->get("origin").isVector() ? c.arg(0).asObject()->get("origin").asVector() : Vec3{0, 0, 0})) o->set("$goalvolume", Value()); // 0x5408fe..: the volume must contain the new goal
             o->set("$goalnodeangles", c.arg(0).asObject()->get("angles")); // only read by the IW2_DEV_SNAP_GOAL_YAW bypass
         }
         return Value();
     });
-    vm_.registerBuiltin("setgoalpos", [](CallContext& c) {
+    vm_.registerBuiltin("setgoalpos", [this](CallContext& c) {
         if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); // IW2_TRAVERSE_SCENE keeps its own goal
         c.self.asObject()->set("$goalpos", c.arg(0));
         c.self.asObject()->set("$goalent", Value());
+        if (Entity* self = entityOf(c.self); self && c.arg(0).isVector() && !goalVolumeHolds(*self, c.arg(0).asVector())) c.self.asObject()->set("$goalvolume", Value()); // 0x5409bd
         c.self.asObject()->set("$goalnodeangles", Value());
         return Value();
     });
@@ -1090,9 +1093,23 @@ void World::registerBuiltins() {
         if (log) print("setgoalentity at " + std::to_string(timeMs_) + " ms from " + c.vm.describeThread(c.thread.id));
         if (c.self.asObject()->get("$goalfrozen").truthy()) return Value();
         c.self.asObject()->set("$goalent", c.arg(0));
+        c.self.asObject()->set("$goalvolume", Value()); // 0x540a5f
         return Value();
     });
-    vm_.registerBuiltin("setgoalvolume", [](CallContext& c) { if (c.self.asObject()->get("$goalfrozen").truthy()) return Value(); c.self.asObject()->set("$goalvolume", c.arg(0)); return Value(); });
+    // 0x540aa0: errors "cannot set goal volume when a goal entity is set" and "... which does not contain goal position".
+    vm_.registerBuiltin("setgoalvolume", [this](CallContext& c) {
+        if (c.self.asObject()->get("$goalfrozen").truthy()) return Value();
+        Entity* self = entityOf(c.self);
+        Entity* vol = entityOf(c.arg(0));
+        if (self && vol) {
+            if (self->obj->get("$goalent").isObject()) throw std::runtime_error("cannot set goal volume when a goal entity is set");
+            const Value gp = self->obj->get("$goalpos");
+            if (!triggerContact(*vol, gp.isVector() ? gp.asVector() : Vec3{0, 0, 0}, gp.isVector() ? gp.asVector() : Vec3{0, 0, 0}))
+                throw std::runtime_error("cannot set goal volume which does not contain goal position");
+        }
+        c.self.asObject()->set("$goalvolume", c.arg(0));
+        return Value();
+    });
     vm_.registerBuiltin("spawn", [this](CallContext& c) {
         Entity& e = spawnEntity(c.arg(0).toString());
         if (c.arg(1).isDefined()) e.obj->set("origin", c.arg(1));

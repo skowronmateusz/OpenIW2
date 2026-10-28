@@ -164,7 +164,32 @@ void World::claimNode(Entity& e, int node) {
     n.ownerUntilMs = kNodeClaimed;
     e.claimedNode = node;
     e.obj->set("node", Value(n.obj));
-    // TODO(spec): 0x515390 (every 4950 ms, flagged 0x8000 nodes within 80 units that face it are blocked).
+}
+
+// 0x515390 (every frame from 0x4ff1d9 / 0x4e8276, due every 4950 ms = 0x1356): with a claimed node flagged 0x8000 the
+// nodes within 80 x 80 (0x516950, mask 0x41ffc, at most 64) that are not claimed (+0x44 != 0x7fffffff), are flagged 0x8000
+// too, lie on the far side of it (dot(claimed - node, facing) <= -0.5 on the normalised xy offset) and look back at it
+// (dot(offset, own facing) > 0.5) are blocked for the actor's team (0x519300). TODO(spec): the facing is taken as
+// (cos, sin) of the node yaw (+0x20), the vector the exe reads at node +0x24 / +0x28.
+void World::blockFacingNodes(Entity& e) {
+    if (timeMs_ - e.ai.nodeBlockMs < 0) return;
+    e.ai.nodeBlockMs = timeMs_ + 4950;
+    if (e.claimedNode < 0 || !(nodes_[size_t(e.claimedNode)].spawnflags & 0x8000)) return;
+    const PathNode& cn = nodes_[size_t(e.claimedNode)];
+    const Vec3 co = vecField(cn.obj, "origin");
+    const float cyaw = vecField(cn.obj, "angles")[1] * float(M_PI) / 180.0f;
+    const float cfx = std::cos(cyaw), cfy = std::sin(cyaw);
+    for (const auto& [i, d2] : nodesInRange(co, 80.0f, 80.0f, 64, 0x41ffc)) {
+        const PathNode& n = nodes_[size_t(i)];
+        if (!(n.spawnflags & 0x8000) || n.ownerUntilMs == kNodeClaimed) continue;
+        const Vec3 no = vecField(n.obj, "origin");
+        float dx = co[0] - no[0], dy = co[1] - no[1];
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len > 0.0f) dx /= len, dy /= len; // 0x421160
+        if (dx * cfx + dy * cfy > -0.5f) continue;
+        const float nyaw = vecField(n.obj, "angles")[1] * float(M_PI) / 180.0f;
+        if (dx * std::cos(nyaw) + dy * std::sin(nyaw) > 0.5f) blockNodeForTeam(i, e);
+    }
 }
 
 // 0x4fe670: give up the claimed node: drop a path that ends at it and block it for the team (0x519300).
@@ -345,7 +370,7 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
     for (auto [node, score] : list) {
         if (node == ignore || !nodeUsable(e, node) || !nodeFacesEnemy(e, node)) continue;
         if (coverScriptAt(e, node, true, script) && script.empty()) continue;
-        // TODO(spec): nodes outside the goal volume (+0x75c, 0x447830) are dropped too.
+        if (!goalVolumeHolds(e, vecField(nodes_[size_t(node)].obj, "origin"))) continue; // 0x54c310: outside the goal volume
         if (node == prefer) {
             score = 16.0f;
         } else {
@@ -409,18 +434,32 @@ bool World::pathToNode(Entity& e, int node) {
     return true;
 }
 
-// 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it.
-// TODO(spec): the goal offset of 0x502960 (+0x73c) and its node-based target choice are not read.
+// 0x502cd0 / 0x502960: a path to the goal unless the actor (or its path end) is already inside it. A truncated path
+// (flag 4) whose planned count (+0x382) is at least four times its point count is dropped even when it ends inside
+// (0x502984..0x5029a1). The offset goal of 0x502960 (0x502a2d..0x502c4d: a node query around the goal shifted
+// sideways by actor +0x73c, planners 0x542340 / 0x5428a0 / 0x542550) only runs when min(|+0x73c|, goal radius −
+// 0x592114) > 0; the exe never writes +0x73c but 0 (4fc7ab, grep of every `0x73c(%reg)` store), so it is dead in the
+// single-player game and the plain path to the goal (0x503650) always runs. The wrapper 0x502cd0 clears the blocker
+// fields (+0x728 / +0x72c) while there is no path afterwards, and a failed plan waits 500 ms (0x502c70).
 bool World::pathToGoal(Entity& e) {
+    bool done = false;
     if (!actorHasPath(e)) {
-        if (actorInGoal(e, 0.0f)) return true;
+        done = actorInGoal(e, 0.0f);
     } else {
-        if (inActorGoal(e, pathEnd(e))) return true;
-        clearActorPath(e);
+        const bool dropped = (e.path.flags & 4) && 4 * e.path.count <= e.path.planned;
+        done = !dropped && inActorGoal(e, pathEnd(e));
+        if (!done) clearActorPath(e);
     }
-    Vec3 gp{};
-    float gr = 0, gh = 0;
-    const bool ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+    bool ok = done;
+    if (!done) {
+        Vec3 gp{};
+        float gr = 0, gh = 0;
+        ok = actorGoal(e, gp, gr, gh) && pathToPoint(e, gp);
+    }
+    if (!actorHasPath(e)) {
+        e.ai.blocker = nullptr;
+        e.ai.blockerEnt = nullptr;
+    }
     if (!ok) {
         clearActorPath(e);
         e.ai.planTimeMs = timeMs_ + 500;
@@ -634,8 +673,11 @@ void World::registerCoverBuiltins() {
         return Value(0);
     });
     // findreacquiredirectpath (0x549280) / findreacquireproximatepath (0x549340): a path towards the enemy, cut
-    // to the goal (0x5047c0); without an enemy in the exposed state the path is cleared.
-    // TODO(spec): 0x503a50 / 0x503be0 (direct and proximate planners) and the trim fields +0x70c / +0x710.
+    // to the goal (0x5047c0) unless the enemy's origin is itself inside the goal (0x5492c5: 0x5026d0 on the enemy
+    // origin); without an enemy in the exposed state the path is cleared. A path left behind sets the trim state
+    // +0x710 = -2, +0x70c = count + 1 (0x5492e7..0x5492f9). The proximate variant 0x549340 uses 0x503be0 (distance
+    // capped search through 0x542fb0 / 0x546980). TODO(spec): 0x503be0 / 0x546980 and the consumer of the trim state
+    // (trimpathtoattack 0x543580 via 0x54c7d0 / 0x5433e0 / 0x503e10).
     auto reacquirePath = [=, this](CallContext& c) {
         Entity& e = actor(c);
         Entity* enemy = entityOf(e.obj->get("enemy"));
@@ -643,9 +685,10 @@ void World::registerCoverBuiltins() {
             clearActorPath(e);
             return Value();
         }
-        pathToPoint(e, vecField(enemy->obj, "origin"));
+        const Vec3 eo = vecField(enemy->obj, "origin");
+        pathToPoint(e, eo);
         // 0x5434e0: drop the path when its start is outside the goal, else cut it after the last point in the goal.
-        if (actorHasPath(e)) {
+        if (actorHasPath(e) && !inActorGoal(e, eo)) {
             ActorPath& p = e.path;
             if (!inActorGoal(e, p.pts[size_t(p.count - 1)].pos)) {
                 clearActorPath(e);
@@ -654,6 +697,10 @@ void World::registerCoverBuiltins() {
                 while (keep >= 0 && inActorGoal(e, p.pts[size_t(keep)].pos)) --keep;
                 dropPathGoalPoints(p, keep + 1);
             }
+        }
+        if (actorHasPath(e)) {
+            e.ai.trimState = -2;
+            e.ai.trimCount = e.path.count + 1;
         }
         return Value();
     };
