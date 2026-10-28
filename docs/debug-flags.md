@@ -83,7 +83,7 @@ described in the code that reads them.
 - Env `IW2_SCENE_COVER=1` (with `IW2_COMBAT_SCENE`): the scene is built around a cover node (victim beside it with the goal volume set, shooter in front) and logs the distance to the node. Env `IW2_COVER_LOG=1`: stderr `[cover ms] #n ...` lines for findcovernode / findbestcovernode / usecovernode, and the scene log adds the victim's animscript thread wait site and animation nodes. Debug only.
 - Env `IW2_TRAVERSE_SCENE=<s>[,<pair>]` (iw2game): at sim time `<s>` takes the first living non-scripted actor, places it at the outer link node before the pair on the shortest route, freezes its goal (`$goalfrozen`, setgoal* ignored) on the far side, neutral team, and prints `[trav]` setup and `[trav t]` state/path/traversal lines every `IW2_TRAVERSE_EVERY` frames (default 10). Debug only.
 
-- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` for one actor (default every 20 frames). Debug only.
+- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) for one actor (default every 20 frames). Debug only.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 

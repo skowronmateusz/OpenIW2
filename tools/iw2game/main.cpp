@@ -977,7 +977,7 @@ int main(int argc, char** argv) {
                                     for (const auto& l : world.paths().links(size_t(ep->path.pts[size_t(i)].node))) std::printf(" %d(%.0f)", int(l.target), l.distance);
                                     std::printf("\n");
                                 }
-                            if (ep->anim) { const auto d = ep->anim->delta(ep->ai.animDeltaGoalWeights); std::printf("    animdelta %.2f %.2f %.2f groundEnt %d look %.2f %.2f dist %.1f budget %.0f\n", d.trans[0], d.trans[1], d.trans[2], int(ep->ai.groundEnt), ep->path.lookDir[0], ep->path.lookDir[1], ep->path.lookDist, ep->path.budget); }
+                            if (ep->anim) { const auto d = ep->anim->delta(ep->ai.animDeltaGoalWeights); std::printf("    animdelta %.2f %.2f %.2f groundEnt %d look %.2f %.2f dist %.1f budget %.0f plan %lld lookIdx %d\n", d.trans[0], d.trans[1], d.trans[2], int(ep->ai.groundEnt), ep->path.lookDir[0], ep->path.lookDir[1], ep->path.lookDist, ep->path.budget, (long long)ep->path.planMs, ep->path.lookIndex); }
                             for (int i = 0; i < ep->path.count; ++i) std::printf("    pt %d node %d (%.0f %.0f %.0f)\n", i, ep->path.pts[size_t(i)].node, ep->path.pts[size_t(i)].pos[0], ep->path.pts[size_t(i)].pos[1], ep->path.pts[size_t(i)].pos[2]);
                         }
             }
