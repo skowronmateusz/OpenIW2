@@ -372,8 +372,17 @@ void World::actorThink(Entity& e) {
 
 // The pain callback (0x4ff3b0) after damage that leaves the actor alive: the attacker counts as having attacked
 // (+0x1780 of its sentient entry), then the pain state is pushed; when it is, the current animscript is killed.
-// TODO(spec): the states' damaged handlers (0x5498c0 node release, turret 0x54af30) are not modelled.
+// The current state's damaged slot runs first (0x4ff4c7). The common one, 0x5498c0, ignores an attacker whose sentient
+// has the actor's own team; otherwise a claimed node within 30 units (xy) and 80 units (z) of the actor is given up
+// (0x502660 limits 900 / 6400, then 0x4fe670). TODO(spec): the turret state's own handler 0x54af30.
+static Vec3 vecField(const ObjectPtr& o, const char* key);
 void World::actorPain(Entity& e, Entity* attacker) {
+    if (e.claimedNode >= 0) {
+        const bool friendly = attacker && isSentient(*attacker) && attacker->obj->get("team").toString() == e.obj->get("team").toString();
+        const Vec3 n = vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), o = vecField(e.obj, "origin");
+        const float dx = n[0] - o[0], dy = n[1] - o[1], dz = o[2] - n[2];
+        if (!friendly && dz * dz <= 6400.0f && dx * dx + dy * dy <= 900.0f) giveUpClaimedNode(e);
+    }
     if (attacker && isSentient(*attacker)) e.sentientInfo[attacker->obj.get()].lastAttackedMs = timeMs_;
     if (aiPushState(e, AiPain)) killActorAnimScript(e);
 }
