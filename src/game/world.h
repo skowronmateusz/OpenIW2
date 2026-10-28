@@ -141,7 +141,8 @@ struct ActorAi {
     int sideBits = 0;                         // gentity contents bits 8 / 0x10 (+0x128): the side the last yield step slid to; 0x10 is in the actor clip masks
     int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
-    bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, TODO(spec))
+    float goalSide = 0;                       // +0x73c sideways goal offset (0x502960); only ever 0 in the exe (4fc7ab)
+    bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, World::stopForEnemy)
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
     std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
     bool corpse = false;                      // turned into a corpse (0x4fdba0)
@@ -1015,6 +1016,10 @@ private:
     void disconnectEntityPaths(Entity& e);
     bool pathToNode(Entity& e, int node);
     bool pathToGoal(Entity& e);
+    bool pathToSideGoal(Entity& e, float side); // 0x502a5b..0x502c58 (actorpath.cpp)
+    bool stopForEnemy(Entity& e, bool fighting, int node, bool hadPath);           // 0x503200
+    bool enemyNearPathAhead(Entity& e, const Vec3& ep, const Vec3& look, bool hadPath); // 0x502e80
+    bool claimedNodeSeesEnemyNode(Entity& e, Entity& enemy);                        // 0x502fc0
     bool aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out);
     void registerCoverBuiltins();
     void registerProneBuiltins(); // src/game/proneworld.cpp

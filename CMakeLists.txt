@@ -188,6 +188,10 @@ add_executable(test_friendlychain tests/test_friendlychain.cpp)
 target_link_libraries(test_friendlychain PRIVATE iw2_game)
 add_test(NAME friendlychain COMMAND test_friendlychain)
 
+add_executable(test_nodesearch tests/test_nodesearch.cpp)
+target_link_libraries(test_nodesearch PRIVATE iw2_game)
+add_test(NAME nodesearch COMMAND test_nodesearch)
+
 add_executable(test_itempickup tests/test_itempickup.cpp)
 target_link_libraries(test_itempickup PRIVATE iw2_game)
 add_test(NAME itempickup COMMAND test_itempickup)
