@@ -28,6 +28,69 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   not listed. The errors "dospawn can only be called on actor spawners" and "Spawner at (%g %g %g)
   is in solid" exist in the executable.
 
+## Spawn checks (observed; src/game/spawnchecks.cpp, world.cpp spawnActor, tests/test_spawnchecks.cpp)
+
+- Builtins 0x4edff0 (dospawn) / 0x4ee120 (stalingradspawn): a non-spawner (eType != 0xa) is an error; a spawner whose +0x158
+  is >= level.time returns undefined (one spawn per spawner per level time; +0x158 = level.time after a success, 0x4ee0f2);
+  with exactly one parameter (0xa0189c == 1) its const string (0x46e760) is passed on as the new actor's targetname.
+- Core 0x532200 (spawner, targetname, force): ai_disableSpawn prints "Attempted spawn prevented by ai_disableSpawn." (not
+  ported); count +0x148 == 0 returns undefined. Without force: the telefrag test 0x4e8500, then, only once the level is
+  loaded (0x1c61048 == 0), the sight test: the player (G_Find classname "player") eye 0x514f70 against 0x532100(eye,
+  spawner origin, player, spawner) -> "^3couldn't spawn from %s because player can see spawnpoint" (0x58f850).
+  0x1c61048 is set by G_InitGame (0x4d99cb: 1 new level, 2 savegame load) and cleared by 0x4da540 (called at 0x448aab,
+  after the entity spawn, the level main thread and the first G_RunFrame). The spawner is copied (0x4f95b0), the copy's
+  targetname set to the argument (0x53233c, none without one), its spawnflags bit 0 cleared (0x53234e), then 0x4fc640.
+- Telefrag 0x4e8500: area query 0x419ea0 (box origin + (-15,-15,0)..(15,15,70) from 0x5a5bdc, up to 0x800 entities, contents
+  mask 0x200c000) against each linked entity's absolute box, which SV_LinkEntity widens by 1 on every side (0x44b555..0x44b5c8,
+  0x591e20), touching included. Blocks when one is a client with ps pm_type < 4 (client +0xfc, +4) or an actor (+0x100) with
+  health (+0x13c) > 0. The player's r.mins / r.maxs are the pmove box of the last ClientThink (0x4e7d68..0x4e7da2, stance
+  height 70 / 50 / 30); spawn sets (-15,-15,0)..(15,15,70) (0x4e9100). The port uses that height for the player clip, the
+  trigger touch box and this test.
+- Sight probe 0x532100 (eye, pos, pass1, pass2): false when |eye - pos|^2 * 0.685584 (0x592298) > the fog sight limit
+  0x1c61038; else true when any of 11 points pos + (x * 30 - 15, y * 30 - 15, z * 72) (table 0x5701e8: (.5,.5,.8),
+  (.5,.5,.5), (.5,.5,.2), then the eight box corners) is not sight-blocked from the eye (0x44c3c0, point, mask 0x801).
+- Actor spawn 0x4fc640: when no actor slot is free (0x4fc8d0, 32 slots) and the entity has spawnflags 2, 0x4fcaf0 frees one
+  and the slot is allocated again (0x4fc687..0x4fc691); otherwise the entity is freed (0x4fc6a9), and dospawn prints
+  "^3couldn't spawn from %s because there are no free actors" (0x58f814).
+- Eviction 0x4fcaf0: while 0x1c61048 is set, Com_Error "too many actors in bsp file" (0x589e50). Else eye and view forward
+  of the player (ps viewangles +0xc4 / +0xc8, AngleVectors) and up to four passes over the actors in use (0x4fe2c0 /
+  0x4fe310, all teams), skipping spawnflags 4 (undeletable) and the entity G_RunFrame is running (0x1c61064); the first pass
+  with a candidate wins: (1) farthest the player cannot see (0x532100), (2) farthest behind (forward . delta < 0),
+  (3) farthest with (forward . delta)^2 < 0.5 * distance^2 (0x591e10), (4) farthest (>=). None: "Tried to force spawning
+  of an AI when all AI slots are used by undeletable AI" (0x589e00). The victim is notified "death" (const 0x1c7f05c,
+  string 0x587ea4) and freed (0x4d7c30), like the script delete.
+- A real spawner (spawnflags 1) is never freed by a spawn (only the positive count is decremented, 0x5325ca..0x5325d8); a
+  map-start placed actor is the entity itself, which the port replaces by a new entity.
+- TODO(spec): the eviction iterates actor slots; the port iterates entities (differs only for equal distances). The
+  ai_disableSpawn dvar is not ported.
+
+## Server frame order (observed; G_RunFrame 0x4da970, src/game/world.cpp World::frame)
+
+G_RunFrame is a resumable state machine (stage 0x1c6105c, jump table 0x4db27c, optional rdtsc time budget); the frame
+start 0x44a6a0 adds 50 ms to level.time and resets the stage. Stages:
+1. 0x4da99f: 0x4e8160 / 0x4e8180 on the player (0x4e8180 runs G_TouchTriggers 0x4e7320 for a player with pm_type < 4 and
+   client +0x8628 / +0x862c clear), the level change 0x4d9f90, the friendly chain error print.
+2. 0x4daa14: 0x447ec0 for every entity from 1; the queued touch records (0x1c610b4, count 0x1c628b4, filled by 0x528cb0)
+   are taken over (0x1c61cb4 / 0x1c628b8).
+3. 0x4dab00: each record with valid spawn ids sends "trigger" (const 0x1c7f0e4) with the other entity; a trigger already
+   notified in this pass keeps its record for the next pass; after each pass the woken threads run (0x46d560).
+   0x528cb0 notifies at once when the queue is full (256).
+4. 0x4dac9c: the animation step of every entity from 1, running the notetrack-woken threads after each entity.
+5. 0x4daefc: woken threads, then the script frame 0x467150; frame counter 0x9bef20 + 1.
+6. 0x4daf94: bad places 0x523a60.
+7. 0x4dafc6: the player's queued usercmds (0x409ed0 -> 0x4e7ee0 -> ClientThink 0x4e7bc0: pmove, r.mins/maxs, use), 0x5154b0,
+   and with ps flag 0x20000 G_RunEntity of the entity at client +0xf4.
+8. 0x4db048: G_RunEntity 0x4da7e0 (once per frame, +0x130 = frame number) of every entity in number order, its link parent
+   (+0x1c8) first; 0x1c61064 holds the running entity number (-1 outside). Dispatch 0x4da720: eType 3 G_RunMissile
+   0x526c30, eType 2 (or physics +0x110) G_RunItem 0x523040, eType 5 0x52ccb0, clients nothing, else the think 0x4da090.
+Then (0x4db11d) for each client in use 0x530cf0 and ClientEndFrame 0x4e7f90, then 0x4d9710, 0x517c30, 0x52b070, 0x4da2d0,
+0x4da0e0. The server frame end 0x44a900 finishes a budgeted G_RunFrame (0x44a870), processes the save queue (0x44a230) and
+builds the snapshot (0x4db2b0).
+Port: triggers (stages 1 + 3) and their threads, the animation step, script frame, bad places, player use, then the
+stage-8 kinds as groups (vehicles, turrets, missiles in entity order, items, script models, actors), link (ClientEndFrame),
+death screen, saves. TODO(spec): stage 8 per entity in number order for all kinds; 0x447ec0, 0x4e8160, 0x5154b0 and the
+item touch's stage; movers (entity thinks in the exe) still run at the frame start here.
+
 ## Perception (observed)
 
 Sentients (player and actors; at most 33, 0x44 bytes from 0x1c60518, enumerated by team mask 0x515230 / 0x515270) have
