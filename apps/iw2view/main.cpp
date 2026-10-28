@@ -3069,6 +3069,37 @@ int main(int argc, char** argv) {
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
+        // Tag orientations of the drawn (interpolated) entity poses of the current rendered frame. The effect attachment
+        // 0x48abb0 reads the cgame entity (0xf7eb80 + n · 0x184: origin +0x148 and angles +0x154 of the frame's interpolated
+        // pose, 0x4a25c0) and the client skeleton (0x4acea0), not the server state; gatherItems fills this for the tags that
+        // bolted world effects use, and their bolts prefer it over World::entityTagOrientation (server pose).
+        struct DrawnTag { int64_t stamp = -1; game::FxTag tag; };
+        std::map<std::pair<int, std::string>, DrawnTag> drawnTags;
+        std::map<int, std::set<std::string>> boltTags; // tags of bolted world effects per entity (filled when played)
+        int64_t renderStamp = 0;
+        auto recordDrawnTags = [&](int number, const BoneMap& bones, const Vec3& ov, const Vec3& av) {
+            const auto bt = boltTags.find(number);
+            if (bt == boltTags.end()) return;
+            const Mat4 m = entityTransform(ov, av);
+            for (const std::string& tag : bt->second) {
+                const auto it = bones.find(lowerName(tag));
+                if (it == bones.end()) continue;
+                auto toWorld = [&](const std::array<float, 3>& v, float w) {
+                    return game::FVec{m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * w, m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * w,
+                                      m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * w};
+                };
+                DrawnTag d;
+                d.stamp = renderStamp;
+                d.tag.origin = toWorld(it->second.first, 1.0f);
+                d.tag.hasAxes = true;
+                for (int k = 0; k < 3; ++k) {
+                    std::array<float, 3> u{0, 0, 0};
+                    u[size_t(k)] = 1;
+                    d.tag.axes[size_t(k)] = toWorld(assets::rotate(it->second.second, u), 0.0f);
+                }
+                drawnTags[{number, tag}] = d;
+            }
+        };
         // World effect / tracer events (server events) are played when they are taken: per rendered frame in play, and per
         // simulated server frame in --shot mode, so a shot shows each effect at its own age rather than every queued event of
         // the whole simulation at age 0 (cgame consumes events per frame, effect time = cg.time, 0x486b30).
@@ -3080,7 +3111,12 @@ int main(int argc, char** argv) {
                     // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
                     game::World* wp = world.get();
                     // 0x48abb0: the tag orientation (origin + axes), refreshed once per frame stamp (cached per world time here).
-                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
+                    boltTags[ev.entity].insert(ev.tag);
+                    auto bolt = std::make_shared<game::FxBolt>([wp, &drawnTags, &renderStamp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
+                        if (const auto dt = drawnTags.find({n, tag}); dt != drawnTags.end() && dt->second.stamp == renderStamp) {
+                            out = dt->second.tag; // the drawn pose of this rendered frame
+                            return true;
+                        }
                         if (wp->timeMs() != lastT) {
                             lastT = wp->timeMs();
                             game::Vec3 p{};
@@ -3105,13 +3141,13 @@ int main(int argc, char** argv) {
                     const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
                     r = {r[0] / rl, r[1] / rl, r[2] / rl};
                     const game::FVec up{r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
-                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
+                    fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, fxTime() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
                     continue;
                 }
-                fxSystem.play(efx(ev.path), ev.origin, ev.forward, world->timeMs());
+                fxSystem.play(efx(ev.path), ev.origin, ev.forward, fxTime());
             }
             for (const auto& te : world->takeTracerEvents())
-                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, world->timeMs(), 0);
+                fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, fxTime(), 0);
         };
         auto gatherItems = [&](const Camera& viewCam) {
             std::vector<DrawItem> items;
@@ -3142,84 +3178,7 @@ int main(int argc, char** argv) {
                 return true;
             };
             Uploader up(dev, false);
-            playWorldFx();
-            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
-            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
-            for (const auto& d : fxSystem.takeDecals(world->timeMs()))
-                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
-            if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
-                DrawItem it;
-                it.model = mm;
-                it.transform = kIdentity;
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-                scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
-            }
-            // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
-            // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
-            const int64_t fxNow = fxTime();
-            const auto fxSprites = fxSystem.sprites(fxNow);
-            if (std::getenv("IW2_FX_DEBUG"))
-                for (size_t i = 0; i < fxSprites.size(); i += std::max<size_t>(1, fxSprites.size() / 12))
-                    std::cerr << "fx sprite " << i << "/" << fxSprites.size() << " " << fxSprites[i].shader << " pos " << fxSprites[i].position[0] << ","
-                              << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
-                              << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
-            world->setFxSightBlockers(fxSystem.sightBlockers());
-            // Emitter models (shell casings, 0x48d7d0): static xmodels at the particle position and angles.
-            for (const auto& fm : fxSystem.models()) {
-                const GpuModel* gm = sceneModel(scene, dev, vfs, fm.model);
-                if (!gm) continue;
-                DrawItem it;
-                it.model = gm;
-                it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
-                if (fm.hasAxes) { // relative Emitter: world axis rows from the tag
-                    const float k = fm.scale;
-                    it.transform = {fm.axes[0][0] * k, fm.axes[0][1] * k, fm.axes[0][2] * k, 0, fm.axes[1][0] * k, fm.axes[1][1] * k, fm.axes[1][2] * k, 0,
-                                    fm.axes[2][0] * k, fm.axes[2][1] * k, fm.axes[2][2] * k, 0, fm.pos[0], fm.pos[1], fm.pos[2], 1};
-                }
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-            }
-            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
-                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
-                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
-                scene.outdoor.build([&](float x, float y, float top, float bottom) {
-                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
-                    return top + (bottom - top) * tr.fraction;
-                });
-                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
-                    if (FILE* f = std::fopen(dump, "wb")) {
-                        std::fprintf(f, "P5 512 512 255\n");
-                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
-                        std::fclose(f);
-                    }
-                }
-                if (std::getenv("IW2_FX_DEBUG"))
-                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
-                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
-            }
-            if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
-                DrawItem it;
-                it.model = cm;
-                it.transform = kIdentity;
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-            }
-            if (std::getenv("IW2_FX_DEBUG"))
-                for (const auto& c : fxSystem.clouds())
-                    std::cerr << "fx cloud " << c.shader << " pos " << c.origin[0] << "," << c.origin[1] << "," << c.origin[2] << " size " << c.size
-                              << " w " << c.width << " h " << c.height << " rgba " << int(c.rgba[0]) << "," << int(c.rgba[3]) << "\n";
-            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
-                DrawItem it;
-                it.model = fxm;
-                it.transform = kIdentity;
-                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
-                it.sunVisibility = 0;
-                items.push_back(it);
-            }
+            ++renderStamp;
             for (const auto& e : world->entities()) {
                 if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");
@@ -3367,6 +3326,7 @@ int main(int argc, char** argv) {
                         ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
                         if (ai.model) items.push_back(ai);
                     }
+                    recordDrawnTags(e->number, bones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                     continue;
                 }
                 if (e->turret) {
@@ -3383,16 +3343,100 @@ int main(int argc, char** argv) {
                         tp = playerTurretPose->first;
                         ty = playerTurretPose->second;
                     }
+                    const assets::XPose tpose = assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty));
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm,
-                                         assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty)));
+                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm, tpose);
                     if (it.model) items.push_back(it);
+                    if (boltTags.count(e->number)) {
+                        BoneMap tbones;
+                        addBones(tbones, tm->parts, tpose);
+                        recordDrawnTags(e->number, tbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                    }
                     continue;
                 }
                 const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
                 if (!gm) continue;
                 DrawItem it = base;
                 it.model = gm;
+                items.push_back(it);
+            }
+            // Effects after the entities: bolted world effects follow this frame's drawn tags (recordDrawnTags).
+            playWorldFx();
+            fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
+            fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
+            for (const auto& d : fxSystem.takeDecals(world->timeMs()))
+                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
+            if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
+                DrawItem it;
+                it.model = mm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+                scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
+            }
+            // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
+            // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
+            const int64_t fxNow = fxTime();
+            const auto fxSprites = fxSystem.sprites(fxNow);
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (size_t i = 0; i < fxSprites.size(); i += std::max<size_t>(1, fxSprites.size() / 12))
+                    std::cerr << "fx sprite " << i << "/" << fxSprites.size() << " " << fxSprites[i].shader << " pos " << fxSprites[i].position[0] << ","
+                              << fxSprites[i].position[1] << "," << fxSprites[i].position[2] << " size " << fxSprites[i].size << " rgba "
+                              << fxSprites[i].rgba[0] << "," << fxSprites[i].rgba[1] << "," << fxSprites[i].rgba[2] << "," << fxSprites[i].rgba[3] << "\n";
+            world->setFxSightBlockers(fxSystem.sightBlockers());
+            // Emitter models (shell casings, 0x48d7d0): static xmodels at the particle position and angles.
+            for (const auto& fm : fxSystem.models()) {
+                const GpuModel* gm = sceneModel(scene, dev, vfs, fm.model);
+                if (!gm) continue;
+                DrawItem it;
+                it.model = gm;
+                it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
+                if (fm.hasAxes) { // relative Emitter: world axis rows from the tag
+                    const float k = fm.scale;
+                    it.transform = {fm.axes[0][0] * k, fm.axes[0][1] * k, fm.axes[0][2] * k, 0, fm.axes[1][0] * k, fm.axes[1][1] * k, fm.axes[1][2] * k, 0,
+                                    fm.axes[2][0] * k, fm.axes[2][1] * k, fm.axes[2][2] * k, 0, fm.pos[0], fm.pos[1], fm.pos[2], 1};
+                }
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
+            if (!fxSystem.clouds().empty() && world && !scene.outdoor.valid()) {
+                // The renderer builds "$outdoor" when the world loads (0x10020c80); here on the first cloud (it needs the
+                // collision world). 0x100207f0: CM_BoxTrace with model 0, a point box, contents 0x2001.
+                scene.outdoor.build([&](float x, float y, float top, float bottom) {
+                    const game::TraceResult tr = world->collision().traceWorld({x, y, top}, {x, y, bottom}, {0, 0, 0}, {0, 0, 0}, 0x2001);
+                    return top + (bottom - top) * tr.fraction;
+                });
+                if (const char* dump = std::getenv("IW2_OUTDOOR_DUMP")) { // 512 x 512 PGM of the outdoor image (row 0 = mins.y)
+                    if (FILE* f = std::fopen(dump, "wb")) {
+                        std::fprintf(f, "P5 512 512 255\n");
+                        std::fwrite(scene.outdoor.image().data(), 1, scene.outdoor.image().size(), f);
+                        std::fclose(f);
+                    }
+                }
+                if (std::getenv("IW2_FX_DEBUG"))
+                    std::cerr << "outdoor map bounds " << scene.outdoor.mins()[0] << "," << scene.outdoor.mins()[1] << "," << scene.outdoor.mins()[2] << " .. "
+                              << scene.outdoor.maxs()[0] << "," << scene.outdoor.maxs()[1] << "," << scene.outdoor.maxs()[2] << "\n";
+            }
+            if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
+                DrawItem it;
+                it.model = cm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
+                items.push_back(it);
+            }
+            if (std::getenv("IW2_FX_DEBUG"))
+                for (const auto& c : fxSystem.clouds())
+                    std::cerr << "fx cloud " << c.shader << " pos " << c.origin[0] << "," << c.origin[1] << "," << c.origin[2] << " size " << c.size
+                              << " w " << c.width << " h " << c.height << " rgba " << int(c.rgba[0]) << "," << int(c.rgba[3]) << "\n";
+            if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
+                DrawItem it;
+                it.model = fxm;
+                it.transform = kIdentity;
+                it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
+                it.sunVisibility = 0;
                 items.push_back(it);
             }
             up.flush();
