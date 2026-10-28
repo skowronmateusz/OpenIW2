@@ -841,6 +841,7 @@ void World::loadState(StateReader& r) {
     for (int n : disconnected)
         if (!pathRecs_.count(n))
             if (Entity* e = entityByNumber(n)) disconnectEntityPaths(*e);
+    levelInitializing_ = false; // 0x4da540 clears 0x1c61048 (2 during a savegame load) once the level is loaded
 }
 
 std::string World::stateDigest() const {

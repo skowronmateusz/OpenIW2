@@ -3,6 +3,7 @@
 // explosion events EV_GRENADE_EXPLODE / EV_ROCKET_EXPLODE / EV_CUSTOM_EXPLODE (cgame 0x4ba8d0 cases 0xbf…0xc3).
 #include "game/world.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -126,10 +127,9 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
 // G_RunMissile (0x526c30) for a linear missile: a point trace from the origin to the trajectory's position now
 // (clip 0x280e891, the parent passes); the sky (surface flag 0x10) frees it, anything else is the impact. The think
 // at 30 s explodes it in the air. TODO(spec): whizby (0x5297b0), water (0x526b40), the 30 s think's event.
-void World::runRockets() {
-    for (size_t i = 0; i < rockets_.size();) {
-        Entity& e = *rockets_[i];
-        if (!e.obj->removed) {
+void World::runRocket(Entity& e) {
+    {
+        {
             RocketState& r = *e.rocket;
             const Value ov = e.obj->get("origin");
             const Vec3 from = ov.isVector() ? ov.asVector() : r.trBase;
@@ -150,9 +150,26 @@ void World::runRockets() {
                 e.obj->removed = true;
             }
         }
-        if (e.obj->removed) rockets_.erase(rockets_.begin() + long(i));
-        else ++i;
     }
+}
+
+// G_RunFrame's entity pass (0x4db050..0x4db0c8) runs G_RunEntity (0x4da7e0) for every entity in number order; a missile
+// (eType 3) goes to G_RunMissile (0x526c30), grenades and rockets alike, so they move interleaved by entity number.
+// TODO(spec): the other entity kinds of that pass (items, vehicles, script models, actors, ...) are still run as groups.
+void World::runMissiles() {
+    std::vector<Entity*> order(grenades_);
+    order.insert(order.end(), rockets_.begin(), rockets_.end());
+    std::stable_sort(order.begin(), order.end(), [](const Entity* a, const Entity* b) { return a->number < b->number; });
+    for (Entity* e : order) {
+        if (e->obj->removed) continue;
+        if (e->grenade) runGrenade(*e);
+        else if (e->rocket) runRocket(*e);
+    }
+    auto prune = [](std::vector<Entity*>& v) {
+        v.erase(std::remove_if(v.begin(), v.end(), [](const Entity* e) { return e->obj->removed; }), v.end());
+    };
+    prune(grenades_);
+    prune(rockets_);
 }
 
 } // namespace iw2::game

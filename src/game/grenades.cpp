@@ -339,15 +339,6 @@ void World::runGrenade(Entity& e) {
     if (timeMs_ >= g.explodeMs) explodeGrenade(e);
 }
 
-void World::runGrenades() {
-    for (size_t i = 0; i < grenades_.size();) {
-        Entity& e = *grenades_[i];
-        if (!e.obj->removed) runGrenade(e);
-        if (e.obj->removed) grenades_.erase(grenades_.begin() + long(i));
-        else ++i;
-    }
-}
-
 // Landing prediction (0x527270 via 0x51f7c0): from now in 50 ms steps until the fuse, the trajectory with the same
 // bounces (0x527080) on a copy; the rest point and its time, or the position when the fuse runs out. Hitting the sky
 // gives no prediction (the current origin is used).
