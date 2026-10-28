@@ -65,7 +65,7 @@ int main() {
         auto lineFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
             "Line\n{\n\tspawnFlags org2fromTrace\n\tlife 1000\n\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n"));
         iw2::game::FxSystem ls;
-        ls.trace = [](const iw2::game::FVec&, const iw2::game::FVec&, float& frac, iw2::game::FVec& n) { frac = 0.25f; n = {0, 0, 1}; return true; };
+        ls.trace = [](const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, float& frac, iw2::game::FVec& n) { frac = 0.25f; n = {0, 0, 1}; return true; };
         ls.viewValid = true;
         ls.viewOrigin = {0, 500, 0};
         ls.play(lineFx, {10, 0, 0}, {1, 0, 0}, 0);
@@ -182,6 +182,48 @@ int main() {
         const auto& bl = sr.sightBlockers();
         CHECK(bl.size() == 1);
         if (bl.size() == 1) CHECK(std::fabs(bl[0].origin[0]) < 1e-4f && std::fabs(bl[0].origin[1] - 10.0f) < 1e-4f);
+    }
+
+    // Emitter physics step 0x480bd0 / 0x480a70: impactFx plays at the hit point, impactKills ends the element; a slow hit on an
+    // upward normal comes to rest at the hit point; emitFx 0x483810 emits every `density` units along the ballistic path.
+    {
+        const char* vel = "\tvelocityX\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t\t1 1\n\t\t]\n\t\tscale 100\n\t}\n";
+        auto killFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            std::string("Emitter\n{\n\tflags usePhysics impactKills impactFx\n\tlife 1000\n\timpactfx\n\t[\n\t\t/fx/hit\n\t]\n") + vel + "}\n"));
+        std::vector<std::string> loads;
+        iw2::game::FxSystem ks;
+        ks.loader = [&](const std::string& n) { loads.push_back(n); return std::shared_ptr<const iw2::assets::EfxEffect>(); };
+        ks.trace = [](const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, float& frac,
+                      iw2::game::FVec& n) { frac = 0.5f; n = {-1, 0, 0}; return true; };
+        ks.play(killFx, {0, 0, 0}, {1, 0, 0}, 0);
+        ks.sprites(0);
+        ks.sprites(100);
+        CHECK(loads.size() == 1 && loads[0] == "fx/hit.efx");
+        ks.sprites(150);
+        CHECK(ks.count() == 0);
+
+        auto restFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Emitter\n{\n\tflags usePhysics\n\tlife 1000\n\tvelocityX\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1\n\t\t\t1 1\n\t\t]\n\t\tscale 3\n\t}\n}\n"));
+        iw2::game::FxSystem rs;
+        rs.trace = [](const iw2::game::FVec& a, const iw2::game::FVec&, const iw2::game::FVec&, const iw2::game::FVec&, float& frac,
+                      iw2::game::FVec& n) { if (a[0] > 0.1f) return false; frac = 0.5f; n = {0, 0, 1}; return true; };
+        rs.play(restFx, {0, 0, 0}, {1, 0, 0}, 0);
+        rs.sprites(0);
+        rs.sprites(100); // 3 · 0.1 = 0.3 units, hit at half: rest at 0.15 (speed² 9 < 16)
+        rs.sprites(300);
+        CHECK(rs.count() == 1);
+
+        auto emitFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            std::string("Emitter\n{\n\tflags emitFx\n\tlife 1000\n\tdensity 10\n\temitfx\n\t[\n\t\tfx/trail\n\t]\n") + vel + "}\n"));
+        std::vector<std::string> emits;
+        iw2::game::FxSystem es;
+        es.loader = [&](const std::string& n) { emits.push_back(n); return std::shared_ptr<const iw2::assets::EfxEffect>(); };
+        es.play(emitFx, {0, 0, 0}, {1, 0, 0}, 0);
+        es.sprites(0);
+        es.sprites(100); // 12 ms steps: |V · ka| = 100 · 0.108 >= 10 at k = 108, backed off to k = 100
+        CHECK(emits.size() == 1);
+        es.sprites(200);
+        CHECK(emits.size() == 2 && emits[1] == "fx/trail.efx");
     }
     if (failures) return 1;
     std::cout << "efx tests passed\n";

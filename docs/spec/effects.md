@@ -42,10 +42,59 @@ the piecewise-linear curve), used for velocities.
   ends the element) and 0x4404f0 maps the tag-space position back: origin + x·row0 + y·row1 + z·row2 (Particle 0x48037a,
   Line 0x482dd8 / 0x482de9, Cloud A 0x482b0f (B stays tag-space), Cylinder 0x4834a9 / 0x4834df, Tail 0x483202, Emitter
   0x483719, OrientedParticle 0x48269c + axes 0x440540).
+- Relative Emitter / Tail / Cloud (0x480bd0 with the orientation): the position +0x4 and the bounce offset +0xc4 are tag space;
+  velocity components without absoluteVel / absoluteAccel are used as they are (0x481004), absolute ones go through 0x440650
+  (0x480fd5 / 0x4811a5), gravity becomes g · (row0.z, row1.z, row2.z) (0x481220); the trace runs between the two points
+  through the bolt (0x4404f0, 0x480cd1) and the hit normal is turned into tag space for the bounce (0x440650, 0x480ab0).
+  Emitter: +0x7c = bolt(position) (0x483719) and the model axis rows go through 0x440540 (x·row0 + y·row1 + z·row2, 0x483742).
+  Tail (0x483010): +0x7c = bolt(position); B = bolt(position + normalize(prev − position) · length) (0x483202); with no
+  movement +0x9c keeps its last (world) value (0x483233).
 - OpenIW2: `FxTag` (origin, axes, hasAxes) from `World::entityTagOrientation` (bone rotation; vehicle tags give the position
-  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder. TODO(spec): relative Emitter / Tail
-  (0x480bd0 traces through the bolt, 0x440650 normals) and OrientedParticle axes (0x440540); the view-weapon flash / brass
-  bolts pass the position only.
+  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder, Emitter, Tail. TODO(spec):
+  OrientedParticle axes (0x440540); the view-weapon flash / brass bolts pass the position only.
+
+## Emitter physics (0x480bd0) and emitFx (0x483810)
+
+- Instance fields from the common init 0x48cb00: flags +0xa8 = def +0x90, spawn +0xb8 = now, end +0xbc = now + _ftol(life),
+  box +0x14 = def +0xa0 (`min`), +0x20 = def +0xac (`max`), then `deathfx` (+0x30, list def +0x78 / count +0x7c) and `impactfx`
+  (+0x2c, def +0x70 / +0x74) picked with (seed >> 17) · count >> 15, a generator draw only for a non-empty list. `min` / `max`
+  (0x487be0 / 0x487c30, "%f %f %f   %f %f %f", 3 or 6 numbers, the first three kept) also set usePhysics | useBBox (0x60).
+  0x48ce70 draws `bounce` (def +0x280) into +0x100 after gravity, wind and the spawn point.
+- Frame time (0x486b30, before the updates): frame ms +0xc = now − last clamped to 0..200 (0xc8), 0 while paused (0x617e98+8);
+  effect time +4 += frame ms. One element update per client frame.
+- Step 0x480bd0 (frame ms ≠ 0, not at rest 0x1000000): u = min((time − spawn) / life, 1) in seconds (time after this frame);
+  next = pos + velocity(u) · dt (0x481810: velocity + velocity2 + gravity + bounce offset +0xc4). Without usePhysics 0x20 the
+  position becomes next. Otherwise 0x486f70 → CM_BoxTrace 0x417640 (model 0, contents 1; box = +0x14 / +0x20 with useBBox
+  0x40, else the zero vector 0x56ce9c). Start- or all-solid (+0x22 / +0x23) or fraction 1 (0x591e20): position = next. On a hit:
+  impactFx 0x800 plays +0x2c at start + (end − start) · fraction (0x47f390) with row0 = the trace normal (0x485220 → 0x4217f0);
+  then impactKills 0x400 returns false (the update fails, the element is freed, the position is not moved); else 0x480a70
+  with uHit = min((fraction · dt + elapsed) / life, 1) (0x4809d0): rest (0x480a50: flags &= ~0x820, |= 0x1000000) when n.z > 0
+  (0x591e00) and |velocity(u)|² < 16 (0x591e84), or when the fraction is 0 (0x4809f0); else D = velocity(uHit), offset =
+  b·D − (D − offset) − 2 (b·D · n) n (b = +0x100, 0x59216c = −2). The position becomes pos + (next − pos) · fraction.
+- Emitter update 0x483630: alive check 0x47fd80, orientation 0x47fcd0, step; an unchanged position (0x415c50) multiplies the
+  spin rates +0x284 by 0.7 (0x591f30); angles += frame ms · 0.01 (0x591ea0) · rate and axes +0x48 = forward, −right, up of
+  0x421da0 (a · 0.017453292, 0x591f50) (0x483e50); size (0x4818b0); useModel: +0x7c = position, refEntity scale +0x98 = size
+  +0x88; then emitFx.
+- Spawn 0x48d7d0 also: +0x290 = one `emitfx` entry (def +0x80 / +0x84), +0x294 = `density` (def +0x260, 0x488a60 "%f %f"),
+  +0x298 = `variance` (def +0x268, 0x488ab0), +0x24c = the spawn position, +0x258 = the start velocity, +0x264 = the attachment
+  origin (0x47faa0 / 0x48a870) or 0, +0x270 = now, +0x274 = (2 · rand() / 32768 − 1) · variance + density (CRT rand 0x553d5d,
+  0x591efc = 32768).
+- emitFx 0x483810 (flag 0x100, frame ms ≠ 0): P = +0x24c moves with the velocity only (no collision). With t = +0x270, acc = 0,
+  k = 0, while t < time: k += 12 (ka = k · 0.001); u = min((time − spawn + acc) / life, 1); V = velocity(u); Q = P + V · ka
+  (+ drift · ka for relative). If |P + off − Q|² ≥ (+0x274)² (off = +0x264): play +0x290 (no attachment: at Q with row0 = V / |V|
+  completed by 0x4217f0, the element axes +0x48 when |V| ≤ 0; relative: bolted to the attachment +0xc0 + 0x3c with no axes, so
+  origin and axes come from the tag (0x485479) and bolt(Q) is only the spawnRange / cullrange position (0x4854ea)); a = 2 · ka ·
+  |V|², when a ≠ 0: n = fistp(((ka² · |V|² − d²) / a) · 1000 (0x591e50) + 2^-30 (0x591f20)), k = max(k − n, t − +0x270), ka =
+  k · 0.001, Q = P + velocity(min((ka + time − spawn + acc) / life, 1)) · ka (no drift); then +0x24c = Q, +0x258 = velocity at
+  that time, off += drift · ka (relative), acc += ka, +0x270 += k, t = +0x270, k = 0, +0x274 = a new rand() distance;
+  otherwise t += 12.
+- Relative drift (0x4836e1..0x4837c6): zero, except for useModel when +0x270 < time: (tag origin − +0x264) · (time − +0x270) ·
+  0.001 — a product, as the exe computes it (0x4837aa fmul). Shipped relative emitFx emitters: panzerfaust / panzerschreck
+  smoke, fire_airplane_emitter (no useModel) and the useModel explosion debris (silo_explode, artilleryexp_*, eldaba boat, tank
+  libya).
+- OpenIW2: `FxSystem::stepEmitter` / `physicsStep` / `emitFx` (steps of at most 200 ms between host updates; emitted and
+  impact effects play after the update loop). TODO(spec): the CRT rand() sequence (std::rand here), deathFx 0x200 (+0x30 is
+  picked but never played here).
 
 ## Particle quads (renderer type 4)
 

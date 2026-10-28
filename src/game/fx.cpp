@@ -93,6 +93,23 @@ void axesFromForward(FxAxes& ax) {
     ax[2] = cross(r, d);
 }
 
+// An effect name of an element list as a file path ("/fx/x" -> "fx/x.efx"). TODO(spec): the exact normalisation of the name.
+std::string fxPath(std::string name) {
+    while (!name.empty() && name[0] == '/') name.erase(0, 1);
+    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".efx") != 0) name += ".efx";
+    return name;
+}
+
+// Emitter axes from its angles (0x483e50): 0x421da0 with a = angle · 0.017453292 (0x591f50) gives forward (cp·cy, cp·sy, −sp),
+// right (cr·sy − sr·sp·cy, −(sr·sp·sy) − cr·cy, −sr·cp) and up (cr·sp·cy + sr·sy, cr·sp·sy − sr·cy, cr·cp); row1 = 0 − right.
+FxAxes angleAxes(const FVec& ang) {
+    const float sp = std::sin(ang[0] * 0.017453292f), cp = std::cos(ang[0] * 0.017453292f);
+    const float sy = std::sin(ang[1] * 0.017453292f), cy = std::cos(ang[1] * 0.017453292f);
+    const float sr = std::sin(ang[2] * 0.017453292f), cr = std::cos(ang[2] * 0.017453292f);
+    const FVec right{cr * sy - sr * sp * cy, -(sr * sp * sy) - cr * cy, -sr * cp};
+    return {FVec{cp * cy, cp * sy, -sp}, FVec{-right[0], -right[1], -right[2]}, FVec{cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp}};
+}
+
 } // namespace
 
 // Spawn position of an element instance (0x48c290), shared by Particle / OrientedParticle / Decal / FxRunner. The random
@@ -203,11 +220,13 @@ void FxSystem::playBolted(const std::shared_ptr<const assets::EfxEffect>& fx, st
 }
 
 void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FxAxes& axes, int64_t nowMs) {
+    const FVec gatePos = gate_ ? *gate_ : origin; // a bolted play gates on the caller's position (0x4854ea), not the tag
+    gate_ = nullptr;
     if (!fx) return;
     const std::shared_ptr<FxBolt> bolt = curBolt_;
     keep_.push_back(fx);
     for (const auto& e : fx->elements) {
-        if (!inRange(e, origin)) continue;
+        if (!inRange(e, gatePos)) continue;
         if (e.spawnFlagBits() & 0x400) { // 0x4854f9: frustumCull -> 0x486e90 (true = outside, element skipped)
             const auto cr = e.numbers("spawnfrustumcullradius");
             const float radius = cr.empty() ? 0.0f : cr[0];
@@ -289,6 +308,23 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     }
     p.startMs = startMs;
     p.endMs = p.startMs + std::max<int64_t>(1, int64_t(range(e.numbers("life"), 1000)));
+    // Common init 0x48cb00 after the life draw: the box (+0x14 = def +0xa0 `min`, +0x20 = def +0xac `max`, 0x487be0 / 0x487c30),
+    // then one `deathfx` entry (+0x30, def +0x78 / +0x7c) and one `impactfx` entry (+0x2c, def +0x70 / +0x74), each
+    // (seed >> 17) · count >> 15 with a generator draw only when the list is not empty. The rest of the draw order of the
+    // spawn is approximate here (see the other comments). TODO(spec): deathFx 0x200 (the +0x30 effect is not played).
+    {
+        const auto mn = e.numbers("min"), mx = e.numbers("max");
+        if (mn.size() >= 3) p.boxMins = {mn[0], mn[1], mn[2]};
+        if (mx.size() >= 3) p.boxMaxs = {mx[0], mx[1], mx[2]};
+        auto pick = [&](const char* key) {
+            const auto names = e.list(key);
+            if (names.empty()) return std::string();
+            seed_ = seed_ * 0x343fd + 0x269ec3;
+            return fxPath(names[std::min(names.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * names.size()) >> 15))]);
+        };
+        pick("deathfx");
+        p.impactFx = pick("impactfx");
+    }
     p.origin = spawnPoint(e, origin, ax);
     if (curBolt_ && (flags & 0x2)) { // relative: the spawn point is stored in tag space (0x48c290 end, 0x440600)
         FxTag t0;
@@ -307,6 +343,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     for (int k = 0; k < 3; ++k) p.velRnd[k] = flags & 0x80000 ? frand() : 0.0f;
     for (int k = 0; k < 3; ++k) p.vel2Rnd[k] = flags & 0x100000 ? frand() : 0.0f;
     p.gravity = range(e.numbers("gravity"), 0);
+    p.bounce = range(e.numbers("bounce"), 0); // 0x48ce70: +0x100 from def +0x280 (after gravity, wind and the spawn point)
     const char* scaled[8] = {"rgb", "alpha", "size", "size2", "length", "rotationdelta", "velocityx", "velocity2x"};
     for (int k = 0; k < 8; ++k) {
         const auto* g = graph(e, scaled[k]);
@@ -340,7 +377,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             if (sf & 0x20) end = add(end, org2());
             float frac = 1.0f;
             FVec n{};
-            if (!(trace && trace(p.origin, end, frac, n))) frac = 1.0f;
+            if (!(trace && trace(p.origin, end, FVec{}, FVec{}, frac, n))) frac = 1.0f;
             p.lineB = add(p.origin, mul(sub(end, p.origin), frac));
             if (sf & 0x10) {
                 const auto names = e.list("impactfx");
@@ -389,7 +426,7 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     if (p.cloud) {
         // 0x48ce70 draws the start angle +0x44 from `rotation` (+0x220); 0x48de90 then draws +0x260 = 0x426250(0, 1) and copies
         // useLength (+0x9d) into +0x25c. The position steps like an Emitter (update 0x482a30 -> 0x480bd0).
-        p.pos = p.prev = p.origin;
+        p.pos = p.prev = p.bolt ? p.local0 : p.origin; // relative: tag space
         p.lastMs = p.cloudLastMs = startMs;
         p.cloudAngle = range(e.numbers("rotation"), 0);
         p.lengthRnd = frand();
@@ -401,7 +438,8 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
         // 0x4879b0) or 6 (min x y z, max x y z). The bounce offset (+0xc4) starts at zero.
         p.emitter = true;
         p.tail = e.type == "Tail";
-        p.pos = p.prev = p.tailB = p.origin;
+        p.pos = p.prev = p.bolt ? p.local0 : p.origin; // relative: tag space (0x48c290 end)
+        p.tailB = p.origin;
         p.lastMs = startMs;
         auto axisRange = [&](const std::vector<float>& v, int k) -> std::vector<float> {
             if (v.size() >= 6) return {v[size_t(k)], v[size_t(k) + 3]};
@@ -424,14 +462,34 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
             seed_ = seed_ * 0x343fd + 0x269ec3;
             p.model = models[std::min(models.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * models.size()) >> 15))];
         }
+        if (!p.tail) {
+            // 0x48d7d0 after the model: one `emitfx` entry (+0x290, def +0x80 / +0x84, generator draw only for a non-empty
+            // list), `density` (def +0x260 -> +0x294) and `variance` (+0x268 -> +0x298) drawn, +0x24c = the spawn position,
+            // +0x264 = the attachment origin for relative (0x47faa0 / 0x48a870) else 0, +0x270 = now, and the first emission
+            // distance +0x274 = (2 · rand() / 32768 − 1) · variance + density (CRT rand 0x553d5d).
+            const auto names = e.list("emitfx");
+            if (!names.empty()) {
+                seed_ = seed_ * 0x343fd + 0x269ec3;
+                p.emitFx = fxPath(names[std::min(names.size() - 1, size_t((uint64_t(seed_ >> 17 & 0x7fff) * names.size()) >> 15))]);
+            }
+            p.density = range(e.numbers("density"), 0);
+            p.variance = range(e.numbers("variance"), 0);
+            p.emitP = p.pos;
+            p.emitOff = p.bolt ? p.bolt0 : FVec{};
+            p.emitLastMs = startMs;
+            p.emitDist = (float(std::rand()) / 32768.0f * 2.0f - 1.0f) * p.variance + p.density;
+        }
     }
     particles_.push_back(p);
 }
 
-// Velocity of an Emitter at graph position u (0x481810): velocity channels (local axes, or world with
-// absoluteVel 0x200000 / 0x400000) + velocity2 channels + gravity · elapsed seconds on z (0x481220, elapsed =
-// trunc(life · u) ms) + the bounce offset (+0xc4).
-FVec FxSystem::velocityAt(const FxParticle& p, float u) const {
+// Velocity of an Emitter at graph position u (0x481810): velocity channels + velocity2 channels + gravity + the bounce
+// offset (+0xc4). Velocity (0x480e80 / 0x481050): non-absolute components are taken along the instance axes (+0xd0, 0x424a70),
+// absoluteVel 0x200000 / absoluteAccel 0x400000 ones as world vectors. With an attachment orientation (relative element) the
+// result is a tag-space vector: non-absolute components are used as they are (0x481004), absolute ones are turned into tag
+// space (0x440650, 0x480fd5 / 0x4811a5). Gravity (0x481220): g = trunc(life ms · u) · gravity (+0xf4) · 0.001 on world z,
+// i.e. g · (row0.z, row1.z, row2.z) in tag space.
+FVec FxSystem::velocityAt(const FxParticle& p, float u, const FxTag* orient) const {
     const assets::EfxElement& e = *p.element;
     const uint32_t flags = e.flagBits();
     auto comp = [&](const char* name, const char* rname, bool useRand, float rnd) {
@@ -447,57 +505,184 @@ FVec FxSystem::velocityAt(const FxParticle& p, float u) const {
                   comp("velocityz", "velocityzrand", rv, p.velRnd[2])};
     const FVec v2{comp("velocity2x", "velocity2xrand", rv2, p.vel2Rnd[0]), comp("velocity2y", "velocity2yrand", rv2, p.vel2Rnd[1]),
                   comp("velocity2z", "velocity2zrand", rv2, p.vel2Rnd[2])};
-    auto toWorld = [&](const FVec& v, bool absolute) {
-        return absolute ? v : add(add(mul(p.axis[0], v[0]), mul(p.axis[1], v[1])), mul(p.axis[2], v[2]));
+    auto frame = [&](const FVec& v, bool absolute) {
+        if (absolute) return orient ? dirToTagSpace(*orient, v) : v;
+        return orient ? v : add(add(mul(p.axis[0], v[0]), mul(p.axis[1], v[1])), mul(p.axis[2], v[2]));
     };
-    FVec out = add(toWorld(v1, flags & 0x200000), toWorld(v2, flags & 0x400000));
+    FVec out = add(frame(v1, flags & 0x200000), frame(v2, flags & 0x400000));
     const int64_t ms = int64_t(float(p.endMs - p.startMs) * u);
-    out[2] += p.gravity * float(ms) * 0.001f;
+    const float g = float(ms) * p.gravity * 0.001f;
+    out = add(out, orient ? dirToTagSpace(*orient, FVec{0, 0, g}) : FVec{0, 0, g});
     return add(out, p.bounceOff);
 }
 
-// One Emitter update to nowMs in steps of at most 25 ms (the original runs once per client frame with the frame time;
-// TODO(spec): our step size). 0x480bd0: unless at rest, pos += velocity(u) · dt; with usePhysics (0x20) the segment is
-// traced (0x486f70) and a hit bounces: the velocity at the hit time D is reflected as b · D (bounce, +0x100) about the
-// normal by adjusting the offset (0x480a70), or the particle comes to rest (flag 0x1000000, clears 0x20 / 0x800) when the
-// normal points up and the pre-bounce speed is below 4 (0x4809f0); the position becomes the hit point. Then (0x483630)
-// an unchanged position damps the spin rates by 0.7 and the angles advance by dt · 0.01 · rate (0x483e50).
-// TODO(spec): spawn flags 0x400 (die on touch) / 0x800 (impact effect), useBBox boxes, the trace contents mask.
-void FxSystem::stepEmitter(FxParticle& p, int64_t nowMs) {
-    const assets::EfxElement& e = *p.element;
-    const uint32_t flags = e.flagBits();
-    const float bounce = range(e.numbers("bounce"), 0.0f);
-    const float lifeS = float(p.endMs - p.startMs) * 0.001f;
+// One update of an Emitter / Tail / Cloud up to nowMs. The original runs one update per client frame with the effect frame
+// time (0x486b30: now − last, clamped to 0..200 ms (0xc8), 0 while paused); here the time since the last update is cut into
+// steps of at most 200 ms. Per step: the attachment orientation of a relative element (0x47fcd0; failure ends the element),
+// the physics step 0x480bd0 (false ends the element), then for Emitters (0x483630) the spin damping (an unchanged position,
+// 0x415c50, multiplies the rates by 0.7, 0x591f30), the angles += frame ms · 0.01 · rate (0x483e50) and emitFx (0x483810).
+// A relative element keeps its position in tag space (spawn: 0x48c290 end).
+bool FxSystem::stepEmitter(FxParticle& p, int64_t nowMs) {
     while (p.lastMs < nowMs) {
-        const int64_t dtMs = std::min<int64_t>(25, nowMs - p.lastMs);
+        const int64_t dtMs = std::min<int64_t>(200, nowMs - p.lastMs);
         p.lastMs += dtMs;
-        const float dt = float(dtMs) * 0.001f;
-        const float curS = float(p.lastMs - p.startMs) * 0.001f;
-        const FVec old = p.pos;
-        if (!p.rest) {
-            const float u = std::min(1.0f, curS / lifeS);
-            const FVec d = velocityAt(p, u);
-            const FVec next = add(p.pos, mul(d, dt));
-            float frac = 1.0f;
-            FVec n{};
-            if ((flags & 0x20) && trace && trace(p.pos, next, frac, n) && frac < 1.0f) {
-                const float uHit = std::min(1.0f, (curS + frac * dt) / lifeS);
-                const float speed2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-                const bool stop = n[2] > 0 ? speed2 < 16.0f : uHit == 0.0f;
-                if (stop) p.rest = true;
-                else {
-                    const FVec d2 = velocityAt(p, uHit);
-                    const FVec delta = sub(d2, p.bounceOff);
-                    const FVec r = mul(d2, bounce);
-                    const float k = (r[0] * n[0] + r[1] * n[1] + r[2] * n[2]) * -2.0f;
-                    p.bounceOff = add(sub(r, delta), mul(n, k));
-                }
-                p.pos = add(p.pos, mul(sub(next, p.pos), frac));
-            } else p.pos = next;
+        FxTag tag;
+        const FxTag* orient = nullptr;
+        if (p.bolt) {
+            if (!(*p.bolt)(tag)) return false;
+            orient = &tag;
         }
+        const FVec old = p.pos;
+        if (!physicsStep(p, dtMs, orient)) return false;
+        if (p.cloud || p.tail) continue; // 0x482a30 / 0x483010 run their own channel updates
         if (p.pos[0] == old[0] && p.pos[1] == old[1] && p.pos[2] == old[2])
             for (float& x : p.angRate) x *= 0.7f;
         for (int k = 0; k < 3; ++k) p.ang[size_t(k)] += float(dtMs) * 0.01f * p.angRate[size_t(k)];
+        // 0x4836e1: a relative Emitter hands emitFx a zero drift, except with useModel when the last emission is older than now:
+        // drift = (tag origin − +0x264) · (now − +0x270) · 0.001 (0x483772..0x4837c2, a product, as in the original).
+        FVec drift{};
+        if (orient && (p.element->flagBits() & 0x10) && !p.model.empty() && p.emitLastMs < p.lastMs)
+            drift = mul(sub(orient->origin, p.emitOff), float(p.lastMs - p.emitLastMs) * 0.001f);
+        emitFx(p, dtMs, orient, drift);
+    }
+    return true;
+}
+
+// 0x480bd0 (one step of frameMs): nothing at rest (0x1000000) or with frame time 0. u = min((now − spawn) / life, 1), all in
+// seconds (0x591e30 = 0.001), with `now` the effect time after this frame; next = pos + velocity(u) · dt. Without usePhysics
+// (0x20) the position becomes next. With it the segment pos -> next (both through the bolt for relative, 0x4404f0) is traced
+// by 0x486f70 (CM_BoxTrace, model 0, contents 1, box = the instance `min` / `max` with useBBox 0x40, else the zero vector
+// 0x56ce9c); a start- or all-solid trace (bytes +0x22 / +0x23) or fraction 1 moves to next. On a hit:
+// - impactFx 0x800: the instance's impact effect (+0x2c) plays at start + (end − start) · fraction (0x47f390) along the
+//   trace normal (0x485220: axes from 0x4217f0);
+// - impactKills 0x400: the step returns false and the element dies (the position is not updated);
+// - else 0x480a70 with the hit time uHit = min((fraction · dt + elapsed) / life, 1) (0x4809d0): the element comes to rest
+//   (0x480a50: flags &= ~0x820, |= 0x1000000) when the normal points up (n.z > 0, 0x591e00) and |velocity(u)|² < 16
+//   (0x591e84), or when the fraction is 0 (0x4809f0); otherwise with D = velocity(uHit) and n the normal (into tag space by
+//   0x440650 for relative): offset = b·D − (D − offset) − 2 (b·D · n) n (b = +0x100 bounce, −2 = 0x59216c). The position
+//   becomes pos + (next − pos) · fraction (0x47f390, tag space for relative).
+bool FxSystem::physicsStep(FxParticle& p, int64_t frameMs, const FxTag* orient) {
+    if (p.rest || frameMs == 0) return true;
+    const assets::EfxElement& e = *p.element;
+    const uint32_t flags = e.flagBits();
+    const float dt = float(frameMs) * 0.001f;
+    const float curS = float(p.lastMs - p.startMs) * 0.001f;
+    const float lifeS = float(p.endMs - p.startMs) * 0.001f;
+    float u = curS / lifeS;
+    if (!(u <= 1.0f)) u = 1.0f;
+    const FVec d = velocityAt(p, u, orient);
+    const FVec next = add(p.pos, mul(d, dt));
+    if (!(flags & 0x20)) {
+        p.pos = next;
+        return true;
+    }
+    const FVec a = orient ? fromTagSpace(*orient, p.pos) : p.pos;
+    const FVec b = orient ? fromTagSpace(*orient, next) : next;
+    const bool box = flags & 0x40;
+    float frac = 1.0f;
+    FVec n{};
+    if (!(trace && trace(a, b, box ? p.boxMins : FVec{}, box ? p.boxMaxs : FVec{}, frac, n) && frac != 1.0f)) {
+        p.pos = next;
+        return true;
+    }
+    if ((flags & 0x800) && !p.impactFx.empty()) {
+        DeferredPlay dp;
+        dp.path = p.impactFx;
+        dp.origin = add(a, mul(sub(b, a), frac));
+        dp.axes[0] = n;
+        axesFromForward(dp.axes);
+        deferred_.push_back(std::move(dp));
+    }
+    if (flags & 0x400) return false;
+    float uHit = (frac * dt + curS) / lifeS;
+    if (!(uHit <= 1.0f)) uHit = 1.0f;
+    const float speed2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if ((n[2] > 0.0f && speed2 < 16.0f) || frac == 0.0f) {
+        p.rest = true;
+    } else {
+        const FVec nt = orient ? dirToTagSpace(*orient, n) : n;
+        const FVec dh = velocityAt(p, uHit, orient);
+        const FVec delta = sub(dh, p.bounceOff);
+        const FVec r = mul(dh, p.bounce);
+        const float k = (r[0] * nt[0] + r[1] * nt[1] + r[2] * nt[2]) * -2.0f;
+        p.bounceOff = add(sub(r, delta), mul(nt, k));
+    }
+    p.pos = add(p.pos, mul(sub(next, p.pos), frac));
+    return true;
+}
+
+// emitFx (0x100) of an Emitter, 0x483810, after the physics step; nothing with frame time 0. The emitter keeps its own point
+// P (+0x24c, starts at the spawn position) that moves with the velocity only (no collision). With t the time of the last
+// emission (+0x270), while t < now: k += 12 ms (ka = k · 0.001), u = min((now − spawn + acc) / life, 1) in seconds (acc =
+// the seconds emitted this frame), V = velocity(u), Q = P + V · ka (+ drift · ka for relative). When |P + off − Q|² ≥ d²
+// (d = +0x274, off = +0x264):
+// - play +0x290: without an attachment at Q with row0 = V / |V| completed by 0x4217f0 (the element axes +0x48 when |V| ≤ 0);
+//   with one, bolted to the attachment (origin and axes from the tag, 0x485479) with Q through the bolt only as the range
+//   gate position (0x4854ea);
+// - back-off: a = 2 · ka · |V|²; when a ≠ 0, n = round(((ka² · |V|² − d²) / a) · 1000 + 2^-30) (0x591e50, 0x591f20, fistp),
+//   k = max(k − n, (t − +0x270)), ka = k · 0.001, Q = P + velocity(min((ka + now − spawn + acc) / life, 1)) · ka (no drift);
+// - P = Q, +0x258 = velocity at that time, off += drift · ka (relative), acc += ka, +0x270 += k, t = +0x270, k = 0, and the
+//   next distance d = (2 · rand() / 32768 − 1) · variance + density (CRT rand 0x553d5d, 0x591efc);
+// otherwise t += 12. TODO(spec): the CRT rand() sequence (here std::rand).
+void FxSystem::emitFx(FxParticle& p, int64_t frameMs, const FxTag* orient, const FVec& drift) {
+    const assets::EfxElement& e = *p.element;
+    if (!(e.flagBits() & 0x100) || frameMs == 0) return;
+    const int64_t now = p.lastMs;
+    const float nowS = float(now - p.startMs) * 0.001f;
+    const float lifeS = float(p.endMs - p.startMs) * 0.001f;
+    float d2 = p.emitDist * p.emitDist;
+    float acc = 0.0f;
+    int64_t t = p.emitLastMs, k = 0;
+    auto uAt = [&](float x) { const float v = x / lifeS; return v <= 1.0f ? v : 1.0f; };
+    while (t < now) {
+        k += 12;
+        float ka = float(k) * 0.001f;
+        const FVec target = add(p.emitP, p.emitOff);
+        FVec v = velocityAt(p, uAt(nowS + acc), orient);
+        FVec q = add(mul(v, ka), p.emitP);
+        if (orient) q = add(q, mul(drift, ka));
+        const FVec df = sub(target, q);
+        if (!(df[0] * df[0] + df[1] * df[1] + df[2] * df[2] >= d2)) {
+            t += 12;
+            continue;
+        }
+        if (!p.emitFx.empty()) {
+            DeferredPlay dp;
+            dp.path = p.emitFx;
+            if (orient) {
+                dp.origin = fromTagSpace(*orient, q);
+                dp.bolt = p.bolt;
+            } else {
+                dp.origin = q;
+                const float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                if (len <= 0.0f) {
+                    dp.axes = angleAxes(p.ang);
+                } else {
+                    dp.axes[0] = mul(v, 1.0f / len);
+                    axesFromForward(dp.axes);
+                }
+            }
+            deferred_.push_back(std::move(dp));
+        }
+        const float v2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        const float a = ka * v2 * 2.0f;
+        if (a != 0.0f) {
+            const float x = ((ka * ka * v2 - d2) / a) * 1000.0f;
+            const int64_t n = int64_t(std::nearbyint(double(x) + 9.313225746154785e-10));
+            k -= n;
+            if (k < t - p.emitLastMs) k = t - p.emitLastMs;
+            ka = float(k) * 0.001f;
+            v = velocityAt(p, uAt(ka + nowS + acc), orient);
+            q = add(mul(v, ka), p.emitP);
+        }
+        p.emitP = q;
+        if (orient) p.emitOff = add(p.emitOff, mul(drift, ka));
+        acc += ka;
+        p.emitLastMs += k;
+        t = p.emitLastMs;
+        k = 0;
+        p.emitDist = (float(std::rand()) / 32768.0f * 2.0f - 1.0f) * p.variance + p.density;
+        d2 = p.emitDist * p.emitDist;
     }
 }
 
@@ -554,7 +739,12 @@ void FxSystem::runPending(int64_t nowMs) {
             due.push_back(r);
             return true;
         });
-        for (const ImpactRun& r : due) play(loader(r.path), r.origin, r.dir, r.startMs);
+        for (const ImpactRun& r : due) { // 0x485220: row0 = the direction, completed by 0x4217f0
+            FxAxes ax{};
+            ax[0] = r.dir;
+            axesFromForward(ax);
+            playAxes(loader(r.path), r.origin, ax, r.startMs);
+        }
     }
     if (pending_.empty() || !loader) return;
     std::vector<PendingRun> due;
@@ -599,7 +789,7 @@ void FxSystem::addTracer(const FVec& from, const FVec& to, int64_t nowMs, int fr
 
 std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
     runPending(nowMs);
-    std::erase_if(particles_, [&](const FxParticle& p) { return nowMs >= p.endMs; });
+    std::erase_if(particles_, [&](const FxParticle& p) { return p.dead || nowMs >= p.endMs; });
     std::vector<FxSprite> out;
     sightBlockers_.clear();
     if (std::getenv("IW2_FX_DEBUG")) {
@@ -639,7 +829,10 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // = the position (through the bolt with relative, 0x4404f0). TODO(spec): `wind` (+0xf8) and affectedByWind 0x800000
             // have no reader in the exe's effect code.
             const FVec before = p.pos;
-            stepEmitter(p, nowMs);
+            if (!stepEmitter(p, nowMs)) {
+                p.dead = true;
+                continue;
+            }
             const uint32_t flags = e.flagBits();
             const float u = std::min(1.0f, float(nowMs - p.startMs) / float(p.endMs - p.startMs));
             const float size = channel(e, "size", "sizerand", flags & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2];
@@ -664,8 +857,8 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (p.bolt) { // relative: A = the tag-space position through the bolt (0x4404f0); B stays the tag-space value (0x482b2d)
                 FxTag now;
                 if (!(*p.bolt)(now)) continue; // 0x47fcd0 fails: the update returns false
-                c.origin = fromTagSpace(now, add(p.local0, sub(p.pos, p.origin)));
-                c.prev = add(p.local0, sub(before, p.origin));
+                c.origin = fromTagSpace(now, p.pos); // p.pos is tag space for relative elements
+                c.prev = before;
             }
             c.size = size;
             c.width = width;
@@ -694,12 +887,25 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         }
         if (p.emitter) {
             p.prev = p.pos; // 0x483010 saves the position (+0x4 -> +0x24c) before the step
-            stepEmitter(p, nowMs);
+            if (!stepEmitter(p, nowMs)) {
+                p.dead = true;
+                continue;
+            }
             if (p.tail) {} // drawn below
             else if (!p.model.empty()) {
                 const float u = std::min(1.0f, float(nowMs - p.startMs) / float(p.endMs - p.startMs));
-                // TODO(spec): the model draw path (size channel as uniform scale is inferred; rgb / alpha are not applied).
-                models_.push_back({p.model, p.pos, p.ang, channel(e, "size", "sizerand", e.flagBits() & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2]});
+                // 0x483750 / 0x4837eb: refEntity scale +0x98 = the size channel (+0x88, 0x4818b0). TODO(spec): the model draw path
+                // (rgb / alpha are not applied).
+                FxModelInst mi{p.model, p.pos, p.ang, channel(e, "size", "sizerand", e.flagBits() & 0x8000, p.rnd[2], u, 0, 1.0f) * p.scale[2]};
+                if (p.bolt) { // relative: +0x7c = the position through the bolt (0x483719), axis rows turned by 0x440540
+                    FxTag now;
+                    if (!(*p.bolt)(now)) continue;
+                    mi.pos = fromTagSpace(now, p.pos);
+                    const FxAxes la = angleAxes(p.ang);
+                    mi.hasAxes = true;
+                    for (int r = 0; r < 3; ++r) mi.axes[size_t(r)] = sub(fromTagSpace(now, la[size_t(r)]), now.origin);
+                }
+                models_.push_back(mi);
             }
             if (!p.tail) continue;
         }
@@ -735,7 +941,11 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!(*p.bolt)(tagNow)) continue;
             pos = fromTagSpace(tagNow, add(p.local0, sub(pos, p.origin)));
         }
-        if (p.tail) pos = p.pos; // TODO(spec): relative Emitter / Tail (0x480bd0 traces through the bolt, 0x440650 normals)
+        FxTag tailTag;
+        if (p.tail) { // +0x7c = the position, through the bolt for relative (0x483072)
+            if (p.bolt && !(*p.bolt)(tailTag)) continue;
+            pos = p.bolt ? fromTagSpace(tailTag, p.pos) : p.pos;
+        }
         FVec lineA = p.origin, lineB = p.lineB;
         if (e.type == "Cylinder") pos = relative ? fromTagSpace(tagNow, p.local0) : p.origin; // no motion (0x483450)
         if (p.line) { // 0x482da0: A (+0x7c) = +0x4, B (+0x9c) = +0x24c, both through the bolt (0x4404f0) for relative
@@ -865,9 +1075,14 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             const float length = channel(e, "length", "lengthrand", flags & 0x20000, p.rnd[4], u, 0, 1.0f) * p.scale[4];
             const FVec d = sub(p.prev, p.pos);
             const float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-            if (dl > 0) p.tailB = add(p.pos, mul(d, length / dl));
+            // +0x9c is world space: for relative the tag-space point goes through the bolt (0x483202); with no movement it keeps the
+            // last world value (0x483233).
+            if (dl > 0) {
+                p.tailB = add(p.pos, mul(d, length / dl));
+                if (p.bolt) p.tailB = fromTagSpace(tailTag, p.tailB);
+            }
             s.beam = s.beamTail = true;
-            s.beamA = p.pos;
+            s.beamA = pos;
             s.beamB = p.tailB;
             s.widthA = s.widthB = s.size;
             if (!viewValid) continue;
@@ -914,6 +1129,22 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
         b.rgba[0] = b.rgba[1] = b.rgba[2] = b.rgba[3] = 1.0f;
         out.push_back(b);
     }
+    // Effects started by element updates (impactFx, emitFx) spawn after the loop (the particle array cannot grow while iterated).
+    std::vector<DeferredPlay> plays;
+    plays.swap(deferred_);
+    if (loader)
+        for (const DeferredPlay& dp : plays) {
+            if (dp.bolt) {
+                FxTag at;
+                if (!(*dp.bolt)(at)) continue; // 0x48abb0 fails: nothing is played
+                curBolt_ = dp.bolt;
+                gate_ = &dp.origin;
+                playAxes(loader(dp.path), at.origin, at.axes, nowMs);
+                gate_ = nullptr;
+                curBolt_.reset();
+            } else
+                playAxes(loader(dp.path), dp.origin, dp.axes, nowMs);
+        }
     return out;
 }
 

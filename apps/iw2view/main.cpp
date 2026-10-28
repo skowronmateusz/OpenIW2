@@ -2776,10 +2776,10 @@ int main(int argc, char** argv) {
             return it->second;
         };
         fxSystem.loader = efx;
-        // usePhysics Emitters (shell casings) trace the world (0x486f70). TODO(spec): the contents mask (the original passes 1).
-        fxSystem.trace = [&world](const game::FVec& a, const game::FVec& b, float& frac, game::FVec& n) {
+        // usePhysics elements trace the world (0x486f70 -> CM_BoxTrace 0x417640: model 0, contents 1, the useBBox box).
+        fxSystem.trace = [&world](const game::FVec& a, const game::FVec& b, const game::FVec& mins, const game::FVec& maxs, float& frac, game::FVec& n) {
             if (!world) return false;
-            const game::TraceResult tr = world->collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, game::Contents::Solid);
+            const game::TraceResult tr = world->collision().traceWorld(a, b, mins, maxs, game::Contents::Solid);
             if (tr.startSolid || tr.allSolid || tr.fraction >= 1.0f) return false;
             frac = tr.fraction;
             n = tr.normal;
@@ -2900,6 +2900,11 @@ int main(int argc, char** argv) {
                 DrawItem it;
                 it.model = gm;
                 it.transform = entityTransform({fm.pos[0], fm.pos[1], fm.pos[2]}, {fm.angles[0], fm.angles[1], fm.angles[2]}, fm.scale);
+                if (fm.hasAxes) { // relative Emitter: world axis rows from the tag
+                    const float k = fm.scale;
+                    it.transform = {fm.axes[0][0] * k, fm.axes[0][1] * k, fm.axes[0][2] * k, 0, fm.axes[1][0] * k, fm.axes[1][1] * k, fm.axes[1][2] * k, 0,
+                                    fm.axes[2][0] * k, fm.axes[2][1] * k, fm.axes[2][2] * k, 0, fm.pos[0], fm.pos[1], fm.pos[2], 1};
+                }
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
                 items.push_back(it);
@@ -5483,7 +5488,12 @@ int main(int argc, char** argv) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
                 const Vec3 at = cam.pos + cam.forward() * dist;
-                fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200));
+                const int64_t t0 = world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200);
+                fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, t0);
+                // IW2_FX_STEP=<ms>: update the effects every <ms> from the play time to the shot, like client frames (element
+                // updates such as emitFx and bounces then run with that frame time instead of one large step).
+                if (const char* st = std::getenv("IW2_FX_STEP"); st && std::atoi(st) > 0)
+                    for (int64_t t = t0; t < world->timeMs(); t += std::atoi(st)) (void)fxSystem.sprites(t);
             }
             if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
                 // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.

@@ -69,7 +69,18 @@ struct FxParticle {
     FVec bounceOff{};                   // +0xc4: velocity offset accumulated by bounces
     FVec ang{}, angRate{};              // +0x278 angles (degrees), +0x284 rates (per ms * 0.01)
     bool rest = false;                  // flag 0x1000000: physics finished
+    bool dead = false;                  // the update returned false (impactKills hit, attachment lost): removed
     int64_t lastMs = 0;                 // time the particle was stepped up to
+    float bounce = 0;                   // +0x100: `bounce` drawn at spawn (0x48ce70, def +0x280)
+    FVec boxMins{}, boxMaxs{};          // +0x14 / +0x20: the element's `min` / `max` (def +0xa0 / +0xac, 0x48cb00)
+    std::string impactFx;               // +0x2c: one `impactfx` entry picked at spawn (0x48cb00, def +0x70 / +0x74)
+    // emitFx (0x100) state of an Emitter (0x483810): the emitter's own ballistic point P (+0x24c, no collision), the attachment
+    // drift offset (+0x264), the time of the last emission (+0x270), the distance to the next one (+0x274), the effect
+    // (+0x290, from `emitfx`) and `density` / `variance` drawn at spawn (+0x294 / +0x298).
+    FVec emitP{}, emitOff{};
+    int64_t emitLastMs = 0;
+    float emitDist = 0, density = 0, variance = 0;
+    std::string emitFx;
 };
 
 // A model instance of an Emitter element with useModel, to be drawn by the host as a static xmodel.
@@ -77,6 +88,10 @@ struct FxModelInst {
     std::string model;
     FVec pos{}, angles{};
     float scale = 1.0f;
+    // Relative Emitters (0x483719 / 0x483742): world axes = the tag-space rows (forward, left, up from the angles, 0x483e50)
+    // turned by the attachment orientation (0x440540); the host uses them instead of `angles` when set.
+    bool hasAxes = false;
+    FxAxes axes{};
 };
 
 // A Light element (class vtable 0x57c734, created by 0x48dbc0) as submitted to the renderer every frame: draw slot 0x4841b0
@@ -176,9 +191,10 @@ public:
     FVec viewRight{1, 0, 0}, viewUp{0, 0, 1};
     // Drops finished particles and returns the visible ones at nowMs.
     std::vector<FxSprite> sprites(int64_t nowMs);
-    // World trace used by usePhysics (0x20) elements (0x486f70): segment a -> b with an optional box, true on a hit
-    // that is not start-solid, giving the fraction and the surface normal. Set by the host.
-    std::function<bool(const FVec& a, const FVec& b, float& frac, FVec& normal)> trace;
+    // World trace used by usePhysics (0x20) elements (0x486f70 -> CM_BoxTrace 0x417640, model 0, contents 1): segment a -> b
+    // with the box mins / maxs (zero without useBBox), true on a hit (fraction < 1) that is neither start- nor all-solid,
+    // giving the fraction and the surface normal. Set by the host.
+    std::function<bool(const FVec& a, const FVec& b, const FVec& mins, const FVec& maxs, float& frac, FVec& normal)> trace;
     // Emitter models at the time of the last sprites() call.
     const std::vector<FxModelInst>& models() const { return models_; }
     // Light elements alive at the last sprites() call (DLL keeps at most r_dlightLimit = 4 of them, TODO(spec): the order
@@ -230,8 +246,19 @@ private:
     std::vector<FxModelInst> models_;
     std::vector<FxLight> lights_;
     std::vector<FxCloud> clouds_;
-    FVec velocityAt(const FxParticle& p, float u) const;
-    void stepEmitter(FxParticle& p, int64_t nowMs);
+    FVec velocityAt(const FxParticle& p, float u, const FxTag* orient) const;
+    bool stepEmitter(FxParticle& p, int64_t nowMs);
+    bool physicsStep(FxParticle& p, int64_t frameMs, const FxTag* orient);
+    void emitFx(FxParticle& p, int64_t frameMs, const FxTag* orient, const FVec& drift);
+    // Effects started by element updates (impactFx 0x485220, emitFx 0x483810), played after the update loop.
+    struct DeferredPlay {
+        std::string path;
+        FVec origin{};
+        FxAxes axes{};
+        std::shared_ptr<FxBolt> bolt; // set: bolted play (origin / axes from the tag; origin is only the range gate position)
+    };
+    std::vector<DeferredPlay> deferred_;
+    const FVec* gate_ = nullptr; // spawnRange / cullrange position of a bolted play when it differs from the tag (0x4854ea)
 };
 
 } // namespace iw2::game
