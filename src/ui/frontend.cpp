@@ -591,7 +591,9 @@ void MenuStack::listClampVisible(const Item& it, ListState& st) const {
 }
 
 // Vertical listbox keys (0x4c9c60): up/down (and the wheel) move the selection, Home/End/PageUp/PageDown jump; the selection stays
-// visible and the feeder is told. TODO(spec): the exact scroll of End/PageUp/PageDown.
+// visible and the feeder is told. Checked against 0x4c9ee2 (PageDown), 0x4c9f54 (PageUp), 0x4c9f7b (End) and 0x4c9fe1 (Home):
+// PageDown/PageUp move the cursor by the visible row count (clamped to 0..count-1) and the first shown row follows; End puts the
+// cursor on the last row and scrolls so it is the bottom one; Home resets both.
 bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
     ListState& st = lists_[&it];
     const int count = env_.feederCount ? env_.feederCount(it.feeder) : 0;
@@ -637,7 +639,8 @@ bool MenuStack::listKey(const Menu&, const Item& it, Key k) {
 // a row above the first shown one scrolls up to it.
 void MenuStack::setFeederSelection(int feeder, int row) {
     // The profile scripts (0x4c4c42..0x4c4c7f) walk the open menus from the top of the stack down and select in each one
-    // (a popup may be on top of the list's menu). TODO(spec): the exe only visits menus whose flag word 0xe8 bit 2 is set.
+    // (a popup may be on top of the list's menu). The exe only visits menus whose flag word 0xe8 bit 2 (visible) is set; Menu_Open
+    // sets bits 1 and 2 (0x4cb7e0, orl 6), so every menu on this stack qualifies.
     for (size_t mi = stack_.size(); mi-- > 0;) {
         Menu* m = stack_[mi];
         for (const auto& itp : m->items) {
@@ -743,7 +746,10 @@ void MenuStack::textInput(const std::string& text) {
     if (!editItem()) return;
     const Item& it = *editItem_;
     for (unsigned char c : text) {
-        if (c < 0x20 || c > 0x7e) continue; // TODO(spec): characters above 0x7f
+        // The exe accepts any character code >= 0x20 (0x4ca993) and stores its low byte (0x4caa5a). Characters above 0x7f are kept out
+        // here: the exe gets them as single code-page bytes from the Win32 char message and the port receives UTF-8 text, so
+        // copying the bytes would not reproduce it. TODO(spec): the code-page mapping of the input layer.
+        if (c < 0x20 || c > 0x7f) continue;
         if (it.type == 16 && !(std::isalnum(c) || c == '_' || c == '-')) continue;
         std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
         const int len = int(s.size());
