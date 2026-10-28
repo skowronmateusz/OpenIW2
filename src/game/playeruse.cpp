@@ -126,7 +126,9 @@ bool World::playerTurretEye(Vec3& eye) {
 // ignore the entity angles.
 std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3& forward) {
     const Vec3 po = player_->obj->get("origin").asVector();
-    const Vec3 pmin{po[0] - 15, po[1] - 15, po[2]}, pmax{po[0] + 15, po[1] + 15, po[2] + 70}; // TODO(spec): stance maxs
+    // The player's box is gclient +0x540..0x554 (0x534575..0x5345b2: origin + mins / maxs). Its only writer is the spawn (0x4e9146..0x4e9188
+    // copies the entity bounds, the constants (-15,-15,0)..(15,15,70) at 0x5a5bdc), so it does not follow the stance.
+    const Vec3 pmin{po[0] - 15, po[1] - 15, po[2]}, pmax{po[0] + 15, po[1] + 15, po[2] + 70};
     std::vector<UseCandidate> list;
     for (const auto& ep : entities_) {
         Entity& e = *ep;
@@ -247,6 +249,21 @@ std::string World::pickupHintText(const std::string& w) {
     return inv.slot[idx] == w ? std::string() : "PLATFORM_SWAPWEAPONS";
 }
 
+World::PlayerUseHint World::vehicleUseHint(const std::string& turretWeapon) {
+    PlayerUseHint h;
+    h.hint = 2;
+    if (!turretWeapon.empty()) h.text = weaponField(lowerStr(turretWeapon), "useHintString");
+    return h;
+}
+
+float World::cvarFloat(const std::string& name, float def) const {
+    const auto it = cvars.find(name);
+    if (it == cvars.end()) return def;
+    char* end = nullptr;
+    const float v = std::strtof(it->second.c_str(), &end);
+    return end == it->second.c_str() ? def : v;
+}
+
 void World::findPlayerUseEntity() {
     playerUseEntity_ = -1;
     playerUseHint_ = {};
@@ -274,7 +291,8 @@ void World::findPlayerUseEntity() {
         }
         if (e.classname.rfind("weapon_", 0) == 0) {
             // 0x534c80: a weapon item is usable when the weapon is not a grenade (weaponType, def +0x78 ≠ 1) and not
-            // owned; the hint is the weapon's (index + 4). TODO(spec): health items (giType 3, hint 3).
+            // owned; the hint is the weapon's (index + 4). A health item (giType 3) would give hint 3 with no condition (0x534ca0); health items
+            // are not modelled (TODO(spec): item_health spawn, bounds, touch pickup).
             const std::string w = lowerStr(e.classname.substr(7));
             if (!weapon(w) || lowerStr(weaponField(w, "weaponType")) == "grenade" || inventory(*player_).owned.count(w)) continue;
             playerUseEntity_ = e.number;
@@ -291,7 +309,7 @@ void World::findPlayerUseEntity() {
             const VehicleState& v = *e.vehicle;
             const Value h = e.obj->get("health");
             if (v.owner >= 0 || std::fabs(v.forwardSpeed) > 1.0f || !h.isNumber() || h.asInt() < 1 || !v.usable) continue;
-            playerUseHint_.hint = 2; // TODO(spec): the vehicle weapon's useHintString (0x534d40 case 0xc)
+            playerUseHint_ = vehicleUseHint(v.info ? v.info->turretWeapon : std::string());
         } else {
             continue;
         }
@@ -616,8 +634,10 @@ std::vector<World::CompassMarker> World::compassVehicles() const {
 // 0x535070: a trace (0x534fd0 → G_Trace, mask 0x2280e801, skipping the player) 15000 units along the view from the
 // eye. An actor hit (contents 0x4000) of the player's enemy team within the weapon's enemyCrosshairRange (+0x260;
 // the turret's weapon on a turret) sets 0x200000; any other actor within g_friendlyfireDist (128, 0x1c13f30) sets
-// 0x100000. TODO(spec): the name target (ps+0x8678, g_friendlyNameDist), non-actor hits
-// (turrets/vehicles, +0x1b4), the trace surface-flag 0x10 exception.
+// 0x100000. The two distances are the dvars g_friendlyNameDist (0x1c1489c, registered 0x4d8a30: default 15000, range 0..15000) and
+// g_friendlyfireDist (0x1c13f30, 0x4d8a50: default 128, range 0..15000), read live (dvar +8) at 0x5352e3 / 0x53531d / 0x535455.
+// TODO(spec): ps+0x8678 as an entity reference (only its display strings are kept), the dvar out-of-range handling, non-actor hits
+// (turrets, +0x1b4), the trace surface-flag 0x10 exception.
 void World::updateCrosshairTarget() {
     crosshairFlags_ = 0;
     crosshairName_.clear();
@@ -653,7 +673,8 @@ void World::updateCrosshairTarget() {
             const Vec3 o = org.asVector();
             const float dx = o[0] - eye[0], dy = o[1] - eye[1], dz = o[2] - eye[2];
             const float d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 < 15000.0f * 15000.0f && !hit->vehicle->lookAtText.empty()) {
+            const float vNameDist = cvarFloat("g_friendlyNameDist", 15000.0f);
+            if (d2 < vNameDist * vNameDist && !hit->vehicle->lookAtText.empty()) {
                 crosshairName_ = hit->vehicle->lookAtText;
                 crosshairWeaponLine_ = hit->vehicle->lookAtText2;
             }
@@ -685,9 +706,9 @@ void World::updateCrosshairTarget() {
             target = true; // 0x535386..0x5353b9
         }
     } else {
-        constexpr float nameDist = 15000.0f; // g_friendlyNameDist default (0x4d8a1a), 0x5352e3 / 0x535455
+        const float nameDist = cvarFloat("g_friendlyNameDist", 15000.0f), fireDist = cvarFloat("g_friendlyfireDist", 128.0f); // 0x5352e3 / 0x53531d
         if (dist2 < nameDist * nameDist) target = true;
-        if (dist2 < 128.0f * 128.0f) {
+        if (dist2 < fireDist * fireDist) {
             crosshairFlags_ |= 0x100000u;
             // 0x535366: unless the actor keeps the player contents bit in its mask (+0x28c & 0x2000000, pushplayer(0), the default)
             // and dontavoidplayer (+0x734) is 0, the 0x8000000 flag is set too.

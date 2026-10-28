@@ -318,6 +318,13 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(itempickup_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
+add_executable(test_usehints tests/test_usehints.cpp)
+target_link_libraries(test_usehints PRIVATE iw2_game)
+add_test(NAME usehints COMMAND test_usehints)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(usehints PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
 add_executable(test_nodedrop tests/test_nodedrop.cpp)
 target_link_libraries(test_nodedrop PRIVATE iw2_game)
 add_test(NAME nodedrop COMMAND test_nodedrop)
