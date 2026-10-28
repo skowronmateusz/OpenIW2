@@ -5,6 +5,7 @@
 #include "game/bulletdamage.h"
 #include "game/itempickup.h"
 #include "game/vehicles.h"
+#include "game/triggerdamage.h"
 
 #include <algorithm>
 #include <cctype>
@@ -219,8 +220,11 @@ float World::hitLocationMultiplier(const Entity* attacker, const std::string& lo
 }
 
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
-                   const std::string& location) {
+                   const std::string& location, int dflags) {
     if (!takesDamage(target)) return;
+    // 0x528050: an entity with vehicle info (ent+0x108) first asks the vehicle filter (0x5122f0) and leaves when it ignores
+    // the means of death. The info is attached when a script_vehicle is initialised (0x50da80).
+    if (target.vehicle && target.vehicle->info && vehicleIgnoresDamage(*target.vehicle->info, modNumber(mod), dflags)) return;
     // Entities without a client or actor (0x528050 with ent+0xfc and ent+0x100 zero): "damage" (0x1c7f058: amount,
     // attacker, direction, point, means of death; 0x527fd0) whenever the amount is not 0, health (ent+0x13c) minus the
     // amount, kept above −1000 (0x528466); below 1 "death" (0x1c7f05c) with the attacker and the means-of-death name
@@ -504,7 +508,15 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         // Damage by weapon, target and distance start → impact (0x531090, called at 0x531787).
         const auto* dmgDef = weaponName.empty() ? def : weapon(weaponName);
         if (dmgDef) damageAmount = bulletDamageAtDistance(*dmgDef, hit->isPlayer, len(sub(tr.endPos, start)));
-        damage(*hit, attacker, damageAmount, dir, tr.endPos, "MOD_RIFLE_BULLET", hitLocationName(location));
+        // Bullet_Fire_Extended (0x531379..0x5313a3): rifleBullet (weapon +0x31c) gives MOD_RIFLE_BULLET and dflags 0x40, else
+        // MOD_PISTOL_BULLET and 0; armorPiercing (+0x320) adds dflags 2.
+        bool ap = false;
+        if (def) {
+            auto apIt = def->find("armorpiercing");
+            ap = apIt != def->end() && std::atoi(apIt->second.c_str()) != 0;
+        }
+        damage(*hit, attacker, damageAmount, dir, tr.endPos, rifle ? "MOD_RIFLE_BULLET" : "MOD_PISTOL_BULLET", hitLocationName(location),
+               (rifle ? 0x40 : 0) | (ap ? 2 : 0));
     }
     return hit;
 }

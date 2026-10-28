@@ -411,6 +411,21 @@ void World::linkVehicleNodes() {
 }
 
 // Loads vehicles/<type> (0x50cf60); an unknown type falls back to "defaultvehicle" (0x50d1b0).
+// 0x5122f0 (G_Damage 0x528050 leaves before any state change when it returns nonzero): bullets (mods 1, 2) hurt only with
+// bulletDamage, or with armorPiercingDamage when the shot has dflags 2; grenades (3, 4) need grenadeDamage, MOD_PROJECTILE
+// projectileDamage, MOD_PROJECTILE_SPLASH projectileSplashDamage; MOD_EXPLOSIVE (14) always hurts; every other mod
+// (0, 7..13, > 14) is ignored.
+bool World::vehicleIgnoresDamage(const VehicleInfo& info, int mod, int dflags) {
+    switch (mod) {
+    case 1: case 2: return !(info.bulletDamage || ((dflags & 2) && info.armorPiercingDamage));
+    case 3: case 4: return !info.grenadeDamage;
+    case 5: return !info.projectileDamage;
+    case 6: return !info.projectileSplashDamage;
+    case 14: return false;
+    default: return true;
+    }
+}
+
 const VehicleInfo* World::vehicleInfo(const std::string& type) {
     const std::string key = lowerCopy(type);
     auto it = vehicleInfos_.find(key);
@@ -459,6 +474,11 @@ const VehicleInfo* World::vehicleInfo(const std::string& type) {
                 else if (k == "highenginesnd") info->highEngineSnd = v;
                 else if (k == "texurescroll") info->texScroll = std::atoi(v.c_str());
                 else if (k == "texurescrollscale") info->texScrollScale = f;
+                else if (k == "bulletdamage") info->bulletDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "armorpiercingdamage") info->armorPiercingDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "grenadedamage") info->grenadeDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "projectiledamage") info->projectileDamage = std::atoi(v.c_str()) != 0;
+                else if (k == "projectilesplashdamage") info->projectileSplashDamage = std::atoi(v.c_str()) != 0;
                 else if (k == "quadbarrel") info->quadBarrel = std::atoi(v.c_str()) != 0;
             }
         }

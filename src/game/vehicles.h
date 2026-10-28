@@ -51,6 +51,9 @@ struct VehicleInfo {
     bool steerWheels = false; // info +0x44: front wheels turn with the yaw rate (0x5107e0)
     float turretHorizSpanLeft = 0, turretHorizSpanRight = 0, turretVertSpanUp = 0, turretVertSpanDown = 0, turretRotRate = 0;
     bool quadBarrel = false;
+    // bulletDamage / armorPiercingDamage / grenadeDamage / projectileDamage / projectileSplashDamage (bool, info +0x50..+0x60):
+    // which means of death hurt the vehicle (0x5122f0).
+    bool bulletDamage = false, armorPiercingDamage = false, grenadeDamage = false, projectileDamage = false, projectileSplashDamage = false;
     // texureScroll (sic, +0x48) / texureScrollScale (+0x64): tread texture scrolling (0x510870).
     int texScroll = 0;
     float texScrollScale = 0;

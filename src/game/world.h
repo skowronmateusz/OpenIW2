@@ -594,6 +594,8 @@ public:
     void debugSetClip(const std::string& weapon, int rounds);
     std::pair<int, int> debugAmmo(const std::string& weapon);
     // Tests: the hit-location multiplier (0x528100) for an attacker holding `weapon` ("" = no weapon).
+    // Vehicle immunity filter of G_Damage (0x5122f0, called at the top of 0x528050 when ent+0x108 is set): true = ignored.
+    static bool vehicleIgnoresDamage(const VehicleInfo& info, int mod, int dflags);
     float debugLocMultiplier(const std::string& weapon, const std::string& location) {
         player_->obj->set("$weapon", script::Value(weapon));
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
@@ -748,7 +750,7 @@ private:
                                 int& location);
     Vec3 eyePosition(Entity& e);
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
-                const std::string& location = "none");
+                const std::string& location = "none", int dflags = 0);
     // attacker: the entity credited with the damage (nullptr = the world).
     bool playerLastShot_ = false;
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,

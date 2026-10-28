@@ -415,3 +415,15 @@ VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0
 - 0x5107e0 sets ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45), 0 when the vehicle info has no steerWheels. 0x510770 (jolt step) and 0x510870 (tread scroll) were already implemented.
 - Turret spin and stop sounds, engine pitch: already implemented in updateVehicleEngineSound (0x510be0).
 - Wheels (cgame 0x4ac2b0, checked): bone control entries (0x4746e0) are {quat, translation, 0}; the translation (default zero vector 0x56ce9c) is added to the bone's local offset. The interpolated fields 0x16c..0x180 = es+0x64 (body pitch), +0x74 (turret yaw), +0x6c (roll), +0x70 (barrel pitch), +0x94 (steer), +0x60 * 0.001 (suspension travel; the server think 0x512cd8 stores (int)(info+0x88 * 1000)). Per wheel tag (front_left, front_right, back_left, back_right, middle_left, middle_right; P = tag bind position): axes from AngleVectors(angles) = forward, left (= -right), up; w = forward*Px + left*Py + up*Pz + origin; point trace (mask 0x211, entity skipped) from w + up*40 (0x591f78) to w - up*travel; d = max((travel + 40) * fraction, 40 - travel); hit = start - up*d; control translation = M * (hit - origin) - P (0x423480, rows forward / left / up), i.e. up*(40 - d): -travel without a hit, at most +travel. The first two wheels also get rotation angles (0, steer, 0) when steer is not 0; the others keep identity. travel 0 means no motion. Implemented as `vehicleWheelControls` (viewer draw path) with `assets::BoneControl`; steerAngle is stored by the think (needs the info key steerWheels). TODO(spec): the previous-yaw source of 0x5107e0 is the frame start yaw here; the wheel offsets use the server-frame pose (no cgame interpolation of the trace).
+
+## Damage filter (G_Damage on a vehicle)
+
+G_Damage (0x528050) calls the vehicle filter 0x5122f0 first whenever the entity has vehicle info (ent+0x108); a nonzero
+result leaves before any health change or `damage` notify. Vehicle-file bools: `bulletDamage` (+0x50),
+`armorPiercingDamage` (+0x54), `grenadeDamage` (+0x58), `projectileDamage` (+0x5c), `projectileSplashDamage` (+0x60).
+MOD_PISTOL_BULLET / MOD_RIFLE_BULLET hurt only with bulletDamage, or with armorPiercingDamage when dflags has bit 2;
+MOD_GRENADE / MOD_GRENADE_SPLASH need grenadeDamage; MOD_PROJECTILE projectileDamage; MOD_PROJECTILE_SPLASH
+projectileSplashDamage; MOD_EXPLOSIVE always hurts; MOD_UNKNOWN, MOD_MELEE..MOD_TRIGGER_HURT (incl. MOD_CRUSH) never do.
+Bullet_Fire_Extended (0x531379..0x5313a3) passes MOD_RIFLE_BULLET with dflags 0x40 for rifleBullet weapons, else
+MOD_PISTOL_BULLET with 0, and ORs 2 for armorPiercing weapons. Implemented as `World::vehicleIgnoresDamage`
+(tests/test_itempickup.cpp). The libya tanks (tiger etc.) have bulletDamage 0, so the MP40 no longer hurts them.
