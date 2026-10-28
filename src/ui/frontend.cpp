@@ -17,7 +17,9 @@ bool inList(const std::vector<std::string>& l, const std::string& v) {
         if (lower(s) == lower(v)) return true;
     return false;
 }
-constexpr size_t kMaxOpenMenus = 16; // TODO(spec): the limit behind the "Too many menus opened" error
+// The open-menu stack (0x4c7e80: list at uiInfo +0x130, count +0x170) holds 16; opening a 17th raises Com_Error(1, "Too many menus
+// opened", 0x5819f8) - a drop error in the exe; here the open is refused.
+constexpr size_t kMaxOpenMenus = 16;
 } // namespace
 
 MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
@@ -279,8 +281,17 @@ std::string MenuStack::valueLabel(const Item& it) const {
         if (it.enumList.empty()) return "<dvarEnumList not set>";
         if (!env_.enumValues) return "<not an enum dvar>";
         const auto names = env_.enumValues(it.enumList);
-        const int i = int(cvarValue(it)); // TODO(spec): the index clamp of 0x4ca510
-        return i >= 0 && size_t(i) < names.size() ? names[size_t(i)] : std::string();
+        // 0x4ca510: atoi of the dvar's string; outside 0..count-1 the domain is searched for that string (case-insensitive,
+        // 0x43f6d0), no match gives index 0.
+        const std::string raw = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
+        int i = std::atoi(raw.c_str());
+        if (i < 0 || size_t(i) >= names.size()) {
+            i = 0;
+            auto low = [](std::string v) { for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch))); return v; };
+            for (size_t k = 0; k < names.size(); ++k)
+                if (low(names[k]) == low(raw)) { i = int(k); break; }
+        }
+        return names.empty() ? std::string() : names[size_t(i)];
     }
     if (it.type == 12 && !it.strList.empty()) return it.strList[strIndex(it)].first;
     if (it.type == 12 && !it.floatList.empty()) {

@@ -283,6 +283,20 @@ int main() {
         CHECK(st.empty());
     }
 
+    {
+        // Enum dvar label (0x4cd720 / index 0x4ca510): atoi of the value in range, else the name matched case-insensitively, else index 0.
+        env.enumValues = [](const std::string&) { return std::vector<std::string>{"low", "medium", "high"}; };
+        iw2::ui::Item en;
+        en.type = 13;
+        en.dvar = "r_quality";
+        en.enumList = "r_quality";
+        cv["r_quality"] = "2";
+        CHECK(st.valueLabel(en) == "high");
+        cv["r_quality"] = "Medium"; // atoi 0 is in range: index 0 (the name search only follows an out-of-range number)
+        CHECK(st.valueLabel(en) == "low");
+        cv["r_quality"] = "9";
+        CHECK(st.valueLabel(en) == "low");
+    }
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;
 }
