@@ -7035,7 +7035,9 @@ int main(int argc, char** argv) {
                 }
                 wasDead = playerDead;
                 // Camera bob (0x4ae290): up by the bob wave, sideways along the right vector (pitch/yaw/roll of the view).
-                // TODO(spec): the landing dip (0xf790a0), the damage kick (0xf79764), the minimum eye height (0x592010).
+                // Landing dip (0xf790a0, viewImp.land), step offset and the minimum eye height (origin z + 8, 0x592010; applied below)
+                // are implemented; the damage kick is applied to the view angles further down (0x4ae371).
+                // TODO(spec): whether the 0x4ae775 minimum also applies while dead (it is skipped here).
                 if (!playerDead) {
                     const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
                     const auto vb = game::viewBob(ps.bobCycle, xy, ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsViewBobMult"));
