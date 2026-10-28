@@ -42,11 +42,17 @@ Once per frame (0x4fe890):
    The first one with no check yet or an older check is checked (0x54ca60); candidates are tried until one sight trace was
    made (trace counter actor +0xd4).
 2. Check: from the actor's eye (`tag_eye` world position and its horizontal forward, 0x500910; origin + 64 without the tag)
-   to the target's eye (actors: `tag_eye`; player: origin + view height, 0x4e8b70). Distance/cone test (0x54c840): fail
+   to the target's eye (actors: `tag_eye`; player 0x4e8b70: ps origin + view height ps+0xd4, moved by the lean
+   0x440380(…, 16, 20), or the turret's `tag_player` while ps pm_flags & 0x300 — so a crouched (40) or prone (11) player
+   is checked at that height, not at a standing 60). Distance/cone test (0x54c840): fail
    beyond `maxsightdistsqrd` (when ≠ 0) or the fog limit 0x1c61038; with a cone (`fovcosine` ≠ 0; the current enemy and
    `favoriteenemy` get none) fail behind or when dot² < dist² · fov². A pass makes a sight trace (0x54c760, mask
    0x280d803); a clear trace still needs a
-   visibility value ≥ 0.2 from 0x48b090.
+   visibility value ≥ 0.2 from 0x48b090. That value is the FX sight blockers only (smoke): 1.0 (0x591e20) with no
+   blockers (count 0xc47a20) or when the segment is shorter than `fx_visMinTraceDist` (dvar 0x617eb0); else, with
+   dir = normalize(end − start) and half = length · 0.5 (0x591e10), every blocker (0x14 bytes from 0xc3ed88: origin,
+   radius², visibility) whose projection t = (origin − start) · dir has |t − half| ≤ half and whose closest-point
+   distance² is below radius² multiplies the result by its visibility. World geometry plays no part in it.
 3. Update: visible, last check = now; if visible: last seen = now, ignore-until = 0 (not on a turret), last known time,
    position and own position (0x500c50). If the target is an actor not on a turret, it gets the same update about this
    actor when this actor is inside its own distance/cone limits (no second trace).
@@ -60,11 +66,39 @@ Once per frame (0x4fe890):
    (0x517e40: bit n·min + max of the node visibility), else as "recent" when known within 10 s; others are aware when known
    within 5 s. Score = threatbias + (visible 1000 | aware 500 | recent 250) + clamp(−100 · accuracy difference, −500,
    1000) + (dist < 2000 ? round((2000 − dist)² · 0.00125) : 0) + max(−100 · attackers (minus itself when current), −400)
-   + (current enemy: visible/aware 1000, recent 500, else 100).
+   + (current enemy: visible/aware 1000, recent 500, else 100). The node visibility table (0x1c8da44) is the
+   lump-38 bit set loaded by 0x52e3c0 (0x516c86); only with the developer dvar `g_connectpaths` (0x1c148b4,
+   registered at 0x4d9339) does 0x516c03 → 0x52ee40 regenerate links and visibility at load ("Map does not have paths
+   generated. Run the game with "g_connectpaths 1" …", 0x58ef50). Shipped maps therefore use the compiler's bits as
+   data; a null table makes 0x517e40 return 0 (not visible), the same node returns 1. The awareness here only
+   ranks enemies (score); it does not make the actor fire (see "Firing at an unseen enemy").
+6. Last sight position (0x4fe830, after step 4 at 0x4fe8bf / 0x54d45b): when the current enemy's record is visible
+   and its last seen time is the current level time, the actor field `lastenemysightpos` (+0x203c, defined flag
+   +0x2048) becomes the enemy's eye (0x514f70: actor `tag_eye` 0x500910, player 0x4e8b70). Losing sight does not
+   clear it. An enemy change (0x515150, 0x5151ff..0x515217) and the enemy-reference clears of the sentient release
+   paths (flag writes at 0x514d83, 0x514de6, 0x514e3d) clear the flag (0x515150 and 0x514d50 also actor +0x1738 /
+   +0x1764, not modelled) and then run 0x4fe830 again (0x515217, 0x514d89). Two more clears (0x4fe23d, followed by
+   0x4fe830, and 0x540db2) are in callers not decoded yet. Its setter
+   0x5368d0 stores a script vector or clears the flag for undefined; the getter 0x536940 returns undefined while the
+   flag is clear.
 
-TODO: the accuracy term (0x550da0: weapon accuracy graphs, player accuracy cvars), the 0x48b090 visibility value, the fog
-limit, `notarget` (entity flag 4 at +0x128), the player's real view height, and
-using a turret's eye for gunners (0x51b940).
+### Firing at an unseen enemy (observed)
+
+The `shoot` builtin path 0x550a70 has no visibility test: without a position it rolls the hit chance (0x54fde0) and
+aims at the current enemy's body (0x54ff90 / 0x550390), with a position (0x550af6) it fires at that point. Whether an
+actor fires is decided by the animscripts' gates, all of which trace: `cansee` (0x53d930 → 0x54ce10 / 0x54ca60, sight
+mask 0x280d803), `sighttracepassed` (sight mask), `canshoot` (0x53d800 → 0x54cf40: muzzle to the point, mask
+0x200c861, also passing when the first hit is a sentient of another team; `canShootEnemyFrom` adds the eye offset for
+its sight check), and suppression (`hasSuppressableEnemy` / `foundGoodSuppressSpot` in utility.gsc), which needs
+`lastenemysightpos` (step 6) and aims `shoot(1, spot)` at points between that position and the enemy that the muzzle
+can sight-trace to. Behind sight-only cover (rhine's fallen trunk, contents 0x8031640: bits 0x1000 and 0x40) `cansee`
+and `canshoot` fail, so an exposed actor falls back to suppression of the last sight position; its bullets (mask
+0x280e831) are not stopped by such cover.
+
+TODO: the accuracy term (0x550da0: weapon accuracy graphs, player accuracy cvars), the fog
+limit, `notarget` (entity flag 4 at +0x128), the actor fields +0x1738 / +0x1764 cleared with an enemy change, the
+`clearenemy` builtin (OpenIW2 clears the field directly, bypassing 0x515150), the node visibility derivation of
+0x52ee40 (developer path only), and using a turret's eye for gunners (0x51b940).
 
 ## AI states (observed; objdump where Ghidra has no function)
 
@@ -959,3 +993,7 @@ With dz = node z - origin z (constants 0x592010 = 8, 0x591e00 = 0, 0x592390 = -1
 dz < -18 gives -8, otherwise 0. Ported as `World::stuckRecovery`. It does not free the demolition actors that wall_hop
 leaves in the actor-clip slab near (6383, 523): they sit on the node height (dz in [-18, 0]), so the nudge is 0.
 TODO(spec): the escape from that slab is still unknown (the move block there returns 0 every frame).
+
+### Negotiation trigger snap (0x503ec0, 0x503fb0..0x503fda)
+
+The trigger runs inside the path step, before the physics move, on the pre-move origin and the previous frame's block velocity (+0x230..0x238): 2D distance² to the begin point <= |velocity|² · 0.005 + 1e-6. When it pushes state 9 the move delta (+0x250..0x258) is replaced by (begin point - origin), so the move block carries the actor exactly onto the begin point. The port used to test after the move, starting wall_hop up to ~13 units early; the hop then ended inside the 15-thick AI-clip wall of demolition (x 6383) and the actors never reached `end_left`. Now `World::moveActor` triggers first and overrides the delta. Failed move block (0x501d00): block vz (+0x238) is cleared; with no node in range the block's partially moved origin stays.

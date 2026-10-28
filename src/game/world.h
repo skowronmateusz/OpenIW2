@@ -794,6 +794,7 @@ private:
     int threatOf(Entity& actor, Entity& target);
     void selectEnemy(Entity& actor);
     void setEnemy(Entity& actor, Entity* enemy, bool notify);
+    void updateLastEnemySightPos(Entity& actor); // 0x4fe830
     int nearestNodeWithin(const Vec3& p, float radius) const;
     void registerCombatBuiltins();
     void registerSoundBuiltins();

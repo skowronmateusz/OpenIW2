@@ -375,4 +375,7 @@ int moveBlock(ActorSlide& pm, const SlideTraceFn& trace) {
     return r;
 }
 
+float stuckNudge(float dz) { return dz > 8.0f ? 8.0f : dz > 0.0f ? dz : dz < -18.0f ? -8.0f : 0.0f; }
+bool negotiationInRange(float dist2, float speed2) { return !(dist2 > speed2 * 0.005f + 0.000001f); }
+
 } // namespace iw2::game
