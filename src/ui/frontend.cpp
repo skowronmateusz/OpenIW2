@@ -72,7 +72,14 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
 void MenuStack::settleFades() {
     for (auto& [it, r] : runtime_) {
         if (r.fadingOut) shownOverrides_.emplace_back(it, false);
-        if (r.fadingIn) (r.hasFore ? r.fore : r.back)[3] = 1.0f; // TODO(spec): fadeClamp of the item's menu
+        if (r.fadingIn) {
+            // The fade-in of 0x4cc450 ends with alpha = the item's menu fadeClamp (menu +0x234, parsed by 0x4d1760).
+            float clamp = 1.0f;
+            for (const Menu* m : stack_)
+                for (const auto& mi : m->items)
+                    if (mi.get() == it) clamp = m->fadeClamp;
+            (r.hasFore ? r.fore : r.back)[3] = clamp;
+        }
         r.fadingIn = r.fadingOut = false;
     }
 }
@@ -140,7 +147,9 @@ void MenuStack::close(const std::string& name) {
     if (it == stack_.end()) return;
     const bool wasTop = stack_.back() == m;
     stack_.erase(it);
-    // TODO(spec): the exe's stop/fade of the loop on close (0x4cf92c); here it stops when no open menu names the same loop.
+    // The exe has no explicit stop on close: Menu_Paint (0x4cf92c, 0x4cfb40, 0x4cfd20) re-submits the loop through 0x40fff0 ->
+    // 0x4423d0 for every open menu (flag 0xe8 bit 2) with a soundLoop (+0x254), so it ends when the last such menu is gone.
+    // TODO(spec): the fade tail of the sound system after the last submit (needs the 0x4423d0 sound-start decode).
     if (!loopAlias_.empty() && lower(m->soundLoop) == loopAlias_) {
         bool still = false;
         for (const Menu* o : stack_) still = still || lower(o->soundLoop) == loopAlias_;
@@ -170,8 +179,10 @@ bool MenuStack::itemVisible(const Item& it) const {
     if (!flag) return false;
     if (!it.dvarTest.empty()) {
         const std::string v = env_.getCvar ? env_.getCvar(it.dvarTest) : std::string();
-        // TODO(spec): the exe handler of showDvar/hideDvar; the shipped menus show an item when the value is listed in
-        // showDvar and hide it when listed in hideDvar.
+        // 0x4d4070(item, 4): showDvar (flag 0x4) and hideDvar (0x8) share one list (item +0x2cc, parsed by 0x4d2cb0 / 0x4d2ce0) and
+        // the dvarTest name (+0x2c4); both must be non-empty. The dvar string is compared case-insensitively with each list entry
+        // (";" entries skipped). With showDvar the item shows only when listed; with hideDvar alone it hides when listed. An item
+        // with both keys would use the last list read (no shipped menu has both active).
         if (!it.showDvar.empty() && !inList(it.showDvar, v)) return false;
         if (!it.hideDvar.empty() && inList(it.hideDvar, v)) return false;
     }
@@ -438,7 +449,14 @@ void MenuStack::key(Key k) {
         k == Key::PageDown || k == Key::WheelUp || k == Key::WheelDown)
         return;
     if (k == Key::Escape) {
-        runItem(*m, m->onEsc); // TODO(spec): menus without onESC (main) simply ignore ESC
+        // UI_KeyEvent (0x4c63c0) on ESC down: when no open visible menu is fullScreen (0x4cf6a0, menu +0x214) and the focused menu has
+        // no onESC (+0x24c), every menu is closed (0x4c8080); otherwise the key goes to the menu handler (0x4cbf2a), which runs onESC if
+        // set (nothing for a fullScreen menu without one, e.g. main). TODO(spec): after closing the last menu the exe also clears the
+        // UI key catcher and, when the byte behind pointer 0x59b724 is 0, sets cl_paused to 0 (0x4c6455).
+        bool fullScreenVisible = false;
+        for (const Menu* o : stack_) fullScreenVisible = fullScreenVisible || o->fullScreen;
+        if (m->onEsc.empty() && !fullScreenVisible) closeAll();
+        else runItem(*m, m->onEsc);
         return;
     }
     const auto sel = selectable(*m);
