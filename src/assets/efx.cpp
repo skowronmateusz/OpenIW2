@@ -31,7 +31,11 @@ std::vector<std::string> words(const std::string& line) {
     return out;
 }
 
-// {name, element-flag bit, spawn-flag bit} rows; one table serves both keys.
+// The exe's flag table 0x56d528 ({name, element flag +0x90, spawn flag +0x94}, 12-byte rows, in this order). `flags` / `flag`
+// search rows 0..23 (0x489c73: count 0x18), `spawnFlags` / `spawnFlag` rows 24..36 (0x56d648, count 0xd); a found row ORs BOTH
+// of its bits into the element (0x488650), so `absoluteVel` / `absoluteAccel` under spawnFlags set element flags. A name not
+// in the searched rows fails the key (0x4886b0 -> 0x489650 "Error while parsing key"), which fails the whole effect (0x486917:
+// "FX Error while parsing segment type", the effect is freed).
 struct FlagName { const char* name; uint32_t flag, spawn; };
 constexpr FlagName kFlagNames[] = {
     {"depthHack", 0x1, 0}, {"setShaderTime", 0x4, 0}, {"useModel", 0x10, 0}, {"useBBox", 0x40, 0},
@@ -44,14 +48,23 @@ constexpr FlagName kFlagNames[] = {
     {"org2fromTrace", 0, 0x8}, {"traceImpactFx", 0, 0x10}, {"org2isOffset", 0, 0x20}, {"cheapOrgCalc", 0, 0x40},
     {"cheapOrg2Calc", 0, 0x80}, {"orgOnSphere", 0, 0x1}, {"orgOnCylinder", 0, 0x4}, {"axisFromSphere", 0, 0x2},
     {"randrotaroundfwd", 0, 0x100}, {"evenDistribution", 0, 0x200}, {"frustumCull", 0, 0x400},
-    {"absoluteAccel", 0x400000, 0},
+    {"absoluteVel", 0x200000, 0}, {"absoluteAccel", 0x400000, 0},
 };
+constexpr size_t kElementRows = 24, kSpawnFirst = 24, kSpawnRows = 13;
 
-uint32_t bitsOf(const std::vector<std::string>& names, bool spawn) {
+const FlagName* findFlag(const std::string& name, bool spawnKey) {
+    const size_t first = spawnKey ? kSpawnFirst : 0, count = spawnKey ? kSpawnRows : kElementRows;
+    for (size_t k = first; k < first + count; ++k)
+        if (lower(name) == lower(kFlagNames[k].name)) return &kFlagNames[k];
+    return nullptr;
+}
+
+// Bit `which` (0 = element +0x90, 1 = spawn +0x94) gathered from both keys.
+uint32_t bitsOf(const EfxElement& e, int which) {
     uint32_t bits = 0;
-    for (const auto& n : names)
-        for (const auto& f : kFlagNames)
-            if (lower(n) == lower(f.name)) bits |= spawn ? f.spawn : f.flag;
+    for (int key = 0; key < 2; ++key)
+        for (const auto& n : e.list(key ? "spawnflags" : "flags"))
+            if (const FlagName* f = findFlag(n, key == 1)) bits |= which ? f->spawn : f->flag;
     return bits;
 }
 
@@ -147,11 +160,11 @@ uint32_t& fxGeneratorSeed() {
 }
 
 uint32_t EfxElement::flagBits() const {
-    if (flagBitsCache_ < 0) flagBitsCache_ = bitsOf(list("flags"), false);
+    if (flagBitsCache_ < 0) flagBitsCache_ = bitsOf(*this, 0);
     return uint32_t(flagBitsCache_);
 }
 uint32_t EfxElement::spawnFlagBits() const {
-    if (spawnFlagBitsCache_ < 0) spawnFlagBitsCache_ = bitsOf(list("spawnflags"), true);
+    if (spawnFlagBitsCache_ < 0) spawnFlagBitsCache_ = bitsOf(*this, 1);
     return uint32_t(spawnFlagBitsCache_);
 }
 
@@ -319,7 +332,14 @@ EfxEffect parseEfx(std::string_view text) {
                 continue;
             }
             if (key == "name") el.name = l[1];
-            el.keys[key] = std::vector<std::string>(l.begin() + 1, l.end());
+            std::string storeKey = key;
+            if (key == "flag") storeKey = "flags";
+            if (key == "spawnflag") storeKey = "spawnflags";
+            if (storeKey == "flags" || storeKey == "spawnflags")
+                for (size_t w = 1; w < l.size(); ++w)
+                    if (!findFlag(l[w], storeKey == "spawnflags"))
+                        throw std::runtime_error("efx: unknown " + storeKey + " name " + l[w] + " (the effect fails to load, 0x486917)");
+            el.keys[storeKey] = std::vector<std::string>(l.begin() + 1, l.end());
         }
         // 0x487910: legacy records become graphs once the element is complete (mean life from `life`, element +0x58/+0x5c).
         // rgbRand (index 1) gets one component there, which the rgb updater (0x47f4a0, fixed 16-byte rows) reads out of bounds:

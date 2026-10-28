@@ -2837,12 +2837,21 @@ int main(int argc, char** argv) {
                 if (ev.entity >= 0 && !ev.tag.empty()) {
                     // Bolted (0x4853f0 attachment): the tag position is re-read while relative particles live (cached per world time).
                     game::World* wp = world.get();
-                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FVec{}, ok = false](game::FVec& out) mutable {
+                    // 0x48abb0: the tag orientation (origin + axes), refreshed once per frame stamp (cached per world time here).
+                    auto bolt = std::make_shared<game::FxBolt>([wp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
                         if (wp->timeMs() != lastT) {
                             lastT = wp->timeMs();
                             game::Vec3 p{};
-                            ok = wp->entityTagPosition(n, tag, p);
-                            if (ok) last = {p[0], p[1], p[2]};
+                            std::array<game::Vec3, 3> ax{};
+                            bool hasAxes = false;
+                            ok = wp->entityTagOrientation(n, tag, p, ax, hasAxes);
+                            if (ok) {
+                                last = game::FxTag{};
+                                last.origin = {p[0], p[1], p[2]};
+                                last.hasAxes = hasAxes;
+                                if (hasAxes)
+                                    for (int k = 0; k < 3; ++k) last.axes[size_t(k)] = {ax[size_t(k)][0], ax[size_t(k)][1], ax[size_t(k)][2]};
+                            }
                         }
                         out = last;
                         return ok;
@@ -3221,8 +3230,8 @@ int main(int argc, char** argv) {
                             viewFlash->brassPending = false;
                             const std::string path = pweapon.field("shellEjectEffect");
                             if (viewFlash->brassValid && !path.empty() && path != "none") {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
-                                    o = vf->brassPos;
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // position only (no tag axes known here)
+                                    o.origin = vf->brassPos;
                                     return vf->brassValid;
                                 });
                                 const auto& m = base.transform;
@@ -3234,8 +3243,8 @@ int main(int argc, char** argv) {
                             viewFlash->pending = false;
                             const std::string path = pweapon.field("viewFlashEffect");
                             if (!path.empty()) {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FVec& o) {
-                                    o = vf->pos;
+                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // position only (no tag axes known here)
+                                    o.origin = vf->pos;
                                     return vf->valid;
                                 });
                                 const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};

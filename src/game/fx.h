@@ -16,9 +16,16 @@ namespace iw2::game {
 using FVec = std::array<float, 3>;
 using FxAxes = std::array<FVec, 3>; // forward, right, up (rows of the 3x3 axis of the game)
 
-// A bolt (the attachment record of 0x4853f0: entity + tag) as a host callback returning the tag's current world position;
+// The orientation of an attachment's tag (0x48abb0 output: origin, then axis rows forward / left / up). hasAxes is false when the
+// host only knows the position (the axes are then taken as the identity, i.e. the tag only translates).
+struct FxTag {
+    FVec origin{};
+    FxAxes axes{FVec{1, 0, 0}, FVec{0, 1, 0}, FVec{0, 0, 1}};
+    bool hasAxes = false;
+};
+// A bolt (the attachment record of 0x4853f0: entity + tag) as a host callback returning the tag's current orientation;
 // false when the attachment is no longer valid (0x485bf0).
-using FxBolt = std::function<bool(FVec&)>;
+using FxBolt = std::function<bool(FxTag&)>;
 
 struct FxParticle {
     const assets::EfxElement* element = nullptr;
@@ -31,6 +38,8 @@ struct FxParticle {
     float rot0 = 0;                     // Particle start angle (+0x44, drawn from `rotation` by 0x48ce70)
     std::shared_ptr<FxBolt> bolt;       // relative (0x2) particle of a bolted effect: follows the tag
     FVec bolt0{};                       // the tag position at spawn
+    FVec local0{};                      // relative: the spawn point in tag space (0x48c290 end: (p − tag origin) · tag rows)
+    FxTag tag0;                         // relative: the tag orientation at spawn
     float scale[8]{};                   // per-channel scale picked from the scale range
     size_t shader = 0;                  // index into the element's shader list
     // Atlas sequence (0x48cd20): start frame (+0x108), frames per ms (+0x10c), loop mode / times (+0x110 / +0x114).

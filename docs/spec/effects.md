@@ -29,6 +29,24 @@ adds a point at time 0 when the first row's time is not 0 and a point at time 1 
 both new points copy the values of the file's first row. `FUN_0047ecf0` integrates a graph up to t (area under
 the piecewise-linear curve), used for velocities.
 
+## Relative elements (flag 0x2) and the attachment
+
+- A bolted play (0x4853f0 with an attachment) takes the effect's origin AND axes from the tag orientation (0x485479 →
+  0x48abb0: origin, then rows forward / left / up). Relative elements get the attachment record (0x485bf0, element +0xc0 via
+  0x48cb00) and are kept in the element array 0x5a39dc.
+- Spawn: the spawn point is converted into tag space at the end of 0x48c290 ((p − origin) · row k, the 0x440600 pattern);
+  Line B by 0x440600 (0x48d4a1), Cylinder / OrientedParticle / Emitter directions by 0x440650 (0x48d786, 0x48dd53, 0x48d964).
+  The particle velocity axes (+0xd0, 0x4803f0) are the effect's axes as given, i.e. the tag axes in world space; the
+  velocity / gravity offsets are added to the tag-space position as they are.
+- Update: 0x47fcd0 returns the attachment orientation (refreshed by 0x48abb0 when the frame stamp 0x6221a8 changed; failure
+  ends the element) and 0x4404f0 maps the tag-space position back: origin + x·row0 + y·row1 + z·row2 (Particle 0x48037a,
+  Line 0x482dd8 / 0x482de9, Cloud A 0x482b0f (B stays tag-space), Cylinder 0x4834a9 / 0x4834df, Tail 0x483202, Emitter
+  0x483719, OrientedParticle 0x48269c + axes 0x440540).
+- OpenIW2: `FxTag` (origin, axes, hasAxes) from `World::entityTagOrientation` (bone rotation; vehicle tags give the position
+  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder. TODO(spec): relative Emitter / Tail
+  (0x480bd0 traces through the bolt, 0x440650 normals) and OrientedParticle axes (0x440540); the view-weapon flash / brass
+  bolts pass the position only.
+
 ## Particle quads (renderer type 4)
 
 - Particle update 0x480330: Emitter step (0x480bd0), A (+0x7c) = position (through the bolt), size (0x4818b0); only when
@@ -87,8 +105,7 @@ mid(r) = (max − min) · 0.5 + min:
 - Frame +0x94: no Line code writes it and the effect pool (0x47f0a0) hands out freed slots uncleared, so it is whatever the
   previous occupant left (0 in never-used pool memory 0xa32380). Frame 0 is used.
 - Relative Lines: the spawn stores B in tag space (0x440600), the update maps A and B through the bolt (0x4404f0).
-- OpenIW2: `FxSystem` emits a `beamTail` sprite; relative Lines follow the tag's translation (TODO(spec): its rotation; the exe maps
-  relative positions through the full tag orientation, 0x47fcd0 / 0x4404f0). The only Line effect (minefield.efx) names materials that do not ship and is not played by
+- OpenIW2: `FxSystem` emits a `beamTail` sprite; relative Lines map A and B through the tag orientation (see "Relative elements"). The only Line effect (minefield.efx) names materials that do not ship and is not played by
   any script.
 
 ## Cloud elements (type 12)
@@ -169,6 +186,13 @@ absoluteVel2 / absoluteAccel 0x400000, affectedByWind 0x800000, disableFarPlaneC
 orgOnSphere 0x1, axisFromSphere 0x2, orgOnCylinder 0x4, org2fromTrace 0x8, traceImpactFx 0x10, org2isOffset
 0x20, cheapOrgCalc 0x40, cheapOrg2Calc 0x80, randrotaroundfwd 0x100, evenDistribution 0x200, frustumCull 0x400.
 The spawnFlags parser uses the same table from its `org2fromTrace` row (0x56d648).
+Exact rules (0x489c59 / 0x489c6c → 0x4886b0 → 0x488650): `flags`/`flag` search the first 24 rows (depthHack ..
+disableFarPlaneCulling), `spawnFlags`/`spawnFlag` the 13 rows from org2fromTrace, which end with absoluteVel (0x200000) and
+absoluteAccel (0x400000): a matched row ORs both its element and spawn bits, so these two set ELEMENT flags from spawnFlags
+(grenade_smoke, large_vehicle_explosion, dust_impact_16ftladder). Names compare case-insensitively. A name outside the searched
+rows fails the key, the element ("FX Error while parsing segment type") and so the whole effect (0x486917 frees it): the
+shipped fx/impacts/wall_impact_small_dirt.efx uses `rgbComponentInterpolation`, which is in no row, and does not load in
+the original; OpenIW2's parser rejects it the same way. An effect holds at most 24 elements (0x48693f).
 
 Implemented: `src/assets/efx.{h,cpp}`. Not specified yet: the runtime (spawning, element update, drawing) and the
 meaning of the flag bits.
