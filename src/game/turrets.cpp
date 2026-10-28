@@ -173,17 +173,37 @@ void World::registerTurretBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("maketurretusable", [this](CallContext& c) { turretOf(c.self).flags |= 0x1000u; return Value(); });
-    // setcursorhint (0x4f0c50): HINT_NONE 1, HINT_ACTIVATE 2, HINT_HEALTH 3, HINT_FRIENDLY 4 (table 0x5a965c) into
-    // +0x98. TODO(spec): HINT_INHERIT (trigger_use only) and the weapon-name hints.
-    vm_.registerBuiltin("setcursorhint", [](CallContext& c) {
+    // setcursorhint (0x4f0c50): the name is matched case-insensitively (0x43f6d0) against HINT_INHERIT, accepted only on a
+    // trigger_use / trigger_use_touch entity (entity types 0x1c7f0e6 / 0x1c7f0e8) and stored as -1 (+0x98; 0x534f13 passes it on
+    // as ps+0x578 unchanged), then against the table 0x5a9658: 1 HINT_NONE, 2 HINT_ACTIVATE, 3 HINT_HEALTH, 4 HINT_FRIENDLY (the table
+    // is terminated by a null entry at index 5 and nothing writes more entries; the weapon hint of a weapon item or turret is
+    // composed by the use-entity search 0x534d40, not by this builtin). Anything else is a script error
+    // "<name> is not a valid hint type. See above for list of valid hint types".
+    vm_.registerBuiltin("setcursorhint", [this](CallContext& c) {
         static const char* const kHints[] = {"HINT_NONE", "HINT_ACTIVATE", "HINT_HEALTH", "HINT_FRIENDLY"};
         const std::string h = c.arg(0).toString();
+        auto ieq = [](const std::string& a, const char* b) {
+            size_t i = 0;
+            for (; i < a.size() && b[i]; ++i)
+                if (std::toupper(static_cast<unsigned char>(a[i])) != std::toupper(static_cast<unsigned char>(b[i]))) return false;
+            return i == a.size() && !b[i];
+        };
+        const Entity* e = entityOf(c.self);
+        if (e && (e->classname == "trigger_use" || e->classname == "trigger_use_touch") && ieq(h, "HINT_INHERIT")) {
+            c.self.asObject()->set("$cursorhint", Value(int32_t(-1)));
+            return Value();
+        }
         for (int i = 0; i < 4; ++i)
-            if (h == kHints[i]) c.self.asObject()->set("$cursorhint", Value(int32_t(i + 1)));
-        return Value();
+            if (ieq(h, kHints[i])) {
+                c.self.asObject()->set("$cursorhint", Value(int32_t(i + 1)));
+                return Value();
+            }
+        throw std::runtime_error(h + " is not a valid hint type. See above for list of valid hint types");
     });
     // sethintstring (0x4f0ec0): trigger_use / trigger_use_touch (+3) or actors (+0x2124); "" clears it.
-    // TODO(spec): the extra parameters appended to the string (0x4eb9b0 "Hint String").
+    // TODO(spec): 0x4eb9b0 ("Hint String") joins all arguments (localized ones wrapped in marker bytes 0x15 / 0x14) into one text of
+    // at most 1024 bytes, registered in a configstring table (0x4f0da0, error "Too many different hintstring values"); only the
+    // first argument is kept here and the marker format of the client-side reader is not decoded.
     vm_.registerBuiltin("sethintstring", [](CallContext& c) {
         const Value v = c.arg(0);
         std::string key;

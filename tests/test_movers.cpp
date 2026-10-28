@@ -1,6 +1,7 @@
 // Tests for mover trajectories (accel/linear/decel phases) and the angle difference helper.
 
 #include "game/movers.h"
+#include "game/turrets.h"
 
 #include <cmath>
 #include <iostream>
@@ -76,6 +77,11 @@ int main() {
     MoverChannel vl; // along the left axis (+y at yaw 0) the roll swings
     startVibrate(vl, {0, 0, 0}, {0, 3, 0}, 1, 1.0f, 0.0f, 0);
     CHECK(near(vl.tr.delta[0], 0) && near(vl.tr.delta[2], 1));
+
+    // node_turret cover arcs (0x5159f0): a right arc of −45 (stored negated) wraps to ~315, a left arc of 45 stays.
+    CHECK(near(iw2::game::turretArcWrapped(-45.0f), 315.0f, 0.02f));
+    CHECK(near(iw2::game::turretArcWrapped(45.0f), 45.0f, 0.02f));
+    CHECK(near(iw2::game::turretArcWrapped(0.0f), 0.0f));
 
     if (failures) return 1;
     std::cout << "movers tests passed\n";

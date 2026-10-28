@@ -316,6 +316,7 @@ struct PathNode {
     std::array<int64_t, 4> teamBlockedMs{}; // +0x44 + 4·team: unusable for that team until then (1 axis, 2 allies)
     std::array<int, 2> link{-1, -1};        // +0x30 / +0x32: the overlapping nodes (0x52d990), -1 = none
     int linkClaims = 0;                     // +0x56: the claims by the nodes linked to this one
+    int turretEntity = -1;                  // +0x58 (node_turret only; -1 at spawn 0x516137): setturretnode's entity number
 };
 
 class World {
@@ -889,6 +890,7 @@ private:
     void restoreDefaultDropPitch(Entity& t); // 0x51cf10
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
+    const TurretState* nodeTurret(const PathNode& n); // the turret set by setturretnode (node +0x58), or null
     bool actorInGoal(Entity& e, float extra);
     bool goalVolumeHolds(Entity& e, const Vec3& p);
     bool workGoalVolumeHolds(Entity& e, const Vec3& p); // the working goal volume (+0x75c)

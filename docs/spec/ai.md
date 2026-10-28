@@ -261,7 +261,7 @@ within 250 ms) is covered neither at its origin nor at its last known position, 
 the grenade is not covered. Covered (0x54b960, arcs 0x54ba00): 2D distance² ≥ distSq, then either in front of the
 node (dot with the forward ≥ 0) or the yaw from the node minus the node yaw, normalised through 16 bits, inside
 [min, max] (wrapping): types 2/3/10/11 {285², facing}, 4 {285², facing}, 5 {800², facing}, 6/8 {285², 305…30},
-7/9 {285², 330…55}, 12 {285², facing}, 18 {285², turret arcs 0x5159f0 or 315…45}, others {0, facing}. With `check`
+7/9 {285², 330…55}, 12 {285², facing}, 18 {285², arcs of the node's turret or 315…45; `setturretnode(node, turret)` 0x515910 stores the turret entity at node +0x58, -1 at spawn and after `unsetturretnode` 0x5159a0; 0x5159f0 reads turret info +0x38 / +0x40 as (int)(deg·65536/360) & 0xffff · 360/65536}, others {0, facing}. With `check`
 the facing test becomes the arc test when the enemy was not seen within 5 s. Arc limits for the facing types:
 2/3/10/11 315…45, 4 350…10, 5/12 330…30, default 305…55.
 - Faces the enemy (0x54c000): the enemy is in front of the node, and the actor is not farther from the node than
