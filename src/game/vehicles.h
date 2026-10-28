@@ -65,6 +65,10 @@ struct VehicleInfo {
 
 struct VehicleState {
     const VehicleInfo* info = nullptr;
+    // The collmap brush model ('*N', vehicle +0xe) found once for the model at spawn / level load (0x50dc40 from 0x511a6f and
+    // 0x511c5b only); setmodel does not look it up again, so a wreck model keeps the collision of the intact vehicle.
+    std::string collmap;
+    bool collmapSet = false;
     // Per wheel (front_left, front_right, back_left, back_right, middle_left, middle_right): settling height and
     // vertical speed, and the surface type under it (vehicle +0x124/+0x13c/+0x154).
     float wheelVel[6]{}, wheelHeight[6]{};

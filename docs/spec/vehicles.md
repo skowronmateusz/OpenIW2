@@ -436,3 +436,15 @@ projectileSplashDamage; MOD_EXPLOSIVE always hurts; MOD_UNKNOWN, MOD_MELEE..MOD_
 Bullet_Fire_Extended (0x531379..0x5313a3) passes MOD_RIFLE_BULLET with dflags 0x40 for rifleBullet weapons, else
 MOD_PISTOL_BULLET with 0, and ORs 2 for armorPiercing weapons. Implemented as `World::vehicleIgnoresDamage`
 (tests/test_itempickup.cpp). The libya tanks (tiger etc.) have bulletDamage 0, so the MP40 no longer hurts them.
+
+## Collision after destruction
+
+The vehicle's collision brush model (vehicle +0xe) and contents (+0xc0 = 0x800000, 0xa00000 with spawnflag 1) are set by
+0x50dc40: look up the script_vehicle_collmap whose targetname equals the vehicle's model name (0x50d270); nothing found
+-> return with everything unchanged; found without a brush model -> warning. Its only callers are the level-load loop over
+all vehicles (0x511a6f) and the vehicle spawn (0x511c5b), never `setmodel`. The death scripts (`maps/_halftrack.gsc kill`)
+`setmodel` to the `_d` wreck model, which has no collmap of its own (hill400_defend: collmaps only for the intact models),
+so a wreck keeps the intact vehicle's brush collision. `World::vehicleCollmap` therefore remembers the first lookup
+(`VehicleState::collmap`); previously the lookup was repeated for the wreck model, found nothing and removed the clip.
+Test: tests/test_barrelclip.cpp. Script barrels (`maps/_interactable_objects.gsc`): a targeted script_brushmodel clip is
+deleted on explosion (`connectpaths`, `delete`); the entity clip disappears with it (same test, libya).

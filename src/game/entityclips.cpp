@@ -13,7 +13,21 @@ namespace iw2::game {
 // the stance in the original (pmove), OpenIW2 keeps the standing box; corpses are not clips.
 // 0x50d270: the in-use script_vehicle_collmap whose targetname equals the vehicle's model name (case-insensitive);
 // its brush model ("*N"), or empty (an empty brush model warns "Cannot use empty vehicle collmap for [%s]").
+// The lookup (0x50dc40) runs when a vehicle is spawned or the level loaded, never on setmodel (its only callers are 0x511a6f
+// and 0x511c5b): the first result is kept, so a destroyed vehicle's wreck model (setmodel to the _d model, which has no
+// collmap of its own) keeps the brush model and contents of the intact vehicle. A model without a collmap leaves the
+// vehicle's brush model unchanged (0x50dc6f: nothing found -> return).
 std::string World::vehicleCollmap(Entity& v) {
+    if (v.vehicle && v.vehicle->collmapSet) return v.vehicle->collmap;
+    const std::string brush = lookupVehicleCollmap(v);
+    if (v.vehicle) {
+        v.vehicle->collmap = brush;
+        v.vehicle->collmapSet = true;
+    }
+    return brush;
+}
+
+std::string World::lookupVehicleCollmap(Entity& v) {
     const Value mv = v.obj->get("model");
     if (!mv.isString()) return {};
     const std::string model = mv.asString();
@@ -79,8 +93,8 @@ void World::syncEntityClips() {
             continue;
         }
         // A vehicle takes the brush model of the script_vehicle_collmap whose targetname is its model name, contents
-        // 0x800000 (0xa00000 with spawnflag 1) (0x50dc40 after level load 0x4d9c6f and on model changes 0x511a6f /
-        // 0x511c5b). The collmap entities themselves have no contents (0x512fd0).
+        // 0x800000 (0xa00000 with spawnflag 1) (0x50dc40 after level load 0x4d9c6f / 0x511a6f and at vehicle spawn
+        // 0x511c5b, never on setmodel). The collmap entities themselves have no contents (0x512fd0).
         if (e.vehicle && !e.obj->removed) {
             const std::string brush = vehicleCollmap(*ep);
             if (brush.empty()) continue;
