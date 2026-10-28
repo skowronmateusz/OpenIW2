@@ -26,8 +26,10 @@ void World::registerSoundBuiltins() {
     // setblur(amount, time) (0x4f3340): sends "scr_blur <time*1000> <amount> 0 1" to the client.
     vm_.registerBuiltin("setblur", [this](CallContext& c) {
         const float amount = c.arg(0).asFloat(), time = c.arg(1).asFloat();
-        // TODO(spec): the original raises script errors "Time must be positive" / "Blur value must be greater than 0".
-        if (time < 0 || amount < 0) return Value();
+        // Argument errors (0x4f3358..0x4f33c9, script error 0x468ed0 with the argument number in 0x9bef1c): time < 0 ->
+        // "Time must be positive" (0x586600, arg 2), then amount < 0 -> "Blur value must be greater than 0" (0x5865dc, arg 1).
+        if (time < 0) throw std::runtime_error("Time must be positive");
+        if (amount < 0) throw std::runtime_error("Blur value must be greater than 0");
         clientCommands_.push_back({"scr_blur", std::to_string(int(time * 1000.0f)) + " " + std::to_string(amount) + " 0 1"});
         return Value();
     });
