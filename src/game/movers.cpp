@@ -161,13 +161,11 @@ void startVibrate(MoverChannel& ch, const MVec& angles, const MVec& dir, float a
     ch.tr.delta = {dotv(ax[0]), 0.0f, dotv(ax[1])};
 }
 
-void World::runMovers() {
-    for (auto it = movers_.begin(); it != movers_.end();) {
-        Entity* e = entityByNumber(it->first);
-        if (!e || e->obj->removed) {
-            it = movers_.erase(it);
-            continue;
-        }
+void World::runMover(Entity& ent) {
+    auto it = movers_.find(ent.number);
+    if (it == movers_.end() || ent.obj->removed) return;
+    Entity* e = &ent;
+    {
         MoverState& m = it->second;
         for (MoverChannel* ch : {&m.pos, &m.apos}) {
             if (!ch->active) continue;
@@ -184,21 +182,36 @@ void World::runMovers() {
                 vm_.notify(e->obj, ch->angles ? "rotatedone" : "movedone");
             }
         }
-        ++it;
     }
-    // Linked entities follow their parent (TODO(spec): the original update order and tag handling, 0x4ed770).
-    for (const auto& [child, link] : links_) {
-        Entity* c = entityByNumber(child);
+}
+
+// Movers whose entity is gone are dropped (after the entity pass).
+void World::pruneMovers() {
+    for (auto it = movers_.begin(); it != movers_.end();) {
+        Entity* e = entityByNumber(it->first);
+        if (!e || e->obj->removed) it = movers_.erase(it);
+        else ++it;
+    }
+}
+
+// A linked entity follows its parent (G_RunEntity 0x4da7e0 runs the link parent +0x1c8 first, then the child's link
+// step 0x4d7170). TODO(spec): the tag handling of 0x4ed770.
+void World::followLink(Entity& child) {
+    const auto lit = links_.find(child.number);
+    if (lit == links_.end()) return;
+    const Link& link = lit->second;
+    {
+        Entity* c = &child;
         Entity* p = entityByNumber(link.parent);
-        if (!c || !p || c->obj->removed || p->obj->removed) continue;
+        if (!p || c->obj->removed || p->obj->removed) return;
         if (link.fullFrame) {
             // G_GeneralLink: the offset frame taken in the parent's tag frame (0x4d6ad0).
             Vec3 po;
             Axis pa;
-            if (!linkParentFrame(link, po, pa)) continue;
+            if (!linkParentFrame(link, po, pa)) return;
             c->obj->set("origin", Value(axisApply(po, pa, link.originOffset)));
             c->obj->set("angles", Value(axisAngles(axisMul(anglesAxis(link.anglesOffset), pa))));
-            continue;
+            return;
         }
         const Value po = p->obj->get("origin"), pa = p->obj->get("angles");
         Vec3 base = po.isVector() ? po.asVector() : Vec3{0, 0, 0}, ang = pa.isVector() ? pa.asVector() : Vec3{0, 0, 0};

@@ -84,8 +84,13 @@ int main() {
     CHECK(w.debugSpawnActor(*spawner, false) == nullptr); // dospawn refuses
     placePlayer(4000.0f, 0);
 
-    // Fill the 32 actor slots (stalingradspawn skips the telefrag test).
+    // ai_disableSpawn (0x532200) refuses every spawn, forced or not.
     spawner->obj->set("count", Value(int32_t(1000)));
+    w.cvars["ai_disableSpawn"] = "1";
+    CHECK(w.debugSpawnActor(*spawner, true) == nullptr);
+    w.cvars["ai_disableSpawn"] = "0";
+
+    // Fill the 32 actor slots (stalingradspawn skips the telefrag test).
     std::vector<iw2::game::Entity*> actors;
     while (liveActors(w) < 32) {
         iw2::game::Entity* a = w.debugSpawnActor(*spawner, true);

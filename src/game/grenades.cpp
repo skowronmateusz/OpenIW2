@@ -824,26 +824,25 @@ void World::launchItem(Entity& item, const Entity& dropper) {
 // weapon flat on the surface 0x522ea0: TODO(spec)), in no-drop contents (0x80000000) it is freed. A map-placed item
 // (FinishSpawningItem 0x5225e0, unless spawnflags 1 = suspended) is dropped 4096 down once, retried from 15 down
 // when the first trace starts solid; still solid → freed.
-void World::runItems() {
+void World::runItem(Entity& e) {
     const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1};
-    for (const auto& ep : entities_) {
-        Entity& e = *ep;
-        if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) continue;
+    {
+        if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) return;
         const Value tb = e.obj->get("$trbase");
         if (!tb.isVector()) {
-            if (e.obj->get("$itemsettled").truthy()) continue;
+            if (e.obj->get("$itemsettled").truthy()) return;
             e.obj->set("$itemsettled", Value(true));
             const Value sf = e.obj->get("spawnflags");
-            if (sf.isNumber() && (sf.asInt() & 1)) continue;
+            if (sf.isNumber() && (sf.asInt() & 1)) return;
             Vec3 o = e.obj->get("origin").asVector();
             TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
             if (tr.startSolid) {
                 o[2] -= 15.0f;
                 tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
-                if (tr.startSolid) { e.obj->removed = true; continue; }
+                if (tr.startSolid) { e.obj->removed = true; return; }
             }
             e.obj->set("origin", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
-            continue;
+            return;
         }
         const Vec3 base = tb.asVector(), delta = e.obj->get("$trdelta").asVector();
         const float t = (float(timeMs_) - e.obj->get("$trtime").asFloat()) * 0.001f;
@@ -864,7 +863,7 @@ void World::runItems() {
         }
         if (tr.fraction < 1.0f) {
             const Vec3 at{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
-            if (collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
+            if (collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; return; }
             e.obj->set("origin", Value(at));
             e.obj->set("$trbase", Value());
             e.obj->set("$itemsettled", Value(true));

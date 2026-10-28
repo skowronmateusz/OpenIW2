@@ -796,7 +796,15 @@ private:
     bool triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax);
     void useAnimTree(Entity& e, const std::string& tree);
     void registerAnimBuiltins();
-    void thinkActors();
+    void thinkActor(Entity& e);
+    void updatePlayerMoved();
+    void debugActorCounts();
+    // G_RunFrame stage 8 (0x4db048): G_RunEntity (0x4da7e0) of one entity, once per frame (+0x130), its link parent
+    // (+0x1c8) first; runEntityPass runs every entity in number order.
+    void runEntity(Entity& e);
+    void runEntityPass();
+    std::vector<int> entityRunFrame_; // by entity number: the frame number of the last G_RunEntity (+0x130)
+    int64_t frameNumber_ = 0;         // level.framenum (0x1c60530)
     void moveActor(Entity& e, float dt);
 
     // Combat (src/game/combat.cpp)
@@ -851,7 +859,6 @@ private:
     void updateScriptedAnim(Entity& e);
     void updateScriptedPose(Entity& e, bool slide);
     void stopScriptedAnim(Entity& e);
-    void runScriptedModels();
     int scriptedThink(Entity& e);
     void registerCampaignBuiltins();
     void objectiveMessage(int state, const std::string& text);
@@ -874,7 +881,9 @@ private:
     int64_t playerRespawnMs_ = -1;   // client +0x866c: level time + 1700 when the player died (0x527e85)
     bool reloading_ = false;         // g_reloading
     int64_t loadGameAtRealMs_ = -1;  // 0x1c60f58: when loadgame_continue runs
-    void runMovers();
+    void runMover(Entity& e);
+    void pruneMovers();
+    void followLink(Entity& child);
     Entity* entityByNumber(int number);
     std::map<int, MoverState> movers_;
     std::map<int, Link> links_;
@@ -910,7 +919,6 @@ private:
     void initMapTurrets();
     TurretState& turretOf(const Value& self);
     // Turret think (src/game/turretthink.cpp)
-    void thinkTurrets();
     void restoreDefaultDropPitch(Entity& t); // 0x51cf10
     // Actor turret state (src/game/actorturret.cpp)
     void releaseTurret(Entity& turret);
@@ -1106,12 +1114,12 @@ private:
     void missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface);
     void rocketImpact(Entity& e, const TraceResult& tr);
     void runRocket(Entity& e);
-    void runMissiles(); // grenades and rockets in entity order (G_RunMissile 0x526c30 from the entity pass)
+    void pruneMissiles(); // drops removed grenades / rockets from their lists after the entity pass
     // Weapon items (classname weapon_*): LaunchItem (0x521f70 → 0x521e00) gives a dropped item a gravity
     // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
     // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.
     void launchItem(Entity& item, const Entity& dropper);
-    void runItems();
+    void runItem(Entity& e);
     void predictGrenadeLanding(Entity& e);
     bool solveThrow(Entity& actor, const std::string& method, const Vec3& start, const Vec3& aim, Vec3& vel);
     bool throwArcClear(Entity& actor, const Vec3& start, const Vec3& vel, const Vec3& target);
@@ -1185,7 +1193,7 @@ private:
     void turretTurn(Entity& t, bool tracking);
     void turretSetState(Entity& t, int state);
     void linkVehicleNodes();
-    void thinkVehicles();
+    void thinkVehicle(Entity& e);
     VehicleState& vehicleState(const script::Value& self);
     int vehicleNodeIndex(const script::Value& v) const;
     const VehicleInfo* vehicleInfo(const std::string& type);

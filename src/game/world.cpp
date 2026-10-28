@@ -412,6 +412,15 @@ void World::dropSpawners() {
 // Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new
 // actor, notifies the spawner "spawned", and starts animscripts/init.gsc::main() (docs/spec/ai.md).
 Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) {
+    // 0x532200..0x532229: the bool dvar ai_disableSpawn (registered at 0x4d89d7, default 0; 0x1c14880) refuses every
+    // dospawn / stalingradspawn. The map-start actors do not go through this core (0x4fc640 directly).
+    if (!mapStartSpawn_) {
+        const auto it = cvars.find("ai_disableSpawn");
+        if (it != cvars.end() && std::atoi(it->second.c_str()) != 0) {
+            print("Attempted spawn prevented by ai_disableSpawn.");
+            return nullptr;
+        }
+    }
     const Value count = spawner.obj->get("count");
     if (count.isInt() && count.asInt() <= 0) return nullptr;
 
@@ -606,6 +615,12 @@ void World::prepareStart() {
 }
 
 void World::runLevelMain() {
+    // The server spawn runs the frame start 0x44a6a0 (level.time += 50, framenum + 1) at 0x448985 right before 0x4da470,
+    // which starts the level's main thread (0x4da50e) and runs the first G_RunFrame (0x4da524): both at level time 50.
+    // TODO(spec): which part of prepareStart's entity spawning the exe does at time 0 (G_InitGame) and which at 50
+    // (0x4da470 -> 0x4fa5c0); here all of it is at 0.
+    timeMs_ += 50;
+    vm_.setTime(timeMs_);
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
     // Threads the init code woke by notify were appended to the current frame list (counter 0x9bef20), which the first
     // Scr_RunFrame runs before the next frame's list that holds the timed waits (VM_Notify 0x46ca60, Scr_RunFrame 0x46f5c0).
@@ -615,9 +630,7 @@ void World::runLevelMain() {
     // (the player stands inside it) must fire and spawn the jeep before ridein's `wait 0.05` ends and does getent("jeep").
     // The exe does run one full G_RunFrame right after starting main (0x4da470: 0x4da524 G_RunFrame(0, 0), no time budget),
     // inside the server spawn 0x4488b0 and before the level counts as loaded (0x448aab -> 0x4da540 clears 0x1c61048).
-    // The frame start 0x44a6a0 (level.time += 50, called at 0x448985 right before 0x4da470) has already run, so the exe's
-    // first frame is at level time 50 and the entities are spawned at 50; the port spawns and runs it at time 0 (all
-    // later frames keep the 50 ms spacing). TODO(spec): the absolute offset (gettime() is 50 ms lower here).
+    // That frame does not advance the time again (the frame start already ran above).
     frame(false);
     levelInitializing_ = false;
 }
@@ -639,8 +652,8 @@ void World::frame(bool advanceTime) {
             havePlayerPrev_ = true;
         }
     }
+    ++frameNumber_; // level.framenum (0x44a6a0)
     syncEntityClips();
-    runMovers();
     if (fxEvents_.size() > 4096) fxEvents_.erase(fxEvents_.begin(), fxEvents_.end() - 4096); // nobody draining
     for (auto& l : loopedFx_)
         if (timeMs_ >= l.nextMs) {
@@ -649,27 +662,34 @@ void World::frame(bool advanceTime) {
         }
     // G_RunFrame (0x4da970) runs in eight stages (jump table 0x4db27c; stage counter 0x1c6105c, reset by the frame start
     // 0x44a6a0 that adds 50 ms to level.time), then the client end frames (docs/spec/ai.md "Server frame order"):
-    //   1 (0x4da99f) 0x4e8160 / 0x4e8180 on the player (0x4e8180 -> G_TouchTriggers 0x4e7320), the level change 0x4d9f90;
-    //   2 (0x4daa14) every entity (from 1) 0x447ec0, then the queued "trigger" touches (0x1c610b4) are taken over;
+    //   1 (0x4da99f) 0x4e8160: the player's queued usercmds (0x409ed0 -> 0x4e7ee0 -> ClientThink 0x4e7bc0) and the eye
+    //     trail 0x5154b0; 0x4e8180: the moved byte and G_TouchTriggers 0x4e7320 (triggers and items); the level change;
+    //   2 (0x4daa14) every entity (from 1) the animation weight update 0x447ec0 -> 0x476960, then the queued "trigger"
+    //     touches (0x1c610b4) are taken over;
     //   3 (0x4dab00) those "trigger" notifies are sent, each trigger once per pass, the woken threads run between passes;
-    //   4 (0x4dac9c) the animation step of every entity (from 1);
+    //   4 (0x4dac9c) the animation time step of every entity (from 1);
     //   5 (0x4daefc) woken threads, then the script frame (0x467150; frame counter 0x9bef20 + 1);
     //   6 (0x4daf94) bad places (0x523a60);
-    //   7 (0x4dafc6) the player's queued usercmds (0x409ed0 -> 0x4e7ee0 -> ClientThink 0x4e7bc0), 0x5154b0 on the player,
-    //     and, with ps flag 0x20000 (in a vehicle), G_RunEntity of the entity at client +0xf4;
+    //   7 (0x4dafc6) 0x409ed0 / 0x5154b0 again (usercmds that arrived since stage 1), and, with ps +0x7c bit 0x20000 (in a
+    //     vehicle, the bit VEH_LinkPlayer 0x511624 tests), G_RunEntity of the vehicle at entity +0xf4;
     //   8 (0x4db048) G_RunEntity (0x4da7e0, once per frame per entity, +0x130 = frame number) of every entity in number
     //     order, an entity's link parent (+0x1c8) first;
     //   then (0x4db11d) for every client in use 0x530cf0 and ClientEndFrame (0x4e7f90), then 0x4d9710, 0x517c30, 0x52b070,
     //   0x4da2d0, 0x4da0e0. The server frame end (0x44a900) then processes the save queue (0x44a230) and builds the
     //   snapshot (0x4db2b0).
     vm_.setTime(timeMs_);
-    runTriggers(); // stages 1 and 3
+    // Stage 1. The player's move itself runs in the front end before this frame; the use part of ClientThink runs here.
+    runPlayerUse();
+    updatePlayerMoved();
+    runTriggers(); // G_TouchTriggers' triggers; their "trigger" notifies are stage 3
+    touchItems();  // G_TouchTriggers' items (Touch_Item 0x521a90)
     vm_.drainReady(); // 0x4dac2a: the threads the trigger notifies woke run before the animation step
-    // Stage 4 (0x4dacd0..0x4daeb8): every entity with an animation tree steps it (0x476c80 / 0x476490)
+    // Stages 2 and 4 (0x4dacd0..0x4daeb8): every entity with an animation tree steps it (0x476c80 / 0x476490)
     // and, after each step that ends at a notetrack, runs the threads that notify woke at once (0x46d560 at 0x4dadc3,
     // 0x4da692) before the next entity's animation moves. So a script that waits for one entity's "end" can start
     // waiting for another entity's "end" in the same frame (duhoc_assault: the drag camera and the dragging soldier end
-    // together). TODO(spec): the exe splits the step at every notetrack; here the threads run after the whole 50 ms step.
+    // together). TODO(spec): the exe splits the step at every notetrack; here the threads run after the whole 50 ms step,
+    // and the weight update (stage 2, for all entities before any time step) runs inside each entity's update.
     for (size_t ei = 0; ei < entities_.size(); ++ei) {
         Entity* e = entities_[ei].get();
         if (!e->anim || e->obj->removed) continue;
@@ -681,7 +701,6 @@ void World::frame(bool advanceTime) {
         });
         if (notified) vm_.drainReady();
     }
-    touchItems(); // TODO(spec): the item touch's stage is not read
     for (size_t i = 0; i < pendingNotifies_.size();) {
         if (pendingNotifies_[i].atMs <= timeMs_) {
             const auto p = pendingNotifies_[i];
@@ -693,17 +712,47 @@ void World::frame(bool advanceTime) {
     }
     vm_.runFrame(timeMs_); // stage 5
     runBadPlaces();        // stage 6
-    runPlayerUse();        // stage 7 (the use part of ClientThink)
-    // Stage 8. TODO(spec): the exe runs these per entity in number order; here they run as groups (missiles together).
-    thinkVehicles();
-    thinkTurrets();
-    runMissiles();
-    runItems();
-    runScriptedModels();
-    thinkActors();
+    // Stage 7: the vehicle the player rides runs first.
+    if (player_ && (pmFlags_ & 0x20000u) && player_->usingVehicle >= 0)
+        if (Entity* v = entityByNumber(player_->usingVehicle)) runEntity(*v);
+    runEntityPass(); // stage 8
+    debugActorCounts();
     updatePlayerLink(); // ClientEndFrame (0x4e7f90, 0x4db144) after the entity pass
     runDeathScreen();
     processSaves(); // 0x44a230 at the server frame end (0x44a91f), after G_RunFrame and before the snapshot
+}
+
+// G_RunEntity (0x4da7e0): once per frame (+0x130 == level.framenum returns at once); a linked entity runs its parent
+// first (stage 8 0x4db082..0x4db08e) and then follows it (0x4d7170); the dispatch 0x4da720 then runs the missile
+// (eType 3, G_RunMissile 0x526c30), the item (eType 2, G_RunItem 0x523040), the script model (eType 5, 0x52ccb0) or the
+// think (0x4da090: movers, vehicles, turrets, actors). Clients run nothing here. 0x1c61064 holds the running number.
+// TODO(spec): the port runs every part that applies to the entity, in this fixed order.
+void World::runEntity(Entity& e) {
+    if (e.obj->removed || e.isPlayer || e.isSpawner || e.number < 0) return;
+    if (size_t(e.number) >= entityRunFrame_.size()) entityRunFrame_.resize(size_t(e.number) + 64, -1);
+    if (entityRunFrame_[size_t(e.number)] == frameNumber_) return;
+    entityRunFrame_[size_t(e.number)] = frameNumber_;
+    if (const auto lit = links_.find(e.number); lit != links_.end())
+        if (Entity* parent = entityByNumber(lit->second.parent)) runEntity(*parent);
+    const int prevRunning = runEntityNumber_;
+    runEntityNumber_ = e.number;
+    followLink(e);
+    runMover(e);
+    if (e.classname == "script_vehicle") thinkVehicle(e);
+    if (e.turret && !e.obj->removed) thinkTurret(e);
+    if (e.grenade && !e.obj->removed) runGrenade(e);
+    else if (e.rocket && !e.obj->removed) runRocket(e);
+    if (e.classname.rfind("weapon_", 0) == 0) runItem(e);
+    if (e.scripted && !e.isActor && !e.obj->removed) updateScriptedAnim(e); // 0x52ccb0
+    if (e.isActor) thinkActor(e);
+    runEntityNumber_ = prevRunning;
+}
+
+void World::runEntityPass() {
+    for (size_t i = 0; i < entities_.size(); ++i) runEntity(*entities_[i]); // entities_ is in number order
+    runEntityNumber_ = -1;
+    pruneMissiles();
+    pruneMovers();
 }
 
 const std::map<std::string, std::string>* World::weapon(const std::string& name) {
@@ -738,25 +787,25 @@ int World::nearestNode(const std::array<float, 3>& p) const {
     return best;
 }
 
-// Every actor thinks once per frame (src/game/actorstate.cpp); corpses no longer think.
-void World::thinkActors() {
-    if (player_) { // 0x4e8194..0x4e81e5: the player's moved byte (+0x86b6), once a frame
-        const Value pov = player_->obj->get("origin");
-        const Vec3 po = pov.isVector() ? pov.asVector() : Vec3{0, 0, 0};
-        const float dx = playerLastPos_[0] - po[0], dy = playerLastPos_[1] - po[1];
-        playerMoved_ = !(dy * dy + dx * dx < 0.01f);
-        playerLastPos_ = po;
-    }
-    for (size_t i = 0; i < entities_.size(); ++i) {
-        Entity& e = *entities_[i];
-        if (!e.isActor || e.obj->removed || e.ai.corpse) continue;
+// An actor thinks once per frame (src/game/actorstate.cpp); corpses no longer think.
+// 0x4e8194..0x4e81e5 (0x4e8180, G_RunFrame stage 1): the player's moved byte (+0x86b6), once a frame.
+void World::updatePlayerMoved() {
+    if (!player_) return;
+    const Value pov = player_->obj->get("origin");
+    const Vec3 po = pov.isVector() ? pov.asVector() : Vec3{0, 0, 0};
+    const float dx = playerLastPos_[0] - po[0], dy = playerLastPos_[1] - po[1];
+    playerMoved_ = !(dy * dy + dx * dx < 0.01f);
+    playerLastPos_ = po;
+}
+
+void World::thinkActor(Entity& e) {
+    {
+        if (!e.isActor || e.obj->removed || e.ai.corpse) return;
         if (!e.ai.facingInit) initActorFacing(e); // lookforward (+0xe0) follows the look angles (actorfacing.cpp)
         e.ai.thoughtMs = timeMs_;
         e.ai.blockVel = e.velocity; // the block velocity of the previous physics step (+0x230, read by 0x505b80 / 0x505cb0)
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
-        runEntityNumber_ = e.number; // 0x1c61064 while G_RunEntity runs it (read by the force-spawn eviction 0x4fcaf0)
         actorThink(e);
-        runEntityNumber_ = -1;
         // The move frame 0x504450 (anim-mode step, turn, facing) runs from the thinks of the exposed, grenade, badplace, death,
         // pain, animcustom and negotiation states (0x4fe8d0, 0x520a3e, 0x548b60, 0x54b358, 0x54b8ab, 0x54d483), not from the
         // turret (0x54aba0) or animscripted (0x54b0a0) thinks.
@@ -790,7 +839,10 @@ void World::thinkActors() {
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
     }
-    // Debug: every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
+}
+
+// Debug (IW2_AI_DEBUG): every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
+void World::debugActorCounts() {
     if (std::getenv("IW2_AI_DEBUG") && timeMs_ % 5000 == 0) {
         std::map<std::string, int> counts;
         for (const auto& ep : entities_) {
@@ -1206,7 +1258,8 @@ bool World::triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax) {
 // Inferred: every server frame while touching; trigger_once is removed after it fires. Player box: (-15,-15,0) to
 // (15,15,r.maxs[2]) around the origin; ClientThink copies the pmove box into r.mins / r.maxs (0x4e7d68..0x4e7da2), so the
 // height follows the stance (playerBoxHeight). G_RunFrame runs this in its first stage (0x4da9aa -> 0x4e8180 ->
-// 0x4e829b, for a player with pm_type < 4 and client +0x8628 / +0x862c clear; TODO(spec): those two fields); the
+// 0x4e829b, for a player with pm_type < 4 and neither noclip (client +0x8628) nor ufo (+0x862c, toggled by 0x4ea170 /
+// 0x4ea220 with GAME_NOCLIPON/OFF, GAME_UFOON/OFF; not modelled, the port has neither); the
 // "trigger" notifies it queues (0x528cb0) are delivered in the third stage (0x4dab00), before the animation step.
 void World::runTriggers() {
     if (!player_) return;
