@@ -765,6 +765,7 @@ private:
     void actorThink(Entity& e);
     void actorPerceive(Entity& e);
     void actorPain(Entity& e, Entity* attacker);
+    void actorPainNode(Entity& e, Entity* attacker, bool nodeRelease);
     void actorMoveNoise(Entity& e);
     void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);

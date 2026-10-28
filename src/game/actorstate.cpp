@@ -374,10 +374,33 @@ void World::actorThink(Entity& e) {
 // (+0x1780 of its sentient entry), then the pain state is pushed; when it is, the current animscript is killed.
 // The current state's damaged slot runs first (0x4ff4c7). The common one, 0x5498c0, ignores an attacker whose sentient
 // has the actor's own team; otherwise a claimed node within 30 units (xy) and 80 units (z) of the actor is given up
-// (0x502660 limits 900 / 6400, then 0x4fe670). TODO(spec): the turret state's own handler 0x54af30.
+// (0x502660 limits 900 / 6400, then 0x4fe670).
 static Vec3 vecField(const ObjectPtr& o, const char* key);
+// The turret state's handler 0x54af30 (the gunner of a turret it owns, hit by a sentient of the enemy team table
+// {0, 2, 1, 0, 0}): the first hit sets flag 0x10 and remembers the attacker (+0x60), the next one lets go of the turret
+// (0x54b020: release 0x549a60, forget it).
 void World::actorPain(Entity& e, Entity* attacker) {
-    if (e.claimedNode >= 0) {
+    if (attacker && isSentient(*attacker) && e.ai.stack[size_t(e.ai.depth)] == AiTurret && e.usingTurret) {
+        Entity* t = entityOf(Value(e.usingTurret));
+        static constexpr int kEnemy[5] = {0, 2, 1, 0, 0};
+        auto teamOf = [](const Entity& x) { const std::string t = x.obj->get("team").toString(); return t == "axis" ? 1 : t == "allies" ? 2 : t == "neutral" ? 3 : 0; };
+        const int own = teamOf(e);
+        if (t && t->turret && t->turret->owner == e.obj && own >= 0 && own < 5 && teamOf(*attacker) == kEnemy[own]) {
+            if (t->turret->flags & 0x10u) {
+                releaseTurret(*t);
+                e.usingTurret.reset();
+            } else {
+                t->turret->flags |= 0x10u;
+                t->turret->hitBy = attacker->obj;
+            }
+        }
+        return actorPainNode(e, attacker, false);
+    }
+    actorPainNode(e, attacker, true);
+}
+
+void World::actorPainNode(Entity& e, Entity* attacker, bool nodeRelease) {
+    if (nodeRelease && e.claimedNode >= 0) {
         const bool friendly = attacker && isSentient(*attacker) && attacker->obj->get("team").toString() == e.obj->get("team").toString();
         const Vec3 n = vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), o = vecField(e.obj, "origin");
         const float dx = n[0] - o[0], dy = n[1] - o[1], dz = o[2] - n[2];
