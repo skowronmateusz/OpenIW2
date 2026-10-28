@@ -277,3 +277,13 @@ add_test(NAME triggerdamage COMMAND test_triggerdamage)
 add_executable(test_grenadehint tests/test_grenadehint.cpp)
 target_link_libraries(test_grenadehint PRIVATE iw2_game)
 add_test(NAME grenadehint COMMAND test_grenadehint)
+
+add_executable(test_savestate tests/test_savestate.cpp)
+target_link_libraries(test_savestate PRIVATE iw2_game)
+add_test(NAME savestate COMMAND test_savestate)
+# The World round trip needs the game files; registered only when they are found.
+set(IW2_TEST_MAIN "$ENV{IW2_MAIN}")
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME savestate_world COMMAND test_savestate)
+  set_tests_properties(savestate_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
