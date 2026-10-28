@@ -430,8 +430,10 @@ Pass classify(const std::string& techset) {
     // technique type 0x18 "emissive feathered no fog" when r_zFeather (0x101ce694, default 1) is on and $floatz (0x101d489c)
     // exists, else 0x15 "emissive no fog" (types: name table built at 0x1001c0d1..). So distortion samples the opaque scene
     // and, with the default r_zFeather, runs distortion_floatz.tech, which needs the float-z target.
-    // Still missing: (b) the tangent / binormal the effects code gives sprite vertices (code.tangent / code.binormal);
-    // the $floatz contents (build floatz pass, technique type 2).
+    // Sprite vertices (docs/spec/effects.md "Sprite vertices, $floatz and the post-sun copy"): tangent = -(half width vector),
+    // binormal = half height vector (billboard: -width * view row 1, height * view row 2). The post-sun copy only happens when the
+    // scene viewport equals the window. $floatz = R32F target of clip z built by technique type 2 "build floatz" (sky: max extent).
+    // Not implemented: the resolve copy, the float-z target and the distortion pass itself.
     if (techset == "distortion") return Pass::Skip;
     // Technique set "objective" (objective.techset: every lit variant -> objective_base.tech, stateMap objective.sm): the glowing
     // twin of an objective model (weapon_tt30_obj, military_tntbomb_obj, ...), added over the scene, never opaque.
@@ -4363,7 +4365,9 @@ int main(int argc, char** argv) {
                     // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
                     // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
                     // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
-                    // TODO(spec): the "KEY_" prefix handling of 0x4c6a20 (key.str has UNBOUND / OR / TAB without it).
+                    // 0x4c6a20 is the generic string translator (a leading 0x15 byte marks a literal; otherwise 0x498a20 does an exact
+                    // map find; a miss gives "^1UNLOCALIZED(^7" s "^1)^7"); it has no KEY_ special case. The "KEY_" in the refs comes from
+                    // the string file name (key.str -> KEY_<REFERENCE>), as with loc.find("KEY_USE").
                     for (size_t b; (b = text.find("[{")) != std::string::npos;) {
                         const size_t e = text.find("}]", b);
                         if (e == std::string::npos) break;
