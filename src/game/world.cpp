@@ -944,7 +944,14 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
         t.allSolid = tr.allSolid;
         return t;
     };
+    const ActorSlide pm0 = pm; // TMPDEBUG
     moveBlock(pm, fn);
+    if (static const char* tl = std::getenv("IW2_TMP_STUCK"); tl && std::atoi(tl) == e.number && timeMs_ > 6500 && timeMs_ < 7000) { // TMPDEBUG
+        float en[3] = {before[0]+delta[0], before[1]+delta[1], before[2]+delta[2]};
+        float st[3] = {before[0], before[1], before[2]};
+        SlideTrace t = fn(st, en);
+        std::fprintf(stderr, "[kind %d t=%d] before %.1f %.1f %.1f delta %.2f %.2f %.2f -> after %.1f %.1f %.1f | direct frac %.3f ss %d all %d | gEnt %x gPlane %d gValid %d flag87 %d hitEnt %x\n", kind, timeMs_, before[0], before[1], before[2], delta[0], delta[1], delta[2], pm.origin[0], pm.origin[1], pm.origin[2], t.fraction, int(t.startSolid), int(t.allSolid), unsigned(pm.groundEnt), int(pm.groundPlane), int(pm.groundEntValid), int(pm.flag87), unsigned(pm.hitEnt));
+    }
     const Vec3 o{pm.origin[0], pm.origin[1], pm.origin[2]};
     e.obj->set("origin", Value(o));
     e.ai.groundEnt = pm.groundEnt;
