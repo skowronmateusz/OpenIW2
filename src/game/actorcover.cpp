@@ -26,7 +26,9 @@ struct CoverArc {
     bool useFacing;
 };
 
-CoverArc coverArc(int type) {
+// Type 18 (node_turret) takes the arcs of its turret (0x5159f0: info +0x38 right and +0x40 left, each (int)(deg · 65536 / 360)
+// & 0xffff · 360 / 65536); without one 315…45.
+CoverArc coverArc(int type, const TurretState* turret = nullptr) {
     switch (type) {
     case 2: case 3: case 10: case 11: return {81225, 315, 45, true};
     case 4: return {81225, 350, 10, true};
@@ -34,7 +36,10 @@ CoverArc coverArc(int type) {
     case 6: case 8: return {81225, 305, 30, false};
     case 7: case 9: return {81225, 330, 55, false};
     case 12: return {81225, 330, 30, true};
-    case 18: return {81225, 315, 45, false}; // TODO(spec): arcs of the node's turret (0x5159f0) when it has one
+    case 18: {
+        if (!turret) return {81225, 315, 45, false};
+        return {81225, turretArcWrapped(turret->rightArc), turretArcWrapped(turret->leftArc), false};
+    }
     default: return {0, 305, 55, true};
     }
 }
@@ -325,11 +330,16 @@ bool World::holdsPosition(Entity& e) {
     return samePoint(vecField(nodes_[size_t(e.claimedNode)].obj, "origin"), vecField(e.obj, "origin"));
 }
 
+const TurretState* World::nodeTurret(const PathNode& n) {
+    const Entity* t = n.turretEntity >= 0 ? entityByNumber(n.turretEntity) : nullptr;
+    return t && t->turret ? t->turret.get() : nullptr;
+}
+
 // 0x54bb30: the animscript of a node, or none with true when the node does not cover the actor from its enemy
 // (or, without an enemy, from its grenade). Returns false for nodes without a cover script and without flag 0x8000.
 bool World::coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& script) {
     const PathNode& n = nodes_[size_t(node)];
-    CoverArc arc = coverArc(n.typeNum);
+    CoverArc arc = coverArc(n.typeNum, nodeTurret(n));
     const char* name = coverScriptName(n.typeNum);
     script.clear();
     if (!name && !(n.spawnflags & 0x8000)) return false;
@@ -423,7 +433,7 @@ float World::coverScore(Entity& e, int node) {
             have = true;
         }
         if (have) {
-            const CoverArc arc = coverArc(n.typeNum);
+            const CoverArc arc = coverArc(n.typeNum, nodeTurret(n));
             const float yaw = vecField(n.obj, "angles")[1];
             bool in;
             if (dist2d(no, p) < arc.distSq) in = false;
@@ -1071,6 +1081,25 @@ void World::registerCoverBuiltins() {
     // isnodeoccupied(node) (0x5158c0): held or claimed (now ≤ +0x44).
     vm_.registerBuiltin("isnodeoccupied", [=, this](CallContext& c) {
         return Value(timeMs_ <= nodes_[size_t(nodeIndex(c.arg(0)))].ownerUntilMs ? 1 : 0);
+    });
+    // setturretnode(node, turret) (0x515910): two arguments, a node_turret node ("Can only set arc angle for node_turret") and
+    // an entity with turret info ("Entity is not a turret"); stores the entity number at node +0x58 (the cover arcs of the node use
+    // that turret, 0x5159f0). unsetturretnode(node) (0x5159a0): one argument, a node_turret; +0x58 = -1.
+    vm_.registerBuiltin("setturretnode", [=, this](CallContext& c) {
+        if (c.args.size() != 2) throw std::runtime_error("Wrong number of arguments to setturretnode");
+        PathNode& n = nodes_[size_t(nodeIndex(c.arg(0)))];
+        if (n.typeNum != 18) throw std::runtime_error("Can only set arc angle for node_turret");
+        Entity* t = entityOf(c.arg(1));
+        if (!t || !t->turret) throw std::runtime_error("Entity is not a turret");
+        n.turretEntity = t->number;
+        return Value();
+    });
+    vm_.registerBuiltin("unsetturretnode", [=, this](CallContext& c) {
+        if (c.args.size() != 1) throw std::runtime_error("USAGE : Must have a node_turret as a parameter.");
+        PathNode& n = nodes_[size_t(nodeIndex(c.arg(0)))];
+        if (n.typeNum != 18) throw std::runtime_error("Can only do this call for node_turret");
+        n.turretEntity = -1;
+        return Value();
     });
     // setnodepriority(node, on) (0x515810): spawnflag 0x40, for the node types listed at 0x5a9468 (18, 2, 3, 5,
     // 10, 11, 12, 6, 7).

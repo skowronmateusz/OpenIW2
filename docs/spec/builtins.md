@@ -163,8 +163,8 @@ rows start at 0x5a5c20; the method tables are read the same way.
 | `badplace_arc` | 0x4f5990 | 0 | yes |
 | `newhudelem` | 0x5300a0 | 0 | yes |
 | `resettimeout` | 0x46f600 | 0 | yes |
-| `setturretnode` | 0x515910 | 0 |  |
-| `unsetturretnode` | 0x5159a0 | 0 |  |
+| `setturretnode` | 0x515910 | 0 | yes |
+| `unsetturretnode` | 0x5159a0 | 0 | yes |
 | `setnodepriority` | 0x515810 | 0 |  |
 | `isnodeoccupied` | 0x5158c0 | 0 |  |
 | `setdebugorigin` | 0x4f8ac0 | 1 | yes |
