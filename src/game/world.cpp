@@ -1311,9 +1311,26 @@ void World::registerBuiltins() {
         const std::string team = c.arg(0).toString();
         const char* prefix = team == "axis" ? "actor_axis_" : team == "allies" ? "actor_ally_" : "actor_neutral_";
         std::vector<ObjectPtr> out;
-        for (const auto& e : entities_)
-            if (e->isSpawner && !e->obj->removed && startsWith(e->classname, prefix)) out.push_back(e->obj);
+        for (const auto& e : entities_) {
+            if (!e->isSpawner || e->obj->removed) continue;
+            // The spawner's team (entity +0x154) is set by the aitype spawner() through setspawnerteam; every shipped
+            // aitype sets the team its class name names, which is the fallback while spawner() is not run.
+            const Value st = e->obj->get("$spawnerteam");
+            if (st.isDefined() ? st.toString() == team : startsWith(e->classname, prefix)) out.push_back(e->obj);
+        }
         return Value(toArray(out));
+    });
+    // setspawnerteam (0x4f8750): only for an actor spawner ("setspawnerteam can only be applied to AI spawners",
+    // 0x585324); "axis" -> entity+0x154 = 1, "allies" -> 2, "neutral" -> 3, else "unknown team '%s', should be axis,
+    // allies, or neutral" (0x5852ec).
+    vm_.registerBuiltin("setspawnerteam", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isSpawner) throw std::runtime_error("setspawnerteam can only be applied to AI spawners");
+        const std::string t = c.arg(0).toString();
+        if (t != "axis" && t != "allies" && t != "neutral")
+            throw std::runtime_error("unknown team '" + t + "', should be axis, allies, or neutral");
+        e->obj->set("$spawnerteam", Value(t));
+        return Value();
     });
     // getaiarray(team) (0x4ec9f0) lists actors whose actor +0x25c is set; the die callback (0x4ff530) clears it, so
     // dead actors are left out.
@@ -1561,6 +1578,35 @@ void World::registerBuiltins() {
         if (!e || !e->isPlayer) throw std::runtime_error("meleebuttonpressed: entity is not a player");
         return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 4u) ? 1 : 0));
     });
+    // Player input queries, all player-only ("entity %i is not a player", 0x590ab8) and all read from the client:
+    // attackbuttonpressed (0x538820) = (client+0x8640 | client+0x8634) & 1, usebuttonpressed (0x538770) = (...) & 0x28
+    // (+activate 0x8 | +usereload 0x20, the same pair playerweapon.h calls "use"), both int 1/0 (same current|previous
+    // command pair as meleebuttonpressed above).
+    auto playerOnly = [this](CallContext& c) -> Entity& {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
+        return *e;
+    };
+    vm_.registerBuiltin("attackbuttonpressed", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 1u) ? 1 : 0));
+    });
+    vm_.registerBuiltin("usebuttonpressed", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 0x28u) ? 1 : 0));
+    });
+    // getplayerangles (0x538600): the vector at client+0xc4 (the player state's view angles).
+    vm_.registerBuiltin("getplayerangles", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        return Value(playerCmd_.viewAngles);
+    });
+    // getnormalizedmovement (0x5386a0): (forwardmove, rightmove, 0) from the signed bytes at client+0x85dc / +0x85dd,
+    // each times 0x5920d8 (1/127).
+    vm_.registerBuiltin("getnormalizedmovement", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        constexpr float kInv127 = 0.007874015718698502f;
+        return Value(Vec3{float(playerCmd_.forward) * kInv127, float(playerCmd_.right) * kInv127, 0.0f});
+    });
     // enableaimassist / disableaimassist (0x4f81c0 / 0x4f8230): set / clear the entity flag 0x800 (entity+0x10). Stored as the
     // script-invisible field $aimassist; nothing in the port reads it yet (TODO(spec): the console auto-aim consumer).
     vm_.registerBuiltin("enableaimassist", [this](CallContext& c) {
@@ -1729,11 +1775,13 @@ void World::registerMissingStubs() {
         }
     }
     for (const auto& f : called)
-        if (!defined.count(f) && !vm_.hasBuiltin(f))
+        if (!defined.count(f) && !vm_.hasBuiltin(f)) {
+            stubbed_.insert(f);
             vm_.registerBuiltin(f, [this, f](CallContext&) {
                 ++missing_[f];
                 return Value();
             });
+        }
 }
 
 } // namespace iw2::game

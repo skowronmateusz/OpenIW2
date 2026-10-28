@@ -109,6 +109,7 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("stoprumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("playrumble", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("playrumbleonpos", [](CallContext&) { return Value(); });
+    vm_.registerBuiltin("playlooprumble", [](CallContext&) { return Value(); }); // 0x4f8c00: a single `ret` as well
     vm_.registerBuiltin("giveachievement", [](CallContext&) { return Value(); });
     // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): exactly 6 arguments, then the fogArgError checks; sends
     // "fog <near> <far> 1 <r> <g> <b> <time*1000>" (format "%g %g %g %g %g %g %.0f" 0x585bd4). Same 0x1c61048 TODO(spec) as setexpfog.

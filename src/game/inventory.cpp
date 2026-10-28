@@ -282,6 +282,14 @@ void World::registerInventoryBuiltins() {
         if (!w.empty()) inv->clip[weaponField(w, "clipName")] = std::clamp(c.arg(1).asInt(), 0, weaponInt(w, "clipSize"));
         return Value();
     });
+    // getammocount(weapon) (0x4f4540): player-only; stock rounds (ps+0x118[def+0x1c8]) plus loaded rounds
+    // (ps+0x318[def+0x1d0]); 0 for an unknown weapon name (the weapon index lookup 0x4dc5f0 returns 0).
+    vm_.registerBuiltin("getammocount", [this, player](CallContext& c) {
+        Inventory& inv = inventory(player(c));
+        const std::string w = lowerCopy(c.arg(0).toString());
+        if (w == "none" || !weapon(w)) return Value(int32_t(0));
+        return Value(int32_t(inv.ammo[weaponField(w, "ammoName")] + inv.clip[weaponField(w, "clipName")]));
+    });
     vm_.registerBuiltin("setweaponclipammo", [this, player, known](CallContext& c) {
         Inventory& inv = inventory(player(c));
         const std::string w = known(c.arg(0));

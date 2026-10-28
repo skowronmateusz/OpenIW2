@@ -485,3 +485,30 @@ Read from the executable bytes (`c3 cc cc cc` at each address): `playrumble` 0x4
 `giveachievement` 0x4f8b50. `bullettracer` (0x4ee830) allocates a temp entity of event 0xb2 (type 0xc1) holding a vector at +0x64, but the
 client event switch (0x4cbea9, event - 9, byte table 0x4cc04c, jump table 0x4cc02c) sends index 0xb8 (byte 7) to the default exit 0x4cc023, so
 nothing reads it. All five are registered as empty built-ins.
+
+## Implementation audit (counting stubs)
+
+`iw2game <main> <map> --stubs` lists every name the shipped scripts call that has no implementation; `World::registerMissingStubs`
+registers those as counting no-ops. Per-file call counts below come from the shipped .gsc files (SP = outside `maps/mp`).
+
+Implemented from the exe: `attackbuttonpressed` (0x538820, buttons & 1), `usebuttonpressed` (0x538770, & 0x28), `getplayerangles`
+(0x538600), `getnormalizedmovement` (0x5386a0, signed bytes x 1/127), `getammocount` (0x4f4540, stock + clip), `setspawnerteam`
+(0x4f8750; all 100 shipped aitype `spawner()` calls name the team of their class name, so `getspawnerteamarray` already agreed),
+`playlooprumble` (0x4f8c00, a single `ret`).
+
+Still stubbed and called by SP scripts (most used first). Engine syntax/VM ops (`waittill`, `endon`, `notify`, `waittillmatch`) are
+handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, developer-only drawing) are intentionally no-ops.
+
+| Name | SP files | Where | Notes |
+|---|---|---|---|
+| `predictanim`, `predictoriginandangles`, `lerpposition`, `gethityaw`, `isdeflected`, `beginprediction`, `endprediction` | 1-2 | animscripts/predict.gsc, death.gsc | balcony stumble/tumble death prediction (anim playback against world collision) |
+| `getgroundenttype` | 2 | animscripts/death.gsc, traverse/window.gsc | exe 0x5401c0 |
+| `getcommandfromkey` | 1 | moscow_str | key-binding text (table 0x5d2730) for hint strings |
+| `buttonpressed` | 1 | _briefing | key-name keyed query (binding table 0x5d2728) |
+| `setstablemissile` | 1 | crossroads | sets entity flag 0x20000 (+0x128); consumer not traced |
+| `enablegrenadetouchdamage` | 1 | tankhunt | sets entity flag 0x4000 (+0x128); consumer not traced |
+| `setdebugorigin`, `setdebugangles`, `getdebugeye` | 1 | _load, utility | developer only |
+| `getviewmodel`, `isonground` | 0-1 | | |
+
+The remaining names (team scores, ranks, `logprint`, `obituary`, `closeingamemenu`, `setclientcvar`, ...) are only called from
+`maps/mp` / gametype scripts.
