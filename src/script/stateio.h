@@ -45,6 +45,7 @@ public:
     std::string str() { const uint32_t n = u32(); need(n); std::string s(reinterpret_cast<const char*>(p_), n); p_ += n; return s; }
     void raw(void* out, size_t n) { need(n); std::memcpy(out, p_, n); p_ += n; }
     bool atEnd() const { return p_ == end_; }
+    uint32_t version = ~0u; // format version of the stream (set by the reader of a versioned file; ~0 = current)
 
 private:
     void need(size_t n) const { if (size_t(end_ - p_) < n) throw std::runtime_error("savegame: truncated state"); }

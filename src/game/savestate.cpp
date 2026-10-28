@@ -460,7 +460,7 @@ void World::loadState(StateReader& r) {
     levelChange_.map = r.str();
     levelChange_.persistent = r.b();
     levelChange_.atMs = r.i64();
-    moviePending_ = r.b();
+    moviePending_ = r.version >= 2 ? r.b() : false;
 
     playerLink_.reset();
     if (r.b()) {
@@ -923,12 +923,13 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 
 void restoreSave(World& world, const LoadedSave& save) {
     StateReader r(save.body.data() + sizeof kStateMagic + 4, save.body.size() - sizeof kStateMagic - 4);
+    std::memcpy(&r.version, save.body.data() + sizeof kStateMagic, 4); // version 1 (before the movie-pending flag) still loads
     world.loadState(r);
     world.markSaveLoaded();
 }
