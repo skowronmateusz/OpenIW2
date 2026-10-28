@@ -173,7 +173,7 @@ public:
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
 
 private:
-    uint32_t seed_ = 0x13579bdf;
+    uint32_t& seed_ = assets::fxGeneratorSeed(); // the exe's single effect generator (0x59b2a8)
     float frand();
     float range(const std::vector<float>& v, float fallback);
     void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);

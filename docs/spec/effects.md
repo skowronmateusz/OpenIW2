@@ -49,8 +49,14 @@ mid(r) = (max − min) · 0.5 + min:
 - anything else, including no flags (0x47e870): 16 rows at t = k/15 (0x5920a4, clamped to 1); f = 1 (1 − t with linear);
   nonlinear g = t > p ? 1 − (t − p)/(1 − p) : 1, clamp g = t < p ? (p − t)/p : 0, f = linear ? (f + g)/2 : g; wave
   f ·= cos(t · w); value = (1 − f) · end + f · start, 0 when negative, 1 when f > 1; random multiplies by a generator draw.
-- OpenIW2: `src/assets/efx.cpp` (`legacyGraph`). TODO(spec): rgbRand converts with one component (left as parsed), the
-  generator state for `random` at load time.
+- rgbRand (index 1) is converted with one component (0x487910 passes 3 only for index 0), but the rgb updater (0x4819b0 →
+  0x47f600 / 0x47f4a0) finds the segment with the graph's own stride and then reads rows at a fixed 16-byte stride, so a
+  one-component rgbRand graph is read out of bounds: undefined in the original. No shipped file has a legacy rgbRand; it is
+  left as parsed.
+- `random` draws from the single effect generator 0x59b2a8 (initial value 0x89abcdef in the data; its setter 0x426240 has
+  no caller), so the values depend on every earlier draw. OpenIW2 shares one generator between the parser and FxSystem
+  (`assets::fxGeneratorSeed`).
+- OpenIW2: `src/assets/efx.cpp` (`legacyGraph`).
 
 ## Line elements (type 2)
 

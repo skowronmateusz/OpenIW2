@@ -43,6 +43,11 @@ struct EfxEffect {
     std::vector<EfxElement> elements;
 };
 
+// The effect system's random generator (CoD2SP_s.exe 0x59b2a8: seed = seed · 0x343fd + 0x269ec3, draw = seed >> 17). One
+// global shared by the parser (legacy `random` channels, 0x47e870) and the runtime; it starts at 0x89abcdef (the data
+// value) and nothing in the exe reseeds it (its setter 0x426240 has no caller).
+uint32_t& fxGeneratorSeed();
+
 // Throws std::runtime_error on malformed text.
 EfxEffect parseEfx(std::string_view text);
 
