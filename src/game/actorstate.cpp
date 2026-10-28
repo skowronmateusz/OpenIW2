@@ -167,12 +167,12 @@ bool World::aiStart(Entity& e, int state) {
     case AiTurret:
         return turretStateStart(e); // 0x549960
     case AiDeath: // 0x548980: +0x740 / +0x741 cleared and the claimed node released at once (0x548995..0x54899a).
-                  // TODO(spec): the head look-at hand-over (0x514970, 0x4fd9e0; 500 ms override-angle gate) and sentient +0x28 = 200
-                  // (0x548a02) are not modelled.
+                  // 0x5489a8..0x5489f9 is the corpse prone blend (proneCorpseStart). TODO(spec): +0x28 = 200 (0x548a02).
         e.obj->set("keepclaimednode", Value(int32_t(0)));
         e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
         if (e.claimedNode >= 0) releaseNode(e);
         e.ai.substate = kSubDeath;
+        proneCorpseStart(e, false); // 0x54899f..0x5489f9: corpse prone blend
         return true;
     case AiPain: // 0x54d2a0
         e.ai.painStartMs = timeMs_;
@@ -421,8 +421,9 @@ void World::actorDie(Entity& e, Entity* attacker) {
 }
 
 // 0x4fdba0: the actor becomes a corpse (entity type 0xb, contents 0x4000000) and is notified "death".
-// TODO(spec): corpse contents and the head look-at hand-over to the corpse slot are not modelled.
+// TODO(spec): corpse contents are not modelled. The prone block goes to the corpse slot (proneCorpseStart).
 void World::actorBecomeCorpse(Entity& e) {
+    proneCorpseStart(e, true); // 0x4fdc0c..0x4fdd94: the prone block goes to the corpse slot
     e.ai.corpse = true;
     clearActorPath(e);
     vm_.notify(e.obj, "death");
@@ -470,6 +471,7 @@ int World::deathThink(Entity& e) {
     ai.facing = 1;
     setActorAnimScript(e, "death", 0, 4);
     // TODO(spec): 500 ms after death the entity's contents become 0x4002000 (corpse); collision does not model it.
+    if (e.ai.prone.corpseBlend) corpseProneFit(e, true); // 0x548b96: smoothed ground fit while the blend runs
     return 0;
 }
 

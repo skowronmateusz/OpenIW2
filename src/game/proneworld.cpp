@@ -5,6 +5,7 @@
 #include "game/world.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -62,7 +63,7 @@ static void actorFit(const CollisionWorld& cw, Entity& e, bool alreadyProne) {
     const ProneFitResult r = proneFit(a, [&cw, pass](const Vec& s, const Vec& t, const Vec& mn, const Vec& mx) {
         return cw.trace(s, t, mn, mx, 0x820011u, pass);
     });
-    p.out = 0;
+    p.lift = 0.0f; // the fit stores int 0 at +0x164
     p.pitchBody = r.pitchBody;
     p.pitchLegs = r.pitchLegs;
     p.fits = r.fits ? 1 : 0;
@@ -149,14 +150,110 @@ void World::actorProneFrame(Entity& e) {
     if (moved) proneRefit(e, true);
 }
 
-bool World::actorProneTilt(const Entity& e, float& pitch, float& lift) const {
+// Ground probe of the corpse fit (0x4fd460): from 30 above the origin a box (-4,-4,0)..(4,4,8) steps 10.9 along
+// `dir` (blocked at once: slope 0, height of `fallback`), then drops from where it stopped to 30 below the origin
+// (start-solid or no hit: the fallback point); the same backwards. Slope = pitch of front ground - back ground (0 when
+// equal), the height (front z + fallback z + back z) / 3.
+static float corpseGroundProbe(const CollisionWorld& cw, int pass, uint32_t mask, const Vec3& o, const Vec3& fallback,
+                               const Vec3& dir, float& slope) {
+    const Vec mins{-4.0f, -4.0f, 0.0f}, maxs{4.0f, 4.0f, 8.0f};
+    auto probe = [&](float sign, Vec3& ground) {
+        const Vec3 p{o[0], o[1], o[2] + 30.0f};
+        const Vec3 q{p[0] + sign * dir[0] * 10.9f, p[1] + sign * dir[1] * 10.9f, p[2] + sign * dir[2] * 10.9f};
+        const TraceResult t1 = cw.trace(p, q, mins, maxs, mask, pass);
+        if (t1.fraction == 0.0f) return false;
+        const Vec3 h{p[0] + (q[0] - p[0]) * t1.fraction, p[1] + (q[1] - p[1]) * t1.fraction, p[2] + (q[2] - p[2]) * t1.fraction};
+        const Vec3 down{h[0], h[1], o[2] - 30.0f};
+        const TraceResult t2 = cw.trace(h, down, mins, maxs, mask, pass);
+        if (t2.startSolid || t2.fraction >= 1.0f) ground = fallback;
+        else ground = {h[0], h[1], (down[2] - h[2]) * t2.fraction + h[2]};
+        return true;
+    };
+    Vec3 front{}, back{};
+    if (!probe(1.0f, front) || !probe(-1.0f, back)) {
+        slope = 0.0f;
+        return fallback[2];
+    }
+    if (front == back) slope = 0.0f;
+    else slope = proneAngleNormalize180(pronePitchOf({front[0] - back[0], front[1] - back[1], front[2] - back[2]}));
+    return (back[2] + fallback[2] + front[2]) * 0.333333343f;
+}
+
+// Corpse ground fit (0x4fd890): slope along the facing (pitch) and, when that is under 30 degrees, across it (roll,
+// else 0); the lift is the mean probe height minus the origin z, cancelled when below 0 and the standing box
+// (-15,-15,0)..(15,15,72) cannot move 1 unit down (0x44c1b0).
+static void corpseGroundFit(const CollisionWorld& cw, int pass, uint32_t mask, const Vec3& o, float yaw, float& pitch,
+                            float& roll, float* lift) {
+    const float r = yaw * 0.0174532924f;
+    const Vec3 fwd{std::cos(r), std::sin(r), 0.0f}, right{std::sin(r), -std::cos(r), 0.0f}; // 0x421f00
+    float h = corpseGroundProbe(cw, pass, mask, o, o, fwd, pitch);
+    if (std::fabs(pitch) >= 30.0f) roll = 0.0f;
+    else h = (corpseGroundProbe(cw, pass, mask, o, o, right, roll) + h) * 0.5f;
+    if (!lift) return;
+    const float d = h - o[2];
+    if (d < 0.0f && cw.sightBlocked(o, {o[0], o[1], o[2] - 1.0f}, {-15, -15, 0}, {15, 15, 72}, mask, pass, 0x7ff)) {
+        *lift = 0.0f;
+        return;
+    }
+    *lift = d;
+}
+
+void World::corpseProneFit(Entity& e, bool smooth) {
+    ActorProne& p = e.ai.prone;
+    if (!p.corpseBlend) return;
+    const uint32_t mask = 0x820011u; // clip mask (0x2820011 / 0x820011) & 0xfdff3fff
+    const Vec3 o = e.obj->get("origin").asVector();
+    const Value av = e.obj->get("angles");
+    const float yaw = av.isVector() ? av.asVector()[1] : 0.0f;
+    if (!smooth) {
+        corpseGroundFit(*collision_, e.number, mask, o, yaw, p.pitchBody, p.pitchLegs, &p.lift);
+        return;
+    }
+    // Smoothed: each angle moves at most 6 degrees towards its target per call, the lift at most 0.6.
+    float tA = 0, tB = 0, tC = 0;
+    corpseGroundFit(*collision_, e.number, mask, o, yaw, tA, tB, &tC);
+    auto stepAngle = [](float& cur, float target) {
+        const float d = proneAngleDelta(target, cur);
+        if (std::fabs(d) > 6.0f) cur += d < 0.0f ? -6.0f : 6.0f;
+        else cur = target;
+    };
+    stepAngle(p.pitchBody, tA);
+    stepAngle(p.pitchLegs, tB);
+    const float dc = tC - p.lift;
+    if (std::fabs(dc) > 0.6f) p.lift += dc < 0.0f ? -0.6f : 0.6f;
+    else p.lift = tC;
+}
+
+// Death start (0x548980) and corpse conversion (0x4fdba0): an actor that is not prone, not in anim mode 8
+// ("nophysics") and not linked starts the corpse blend (500 ms, zero angles; at the conversion only when it has not
+// started yet) and is fitted to the ground at once.
+void World::proneCorpseStart(Entity& e, bool conversion) {
+    ActorProne& p = e.ai.prone;
+    if (e.ai.animMode == 8 || links_.count(e.number)) return;
+    if (p.prone && !p.corpseBlend && proneTick(p, timeMs_)) return;
+    if (!conversion || !p.corpseBlend) {
+        p.startMs = timeMs_;
+        p.prone = true;
+        p.corpseBlend = true;
+        p.durMs = 500;
+        p.pitchBody = 0.0f;
+        p.pitchLegs = 0.0f;
+    }
+    corpseProneFit(e, false);
+    if (proneLog())
+        std::fprintf(stderr, "[prone %lld] #%d corpse blend (%s) pitch %.1f roll %.1f lift %.1f\n", (long long)timeMs_, e.number,
+                     conversion ? "corpse" : "death", p.pitchBody, p.pitchLegs, p.lift);
+}
+
+bool World::actorProneTilt(const Entity& e, int64_t nowMs, float& pitch, float& roll, float& lift) const {
     if (!e.isActor) return false;
     const ActorProne& p = e.ai.prone;
-    if (!p.prone || p.corpseBlend) return false; // TODO(spec): the corpse blend (mode 2, +0x158 set by 0x4fdd75)
-    if (p.durMs < 0 && p.startMs - p.durMs < timeMs_) return false;
-    const float f = proneFraction(p, timeMs_);
+    const bool prone = p.prone && !p.corpseBlend && !(p.durMs < 0 && p.startMs - p.durMs < nowMs);
+    if (!prone && !p.corpseBlend) return false;
+    const float f = proneFraction(p, nowMs);
     pitch = f * p.pitchBody;
-    lift = f * float(p.out);
+    roll = p.corpseBlend ? f * p.pitchLegs : 0.0f;
+    lift = f * p.lift;
     return true;
 }
 

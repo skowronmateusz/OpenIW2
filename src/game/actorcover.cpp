@@ -671,7 +671,7 @@ void World::registerCoverBuiltins() {
             (void)ex; (void)ey; (void)ez;
             if (!actorSightClear(e, *enemy, from, enemyEye, maxd)) continue; // 0x54c7d0: distance² <= maxsightdistsqrd
             Vec3 at;
-            const float step = e.obj->get("anim_pose").toString() == "crouch" ? 10.0f : 18.0f; // TODO(spec): actor +0x288
+            const float step = e.ai.prone.tilt ? 10.0f : 18.0f; // actor +0x288 (prone tilt byte, 0x5491bf)
             if (!aiMoveCheck(e, {o[0] + ox, o[1] + oy, o[2]}, step, at) || !inActorGoal(e, at)) continue;
             if (pathToPoint(e, at) && actorHasPath(e)) {
                 e.ai.substate = kSubReacquire;

@@ -2794,15 +2794,17 @@ int main(int argc, char** argv) {
                     } else {
                         pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
                     }
-                    // Prone tilt (cgame 0x4c1cc0 / 0x4c1b90): tag_origin turned about y by the transition fraction times
-                    // the fit's body pitch, lifted by fraction x +0x164 (always 0).
-                    if (float tiltPitch = 0, tiltLift = 0; world->actorProneTilt(*e, tiltPitch, tiltLift)) {
+                    // Prone tilt (cgame 0x4c1cc0 / 0x4c1b90): a DObj control on tag_origin, rotation pitch (0x423970) times
+                    // roll (0x423a10, corpse blend only) = anglesQuat(pitch, 0, roll), lift on z. The fraction uses cg.time,
+                    // which lies between the two snapshots it interpolates (0x4a4c10): the effect time below.
+                    const int64_t cgTime = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
+                    if (float tiltPitch = 0, tiltRoll = 0, tiltLift = 0; world->actorProneTilt(*e, cgTime, tiltPitch, tiltRoll, tiltLift)) {
                         for (size_t bi = 0; bi < body->parts.bones.size(); ++bi) {
                             std::string n = body->parts.bones[bi].name;
                             for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                             if (n != "tag_origin") continue;
                             pose = assets::applyControls(body->parts, pose,
-                                                         std::vector<assets::BoneControl>{{int(bi), assets::anglesQuat(tiltPitch, 0, 0), {0, 0, tiltLift}}});
+                                                         std::vector<assets::BoneControl>{{int(bi), assets::anglesQuat(tiltPitch, 0, tiltRoll), {0, 0, tiltLift}}});
                             break;
                         }
                     }

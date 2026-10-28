@@ -771,7 +771,10 @@ void World::registerCombatBuiltins() {
         if (!c.arg(0).isVector()) return Value(false);
         const Vec3 from = c.self.asObject()->get("origin").asVector();
         const Vec3 to = c.arg(0).asVector();
-        const TraceResult tr = collision_->trace(add(from, {0, 0, 18}), add(to, {0, 0, 18}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
+        // Step height: 10 while the prone tilt byte +0x288 is set, else 18 (0x53defc). TODO(spec): the rest of 0x53dce0.
+        Entity* self = entityOf(c.self);
+        const float step = self && self->isActor && self->ai.prone.tilt ? 10.0f : 18.0f;
+        const TraceResult tr = collision_->trace(add(from, {0, 0, step}), add(to, {0, 0, step}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
         return Value(tr.fraction >= 0.999f && !tr.startSolid);
     });
     // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).

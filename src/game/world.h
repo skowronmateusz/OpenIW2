@@ -94,7 +94,7 @@ struct ActorProne {
     bool prone = false;                             // +0x159
     int64_t startMs = 0;                            // +0x15c transition start
     int durMs = 0;                                  // +0x160 transition length; negative while leaving, 0 when settled
-    int out = 0;                                    // +0x164 (the fit writes 0)
+    float lift = 0;                                 // +0x164: corpse ground lift (0x4fd890); the prone fit writes int 0 here
     float pitchBody = 0, pitchLegs = 0;             // +0x168 / +0x16c fit pitches
     bool tilt = false;                              // +0x288 set by enterprone, cleared by the think when not prone
     // The think compares the entity's origin and angles with the values of its previous think (0x4ff0b5..0x4ff16e).
@@ -499,9 +499,9 @@ public:
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
     // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
-    // Client prone tilt of an actor's tag_origin (0x4c1cc0 mode 1): rotation about y by fraction x body pitch, lift
-    // fraction x +0x164; false when the actor is not prone.
-    bool actorProneTilt(const Entity& e, float& pitch, float& lift) const;
+    // Client prone tilt of an actor's tag_origin at client time `nowMs` (0x4c1cc0): mode 1 (prone) pitch = f x +0x168,
+    // roll 0; mode 2 (corpse blend) pitch f x +0x168, roll f x +0x16c; lift f x +0x164; false when neither applies.
+    bool actorProneTilt(const Entity& e, int64_t nowMs, float& pitch, float& roll, float& lift) const;
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
@@ -981,6 +981,8 @@ private:
     void proneExit(Entity& e, int ms);       // 0x514c40
     void proneRefit(Entity& e, bool fit);    // 0x5022b0
     void actorProneFrame(Entity& e);         // the prone part of the actor think 0x4ff030
+    void proneCorpseStart(Entity& e, bool conversion); // 0x548980 (death start) / 0x4fdba0 (corpse) blend start
+    void corpseProneFit(Entity& e, bool smooth);       // 0x4fd9e0
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void turretFireSound(Entity& t, bool playerOwner);
