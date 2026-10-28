@@ -219,8 +219,8 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
         if (maskHeld) return;
         if (st >= 1 && st <= 16) return; // only from the ready state (0x4df9fb..0x4dfa60)
     }
-    // TODO(spec): ps+0x104 != 0 and the command byte +0xd also cancel (0x4dfa6c..0x4dfa90); not modelled (taken as 0 / unchanged).
-    const bool cancel = in.weapon != prevCmdWeapon_ || maskHeld;
+    // ps+0x104 (damage this frame) also cancels. TODO(spec): the command byte +0xd (0x4dfa8a) is not modelled (taken as unchanged).
+    const bool cancel = in.damaged || in.weapon != prevCmdWeapon_ || maskHeld;
     if (inBinoc() && cancel) {
         binocularCancel(in.fire);
         return;

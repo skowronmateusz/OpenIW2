@@ -5772,6 +5772,11 @@ int main(int argc, char** argv) {
                 wi.binoculars = (buttons & game::Button::Binoculars) != 0;
                 wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
                 wi.inVehicle = inVehicle;
+                {
+                    static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
+                    wi.damaged = world->playerDamageFeedback().event != binocDamageEvent;
+                    binocDamageEvent = world->playerDamageFeedback().event;
+                }
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
