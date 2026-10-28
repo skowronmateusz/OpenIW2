@@ -1017,8 +1017,7 @@ void World::registerCombatBuiltins() {
         viewKick_.dir = sub(e->obj->get("origin").asVector(), c.arg(1).asVector());
         return Value();
     });
-    for (const char* noop : {"exitprone", "enterprone", "trackscriptstate", "setproneanimnodes", "updateprone",
-                             "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
+    for (const char* noop : {"trackscriptstate", "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
     // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").

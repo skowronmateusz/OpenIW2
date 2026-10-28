@@ -636,3 +636,49 @@ a13 adds 0x10000 to the mask 0x810011, a14 body length. Constants (.rdata): 6 (0
 with (entity, origin, 15, 48, yaw, -, -, -, alreadyProne, strict 1, no normal, table 1, +0x10000, 66) and returns the int.
 Ported exactly; on toujane / moscow (`--spawn-all`, 60 s) 187 / 226 calls, 168 / 90 fit, no runtime errors. Note the
 trace pass entity is the actor itself, and our G_Trace stands in for 0x44bf00 (capsule sweep, docs/spec/collision.md).
+
+### Prone state and built-ins (ported)
+
+Actor fields (offsets from the actor struct, `ActorProne` in src/game/world.h): +0x140/+0x142/+0x144 leg nodes down /
+straight / up (0 = unset), +0x148 = 1 / down angle, +0x14c = 1 / up angle, +0x150 bend of the last leg-weight update,
++0x154 last fit result (script field `proneok`), +0x158 corpse-blend byte, +0x159 prone, +0x15c transition start (level
+ms), +0x160 transition length in ms (negative while leaving, 0 once settled), +0x164 / +0x168 / +0x16c the fit outputs a6 /
+a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; reader not found: TODO(spec)).
+
+- Bookkeeping shared by 0x514970 / 0x514b30 / 0x514c40 / 0x53d430: length < 0 and start - length < now: prone = 0 (the
+  leave finished); length > 0 and start + length < now: length = 0.
+- Fraction 0x5149e0 (edx = block +0x158, ecx = now): 0 when not prone; 1 when length is 0; leaving: 1 - (now - start) /
+  -length (0 once finished); entering: (now - start) / length (1 once finished).
+- `setproneanimnodes(down, up, a, b, c)` 0x53d2f0: floats read before the actor check; down must be < 0, up > 0 (the two
+  error strings at 0x5916ac / 0x591670); stores 1/down, 1/up and the three nodes (0x46e530).
+- `enterprone(sec)` 0x53d1b0: "Must call SetProneAnimNodes before calling EnterProne" (0x5916e4) when both reciprocals
+  are 0 or any node is 0; then 0x514b30 with _ftol2(sec * 1000). 0x514b30: when not prone, a corpse blend, or a leave
+  that has finished: corpse byte 0, prone 1, tilt 1, start = now, length = ms, fit (already prone 0, strict, outputs into
+  +0x164..+0x16c) into +0x154. Otherwise only when the length is non-zero and differs from ms: with f = fraction < 1 the
+  start becomes now - _ftol2(ms * f); the length becomes ms.
+- `exitprone(sec)` 0x53d280 -> 0x514c40(ms): only while prone and not a corpse blend; after the bookkeeping (a finished
+  leave returns), a non-zero length different from ms sets start = now - _ftol2(ms * f), else start = now; length = -ms.
+- `updateprone(a, b, weight, blend, rate)` 0x53d430: only while prone and not a corpse blend; after the bookkeeping (a
+  finished leave clears prone and returns) both animations get setanim 0x4795e0 with (weight, blend, rate), then 0x5022b0
+  with eax = 0.
+- 0x5022b0 (edi = actor): eax != 0 runs the fit with already prone = 1 (into +0x154 and +0x164..+0x16c); eax = 0 sets
+  +0x150 = 360 instead. Bend d = wrap(+0x16c - +0x168). When d differs from +0x150: d < 0 gives down = min(d * +0x148,
+  0.99), d >= 0 gives up = min(d * +0x14c, 0.99) (0x592208 = 0.99), straight = 1 - that; each weight under 0.001
+  (0x591e30) becomes 0 and goes to its node through 0x478f10 (goal, blend 0.05, rate 1) + 0x4794b0 (ancestors); +0x150 = d.
+- Actor think 0x4ff030: after the state loop it compares the entity origin and angles with those of the previous think
+  (moved / turned); at 0x4ff1de, when 0x514970 says prone (prone, no corpse blend, with the bookkeeping) and the actor
+  moved or turned, 0x5022b0 runs with eax = 1; when not prone the tilt byte +0x288 is cleared. Ported as
+  `World::actorProneFrame` after the facing and movement-noise steps.
+- Client 0x4c1cc0 (per centity, prone block from the snapshot): when prone (0x514970 on the client copy) or the corpse
+  byte is set, f = 0x5149e0; corpse byte: mode 2 (pitch f * a7, second rotation f * a8, lift f * a6); otherwise mode 1:
+  pitch f * a7, lift f * a6. 0x4c1b90 applies it to the actor's `tag_origin` (scr const 0x1c7f144 = "tag_origin", set at
+  0x506fed; error "actor (entnum %d) does not have a tag_origin") as a DObj control: rotation 0x423970 = quaternion (0,
+  sin(a/2), 0, cos(a/2)) (a pitch about y, the same as `anglesQuat(a, 0, 0)`), translation (0, 0, lift). Mode 1 is drawn by
+  iw2view through `World::actorProneTilt`.
+
+Verified: 28-map sweep (40 s, `--spawn-all`, `IW2_PRONE_LOG=1`): no unimplemented built-ins; checkprone / enterprone /
+exitprone run on 25 maps; runtime errors only the known ones (elalamein / matmata setbattlechatter, matmata roof_guys,
+silotown_assault field_charge spawn), none from prone code.
+TODO(spec): the corpse prone blend (0x4fdba0 copies the block, sets the corpse byte, 500 ms, zero pitches; client mode 2
+with the second rotation 0x423a10 / product 0x4235e0) is not ported; the reader of +0x288; the client draws with its own
+time (0xf708dc), here the server time is used. Not visually checked in iw2view yet.

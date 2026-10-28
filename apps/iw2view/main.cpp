@@ -2793,6 +2793,18 @@ int main(int argc, char** argv) {
                     } else {
                         pose = e->anim ? e->anim->pose(body->parts) : assets::bindPose(body->parts);
                     }
+                    // Prone tilt (cgame 0x4c1cc0 / 0x4c1b90): tag_origin turned about y by the transition fraction times
+                    // the fit's body pitch, lifted by fraction x +0x164 (always 0).
+                    if (float tiltPitch = 0, tiltLift = 0; world->actorProneTilt(*e, tiltPitch, tiltLift)) {
+                        for (size_t bi = 0; bi < body->parts.bones.size(); ++bi) {
+                            std::string n = body->parts.bones[bi].name;
+                            for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                            if (n != "tag_origin") continue;
+                            pose = assets::applyControls(body->parts, pose,
+                                                         std::vector<assets::BoneControl>{{int(bi), assets::anglesQuat(tiltPitch, 0, 0), {0, 0, tiltLift}}});
+                            break;
+                        }
+                    }
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *body, pose);
                     if (it.model) items.push_back(it);
