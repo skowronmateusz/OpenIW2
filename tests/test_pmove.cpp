@@ -207,6 +207,20 @@ int main() {
             CHECK(lp.onLadder && lp.origin[2] - z0 > 40.0f);
         }
     }
+    {
+        // Stance speed blend (0x509760 / 0x50aaaf): flat factors, the crouch -> prone lerp (400 ms), the prone -> crouch lerp (400 ms).
+        using iw2::game::stanceSpeedFactor;
+        CHECK(near(stanceSpeedFactor(60, 1000, -1, false), 1.0f, 1e-6f));
+        CHECK(near(stanceSpeedFactor(40, 1000, -1, false), 0.65f, 1e-6f));
+        CHECK(near(stanceSpeedFactor(11, 1000, -1, false), 0.15f, 1e-6f));
+        CHECK(near(stanceSpeedFactor(11, 1000, 1000, true), 0.15f, 1e-6f));            // f = 0 exactly: the flat prone factor
+        CHECK(near(stanceSpeedFactor(11, 1200, 1000, true), 0.40f, 1e-5f));            // f = 0.5
+        CHECK(near(stanceSpeedFactor(11, 1500, 1000, true), 0.15f, 1e-6f));            // f clamped to 1
+        CHECK(near(stanceSpeedFactor(40, 1000, 1000, false), 0.65f, 1e-6f));           // t = 0: the flat crouch factor
+        CHECK(near(stanceSpeedFactor(40, 1200, 1000, false), 0.40f, 1e-5f));           // t = 0.5
+        CHECK(near(stanceSpeedFactor(40, 1900, 1000, false), 0.65f, 1e-6f));
+        CHECK(near(stanceSpeedFactor(40, 1200, 1000, true), 0.65f, 1e-6f));            // a downward lerp (from standing) does not blend
+    }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;
 }

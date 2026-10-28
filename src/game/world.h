@@ -235,6 +235,7 @@ struct DangerPlane {
 struct Entity {
     ObjectPtr obj;
     int number = 0;
+    uint32_t shadowHint = 0;          // entity state +0x10 bits 0x2000..0xe000 (setshadowhint 0x4ef700; render only)
     std::string classname;
     bool isPlayer = false;
     bool isSpawner = false;
@@ -490,6 +491,11 @@ public:
         std::string text;
     };
     const PlayerUseHint& playerUseHint() const { return playerUseHint_; }
+    // The use hint of a usable vehicle (0x534d40 case 0xc, entity type 0xc): hint 2, and when its weapon (entityState +2, the vehicle's
+    // turretWeapon) has a useHintString (weapon def +0x56c non-empty) that string (def +0x574); otherwise no text.
+    PlayerUseHint vehicleUseHint(const std::string& turretWeapon);
+    // A float dvar by name (cvars, case-insensitive) or `def` when it is unset or not a number.
+    float cvarFloat(const std::string& name, float def) const;
     // After the player's death: no view weapon (ent+2 = 0, cgame 0x4b6a0a) and the dead view yaw (ps+0x10c).
     bool playerDeadWeaponless() const { return playerDeadWeaponless_; }
     // P_DamageFeedback (0x4e7040): damageEvent (ps+0xf8) counts damage frames; pitch/yaw (ps+0x100/+0xfc) are the
