@@ -335,6 +335,8 @@ void World::actorThink(Entity& e) {
         actorBecomeCorpse(e);
         return;
     }
+    // 0x501d00: the physics of a followed actor in anim mode 1 that no path step moved this think: the yield step 0x501620.
+    if (ai.followed && ai.animMode == 1 && e.path.count <= 0) moveActor(e, 0.05f);
     // 0x4fef50: inside the goal and the path (if any) ends inside it.
     if (actorInGoal(e, 0.0f)) {
         bool pathInGoal = true;

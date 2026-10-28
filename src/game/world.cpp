@@ -576,30 +576,35 @@ void World::thinkActors() {
 // (+0x2150), the side offset (+0x73c) and the actor physics (0x501xxx) that clips the move.
 void World::moveActor(Entity& e, float dt) {
     ActorPath& p = e.path;
-    if (p.count <= 0) return;
-    auto o = e.obj->get("origin").asVector();
-    float dist = 0.0f;
     // A followed actor (+0x2148) skips the path walk (0x5041a3 -> 0x504228): 0x544ca0 only updates the lookahead, with the shrink
     // flag 0x500d80(bumped entity), the desired delta stays zero (0x504262..0x504268), the mode word is 1 and neither the facing
-    // nor the stop-soon check 0x503ec0 run; the physics still applies gravity and ground. TODO(spec): the trail 0x505520 / 0x504f60
-    // (+0x2150 ring) only feeds the facing blend (0x504e70 / 0x505630), which is not modelled.
+    // nor the stop-soon check 0x503ec0 run. The physics 0x501d00 then calls the yield step 0x501620 (anim mode 1 or 7), which
+    // moves the actor out of the followed entity's way (yieldFollowed); it runs with or without a path.
+    // TODO(spec): the trail 0x505520 / 0x504f60 (+0x2150 ring) only feeds the facing blend (0x504e70 / 0x505630), which is not modelled.
     const bool followed = e.ai.followed != nullptr;
+    const bool yieldNow = followed && e.ai.animMode == 1 && actorSlideEnabled() && e.ai.yieldMs != timeMs_;
+    if (p.count <= 0 && !yieldNow) return;
+    auto o = e.obj->get("origin").asVector();
+    float dist = 0.0f;
     if (e.anim && !followed) {
         const AnimDelta d = e.anim->delta(e.ai.animDeltaGoalWeights);
         dist = std::sqrt(d.trans[0] * d.trans[0] + d.trans[1] * d.trans[1]);
     }
     const Vec3 before = o;
-    updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
-    if (p.count <= 0) return;
-    float turn = p.farDir[1] * p.lookDir[1] + p.farDir[0] * p.lookDir[0];
-    if (turn < 1e-6f) turn = 1e-6f;
-    float f = std::pow(turn, 0.333f);
-    if (f < 0.6f) f = 0.6f;
-    float step = followed ? 0.0f : f * dist;
-    if (step > p.lookDist) step = p.lookDist;
-    o[0] += p.lookDir[0] * step;
-    o[1] += p.lookDir[1] * step;
-    o[2] += p.lookDir[2] * step;
+    if (p.count > 0) updatePathLook(e, o, followed && followShrink(e, e.ai.bumpedEnt), false);
+    if (p.count <= 0 && !yieldNow) return;
+    float step = 0.0f;
+    if (p.count > 0) {
+        float turn = p.farDir[1] * p.lookDir[1] + p.farDir[0] * p.lookDir[0];
+        if (turn < 1e-6f) turn = 1e-6f;
+        float f = std::pow(turn, 0.333f);
+        if (f < 0.6f) f = 0.6f;
+        step = followed ? 0.0f : f * dist;
+        if (step > p.lookDist) step = p.lookDist;
+        o[0] += p.lookDir[0] * step;
+        o[1] += p.lookDir[1] * step;
+        o[2] += p.lookDir[2] * step;
+    }
     if (step > 0.0f) {
         const float yaw = std::atan2(p.lookDir[1], p.lookDir[0]) * 180.0f / float(M_PI);
         e.obj->set("angles", Value(Vec3{0, yaw, 0}));
@@ -642,7 +647,14 @@ void World::moveActor(Entity& e, float dt) {
             t.allSolid = tr.allSolid;
             return t;
         };
-        moveBlock(pm, fn);
+        if (yieldNow) {
+            e.ai.yieldMs = timeMs_;
+            if (!yieldFollowed(e, pm, fn, before)) {
+                for (int a = 0; a < 3; ++a) pm.origin[a] = before[a]; // 0x501620 returned 0: no move this frame
+            }
+        } else {
+            moveBlock(pm, fn);
+        }
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         e.ai.groundEnt = pm.groundEnt;
         grounded = pm.groundEnt != 0x7ff; // ENTITYNUM_NONE: no ground

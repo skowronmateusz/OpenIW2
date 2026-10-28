@@ -4,6 +4,7 @@
 #include "game/bulletdamage.h"
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
+#include "game/actorslide.h"
 #include "game/animtree.h"
 #include "game/axis.h"
 #include "game/inventory.h"
@@ -135,7 +136,9 @@ struct ActorAi {
     int64_t detourMs = 0;                     // +0x724 earliest time of the next detour / blocked wait
     struct Entity* blocker = nullptr;         // +0x728 actor whose blocking this one waits out (itself: blocked)
     struct Entity* blockerEnt = nullptr;      // +0x72c the sentient blocking the way
-    struct Entity* followed = nullptr;        // +0x2148 actor being followed (TODO(spec): set from +0x318)
+    struct Entity* followed = nullptr;        // +0x2148 the entity this actor yields to (0x501620 steps it aside)
+    int sideBits = 0;                         // gentity contents bits 8 / 0x10 (+0x128): the side the last yield step slid to; 0x10 is in the actor clip masks
+    int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
     bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, TODO(spec))
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
@@ -812,7 +815,10 @@ private:
     void retargetFollowed(Entity& e, Entity& player); // 0x4fec50
     void scanFollowed(Entity& e);                      // 0x504630
     void standOrFollow(Entity& e, const std::string& script); // 0x504630 + 0x53ae40 / 0x53ade0            // 0x4fedc0
-    void linkBumpedActor(Entity& e, int hit);  // 0x501c6f..0x501c8b
+    void linkBumpedActor(Entity& e, int hit);  // +0x318 bookkeeping only
+    bool yieldFollowed(Entity& e, ActorSlide& pm, const SlideTraceFn& fn, const Vec3& before); // 0x501620
+    bool followClear(Entity& e, const Vec3& newPos); // 0x501380
+    bool nearClaimedNode(const Entity& a) const; // 0x504610
     Vec3 pathEnd(const Entity& e) const { return e.path.pts[0].pos; }
     void combatScript(Entity& e);
     std::string stopScript(Entity& e);

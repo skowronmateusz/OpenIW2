@@ -50,7 +50,7 @@ void World::syncEntityClips() {
             c.origin = o.asVector();
             c.mins = {-15, -15, 0};
             c.maxs = {15, 15, e.isActor ? 72.0f : 70.0f};
-            c.contents = e.isActor ? Contents::ActorBody : Contents::PlayerBody;
+            c.contents = e.isActor ? Contents::ActorBody | uint32_t(e.ai.sideBits) : Contents::PlayerBody; // sideBits: the yield step 0x501620 sets 8 / 0x10
             c.hitBoxes = e.isActor;
             clips.push_back(c);
             continue;
