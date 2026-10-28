@@ -65,6 +65,18 @@ int main() {
     CHECK(near(run(rva, 0, 3000, done), 135));
     CHECK(done == 2000);
 
+    // vibrate (0x533b90): sine around the angles, zero crossings at 0, half and full duration; yaw 0 axis: forward = +x, left = +y.
+    MoverChannel vb;
+    startVibrate(vb, {0, 0, 0}, {2, 0, 0}, 5, 2.0f, 0.5f, 10000);
+    CHECK(vb.tr.type == 4 && vb.tr.durationMs == 2000 && vb.tr.startMs == 10500);
+    CHECK(near(vb.tr.delta[0], 5) && near(vb.tr.delta[1], 0) && near(vb.tr.delta[2], 0));
+    CHECK(near(vb.tr.evaluate(10500)[0], 0) && near(vb.tr.evaluate(11000)[0], 5) && near(vb.tr.evaluate(11500)[0], 0, 0.1f));
+    CHECK(near(vb.tr.evaluate(12000)[0], -5));
+    CHECK(!stepMove(vb, 12499) && stepMove(vb, 12500) && vb.tr.type == 0 && near(vb.tr.base[0], 0));
+    MoverChannel vl; // along the left axis (+y at yaw 0) the roll swings
+    startVibrate(vl, {0, 0, 0}, {0, 3, 0}, 1, 1.0f, 0.0f, 0);
+    CHECK(near(vl.tr.delta[0], 0) && near(vl.tr.delta[2], 1));
+
     if (failures) return 1;
     std::cout << "movers tests passed\n";
     return 0;

@@ -1,6 +1,7 @@
 // Movers and linking, following CoD2SP_s.exe 1.3 (docs/spec/movers.md).
 #include "game/movers.h"
 
+#include "game/axis.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -145,6 +146,21 @@ bool stepMove(MoverChannel& ch, int64_t nowMs) {
     return false;
 }
 
+void startVibrate(MoverChannel& ch, const MVec& angles, const MVec& dir, float amplitude, float seconds, float phase, int64_t nowMs) {
+    const MVec v = scaled(normalized(dir), amplitude); // 0x4210d0 leaves a zero vector alone
+    const Axis ax = anglesAxis({angles[0], angles[1], angles[2]});
+    const auto dotv = [&](const script::Vec3& r) { return r[0] * v[0] + r[1] * v[1] + r[2] * v[2]; };
+    ch = {};
+    ch.active = true;
+    ch.angles = true;
+    ch.target = angles;
+    ch.tr.type = 4;
+    ch.tr.durationMs = int(double(seconds) * 1000.0);
+    ch.tr.startMs = nowMs - int(phase * -1000.0f);
+    ch.tr.base = angles;
+    ch.tr.delta = {dotv(ax[0]), 0.0f, dotv(ax[1])};
+}
+
 void World::runMovers() {
     for (auto it = movers_.begin(); it != movers_.end();) {
         Entity* e = entityByNumber(it->first);
@@ -286,6 +302,15 @@ void World::registerMoverBuiltins() {
         const Vec3 vel = c.arg(0).asVector();
         startVelocityMove(ch, cur, {vel[0], vel[1], vel[2]}, t, a, d, timeMs_);
         ch.angles = true;
+        return Value();
+    });
+    // vibrate(direction, amplitude, seconds, phase) (0x533b90): see startVibrate. The original also needs the level to be
+    // running (0xa0189c == 4), which always holds here. A running angular move is replaced.
+    vm_.registerBuiltin("vibrate", [this, mover](CallContext& c) {
+        Entity& e = mover(c);
+        const Vec3 dir = c.arg(0).asVector(), ang = e.obj->get("angles").asVector();
+        startVibrate(movers_[e.number].apos, {ang[0], ang[1], ang[2]}, {dir[0], dir[1], dir[2]}, c.arg(1).asFloat(),
+                     c.arg(2).asFloat(), c.arg(3).asFloat(), timeMs_);
         return Value();
     });
     vm_.registerBuiltin("movegravity", [this, mover](CallContext& c) {
