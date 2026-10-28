@@ -71,3 +71,17 @@ adsFireAnim, adsLastShotAnim, adsRechamberAnim, adsUpAnim, adsDownAnim; slots 1�
   per bone (the XAnim blend itself is not implemented yet). With this the hip pose of every weapon (also the
   Enfield, Sten, Bren, Springfield and Mosin, whose idle and adsDown poses are turned ±90° in opposite directions)
   and the aimed sight picture match screenshots of the original.
+
+## Hit-location damage multiplier (G_Damage 0x528100..0x528143)
+
+For a sentient target the damage is `trunc(amount × table[location])` (`_ftol`); a result <= 0 leaves G_Damage before any
+state change. The table is the attacker's weapon table (weapon def +0x5b0 + 4·location: the weapon-file keys `locNone`,
+`locHelmet`, `locHead`, `locNeck`, `locTorsoUpper`, `locTorsoLower`, `locRightArmUpper`, `locLeftArmUpper`,
+`locRightArmLower`, `locLeftArmLower`, `locRightHand`, `locLeftHand`, `locRightLegUpper`, `locLeftLegUpper`,
+`locRightLegLower`, `locLeftLegLower`, `locRightFoot`, `locLeftFoot`, `locGun`; field table entry at file 0x1a8eac) when
+the entity's weapon (inflictor byte +2, else the attacker's) is defined and its `weaponType` (+0x78) is 0 (`bullet`).
+Otherwise the default table 0x1c91328 is used: 19 floats initialised to 1.0 (0x527a08) and loaded from
+`info/ai_lochit_dmgtable` (`LOCDMGTABLE\name\value\...`, 0x527b73..0x527ba1; e.g. head 4, torso_upper 0.9, gun 0).
+Location order: none, helmet, head, neck, torso_upper, torso_lower, right_arm_upper, left_arm_upper, right_arm_lower,
+left_arm_lower, right_hand, left_hand, right_leg_upper, left_leg_upper, right_leg_lower, left_leg_lower, right_foot,
+left_foot, gun (name table 0x5a9538). OpenIW2 uses the attacker's `$weapon` since damage() has no inflictor argument.

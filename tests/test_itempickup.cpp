@@ -95,5 +95,16 @@ int main() {
         std::cout << "npc mp40: stock " << mp2.first << " clip " << mp2.second << "\n";
         CHECK(mp2.second == 32 && mp2.first == 40);
     }
+    if (const char* main = std::getenv("IW2_MAIN")) {
+        // Hit-location multipliers (0x528100): a bullet weapon uses its own locXxx keys, anything else info/ai_lochit_dmgtable.
+        iw2::fs::Vfs vfs;
+        vfs.mountDirectory(main);
+        World world(vfs, "toujane");
+        world.start();
+        CHECK(std::fabs(world.debugLocMultiplier("kar98k", "head") - 1.5f) < 1e-4f);
+        CHECK(std::fabs(world.debugLocMultiplier("kar98k", "torso_upper") - 0.9f) < 1e-4f);
+        CHECK(std::fabs(world.debugLocMultiplier("", "head") - 4.0f) < 1e-4f);
+        CHECK(std::fabs(world.debugLocMultiplier("", "gun")) < 1e-4f);
+    }
     return failures ? 1 : 0;
 }

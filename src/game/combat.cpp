@@ -169,6 +169,55 @@ Value World::attackerValue(Entity* attacker) {
     return Value(worldEntityObj_);
 }
 
+// Hit-location damage multiplier (0x528100..0x528143). The attacker's weapon table (weapon +0x5b0 + 4·location, the keys
+// locNone, locHelmet, ... of the weapon file) applies when the weapon is a bullet weapon (weaponType +0x78 == 0);
+// otherwise, and with no weapon, the default table loaded from info/ai_lochit_dmgtable (0x527b30..0x527ba1:
+// "LOCDMGTABLE\name\value\..." for the 19 locations, initialised to 1.0 at 0x527a08). A key a weapon file leaves out
+// is taken as 1.0 (TODO(spec): the descriptor default).
+float World::hitLocationMultiplier(const Entity* attacker, const std::string& location) {
+    static const char* const kLocKeys[19] = {"none", "helmet", "head", "neck", "torso_upper", "torso_lower", "right_arm_upper",
+                                             "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand", "left_hand",
+                                             "right_leg_upper", "left_leg_upper", "right_leg_lower", "left_leg_lower",
+                                             "right_foot", "left_foot", "gun"};
+    int idx = 0;
+    for (int i = 0; i < 19; ++i)
+        if (location == kLocKeys[i]) idx = i;
+    if (attacker) {
+        const std::string w = lowerStr(attacker->obj->get("$weapon").toString());
+        const auto* def = w.empty() || w == "none" ? nullptr : weapon(w);
+        if (def) {
+            auto type = def->find("weapontype");
+            if (type == def->end() || type->second.empty() || lowerStr(type->second) == "bullet") {
+                std::string key = "loc";
+                for (const char c : std::string(kLocKeys[idx]))
+                    if (c != '_') key += c;
+                auto it = def->find(key);
+                return it != def->end() ? float(std::atof(it->second.c_str())) : 1.0f;
+            }
+        }
+    }
+    if (!locDmgTableLoaded_) {
+        locDmgTableLoaded_ = true;
+        locDmgTable_.assign(19, 1.0f);
+        if (auto d = vfs_.read("info/ai_lochit_dmgtable")) {
+            const std::string text(d->begin(), d->end());
+            std::vector<std::string> tok;
+            size_t p = 0;
+            while (p <= text.size()) {
+                const size_t q = text.find('\\', p);
+                tok.push_back(text.substr(p, q == std::string::npos ? std::string::npos : q - p));
+                if (q == std::string::npos) break;
+                p = q + 1;
+            }
+            if (!tok.empty() && tok[0] == "LOCDMGTABLE")
+                for (size_t i = 1; i + 1 < tok.size(); i += 2)
+                    for (int k = 0; k < 19; ++k)
+                        if (tok[i] == kLocKeys[k]) locDmgTable_[size_t(k)] = float(std::atof(tok[i + 1].c_str()));
+        }
+    }
+    return locDmgTable_[size_t(idx)];
+}
+
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
                    const std::string& location) {
     if (!takesDamage(target)) return;
@@ -192,7 +241,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
     // table +0x5b0, else the default table 0x1c91328) and truncated; a result <= 0 leaves G_Damage (0x52857f) before any
     // state changes, so no "damage" notify and no pain (a radius-damage edge of 0 gave animscripts/pain.gsc:101 a
-    // divide by zero in health / damageTaken). TODO(spec): the multiplier tables (taken as 1.0 here).
+    // divide by zero in health / damageTaken). The multiplier tables: hitLocationMultiplier; the product is truncated (_ftol).
+    amount = int(float(amount) * hitLocationMultiplier(attacker, location));
     if (amount <= 0) return;
     // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage
     // (0x5282b3). TODO(spec): the knockback computed before that check still applies in the exe.

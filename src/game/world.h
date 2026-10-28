@@ -593,6 +593,11 @@ public:
     Entity* debugUseWeaponItem(const std::string& weapon, int stock, int clip);
     void debugSetClip(const std::string& weapon, int rounds);
     std::pair<int, int> debugAmmo(const std::string& weapon);
+    // Tests: the hit-location multiplier (0x528100) for an attacker holding `weapon` ("" = no weapon).
+    float debugLocMultiplier(const std::string& weapon, const std::string& location) {
+        player_->obj->set("$weapon", script::Value(weapon));
+        return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
+    }
     void debugDamage(Entity& e, int amount);
     // Test hooks (iw2game IW2_TOUCH_TEST / IW2_ROCKET_TEST): the vehicle touch callback with the vehicle placed 100 units
     // behind `t` moving at 400 units/s towards it; a vehicle rocket fired from 300 units away at `t`.
@@ -1213,6 +1218,9 @@ private:
     uint32_t entityContents(const Entity& e) const;          // gentity +0xc0 (setcontents 0x4efd70; spawn values 0x4fc74f / 0x4e90e2 / 0x533440 / 0x533480 / 0x5334d0)
     static bool isScriptMover(const Entity& e);              // eType 5 (0x5332b0): script_model, script_brushmodel, script_origin
     void vehicleTouchDamage(Entity& vehicle, Entity& other); // 0x512d40 (src/game/vehicles.cpp)
+    float hitLocationMultiplier(const Entity* attacker, const std::string& location); // 0x528100 (combat.cpp)
+    std::vector<float> locDmgTable_;
+    bool locDmgTableLoaded_ = false;
     Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
     std::map<std::string, std::string> collmapByModel_; // vehicle model → collmap brush model (src/game/entityclips.cpp)        // xmodel mins / maxs, filled by skeleton()
     std::mt19937 rng_{12345};
