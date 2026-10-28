@@ -647,6 +647,43 @@ void World::moveActor(Entity& e, float dt) {
     }
 }
 
+// The actor physics for a movement kind other than 1 (block mode +0x40 = actor +0x264: anim mode 4 -> 2, 5 -> 3, 6 -> 4): the
+// delta (actor +0x250, already turned by the yaw +0x124 in 0x501d00) goes through the same actor slide block as the path
+// step (moveBlock: kind 3 adds the delta without collision, kind 4 slides in 3D, kind 2 is the ground-bound step).
+void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
+    const Vec3 before = e.obj->get("origin").asVector();
+    ActorSlide pm;
+    for (int a = 0; a < 3; ++a) {
+        pm.origin[a] = before[a];
+        pm.moveDelta[a] = delta[size_t(a)];
+        pm.velocity[a] = e.velocity[a];
+    }
+    pm.dt = dt;
+    pm.timeMs = int(dt * 1000.0f + 0.5f);
+    pm.mode = kind;
+    pm.gravity = gravity();
+    pm.mask = e.ai.noPush ? 0x2820011u : 0x820011u;
+    pm.groundEnt = uint16_t(e.ai.groundEnt);
+    const SlideTraceFn fn = [&](const float s[3], const float en[3]) {
+        const TraceResult tr = collision_->trace({s[0], s[1], s[2]}, {en[0], en[1], en[2]}, {-15, -15, 0}, {15, 15, 72}, pm.mask, e.number);
+        SlideTrace t;
+        t.fraction = tr.fraction;
+        for (int a = 0; a < 3; ++a) t.normal[a] = tr.normal[a];
+        t.surface = tr.contents;
+        t.surfFlags = tr.surfaceFlags;
+        t.entity = tr.fraction < 1.0f || tr.startSolid ? uint16_t(tr.entity < 0 ? 0x7fe : tr.entity) : uint16_t(0x7ff);
+        t.startSolid = tr.startSolid;
+        t.allSolid = tr.allSolid;
+        return t;
+    };
+    moveBlock(pm, fn);
+    const Vec3 o{pm.origin[0], pm.origin[1], pm.origin[2]};
+    e.obj->set("origin", Value(o));
+    e.ai.groundEnt = pm.groundEnt;
+    e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
+    linkBumpedActor(e, pm.hitEnt);
+}
+
 bool World::negotiationTrigger(Entity& e, const Vec3& o, bool grounded) {
     ActorPath& p = e.path;
     if (!grounded) return false;

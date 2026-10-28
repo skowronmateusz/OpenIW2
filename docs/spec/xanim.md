@@ -101,7 +101,7 @@ old time to its time (if it loops and the time went back, plus one whole cycle, 
 weight, and adds its weight. A node with one weighted child hands it its own weight; several weighted children are
 summed with their own weights, then normalized and added with the node's weight (nested), or at the top divided by
 the weight sum. The weights are the current ones, or the goal weights when the caller asks (actor byte +0x220). The
-translation is turned into the frame of the old time's delta rotation (0x4758f0, a 2D rotation: its length is kept).
+xy translation difference is turned by minus the yaw of the new-time delta rotation quaternion (z, w) (0x475960 passes flag 1 to pick the second sample, the one taken at [node+0], the time that the translation difference ends on; 0x4758f0: x' = (1-2z^2/s)x + (2zw/s)y, y' = (1-2z^2/s)y - (2zw/s)x with s = z^2+w^2; length kept). The relative quaternion conj(old)*new (z = w0 z1 - z0 w1, w = w0 w1 + z0 z1) is summed with the weights like the translation (0x475a0b..0x475a35); the yaw of the result (0x423900, atan2(2zw/s, 1-2z^2/s) in degrees; (0,0) gives the identity) is what the actor turn 0x504aa0 adds in anim modes 4-7.
 
 The actor path move (0x504160 anim mode 1, movemode ≠ stop, with a path and no followed actor) takes the horizontal
 length of this delta as the frame distance (0x5041ad → 0x505230).

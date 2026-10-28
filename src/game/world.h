@@ -785,6 +785,7 @@ private:
     int customThink(Entity& e);
     int negotiationThink(Entity& e);               // 0x54b760
     void replanFromSentient(Entity& e);            // 0x5037e0
+    void moveActorKind(Entity& e, int kind, const Vec3& delta, float dt); // actor physics for the anim modes 4-6 (kinds 2-4)
     bool negotiationTrigger(Entity& e, const Vec3& o, bool grounded); // the state 9 branch of 0x503ec0
     void registerActorStateBuiltins();
     // Cover nodes and claiming (src/game/actorcover.cpp)

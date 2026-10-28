@@ -473,8 +473,29 @@ void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goa
             const auto& l = a->deltaTrans.keys.back();
             for (int k = 0; k < 3; ++k) to[size_t(k)] += l[size_t(k)] - f[size_t(k)];
         }
+        // 0x475960: the rotation track is sampled at both times (no track: identity). The relative quaternion
+        // conj(old) * new is added with the weight (0x475a0b..0x475a35) and the translation difference is turned by
+        // minus the yaw of the new rotation (0x4758f0: x' = (1 - 2 z^2 / s) x + (2 z w / s) y, y' = (1 - 2 z^2 / s) y - (2 z w / s) x).
+        float z0 = 0.0f, w0 = 1.0f, z1 = 0.0f, w1 = 1.0f;
+        if (!a->deltaRot.keys.empty()) {
+            const assets::Quat q0 = assets::sampleRotRaw(a->deltaRot, s.oldTime * span, keys);
+            const assets::Quat q1 = assets::sampleRotRaw(a->deltaRot, s.time * span, keys);
+            z0 = q0.z; w0 = q0.w; z1 = q1.z; w1 = q1.w;
+        }
+        float dx = to[0] - from[0], dy = to[1] - from[1];
+        const float sq = z1 * z1 + w1 * w1;
+        if (sq > 0.0f) {
+            const float k = 2.0f / sq, q = k * z1 * z1, r = k * w1 * z1;
+            const float nx = (1.0f - q) * dx + r * dy;
+            dy = (1.0f - q) * dy - r * dx;
+            dx = nx;
+        }
         out.weight += weight;
-        for (int k = 0; k < 3; ++k) out.trans[size_t(k)] += (to[size_t(k)] - from[size_t(k)]) * weight;
+        out.trans[0] += dx * weight;
+        out.trans[1] += dy * weight;
+        out.trans[2] += (to[2] - from[2]) * weight;
+        out.rot[0] += (w0 * z1 - z0 * w1) * weight;
+        out.rot[1] += (w0 * w1 + z0 * z1) * weight;
         return;
     }
     auto w = [&](int c) { return goalWeights ? nodes_[size_t(c)].goalWeight : nodes_[size_t(c)].weight; };
@@ -492,16 +513,19 @@ void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goa
     if (!nested) {
         if (out.weight == 0) return;
         for (float& v : out.trans) v /= out.weight;
+        for (float& v : out.rot) v /= out.weight;
         return;
     }
     if (sum.weight == 0) return;
     const float scale = weight / sum.weight;
     if (first) {
         for (float& v : out.trans) v *= scale;
+        for (float& v : out.rot) v *= scale;
         out.weight = weight;
         return;
     }
     for (int k = 0; k < 3; ++k) out.trans[size_t(k)] += sum.trans[size_t(k)] * scale;
+    for (int k = 0; k < 2; ++k) out.rot[size_t(k)] += sum.rot[size_t(k)] * scale;
     out.weight += weight;
 }
 

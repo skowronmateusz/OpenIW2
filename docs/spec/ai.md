@@ -241,8 +241,7 @@ below, height 184), linked nodes first then nearest (0x516640); a linked node is
 ones are traced last. Sentient node 0x515040: radius 192, cached (+0x38, flags +0x3c/+0x3d). A* 0x545840: sorted open list by g + h (h = 2D distance to the goal position), insert before the first not lower,
 re-open on cheaper g, links with a team block byte (+8 + team) skipped; 0x545ca0 adds planes. Path points 0x541da0: goal first in the original (+0x330, 0x1c bytes: pos, dir, length, node), at most 32 (+0x6e8 |= 4),
 the goal position as an extra point when it differs (2D) from the goal node. Implemented in `src/game/actorpath.cpp`
-(goal-first layout, see "Path following"). TODO(spec): negotiation pairs (types 16/17),
-0x502960's offset goal (0x542340/0x545670).
+(goal-first layout, see "Path following"). Negotiation pairs (types 16/17) are ported. TODO(spec): 0x502960's offset goal (0x542340/0x545670).
 
 **Danger planes** (observed; Ghidra decompile and objdump call sites): actor
 +0x2050 holds four 0x18-byte slots {time, source, nx, ny, dist, short-lived}. 0x54b3b0 (slot choice 0x54b370: the
