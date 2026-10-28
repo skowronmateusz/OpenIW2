@@ -163,29 +163,51 @@ bool World::pathLookClear(const ActorPath& p, const Vec3& o, const Vec3& target)
 void World::updateFollowed(Entity& e) {
     ActorAi& ai = e.ai;
     Entity* f = ai.followed;
-    if (!f) return;
-    if (f->obj->removed) {
+    if (f && f->obj->removed) {
         ai.followed = nullptr;
-        return;
+        f = nullptr;
     }
-    const Vec3 mo = originOf(e.obj), fo = originOf(f->obj);
-    const float dx = fo[0] - mo[0], dy = fo[1] - mo[1];
-    const float d2 = dy * dy + dx * dx;
-    const bool fActor = f->isActor;
-    if (!(d2 < 1406.25f)) {
-        if (fActor && f->ai.followed == &e) f->ai.followed = nullptr;
-        ai.followed = nullptr;
-    } else if (fActor && f->ai.blockerEnt == &e) {
-        ai.followed = nullptr;
+    if (f) {
+        const Vec3 mo = originOf(e.obj), fo = originOf(f->obj);
+        const float dx = fo[0] - mo[0], dy = fo[1] - mo[1];
+        const float d2 = dy * dy + dx * dx;
+        const bool fActor = f->isActor;
+        if (!(d2 < 1406.25f)) {
+            if (fActor && f->ai.followed == &e) f->ai.followed = nullptr;
+            ai.followed = nullptr;
+        } else if (fActor && f->ai.blockerEnt == &e) {
+            ai.followed = nullptr;
+        }
+        if (!ai.followed) ++stats.followReleases;
     }
+    // 0x4fee45: unless it already follows the player (gentity 0), the retarget 0x4fec50 runs.
+    if (player_ && ai.followed != player_) retargetFollowed(e, *player_);
     f = ai.followed;
-    if (!f) {
-        ++stats.followReleases;
-        return;
-    }
+    if (!f) return;
+    const Vec3 mo = originOf(e.obj), fo = originOf(f->obj);
+    const float d2 = (fo[1] - mo[1]) * (fo[1] - mo[1]) + (fo[0] - mo[0]) * (fo[0] - mo[0]);
     if (d2 < 900.0f) return;
     if (ai.blocker == &e || ai.animMode != 1 || e.path.count <= 0) return;
     if ((mo[0] - fo[0]) * e.path.lookDir[0] + (mo[1] - fo[1]) * e.path.lookDir[1] > 0.0f) ai.followed = nullptr, ++stats.followReleases;
+}
+
+// 0x4fec50 (actor, player gentity): an actor that avoids the player (dontavoidplayer +0x734 = 0, and the player contents bit
+// +0x28c & 0x2000000), not a turret gunner (state 2), whose team is not the one the player's team fights (table {0, 2, 1, 0, 0}),
+// and whose box overlaps the player's box shifted by its velocity * 0.1 (0x59202c; 0x447830, an AABB test for an actor), follows
+// the player: +0x2148 = the player gentity. When it stands at its claimed node (0x504610: node set, 0x502660 close) it is skipped
+// while the client byte +0x86b6 is set. TODO(spec): that byte (taken as 0), the node hand-over 0x519050 to the player's
+// sentient (the claimed node stays with the actor), the player's mins/maxs (+0x540/+0x54c; the standing box is used).
+void World::retargetFollowed(Entity& e, Entity& player) {
+    ActorAi& ai = e.ai;
+    const Value dap = e.obj->get("dontavoidplayer");
+    if ((dap.isNumber() && dap.asInt() != 0) || !ai.noPush) return;
+    if (ai.stack[size_t(ai.depth)] == AiTurret) return;
+    if (isEnemy(player, e)) return;
+    const Vec3 po = originOf(player.obj), ao = originOf(e.obj);
+    const float px = po[0] + player.velocity[0] * 0.1f, py = po[1] + player.velocity[1] * 0.1f, pz = po[2] + player.velocity[2] * 0.1f;
+    if (px + 15 < ao[0] - 15 || px - 15 > ao[0] + 15 || py + 15 < ao[1] - 15 || py - 15 > ao[1] + 15 || pz + 70 < ao[2] || pz > ao[2] + 72) return;
+    ai.followed = &player;
+    ++stats.followLinks;
 }
 
 // 0x500d80 (this = actor, arg = the bumped entity number +0x318): the lookahead shrink flag of the followed branch. A bumped
