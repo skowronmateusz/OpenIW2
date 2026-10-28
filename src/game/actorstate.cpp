@@ -935,8 +935,9 @@ void World::registerActorStateBuiltins() {
     // box +-15 x +-15 x 0..72, traced from the player's eye, mask 0x801; unlimited distance here since 0x1c61038 is
     // FLT_MAX by default); a smaller move fails while the actor is stopping (+0x6b0 > 0 and +0x704). Otherwise
     // origin and (with a second argument) angles are set, motion and path cleared, true returned.
-    // TODO(spec): the level state 0x1c61048 gating the sight checks (taken as "time > 0"), the teleport bit
-    // (eFlags 2, moves over 128 units), the mid-stopping check, the facing setters 0x504950 / 0x5049a0 (angles only).
+    // The checks run once the level is loaded (0x53e033: 0x1c61048 == 0, cleared by 0x4da540; docs/spec/ai.md "Spawn
+    // checks"). TODO(spec): the teleport bit (eFlags 2, moves over 128 units), the mid-stopping check, the facing setters
+    // 0x504950 / 0x5049a0 (angles only), the pass entities of this 0x532100 call (the probe here is a plain trace).
     vm_.registerBuiltin("teleport", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         if (!a || !a->isActor) throw std::runtime_error("not an actor");
@@ -944,7 +945,7 @@ void World::registerActorStateBuiltins() {
         const Vec3 cur = vecField(a->obj, "origin");
         const float dx = cur[0] - goal[0], dy = cur[1] - goal[1], dz = cur[2] - goal[2];
         const float dist2 = dx * dx + dy * dy + dz * dz;
-        if (timeMs_ > 0) {
+        if (!levelInitializing_) {
             if (dist2 > 100.0f) {
                 if (player_) {
                     const Value eyeV = Value(eyePosition(*player_));

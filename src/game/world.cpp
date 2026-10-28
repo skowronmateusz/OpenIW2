@@ -411,57 +411,53 @@ void World::dropSpawners() {
 
 // Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new
 // actor, notifies the spawner "spawned", and starts animscripts/init.gsc::main() (docs/spec/ai.md).
-Entity* World::spawnActor(Entity& spawner, bool force) {
+Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) {
     const Value count = spawner.obj->get("count");
     if (count.isInt() && count.asInt() <= 0) return nullptr;
 
-    // dospawn (arg3 == 0) refuses a spawnpoint whose box (origin + (-15,-15,0)..(15,15,70), 0x5a5bdc..0x5a5bf0) holds a
-    // living body: an entity with contents & 0x200c000 that is a client in state < 4 or an actor with health > 0
-    // (0x4e8500). The message is "couldn't spawn from %s because spawnpoint would telefrag" and the result undefined
-    // (0x532253-0x53227e). stalingradspawn passes force and skips the test. The "player can see the spawnpoint"
-    // test (0x532288) is skipped when the global at 0x1c61048 is set, which it is in-game (SP), so it is not done.
-    // TODO(spec): the player's contents bits and the client-state meaning of the <4 compare.
+    const Value tn = spawner.obj->get("targetname");
+    const std::string spawnerName = tn.isString() ? tn.toString() : std::string("<unnamed>"); // 0x5875f4
+    // dospawn (arg3 == 0, 0x532242) refuses a spawnpoint that would telefrag (0x4e8500, "^3couldn't spawn from %s because
+    // spawnpoint would telefrag", 0x58f88c) and, once the level runs (0x1c61048 == 0, 0x532288), one the player can see:
+    // the player's eye (0x514f70) sees the actor box at the spawner's origin (0x532100, passing the player and the
+    // spawner) -> "^3couldn't spawn from %s because player can see spawnpoint" (0x58f850). Both return undefined.
+    // stalingradspawn passes force (arg3 = 1) and skips both tests.
     if (!force) {
-        const Value so = spawner.obj->get("origin");
-        if (so.isVector()) {
-            const Vec3 sp = so.asVector();
-            bool blocked = false;
-            for (const auto& e : entities_) {
-                if (e.get() == &spawner || e->obj->removed || !(e->isActor || e->isPlayer)) continue;
-                if (e->isActor && (e->ai.corpse || !e->ai.alive)) continue;
-                const Value eo = e->obj->get("origin");
-                if (!eo.isVector()) continue;
-                const Vec3 p = eo.asVector();
-                // actor box (-15,-15,0)..(15,15,72) against the spawn box (-15,-15,0)..(15,15,70), touching counts
-                const float height = e->isPlayer ? 70.0f : 72.0f; // TODO(spec): the player's box height
-                if (p[0] - 15 <= sp[0] + 15 && p[0] + 15 >= sp[0] - 15 && p[1] - 15 <= sp[1] + 15 && p[1] + 15 >= sp[1] - 15 &&
-                    p[2] <= sp[2] + 70 && p[2] + height >= sp[2]) {
-                    if (e->isPlayer && !isAlive(*e)) continue;
-                    blocked = true;
-                    break;
-                }
-            }
-            if (blocked) {
-                const Value tn = spawner.obj->get("targetname");
-                print("^3couldn't spawn from " + (tn.isString() ? tn.toString() : std::string("<unnamed>")) +
-                      " because spawnpoint would telefrag");
+        if (spawnWouldTelefrag(spawner)) {
+            print("^3couldn't spawn from " + spawnerName + " because spawnpoint would telefrag");
+            return nullptr;
+        }
+        if (!levelInitializing_ && player_) {
+            const Value so = spawner.obj->get("origin");
+            if (so.isVector() && sightToActorBox(eyePosition(*player_), so.asVector(), player_->number, spawner.number)) {
+                print("^3couldn't spawn from " + spawnerName + " because player can see spawnpoint");
                 return nullptr;
             }
         }
     }
+    // The spawned entity is a copy of the spawner (0x4f95b0) with spawnflags bit 0 cleared (0x53234e); the actor spawn
+    // 0x4fc640 reads its flags: bit 2 (forcespawn) and bit 4 (undeletable, skipped by 0x4fcaf0). Kept as "$spawnflags"
+    // because the port does not copy the script field spawnflags.
+    const Value spawnerFlags = spawner.obj->get("spawnflags");
+    const int actorFlags = (spawnerFlags.isInt() ? spawnerFlags.asInt() : 0) & ~1;
     // The actor pool has 32 slots (FUN_004fc8d0 scans 0x20 slots of 0x21a4 bytes); a corpse conversion (0x4fdba0 ->
-    // 0x4fc960) or a freed entity returns its slot. With no free slot the spawn fails with "Actor allocation failed",
-    // the fresh entity is freed (0x4d7c30) and dospawn reports "couldn't spawn from %s because there are no free
-    // actors" (0x532398), returning undefined; the spawner's count is untouched (it is decremented only after a
-    // successful spawn, 0x5325ca). TODO(spec): the spawner flag 2 retry that frees the farthest actor (0x4fcaf0).
+    // 0x4fc960) or a freed entity returns its slot. With no free slot (0x4fc67c) an entity with spawnflags 2 frees one
+    // actor (0x4fcaf0, World::freeActorForForceSpawn) and allocates again (0x4fc68c); otherwise, or when that fails too,
+    // the fresh entity is freed (0x4d7c30) and dospawn reports "couldn't spawn from %s because there are no free actors"
+    // (0x532398), returning undefined; the spawner's count is untouched (it is decremented only after a successful
+    // spawn, 0x5325ca).
     {
-        int live = 0;
-        for (const auto& e : entities_)
-            if (e->isActor && !e->obj->removed && !e->ai.corpse) ++live;
-        if (live >= 32) {
-            const Value tn = spawner.obj->get("targetname");
-            print("^3couldn't spawn from " + (tn.isString() ? tn.toString() : std::string("<unnamed>")) +
-                  " because there are no free actors");
+        auto liveActors = [this] {
+            int live = 0;
+            for (const auto& e : entities_)
+                if (e->isActor && !e->obj->removed && !e->ai.corpse) ++live;
+            return live;
+        };
+        bool full = liveActors() >= 32;
+        if (full && (actorFlags & 2) && freeActorForForceSpawn()) full = liveActors() >= 32;
+        if (full) {
+            // a map-start placed actor is freed silently (0x4fc6a9); the message is dospawn's (0x532398)
+            if (!mapStartSpawn_) print("^3couldn't spawn from " + spawnerName + " because there are no free actors");
             return nullptr;
         }
     }
@@ -471,16 +467,18 @@ Entity* World::spawnActor(Entity& spawner, bool force) {
     Entity& a = spawnEntity(cls);
     a.isActor = true;
     a.obj->kind = "actor";
-    // Spawned AI keep the spawner's key/values except its targetname; map-start AI (no spawner flag 1) are the
-    // placed entity itself, so they keep it. A spawner whose count runs out is removed. (Inferred from scripts
-    // that getent() a spawner by targetname and later getent() the AI by script_noteworthy, e.g. eldaba
-    // intro_actors_setup; the actor spawn 0x5325ca itself only decrements a positive count, TODO(spec) where the
-    // spent spawner is freed.)
+    // Spawned AI keep the spawner's key/values except its targetname: dospawn copies the spawner (0x4f95b0) and sets the
+    // copy's targetname (+0x120) to the optional argument, none without one (0x53233c -> 0x4634c0). Map-start AI (no
+    // spawner flag 1) are the placed entity itself (0x4fc640 turns it into the actor), so they keep it; the port spawns
+    // a new entity for them and removes the placed one below. A real spawner (flag 1) is never freed by a spawn: the spawn
+    // only decrements a positive count (0x5325ca..0x5325d8).
     const Value flags = spawner.obj->get("spawnflags");
     const bool placed = !(flags.isInt() && (flags.asInt() & 1));
     for (const auto& [k, v] : spawner.obj->fields)
         if (k != "spawnflags" && k != "count" && (placed || k != "targetname")) a.obj->set(k, v);
+    if (targetname.isDefined()) a.obj->set("targetname", targetname);
     a.obj->set("classname", Value(cls));
+    a.obj->set("$spawnflags", Value(int32_t(actorFlags)));
     // 0x4fc640 -> 0x4fc550 (0x4fc66c): an actor spawn without the SPAWNER flag drops the entity to the floor before the actor
     // slot is allocated; dospawn clears the copy's spawnflags bit 0 (0x53234e) and calls 0x4fc640, so runtime spawns are
     // dropped again from the spawner's (already dropped, 0x5325f0) origin. A map-start placed actor is dropped by the exe
@@ -535,6 +533,21 @@ Entity* World::spawnActor(Entity& spawner, bool force) {
     return &a;
 }
 
+void World::deleteEntityScripted(Entity& e) {
+    connectEntityPaths(e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
+    // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
+    // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
+    vm_.notify(e.obj, "death");
+    // G_FreeEntity (0x4d7c30, call at 0x4d7d87): an actor's turret (+0x2114) it owns is released (0x549a60), so the gun is usable again.
+    if (e.usingTurret) turretStateFinish(e);
+    // G_FreeEntity (0x4d7c30) resets the entity (call 0x419700 at 0x4d7ce3; TODO(spec): confirm it is the memset), whose state holds the loop sound index (ent+6, set by playloopsound
+    // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
+    if (const Value h = e.obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
+    e.obj->set("$loopsound", Value());
+    e.obj->set("$loopalias", Value());
+    vm_.freeObject(e.obj);
+}
+
 void World::start() {
     prepareStart();
     runLevelMain();
@@ -582,8 +595,8 @@ void World::prepareStart() {
     syncEntityClips();
     // 0x516b70 (after the entity spawn 0x4fa5c0, 0x4fdf30; before the first frame 0x4da970): every entity with the DYNAMICPATH
     // flags 0x300 -- set by script_brushmodel spawn 0x533440 when spawnflags bit 1 is set (0x53346c) -- disconnects its paths
-    // (0x519860). TODO(spec): that the level main() runs after this point (assumed: the map scripts rely on it, e.g. moscow's
-    // ai_table_clip_down is made solid again later without a disconnectpaths call).
+    // (0x519860). The level script's main() starts after it: 0x4da470 calls 0x4fa5c0, 0x4fdf30, 0x516b70 and then the
+    // main thread (0x46da30 / 0x464ea0 at 0x4da50e), then the first G_RunFrame (0x4da524).
     for (const auto& ep : entities_) {
         if (ep->classname != "script_brushmodel" || ep->obj->removed) continue;
         const Value sf = ep->obj->get("spawnflags");
@@ -596,14 +609,17 @@ void World::runLevelMain() {
     vm_.start("maps/" + mapName_ + ".gsc", "main", {}, Value(vm_.level())); // self = level: maps/duhoc_assault.gsc main() threads read self fields (inferred)
     // Threads the init code woke by notify were appended to the current frame list (counter 0x9bef20), which the first
     // Scr_RunFrame runs before the next frame's list that holds the timed waits (VM_Notify 0x46ca60, Scr_RunFrame 0x46f5c0).
-    // TODO(spec): whether the exe runs a frame at time 0 before the first 50 ms step; only the order is evidenced.
     vm_.drainReady();
     // The exe's script lists are keyed by a frame counter (0x9bef20): a thread that init code left in `wait 0.05` is in the
     // NEXT frame's list, so something already ran the current one. moscow/matmata need that: matmata's start trigger_multiple
     // (the player stands inside it) must fire and spawn the jeep before ridein's `wait 0.05` ends and does getent("jeep").
-    // So one game frame runs at time 0 before the first 50 ms step. TODO(spec): the exe's server start-up frames (count and
-    // time step) are not read.
+    // The exe does run one full G_RunFrame right after starting main (0x4da470: 0x4da524 G_RunFrame(0, 0), no time budget),
+    // inside the server spawn 0x4488b0 and before the level counts as loaded (0x448aab -> 0x4da540 clears 0x1c61048).
+    // The frame start 0x44a6a0 (level.time += 50, called at 0x448985 right before 0x4da470) has already run, so the exe's
+    // first frame is at level time 50 and the entities are spawned at 50; the port spawns and runs it at time 0 (all
+    // later frames keep the 50 ms spacing). TODO(spec): the absolute offset (gettime() is 50 ms lower here).
     frame(false);
+    levelInitializing_ = false;
 }
 
 Entity* World::entityByNumber(int number) {
@@ -631,12 +647,29 @@ void World::frame(bool advanceTime) {
             fxEvents_.push_back({fxNames_[size_t(l.id)], l.origin, Vec3{0, 0, 1}});
             l.nextMs = timeMs_ + int64_t(l.delayS * 1000.0f);
         }
-    // G_RunFrame's entity loop (0x4dacd0..0x4daeb8): every entity with an animation tree steps it (0x476c80 / 0x476490)
+    // G_RunFrame (0x4da970) runs in eight stages (jump table 0x4db27c; stage counter 0x1c6105c, reset by the frame start
+    // 0x44a6a0 that adds 50 ms to level.time), then the client end frames (docs/spec/ai.md "Server frame order"):
+    //   1 (0x4da99f) 0x4e8160 / 0x4e8180 on the player (0x4e8180 -> G_TouchTriggers 0x4e7320), the level change 0x4d9f90;
+    //   2 (0x4daa14) every entity (from 1) 0x447ec0, then the queued "trigger" touches (0x1c610b4) are taken over;
+    //   3 (0x4dab00) those "trigger" notifies are sent, each trigger once per pass, the woken threads run between passes;
+    //   4 (0x4dac9c) the animation step of every entity (from 1);
+    //   5 (0x4daefc) woken threads, then the script frame (0x467150; frame counter 0x9bef20 + 1);
+    //   6 (0x4daf94) bad places (0x523a60);
+    //   7 (0x4dafc6) the player's queued usercmds (0x409ed0 -> 0x4e7ee0 -> ClientThink 0x4e7bc0), 0x5154b0 on the player,
+    //     and, with ps flag 0x20000 (in a vehicle), G_RunEntity of the entity at client +0xf4;
+    //   8 (0x4db048) G_RunEntity (0x4da7e0, once per frame per entity, +0x130 = frame number) of every entity in number
+    //     order, an entity's link parent (+0x1c8) first;
+    //   then (0x4db11d) for every client in use 0x530cf0 and ClientEndFrame (0x4e7f90), then 0x4d9710, 0x517c30, 0x52b070,
+    //   0x4da2d0, 0x4da0e0. The server frame end (0x44a900) then processes the save queue (0x44a230) and builds the
+    //   snapshot (0x4db2b0).
+    vm_.setTime(timeMs_);
+    runTriggers(); // stages 1 and 3
+    vm_.drainReady(); // 0x4dac2a: the threads the trigger notifies woke run before the animation step
+    // Stage 4 (0x4dacd0..0x4daeb8): every entity with an animation tree steps it (0x476c80 / 0x476490)
     // and, after each step that ends at a notetrack, runs the threads that notify woke at once (0x46d560 at 0x4dadc3,
     // 0x4da692) before the next entity's animation moves. So a script that waits for one entity's "end" can start
     // waiting for another entity's "end" in the same frame (duhoc_assault: the drag camera and the dragging soldier end
     // together). TODO(spec): the exe splits the step at every notetrack; here the threads run after the whole 50 ms step.
-    vm_.setTime(timeMs_);
     for (size_t ei = 0; ei < entities_.size(); ++ei) {
         Entity* e = entities_[ei].get();
         if (!e->anim || e->obj->removed) continue;
@@ -648,8 +681,7 @@ void World::frame(bool advanceTime) {
         });
         if (notified) vm_.drainReady();
     }
-    runTriggers();
-    touchItems();
+    touchItems(); // TODO(spec): the item touch's stage is not read
     for (size_t i = 0; i < pendingNotifies_.size();) {
         if (pendingNotifies_[i].atMs <= timeMs_) {
             const auto p = pendingNotifies_[i];
@@ -659,19 +691,19 @@ void World::frame(bool advanceTime) {
             ++i;
         }
     }
-    vm_.runFrame(timeMs_);
-    runPlayerUse(); // TODO(spec): the client think (0x4da970) order relative to the script frame is not read
+    vm_.runFrame(timeMs_); // stage 5
+    runBadPlaces();        // stage 6
+    runPlayerUse();        // stage 7 (the use part of ClientThink)
+    // Stage 8. TODO(spec): the exe runs these per entity in number order; here they run as groups (missiles together).
     thinkVehicles();
     thinkTurrets();
-    runGrenades();
-    runRockets(); // TODO(spec): G_RunFrame runs every missile in entity order
+    runMissiles();
     runItems();
-    runBadPlaces(); // TODO(spec): where G_RunFrame calls 0x523a60 relative to the actors is not read
     runScriptedModels();
     thinkActors();
-    updatePlayerLink(); // ClientEndFrame (0x4e7f90) after the entities. TODO(spec): the exact frame order
+    updatePlayerLink(); // ClientEndFrame (0x4e7f90, 0x4db144) after the entity pass
     runDeathScreen();
-    processSaves(); // 0x44a230 once per server frame. TODO(spec): its place in the frame (here: after everything else)
+    processSaves(); // 0x44a230 at the server frame end (0x44a91f), after G_RunFrame and before the snapshot
 }
 
 const std::map<std::string, std::string>* World::weapon(const std::string& name) {
@@ -722,7 +754,9 @@ void World::thinkActors() {
         e.ai.thoughtMs = timeMs_;
         e.ai.blockVel = e.velocity; // the block velocity of the previous physics step (+0x230, read by 0x505b80 / 0x505cb0)
         e.velocity = {0, 0, 0}; // set again by this frame's move (moveActor)
+        runEntityNumber_ = e.number; // 0x1c61064 while G_RunEntity runs it (read by the force-spawn eviction 0x4fcaf0)
         actorThink(e);
+        runEntityNumber_ = -1;
         // The move frame 0x504450 (anim-mode step, turn, facing) runs from the thinks of the exposed, grenade, badplace, death,
         // pain, animcustom and negotiation states (0x4fe8d0, 0x520a3e, 0x548b60, 0x54b358, 0x54b8ab, 0x54d483), not from the
         // turret (0x54aba0) or animscripted (0x54b0a0) thinks.
@@ -1169,14 +1203,17 @@ bool World::triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax) {
 // G_TouchTriggers for the player (0x4e7320): the entities in the player's area whose contents match the client mask
 // 0x40000000 are tested with SV_EntityContact (0x447830) against the player's absolute box, and their touch function
 // runs. Trigger contents (0x528dc0): 0x40000000 unless spawnflags & 8, so those triggers never fire for the player.
-// Inferred: every server frame while touching; trigger_once is removed after it fires. Player box: (-15,-15,0)-(15,15,70)
-// around the origin (TODO(spec): the stance-dependent r.maxs).
+// Inferred: every server frame while touching; trigger_once is removed after it fires. Player box: (-15,-15,0) to
+// (15,15,r.maxs[2]) around the origin; ClientThink copies the pmove box into r.mins / r.maxs (0x4e7d68..0x4e7da2), so the
+// height follows the stance (playerBoxHeight). G_RunFrame runs this in its first stage (0x4da9aa -> 0x4e8180 ->
+// 0x4e829b, for a player with pm_type < 4 and client +0x8628 / +0x862c clear; TODO(spec): those two fields); the
+// "trigger" notifies it queues (0x528cb0) are delivered in the third stage (0x4dab00), before the animation step.
 void World::runTriggers() {
     if (!player_) return;
     const Value po = player_->obj->get("origin");
     if (!po.isVector()) return;
     const Vec3 p = po.asVector();
-    const Vec3 pmin{p[0] - 15, p[1] - 15, p[2]}, pmax{p[0] + 15, p[1] + 15, p[2] + 70};
+    const Vec3 pmin{p[0] - 15, p[1] - 15, p[2]}, pmax{p[0] + 15, p[1] + 15, p[2] + playerBoxHeight()};
     std::vector<Entity*> fired;
     for (const auto& e : entities_) {
         if (e->obj->removed || e->isSpawner || !startsWith(e->classname, "trigger_")) continue;
@@ -1294,11 +1331,18 @@ void World::registerBuiltins() {
         return Value();
     });
 
+    // 0x4edff0 / 0x4ee120: a spawner spawns at most once per level time (+0x158 >= level.time returns undefined; set to
+    // level.time after a successful spawn, 0x4ee0f2), and the one optional argument (0x46e760, only with exactly one
+    // parameter) becomes the new actor's targetname (0x53233c, set on the copy before the actor starts).
     auto doSpawn = [this](CallContext& c, bool force) -> Value {
         Entity* sp = entityOf(c.self);
         if (!sp || !sp->isSpawner) throw std::runtime_error("dospawn can only be called on actor spawners");
-        Entity* a = spawnActor(*sp, force);
-        return a ? Value(a->obj) : Value();
+        const Value last = sp->obj->get("$lastspawn");
+        if (last.isNumber() && last.asInt() >= timeMs_) return Value();
+        Entity* a = spawnActor(*sp, force, c.argc() == 1 ? c.arg(0) : Value());
+        if (!a) return Value();
+        sp->obj->set("$lastspawn", Value(int32_t(timeMs_)));
+        return Value(a->obj);
     };
     vm_.registerBuiltin("dospawn", [doSpawn](CallContext& c) { return doSpawn(c, false); });           // 0x4edff0: arg3 = 0
     vm_.registerBuiltin("stalingradspawn", [doSpawn](CallContext& c) { return doSpawn(c, true); });    // 0x4ee120: arg3 = 1
@@ -1483,18 +1527,7 @@ void World::registerBuiltins() {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("delete on a non-entity");
         if (e->isPlayer) throw std::runtime_error("cannot delete the player");
-        connectEntityPaths(*e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
-        // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
-        // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
-        vm_.notify(e->obj, "death");
-        // G_FreeEntity (0x4d7c30, call at 0x4d7d87): an actor's turret (+0x2114) it owns is released (0x549a60), so the gun is usable again.
-        if (e->usingTurret) turretStateFinish(*e);
-        // G_FreeEntity (0x4d7c30) resets the entity (call 0x419700 at 0x4d7ce3; TODO(spec): confirm it is the memset), whose state holds the loop sound index (ent+6, set by playloopsound
-        // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
-        if (const Value h = e->obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
-        e->obj->set("$loopsound", Value());
-        e->obj->set("$loopalias", Value());
-        vm_.freeObject(e->obj);
+        deleteEntityScripted(*e);
         return Value();
     });
     vm_.registerBuiltin("setmodel", [](CallContext& c) {

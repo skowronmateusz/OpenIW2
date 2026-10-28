@@ -85,7 +85,8 @@ void World::syncEntityClips() {
             c.id = e.number;
             c.origin = o.asVector();
             c.mins = {-15, -15, 0};
-            c.maxs = {15, 15, e.isActor ? 72.0f : 70.0f};
+            // the player's r.maxs is the pmove box of its stance (ClientThink 0x4e7d68..0x4e7da2, linked at 0x4e7dae)
+            c.maxs = {15, 15, e.isActor ? 72.0f : playerBoxHeight()};
             c.contents = e.isActor && e.ai.dyingContents ? e.ai.dyingContents : entityContents(e); // 0xc0: 0x4000 actor (0x4fc74f), 0x2000000 player (0x4e90e2), what setcontents stored, or the death think's 0x4002000 (0x548bc0)
             if (!c.contents) continue;      // 0x44b2d0 unlinks an entity without contents: no trace sees it
             c.hitBoxes = e.isActor;

@@ -362,6 +362,12 @@ public:
 
     // Debug: spawns one AI from each actor spawner (exercises the aitype/animscripts path).
     int spawnAllActors();
+    // Test hooks for the spawn checks (src/game/spawnchecks.cpp): one spawn as dospawn (force false) or stalingradspawn,
+    // the telefrag test, the force-spawn eviction, and the "level loaded" state (0x1c61048 cleared).
+    Entity* debugSpawnActor(Entity& spawner, bool force) { return spawnActor(spawner, force); }
+    bool debugWouldTelefrag(const Entity& spawner) { return spawnWouldTelefrag(spawner); }
+    bool debugEvictForForceSpawn() { return freeActorForForceSpawn(); }
+    void debugSetLevelLoaded(bool loaded) { levelInitializing_ = !loaded; }
 
     // Moves the player entity (set by the movement code each frame).
     void setPlayerOrigin(const Vec3& origin, const Vec3& angles);
@@ -758,9 +764,24 @@ public:
 
 private:
     Entity& spawnEntity(const std::string& classname);
-    // force = the exe's third argument of the spawn core 0x532200: stalingradspawn passes 1 (skips the telefrag test),
-    // dospawn passes 0.
-    Entity* spawnActor(Entity& spawner, bool force = true);
+    // force = the exe's third argument of the spawn core 0x532200: stalingradspawn passes 1 (skips the telefrag and the
+    // player-sight tests), dospawn passes 0.
+    Entity* spawnActor(Entity& spawner, bool force = true, const Value& targetname = Value());
+    // Spawn checks (src/game/spawnchecks.cpp): the telefrag test 0x4e8500, the actor-box sight probe 0x532100, the
+    // force-spawn eviction 0x4fcaf0 and the player's r.maxs[2] (stance box from pmove).
+    bool spawnWouldTelefrag(const Entity& spawner);
+    bool sightToActorBox(const Vec3& eye, const Vec3& pos, int pass1, int pass2) const;
+    bool freeActorForForceSpawn();
+    float playerBoxHeight() const;
+    // Script delete (0x4ef570): notify "death", then G_FreeEntity (0x4d7c30).
+    void deleteEntityScripted(Entity& e);
+    // 0x1c61048: set by G_InitGame (0x4d99cb: 1, or 2 for a savegame load) and cleared by 0x4da540 once the level is
+    // loaded (0x448aab, after the entity spawn, the level script's start and the first G_RunFrame). Here: until the end
+    // of runLevelMain() or loadState().
+    bool levelInitializing_ = true;
+    // 0x1c61064: the entity number G_RunFrame's entity pass is running (0x4db022..0x4db0d3), -1 outside it. Here the
+    // actor think loop sets it.
+    int runEntityNumber_ = -1;
     Entity* entityOf(const Value& v);
     void spawnMapEntities();
     void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
@@ -1078,11 +1099,11 @@ private:
     std::vector<std::array<std::string, 23>> impactEffects_;
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
-    void runGrenades();
     Entity& spawnRocket(Entity& parent, const std::string& weaponName, const Vec3& start, const Vec3& dir);
     void missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface);
     void rocketImpact(Entity& e, const TraceResult& tr);
-    void runRockets();
+    void runRocket(Entity& e);
+    void runMissiles(); // grenades and rockets in entity order (G_RunMissile 0x526c30 from the entity pass)
     // Weapon items (classname weapon_*): LaunchItem (0x521f70 → 0x521e00) gives a dropped item a gravity
     // trajectory; G_RunItem (0x523040) moves it and stops it where it lands; FinishSpawningItem (0x5225e0) drops a
     // map-placed one to the floor. `launchItem` starts the fall of a dropped item from its dropper.

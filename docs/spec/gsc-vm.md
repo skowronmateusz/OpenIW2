@@ -76,12 +76,13 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   counter + frames. `wait 0` therefore resumes in the SAME frame's list (after what is already queued). Ours: `wait 0` queues the
   thread like a notify wake-up.
 - Consequence for init: threads woken or left in `wait 0` by main() run in the first frame list; `wait 0.05` threads are in the
-  next one. World::start drains the queue and runs one game frame at time 0 (matmata: the start trigger_multiple fires and spawns
-  the jeep before ridein's `wait 0.05` calls getent("jeep")). TODO(spec): the exe's start-up frames (number, time step) are not
-  read; only the order is evidenced.
-- TODO(spec): where the frame-end threads (0x467150) run what they notify; the order of engine-side notifies (triggers, anim
-  notetracks) relative to Scr_RunFrame (we notify before `runFrame`, so they run after that frame's timed threads).
-- Spawn (`dospawn` 0x4edff0 arg3=0, `stalingradspawn` 0x4ee120 arg3=1, core 0x532200): dospawn refuses a spawnpoint whose box
-  (origin + (-15,-15,0)..(15,15,70)) holds a living body (0x4e8500, contents 0x200c000), "couldn't spawn from %s because spawnpoint
-  would telefrag"; both fail with "no free actors" when all 32 actor slots (0x4fc8d0) are in use (corpses free their slot).
-  TODO(spec): the player's contents/box height, the spawner flag-2 retry (0x4fcaf0).
+  next one. World::start drains the queue and runs one game frame (matmata: the start trigger_multiple fires and spawns
+  the jeep before ridein's `wait 0.05` calls getent("jeep")). Evidenced: the server spawn (0x4488b0) runs the frame start
+  0x44a6a0 (level.time += 50) at 0x448985, then 0x4da470: entity spawn, main thread (0x4da50e), one full G_RunFrame(0, 0)
+  (0x4da524); only then is the level loaded (0x448aab -> 0x4da540 clears 0x1c61048). So the exe's first frame is at level
+  time 50; the port runs it at 0 (TODO(spec): the absolute 50 ms offset of gettime()).
+- Engine-side notifies relative to the script frame: G_RunFrame stages (docs/spec/ai.md "Server frame order"): the player's
+  trigger touches (stage 1) are delivered as "trigger" notifies in stage 3, the animation notetracks in stage 4, both before
+  the script frame (stage 5, 0x467150).
+- Spawn (`dospawn` 0x4edff0 arg3=0, `stalingradspawn` 0x4ee120 arg3=1, core 0x532200): see docs/spec/ai.md "Spawn checks"
+  (telefrag, player sight, one spawn per spawner per level time, optional targetname, 32 actor slots, forcespawn eviction).
