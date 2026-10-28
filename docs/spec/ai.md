@@ -819,3 +819,11 @@ Resolved: the facing blend (see "Facing blend"). Open (from before): the ring ad
   zeroed, 0x4d6ca0(entity, 1). Otherwise 0x504160, the physics 0x501d00, +0x720 = now + 500 when the bumped entity
   (+0x318) has a sentient, then 0x4e7150(+0x294, +0x298) (not identified). The port runs these pieces from the state code
   (moveActor, followActorPath); wiring 0x504450 as one frame is TODO(spec).
+- Elalamein check (after the facing blend): the player dies by 40 s where the build before it (1b1b4a0) survived. The
+  bisect (ring feed, modes 2/4/5, prone turn rate, the removed moveActor yaw write) shows the death only goes away with
+  both the selector and the old yaw write restored; it is not tied to one piece. The damage (`IW2_PLAYER_DMG_LOG`) comes
+  from the same standing kar98 riflemen (#1396, #1405, #1409, #1411; 80 per hit) in both builds, and #1396's facing state
+  is identical frame by frame (mode 3 override, no path, yaw 12.9). Only the hit timing differs: 7 hits within 7.8 s
+  versus 5 spread out, against 500 health that regenerates. The cause is the shared random sequence shifting when other
+  actors move differently, not a facing fault, so this is not a regression. breakout, duhoc_defend and hill400_assault
+  end with the player dead in both builds.
