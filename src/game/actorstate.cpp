@@ -545,6 +545,23 @@ bool World::seesEnemyRecently(Entity& e, int64_t withinMs) {
     return sightCheck(e, *enemy);
 }
 
+// 0x54d010 → 0x54cf40: a point trace (mask 0x200c861, ignoring the actor) between the enemy's eye lowered by 16 (actor:
+// 0x500910 +0x174, player: 0x4e8b70) and the actor's own eye (0x500b40). Beyond the fog sight limit 0x1c61038 it fails;
+// a clear trace passes; a trace that ends on a sentient of another team passes too (gentity +0x104 sentient, +4 team).
+bool World::enemyEyeTraceOk(Entity& e) {
+    Entity* enemy = entityOf(e.obj->get("enemy"));
+    if (!enemy) return false;
+    Vec3 target = sightEye(*enemy, nullptr);
+    target[2] -= 16.0f;
+    const Vec3 eye = sightEye(e, nullptr);
+    const Vec3 d = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
+    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > fogSightSq_) return false;
+    const TraceResult tr = collision_->trace(target, eye, {0, 0, 0}, {0, 0, 0}, 0x200c861, e.number);
+    if (tr.fraction == 1.0f) return true;
+    Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
+    return hit && isSentient(*hit) && hit->obj->get("team").toString() != e.obj->get("team").toString();
+}
+
 // Exposed think (0x5496f0): a grenade (+0x20c4) → grenade state, a recorded free turret (+0x2114) → turret state;
 // else perception, the substate (0x548d50) and its behaviour.
 int World::exposedThink(Entity& e) {
@@ -590,8 +607,10 @@ void World::exposedSubstate(Entity& e) {
     if (ai.substate == kSubNoncombat) {
         if (seesEnemyRecently(e, 250)) ai.substate = kSubCombat;
     } else if (ai.substate == kSubReacquire) {
-        // TODO(spec): with a path, combat also when the enemy is seen and 0x54d010 (eye trace + 0x54cf40) passes.
-        if (!actorHasPath(e)) ai.substate = kSubCombat;
+        // 0x548d50 state 0x66: no path (+0x6b0 <= 0) → combat; with a path, combat when the enemy was seen within
+        // 250 ms (0x54ce70) and 0x54d010 passes. TODO(spec): a blocking actor (+0x728) or followed actor (+0x2148)
+        // also gives combat directly (not modelled).
+        if (!actorHasPath(e) || (seesEnemyRecently(e, 250) && enemyEyeTraceOk(e))) ai.substate = kSubCombat;
     }
 }
 

@@ -72,8 +72,9 @@ bool isEnemyTeam(const Entity& me, const Entity& other) {
 // an enemy team's fire counts (0x54b3c9…0x54b3f2: the source's team must be the enemy of the actor's). The slot is
 // the one the source already owns, else the oldest; it stores the time, the source and the plane. The plane is the
 // perpendicular of b − a through a — (a.y − b.y, b.x − a.x), n·p = c — flipped so the actor's own origin is on the
-// kept side (n·origin ≤ c). A same-team source (0x54b484: only reachable through the unidentified entity +0xfc
-// exception, TODO(spec)) marks the slot short-lived and drops the actor's path.
+// kept side (n·origin ≤ c). A same-team source (0x54b484: only reachable through the entity +0xfc exception, the
+// client pointer, i.e. the player, whose fire skips the team check) marks the slot short-lived and drops the actor's
+// path.
 void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) {
     // The team check is skipped for the player (its entity +0xfc, the client pointer, is nonzero — G_Damage's
     // "client or actor" pair 0x528050, confirmed by 0x53145c), so player fire also suppresses same-team and
