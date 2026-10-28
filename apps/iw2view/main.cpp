@@ -3078,10 +3078,12 @@ int main(int argc, char** argv) {
         std::map<int, std::set<std::string>> boltTags; // tags of bolted world effects per entity (filled when played)
         int64_t renderStamp = 0;
         auto recordDrawnTags = [&](int number, const BoneMap& bones, const Vec3& ov, const Vec3& av) {
-            const auto bt = boltTags.find(number);
-            if (bt == boltTags.end()) return;
+            // tag_flash / tag_brass always (a flash event of this frame is drained after the entity loop, before its bolt is
+            // known), plus any other tag a bolted world effect of this entity uses.
+            std::set<std::string> tags{"tag_flash", "tag_brass"};
+            if (const auto bt = boltTags.find(number); bt != boltTags.end()) tags.insert(bt->second.begin(), bt->second.end());
             const Mat4 m = entityTransform(ov, av);
-            for (const std::string& tag : bt->second) {
+            for (const std::string& tag : tags) {
                 const auto it = bones.find(lowerName(tag));
                 if (it == bones.end()) continue;
                 auto toWorld = [&](const std::array<float, 3>& v, float w) {
@@ -3347,7 +3349,7 @@ int main(int argc, char** argv) {
                     DrawItem it = base;
                     it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm, tpose);
                     if (it.model) items.push_back(it);
-                    if (boltTags.count(e->number)) {
+                    {
                         BoneMap tbones;
                         addBones(tbones, tm->parts, tpose);
                         recordDrawnTags(e->number, tbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
