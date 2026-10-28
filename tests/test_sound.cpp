@@ -1,6 +1,7 @@
 // Tests for WAV parsing and the mixer's distance attenuation, with synthetic data.
 
 #include "audio/decode.h"
+#include "audio/reverb.h"
 #include "audio/sound.h"
 
 #include "fs/vfs.h"
@@ -124,6 +125,34 @@ int main() {
     CHECK(threw);
 
     testMixer();
+
+    {
+        using iw2::audio::EnvReverb;
+        CHECK(EnvReverb::roomIndex("generic") == 0 && EnvReverb::roomIndex("psychotic") == 25 && EnvReverb::roomIndex("x") == -1);
+        EnvReverb r;
+        CHECK(r.wet() == 0 && r.activeSlot() == 0);
+        // level slot: wet ramps 0 -> 0.5 over 1000 ms
+        CHECK(r.activateCommand(1, "cave", 1.0f, 0.5f, 1.0f));
+        CHECK(r.activeSlot() == 1 && r.roomType() == 8);
+        r.tick(500);
+        CHECK(std::fabs(r.wet() - 0.25f) < 1e-4f);
+        // shellshock outranks level; the level one stays stored
+        CHECK(r.activate(2, 22, 1.0f, 1.0f, 0));
+        CHECK(r.activeSlot() == 2 && r.roomType() == 22);
+        r.tick(1);
+        CHECK(r.wet() == 1.0f);
+        // a lower slot while a higher is active only stores
+        CHECK(r.activate(1, 3, 1.0f, 0.1f, 0) && r.activeSlot() == 2);
+        // deactivating the active slot falls back to the level slot, wet moves to its target
+        CHECK(r.deactivate(2, 100) && r.activeSlot() == 1 && r.roomType() == 3);
+        r.tick(200);
+        CHECK(std::fabs(r.wet() - 0.1f) < 1e-4f);
+        CHECK(r.deactivate(1, 0) && r.activeSlot() == 0);
+        r.tick(5);
+        CHECK(r.wet() == 0.0f);
+        CHECK(!r.activate(1, 0, 1.5f, 0.5f, 0) && !r.activate(1, 99, 1, 0.5f, 0) && !r.activate(0, 0, 1, 0.5f, 0));
+        CHECK(r.voiceWet(true) == 0.0f && r.voiceWet(false, false) == 0.0f);
+    }
 
     if (failures) return 1;
     std::cout << "sound tests passed\n";

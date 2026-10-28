@@ -47,6 +47,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <iomanip>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -5962,6 +5963,17 @@ int main(int argc, char** argv) {
                         a >> ms;
                         if (musicHandle) mixer.fadeOut(musicHandle, ms);
                         musicHandle = 0;
+                    } else if (cmd.name == "reverb") { // reverb <prio> "<room>" <dry> <wet> <fade s> (CG_ReverbCmd 0x4a6350)
+                        int prio = 0;
+                        std::string room;
+                        float dry = 0, wet = 0, fadeS = 0;
+                        a >> prio >> std::quoted(room) >> dry >> wet >> fadeS;
+                        mixer.reverbCommand(prio, room, dry, wet, fadeS);
+                    } else if (cmd.name == "deactivatereverb") { // deactivatereverb <prio> <fade s> (0x4a6500)
+                        int prio = 0;
+                        float fadeS = 0;
+                        a >> prio >> fadeS;
+                        mixer.deactivateReverbCommand(prio, fadeS);
                     } else if (cmd.name == "snd_fade") { // snd_fade <volume> <ms> (0x4a6ec4)
                         float vol = 1;
                         int ms = 0;

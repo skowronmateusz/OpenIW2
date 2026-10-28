@@ -39,6 +39,7 @@ target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_audio
   src/audio/sound.cpp
+  src/audio/reverb.cpp
   src/audio/decode.cpp)
 target_include_directories(iw2_audio PUBLIC src)
 target_link_libraries(iw2_audio PUBLIC iw2_fs)
