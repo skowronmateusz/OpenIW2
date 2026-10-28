@@ -571,7 +571,7 @@ Walkable: z snaps to the trace end only if lower than the origin or mode==5; gro
 Block fields: +0x18 ground entity, +0x20 contact flag, +0x24 ground normal.z, +0x28 surface type ((trace +0x10 >> 20) & 0x1f), +0x2c desired displacement, +0x40 mode, +0x48 time ms (dt = ms * 0.001), +0x64 byte (step height 10 if set, else 18), +0x68 trace mask.
 Early out: ground entity 0x7fe and zero displacement -> velocity zeroed. Mode 3 adds the displacement; mode 4 (0x548260) sets velocity = displacement/dt and slide-moves without gravity; otherwise the ground probe runs and then mode 5 (0x548200), ground-entity walking (0x548110) or airborne (0x5480d0), see the header comment of moveBlock.
 After the move, the contact flag, normal.z and surface type are set when a ground plane exists with normal.z at least 0.3 (0x592018).
-Not ported: 0x5485a0 (footstep timer: +0x1c/+0x48 accumulates to 500 ms and plays a sound via 0x535770) and the world wiring. TODO(spec) for the sound call.
+0x5485a0 is the movement-noise accumulator (+0x1c/+0x48 accumulates to 500 ms, then AI event 2 via 0x535770, enemy-team receivers); it is ported in the actor frame as `actorMoveNoise`, not in moveBlock. The footstep sound 0x548650 stays unported (audible only).
 
 ### Actor trace box, followed actor (+0x2148) and 0x500d80: decode status
 
