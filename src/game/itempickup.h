@@ -30,6 +30,12 @@ struct ItemAmmo {
 // `seed` is the game's rand() state (0x5a56f4, seed = seed * 0x343fd + 0x269ec3).
 ItemAmmo resolveItemAmmo(ItemAmmo item, int dropAmmoMin, int dropAmmoMax, int clipSize, int maxAmmo, uint32_t& seed);
 
+// The ammunition a non-player dropper puts on the weapon item (0x5220f0 with no client, 0x522185..0x52231f), before the item stores
+// it as +0x148 / +0x154 (-1 for 0): with dropAmmoMin and dropAmmoMax both 0 the total is round((r1 + 1) * (clipSize - 1) * 0.5) + 1
+// and the clip round(total * (r2 / 65536 + 0.25)); a negative max gives nothing; else the total is (max - min) range draw (equal: min),
+// none when <= 0, and the clip a draw % clipSize (0 for clipSize 0) up to the total; stock = total - clip. Draws: rand() >> 17 (r1 / 32768).
+ItemAmmo actorDropAmmo(int dropAmmoMin, int dropAmmoMax, int clipSize, uint32_t& seed);
+
 // After an owned weapon's ammunition was taken only in part (`added` of stock + clip): what stays on the item.
 ItemAmmo itemAmmoAfterPartial(ItemAmmo item, int added);
 
