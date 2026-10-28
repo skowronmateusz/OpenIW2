@@ -128,6 +128,8 @@ public:
     // Advances script time and runs every thread that is due. Call once per server frame.
     void runFrame(int64_t nowMs);
     int64_t time() const { return nowMs_; }
+    // Sets the script clock before the frame's threads run (the engine's entity loop runs woken threads first).
+    void setTime(int64_t nowMs) { nowMs_ = nowMs; }
 
     // Wakes the threads waiting for `event` on `object`. They are queued, not run: the exe's VM_Notify (0x46ca60)
     // only moves each woken thread to the end of the current frame's run list (0x46c130), which Scr_RunFrame
