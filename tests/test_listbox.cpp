@@ -189,11 +189,23 @@ int main() {
     st.key(Key::End);
     st.key(Key::Backspace);
     CHECK(cv["newname"] == "ZbcX");
-    CHECK(st.editOffset() == 3); // maxPaintChars 3: the window follows the cursor (TODO(spec) rule)
+    CHECK(st.editOffset() == 2); // maxPaintChars 3: offset = max(offset, cursor - 3) (0x4ca7e0); End made it 5 - 3
+    // Colour codes: the cursor steps over a "^N" pair for free (0x4d41c0).
+    cv["newname"] = "a^1bc";
+    st.key(Key::End);
+    st.key(Key::Left);
+    st.key(Key::Left);
+    CHECK(st.editCursor() == 3); // before b
+    st.key(Key::Left); // the pair ^1 is skipped for free, then one step over a
+    CHECK(st.editCursor() == 0);
+    st.key(Key::Right);
+    CHECK(st.editCursor() == 1);
+    st.key(Key::Right); // the code at the cursor is skipped, then one character
+    CHECK(st.editCursor() == 4);
     st.key(Key::Enter);
     CHECK(cv["accepted"] == "1" && !st.editItem());
     st.textInput("q");
-    CHECK(cv["newname"] == "ZbcX"); // not editing any more
+    CHECK(cv["newname"] == "a^1bc"); // not editing any more
 
     // Tab moves the focus (the list consumes up/down), editing resumes on the field.
     st.setFeederSelection(24, 0);

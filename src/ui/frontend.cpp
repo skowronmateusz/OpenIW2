@@ -543,13 +543,35 @@ void MenuStack::startEdit(const Item* it) {
     overstrike_ = true;
 }
 
+// "^N" colour code at i: '^' followed by a digit 0..9 (0x4d41c0: not '^', not NUL).
+static bool isColorCode(const std::string& s, int i) {
+    return i >= 0 && i + 1 < int(s.size()) && s[size_t(i)] == '^' && s[size_t(i) + 1] >= '0' && s[size_t(i) + 1] <= '9';
+}
+
+// 0x4d41c0: moves the edit cursor by n visible characters, colour code pairs count for nothing. n > 0 (right): skip the codes at the cursor,
+// stop at the end of the text, else step one character and repeat; n <= 0 (left): while the cursor is above 0, a code pair right before it is
+// skipped for free, any other character costs one step.
+int MenuStack::editStep(const std::string& s, int cur, int n) {
+    if (n > 0) {
+        while (true) {
+            while (isColorCode(s, cur)) cur += 2;
+            if (cur >= int(s.size())) return cur;
+            ++cur;
+            if (--n == 0) return cur;
+        }
+    }
+    while (cur != 0 && n != 0) {
+        if (cur >= 2 && isColorCode(s, cur - 2)) cur -= 2;
+        else --cur, ++n;
+    }
+    return cur;
+}
+
 void MenuStack::editStore(const Item& it, const std::string& v) {
     if (env_.setCvar) env_.setCvar(it.dvar, v);
-    // TODO(spec): the paint window (0x4cc170); here the window follows the cursor.
-    if (it.maxPaintChars > 0) {
-        if (editCursor_ < editOffset_) editOffset_ = editCursor_;
-        if (editCursor_ >= editOffset_ + it.maxPaintChars) editOffset_ = editCursor_ - it.maxPaintChars + 1;
-    }
+    // 0x4ca7e0: the paint offset never passes the cursor and never lags more than maxPaintChars visible characters behind it.
+    if (editOffset_ > editCursor_) editOffset_ = editCursor_;
+    else if (it.maxPaintChars > 0) editOffset_ = std::max(editOffset_, editStep(v, editCursor_, -it.maxPaintChars));
 }
 
 void MenuStack::moveFocus(const Menu& m, int dir) {
@@ -572,15 +594,15 @@ bool MenuStack::editKey(const Menu& m, Key k) {
     switch (k) {
     case Key::Escape: editing_ = false; return false;
     case Key::Enter: editing_ = false; runItem(m, it.accept); return true;
-    case Key::Left: if (editCursor_ > 0) --editCursor_; break;
-    case Key::Right: if (editCursor_ < len) ++editCursor_; break;
+    case Key::Left: editCursor_ = editStep(s, editCursor_, -1); break; // 0x4cad02
+    case Key::Right: editCursor_ = editStep(s, editCursor_, 1); break; // 0x4cad6a
     case Key::Home: editCursor_ = 0; editOffset_ = 0; break;
     case Key::End: editCursor_ = len; break;
     case Key::Insert: overstrike_ = !overstrike_; return true;
-    case Key::Backspace: // TODO(spec): the "^N" colour code pairs are treated as one unit by the exe; here plain characters
+    case Key::Backspace: // 0x4ca8c0: removes the character before the cursor, then the cursor steps left by one visible character on the new text
         if (editCursor_ > 0) {
             s.erase(size_t(editCursor_ - 1), 1);
-            --editCursor_;
+            editCursor_ = editStep(s, editCursor_, -1);
             editStore(it, s);
         }
         return true;
@@ -618,7 +640,7 @@ void MenuStack::textInput(const std::string& text) {
             if (editCursor_ < len) s[size_t(editCursor_)] = char(c);
             else s.push_back(char(c));
         }
-        ++editCursor_;
+        editCursor_ = editStep(s, editCursor_, 1); // 0x4caa9b
         editStore(it, s);
     }
 }

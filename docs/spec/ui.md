@@ -106,6 +106,11 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
 - Scroll: `maxScroll = max(0, count - ftol(h/eh) + 1)`, `thumbY = ftol(startPos*(h-50)/maxScroll + y + 17)`. Zones of the scrollbar column: 0x100 up,
   0x200 down, 0x400 thumb, 0x800 page up, 0x1000 page down; arrows auto-repeat (500 ms, then faster); the thumb drags.
 - Mouse: hover row `ftol((mouseY-2-y)/eh) + startPos`; a second click on the selected row within 300 ms runs `doubleclick`. Keys: see "List keys" below.
+- Edit fields (colour codes, PROVEN): "^" + digit 0..9 is a colour code. The renderer (0x100329a0) draws no glyph and no advance for it: 0..6 = black, red, green,
+  yellow, blue, cyan, magenta (table 0x10197f9c; the item alpha is kept), 7 = the item colour again, 8/9 read run-time dwords (TODO(spec)). The edit cursor moves by visible
+  characters (0x4d41c0): Left skips a code pair before the cursor for free and costs one step per other character, Right skips the codes at the cursor and then steps one;
+  Backspace deletes one raw character and then steps left like Left on the new text; typing steps right like Right. The paint offset (0x4ca7e0) = max(offset, cursor - maxPaintChars
+  visible characters), min(offset, cursor).
 - Edit fields: editing starts on focus or click (cursor 0, overstrike on); cursor glyph `_` (overstrike) or `|`; VALIDFILEFIELD takes `[A-Za-z0-9_-]`; every
   change writes the dvar; Enter runs `accept`; Tab/Up/Down move the focus.
 - Feeders: 0x18 player profiles (`ProfileList`, `players/<name>/` directories, uiScripts addPlayerProfiles, sortPlayerProfiles, selectActivePlayerProfile,
@@ -118,7 +123,7 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
   cursor and startPos to 0; End (0xa6/0xbc) sets cursor = count-1 and, when it is not shown, startPos = cursor - rows + 1; PgUp (0xa4/0xb8) / PgDn (0xa3/0xbe) move
   the cursor by the visible row count (rows = 0x4c9320), clamped to [0, count-1], scrolling only as far as needed to keep it shown. Every key ends in the feeder
   selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Horizontal lists (flag at +0x108) use the left/right keys instead; unimplemented.
-- TODO(spec): image columns, the edit field paint window 0x4cc170 and `^N` colour codes, drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
+- TODO(spec): image columns, drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
   textsavegame, horizontal listbox, 64-profile cap on the add loop, the restart of sound/video on profile load.
 - No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
   out of scope.
