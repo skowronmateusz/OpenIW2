@@ -462,12 +462,12 @@ void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& i
         // requested stance's, but a stand request from prone tests the standing box (0x554 -> 0x100(%ebp), 0x50a150) before
         // stepping up to crouch. A blocked rise adds the event the cgame turns into the invalid-command hint: 0x8e (client
         // prone) with parm 2 (crouch blocked) or 1 (stand blocked) from prone, 0x8d (client crouch) with parm 1 from crouch.
-        // TODO(spec): the event is skipped while usercmd button 0x2000 is held (0x50a1f2), which is not modelled.
+        // The event is skipped while usercmd button 0x2000 (stance key held) is set (0x50a10c, 0x50a1f5, 0x50a28c).
         const bool standRequest = in.stance == Stance::Stand;
         const Vec maxs{mp.maxs[0], mp.maxs[1], maxsZ(standRequest ? Stance::Stand : want, mp)};
         const TraceResult tr = w.trace(ps.origin, ps.origin, mp.mins, maxs, Contents::PlayerSolid);
         if (tr.startSolid || tr.allSolid) {
-            addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x8e : 0x8d, standRequest ? 1 : 2);
+            if (!in.stanceHeld) addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x8e : 0x8d, standRequest ? 1 : 2);
             return;
         }
     } else if (want == Stance::Prone && !ps.onGround) {

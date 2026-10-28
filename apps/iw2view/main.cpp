@@ -5616,6 +5616,7 @@ int main(int argc, char** argv) {
                 in.forward = controlsBlocked ? 0.0f : float(input.forwardMove()) / 127.0f;
                 in.right = controlsBlocked ? 0.0f : float(input.rightMove()) / 127.0f;
                 in.jump = (buttons & game::Button::Jump) != 0;
+                in.stanceHeld = (buttons & game::Button::StanceHeld) != 0; // 0x2000 (0x50a1f5)
                 in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
                             : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
                 // allowleanleft/right(false) set pm_flags 0x2000000/0x4000000, which cancel the lean (0x50ae13).

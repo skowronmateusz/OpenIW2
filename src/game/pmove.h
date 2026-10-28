@@ -18,6 +18,7 @@ struct PlayerInput {
     float forward = 0, right = 0; // -1..1 (the original's -127..127 command bytes)
     bool jump = false;            // held (usercmd 0x400, also the mantle button)
     Stance stance = Stance::Stand; // requested stance
+    bool stanceHeld = false;      // usercmd 0x2000: +prone / +movedown held (CL stance 0x409500); no blocked-rise event then
     bool leanLeft = false, leanRight = false; // +leanleft / +leanright (usercmd bits 0x40 / 0x80)
     float yaw = 0;                // view yaw in degrees
     bool adsHeld = false;         // usercmd 0x1000, or the weapon state forces aim (0x13 / 0x14)
