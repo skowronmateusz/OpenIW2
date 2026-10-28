@@ -112,11 +112,13 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
   createPlayerProfile, deletePlayerProfile, loadPlayerProfile; dvars `ui_playerProfileCount/Selected/NameNew/AlreadyChosen`, `com_playerProfile`),
   0x10 savegames (`save/*.svg`, newest first). `Menu_SetFeederSelection` visits every open menu from the top of the stack down (0x4c4c42..0x4c4c7f),
   so a popup on top does not hide the list.
+- Thumb drag (0x4cb100 starts it, per tick 0x4cae10): startPos = clamp(ftol((pointerY - (y+17) - 8) * maxScroll / (h - 50)), 0, maxScroll), `maxScroll` = 0x4c9320;
+  the thumb is drawn (0x4c9480) at pointerY - 8 while ftol(y+17)+8 <= pointerY <= ftol(y+h-34)+8, otherwise at the startPos position (0x4c93a0).
 - List keys (handler 0x4c9c60, PROVEN, vertical lists): Up 0x9c/0xb9 and Down 0x9d/0xbb (0xb9/0xbb are the wheel codes) move one row; Home (0xa5/0xb6) sets
   cursor and startPos to 0; End (0xa6/0xbc) sets cursor = count-1 and, when it is not shown, startPos = cursor - rows + 1; PgUp (0xa4/0xb8) / PgDn (0xa3/0xbe) move
   the cursor by the visible row count (rows = 0x4c9320), clamped to [0, count-1], scrolling only as far as needed to keep it shown. Every key ends in the feeder
   selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Horizontal lists (flag at +0x108) use the left/right keys instead; unimplemented.
-- TODO(spec): image columns, the edit field paint window 0x4cc170 and `^N` colour codes, thumb drag clamp, drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
+- TODO(spec): image columns, the edit field paint window 0x4cc170 and `^N` colour codes, drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
   textsavegame, horizontal listbox, 64-profile cap on the add loop, the restart of sound/video on profile load.
 - No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
   out of scope.

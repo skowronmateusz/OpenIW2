@@ -443,8 +443,12 @@ MenuStack::ListLayout MenuStack::listLayout(const Item& it) const {
 
 float MenuStack::listThumbY(const Menu& m, const Item& it) const {
     const float y = m.rect.y + it.rect.y;
-    // TODO(spec): the clamp bounds of the dragged thumb (0x4c9480); here the track between the arrows.
-    if (listDrag_.item == &it) return std::clamp(listDrag_.mouseY - 8.0f, y + 17.0f, y + it.rect.h - 17.0f);
+    // 0x4c9480: while dragged the thumb is drawn at pointerY - 8 as long as ftol(y+17)+8 <= pointerY <= ftol(y+h-34)+8, else at the startPos position.
+    if (listDrag_.item == &it) {
+        const int lo = int(y + 17.0f) + 8, hi = int(y + it.rect.h - 32.0f - 2.0f) + 8;
+        const int my = int(listDrag_.mouseY);
+        if (my >= lo && my <= hi) return float(my - 8);
+    }
     const int maxScroll = listMaxScroll(it);
     const float step = maxScroll > 0 ? (it.rect.h - 32.0f - 2.0f - 16.0f) / float(maxScroll) : 0.0f;
     return float(int(float(listState(it).startPos) * step + y + 17.0f)); // 0x4c93a0
