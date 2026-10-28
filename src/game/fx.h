@@ -41,6 +41,7 @@ struct FxParticle {
     FVec local0{};                      // relative: the spawn point in tag space (0x48c290 end: (p − tag origin) · tag rows)
     FxTag tag0;                         // relative: the tag orientation at spawn
     float scale[8]{};                   // per-channel scale picked from the scale range
+    float velScale[3]{1, 1, 1}, vel2Scale[3]{1, 1, 1}; // velocity / velocity2 X, Y, Z scales (0x4804c0 records +0x1c4.., +0x20c..)
     size_t shader = 0;                  // index into the element's shader list
     // Atlas sequence (0x48cd20): start frame (+0x108), frames per ms (+0x10c), loop mode / times (+0x110 / +0x114).
     int seqStart = 0;
@@ -74,6 +75,7 @@ struct FxParticle {
     float bounce = 0;                   // +0x100: `bounce` drawn at spawn (0x48ce70, def +0x280)
     FVec boxMins{}, boxMaxs{};          // +0x14 / +0x20: the element's `min` / `max` (def +0xa0 / +0xac, 0x48cb00)
     std::string impactFx;               // +0x2c: one `impactfx` entry picked at spawn (0x48cb00, def +0x70 / +0x74)
+    std::string deathFx;                // +0x30: one `deathfx` entry picked at spawn (0x48cb00, def +0x78 / +0x7c)
     // emitFx (0x100) state of an Emitter (0x483810): the emitter's own ballistic point P (+0x24c, no collision), the attachment
     // drift offset (+0x264), the time of the last emission (+0x270), the distance to the next one (+0x274), the effect
     // (+0x290, from `emitfx`) and `density` / `variance` drawn at spawn (+0x294 / +0x298).
@@ -213,6 +215,8 @@ public:
 private:
     uint32_t& seed_ = assets::fxGeneratorSeed(); // the exe's single effect generator (0x59b2a8)
     float frand();
+    int crtRand();                      // MSVC CRT rand() (0x553d5d), used by emitFx distances
+    uint32_t crtSeed_ = 1;              // CRT default seed (the exe reseeds it with timeGetTime(), 0x40e149)
     float range(const std::vector<float>& v, float fallback);
     void spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);
     void spawnParticle(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs);
@@ -252,6 +256,7 @@ private:
     std::vector<FxCloud> clouds_;
     FVec velocityAt(const FxParticle& p, float u, const FxTag* orient) const;
     bool stepEmitter(FxParticle& p, int64_t nowMs);
+    void deathEffect(const FxParticle& p, bool expired);
     bool physicsStep(FxParticle& p, int64_t frameMs, const FxTag* orient);
     void emitFx(FxParticle& p, int64_t frameMs, const FxTag* orient, const FVec& drift);
     // Effects started by element updates (impactFx 0x485220, emitFx 0x483810), played after the update loop.

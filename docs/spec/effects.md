@@ -99,8 +99,24 @@ the piecewise-linear curve), used for velocities.
   smoke, fire_airplane_emitter (no useModel) and the useModel explosion debris (silo_explode, artilleryexp_*, eldaba boat, tank
   libya).
 - OpenIW2: `FxSystem::stepEmitter` / `physicsStep` / `emitFx` (steps of at most 200 ms between host updates; emitted and
-  impact effects play after the update loop). TODO(spec): the CRT rand() sequence (std::rand here), deathFx 0x200 (+0x30 is
-  picked but never played here).
+  impact effects play after the update loop). The emitFx distance uses the MSVC CRT rand() (0x553d5d: per-thread seed ·
+  0x343fd + 0x269ec3, (seed >> 16) & 0x7fff); the exe seeds it once with timeGetTime() (srand 0x553d50 at 0x40e149) and 25
+  other callers share it, so the exact sequence is not reproducible; `FxSystem::crtRand` keeps the generator and the 0..32767
+  range (seed 1, the CRT default). Before, std::rand() (0..2^31 − 1 on macOS) made the distances up to 65536 · variance.
+- deathFx 0x200: the death slot (vtable +4) 0x4801d0 of Particle, OrientedParticle, Emitter, Tail and Cylinder (not Line,
+  Light, Cloud). The update loop 0x48be90 calls it when the system time is past the end +0xbc (after clearing impactKills
+  0x400, 0x48bec9) or when the update slot returned false. With 0x200 set, 0x400 clear and an effect in +0x30: a, b, c =
+  0x426250(−1, 1) in that order, dir = (c, b, a) / |·| when the length is above 1e-6 (double 0x592310), else (0, 0, 1); plays
+  +0x30 at +0x4 (tag space for a relative element, passed unchanged) with row 0 = dir (0x485220). Shipped users:
+  fx/misc/flare_hill400.efx (Emitter, deathfx fx/misc/flare) and fx/impacts/minefield.efx. OpenIW2: `FxSystem::deathEffect`
+  (deferred like impactFx).
+- Channel scales (0x4804c0, init slot vtable +0x1c of Particle / OrientedParticle / Emitter / Line): one record per group
+  for the 22 groups in key order without length / lengthRand (instance +0x144, stride 0xc: curve, 0, scale = 0x48a2c0 of the
+  group's `scale` range, no draw when min == max). Rand groups get a scale too but 0x47f570 multiplies only by the main
+  group's. Tail / Cylinder (0x482fa0) and Cloud (0x482970) add length and lengthRand after it; Light (0x4840d0) has only rgb,
+  rgbRand, size, sizeRand. So velocity / velocity2 X, Y and Z each use their own per-instance scale (+0x1c4 / +0x1d0 / +0x1dc,
+  +0x20c / +0x218 / +0x224; 0x480e80 / 0x481050). The order relative to the other spawn draws (0x48cb00 / 0x48ce70) is
+  still approximate.
 
 ## Particle quads (renderer type 4)
 
@@ -284,7 +300,6 @@ meaning of the flag bits.
 Particles and oriented particles are spawned by `playfx`, `playfxontag` and `playloopedfx` and drawn as
 camera-facing sprites in `iw2view`. Position, gravity and channel evaluation follow the evidence in
 the executable. Inferred and marked TODO: spawn shapes (sphere/cylinder, `radius`, `height`),
-the per-particle velocity scale,
 other element types (CameraShake, Cylinder; see the sections below for the decoded ones), and the argument order of
 the script built-ins (taken from the shipped scripts' calls).
 
@@ -370,3 +385,9 @@ their spawn delay are left out (the original lists every element in its two elem
 - Rectangle (1.3 DLL 0x1003fa60): c = byte 0xf, r = byte 0xe, u0 = (frame % c)/c, v0 = (frame / c)/r, u1 = u0 + 1/c,
   v1 = v0 + 1/r; a single frame uses 0..1.
 - OpenIW2: `FxSystem::atlas` (host reads the material bytes), `FxSprite::uv`. TODO(spec): start mode 2's value.
+
+## Flash element (type 11, 0x48ddb0)
+
+No shipped effect uses it: a census of all 375 `fx/**/*.efx` files in main finds the element types Particle 858, Tail 143,
+Emitter 111, FxRunner 99, Decal 80, Light 49, OrientedParticle 20, Cloud 9, CameraShake 1, Line 1 and no Flash (nor
+Cylinder). Not decoded; TODO(spec) if an effect with it ever appears.
