@@ -398,8 +398,8 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
     // Stairs (0x54f846): a height change of more than half a unit against the plain slide gives the step event 0x8f
     // (parameter: the rounded height clamped to -16..24, + 0x80) and slows the player down. Not on a ladder.
     // Steps over 3 units also advance the bob cycle by min(|step| / 2, 4) · 1.25 + 7 (a footstep when bit 7 changes,
-    // 0x50a830 always allows it). TODO(spec): the prone surface test 0x4fc000 (0x54e990, pm_flags 1) that undoes a prone
-    // step: it traces boxes (+-6 units, 30 up, 66 down) against ps+0x558 and restores the start origin and velocity.
+    // 0x50a830 always allows it). The prone gate 0x4fc000 (called from 0x54e990) returns 1 on every path and only
+    // fills the prone body angles ps+0x584..0x58c, so no step is ever undone.
     if (onGroundPlane && !ps.onLadder) {
         const float dz = ps.origin[2] - downO[2];
         if (std::fabs(dz) > 0.5f) {
@@ -450,7 +450,7 @@ float viewHeightAt(int target, bool down, int percent) {
 float maxsZ(Stance s, const MoveParams& mp) { return s == Stance::Prone ? 30.0f : s == Stance::Crouch ? 50.0f : mp.maxs[2]; }
 
 // Stance change (0x509d10): standing up needs room for the taller box; going prone needs ground
-// (TODO(spec): the prone surface test 0x4fc000). A change starts a view-height transition (0x509840).
+// (0x4fc000 always returns 1: it is not a gate). A change starts a view-height transition (0x509840).
 void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, const MoveParams& mp) {
     Stance want = in.stance;
     if (want == ps.stance) return;
@@ -818,17 +818,78 @@ void mantleMove(PlayerState& ps, const MantleAnims& m, int ms) {
 }
 
 // Aiming (0x4dd020, then 0x50bd00): with the aim command and a weapon that may aim (0x4dcf70) the player aims
-// standing or crouched; prone only when the aim was just pressed or the player is not moving (then pm_flags 0x800
-// is set too, TODO(spec): what 0x800 does). Aiming slows movement unless prone or in weapon states 5–9.
+// standing or crouched; prone only when the aim was just pressed or the player is not moving. A prone aim also sets
+// pm_flags 0x800 (0x4dd070, ORed with 0x40): PmoveSingle (0x50c748) keeps the prone player's moves at zero while it is
+// set (see proneAimCancel for how it is cleared). Aiming slows movement unless prone or in weapon states 5–9.
 void updateAds(PlayerState& ps, const PlayerInput& in, float f, float r) {
     const bool prone = ps.stance == Stance::Prone; // pm_flags 1
     ps.ads = false;
     if (in.adsHeld && in.adsAllowed) {
         if (!prone) ps.ads = true;
-        else if (!ps.prevAdsHeld || (f == 0 && r == 0)) ps.ads = true;
+        else if (!ps.prevAdsHeld || (f == 0 && r == 0)) ps.ads = ps.proneAimLatch = true;
     }
     ps.prevAdsHeld = in.adsHeld;
     ps.adsSlow = ps.ads && !prone && !(in.weaponState >= 5 && in.weaponState <= 9);
+}
+
+// 0x4dd4f0: whether the weapon state can be interrupted by a movement command (false for 3, 0xb and 0xc–0x10; the
+// other states, including the unlisted ones after a call to 0x4df0a0, give true).
+bool weaponStateInterruptible(int state) { return !(state == 3 || (state >= 0xb && state <= 0x10)); }
+
+// Prone aim cancel (PmoveSingle 0x50c4f6–0x50c5a3, prone only): a larger forward or right command than the previous one
+// ends the aim (0x4dd090: pm_flags 0x40 cleared, player event 0x95) and the 0x800 latch when the weapon state allows
+// it (0x4dd4f0). Otherwise, with the aim not active, the latch is cleared in weapon states 0, 1, 2 and 5.
+void proneAimCancel(PlayerState& ps, float f, float r, int weaponState) {
+    if (ps.stance != Stance::Prone) return;
+    bool increased = false;
+    if (f != ps.prevCmdFwd) increased = std::fabs(ps.prevCmdFwd) < std::fabs(f);
+    if (!increased && r != ps.prevCmdRight) increased = std::fabs(ps.prevCmdRight) < std::fabs(r);
+    if (increased) {
+        if (weaponStateInterruptible(weaponState)) {
+            ps.proneAimLatch = false;
+            ps.ads = false;
+            addPlayerEvent(ps, 0x95);
+        }
+        return;
+    }
+    if (!ps.ads && (weaponState == 0 || weaponState == 1 || weaponState == 2 || weaponState == 5)) ps.proneAimLatch = false;
+}
+
+// Hold breath (PM_UpdateHoldBreath 0x4dd350). The flag 0x4000 is raised by the +holdbreath command (0x8000) with the
+// aim fraction 1 on a reticle weapon, only once the timer has run back to 0; the timer counts up by the frame time
+// while held and down otherwise, at the hold time the flag drops and the timer jumps to hold + gasp. The sway scale
+// ps+0x590 is tracked (DiffTrack 0x420a20) towards (s - 1) · adsFrac + 1 with s = 0 while holding (rate hold_lerp) or
+// 1 + (gasp_scale - 1) · timer / (hold + gasp) otherwise (rate gasp_lerp).
+void updateHoldBreath(PlayerState& ps, const PlayerInput& in, const BreathParams& b, int ms, float seconds) {
+    const int holdMs = int(std::lrint(b.holdTime * 1000.0f)), gaspMs = int(std::lrint(b.gaspTime * 1000.0f));
+    if (holdMs < 1) {
+        ps.holdingBreath = false;
+        ps.breathScale = 1.0f;
+        ps.breathTimerMs = 0;
+        return;
+    }
+    if (in.adsFrac == 1.0f && in.breathWeapon && in.holdBreathHeld) {
+        if (ps.breathTimerMs == 0) ps.holdingBreath = true;
+    } else {
+        ps.holdingBreath = false;
+    }
+    ps.breathTimerMs += ps.holdingBreath ? ms : -ms;
+    if (ps.breathTimerMs < 0) ps.breathTimerMs = 0;
+    if (ps.holdingBreath && ps.breathTimerMs > holdMs) {
+        ps.breathTimerMs = gaspMs + holdMs;
+        ps.holdingBreath = false;
+    }
+    float s, rate;
+    if (ps.holdingBreath) {
+        s = 0.0f;
+        rate = b.holdLerp;
+    } else {
+        s = (b.gaspScale - 1.0f) * (float(ps.breathTimerMs) / float(gaspMs + holdMs)) + 1.0f;
+        rate = b.gaspLerp;
+    }
+    const float target = (s - 1.0f) * in.adsFrac + 1.0f;
+    const float d = target - ps.breathScale, step = d * rate * seconds;
+    ps.breathScale = (std::fabs(d) > 0.001f && !(std::fabs(d) <= std::fabs(step))) ? ps.breathScale + step : target;
 }
 
 // Aim spread scale (0x4de540, from PmoveSingle 0x50c6cb before the view angles are taken): decay = hipSpreadDecayRate
@@ -1096,7 +1157,10 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     // and right moves (0x50c5c7).
     float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);
     if (in.dead) fwdMove = rightMove = 0; // 0x50c733: pm_type ≥ 4 clears the command's moves
-    if (ps.ads && ps.viewHeightTarget == 11) fwdMove = rightMove = 0;
+    proneAimCancel(ps, std::clamp(in.forward, -1.0f, 1.0f), std::clamp(in.right, -1.0f, 1.0f), in.weaponState); // 0x50c4f6
+    if ((ps.ads || ps.proneAimLatch) && ps.viewHeightTarget == 11) fwdMove = rightMove = 0; // 0x50c5d4, 0x50c750
+    ps.prevCmdFwd = std::clamp(in.forward, -1.0f, 1.0f); // the next step's previous command (raw, before the zeroing above)
+    ps.prevCmdRight = std::clamp(in.right, -1.0f, 1.0f);
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
     // While mantling (pm_flags 4) PmoveSingle skips the stance change and the ground trace (0x50c9b7).
     if (!ps.mantling) groundTrace(w, ps, pml);
@@ -1122,11 +1186,13 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
             updateStance(w, ps, in, mp); // 0x50ca29
             updateViewHeight(ps);
             updateAds(ps, in, fwdMove, rightMove);
+            updateHoldBreath(ps, in, mp.breath, ms, pml.frametime);
             mantleMove(ps, *mp.mantle, ms);
             return;
         }
     }
     updateAds(ps, in, fwdMove, rightMove);
+    updateHoldBreath(ps, in, mp.breath, ms, pml.frametime); // 0x4dd350, right after the aim update (PM_Weapon 0x4dfc6c)
 
     // pm_time runs down; when it expires pm_flags 0x80000, 0x400 and 0x200 are cleared.
     {
@@ -1166,6 +1232,16 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
 }
 
 } // namespace
+
+void breathOnFire(PlayerState& ps, const MoveParams& mp, float adsFrac, bool breathWeapon) {
+    if (adsFrac != 1.0f || !breathWeapon) return;
+    const int holdMs = int(std::lrint(mp.breath.holdTime * 1000.0f));
+    if (ps.breathTimerMs < holdMs) {
+        ps.breathTimerMs += int(std::lrint(mp.breath.fireDelay * 1000.0f));
+        if (ps.breathTimerMs > holdMs) ps.breathTimerMs = holdMs;
+    }
+    ps.holdingBreath = false;
+}
 
 Vec leanOffset(float yawDeg, float lean) {
     if (lean == 0) return {0, 0, 0};

@@ -312,6 +312,8 @@ public:
     }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
     uint32_t playerPmFlags() const { return pmFlags_; }
+    // Mirrors a flag the player move owns (pm_flags 0x4000 hold breath) into the flags the HUD reads.
+    void setPlayerPmFlag(uint32_t bit, bool on) { pmFlags_ = on ? (pmFlags_ | bit) : (pmFlags_ & ~bit); }
     // On a turret (ps eFlags & 0x300, set by the turret use 0x51db50).
     // Debug (iw2view IW2_FIRE_TURRETS): one shot from every turret entity (number of turrets fired).
     int debugFireTurrets();

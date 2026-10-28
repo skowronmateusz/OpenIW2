@@ -318,6 +318,32 @@ void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewY
     outRot_[1] = angleDelta(outRot_[1], lagYaw_);
 }
 
+std::array<float, 2> ViewWeaponMotion::scopeSway(const Field& w, int ms, float adsFrac, int stance, float breathScale, bool reticle) {
+    if (!reticle) return {0, 0};
+    // Amount / speed as the idle sway (0x4ae0a1-0x4ae0f6): aimDownSight weapons lerp hipIdle* (0x2cc / 0x2d4) to adsIdle*
+    // (0x2c8 / 0x2d0) by the aim fraction; otherwise hip values, or 80 and 1 without hipIdleAmount.
+    float amount, speed;
+    if (w("aimDownSight") != 0) {
+        amount = w("adsIdleAmount") * adsFrac + w("hipIdleAmount") * (1.0f - adsFrac);
+        speed = w("adsIdleSpeed") * adsFrac + w("hipIdleSpeed") * (1.0f - adsFrac);
+    } else if (w("hipIdleAmount") != 0) {
+        amount = w("hipIdleAmount");
+        speed = w("hipIdleSpeed");
+    } else {
+        amount = 80.0f;
+        speed = 1.0f;
+    }
+    // The stance factor (0xf79068) approaches its target only while the aim fraction is non-zero (0x4ae125-0x4ae196).
+    const float target = stance == 2 ? w("idleProneFactor") : stance == 1 ? w("idleCrouchFactor") : 1.0f;
+    if (adsFrac != 0 && target != idleFactor_) {
+        const float step = float(ms) * 0.0005f;
+        idleFactor_ = target > idleFactor_ ? std::min(target, idleFactor_ + step) : std::max(target, idleFactor_ - step);
+    }
+    const float x = idleFactor_ * amount * adsFrac * breathScale;
+    idleTime_ += int(std::lrint(double(float(ms) * breathScale * speed)));
+    return {std::sin(float(idleTime_) * 0.001f) * x * 0.01f, std::sin(float(idleTime_) * 0.0007f) * x * 0.01f};
+}
+
 float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac, float adsFrac, bool zoomingIn) {
     const float zoom = std::min(adsZoomFov, cgFov);
     if (adsFrac == 1.0f) return zoom;

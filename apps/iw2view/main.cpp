@@ -2853,6 +2853,7 @@ int main(int argc, char** argv) {
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
+        bool breathWeapon = false; // the equipped weapon has a scope reticle and is not an item (hold-breath weapons, 0x4dd350)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
@@ -3866,9 +3867,9 @@ int main(int argc, char** argv) {
             // and the aim fraction (0xf709a0) exactly 1.0. Text PLATFORM_HOLD_BREATH with &&1 = the key bound to +holdbreath,
             // else +melee_breath, else +breath_binoculars (0x4cdbf0), white, the item's textscale / textstyle; x = rect.x −
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
-            // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is set by
-            // 0x4dd290 (cleared by 0x4dd2a0), which has no direct callers and no disableweapon string in the SP exe: never set in SP.
-            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && pweapon.adsFrac() == 1.0f) {
+            // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
+            // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
+            if (world && world->player() && holdBreathItem && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
@@ -5608,6 +5609,12 @@ int main(int argc, char** argv) {
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
                 in.adsAllowed = pweapon.adsAllowed();
                 in.weaponState = pweapon.stateNumber();
+                in.holdBreathHeld = !controlsBlocked && (buttons & game::Button::HoldBreath) != 0;
+                {
+                    const std::string ret = pweapon.field("adsOverlayReticle");
+                    breathWeapon = pweapon.equipped() && !ret.empty() && ret != "none" && pweapon.field("weaponClass") != "item";
+                    in.breathWeapon = breathWeapon;
+                }
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
                 float remaining = std::min(dt, 0.1f);
                 // With a running level the player clips against the world and its solid entities (brush models,
@@ -5636,6 +5643,7 @@ int main(int argc, char** argv) {
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
                 }
+                if (world) world->setPlayerPmFlag(0x4000, ps.holdingBreath); // hold breath, read by the HUD hint
                 // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
                 if (world) {
                     if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
@@ -5645,6 +5653,7 @@ int main(int argc, char** argv) {
                         // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
                         const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
                         if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, world->timeMs());
+                        if (ev == 0x95) input.clearAds(); // 0x4dd090 (the prone aim cancel): the cgame clears the toggled aim (0x4bafbc)
                     }
                 }
                 // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
@@ -5741,6 +5750,7 @@ int main(int argc, char** argv) {
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
+                if (shots > 0) game::breathOnFire(ps, mp, pweapon.adsFrac(), breathWeapon); // 0x4dee18 -> 0x4dd2b0
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
                 aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
                 writeWeapon();
@@ -6148,6 +6158,14 @@ int main(int argc, char** argv) {
                     cam.yaw += std::atan(k.x) * 57.29578f;
                     cam.pitch -= std::atan(k.y) * 57.29578f;
                 }
+            if (!onTurret && !playerDead && pweapon.equipped() && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
+                const std::string ret = pweapon.field("adsOverlayReticle");
+                const auto ss = vmMotion.scopeSway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
+                                                   pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
+                                                   ps.breathScale, !ret.empty() && ret != "none");
+                cam.pitch += ss[0];
+                cam.yaw += ss[1];
+            }
             cam.pitch += bobAngles[0]; // ADS view bob (0x4ae4a9)
             cam.yaw += bobAngles[1];
             if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll
