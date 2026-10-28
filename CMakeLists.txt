@@ -84,7 +84,7 @@ add_library(iw2_game
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
-  src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp)
+  src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
 target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)

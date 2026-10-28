@@ -689,6 +689,8 @@ bool pathLongerThan(const ActorPath& p, float dist) {
 }
 } // namespace
 
+bool pathAheadLongerThan(const ActorPath& p, float dist) { return pathLongerThan(p, dist); } // used by 0x545580
+
 // 0x502e80: the enemy (at `ep`) is near the way ahead. The reach is pathenemylookahead (+0x780), 256 more without a
 // path before this update; inside it (2D) around the actor counts, else near the lookahead segment (the actor to
 // `look`), the rest of the lookahead's path segment, and the segments after it towards the goal while the length
