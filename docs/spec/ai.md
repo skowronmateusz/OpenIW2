@@ -230,9 +230,11 @@ types 18, 2, 3, 5, 10, 11, 12, 6, 7). `findbestcovernode` options are the consta
 
 Implemented in `src/game/actorcover.cpp`. Done since: node blocking 0x515390 (blockFacingNodes), goal volumes
 (goalVolumeHolds), the 0x502960 offset goal (dead: +0x73c is only ever written 0), the damaged handler 0x5498c0, the trim
-state set by the reacquire paths. TODO(spec): node take-over 0x518e80/0x518dc0, linked nodes, 0x505ed0/0x505f70 (goal
-entity, path to enemy), the rest of 0x503200, the move check's continuation after a block, the consumer of the trim
-state (trimpathtoattack 0x543580), the planners 0x503a50 / 0x503be0 / 0x546980, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
+state set by the reacquire paths, trimpathtoattack 0x543580 (with the sight test 0x54c7d0), the planners 0x503a50 (reuse
+rule) / 0x503be0 / 0x546980, the turret damaged handler 0x54af30, the node kd-tree order (0x52de40 build, 0x516820 walk) and
+the node take-over 0x518e80 / priority rule 0x518dc0. TODO(spec): the linked nodes
+(+0x30 / +0x32, +0x56) of the node claims, 0x505ed0/0x505f70 (goal entity, path to enemy), the rest of 0x503200, the move
+check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0,
 0x502960's offset goal (0x542340/0x545670, see "Path planner").
 
 ## Path planner (observed)

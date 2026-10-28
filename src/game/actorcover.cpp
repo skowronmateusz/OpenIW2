@@ -104,16 +104,35 @@ bool World::inActorGoal(Entity& e, const Vec3& p) {
 }
 
 // Node usable by this sentient (0x518f20): its own node; not while the node is blocked for its team; free when the
-// owner's hold has expired. TODO(spec): taking a claimed node from another actor (0x518e80 / 0x518d80) and the
-// distance rule of priority nodes (0x518dc0: 0x420f00 against 225) are not implemented.
+// owner's hold has expired. A node held for good (+0x44 = 0x7fffffff) is taken over (0x518e80, then 0x518d80 /
+// 0x5191a0: the owner lets go of it) by a sentient without a node that is not walking (0x5055b0) and stands at the node
+// (0x502660) while the owner does not. A priority node (spawnflag 0x40) is also usable (0x518dc0) when nobody has it,
+// or when its owner, of the same team, is dying, or is farther from it than this sentient by more than 15 units (xy;
+// 225 on the squared distance 0x420f00, the owner at least 225 away). TODO(spec): the linked nodes (+0x30 / +0x32,
+// +0x56) of all three are not modelled.
 bool World::nodeUsable(Entity& e, int node) {
     PathNode& n = nodes_[size_t(node)];
     if (n.owner == &e) return true;
     const int team = teamIndex(e.obj->get("team"));
     if (team > 0 && timeMs_ <= n.teamBlockedMs[size_t(team)]) return false;
     if (n.ownerUntilMs < timeMs_) return true;
-    if ((n.spawnflags & 0x40) && n.owner && n.owner->isActor && n.owner->ai.stack[size_t(n.owner->ai.depth)] == AiDeath)
-        return true; // 0x518dc0: the owner of a priority node is dying
+    const Vec3 no = vecField(n.obj, "origin");
+    if (n.ownerUntilMs == kNodeClaimed && n.owner && n.owner->isActor && e.isActor && e.claimedNode < 0 &&
+        !(e.ai.animMode == 1 && e.ai.movemode != 0) && nearPoint(no, vecField(e.obj, "origin")) &&
+        !nearPoint(no, vecField(n.owner->obj, "origin"))) {
+        Entity& owner = *n.owner;
+        if (owner.claimedNode == node) releaseNode(owner);
+        return true;
+    }
+    if (n.spawnflags & 0x40) {
+        if (!n.owner) return true;
+        Entity& o = *n.owner;
+        if (!o.isActor || teamIndex(o.obj->get("team")) != team) return false;
+        if (o.ai.stack[size_t(o.ai.depth)] == AiDeath) return true;
+        const Vec3 mo = vecField(e.obj, "origin"), oo = vecField(o.obj, "origin");
+        const float d1 = dist2d(no, oo);
+        return d1 >= 225.0f && dist2d(no, mo) + 225.0f < d1;
+    }
     return false;
 }
 
