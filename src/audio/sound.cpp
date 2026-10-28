@@ -206,6 +206,9 @@ void SoundAliases::load(const fs::Vfs& vfs, const std::string& level, bool menuO
             if (const std::string c = lower(get("volumefalloffcurve")); !c.empty()) {
                 if (const auto it = curves.find(c); it != curves.end()) a.curve = it->second;
             }
+            a.streamed = lower(get("type")) == "streamed"; // 0x428e70
+            a.startDelayMs = int(num(get("startdelay"), 0));
+            a.lfePct = std::clamp(num(get("lfe percentage"), 0), 0.0f, 1.0f);
             a.secondary = lower(get("secondaryaliasname"));
             a.subtitle = get("subtitle");
             // vol_mod group (0x428bf0, applied by the post-parse check 0x429783): vol_min / vol_max are multiplied by the group
@@ -251,10 +254,80 @@ std::shared_ptr<const Wav> Mixer::load(const std::string& file) {
     return w;
 }
 
-int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* duration) {
+namespace {
+// The exe's channel numbers (alias flags >> 7 & 0xf, name table 0x59b334): auto 0, auto2d 1, menu 2, weapon 3, voice 4, item 5, body 6, local 7,
+// music 8, announcer 9, shellshock 10. A slot's channel doubles as its steal priority (0x4417d1 stores it at slot +4, 0x441910 compares it).
+int exeChannel(const std::string& c) {
+    static const char* const kNames[11] = {"auto", "auto2d", "menu", "weapon", "voice", "item", "body", "local", "music", "announcer", "shellshock"};
+    for (int i = 0; i < 11; ++i)
+        if (c == kNames[i]) return i;
+    return 0;
+}
+// 0x441d1c jump table (bytes 0x441dfc): auto, weapon, voice, item, body are 3D channels (0x49f740, culled beyond dist_max by 0x4423d0
+// before anything starts); the rest are 2D (0x49f470).
+bool is3DChannel(int ch) { return ch == 0 || (ch >= 3 && ch <= 6); }
+} // namespace
+
+// Pool bookkeeping of the generic play (0x4423d0): free slot (0x441990 / 0x441a30 / 0x441ad0) or else the steal choice of 0x441910: only slots
+// whose priority (channel) is <= the new sound's are candidates; a slot of the new sound's owner wins over another owner's; otherwise the lowest
+// priority, then the earliest end time (a loop ends "now", 0x49f6db) goes. Returns 0 (play fails) when nothing can be stolen.
+int Mixer::allocSlot(Voice& v) {
+    if (v.dedicated) return 1;
+    const int cap = v.pool == 2 ? kPoolStream : v.pool == 1 ? kPool3D : kPool2D;
+    int count = 0;
+    for (const Voice& o : voices_) count += (!o.dedicated && o.pool == v.pool) ? 1 : 0;
+    if (count < cap) return 1;
+    auto endMs = [&](const Voice& o) {
+        if (o.loop) return 0.0;
+        return (double(o.wav->frames()) - o.pos) / o.step / double(rate_) * 1000.0 + o.delayFrames * 1000.0 / double(rate_);
+    };
+    int best = -1;
+    for (int i = 0; i < int(voices_.size()); ++i) {
+        const Voice& o = voices_[size_t(i)];
+        if (o.dedicated || o.pool != v.pool || o.prio > v.prio) continue;
+        if (best < 0) { best = i; continue; }
+        const Voice& b = voices_[size_t(best)];
+        if (o.owner != b.owner) {
+            if (o.owner == v.owner) { best = i; continue; }
+            if (b.owner == v.owner) continue;
+        }
+        int d = o.prio - b.prio;
+        if (d == 0) {
+            const double e = endMs(o) - endMs(b);
+            d = e < 0 ? -1 : e > 0 ? 1 : 0;
+            if (d == 0) continue;
+        }
+        if (d < 0) best = i;
+    }
+    if (best < 0) return 0;
+    voices_.erase(voices_.begin() + best);
+    return 1;
+}
+
+int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* duration, PlayOptions opt) {
     lastSubtitle_.clear();
     const SoundAlias* a = aliases_.pick(name, rng_);
     if (!a) return 0;
+    // The secondary alias starts first (0x442401..0x44243e) and may itself have none.
+    const std::string sub = a->subtitle;
+    if (!a->secondary.empty() && a->secondary != a->name) play(a->secondary, origin, nullptr, opt);
+    lastSubtitle_ = sub;
+    const int exch = exeChannel(a->channel);
+    const float distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 5.0f; // dist_max 0 -> 5 * dist_min (0x429701)
+    if (is3DChannel(exch) && origin && a->channel != "local" && !opt.dedicated && (!a->loop || opt.refresh)) {
+        std::lock_guard lock(mutex_);
+        const float dx = (*origin)[0] - listener_[0], dy = (*origin)[1] - listener_[1], dz = (*origin)[2] - listener_[2];
+        if (distMax > 0 && dx * dx + dy * dy + dz * dz > distMax * distMax) return 0; // 0x4424e6: culled when farther than dist_max
+    }
+    if (a->loop && opt.refresh) { // 0x441f80: a running loop of the same alias and owner is refreshed instead of restarted
+        std::lock_guard lock(mutex_);
+        for (Voice& o : voices_)
+            if (o.refresh && o.loop && o.owner == opt.owner && o.name == a->name) {
+                o.stamp = stampNow_;
+                if (a->channel != "local") o.origin = origin;
+                return o.handle;
+            }
+    }
     auto wav = load(a->file);
     if (!wav || wav->frames() == 0) return 0;
     Voice v;
@@ -266,23 +339,40 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     if (duration) *duration = a->loop ? 0.0f : float(double(wav->frames()) / (double(wav->rate) * pitch));
     if (a->channel != "local") v.origin = origin;
     v.distMin = a->distMin;
-    v.distMax = a->distMax > a->distMin ? a->distMax : a->distMin * 5.0f; // dist_max 0 -> 5 * dist_min (0x429701)
+    v.distMax = distMax;
     v.curve = a->curve;
     v.loop = a->loop;
     v.chan = channelIndex(a->channel);
     v.master = a->master;
     v.slavePct = a->slavePct;
     v.noWet = a->noWetLevel;
+    v.owner = opt.owner;
+    v.prio = exch;
+    v.pool = a->streamed ? 2 : is3DChannel(exch) ? 1 : 0;
+    v.dedicated = opt.dedicated;
+    v.refresh = opt.refresh;
+    v.name = a->name;
+    v.delayFrames = double(a->startDelayMs) * double(rate_) / 1000.0;
     int handle;
     {
         std::lock_guard lock(mutex_);
+        // Channel exclusivity (0x44250a..0x442531): outside auto / auto2d / menu, an alias without a secondary first stops the owner's
+        // running sounds of the same channel.
+        if (opt.owner >= 0 && exch > 2 && a->secondary.empty())
+            std::erase_if(voices_, [&](const Voice& o) { return o.owner == opt.owner && o.prio == exch && !o.dedicated; });
+        v.stamp = stampNow_;
+        if (!allocSlot(v)) return 0;
         v.handle = handle = nextHandle_++;
         voices_.push_back(std::move(v));
     }
-    const std::string sub = a->subtitle;
-    if (!a->secondary.empty() && a->secondary != a->name) play(a->secondary, origin, nullptr);
-    lastSubtitle_ = sub;
     return handle;
+}
+
+void Mixer::sweepLoops(int soundTimeMs) {
+    std::lock_guard lock(mutex_);
+    if (paused_) return; // 0x443522: the sweep does not run while paused
+    std::erase_if(voices_, [&](const Voice& v) { return v.refresh && v.loop && v.stamp != stampNow_; });
+    stampNow_ = soundTimeMs;
 }
 
 int Mixer::playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin) {
@@ -481,6 +571,7 @@ void Mixer::mix(float* out, int frames) {
                 gl = baseL * v.gain;
                 gr = baseR * v.gain;
             }
+            if (v.delayFrames > 0) { v.delayFrames -= 1; continue; } // alias startdelay: silent until it has passed
             if (v.pos >= double(n)) {
                 if (!v.loop) break;
                 v.pos = std::fmod(v.pos, double(n));
