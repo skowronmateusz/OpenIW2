@@ -544,10 +544,11 @@ void accelerate(PlayerState& ps, const Vec& wishDir, float wishSpeed, float acce
 // view height 11. The value moves towards the target by ms · max/350 and back to 0 by ms · max/280. A 16-unit cube
 // traced from the eye to the leaned eye limits it to 1 − sqrt(1 − fraction).
 // The allowleanleft/right flags (0x2000000/0x4000000, 0x50ae13) cancel the input in the callers.
-// TODO(spec): ps flag 0x8000 and 0x20300 in ps+0x7c.
+// The input is cancelled while pm_flags (ps+0x7c) has 0x100 (adsSlow) or 0x200 (landTimer) set (0x50ae2c: test 0x20300 -> target 0).
+// TODO(spec): pm_flags bit 0x20000 (not modelled) and the 0x8000 / ps+4 < 4 / ps+0x60 conditions on the ps+0xc word (0x50adf1..0x50ae0d).
 void updateLean(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float ms, float yaw) {
     int dir = 0;
-    if (ps.onGround) {
+    if (ps.onGround && !ps.adsSlow && !ps.landTimer) {
         if (in.leanLeft) dir -= 1;
         if (in.leanRight) dir += 1;
     }
