@@ -2798,7 +2798,8 @@ int main(int argc, char** argv) {
                     // roll (0x423a10, corpse blend only) = anglesQuat(pitch, 0, roll), lift on z. The fraction uses cg.time,
                     // which lies between the two snapshots it interpolates (0x4a4c10): the effect time below.
                     const int64_t cgTime = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
-                    if (float tiltPitch = 0, tiltRoll = 0, tiltLift = 0; world->actorProneTilt(*e, cgTime, tiltPitch, tiltRoll, tiltLift)) {
+                    static const bool noTilt = std::getenv("IW2_NO_PRONE_TILT") != nullptr;
+                    if (float tiltPitch = 0, tiltRoll = 0, tiltLift = 0; !noTilt && world->actorProneTilt(*e, cgTime, tiltPitch, tiltRoll, tiltLift)) {
                         for (size_t bi = 0; bi < body->parts.bones.size(); ++bi) {
                             std::string n = body->parts.bones[bi].name;
                             for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
@@ -5032,6 +5033,19 @@ int main(int argc, char** argv) {
                                 cam.yaw = std::atan2(to[1] - cam.pos.y, to[0] - cam.pos.x) * 180.0f / float(M_PI);
                                 cam.pitch = 15.0f;
                             }
+                }
+                if (const char* se = std::getenv("IW2_SHOT_ENT")) { // IW2_SHOT_ENT=N[,dist,yaw,height]: camera aimed at entity N
+                    float v[4] = {-1, 120, 90, 50};
+                    std::sscanf(se, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]);
+                    for (const auto& te : world->entities())
+                        if (te->number == int(v[0]) && te->obj->get("origin").isVector()) {
+                            const script::Vec3 to = te->obj->get("origin").asVector();
+                            const script::Value ta = te->obj->get("angles");
+                            const float yr = ((ta.isVector() ? ta.asVector()[1] : 0.0f) + v[2]) * float(M_PI) / 180.0f;
+                            cam.pos = {to[0] + std::cos(yr) * v[1], to[1] + std::sin(yr) * v[1], to[2] + v[3]};
+                            cam.yaw = std::atan2(to[1] - cam.pos.y, to[0] - cam.pos.x) * 180.0f / float(M_PI);
+                            cam.pitch = std::atan2(v[3] - 10.0f, v[1]) * 180.0f / float(M_PI);
+                        }
                 }
                 if (forceTurret || forceJolt)
                     for (const auto& e : world->entities())

@@ -729,4 +729,7 @@ goal is dead code (see actorcover.cpp).
   `anglesQuat(pitch, 0, roll)`; translation (0, 0, f * +0x164).
 - Client time: f uses cg.time (0xf708dc), set from the snapshot server time (0x4a4070) and lying between the previous and
   next snapshot (frame interpolation 0x4a4c10). iw2view passes its effect time, server time - 50 + lerp * 50.
+- Visual check (iw2view, toujane `--spawn-all` 50 s, corpse #1139 with pitch -4.2 / roll 11.7, `IW2_SHOT_ENT=1139,110,0,40`,
+  A/B with `IW2_NO_PRONE_TILT`): with the control the body lies on the rising ground beside the wall (right side raised),
+  without it the right arm sinks into the slope. Live prone pitches seen so far are a few degrees (not visible).
 

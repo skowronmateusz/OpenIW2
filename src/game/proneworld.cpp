@@ -87,8 +87,10 @@ void World::proneEnter(Entity& e, int ms) {
     p.durMs = ms;
     actorFit(*collision_, e, false);
     if (proneLog())
-        std::fprintf(stderr, "[prone %lld] #%d enterprone %d ms -> fits %d (body %.1f legs %.1f)\n", (long long)timeMs_, e.number,
-                     ms, p.fits, p.pitchBody, p.pitchLegs);
+        std::fprintf(stderr, "[prone %lld] #%d enterprone %d ms at (%.0f %.0f %.0f) yaw %.0f -> fits %d (body %.1f legs %.1f)\n",
+                     (long long)timeMs_, e.number, ms, e.obj->get("origin").asVector()[0], e.obj->get("origin").asVector()[1],
+                     e.obj->get("origin").asVector()[2], e.obj->get("angles").isVector() ? e.obj->get("angles").asVector()[1] : 0.0f,
+                     p.fits, p.pitchBody, p.pitchLegs);
 }
 
 void World::proneExit(Entity& e, int ms) {
@@ -241,8 +243,10 @@ void World::proneCorpseStart(Entity& e, bool conversion) {
     }
     corpseProneFit(e, false);
     if (proneLog())
-        std::fprintf(stderr, "[prone %lld] #%d corpse blend (%s) pitch %.1f roll %.1f lift %.1f\n", (long long)timeMs_, e.number,
-                     conversion ? "corpse" : "death", p.pitchBody, p.pitchLegs, p.lift);
+        std::fprintf(stderr, "[prone %lld] #%d corpse blend (%s) at (%.0f %.0f %.0f) yaw %.0f pitch %.1f roll %.1f lift %.1f\n",
+                     (long long)timeMs_, e.number, conversion ? "corpse" : "death", e.obj->get("origin").asVector()[0],
+                     e.obj->get("origin").asVector()[1], e.obj->get("origin").asVector()[2],
+                     e.obj->get("angles").isVector() ? e.obj->get("angles").asVector()[1] : 0.0f, p.pitchBody, p.pitchLegs, p.lift);
 }
 
 bool World::actorProneTilt(const Entity& e, int64_t nowMs, float& pitch, float& roll, float& lift) const {
