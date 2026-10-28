@@ -825,25 +825,47 @@ void World::launchItem(Entity& item, const Entity& dropper) {
     item.obj->set("$trbase", item.obj->get("origin"));
     item.obj->set("$trdelta", Value(Vec3{std::cos(yaw) * 150.0f, std::sin(yaw) * 150.0f, (r + r - 1.0f) * 50.0f + 200.0f}));
     item.obj->set("$trtime", Value(float(timeMs_)));
+    item.obj->set("$trtype", Value(int32_t(5))); // TR_GRAVITY (0x521f2d)
+    item.obj->set("$groundent", Value(int32_t(kItemNoGround)));
 }
 
-// G_RunItem (0x523040) for weapon items with a gravity trajectory: the position at the level time (z − 400·t²),
-// traced from the current origin with the item box (−1, −1, −1)…(1, 1, 1) and mask 0x491 (clipmask 0 → 0x491),
-// skipping the owner; on a hit the item stops at the hit point (the exe eases there over 50 ms, TR 3, and lays a
-// weapon flat on the surface 0x522ea0: TODO(spec)), in no-drop contents (0x80000000) it is freed. A map-placed item
-// (FinishSpawningItem 0x5225e0, unless spawnflags 1 = suspended) is dropped 4096 down once, retried from 15 down
-// when the first trace starts solid; still solid → freed.
+// G_RunItem (0x523040), the per-frame item state machine. Item state on the entity: $trtype (0 stationary, 3 linear stop,
+// 5 gravity), $trtime / $trduration (ms), $trbase / $trdelta, $groundent (kItemNoGround = 0x7ff, -1 = the world, else the
+// entity number of a clip).
+//  1. 0x523049..0x5230b2: unless the item rests on a stationary ground (groundEntityNum +0xc set and that entity's trType
+//     +0x14 == 0), an item whose trajectory is not already gravity and that is not suspended (spawnflags +0x124 & 1; eType 0xb
+//     ignores the flag) is re-based: TR_GRAVITY from its current origin at the level time with a zero velocity.
+//  2. 0x5230b5..0x5230d2: trType 0 or 6, or linked (tagInfo +0x1c8), runs only the think (0x5233b0).
+//  3. 0x5230d8..0x523127: the position 50 ms ahead (0x4fae80 at levelTime + 0x32); when its squared distance from the origin
+//     (0x420d90) is below 0.1 (0x59202c) the end z drops by 1 (0x591e20).
+//  4. 0x52312b..0x523163: trace of the entity box from the origin to that end, passEnt = owner (+0xf4), mask = clipmask
+//     (+0x12c) or 0x491.
+//  5. Hit (fraction < 1): endpos = lerp; the slide (not start-solid, fraction < 0.01, normal z < 0.5, 0x5231b2..0x523278)
+//     replaces the trace with the second one. Then trType 3, duration 50 ms, base = old origin, delta = (endpos - origin) * 20,
+//     origin = endpos (0x52327b..0x5232fd). No hit: origin = end (0x5232f1).
+//  6. Link, G_RunThink (0x4da090); a freed item stops here (+0xa4 in-use byte, 0x523315).
+//  7. Settle (0x523323..0x5233a9) only when this frame's (possibly slide) trace has fraction < 0.01 (0x591ea0): normal z <= 0
+//     frees the item (0x4d7c30), so do no-drop contents 0x80000000 at the origin (0x44c840); else 0x522ea0 lays it on the surface
+//     (not for eType 0xb: 0x4fd9e0, TODO(spec), no weapon item has it), G_SetOrigin(endpos) (0x4d8380: trType 0, delta 0) and
+//     groundEntityNum = the trace's entity (0x523397).
+// After the first floor hit the item sits 0.125 (the trace epsilon) above the floor with trType 3; the next frame's re-base
+// probes 1 unit down from there, which ends at once (fraction 0): it settles one frame after the hit. A wall hit (fraction
+// >= 0.01) does not settle; the item drops straight down from the wall afterwards (zero velocity after the re-base).
+// A map-placed item (FinishSpawningItem 0x5225e0, unless spawnflags 1 = suspended) is dropped 4096 down once, retried from 15
+// down when the first trace starts solid; still solid -> freed; it rests there (trType 0) with the trace's entity as ground
+// (0x52283f).
 void World::runItems() {
-    const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1};
-    for (const auto& ep : entities_) {
-        Entity& e = *ep;
+    const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1}; // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): other item types use z 0..2
+    for (size_t ei = 0; ei < entities_.size(); ++ei) {
+        Entity& e = *entities_[ei];
         if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) continue;
-        const Value tb = e.obj->get("$trbase");
-        if (!tb.isVector()) {
+        const Value sf = e.obj->get("spawnflags");
+        const bool suspended = sf.isNumber() && (sf.asInt() & 1);
+        if (!e.obj->get("$trtype").isNumber()) {
             if (e.obj->get("$itemsettled").truthy()) continue;
             e.obj->set("$itemsettled", Value(true));
-            const Value sf = e.obj->get("spawnflags");
-            if (sf.isNumber() && (sf.asInt() & 1)) continue;
+            e.obj->set("$trtype", Value(int32_t(0)));
+            if (suspended) continue; // groundEntityNum stays unset; the suspended flag blocks the re-base (step 1)
             Vec3 o = e.obj->get("origin").asVector();
             TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
             if (tr.startSolid) {
@@ -852,62 +874,121 @@ void World::runItems() {
                 if (tr.startSolid) { e.obj->removed = true; continue; }
             }
             e.obj->set("origin", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
+            e.obj->set("$groundent", Value(int32_t(tr.fraction < 1.0f ? tr.entity : kItemNoGround)));
             continue;
         }
-        const Vec3 base = tb.asVector(), delta = e.obj->get("$trdelta").asVector();
-        const float t = (float(timeMs_) - e.obj->get("$trtime").asFloat()) * 0.001f;
-        const Vec3 cur = e.obj->get("origin").asVector();
-        const Vec3 next{base[0] + delta[0] * t, base[1] + delta[1] * t, base[2] + delta[2] * t - 400.0f * t * t};
+        Trajectory trj;
+        trj.type = e.obj->get("$trtype").asInt();
+        trj.startMs = e.obj->get("$trtime").isNumber() ? int64_t(e.obj->get("$trtime").asFloat()) : 0;
+        trj.durationMs = e.obj->get("$trduration").isNumber() ? e.obj->get("$trduration").asInt() : 0;
+        {
+            const Value b = e.obj->get("$trbase"), d = e.obj->get("$trdelta");
+            if (b.isVector()) { const Vec3 v = b.asVector(); trj.base = {v[0], v[1], v[2]}; }
+            if (d.isVector()) { const Vec3 v = d.asVector(); trj.delta = {v[0], v[1], v[2]}; }
+        }
+        Vec3 cur = e.obj->get("origin").asVector();
+        // 1. Re-base. A ground entity counts as moving while a mover channel of it is active (its trType is not 0).
+        const int ground = e.obj->get("$groundent").isNumber() ? e.obj->get("$groundent").asInt() : kItemNoGround;
+        bool groundStill = false;
+        if (ground == -1) groundStill = true;
+        else if (ground != kItemNoGround) {
+            const auto m = movers_.find(ground);
+            groundStill = m == movers_.end() || !m->second.pos.active;
+        }
+        if (!groundStill && trj.type != 5 && !suspended) {
+            trj.type = 5;
+            trj.startMs = timeMs_;
+            trj.durationMs = 0;
+            trj.base = {cur[0], cur[1], cur[2]};
+            trj.delta = {0, 0, 0};
+        }
+        // 2. Stationary or linked: think only.
+        if (trj.type == 0 || trj.type == 6 || links_.count(e.number)) {
+            e.obj->set("$trtype", Value(int32_t(trj.type)));
+            continue;
+        }
+        // 3. The position 50 ms ahead.
+        const MVec ahead = trj.evaluate(timeMs_ + 50);
+        Vec3 next{ahead[0], ahead[1], ahead[2]};
+        {
+            const float dx = next[0] - cur[0], dy = next[1] - cur[1], dz = next[2] - cur[2];
+            if (dx * dx + dy * dy + dz * dz < 0.1f) next[2] -= 1.0f;
+        }
+        // 4. The trace. TODO(spec): passEnt is the owner (+0xf4); LaunchItem does not set it, the port passes the item itself.
         TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
-        // Slide (0x5231b2..0x523278): a hit that barely moved (fraction < 0.01, 0x591ea0) on a steep surface (normal z < 0.5) that
-        // did not start solid pushes the end point out along the normal, next + n · (1 − (next − cur)·n), traces again from the
-        // hit point to it and takes the point at that second fraction (0x47f390 lerp); the second trace replaces the first.
-        if (tr.fraction < 1.0f && !tr.startSolid && tr.fraction < 0.01f && tr.normal[2] < 0.5f) {
-            const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
-            const Vec3 end2 = itemSlideEnd(cur, next, n);
-            const Vec3 from{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
-            TraceResult tr2 = collision_->trace(from, end2, mins, maxs, 0x491, e.number);
-            const float f2 = tr2.fraction;
-            tr2.endPos = {from[0] + (end2[0] - from[0]) * f2, from[1] + (end2[1] - from[1]) * f2, from[2] + (end2[2] - from[2]) * f2};
-            tr = tr2;
-        }
+        Vec3 endpos = next;
         if (tr.fraction < 1.0f) {
-            const Vec3 at{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
-            if (collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
-            e.obj->set("origin", Value(at));
-            e.obj->set("$trbase", Value());
-            e.obj->set("$itemsettled", Value(true));
-            // 0x522ea0 (called from 0x523387 for every resting item that is not type 0xb): the item's forward vector
-            // (its pitch and yaw) is projected onto the plane of the hit normal, (n × f) × n, and the angles become its
-            // vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
-            // trajectory is cleared and currentAngles (+0xe8..) set. The exe eases the view to the hit point (TR 3, 50 ms, delta = 20 x
-            // the offset, 0x52327f); the server origin is already there. TODO(spec): the exe settles only when a trace of the next
-            // frame (gravity trajectory re-based on the origin each frame, 0x523086) hits with fraction < 0.01 and normal z > 0
-            // (else frees the item), with an entity flag at +0xa4; the port settles on the first hit. The owner as the trace's
-            // passEnt (item+0xf4).
-            {
-                const Value av = e.obj->get("angles");
-                const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
-                const float rad = 0.01745329238474369f;
-                const Vec3 f{std::cos(a[0] * rad) * std::cos(a[1] * rad), std::cos(a[0] * rad) * std::sin(a[1] * rad), -std::sin(a[0] * rad)};
+            endpos = {cur[0] + (next[0] - cur[0]) * tr.fraction, cur[1] + (next[1] - cur[1]) * tr.fraction, cur[2] + (next[2] - cur[2]) * tr.fraction};
+            // 5. Slide: next' = next + n * (1 - (next - cur) . n), traced from the hit point; the second trace replaces the first.
+            if (!tr.startSolid && tr.fraction < 0.01f && tr.normal[2] < 0.5f) {
                 const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
-                const Vec3 t{n[1] * f[2] - n[2] * f[1], n[2] * f[0] - n[0] * f[2], n[0] * f[1] - n[1] * f[0]};
-                const Vec3 g{t[1] * n[2] - t[2] * n[1], t[2] * n[0] - t[0] * n[2], t[0] * n[1] - t[1] * n[0]};
-                float pitch = 90.0f, yaw = 0.0f;
-                if (g[0] == 0.0f && g[1] == 0.0f) {
-                    pitch = g[2] > 0.0f ? 270.0f : 90.0f; // vectoangles of a vertical vector
-                } else {
-                    yaw = std::atan2(g[1], g[0]) / rad;
-                    if (yaw < 0) yaw += 360.0f;
-                    pitch = -std::atan2(g[2], std::sqrt(g[0] * g[0] + g[1] * g[1])) / rad;
-                    if (pitch < 0) pitch += 360.0f;
-                }
-                e.obj->set("angles", Value(Vec3{pitch, yaw, 90.0f}));
+                const Vec3 end2 = itemSlideEnd(cur, next, n);
+                const Vec3 from = endpos;
+                tr = collision_->trace(from, end2, mins, maxs, 0x491, e.number);
+                const float f2 = tr.fraction;
+                endpos = {from[0] + (end2[0] - from[0]) * f2, from[1] + (end2[1] - from[1]) * f2, from[2] + (end2[2] - from[2]) * f2};
             }
-        } else {
-            e.obj->set("origin", Value(next));
+            trj.type = 3;
+            trj.startMs = timeMs_;
+            trj.durationMs = 50;
+            trj.base = {cur[0], cur[1], cur[2]};
+            trj.delta = {(endpos[0] - cur[0]) * 20.0f, (endpos[1] - cur[1]) * 20.0f, (endpos[2] - cur[2]) * 20.0f};
         }
+        cur = endpos;
+        e.obj->set("origin", Value(cur));
+        e.obj->set("$trtype", Value(int32_t(trj.type)));
+        e.obj->set("$trtime", Value(float(trj.startMs)));
+        e.obj->set("$trduration", Value(int32_t(trj.durationMs)));
+        e.obj->set("$trbase", Value(Vec3{trj.base[0], trj.base[1], trj.base[2]}));
+        e.obj->set("$trdelta", Value(Vec3{trj.delta[0], trj.delta[1], trj.delta[2]}));
+        // 7. Settle.
+        if (!(tr.fraction < 0.01f)) continue;
+        if (tr.normal[2] <= 0.0f) { e.obj->removed = true; continue; }
+        if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; continue; }
+        // 0x522ea0: the item's forward vector (its pitch and yaw) is projected onto the plane of the hit normal, (n x f) x n, and
+        // the angles become its vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
+        // trajectory is cleared and currentAngles (+0xe8..) set.
+        {
+            const Value av = e.obj->get("angles");
+            const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+            const float rad = 0.01745329238474369f;
+            const Vec3 f{std::cos(a[0] * rad) * std::cos(a[1] * rad), std::cos(a[0] * rad) * std::sin(a[1] * rad), -std::sin(a[0] * rad)};
+            const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+            const Vec3 t{n[1] * f[2] - n[2] * f[1], n[2] * f[0] - n[0] * f[2], n[0] * f[1] - n[1] * f[0]};
+            const Vec3 g{t[1] * n[2] - t[2] * n[1], t[2] * n[0] - t[0] * n[2], t[0] * n[1] - t[1] * n[0]};
+            float pitch = 90.0f, yaw = 0.0f;
+            if (g[0] == 0.0f && g[1] == 0.0f) {
+                pitch = g[2] > 0.0f ? 270.0f : 90.0f; // vectoangles of a vertical vector
+            } else {
+                yaw = std::atan2(g[1], g[0]) / rad;
+                if (yaw < 0) yaw += 360.0f;
+                pitch = -std::atan2(g[2], std::sqrt(g[0] * g[0] + g[1] * g[1])) / rad;
+                if (pitch < 0) pitch += 360.0f;
+            }
+            e.obj->set("angles", Value(Vec3{pitch, yaw, 90.0f}));
+        }
+        // G_SetOrigin(endpos) (0x4d8380) and groundEntityNum = tr.entityNum.
+        e.obj->set("$trtype", Value(int32_t(0)));
+        e.obj->set("$trbase", Value(cur));
+        e.obj->set("$trdelta", Value(Vec3{0, 0, 0}));
+        e.obj->set("$trduration", Value(int32_t(0)));
+        e.obj->set("$groundent", Value(int32_t(tr.entity)));
+        e.obj->set("$itemsettled", Value(true));
     }
+}
+
+Entity& World::debugDropItem(const std::string& weaponName, const Vec3& origin, const Vec3& velocity) {
+    Entity& item = spawnEntity("weapon_" + lowerStr(weaponName));
+    item.obj->set("origin", Value(origin));
+    item.obj->set("angles", Value(Vec3{0, 0, 0}));
+    if (const auto* def = weapon(weaponName))
+        if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
+    item.obj->set("$trtype", Value(int32_t(5)));
+    item.obj->set("$trtime", Value(float(timeMs_)));
+    item.obj->set("$trbase", Value(origin));
+    item.obj->set("$trdelta", Value(velocity));
+    item.obj->set("$groundent", Value(int32_t(kItemNoGround)));
+    return item;
 }
 
 } // namespace iw2::game
