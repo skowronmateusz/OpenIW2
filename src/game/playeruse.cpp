@@ -460,7 +460,8 @@ void World::pickUpWeaponItem(Entity& item) {
     // takes the weapon. With both slots full: the held weapon (ps+0xb0) is dropped when it has the same slot class (0x52146d); else, when
     // the player has neither stock nor clip of the new weapon's ammo / clip type (0x5214ac..0x5214e9), the slot-1 weapon is dropped;
     // otherwise nothing is taken and the client gets gm "GAME_CANT_GET_PRIMARY_WEAP_MESSAGE" (0x58dff4).
-    // TODO(spec): the two-handed pairing test 0x4dcb20 (def +0x88) that also lets the pickup through; the debug-weapon warning 0x58e020.
+    // 0x4dcb20 (slot pairing for slotStackable weapons, def +0x88) also lets a pickup through; no SP weapon file sets slotStackable, so it
+    // never applies. TODO(spec): the debug-weapon warning 0x58e020.
     auto slotClass = [&](const std::string& n) {
         const std::string sl = lowerStr(weaponField(n, "weaponSlot"));
         return sl == "primary" ? 1 : sl == "primaryb" ? 2 : 0;
@@ -519,8 +520,7 @@ void World::pickUpWeaponItem(Entity& item) {
         int& cl = inv.clip[weaponField(w, "clipName")];
         // 0x520e40: stock += item stock; a clipOnly weapon (+0x340) first tops its clip up from the stock (0x520de0: n = min(clipSize -
         // clip, stock)); then the stock is capped at the ammo's maxAmmo (0x520efd..0x520f1b) and the clip at clipSize (0x520f1d..0x520f3b).
-        // TODO(spec): the clipOnly branch that zeroes the stock when gentity +0x100 is 0 (0x520ed8), and the shared-ammo trim when
-        // def +0x1e4 >= 0 (0x520f3d, 0x4dcc00).
+        // TODO(spec): the clipOnly branch that zeroes the stock when gentity +0x100 is 0 (0x520ed8). The shared-ammo trim follows.
         st += stock;
         if (weaponInt(w, "clipOnly") != 0) {
             const int n = std::min(clipSize - cl, st);
@@ -528,6 +528,7 @@ void World::pickUpWeaponItem(Entity& item) {
         }
         st = std::min(st, weaponInt(w, "maxAmmo"));
         cl = std::min(cl, clipSize);
+        trimSharedAmmo(inv, w); // 0x520f3d..0x520ff5
     }
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
     item.obj->removed = true;

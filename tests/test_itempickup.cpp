@@ -94,6 +94,18 @@ int main() {
         const auto mp2 = world.debugAmmo("mp40");
         std::cout << "npc mp40: stock " << mp2.first << " clip " << mp2.second << "\n";
         CHECK(mp2.second == 32 && mp2.first == 40);
+        // Shared ammo cap (0x520f3d): frag grenades share WEAPON_FRAGGRENADE, cap 4. With 3 frags a touched stick grenade item holding 3
+        // is trimmed back to the one that fits.
+        inv.owned.insert("fraggrenade");
+        inv.offhand = "fraggrenade";
+        world.debugSetClip("fraggrenade", 3);
+        world.debugSpawnItem("stielhandgranate");
+        for (const auto& e : world.entities())
+            if (!e->obj->removed && e->classname == "weapon_stielhandgranate") e->obj->set("$ammoClip", iw2::script::Value(int32_t(3)));
+        world.frame();
+        const auto st = world.debugAmmo("stielhandgranate");
+        std::cout << "stielhandgranate after the shared cap: clip " << st.second << " owned " << inv.owned.count("stielhandgranate") << "\n";
+        CHECK(world.debugAmmo("fraggrenade").second + st.second <= 4);
     }
     return failures ? 1 : 0;
 }
