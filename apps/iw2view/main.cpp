@@ -1696,6 +1696,12 @@ struct Renderer {
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
     SDL_GPUTextureFormat colorFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTexture* sceneTex = nullptr;
+    // Shell shock screen blend (cmd 0xa capture + cmd 0x1d blend, gfx 0x10031120/0x10031160): ping-pong of composed frames.
+    SDL_GPUTexture* ghostTex[2] = {nullptr, nullptr};
+    int ghostCur = 0;
+    bool ghostValid = false;   // a previous composed frame has been captured
+    bool ghostActive = false;  // set by the caller each frame: shell shock blend running
+    float ghostBlendMs = 0.0f, ghostElapsedMs = 0.0f; // blend window and time since the capture
     SDL_GPUTexture* halfTex = nullptr;
     SDL_GPUTexture* quarterTex = nullptr;
     SDL_GPUBuffer* blurVerts = nullptr;
@@ -2055,7 +2061,7 @@ struct Renderer {
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
         if (sceneTex && blurW == w && blurH == h) return;
-        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1]})
+        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1], &ghostTex[0], &ghostTex[1]})
             if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         auto make = [&](uint32_t tw, uint32_t th) {
             SDL_GPUTextureCreateInfo info{};
@@ -2076,11 +2082,14 @@ struct Renderer {
         glowTmpTex = make(w / 4, h / 4);
         glowTex[0] = make(w / 4, h / 4); // TODO(spec): $glow_0 / $glow_1 resolution (quarter assumed)
         glowTex[1] = make(w / 4, h / 4);
+        ghostTex[0] = make(w, h);
+        ghostTex[1] = make(w, h);
+        ghostValid = false;
         quarterTex = make(w / 4, h / 4); // $blurred_screen: (screenW>>2, screenH>>2) clamped >= 1 (gfx 0x100235b5)
         if (!blurVerts) {
             SDL_GPUBufferCreateInfo vb{};
             vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-            vb.size = uint32_t(8 * sizeof(GpuVertex));
+            vb.size = uint32_t(12 * sizeof(GpuVertex));
             blurVerts = SDL_CreateGPUBuffer(dev, &vb);
         }
         blurW = w;
@@ -2113,11 +2122,14 @@ struct Renderer {
         // r_glow (default 1, gfx 0x1000b7b8); IW2_NO_GLOW=1 disables the chain.
         static const bool noGlow = std::getenv("IW2_NO_GLOW") != nullptr;
         const bool glowOn = !noGlow;
-        const bool post = blurA > 0.0f || glowOn;
+        const bool post = blurA > 0.0f || glowOn || ghostActive;
         if (post) {
             ensureBlurTargets(w, h);
-            GpuVertex bv[8]{};
-            for (int q = 0; q < 2; ++q)
+            GpuVertex bv[12]{};
+            // quad 0: scene, 1: blur, 2: shock ghost (previous composed frame); alpha = min(0.01^(elapsed/blend), 0.99) (gfx 0x10031160)
+            const float ghostA = ghostBlendMs > 0.0f && ghostElapsedMs >= 0.0f && ghostElapsedMs < ghostBlendMs
+                                     ? std::min(std::pow(0.01f, ghostElapsedMs / ghostBlendMs), 0.99f) : 0.0f;
+            for (int q = 0; q < 3; ++q)
                 for (int k = 0; k < 4; ++k) {
                     GpuVertex& g = bv[q * 4 + k];
                     const float xs[4] = {-1, 1, 1, -1}, ys[4] = {1, 1, -1, -1}, us[4] = {0, 1, 1, 0}, vs[4] = {0, 0, 1, 1};
@@ -2125,7 +2137,7 @@ struct Renderer {
                     g.pos[1] = ys[k];
                     g.normal[2] = 1;
                     std::memset(g.color, 255, 3);
-                    g.color[3] = q == 0 ? 255 : uint8_t(std::lround(game::blurAlpha(blur, float(w)) * 255.0f));
+                    g.color[3] = q == 0 ? 255 : q == 2 ? uint8_t(std::lround(ghostA * 255.0f)) : uint8_t(std::lround(game::blurAlpha(blur, float(w)) * 255.0f));
                     g.uv[0] = us[k];
                     g.uv[1] = vs[k];
                 }
@@ -2568,7 +2580,9 @@ struct Renderer {
                 }
             }
             SDL_GPUColorTargetInfo c2{};
-            c2.texture = target;
+            // Shock blend: compose into the persistent ghost texture, which then becomes next frame's blend source.
+            SDL_GPUTexture* composeDst = ghostActive ? ghostTex[ghostCur] : target;
+            c2.texture = composeDst;
             c2.load_op = SDL_GPU_LOADOP_DONT_CARE;
             c2.store_op = SDL_GPU_STOREOP_STORE;
             SDL_GPUDepthStencilTargetInfo d2 = ds;
@@ -2596,16 +2610,45 @@ struct Renderer {
                     SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
                 }
             }
-            SDL_BindGPUGraphicsPipeline(p2, pipelines[int(Pass::Blend)]);
-            struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
-            SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
-            SDL_GPUBufferBinding bvb{blurVerts, 0};
-            SDL_BindGPUVertexBuffers(p2, 0, &bvb, 1);
-            SDL_GPUBufferBinding bib{overlayIndices ? overlayIndices : nullptr, 0};
-            if (!bib.buffer) bib.buffer = ensureOverlayIndices();
-            SDL_BindGPUIndexBuffer(p2, &bib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            FragmentUniforms fu = {{0, 0, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 1, 1}, {0, 0, 0, 0}};
-            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            auto bindBlend = [&]() {
+                SDL_BindGPUGraphicsPipeline(p2, pipelines[int(Pass::Blend)]);
+                struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
+                SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
+                SDL_GPUBufferBinding bvb{blurVerts, 0};
+                SDL_BindGPUVertexBuffers(p2, 0, &bvb, 1);
+                SDL_GPUBufferBinding bib{overlayIndices ? overlayIndices : nullptr, 0};
+                if (!bib.buffer) bib.buffer = ensureOverlayIndices();
+                SDL_BindGPUIndexBuffer(p2, &bib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                FragmentUniforms fu = {{0, 0, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 1, 1}, {0, 0, 0, 0}};
+                SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            };
+            bindBlend();
+            if (ghostActive) {
+                if (ghostValid && ghostElapsedMs >= 0.0f && ghostElapsedMs < ghostBlendMs) {
+                    SDL_GPUTextureSamplerBinding tex[4] = {{ghostTex[1 - ghostCur], clampSampler},
+                                                           {scene.dummyLightmap.coeffs, clampSampler},
+                                                           {scene.dummyLightmap.sun, clampSampler},
+                                                           {scene.textures[0], repeatSampler}};
+                    SDL_BindGPUFragmentSamplers(p2, 0, tex, 4);
+                    SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, 2 * 4, 0);
+                }
+                // Capture (cmd 0xa) happens after the blend and before the 2D pass: end the pass, copy the composed frame to the target.
+                SDL_EndGPURenderPass(p2);
+                SDL_GPUColorTargetInfo c3{};
+                c3.texture = target;
+                c3.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                c3.store_op = SDL_GPU_STOREOP_STORE;
+                p2 = SDL_BeginGPURenderPass(cmd, &c3, 1, &d2);
+                SDL_BindGPUGraphicsPipeline(p2, copyPipe);
+                SDL_GPUTextureSamplerBinding cb{ghostTex[ghostCur], clampSampler};
+                SDL_BindGPUFragmentSamplers(p2, 0, &cb, 1);
+                SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
+                bindBlend();
+                ghostCur = 1 - ghostCur;
+                ghostValid = true;
+            } else {
+                ghostValid = false; // flag 0xf7e8a4 cleared: the next shock starts with a capture only
+            }
             SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
             for (int q = 1; q < (blurA > 0.0f ? 2 : 1); ++q) { // q = 0 (the scene) was copied above
                 SDL_GPUTextureSamplerBinding tex[4] = {{srcs[q], clampSampler},
@@ -7257,6 +7300,22 @@ int main(int argc, char** argv) {
                 renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
+                { // shell shock screen blend (0x4b16b0): blendMs scaled by the remaining time; elapsed = real time since the last capture
+                    static int64_t lastGhostTicks = 0;
+                    const int64_t nowTicks = int64_t(SDL_GetTicks());
+                    renderer.ghostActive = false;
+                    if (world)
+                        if (const game::ShockRecord* rec = world->shellShockRecord()) {
+                            const auto& ss = world->shellShock();
+                            const int remaining = int(ss.startMs + ss.durationMs - world->timeMs());
+                            if (ss.startMs != 0 && ss.durationMs != 0 && remaining > 0) {
+                                renderer.ghostActive = true;
+                                renderer.ghostBlendMs = float(game::shockBlendMs(*rec, remaining));
+                                renderer.ghostElapsedMs = float(nowTicks - lastGhostTicks);
+                            }
+                        }
+                    lastGhostTicks = nowTicks;
+                }
                 const uint64_t profB = SDL_GetTicksNS();
                 updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
