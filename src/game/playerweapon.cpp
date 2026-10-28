@@ -117,6 +117,8 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
         stock_ = std::max(0, start - clip_);
     }
     needsRechamber_ = false;
+    brassInChamber_ = false; // TODO(spec): the exe keeps the ps+0x530 bit per weapon across switches
+    brassTimer_ = 0;
     addPending_ = false;
     reloadInterrupted_ = false;
     triggerReleased_ = true;
@@ -399,6 +401,18 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
         }
     }
     timer_ -= dt;
+    // Bolt-action brass (0x4dd700 in the rechamber state 4, 0x4ddfa0 in the reload states 5–8): when the delay set at the
+    // state start expires with the chamber bit still set, the bit is cleared and event 0xa2 ejects the casing.
+    if (brassTimer_ > 0) {
+        brassTimer_ -= dt;
+        if (brassTimer_ <= 0) {
+            brassTimer_ = 0;
+            if (brassInChamber_ && (state_ == State::Rechamber || inReloadStates() || state_ == State::ReloadEnd)) {
+                brassInChamber_ = false;
+                events_.push_back({Event::EjectBrass, name_});
+            }
+        }
+    }
     if (addPending_) { // the reload's ammo add (weaponDelay, 0x4dd8c0 / 0x4dd5b0)
         addTimer_ -= dt;
         if (addTimer_ <= 0) applyReloadAdd();
@@ -591,6 +605,12 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
         if (needsRechamber_ && clip_ > 0) {
             enter(State::Rechamber, "rechamberAnim", time("rechamberTime", 1.0f));
             needsRechamber_ = false;
+            // 0x4dd851..0x4dd87b: weaponTime = rechamberTime (+0x208), weaponDelay = rechamberBoltTime (+0x20c) when non-zero
+            // and shorter, else 1 ms; the casing comes out when that delay ends (0x4dd75e).
+            {
+                const float rt = time("rechamberTime", 1.0f), bt = time("rechamberBoltTime", 0);
+                if (brassInChamber_) brassTimer_ = bt != 0 && bt < rt ? bt : 0.001f;
+            }
             return 0;
         }
         enter(State::Ready, nullptr, 0);
@@ -628,6 +648,8 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
         ++shots;
         triggerReleased_ = false;
         needsRechamber_ = fieldValue("boltAction") == "1";
+        brassInChamber_ = needsRechamber_; // no brass on the shot itself (0x4b79d1), it waits in the chamber
+        brassTimer_ = 0;
         const bool aimed = adsFrac_ == 1.0f;
         enter(State::Firing, clip_ == 0 ? (aimed ? "adsLastShotAnim" : "lastShotAnim") : (aimed ? "adsFireAnim" : "fireAnim"),
               time("fireTime", 0.1f));
@@ -662,6 +684,7 @@ bool PlayerWeapon::startReload() {
         const float a = time("reloadStartAddTime", 0);
         addTimer_ = a == 0 ? 0.0f : std::min(a, t); // 0x4dd8c0 for states 7 / 8
         addPending_ = a != 0;
+        scheduleBrass();
         return true;
     }
     beginRound();
@@ -681,6 +704,17 @@ void PlayerWeapon::beginRound() {
     d -= fd < d ? fd : 0.001f;
     addTimer_ = std::max(0.0f, d);
     addPending_ = true;
+    scheduleBrass();
+}
+
+// 0x4dd930..0x4dd970: a reload state started with the bolt-action chamber bit set takes weaponDelay = min(rechamberBoltTime,
+// the add delay, or weaponTime without one), at least 1 ms; the casing is ejected when it ends (0x4ddfa0).
+void PlayerWeapon::scheduleBrass() {
+    if (!brassInChamber_) return;
+    const float limit = addPending_ && addTimer_ > 0 ? addTimer_ : timer_;
+    const float bt = time("rechamberBoltTime", 0);
+    const float d = std::min(bt, limit);
+    brassTimer_ = d > 0 ? d : 0.001f;
 }
 
 // 0x4dd5b0: the rounds a segmented reload step adds: the stock or the room, capped by reloadAmmoAdd (reloadStartAdd in the

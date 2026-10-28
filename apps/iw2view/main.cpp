@@ -3332,6 +3332,12 @@ int main(int argc, char** argv) {
         // First-person weapon: hands and gun posed by the weapon's current view-model animation and drawn in
         // camera space. The gun's root follows the hands' tag_weapon bone (inferred from the skeletons).
         game::PlayerWeapon pweapon;
+        // EV_FIRE_WEAPON (0x4b7800): the flash, and the brass unless the weapon is boltAction (0x4b79d1: a bolt-action casing
+        // comes out with event 0xa2 when the bolt is worked, PlayerWeapon::Event::EjectBrass).
+        auto viewShot = [&]() {
+            viewFlash->pending = true;
+            if (pweapon.number("boltAction") == 0) viewFlash->brassPending = true;
+        };
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
         game::AimBlend aimBlend; // the view model aim layers' cross-fade (0x4b25e0)
@@ -5878,7 +5884,7 @@ int main(int argc, char** argv) {
             game::PlayerWeapon::Input shotIn;
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
-            if (pweapon.update(fireSeconds, shotIn) > 0) viewFlash->pending = viewFlash->brassPending = true;
+            if (pweapon.update(fireSeconds, shotIn) > 0) viewShot();
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             // Debug: IW2_SHOT_SCRIPT=t:action,... (reload+/-, fire+/-, ads+/-, frag+/-, smoke+/-, melee+/-, weapon=name) runs
@@ -5915,11 +5921,12 @@ int main(int argc, char** argv) {
                 game::PlayerWeapon::Input stepIn = shotIn;
                 if (pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14) stepIn.ads = true; // forced aim (0x409af0)
                 const int shotsFired = pweapon.update(0.02f, stepIn);
-                if (shotsFired > 0 && (shotScript.empty() || shotTurnSim || i >= shotSteps - 5)) viewFlash->pending = viewFlash->brassPending = true;
+                if (shotsFired > 0 && (shotScript.empty() || shotTurnSim || i >= shotSteps - 5)) viewShot();
                 if (!shotScript.empty()) {
                     for (const auto& e : pweapon.takeEvents()) {
                         const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                         if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds();
+                        else if (e.kind == game::PlayerWeapon::Event::EjectBrass) { if (shotTurnSim || i >= shotSteps - 5) viewFlash->brassPending = true; }
                         else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop && world) {
                             static const char* const kN[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release", "binocular_drop"};
                             world->notifyPlayer(kN[e.kind - game::PlayerWeapon::Event::BinocularEnter]);
@@ -6652,6 +6659,7 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    else if (e.kind == game::PlayerWeapon::Event::EjectBrass) viewFlash->brassPending = true; // event 0xa2 (0x4bb113)
                     else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
                         ps.aimSpread = e.alt ? std::max(ps.aimSpread, 128.0f) : 255.0f;
                     else if (e.kind >= game::PlayerWeapon::Event::BinocularEnter && e.kind <= game::PlayerWeapon::Event::BinocularDrop) {
@@ -6765,7 +6773,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
                 for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
-                if (shots) viewFlash->pending = viewFlash->brassPending = true; // EV_FIRE_WEAPON -> fire flag (0x4b7800)
+                if (shots) viewShot(); // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, pweapon.clip() == 0 && i == shots - 1);
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
                 if (!inVehicle && !onTurret && !world->playerLinked()) {
