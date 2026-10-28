@@ -399,6 +399,11 @@ Pass classify(const std::string& techset) {
     if (techset == "sky") return Pass::Sky;
     if (techset == "water") return Pass::Water;
     if (techset == "tools" || techset.rfind("tools", 0) == 0) return Pass::Skip;
+    // Technique set "distortion" (iw_07.iwd materials/techniques/distortion.tech, shaders/lib/distortion.hlsl): the colorMap is a
+    // du/dv map that only offsets a lookup of the resolved scene (sampler.resolvedPostSun); the output is the scene sample times
+    // the vertex colour, alpha = vertex alpha · map alpha. Its texels are never shown as colours (drawn as a sprite they gave the
+    // green / red halo around fires, gfx_distortion_heat). TODO(spec): the scene-copy refraction pass; skipped until then.
+    if (techset == "distortion") return Pass::Skip;
     if (techset.find("_add") != std::string::npos) return Pass::Additive;
     // effect_multiply -> vertcol_mul.tech -> mul.hlsl: multiplied into the framebuffer (DST_COLOR, ZERO), unlit.
     if (techset == "effect_multiply") return Pass::Multiply;
