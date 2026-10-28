@@ -56,5 +56,10 @@ void startMove(MoverChannel& ch, const MVec& current, const MVec& target, int to
 // Advances finished phases (0x5327d0); returns true when the whole move is done.
 void startVelocityMove(MoverChannel& ch, const MVec& current, const MVec& velocity, int totalMs, int accelMs, int decelMs, int64_t nowMs);
 bool stepMove(MoverChannel& ch, int64_t nowMs);
+// vibrate (0x533b90): an angular type 4 (sine) trajectory around the current angles. delta = (forward · v, 0, left · v) with
+// v = normalize(dir) · amplitude and forward / left the rows of the angles' axis (0x421da0); the duration is
+// (int)(seconds · 1000), the start is nowMs − (int)(phase · −1000). When the duration ends the angles return to the saved ones
+// (0x5327d0 final branch: base = the copy at entity +0x1a8, then `rotatedone`).
+void startVibrate(MoverChannel& ch, const MVec& angles, const MVec& dir, float amplitude, float seconds, float phase, int64_t nowMs);
 
 } // namespace iw2::game
