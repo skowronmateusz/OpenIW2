@@ -535,7 +535,45 @@ void adsExitDelay() {
     CHECK(w.adsFrac() == 0.0f); // then released
 }
 
+// adsFire (+0x348, 0x4dea00 / 0x4dd1b2): a hip press starts the fire state with weaponDelay = the remaining aim time; the aim
+// is held and the shot comes when it is complete. A non-segmented reload releases the aim only in its last adsReloadTransTime.
+void adsFire() {
+    PlayerWeapon w;
+    w.equip("launcher", {{"weapontype", "projectile"}, {"firetime", "0.8"}, {"clipsize", "1"}, {"startammo", "4"}, {"raisetime", "0"},
+                         {"reloadtime", "4"}, {"aimdownsight", "1"}, {"adsfire", "1"}, {"adstransintime", "0.5"},
+                         {"adstransouttime", "0.2"}, {"adsreloadtranstime", "0.5"}});
+    run(w, 0.05f, false);
+    int shots = run(w, 0.01f, true);
+    CHECK(shots == 0 && w.clip() == 1); // the press alone does not shoot
+    shots = run(w, 0.3f, false);
+    CHECK(shots == 0 && w.adsFrac() > 0.5f && w.adsFrac() < 1.0f);
+    shots = 0;
+    float aimAtShot = 0;
+    for (int i = 0; i < 30; ++i)
+        if (const int n = w.update(0.01f, {}); n) shots += n, aimAtShot = w.adsFrac();
+    CHECK(shots == 1 && w.clip() == 0 && aimAtShot > 0.999f); // the aim finished, then the shot
+    PlayerWeapon r;
+    r.equip("rifle", {{"firetime", "0.1"}, {"clipsize", "5"}, {"startammo", "20"}, {"raisetime", "0"}, {"reloadtime", "4"},
+                      {"reloademptytime", "4"}, {"aimdownsight", "1"}, {"adstransintime", "0.1"}, {"adstransouttime", "0.1"},
+                      {"adsreloadtranstime", "0.5"}});
+    PlayerWeapon::Input in;
+    in.ads = true;
+    for (int i = 0; i < 20; ++i) r.update(0.01f, in);
+    in.fire = true;
+    r.update(0.01f, in);
+    in.fire = false;
+    for (int i = 0; i < 20; ++i) r.update(0.01f, in);
+    in.reload = true;
+    r.update(0.01f, in);
+    in.reload = false;
+    for (int i = 0; i < 100; ++i) r.update(0.01f, in);
+    CHECK(r.adsFrac() == 0.0f); // aim released while reloading
+    for (int i = 0; i < 270; ++i) r.update(0.01f, in);
+    CHECK(r.adsFrac() > 0.9f);  // back in the last 0.5 s
+}
+
 int main() {
+    adsFire();
     adsExitDelay();
     reloadAddTiming();
     segmentedReload();

@@ -214,6 +214,7 @@ private:
     bool usePrev_ = false;         // previous command's 0x28
     std::string prevCmdWeapon_;    // previous command's weapon (the 0x4df9b0 cancel test)
     float adsFrac_ = 0;
+    bool deferredFire_ = false; // adsFire: state 3 waiting for the aim before the shot
     float adsExitTimer_ = 0; // player_adsExitDelay hold, seconds left
     bool adsHeld_ = false; // the last update's aim command
     bool zoomingIn_ = true;

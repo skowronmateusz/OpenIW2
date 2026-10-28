@@ -36,7 +36,8 @@ int main() {
     w.player()->obj->set("$weapon", iw2::script::Value(std::string("panzerschreck")));
     const iw2::script::Vec3 o = w.player()->obj->get("origin").asVector();
     const int impactsBefore = w.stats.bulletImpacts;
-    w.playerFire({o[0], o[1], o[2] + 60}, {1, 0, 0});
+    const auto kick = w.playerFire({o[0], o[1], o[2] + 60}, {1, 0, 0});
+    CHECK(kick[0] == 64.0f && kick[1] == 0.0f && kick[2] == 0.0f); // 0x531b1b: forward * 64
     CHECK(w.stats.rockets == 1);
     CHECK(w.stats.bulletImpacts == impactsBefore); // no bullet trace
     bool trail = false;
@@ -51,7 +52,8 @@ int main() {
     CHECK(trail);
     // A bullet weapon still traces.
     w.player()->obj->set("$weapon", iw2::script::Value(std::string("kar98k")));
-    w.playerFire({o[0], o[1], o[2] + 60}, {1, 0, 0});
+    const auto bulletKick = w.playerFire({o[0], o[1], o[2] + 60}, {1, 0, 0}, false, 5.0f); // spread draws two rand()s
+    CHECK(bulletKick[0] == 0.0f);
     CHECK(w.stats.rockets == 1);
     if (failures) std::cerr << failures << " failure(s)\n";
     else std::cout << "playerrocket ok\n";

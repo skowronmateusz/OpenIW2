@@ -1274,6 +1274,13 @@ std::array<float, 2> hipSpreadRange(const HipSpread& h, float vh) {
     return {(h.duckedMin - h.proneMin) * t + h.proneMin, (h.duckedMax - h.proneMax) * t + h.proneMax};
 }
 
+float fireSpreadDegrees(const HipSpread& h, float vh, float aimSpread, float adsFrac, float adsSpread) {
+    const auto r = hipSpreadRange(h, vh);
+    const float scale = aimSpread * 0.0039215688593685627f; // 0x591e98 = 1/255
+    if (adsFrac == 1.0f) return (r[1] - adsSpread) * scale + adsSpread;
+    return (r[1] - r[0]) * scale + r[0];
+}
+
 void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac) {
     if (adsFrac == 1.0f) return;
     ps.aimSpread = std::min(ps.aimSpread + h.fireAdd * 255.0f, 255.0f);

@@ -39,6 +39,7 @@ std::string PlayerWeapon::handModel() const {
 
 void PlayerWeapon::enter(State s, const char* animKey, float duration) {
     state_ = s;
+    deferredFire_ = false;
     timer_ = duration;
     const std::string a = animKey ? fieldValue(animKey) : std::string();
     const std::string idle = fieldValue("idleAnim");
@@ -83,6 +84,7 @@ void PlayerWeapon::playFirst(std::initializer_list<const char*> keys) {
 // A state whose view animation comes from another definition (the offhand's, or the new weapon's).
 void PlayerWeapon::enterWith(const Def& d, State s, const char* animKey, float duration) {
     state_ = s;
+    deferredFire_ = false;
     timer_ = duration;
     const std::string a = defValue(d, animKey);
     anim_ = a.empty() ? defValue(d, "idleAnim") : a;
@@ -97,6 +99,7 @@ void PlayerWeapon::enterWith(const Def& d, State s, const char* animKey, float d
 
 void PlayerWeapon::equip(const std::string& name, const Def& def) {
     pendingIdle_ = false;
+    deferredFire_ = false;
     if (!name_.empty()) {
         ammo_[name_] = {clip_, stock_};
         brassBits_[name_] = brassInChamber_; // ps+0x530 is a per-weapon bit array (0x4dd750, 0x4ddfcf): it survives a switch
@@ -380,10 +383,24 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
             const std::string v = defValue(binocDef_, k);
             return v.empty() ? fb : float(std::atof(v.c_str()));
         };
+        // The per-ms rates (def +0x588 / +0x58c, 0x5075b6..0x507617) are 1 / the whole-ms transition time, 1/300 and 1/500
+        // when the time is not positive.
+        auto transSeconds = [&](const char* k, float fallback) {
+            const int ms = int(adsNum(k, 0) * 1000.0f);
+            return ms > 0 ? float(ms) * 0.001f : fallback;
+        };
         const bool can = adsNum("aimDownSight", 0) != 0;
-        bool want = can && in.ads && state_ != State::Reloading && state_ != State::ReloadStart &&
-                    !(state_ == State::ReloadEnd && timer_ - time("adsReloadTransTime", 0) > 0) &&
-                    !(state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0);
+        // The allowed flag of 0x4dd0d0 (dl): not in the reload states (a non-segmented reload releases the aim in its last
+        // adsReloadTransTime, a segmented one in states 5..8 never and in state 9 by the same test), not while rechambering
+        // unless rechamberWhileAds; otherwise the aim button (pm_flags 0x40). adsFire (+0x348) holds the aim in state 3
+        // while the weapon delay runs (0x4dd1b2).
+        const float reloadTrans = time("adsReloadTransTime", 0);
+        bool blocked;
+        if (segmented()) blocked = inReloadStates() || (state_ == State::ReloadEnd && timer_ - reloadTrans > 0);
+        else blocked = state_ == State::Reloading && timer_ - reloadTrans > 0;
+        if (state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0) blocked = true;
+        bool want = can && in.ads && !blocked;
+        if (can && time("adsFire", 0) != 0 && delay_ > 0 && state_ == State::Firing) want = true;
         if (inBinoc()) want = can && (state_ == State::BinocEnter || state_ == State::BinocUp);
         // player_adsExitDelay (0x4dd0d0): at a full aim fraction, when aiming stops being allowed, the aim is held for
         // the delay (timer ps+0xbc = time + delay on first loss, cleared once it has run out).
@@ -393,8 +410,8 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
             else adsExitTimer_ = 0;
         } else adsExitTimer_ = 0;
         if (!can) adsFrac_ = 0;
-        else if (want) adsFrac_ += dt / std::max(0.001f, adsNum("adsTransInTime", 0.3f));
-        else adsFrac_ -= dt / std::max(0.001f, adsNum("adsTransOutTime", 0.3f));
+        else if (want) adsFrac_ += dt / transSeconds("adsTransInTime", 0.3f);
+        else adsFrac_ -= dt / transSeconds("adsTransOutTime", 0.5f);
         adsFrac_ = std::clamp(adsFrac_, 0.0f, 1.0f);
         if (adsFrac_ == 0) zoomingIn_ = true;
         if (adsFrac_ == 1) zoomingIn_ = false;
@@ -586,8 +603,27 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
     // then ends after the current round (once the clip is not empty).
     if (segmented() && inReloadStates() && fireEdge) reloadInterrupted_ = true;
 
-    if (timer_ > 0) return 0;
-    switch (state_) {
+    // The fire of an adsFire weapon waits for the aim (0x4dea00 sets weaponDelay = (1 - aim) / rate, 0x4ded55 fires only with
+    // no delay left). When the delay runs out the start is evaluated again: it fires once the aim is complete.
+    const auto adsFireDelay = [&]() {
+        if (time("adsFire", 0) == 0 || time("aimDownSight", 0) == 0) return 0.0f;
+        const int ms = int(adsFrac_ == 1.0f ? 0.0f : (1.0f - adsFrac_) * std::max(1.0f, std::floor(time("adsTransInTime", 0) * 1000.0f)));
+        return float(ms) * 0.001f;
+    };
+    bool fireNow = false;
+    if (deferredFire_ && state_ == State::Firing && delayDone) {
+        deferredFire_ = false;
+        const float d = adsFireDelay();
+        if (d > 0) {
+            delay_ = d;
+            deferredFire_ = true;
+            timer_ = time("fireTime", 0.1f);
+            return 0;
+        }
+        fireNow = true;
+    }
+    if (timer_ > 0 && !fireNow) return 0;
+    if (!fireNow) switch (state_) {
     case State::Reloading: {
         if (segmented()) { // 0x4de200: another round while rounds can still be loaded and no attack interrupted
             if (addPending_) applyReloadAdd();
@@ -631,12 +667,12 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
         break;
     }
 
-    if (timer_ > 0) return 0; // a reload round or the outro began in the switch above
+    if (timer_ > 0 && !fireNow) return 0; // a reload round or the outro began in the switch above
     if (in.reload && startReload()) return 0;
     // Automatic reload (PM_Weapon 0x4de370, default of the state switch 0x4de429; states ready and rechamber, not while
     // firing): an empty clip with ammo in stock starts the reload (0x4dda60), except prone while moving (0x4de46e).
     if (clip_ == 0 && !in.proneMoving && (state_ == State::Ready || state_ == State::Rechamber) && startReload()) return 0;
-    if (in.fire && (automatic || triggerReleased_)) {
+    if (fireNow || (in.fire && (automatic || triggerReleased_))) {
         if (clip_ == 0) {
             if (!startReload()) {
                 triggerReleased_ = false;
@@ -651,6 +687,17 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
                 }
             }
             return 0;
+        }
+        if (!fireNow) {
+            const float d = adsFireDelay();
+            if (d > 0) { // the press only starts the state (0x4dea00); the shot follows when the delay is over
+                triggerReleased_ = false;
+                state_ = State::Firing;
+                timer_ = time("fireTime", 0.1f);
+                delay_ = d;
+                deferredFire_ = true;
+                return 0;
+            }
         }
         --clip_;
         ++shots;

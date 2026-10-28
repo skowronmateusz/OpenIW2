@@ -28,6 +28,16 @@ bool near(float a, float b, float eps) { return std::fabs(a - b) <= eps; }
 int main() {
     using namespace iw2::game;
     {
+        // fireSpreadDegrees (0x531c40): hip scales between range min and max, fully aimed between adsSpread and max.
+        HipSpread h;
+        h.standMin = 2; h.max = 8; h.duckedMin = 1; h.duckedMax = 4; h.proneMin = 0.5f; h.proneMax = 2;
+        CHECK(near(fireSpreadDegrees(h, 60, 0, 0, 0.3f), 2.0f, 1e-4f));
+        CHECK(near(fireSpreadDegrees(h, 60, 255, 0, 0.3f), 8.0f, 1e-4f));
+        CHECK(near(fireSpreadDegrees(h, 40, 255, 0.5f, 0.3f), 4.0f, 1e-4f));
+        CHECK(near(fireSpreadDegrees(h, 60, 0, 1.0f, 0.3f), 0.3f, 1e-4f));
+        CHECK(near(fireSpreadDegrees(h, 60, 255, 1.0f, 0.3f), 8.0f, 1e-4f));
+    }
+    {
         // Free fall without a map: the slide move uses the average of the start and end vertical speed (0x54eac0),
         // so the fall distance is exactly g·t²/2.
         CollisionWorld empty;
