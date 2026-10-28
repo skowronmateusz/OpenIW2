@@ -1031,18 +1031,23 @@ void World::registerCoverBuiltins() {
         }
         return Value();
     });
-    // withinapproxpathdist(dist) (0x545030): no path, or the rest of the path shorter than dist.
+    // withinapproxpathdist(dist) (0x545030): no path, or the length left (lookahead distance + segment lengths) is below dist.
     vm_.registerBuiltin("withinapproxpathdist", [=, this](CallContext& c) {
         Entity& e = actor(c);
         if (!actorHasPath(e)) return Value(1);
         const float limit = c.arg(0).asFloat();
-        Vec3 p = vecField(e.obj, "origin");
-        float len = 0.0f;
-        for (int i = e.path.count > 1 ? e.path.count - 2 : 0; i >= 0; --i) {
-            const Vec3& q = e.path.pts[size_t(i)].pos;
-            len += std::sqrt(dist2d(p, q));
-            if (len >= limit) return Value(0);
-            p = q;
+        const ActorPath& p = e.path;
+        float sum = p.lookSegLen + p.lookDist;
+        if (p.lookIndex == p.traversal) return Value(sum < limit ? 1 : 0);
+        int i = p.lookIndex - 1;
+        if (i == p.count - 2) {
+            sum += p.startLen;
+            --i;
+        }
+        if (!(sum < limit)) return Value(0);
+        for (; i >= p.traversal; --i) {
+            sum += p.pts[size_t(i)].len;
+            if (!(sum < limit)) return Value(0);
         }
         return Value(1);
     });

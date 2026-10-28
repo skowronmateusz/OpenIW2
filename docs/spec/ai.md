@@ -265,8 +265,7 @@ claimed node is in the new goal and is the chosen node (with no claimed node in 
 drops the path, waits 500 ms (0x503e10, +0x720) and does not claim the node (else 0x5152f0 claims it).
 The goal entity (0x505ed0) and the working goal (0x505f70) are in `friendlychainworld.cpp` (re-checked against the exe: the chain node is cleared when there is no sentient goal entity, and the working goal volume +0x75c is the script volume only in mode 0). TODO(spec): the move
 check's continuation after a block, `ispathdirect`, actor +0x20b4 in the score, 0x548be0, the other 0x505f70 caller
-0x54ad05, `withinapproxpathdist` (0x545030 starts from the lookahead +0x3ac/+0x3b4 and the traversal index +0x386; the
-builtin still sums the point distances from the origin).
+0x54ad05, `withinapproxpathdist` (ported: 0x545030 sums the lookahead +0x3ac/+0x3b4, +0x3c4 on the first segment and the segment lengths down to +0x386).
 
 ## Path planner (observed)
 
