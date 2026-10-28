@@ -5632,6 +5632,11 @@ int main(int argc, char** argv) {
                 pmp.mantle = &mantleAnims;
                 // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
+                if (world && world->shellShockRecord()) { // usercmd 0x800 (0x409c82): cgame flag 0x621560 = shock running (0x4b24db)
+                    const auto& ss = world->shellShock();
+                    const int64_t el = world->timeMs() - ss.startMs;
+                    pmp.shellShockSlow = ss.startMs != 0 && el >= 0 && el < ss.durationMs;
+                }
                 if (pweapon.equipped()) {
                     auto n = [&](const char* k) { return pweapon.number(k); };
                     pmp.hipSpread = {n("hipSpreadStandMin"), n("hipSpreadDuckedMin"), n("hipSpreadProneMin"), n("hipSpreadMax"),

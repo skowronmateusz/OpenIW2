@@ -493,8 +493,9 @@ void updateViewHeight(PlayerState& ps) {
 
 // Command scale (0x508140, 0x5080a0): g_speed · max(|forward| (×backSpeedScale when backwards),
 // |right|·strafeSpeedScale) / (|command| · 127), then ×0.65 crouched, ×0.15 prone, × the weapon's
-// moveSpeedScale; ×0.4 once while aiming (pm_flags 0x100) or leaning. TODO(spec): the blend during crouch/prone
-// transitions (0x509760), pm_type 2 (×3) and 3 (×6), the ×0.4 of command bit 0x800.
+// moveSpeedScale; ×0.4 once while aiming (pm_flags 0x100) or leaning; walk only: ×0.4 with command bit 0x800
+// (0x508379; the bit is the shell-shock flag, MoveParams::shellShockSlow). TODO(spec): the blend during crouch/prone
+// transitions (0x509760), pm_type 2 (×3) and 3 (×6).
 float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bool walking) {
     const float fb = f < 0 && walking ? f * mp.backSpeedScale : f;
     const float rs = walking ? std::fabs(r * mp.strafeSpeedScale) : std::fabs(r);
@@ -505,6 +506,7 @@ float cmdScale(const PlayerState& ps, float f, float r, const MoveParams& mp, bo
         if (ps.stance == Stance::Prone) s *= 0.15f;
         else if (ps.stance == Stance::Crouch) s *= 0.65f;
         if (mp.weaponSpeedScale > 0) s *= mp.weaponSpeedScale;
+        if (mp.shellShockSlow) s *= 0.4f; // 0x508379, after the weapon scale (0x508370)
     }
     if (ps.adsSlow || ps.lean != 0) s *= 0.4f; // pm_flags 0x100 or a nonzero leanf (ps+0x4c) (0x508140, 0x5080a0)
     return s;

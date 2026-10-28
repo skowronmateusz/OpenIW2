@@ -150,6 +150,7 @@ struct MoveParams {
     float backSpeedScale = 0.7f;      // player_backSpeedScale
     float strafeSpeedScale = 0.8f;    // player_strafeSpeedScale
     float weaponSpeedScale = 0.0f;    // current weapon's moveSpeedScale (0 = none)
+    bool shellShockSlow = false;      // usercmd button 0x800: set by CL_CmdButtons (0x409c82) while the cgame shell shock runs (0x621560, 0x4b24db)
     float jumpStepSize = 18.0f;       // jump_stepSize
     uint32_t traceMask = Contents::PlayerClipMask; // pm->tracemask: the player's clip mask (0x4e90e2)
     int passEntity = -1;              // the player's entity number, skipped by the traces
