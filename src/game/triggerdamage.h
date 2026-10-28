@@ -18,4 +18,9 @@ bool triggerDamageAccepts(int spawnflags, int mod);
 // accepted; with an accumulate value the damage taken since the last firing (32000 - health) must reach it.
 bool triggerDamageFires(int threshold, int accumulate, int spawnflags, int damage, int mod, int health);
 
+// SV_EntityContact (0x447830) for trigger_disk (shape flag 0x20, spawn 0x529070): the entity stores radius + 64 (0x56f6e0)
+// in r.maxs x/y and +-100000 in z, and the contact test subtracts the 64 again, so the box touches when its centre is at
+// least radius + half its x width from the axis (the inverse of the trigger_radius test; no z test).
+bool triggerDiskContact(float absminX, float absmaxX, float absminY, float absmaxY, float originX, float originY, float radius);
+
 } // namespace iw2::game

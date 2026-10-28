@@ -2,6 +2,7 @@
 #include "game/actorfields.h"
 #include "game/actorslide.h"
 #include "game/playerevents.h"
+#include "game/triggerdamage.h"
 
 #include "script/builtins_core.h"
 #include "script/parser.h"
@@ -1093,8 +1094,8 @@ bool World::submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) con
 // box must reach above the base and below the top, and the box centre must lie within radius + half the box width
 // (x) of the axis. Brush triggers: a zero-length trace of the box against the brush model at the entity's origin and
 // angles (CM_TransformedBoxTrace 0x417c20, mask -1) that starts solid.
-// TODO(spec): trigger_disk (flag 0x20, spawn 0x529070 not decoded): 0x447830 then touches when the centre distance is
-// at least radius + half width - 64; only AI-only disks (spawnflags 8) exist in the SP maps.
+// trigger_disk (flag 0x20, spawn 0x529070, "radius" only): touches when the centre distance is at least radius + half
+// width (triggerDiskContact); only AI-only disks (spawnflags 8) exist in the SP maps.
 bool World::triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax) {
     const Value ov = e.obj->get("origin");
     const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
@@ -1105,6 +1106,10 @@ bool World::triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax) {
         const float cx = (absmin[0] + absmax[0]) * 0.5f, cy = (absmin[1] + absmax[1]) * 0.5f;
         const float rr = absmax[0] - cx + r, dx = cx - o[0], dy = cy - o[1];
         return dx * dx + dy * dy < rr * rr;
+    }
+    if (e.classname == "trigger_disk") {
+        const float r = e.obj->get("radius").isNumber() ? e.obj->get("radius").asFloat() : 0.0f;
+        return triggerDiskContact(absmin[0], absmax[0], absmin[1], absmax[1], o[0], o[1], r);
     }
     const Value m = e.obj->get("model");
     if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') return false;
