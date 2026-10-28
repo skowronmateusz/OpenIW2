@@ -479,6 +479,19 @@ std::vector<int> World::findCoverNodes(Entity& e, int better, int ignore, int pr
 // path end) is near it or the plan time is not reached; else release it and claim the node the actor stands at
 // when it is a cover node (or flagged 0x8000), near and usable.
 void World::updateClaimedNode(Entity& e) {
+    updateClaimedNodeCore(e);
+    // 0x4fe8e1..0x4fe906 (and 0x548b6c..): afterwards, a claimed node that the followed entity stands at (0x502660: within 30 units
+    // in xy and 80 in z of the node) is given up (0x4fe670).
+    if (e.claimedNode >= 0 && e.ai.followed && nearClaimedNodeOf(e, vecField(e.ai.followed->obj, "origin"))) giveUpClaimedNode(e);
+}
+
+bool World::nearClaimedNodeOf(const Entity& a, const Vec3& pos) const {
+    const Vec3 no = vecField(nodes_[size_t(a.claimedNode)].obj, "origin");
+    const float dz = pos[2] - no[2];
+    return dz * dz <= 6400.0f && dist2d(no, pos) <= 900.0f;
+}
+
+void World::updateClaimedNodeCore(Entity& e) {
     if (!e.ai.alive || e.obj->get("keepclaimednode").truthy()) return;
     if (e.obj->get("keepclaimednodeingoal").truthy()) {
         if (e.claimedNode >= 0 && inActorGoal(e, vecField(nodes_[size_t(e.claimedNode)].obj, "origin"))) return;

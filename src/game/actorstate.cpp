@@ -594,7 +594,7 @@ int World::exposedThink(Entity& e) {
         ai.facing = 5;
         followActorPath(e, true);
     }
-    updateClaimedNode(e); // 0x4fe8d0 → 0x4fe740. TODO(spec): 0x504450 before it, the followed-actor check after.
+    updateClaimedNode(e); // 0x4fe8d0 → 0x4fe740, then the followed-at-node check. TODO(spec): 0x504450 before it.
     return 0;
 }
 

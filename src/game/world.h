@@ -857,6 +857,8 @@ private:
     bool atClaimedNode(Entity& e);
     bool inActorGoal(Entity& e, const Vec3& p);
     void updateClaimedNode(Entity& e);
+    void updateClaimedNodeCore(Entity& e); // 0x4fe740
+    bool nearClaimedNodeOf(const Entity& a, const Vec3& pos) const; // 0x502660
     bool pathToPoint(Entity& e, const Vec3& target);
     bool pathToSentient(Entity& e, const Vec3& target);
     // AI events (src/game/actorevents.cpp): 0x535770 / 0x535860 / dispatch 0x535d70
