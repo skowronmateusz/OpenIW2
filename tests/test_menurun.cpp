@@ -105,6 +105,22 @@ int main() {
     iw2::ui::runScript(m->onEsc, m->name, env);
     CHECK((log == std::vector<std::string>{"resp invert_axis1 accept_normal", "close invert_axis1"}));
 
+    // execOnDvar*Value (0x4c8ce0..0x4c8d80): string compare is case-insensitive, float compare has a 1e-5 tolerance.
+    {
+        std::vector<std::string> ran;
+        iw2::ui::MenuEnv e2 = env;
+        e2.exec = [&](const std::string& t) { ran.push_back(t); };
+        cvars["t"] = "AbC";
+        iw2::ui::runScript({{"execOnDvarStringValue", "t", "abc", "go1"}, {"execOnDvarStringValue", "t", "x", "no"},
+                            {"execNowOnDvarFloatValue", "t2", "0.5", "no2"}}, "m", e2);
+        cvars["t2"] = "0.500001";
+        iw2::ui::runScript({{"execOnDvarFloatValue", "t2", "0.5", "go2"}, {"execOnDvarFloatValue", "t2", "0.6", "no3"}}, "m", e2);
+        CHECK((ran == std::vector<std::string>{"go1", "go2"}));
+        cvars["name"] = "Joe";
+        iw2::ui::runScript({{"uiScript", "update", "ui_GetName"}}, "m", e2);
+        CHECK(cvars["ui_Name"] == "Joe");
+    }
+
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;
 }

@@ -1,6 +1,7 @@
 #include "ui/menurun.h"
 
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <sstream>
 
@@ -14,7 +15,7 @@ std::string lowerStr(std::string s) {
 }
 
 // Console command text run by "execnow". "toggle <bool cvar>" is 0x433b80 -> 0x433a10: a bool flips, an int cvar
-// without a range (min <= 0, max >= 1) goes 0 -> 1 and anything else -> 0. TODO(spec): the other console commands.
+// without a range (min <= 0, max >= 1) goes 0 -> 1 and anything else -> 0. Every other text goes to env.exec (the console).
 void execConsole(const std::string& text, MenuEnv& env) {
     std::istringstream in(text);
     std::string cmd, arg;
@@ -29,8 +30,16 @@ void execConsole(const std::string& text, MenuEnv& env) {
 
 // "uiScript update <dvar>" (handler 0x4c5118): for ui_mousePitch the bool decides the sign of the cvar m_pitch:
 // true -> -0.022 (0xbcb43958), false -> +0.022 (0x3cb43958).
+//
+// The handler (0x4c5010) compares the argument with ui_SetName, ui_GetName, ui_mousePitch and ui_savegameListAutosave in that
+// order and returns silently for anything else (no error is printed). ui_GetName (0x4c5091) copies the dvar "name" into
+// "ui_Name" (an empty string when "name" is missing); ui_SetName (0x4c5029) copies "ui_Name" into "name".
+// TODO(spec): ui_savegameListAutosave (0x4c5164 -> 0x4c4960 with "autosave" or 0) refreshes the save list and is not ported.
 void uiScriptUpdate(const std::string& name, MenuEnv& env) {
-    if (lowerStr(name) != "ui_mousepitch") return; // TODO(spec): the other dvars the handler updates
+    const std::string lname = lowerStr(name);
+    if (lname == "ui_setname") { env.setCvar("name", env.getCvar("ui_Name")); return; }
+    if (lname == "ui_getname") { env.setCvar("ui_Name", env.getCvar("name")); return; }
+    if (lname != "ui_mousepitch") return;
     const std::string v = env.getCvar("ui_mousePitch");
     const bool on = !v.empty() && std::atof(v.c_str()) != 0.0;
     env.setCvar("m_pitch", on ? "-0.022" : "0.022");
@@ -78,7 +87,8 @@ void initUiCvars(MenuEnv& env) {
 
 // uiScript openMenuOnDvar / openMenuOnDvarNot / closeMenuOnDvar / closeMenuOnDvarNot <dvar> <value> <menu>
 // (exe 0x4c52d0 parses the three arguments, 0x4c53a0 opens, 0x4c5430 closes): the dvar string is compared with the value
-// (case-insensitive, 0x43f6d0); the "Not" variants act when they differ. TODO(spec): the exe prints an error when the dvar is unknown.
+// (case-insensitive, 0x43f6d0); the "Not" variants act when they differ. The exe reads the dvar string with 0x4314b0, which gives
+// "" for an unknown dvar (no error is printed in the open/close path 0x4c53a0 / 0x4c5430).
 static bool menuOnDvar(const std::string& cmd, const std::string& dvar, const std::string& value, const std::string& menu, MenuEnv& env) {
     const bool open = cmd == "openmenuondvar" || cmd == "openmenuondvarnot";
     const bool close = cmd == "closemenuondvar" || cmd == "closemenuondvarnot";
@@ -132,12 +142,22 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
                 env.setItemColor(cmd[1], lowerStr(cmd[2]), Color{float(std::atof(cmd[3].c_str())), float(std::atof(cmd[4].c_str())),
                                                                  float(std::atof(cmd[5].c_str())), float(std::atof(cmd[6].c_str()))});
         }
-        else if (name == "execondvarintvalue" && cmd.size() > 3) {
+        else if ((name == "execondvarintvalue" || name == "execondvarstringvalue" || name == "execondvarfloatvalue" ||
+                  name == "execnowondvarintvalue" || name == "execnowondvarstringvalue" || name == "execnowondvarfloatvalue") &&
+                 cmd.size() > 3) {
+            // 0x4c8ce0..0x4c8d80 all enter 0x4c8bb0(queueMode, compare): dvar name, value and console text, then the text runs when
+            // compare(dvar string, value) holds. Compares: string 0x4c8c50 (case-insensitive equal), int 0x4c8c70 (atoi equal),
+            // float 0x4c8ca0 (|atof(a) - atof(b)| < 1e-5, constant 0x592124). The "now" variants only pass queue mode 0 instead of 2.
             const std::string v = env.getCvar ? env.getCvar(cmd[1]) : std::string();
-            if (std::atoi(v.c_str()) == std::atoi(cmd[2].c_str()) && env.exec) env.exec(cmd[3]);
+            const bool isInt = name.find("int") != std::string::npos, isFloat = name.find("float") != std::string::npos;
+            bool match;
+            if (isInt) match = std::atoi(v.c_str()) == std::atoi(cmd[2].c_str());
+            else if (isFloat) match = std::fabs(std::atof(v.c_str()) - std::atof(cmd[2].c_str())) < 1e-5;
+            else match = lowerStr(v) == lowerStr(cmd[2]);
+            if (match && env.exec) env.exec(cmd[3]);
         }
         else if (name == "nextlevel") { if (env.exec) env.exec("nextlevel"); }
-        // Other commands (open, setcvar, transition, ...) are not used by the script menus; TODO(spec).
+        // transition (0x4c8560) and orbit (0x4c8790) are in the command table but no shipped .menu uses them (checked over all ui*/ menus).
     }
 }
 
