@@ -674,6 +674,7 @@ int main(int argc, char** argv) {
         std::vector<std::pair<float, std::array<float, 2>>> playerLooks, playerFires; // --player-look / --player-fire T yaw,pitch
         std::vector<std::pair<float, iw2::game::Vec3>> playerFireAts; // --player-fire-at T x,y,z: one bullet from the eye at the point
         std::vector<std::pair<float, iw2::game::Vec3>> playerMelees;  // --player-melee T x,y,z: one melee blow looking at the point
+        std::vector<std::pair<float, std::array<float, 2>>> playerThrows; // autoplay: throw the offhand grenade at T along yaw,pitch
         std::vector<std::pair<float, float>> playerAds;               // --player-ads T frac: the aim fraction from T
         std::vector<std::pair<float, std::string>> playerWeapons;     // --player-weapon T name: the player's current weapon from T
         bool godMode = false; // --god: the player takes no damage
@@ -1369,6 +1370,16 @@ int main(int argc, char** argv) {
                 } else {
                     ++it;
                 }
+            for (auto it = playerThrows.begin(); it != playerThrows.end();)
+                if (world.player() && f * 0.05f >= it->first) {
+                    // autoplay throw: the offhand grenade from the eye along yaw,pitch (what PM_Weapon's OffhandThrow event calls)
+                    const auto& inv = world.inventory(*world.player());
+                    const auto o = world.player()->obj->get("origin").asVector();
+                    const int before = world.stats.grenades;
+                    if (!inv.offhand.empty()) world.playerThrowGrenade(inv.offhand, iw2::game::Vec3{o[0], o[1], o[2] + 60.0f}, iw2::game::Vec3{it->second[1], it->second[0], 0}, iw2::game::Vec3{0, 0, 0});
+                    std::printf("player threw %s at %.2f s yaw %.0f pitch %.0f: grenades %d\n", inv.offhand.c_str(), f * 0.05f, it->second[0], it->second[1], world.stats.grenades - before);
+                    it = playerThrows.erase(it);
+                } else ++it;
             for (auto it = playerFireAts.begin(); it != playerFireAts.end();)
                 if (world.player() && f * 0.05f >= it->first) {
                     const auto o = world.player()->obj->get("origin").asVector();
@@ -1638,8 +1649,9 @@ int main(int argc, char** argv) {
                 // trigger_lookat to look at, or a target to shoot (trigger_damage, or a non-actor entity whose "damage" a thread
                 // waits for: bottles, bears, barrels). Reachable by the player (not AI-only, not disabled), ranked by the map's own
                 // waiters first, then walking distance.
-                enum Kind { Enter, Use, Lookat, Shoot };
-                static const char* const kindName[] = {"enter", "use", "look at", "shoot"};
+                enum Kind { Enter, Use, Lookat, Shoot, Throw };
+                static const char* const kindName[] = {"enter", "use", "look at", "shoot", "throw a grenade into"};
+                const bool haveGrenade = !world.inventory(*world.player()).offhand.empty();
                 iw2::game::Entity* best = nullptr;
                 Kind bestKind = Enter;
                 float bestD = 0;
@@ -1648,8 +1660,11 @@ int main(int argc, char** argv) {
                 iw2::game::Vec3 bestTarget{};
                 const std::string mapPrefix = std::string("maps/") + argv[2];
                 for (const auto& w : waiters) {
-                    if (w.event != "trigger" && w.event != "damage") continue;
+                    // "" = a thread sleeping in a poll loop on the entity (moscow's objective_nades polls the grenades touching the trigger)
+                    if (w.event != "trigger" && w.event != "damage" && w.event != "") continue;
                     const int rank = w.site.rfind(mapPrefix, 0) == 0 ? 0 : 2;
+                    const bool grenadePoll = w.event == "" && rank == 0 && (w.site.find("nade") != std::string::npos || w.site.find("grenade") != std::string::npos);
+                    if (w.event == "" && !grenadePoll) continue;
                     // Library triggers that never gate the flow (sound / ambient / autosave / exploder hooks): entering them only costs time.
                     if (rank && (w.site.find("tank_rumble") != std::string::npos || w.site.find("ambient_thread") != std::string::npos ||
                                  w.site.rfind("maps/_autosave.gsc", 0) == 0 || w.site.find("exploder_load") != std::string::npos))
@@ -1658,10 +1673,25 @@ int main(int argc, char** argv) {
                         if (e->obj != w.object || e->obj->removed || e->isSpawner) continue;
                         Kind kind;
                         if (w.event == "damage") {
-                            if (e->isActor || e->vehicle || e->classname.rfind("trigger_", 0) == 0 || e.get() == world.player()) continue;
+                            if (e->vehicle || e->classname.rfind("trigger_", 0) == 0 || e.get() == world.player()) continue;
                             if (w.site.rfind("maps/_interactable_objects.gsc", 0) == 0) continue; // decoration (breakables, helmets): never a gate
+                            if (e->isActor) { // a named actor the map's own script waits the damage of: shoot it only when the waiting function's name says
+                                              // it is a target (sniper / shoot / kill / target); never allies, prisoners or scene actors (moscow's
+                                              // melee_scene_damage on the prisoner ends the mission)
+                                const auto tm = e->obj->get("team");
+                                std::string fn = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
+                                for (auto& ch : fn) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                                const bool targetLike = fn.find("sniper") != std::string::npos || fn.find("shoot") != std::string::npos || fn.find("kill") != std::string::npos || fn.find("target") != std::string::npos;
+                                if (rank != 0 || !targetLike || !world.isAlive(*e) || (tm.isString() && tm.asString() == "allies") ||
+                                    e->classname.find("prisoner") != std::string::npos || e->classname.find("civilian") != std::string::npos) continue;
+                            }
                             kind = Shoot;
-                        } else if (e->classname == "trigger_multiple" || e->classname == "trigger_once" || e->classname == "trigger_radius") kind = Enter;
+                        } else if (e->classname == "trigger_multiple" || e->classname == "trigger_once" || e->classname == "trigger_radius") {
+                            // Entered twice without progress: the third try throws a grenade into it (moscow's potato training waits for a
+                            // grenade entity to touch `nade_train_trig`, not the player).
+                            if (grenadePoll && !haveGrenade) continue;
+                            kind = grenadePoll || (enteredTriggers[e->number] >= 2 && haveGrenade) ? Throw : Enter;
+                        }
                         else if (e->classname == "trigger_use" || e->classname == "trigger_use_touch") kind = Use;
                         else if (e->classname == "trigger_lookat") kind = Lookat;
                         else if (e->classname == "trigger_damage") kind = Shoot;
@@ -1669,7 +1699,9 @@ int main(int argc, char** argv) {
                         if (e->obj->get("$disabled").truthy()) continue;
                         const auto sf = e->obj->get("spawnflags");
                         if (kind == Enter && sf.isNumber() && (sf.asInt() & 8)) continue;
-                        if (enteredTriggers[e->number] >= 2) continue; // a model whose "damage" wait survived the shot is meleed the second time
+                        // a model whose "damage" wait survived the shot is meleed the second time; a grenade target gets up to three lobs (poll
+                        // loops) or one after two fruitless entries
+                        if (enteredTriggers[e->number] >= (kind == Throw ? 5 : 2)) continue;
                         { // skip the triggers a player would never enter on purpose: kill / desertion / minefield triggers, by the waiting
                           // function's name and the targetname (--autoplay-skip adds substrings)
                             std::string names = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
@@ -1754,7 +1786,10 @@ int main(int argc, char** argv) {
                     if (best && !haveStand && bestKind != Enter) {
                         // Shoot: 200 units for the first try, 40 for the second (a melee blow: MOD_MELEE gates such as moscow's mannequin).
                         const bool meleeTry = bestKind == Shoot && enteredTriggers[best->number] == 1 && best->classname != "trigger_damage";
-                        const float standOff = bestKind == Use ? 40.0f : bestKind == Lookat ? 120.0f : meleeTry ? 40.0f : 200.0f;
+                        // Throw: successive tries from 60 (dropped almost straight down), 120, 200, 300 and 90 units (pitches below)
+                        static const float throwOffs[5] = {60.0f, 120.0f, 200.0f, 300.0f, 90.0f};
+                        const float throwOff = throwOffs[std::min(enteredTriggers[best->number], 4)];
+                        const float standOff = bestKind == Use ? 40.0f : bestKind == Lookat ? 120.0f : bestKind == Throw ? throwOff : meleeTry ? 40.0f : 200.0f;
                         float dx = po[0] - bestTarget[0], dy = po[1] - bestTarget[1];
                         const float len = std::sqrt(dx * dx + dy * dy);
                         if (len < 1.0f) { dx = 1; dy = 0; } else { dx /= len; dy /= len; }
@@ -1842,7 +1877,10 @@ int main(int argc, char** argv) {
                             if (bestKind == Use) playerUses.push_back({at + 0.3f, {yaw, pitch}});
                             if (bestKind == Lookat || bestKind == Shoot) playerLooks.push_back({at + 0.3f, {yaw, pitch}});
                             const bool melee = bestKind == Shoot && enteredTriggers[best->number] >= 2 && best->classname != "trigger_damage"; // second try
-                            if (melee) { // the blow aims at chest height of a model standing on its origin (the mannequin)
+                            if (bestKind == Throw) { // yaw at the trigger; pitch per try (down 45 from 60 units, then lobs of 35 / 25 / 15 up, then down 60 from 90)
+                                static const float throwPitch[5] = {45.0f, -35.0f, -25.0f, -15.0f, 60.0f};
+                                playerThrows.push_back({at + 0.5f, {yaw, throwPitch[std::min(enteredTriggers[best->number] - 1, 4)]}});
+                            } else if (melee) { // the blow aims at chest height of a model standing on its origin (the mannequin)
                                 playerMelees.push_back({at + 0.5f, iw2::game::Vec3{bestTarget[0], bestTarget[1], bestTarget[2] + 40.0f}});
                             } else if (bestKind == Shoot) { // aimed (ADS) shots: training scripts count only `playerads` shots (moscow bottles 2)
                                 playerAds.push_back({at + 0.3f, 1.0f});

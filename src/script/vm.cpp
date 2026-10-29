@@ -1081,11 +1081,14 @@ void VM::unwind(Thread& t, size_t frame) {
 std::vector<VM::Waiter> VM::waiters() const {
     std::vector<Waiter> out;
     for (const auto& th : threads_) {
-        if (th->state != ThreadState::WaitingNotify || th->frames.empty() || !th->waitObject) continue;
+        if (th->frames.empty()) continue;
         const Frame& fr = th->frames.back();
         const CompiledFunction& f = functions_[size_t(fr.function)];
         const int line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
-        out.push_back({th->waitObject, th->waitEvent, f.file + ":" + std::to_string(line) + " " + f.name});
+        if (th->state == ThreadState::WaitingNotify && th->waitObject)
+            out.push_back({th->waitObject, th->waitEvent, f.file + ":" + std::to_string(line) + " " + f.name});
+        else if (th->state == ThreadState::Waiting && std::holds_alternative<ObjectPtr>(fr.self.v)) // a timed wait (poll loop): event ""
+            out.push_back({std::get<ObjectPtr>(fr.self.v), std::string(), f.file + ":" + std::to_string(line) + " " + f.name});
     }
     return out;
 }
