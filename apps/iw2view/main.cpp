@@ -5281,7 +5281,10 @@ int main(int argc, char** argv) {
             // cg_crosshairDynamic 1 or cg_drawGun 0, so nothing to draw by default.
             const bool onTurretHud = world && world->playerOnTurret();
             const bool inVehicleHud = world && (world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x80000);
-            if (onTurretHud || inVehicleHud) {
+            // Paused with cg_drawpaused set hides the turret reticle (0x4bcef0, 0x4bcf03..0x4bcf1b) and the hand crosshair (0x4bd110,
+            // 0x4bd11c); the vehicle weapon reticle (0x4bd000) has no such test.
+            const bool pausedHide = menuEnv.getCvar("cl_paused") == "1" && menuEnv.getCvar("cg_drawpaused") != "0";
+            if ((onTurretHud && !pausedHide) || (inVehicleHud && !onTurretHud)) {
                 // 0x4bd000: the vehicle's weapon reticle, drawn unconditionally (the 0x4bd110 conditions are not checked there).
                 const std::string tw = onTurretHud ? world->playerTurretWeapon() : world->playerVehicleTurretWeapon();
                 const auto* td = tw.empty() ? nullptr : world->weapon(tw);
@@ -5297,7 +5300,7 @@ int main(int argc, char** argv) {
             }
             const int wst = pweapon.stateNumber();
             const float crossAlpha = 1.0f - (world ? scopeAlpha() : 0.0f);
-            const bool drawCross = !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
+            const bool drawCross = !pausedHide && !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
                                    wst != 1 && wst != 2 && wst != 5 && wst != 10 && wst != 11;
             // Look (0x4bd760 → 0x4bd2c0 centre, 0x4bd520 sides). Aiming (0x4bd230, fraction past 1 − adsCrosshairInFrac
             // while zooming in, adsCrosshairOutFrac out): scale 1 − f/2 and the centre moved down by 480 / fov_y ·
@@ -5445,9 +5448,15 @@ int main(int argc, char** argv) {
             const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
             // clipOnly weapons (def +0x340): the clip is "invalid" for the ownerdraw (0x4a7a13) and the displayed stock is the
             // clip count itself (0x4dcd60 without a shared-ammo group returns ps.ammoclip[clipIndex] for them, ps.ammo[ammoIndex]
-            // otherwise). TODO(spec): the shared-ammo-group sum of 0x4dcd60 (def +0x1e4 >= 0) is not modelled.
+            // otherwise); the shared-group sum (def +0x1e4 >= 0) is World::hudStock.
             const bool clipOnly = pweapon.hudNumber("clipOnly") != 0.0f;
-            const int dispStock = clipOnly ? pweapon.clip() : pweapon.stock();
+            int dispStock = clipOnly ? pweapon.clip() : pweapon.stock();
+            // Shared cap group (def +0x1e4 >= 0, field sharedAmmoCapName): the stock shown is the group sum (0x4dcd60, World::hudStock).
+            if (world && !pweapon.name().empty()) {
+                std::string k = pweapon.name();
+                for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (const int g = world->hudGroupStock(k); g >= 0) dispStock = g;
+            }
             const bool stockLow = maxAmmo >= 0 && float(std::min(dispStock, 999)) <= maxAmmo * 0.2f;
             const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
@@ -7277,6 +7286,11 @@ int main(int argc, char** argv) {
                         if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
                         hudFade.weapon = pweapon.name();
                     }
+                    // 0x4a6220 (called from 0x4bfa50 / 0x4bfbb7 while cl_paused && cg_drawpaused) re-touches the HUD fade timestamps every
+                    // frame so the HUD stays visible in the pause menu. Wired: compass 0xf79a38, weaponinfo 0xf79a40, stance 0xf79a44,
+                    // offhandinfo 0xf79a48. TODO(spec): 0xf79a3c and the remaining stamps it writes (health bar owner unidentified).
+                    if (menuEnv.getCvar("cl_paused") == "1" && menuEnv.getCvar("cg_drawpaused") != "0")
+                        hudFade.compass = hudFade.ammo = hudFade.stance = hudFade.offhand = nowMs;
                     const bool turretBits = world && world->playerOnTurret(); // 0xf70964 & 0x300
                     const bool fireTouch = !turretBits && ((buttons & game::Button::Attack) != 0 || ((buttons & 0x30u) != 0 && !ps.mantling));
                     const bool viewMoved = cam.pitch != hudFade.pitch || cam.yaw != hudFade.yaw;
