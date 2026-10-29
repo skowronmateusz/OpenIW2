@@ -20,6 +20,7 @@
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
+#include "game/grenadeindicator.h"
 #include "game/hudfade.h"
 #include "game/textmessage.h"
 #include "game/clientinput.h"
@@ -5355,6 +5356,35 @@ int main(int argc, char** argv) {
                         pic(sp + cx, cy - size * 0.5f, size, side, 1);
                         pic(cx - size * 0.5f - k, sp + cy, size, side, 2);
                         pic(cx - size - sp - k, cy - size * 0.5f - k, size, side, 3);
+                    }
+                }
+            }
+            // Grenade indicator (cgame 0x4be210, after the crosshair, only with pm_type < 4): for each moving grenade within
+            // range (src/game/grenadeindicator.h) a hud_grenadepointer box and a hud_grenadeicon box around the screen centre,
+            // colour white with the pulsing alpha. Not under a scope overlay unless cg_hudGrenadeIconInScope (0).
+            // TODO(spec): the exe reads the entity state's pos.trBase / pos.trDelta (a flying grenade keeps its launch / last
+            // bounce base) and the 0x793940 / 0x793944 scales are taken as the uniform virtual-unit scale used elsewhere here.
+            if (world && world->player() && !(scopeAlpha() > 0) &&
+                !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
+                const game::GrenadeIndicatorCfg gcfg;
+                const std::array<float, 3> pOrigin{c.pos.x, c.pos.y, c.pos.z - hudViewHeight};
+                const float ga = game::grenadeIndicatorAlpha(gcfg, world->timeMs());
+                for (const auto& g : world->hudGrenades()) {
+                    const std::array<float, 3> gb{g.base[0], g.base[1], g.base[2]}, gd{g.delta[0], g.delta[1], g.delta[2]};
+                    if (!game::grenadeIndicatorVisible(gcfg, gb, gd, pOrigin, hudViewHeight)) continue;
+                    const float ang = game::grenadeIndicatorAngle(gb[0] - pOrigin[0], gb[1] - pOrigin[1], c.yaw);
+                    const auto lay = game::grenadeIndicatorLayout(gcfg, float(w) * 0.5f, float(h) * 0.5f, sc, sc, ang);
+                    const struct { const game::GrenadeIndicatorQuad* quad; const char* mat; } parts[2] = {{&lay.pointer, "hud_grenadepointer"}, {&lay.icon, "hud_grenadeicon"}};
+                    for (const auto& part : parts) {
+                        Quad2D q{0, 0, 0, 0};
+                        q.free = true;
+                        for (int k = 0; k < 4; ++k) {
+                            q.qx[k] = part.quad->xy[size_t(k) * 2];
+                            q.qy[k] = part.quad->xy[size_t(k) * 2 + 1];
+                        }
+                        q.rgba[3] = uint8_t(std::clamp(ga, 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture(part.mat);
+                        out.push_back(q);
                     }
                 }
             }

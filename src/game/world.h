@@ -619,6 +619,10 @@ public:
 
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
+    // HUD grenade indicator input (cgame 0x4be210 reads pos.trBase / pos.trDelta of eType 3 entities whose weapon has
+    // projExplosionType "grenade", def +0x390 == 0): one entry per live grenade missile.
+    struct HudGrenade { Vec3 base, delta; };
+    std::vector<HudGrenade> hudGrenades();
 
     const std::array<Objective, 16>& objectives() const { return objectives_; }
     // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
