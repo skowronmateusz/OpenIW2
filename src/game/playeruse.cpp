@@ -663,6 +663,11 @@ bool World::debugTriggerEntryPoint(Entity& e, Vec3& out) {
     return false;
 }
 
+bool World::debugTriggerTouches(Entity& e, const Vec3& feet) {
+    const float height = playerBoxHeight();
+    return triggerContact(e, Vec3{feet[0] - 15, feet[1] - 15, feet[2]}, Vec3{feet[0] + 15, feet[1] + 15, feet[2] + height});
+}
+
 void World::debugDamage(Entity& e, int amount) { damage(e, player_, amount, {0, 0, 1}, e.obj->get("origin").asVector(), "MOD_EXPLOSIVE"); }
 
 void World::debugVehicleTouch(Entity& v, Entity& t) {

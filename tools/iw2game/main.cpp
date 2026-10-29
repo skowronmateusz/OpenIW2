@@ -685,6 +685,9 @@ int main(int argc, char** argv) {
         // nearest trigger a script thread waits for, then kills the actors a script waits the death of (or the remaining axis),
         // then (with --autoplay-force) notifies the level event a script waits for, else records the stall with the wait sites.
         bool autoplay = false, autoplayForce = false;
+        // Substrings of a waiting function's name / a trigger's targetname that keep the autoplay bot out of a trigger (kill-player,
+        // desertion, minefield triggers); --autoplay-skip a,b adds more.
+        std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail"};
         float stallSecs = 25.0f;
         std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
         for (int i = 3; i < argc; ++i) {
@@ -768,6 +771,14 @@ int main(int argc, char** argv) {
             } else if (a == "--autoplay") {
                 autoplay = true;
                 if (i + 2 < argc && std::string(argv[i + 1]).find_first_not_of("0123456789.") == std::string::npos) stallSecs = std::stof(argv[++i]);
+            } else if (a == "--autoplay-skip" && i + 1 < argc) {
+                std::string list = argv[++i];
+                for (size_t p = 0; p <= list.size();) {
+                    const size_t q = list.find(',', p);
+                    autoplaySkip.push_back(list.substr(p, q == std::string::npos ? std::string::npos : q - p));
+                    if (q == std::string::npos) break;
+                    p = q + 1;
+                }
             } else if (a == "--autoplay-force") {
                 autoplay = autoplayForce = true;
             } else if (a == "--report" && i + 1 < argc) {
@@ -1401,6 +1412,38 @@ int main(int argc, char** argv) {
                 std::snprintf(head, sizeof head, "[autoplay %.2f] ", t);
                 const auto waiters = world.vm().waiters();
                 const auto po = world.player()->obj->get("origin").asVector();
+                // Walking distance over the AI path graph (nearest usable nodes, A*, leg lengths) so the chase follows the level's
+                // route order rather than straight lines through walls; unreachable or node-less: straight-line distance x4.
+                const auto& graph = world.paths();
+                const auto nearestNode = [&](const iw2::game::Vec3& p) {
+                    int best = -1;
+                    float bd = 0;
+                    for (size_t i = 0; i < graph.size() && i < world.nodes().size(); ++i) {
+                        if (world.nodes()[i].typeNum == 0 || graph.links(i).empty()) continue;
+                        const auto& q = graph.position(i);
+                        const float d = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]) * 4;
+                        if (best < 0 || d < bd) { best = int(i); bd = d; }
+                    }
+                    return best;
+                };
+                const int playerNode = nearestNode(po);
+                std::vector<int> bestRoute; // the node route to the chosen trigger (empty: straight line)
+                std::vector<iw2::game::Entity*> forbidden; // kill / minefield triggers (skip list): never entered, routes through them are refused
+                const auto walkDistance = [&](const iw2::game::Vec3& c, std::vector<int>* routeOut = nullptr) {
+                    const float straight = std::sqrt((c[0] - po[0]) * (c[0] - po[0]) + (c[1] - po[1]) * (c[1] - po[1]) + (c[2] - po[2]) * (c[2] - po[2]));
+                    const int n = playerNode >= 0 ? nearestNode(c) : -1;
+                    if (n < 0) return straight * 4;
+                    const auto route = graph.findPath(playerNode, n);
+                    if (route.empty()) return straight * 4;
+                    if (routeOut) *routeOut = route;
+                    float d = 0;
+                    for (size_t i = 1; i < route.size(); ++i) {
+                        const auto& a = graph.position(size_t(route[i - 1]));
+                        const auto& b = graph.position(size_t(route[i]));
+                        d += std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+                    }
+                    return d;
+                };
                 // 1. the nearest trigger a script thread waits for ("trigger"), reachable by the player (not AI-only, not disabled)
                 iw2::game::Entity* best = nullptr;
                 float bestD = 0;
@@ -1417,13 +1460,23 @@ int main(int argc, char** argv) {
                         const auto sf = e->obj->get("spawnflags");
                         if (sf.isNumber() && (sf.asInt() & 8)) continue;
                         if (enteredTriggers[e->number] >= 2) continue;
+                        { // skip the triggers a player would never enter on purpose: kill / desertion / minefield triggers, by the waiting
+                          // function's name and the targetname (--autoplay-skip adds substrings)
+                            std::string names = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
+                            const auto tn = e->obj->get("targetname");
+                            if (tn.isString()) names += " " + tn.asString();
+                            for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                            bool skip = false;
+                            for (const auto& sub : autoplaySkip) skip = skip || names.find(sub) != std::string::npos;
+                            if (skip) { forbidden.push_back(e.get()); continue; }
+                        }
                         const auto ov = e->obj->get("origin");
                         const auto o = ov.isVector() ? ov.asVector() : iw2::game::Vec3{0, 0, 0};
                         iw2::game::Vec3 mn, mx, c = o;
                         const auto m = e->obj->get("model");
                         if (m.isString() && world.submodelBounds(m.asString(), mn, mx))
                             for (int k = 0; k < 3; ++k) c[k] = o[k] + (mn[k] + mx[k]) * 0.5f;
-                        const float d = std::sqrt((c[0] - po[0]) * (c[0] - po[0]) + (c[1] - po[1]) * (c[1] - po[1]) + (c[2] - po[2]) * (c[2] - po[2]));
+                        const float d = walkDistance(c);
                         if (!best || rank < bestRank || (rank == bestRank && d < bestD)) { best = e.get(); bestD = d; bestRank = rank; bestSite = w.site; }
                     }
                 }
@@ -1437,9 +1490,45 @@ int main(int argc, char** argv) {
                                   tn.isString() ? tn.asString().c_str() : "-", entry[0], entry[1], entry[2], bestD, bestSite.c_str());
                     autoplayLog.push_back(buf);
                     std::cout << buf << "\n";
-                    world.setPlayerOrigin(entry, world.player()->obj->get("angles").asVector());
-                    playerPath.clear(); // --player-at waypoints before the stall stay where they left the player
-                    lastActionT = t; ++actionsSinceProgress;
+                    // Walk there at 250 u/s along the AI node route (through --player-at's interpolation) instead of teleporting, so
+                    // the triggers on the way fire, minefields / walls are avoided like the AI does and distance / time based checks
+                    // (desertion, friendly chain) see a moving player. Without a route: a straight line.
+                    walkDistance(entry, &bestRoute);
+                    playerPath = {{t, po}};
+                    float at = t;
+                    iw2::game::Vec3 prev = po;
+                    const auto leg = [&](const iw2::game::Vec3& q) {
+                        at += std::max(std::sqrt((q[0] - prev[0]) * (q[0] - prev[0]) + (q[1] - prev[1]) * (q[1] - prev[1]) + (q[2] - prev[2]) * (q[2] - prev[2])) / 250.0f, 0.05f);
+                        playerPath.push_back({at, q});
+                        prev = q;
+                    };
+                    for (const int n : bestRoute) leg(graph.position(size_t(n)));
+                    leg(entry);
+                    // Refuse a route that crosses a kill / minefield trigger (a player would see the signs): sample it every 32 units.
+                    iw2::game::Entity* crossed = nullptr;
+                    for (size_t i = 1; i < playerPath.size() && !crossed; ++i) {
+                        const auto& a = playerPath[i - 1].second;
+                        const auto& b = playerPath[i].second;
+                        const float len = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
+                        for (float s = 0; s <= len && !crossed; s += 32.0f) {
+                            const float u = len > 0 ? s / len : 0;
+                            const iw2::game::Vec3 p{a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u};
+                            for (auto* fe : forbidden)
+                                if (world.debugTriggerTouches(*fe, p)) { crossed = fe; break; }
+                        }
+                    }
+                    if (crossed) {
+                        const auto ctn = crossed->obj->get("targetname");
+                        std::snprintf(buf, sizeof buf, "%s  route to #%d refused: it crosses kill/minefield trigger #%d %s", head, best->number, crossed->number, ctn.isString() ? ctn.asString().c_str() : "-");
+                        autoplayLog.push_back(buf);
+                        std::cout << buf << "\n";
+                        playerPath.clear();
+                        enteredTriggers[best->number] = 2;
+                        lastActionT = t;
+                    } else {
+                        lastActionT = std::min(at, t + 60.0f);
+                    }
+                    ++actionsSinceProgress;
                 } else if (best) {
                     char buf[256];
                     std::snprintf(buf, sizeof buf, "%strigger #%d %s has no entry point for the player box", head, best->number, best->classname.c_str());
