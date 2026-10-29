@@ -127,6 +127,23 @@ int main() {
         CHECK(w.debugSpawnActor(*spawner, true) == nullptr);
         CHECK(liveActors(w) == 32);
     }
+
+    // --spawn-all is a debug state without the 32-slot limit; without it only the first 32
+    // spawners would produce an actor. Every spawned actor starts with its script goal at the spawn origin (0x4fc80d).
+    {
+        iw2::game::World all(vfs, "newvillers");
+        all.prepareStart();
+        const int spawned = all.spawnAllActors();
+        CHECK(spawned > 32);
+        CHECK(liveActors(all) > 32);
+        int withGoal = 0;
+        for (const auto& e : all.entities()) {
+            if (!e->isActor || e->obj->removed) continue;
+            const Value g = e->obj->get("$goalpos"), o = e->obj->get("origin");
+            if (g.isVector() && o.isVector() && g.asVector() == o.asVector()) ++withGoal;
+        }
+        CHECK(withGoal > 32);
+    }
     if (failures) std::cerr << failures << " failure(s)\n";
     else std::cout << "spawnchecks ok\n";
     return failures ? 1 : 0;

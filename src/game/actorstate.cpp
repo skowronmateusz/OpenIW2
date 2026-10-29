@@ -380,7 +380,7 @@ void World::actorThink(Entity& e) {
 // the goal volume), not the working goal (+0x748) that the movement code and the turret think read. So a goal set by script
 // earlier in the frame counts at once, and the working goal of the last path update (still the previous goal) does not.
 // |dz| <= goalheight, 2D distance <= goalradius, then the volume. Without a script goal position the port falls back to the
-// working goal. TODO(spec): the port does not store the spawn origin as the initial script goal (+0x764).
+// working goal. The spawn origin is the initial script goal (spawnActor, 0x4fc80d).
 bool World::inScriptGoal(Entity& e, const Vec3& p) {
     const Value gv = e.obj->get("$goalpos");
     if (!gv.isVector()) {

@@ -462,7 +462,7 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
                 if (e->isActor && !e->obj->removed && !e->ai.corpse) ++live;
             return live;
         };
-        bool full = liveActors() >= 32;
+        bool full = !actorPoolUnlimited_ && liveActors() >= 32;
         if (full && (actorFlags & 2) && freeActorForForceSpawn()) full = liveActors() >= 32;
         if (full) {
             // a map-start placed actor is freed silently (0x4fc6a9); the message is dospawn's (0x532398)
@@ -511,6 +511,10 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
     a.obj->set("team", Value(startsWith(cls, "actor_axis") ? "axis" : startsWith(cls, "actor_ally") ? "allies" : "neutral"));
     useAnimTree(a, "generic_human"); // AI use the generic_human tree (inferred from animscripts' #using_animtree)
     applyActorFieldDefaults(*a.obj); // docs/spec/ai.md
+    // 0x4fc80d: the script goal block (+0x764) starts at the spawn origin (copied to the working goal 0x748 at 0x4fc831,
+    // goalradius 4 / goalheight 80 through the setters 0x5061f0 / 0x506220), so a setgoalvolume right after the spawn
+    // tests the volume against the spawn point (newvillers spawnedGuySetsGoalVolume).
+    a.obj->set("$goalpos", a.obj->get("origin"));
     // movemode is a byte enum shown as "stop", "stop soon", "walk", "run" (getter 0x536960); the zeroed actor
     // starts at "stop". TODO(spec): anim_pose's initial value (a string index, 0 after allocation) is inferred.
     a.obj->set("movemode", Value("stop"));
@@ -1199,6 +1203,7 @@ void World::registerAnimBuiltins() {
 }
 
 int World::spawnAllActors() {
+    actorPoolUnlimited_ = true;
     std::vector<Entity*> spawners;
     for (const auto& e : entities_)
         if (e->isSpawner && !e->obj->removed) spawners.push_back(e.get());

@@ -371,6 +371,8 @@ public:
     const std::vector<PathNode>& nodes() const { return nodes_; }
 
     // Debug: spawns one AI from each actor spawner (exercises the aitype/animscripts path).
+    // Sets actorPoolUnlimited_ for the rest of the run: spawning every spawner at once would otherwise exhaust the
+    // 32-slot actor pool, so later script spawns (turret gunners) would all fail.
     int spawnAllActors();
     // Test hooks for the spawn checks (src/game/spawnchecks.cpp): one spawn as dospawn (force false) or stalingradspawn,
     // the telefrag test, the force-spawn eviction, and the "level loaded" state (0x1c61048 cleared).
@@ -813,6 +815,7 @@ private:
     void spawnMapEntities();
     void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
     void dropSpawners();  // 0x5325f0: spawners put on the ground at level start
+    bool actorPoolUnlimited_ = false; // debug (--spawn-all): the 32-slot actor pool limit of spawnActor is not applied
     bool mapStartSpawn_ = false; // spawnActor runs for the map-start placed actors (their drop sees the earlier entities only)
     void setLevelStartDropClips();
     void registerBuiltins();

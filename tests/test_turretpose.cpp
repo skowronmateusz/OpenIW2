@@ -86,9 +86,9 @@ void gunnerTest(iw2::fs::Vfs& vfs) {
     w.start();
     w.spawnAllActors();
     int checked = 0;
-    for (int f = 0; f < 240; ++f) { // 12 s
+    for (int f = 0; f < 480; ++f) { // 24 s
         w.frame();
-        if (f < 200) continue;
+        if (f < 440) continue;
         for (const auto& up : w.entities()) {
             Entity& e = *up;
             if (!e.isActor || e.ai.stack[size_t(e.ai.depth)] != AiTurret || !e.usingTurret || !e.anim) continue;
