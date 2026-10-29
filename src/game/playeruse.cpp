@@ -633,6 +633,36 @@ std::pair<int, int> World::debugAmmo(const std::string& w) {
     return {inv.ammo[weaponField(w, "ammoName")], inv.clip[weaponField(w, "clipName")]};
 }
 
+bool World::debugTriggerEntryPoint(Entity& e, Vec3& out) {
+    const Value ov = e.obj->get("origin");
+    const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+    Vec3 mn, mx;
+    if (e.classname == "trigger_radius") {
+        const float r = e.obj->get("radius").isNumber() ? e.obj->get("radius").asFloat() : 0.0f;
+        const float h = e.obj->get("height").isNumber() ? e.obj->get("height").asFloat() : 0.0f;
+        mn = {o[0] - r, o[1] - r, o[2]};
+        mx = {o[0] + r, o[1] + r, o[2] + h};
+    } else {
+        const Value m = e.obj->get("model");
+        if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) return false;
+        for (int c = 0; c < 3; ++c) { mn[c] += o[c]; mx[c] += o[c]; }
+    }
+    const float height = playerBoxHeight();
+    const auto touches = [&](const Vec3& p) {
+        return triggerContact(e, Vec3{p[0] - 15, p[1] - 15, p[2]}, Vec3{p[0] + 15, p[1] + 15, p[2] + height});
+    };
+    // Centre first, then a grid over the bounds (thin / L-shaped brushes), feet at the bottom of the bounds + a little.
+    const float zs[3] = {mn[2] + 1.0f, (mn[2] + mx[2]) * 0.5f - height * 0.5f, mx[2] - height - 1.0f};
+    for (int n = 1; n <= 8; n *= 2)
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                for (const float z : zs) {
+                    const Vec3 p{mn[0] + (mx[0] - mn[0]) * (i + 0.5f) / n, mn[1] + (mx[1] - mn[1]) * (j + 0.5f) / n, z};
+                    if (touches(p)) { out = p; return true; }
+                }
+    return false;
+}
+
 void World::debugDamage(Entity& e, int amount) { damage(e, player_, amount, {0, 0, 1}, e.obj->get("origin").asVector(), "MOD_EXPLOSIVE"); }
 
 void World::debugVehicleTouch(Entity& v, Entity& t) {

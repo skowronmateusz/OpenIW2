@@ -343,6 +343,9 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(turretpose_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME itemdrop_world COMMAND test_itemdrop)
   set_tests_properties(itemdrop_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  # Mission-script smoke: a few maps headless (plain + one --autoplay run + a determinism check).
+  add_test(NAME script_smoke COMMAND ${CMAKE_SOURCE_DIR}/tools/script_sweep.sh --smoke --bin $<TARGET_FILE:iw2game>)
+  set_tests_properties(script_smoke PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}" DEPENDS iw2game)
 endif()
 
 add_executable(test_usehints tests/test_usehints.cpp)

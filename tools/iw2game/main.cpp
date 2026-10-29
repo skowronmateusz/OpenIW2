@@ -28,6 +28,7 @@
 #include <iostream>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -679,6 +680,13 @@ int main(int argc, char** argv) {
         std::string saveDir;   // --save-dir DIR: write the saves of the level (autosaves, --save-at) to DIR/<name>.svg
         std::string loadFile;  // --load FILE: start from a savegame instead of running the level script
         std::vector<std::pair<float, std::string>> saveAts; // --save-at T name: queue a manual save (type 0, flags 6) at T seconds
+        // --autoplay [stallSecs]: a god-mode bot follows the level's own gating: when no
+        // novel level notify / objective change / autosave / level change has happened for stallSecs of sim time it enters the
+        // nearest trigger a script thread waits for, then kills the actors a script waits the death of (or the remaining axis),
+        // then (with --autoplay-force) notifies the level event a script waits for, else records the stall with the wait sites.
+        bool autoplay = false, autoplayForce = false;
+        float stallSecs = 25.0f;
+        std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--save-dir" && i + 1 < argc) {
@@ -757,6 +765,13 @@ int main(int argc, char** argv) {
             } else if (a == "--pmove") {
                 pmove = true; // the player stands still under pmove (pushed by entities, falls) as in iw2view
             } else if (a == "--mixer") {
+            } else if (a == "--autoplay") {
+                autoplay = true;
+                if (i + 2 < argc && std::string(argv[i + 1]).find_first_not_of("0123456789.") == std::string::npos) stallSecs = std::stof(argv[++i]);
+            } else if (a == "--autoplay-force") {
+                autoplay = autoplayForce = true;
+            } else if (a == "--report" && i + 1 < argc) {
+                reportFile = argv[++i];
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
@@ -784,6 +799,26 @@ int main(int argc, char** argv) {
             else ++soundsUnknown[alias];
             return 1;
         };
+        // Progress record (--autoplay / --report): first occurrence of every level notify, objective states, saves, level change.
+        std::set<std::string> seenNotifies;
+        std::vector<std::string> notifyTimeline; // "T name" of each first occurrence
+        std::vector<std::string> autoplayLog;    // every autoplay action / stall record
+        std::vector<std::string> forcedEvents;
+        std::map<int, int> enteredTriggers;
+        float lastProgressT = 0.0f;
+        int stallCount = 0, savesSeen = 0;
+        int actionsSinceProgress = 0; // autoplay actions since the last real progress: escalation level
+        float lastActionT = 0.0f, lastSeenProgressT = 0.0f;
+        std::array<int, 16> objStates{};
+        world.vm().notifyHook = [&](const iw2::script::ObjectPtr& o, const std::string& ev) {
+            if (o->kind != "level") return;
+            if (seenNotifies.insert(ev).second) {
+                char buf[64];
+                std::snprintf(buf, sizeof buf, "%.2f ", world.timeMs() / 1000.0f);
+                notifyTimeline.push_back(buf + ev);
+                lastProgressT = world.timeMs() / 1000.0f;
+            }
+        };
         const auto t0 = std::chrono::steady_clock::now();
         if (!loadFile.empty()) {
             std::ifstream lf(loadFile, std::ios::binary);
@@ -800,6 +835,8 @@ int main(int argc, char** argv) {
         }
         auto writeSaves = [&] {
             for (auto& f : world.takeSaveFiles()) {
+                ++savesSeen;
+                lastProgressT = world.timeMs() / 1000.0f;
                 if (saveDir.empty()) { std::cout << "save " << f.name << " (" << f.bytes.size() << " bytes, not written: no --save-dir)\n"; continue; }
                 const std::filesystem::path path = std::filesystem::path(saveDir) / (f.name + ".svg");
                 std::filesystem::create_directories(path.parent_path());
@@ -1351,6 +1388,123 @@ int main(int argc, char** argv) {
                           << (ch->victoryScreen ? ": openvictoryscreen, nextlevel loads it" : ch->failed ? " (failed)" : "") << "\n";
             }
             writeSaves();
+            for (int i = 0; i < 16; ++i)
+                if (world.objectives()[size_t(i)].state != objStates[size_t(i)]) {
+                    objStates[size_t(i)] = world.objectives()[size_t(i)].state;
+                    lastProgressT = f * 0.05f;
+                }
+            if (autoplay && lastChange) break; // the level ends (victory screen, load, mission failed): nothing more to follow
+            if (lastProgressT != lastSeenProgressT) { lastSeenProgressT = lastProgressT; actionsSinceProgress = 0; }
+            if (autoplay && world.player() && f * 0.05f - std::max(lastProgressT, lastActionT) >= stallSecs) {
+                const float t = f * 0.05f;
+                char head[64];
+                std::snprintf(head, sizeof head, "[autoplay %.2f] ", t);
+                const auto waiters = world.vm().waiters();
+                const auto po = world.player()->obj->get("origin").asVector();
+                // 1. the nearest trigger a script thread waits for ("trigger"), reachable by the player (not AI-only, not disabled)
+                iw2::game::Entity* best = nullptr;
+                float bestD = 0;
+                int bestRank = 0; // triggers waited by the map's own scripts (maps/<map>*.gsc) come before library ones (_load autospawn, _vehicle, ...)
+                std::string bestSite;
+                const std::string mapPrefix = std::string("maps/") + argv[2];
+                for (const auto& w : waiters) {
+                    if (w.event != "trigger") continue;
+                    const int rank = w.site.rfind(mapPrefix, 0) == 0 ? 0 : 1;
+                    for (const auto& e : world.entities()) {
+                        if (e->obj != w.object || e->obj->removed || e->isSpawner) continue;
+                        if (e->classname != "trigger_multiple" && e->classname != "trigger_once" && e->classname != "trigger_radius") continue;
+                        if (e->obj->get("$disabled").truthy()) continue;
+                        const auto sf = e->obj->get("spawnflags");
+                        if (sf.isNumber() && (sf.asInt() & 8)) continue;
+                        if (enteredTriggers[e->number] >= 2) continue;
+                        const auto ov = e->obj->get("origin");
+                        const auto o = ov.isVector() ? ov.asVector() : iw2::game::Vec3{0, 0, 0};
+                        iw2::game::Vec3 mn, mx, c = o;
+                        const auto m = e->obj->get("model");
+                        if (m.isString() && world.submodelBounds(m.asString(), mn, mx))
+                            for (int k = 0; k < 3; ++k) c[k] = o[k] + (mn[k] + mx[k]) * 0.5f;
+                        const float d = std::sqrt((c[0] - po[0]) * (c[0] - po[0]) + (c[1] - po[1]) * (c[1] - po[1]) + (c[2] - po[2]) * (c[2] - po[2]));
+                        if (!best || rank < bestRank || (rank == bestRank && d < bestD)) { best = e.get(); bestD = d; bestRank = rank; bestSite = w.site; }
+                    }
+                }
+                iw2::game::Vec3 entry;
+                if (actionsSinceProgress >= 3) best = nullptr; // three fruitless trigger entries since the last progress: escalate to the kill gate, then force
+                if (best && world.debugTriggerEntryPoint(*best, entry)) {
+                    ++enteredTriggers[best->number];
+                    const auto tn = best->obj->get("targetname");
+                    char buf[512];
+                    std::snprintf(buf, sizeof buf, "%senter trigger #%d %s %s at %.0f,%.0f,%.0f (dist %.0f) waited by %s", head, best->number, best->classname.c_str(),
+                                  tn.isString() ? tn.asString().c_str() : "-", entry[0], entry[1], entry[2], bestD, bestSite.c_str());
+                    autoplayLog.push_back(buf);
+                    std::cout << buf << "\n";
+                    world.setPlayerOrigin(entry, world.player()->obj->get("angles").asVector());
+                    playerPath.clear(); // --player-at waypoints before the stall stay where they left the player
+                    lastActionT = t; ++actionsSinceProgress;
+                } else if (best) {
+                    char buf[256];
+                    std::snprintf(buf, sizeof buf, "%strigger #%d %s has no entry point for the player box", head, best->number, best->classname.c_str());
+                    autoplayLog.push_back(buf);
+                    std::cout << buf << "\n";
+                    enteredTriggers[best->number] = 2;
+                    lastActionT = t; ++actionsSinceProgress;
+                } else {
+                    // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
+                    int killed = 0;
+                    for (const auto& w : waiters) {
+                        if (w.event != "death" || killed >= 10) continue;
+                        for (const auto& e : world.entities())
+                            if (e->obj == w.object && !e->obj->removed && (e->isActor || e->vehicle) && world.isAlive(*e) && killed < 10 &&
+                                !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies")) { // never friendlies (missionfailed)
+                                world.debugDamage(*e, 100000);
+                                ++killed;
+                            }
+                    }
+                    const char* what = "death-waited entities";
+                    if (killed == 0) {
+                        what = "axis actors";
+                        for (const auto& e : world.entities()) {
+                            const auto team = e->obj->get("team");
+                            if (e->isActor && !e->obj->removed && world.isAlive(*e) && team.isString() && team.asString() == "axis") {
+                                world.debugDamage(*e, 100000);
+                                ++killed;
+                            }
+                        }
+                    }
+                    if (killed > 0) {
+                        char buf[256];
+                        std::snprintf(buf, sizeof buf, "%skilled %d %s", head, killed, what);
+                        autoplayLog.push_back(buf);
+                        std::cout << buf << "\n";
+                        lastActionT = t; ++actionsSinceProgress;
+                    } else {
+                        // 3. --autoplay-force: notify the level event a level-script thread waits for (masks bugs; listed in the report)
+                        std::string forced;
+                        if (autoplayForce) // the map's own scripts' level waits first (maps/<map>*.gsc), then the library's (maps/_*.gsc)
+                            for (const std::string& prefix : {mapPrefix, std::string("maps/")}) {
+                                for (const auto& w : waiters)
+                                    if (w.object == world.vm().level() && w.site.rfind(prefix, 0) == 0 && std::find(forcedEvents.begin(), forcedEvents.end(), w.event) == forcedEvents.end()) { forced = w.event; break; }
+                                if (!forced.empty()) break;
+                            }
+                        if (!forced.empty()) {
+                            forcedEvents.push_back(forced);
+                            autoplayLog.push_back(head + std::string("forced level notify ") + forced);
+                            std::cout << autoplayLog.back() << "\n";
+                            world.vm().notify(world.vm().level(), forced, {});
+                            lastActionT = t; ++actionsSinceProgress;
+                        } else {
+                            // 4. a real stall: record the level-script wait sites (maps/*.gsc, not the animscripts)
+                            ++stallCount;
+                            std::map<std::string, int> sites;
+                            for (const auto& d : world.vm().describeThreads())
+                                if (d.rfind("maps/", 0) == 0) ++sites[d];
+                            autoplayLog.push_back(head + std::string("stall: no progress for ") + std::to_string(int(stallSecs)) + " s, " + std::to_string(sites.size()) + " level-script wait sites");
+                            std::cout << autoplayLog.back() << "\n";
+                            for (const auto& [k, n] : sites) autoplayLog.push_back("    x" + std::to_string(n) + " " + k);
+                            lastActionT = t; actionsSinceProgress = 0;
+                        }
+                    }
+                }
+            }
             if (!menuAnswers.empty())
                 for (const auto& cmd : world.takeClientCommands())
                     if (cmd.name == "popupopen") {
@@ -1519,6 +1673,46 @@ int main(int argc, char** argv) {
         for (const char* n : {"mis_01", "mis_02", "mis_03", "mis_04", "ui_nextMission", "mis_difficulty"}) std::cout << "cvar " << n << " = " << world.cvars[n] << "\n";
         std::cout << "unimplemented built-ins called: " << top.size() << "\n";
         for (size_t i = 0; i < top.size() && i < 60; ++i) std::cout << "  " << top[i].second << " x" << top[i].first << "\n";
+        if (autoplay) std::cout << "autoplay: " << autoplayLog.size() << " log lines, " << stallCount << " stalls, " << forcedEvents.size() << " forced notifies\n";
+        if (!reportFile.empty()) { // --report FILE: uncapped, deterministic (no wall time) summary for tools/script_sweep.sh
+            std::ofstream r(reportFile);
+            r << "map " << argv[2] << "\n";
+            r << "seed " << (std::getenv("IW2_SCRIPT_SEED") ? std::getenv("IW2_SCRIPT_SEED") : "1") << "\n";
+            r << "seconds " << seconds << "\n";
+            r << "sim_ms " << world.timeMs() << "\n";
+            int loopKills = 0;
+            for (const auto& e : world.vm().errors())
+                if (e.find("potential infinite loop") != std::string::npos) ++loopKills;
+            r << "runtime_errors " << world.vm().errors().size() << "\n";
+            r << "loop_guard_kills " << loopKills << "\n";
+            r << "unimplemented_builtins " << top.size() << "\n";
+            r << "live_threads " << world.vm().liveThreadCount() << "\n";
+            r << "notifies " << seenNotifies.size() << "\n";
+            r << "saves " << savesSeen << "\n";
+            r << "stalls " << stallCount << "\n";
+            r << "forced " << forcedEvents.size() << "\n";
+            if (auto ch = lastChange ? lastChange : world.dueLevelChange())
+                r << "level_change " << ch->map << (ch->failed ? " failed" : ch->victoryScreen ? " victory" : ch->persistent ? " persistent" : " load") << "\n";
+            else
+                r << "level_change none\n";
+            if (world.player()) r << "player_health " << world.player()->obj->get("health").toString() << "\n";
+            r << "[errors]\n";
+            for (const auto& [e, n] : errs) r << n << " " << e << "\n";
+            r << "[builtins]\n";
+            for (const auto& [n, f2] : top) r << n << " " << f2 << "\n";
+            r << "[objectives]\n";
+            for (int i = 0; i < 16; ++i)
+                if (world.objectives()[size_t(i)].state) r << i << " " << world.objectives()[size_t(i)].state << " " << world.objectives()[size_t(i)].text << "\n";
+            r << "[notifies]\n";
+            for (const auto& l : notifyTimeline) r << l << "\n";
+            r << "[autoplay]\n";
+            for (const auto& l : autoplayLog) r << l << "\n";
+            r << "[level_waits]\n";
+            std::map<std::string, int> sites;
+            for (const auto& d : world.vm().describeThreads())
+                if (d.rfind("maps/", 0) == 0) ++sites[d];
+            for (const auto& [k, n] : sites) r << n << " " << k << "\n";
+        }
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
