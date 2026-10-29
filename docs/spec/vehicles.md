@@ -451,5 +451,13 @@ all vehicles (0x511a6f) and the vehicle spawn (0x511c5b), never `setmodel`. The 
 `setmodel` to the `_d` wreck model, which has no collmap of its own (hill400_defend: collmaps only for the intact models),
 so a wreck keeps the intact vehicle's brush collision. `World::vehicleCollmap` therefore remembers the first lookup
 (`VehicleState::collmap`); previously the lookup was repeated for the wreck model, found nothing and removed the clip.
+`freevehicle` (0x513850, called by the libya tank death script) calls 0x511c80, which clears the vehicle info (+0x108), health,
+takedamage and the trajectories and sets eType 0xd, but writes neither the contents (+0xc0) nor the brush model and does not unlink:
+a freed wreck keeps blocking. OpenIW2 dropped the clip there (the entity clips required `Entity::vehicle`, which freevehicle resets), so
+after a libya tank was destroyed the player walked and drove through the wreck. `freevehicle` now stores the brush on the object
+(`$collmap`) and `syncEntityClips` / `entityContents` use it for a `script_vehicle_corpse` (`World::corpseCollmap`).
+Live tanks were not affected: a headless probe of libya (all 13 AI crusaders, 80 s) showed every tank with clip model 181, contents
+0x800000, and the live iw2view loop uses the same `World::collision()` as the tests (the `scene.collision` world without entities is
+used only by `--shot --walk-seconds`). Test: tests/test_vehiclehit.cpp ("wreck hits").
 Test: tests/test_barrelclip.cpp. Script barrels (`maps/_interactable_objects.gsc`): a targeted script_brushmodel clip is
 deleted on explosion (`connectpaths`, `delete`); the entity clip disappears with it (same test, libya).

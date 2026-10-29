@@ -1416,7 +1416,9 @@ void World::registerVehicleBuiltins() {
         if (fv.engHandle) stopSound(fv.engHandle);
         if (fv.spinHandle) stopSound(fv.spinHandle);
         Entity* e = entityOf(c.self);
+        const std::string brush = vehicleCollmap(*e); // the clip survives: 0x511c80 leaves contents +0xc0 and the brush model alone
         e->vehicle.reset();
+        if (!brush.empty()) e->obj->set("$collmap", Value(brush));
         e->classname = "script_vehicle_corpse";
         e->obj->set("classname", Value("script_vehicle_corpse"));
         e->obj->set("$takedamage", Value(false)); // 0x511d1e: ent+0x111 = 0 and health (+0x13c) = 0 (0x511c85)

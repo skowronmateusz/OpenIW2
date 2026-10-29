@@ -52,6 +52,16 @@ std::string World::lookupVehicleCollmap(Entity& v) {
     return brush;
 }
 
+// freevehicle (0x513850) turns the vehicle into a script_vehicle_corpse: 0x511c80 clears the vehicle info (+0x108), health, takedamage
+// and the trajectories but writes neither the contents (+0xc0) nor the brush model, and the entity stays linked, so a wreck keeps
+// blocking with the collmap of the intact vehicle (see "Collision after destruction", docs/spec/vehicles.md). The brush model is
+// kept on the object by freevehicle.
+std::string World::corpseCollmap(const Entity& e) {
+    if (e.vehicle || e.classname != "script_vehicle_corpse") return {};
+    const Value v = e.obj->get("$collmap");
+    return v.isString() ? v.asString() : std::string();
+}
+
 bool World::isScriptMover(const Entity& e) {
     return e.classname == "script_model" || e.classname == "script_brushmodel" || e.classname == "script_origin";
 }
@@ -74,6 +84,11 @@ uint32_t World::entityContents(const Entity& e) const {
         const bool one = sf.isNumber() && (sf.asInt() & 1);
         if (e.vehicle->collmapSet && !e.vehicle->collmap.empty()) return one ? 0xa00000u : 0x800000u;
         return one ? 0x202080u : 0x2080u;
+    }
+    // freevehicle (0x513850 -> 0x511c80) keeps the contents word and the brush model.
+    if (corpseCollmap(e).size() > 1) {
+        const Value sf = e.obj->get("spawnflags");
+        return (sf.isNumber() && (sf.asInt() & 1)) ? 0xa00000u : 0x800000u;
     }
     return 0;
 }
@@ -103,8 +118,9 @@ void World::syncEntityClips() {
         // A vehicle takes the brush model of the script_vehicle_collmap whose targetname is its model name, contents
         // 0x800000 (0xa00000 with spawnflag 1) (0x50dc40 after level load 0x4d9c6f / 0x511a6f and at vehicle spawn
         // 0x511c5b, never on setmodel). The collmap entities themselves have no contents (0x512fd0).
-        if (e.vehicle && !e.obj->removed) {
-            const std::string brush = vehicleCollmap(*ep);
+        const std::string corpseBrush = e.vehicle ? std::string() : corpseCollmap(e);
+        if ((e.vehicle || corpseBrush.size() > 1) && !e.obj->removed) {
+            const std::string brush = e.vehicle ? vehicleCollmap(*ep) : corpseBrush;
             if (brush.empty()) continue;
             EntityClip c;
             c.id = e.number;
