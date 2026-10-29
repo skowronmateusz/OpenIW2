@@ -30,4 +30,11 @@ inline DrawKeyFields drawKeyFields(uint32_t key) {
     return {(key >> 4) & 0xfff, (key >> 0x15) & 0x3ff, (key >> 0x10) & 0x1f};
 }
 
+// Order of two materials in the sorted material table (comparator 0x10016ae0): ascending material byte (Material::sortByte), ties by
+// the techset record address (ascending, i.e. techset first-load order). `techsetRank` must be that load order; it is NOT reproducible
+// from the shipped data alone (TODO(spec): the engine's whole material load sequence), so iw2view does not rank sprites with it.
+inline bool materialSortLess(uint8_t byteA, uint32_t techsetRankA, uint8_t byteB, uint32_t techsetRankB) {
+    return byteA != byteB ? byteA < byteB : techsetRankA < techsetRankB;
+}
+
 } // namespace iw2::game

@@ -32,6 +32,7 @@
 #include "game/watersim.h"
 #include "game/fx.h"
 #include "game/fog.h"
+#include "game/viewcull.h"
 #include "game/marks.h"
 #include "game/outdoor.h"
 #include "game/pmove.h"
@@ -393,6 +394,7 @@ struct Scene {
     // space), drawn with the world shaders per entity at its origin/angles while the entity is not hidden
     // (docs/spec/d3dbsp.md "Brush models"). Empty without a level (then they are baked into `batches`).
     std::unordered_map<int, std::vector<Batch>> brushBatches;
+    std::unordered_map<int, std::array<float, 6>> brushBounds; // per brush model: local mins xyz, maxs xyz of its drawn soups' vertices
     // CPU-side models for skinned (animated) drawing.
     struct CpuModel {
         assets::XModelParts parts;
@@ -1382,6 +1384,16 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
         auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne)}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
+        if (soupOwner[si] > 0) {
+            auto bb = scene.brushBounds.try_emplace(soupOwner[si], std::array<float, 6>{1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f}).first;
+            for (uint32_t k = 0; k < s.indexCount; ++k) {
+                const auto& pos = bsp.vertices()[s.firstVertex + bsp.indices()[s.firstIndex + k]].position;
+                for (int a = 0; a < 3; ++a) {
+                    bb->second[size_t(a)] = std::min(bb->second[size_t(a)], pos[size_t(a)]);
+                    bb->second[size_t(3 + a)] = std::max(bb->second[size_t(3 + a)], pos[size_t(a)]);
+                }
+            }
+        }
     }
     // Sun from worldspawn (needed for baking model light).
     for (const auto& e : bsp.entities()) {
@@ -3480,6 +3492,7 @@ int main(int argc, char** argv) {
                     if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
                 return true;
             };
+            const game::FogParams fogNow = fogState.current(world->timeMs());
             Uploader up(dev, false);
             ++renderStamp;
             for (const auto& e : world->entities()) {
@@ -3502,6 +3515,19 @@ int main(int argc, char** argv) {
                     DrawItem it; // drawn by the world passes (Renderer::draw), with its baked lightmaps
                     it.worldBatches = &bm->second;
                     it.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                    // Renderer near / far plane box cull (docs/spec/render-hints.md; the dll culls brush-model entities by a world box,
+                    // 0x10009210). TODO(spec): the side planes and the dll's own box builder 0x10008900; IW2_NO_CULL disables this.
+                    if (!noCull) {
+                        const auto bb = scene.brushBounds.find(bm->first);
+                        if (bb != scene.brushBounds.end()) {
+                            float wmn[3], wmx[3];
+                            game::transformedBoxBounds(&bb->second[0], &bb->second[3], it.transform.data(), wmn, wmx);
+                            const Vec3 fw = viewCam.forward();
+                            const float eye[3] = {viewCam.pos.x, viewCam.pos.y, viewCam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
+                            const float farD = game::farPlaneDistance(fogNow.active && !fogNow.exponential, fogNow.farDist, 0.0f, world->cullDist());
+                            if (game::boxCulledByDepthPlanes(wmn, wmx, eye, fwd, farD)) continue;
+                        }
+                    }
                     items.push_back(it);
                     continue;
                 }
