@@ -19,8 +19,9 @@ struct ShockRecord {
     int soundFadeOutMs = 2500;        // +0x1c cg_shock_soundFadeOutTime
     float dry = 1.0f, wet = 0.5f;     // +0x20 / +0x24 cg_shock_soundDryLevel / WetLevel
     std::string room;                 // +0x28 cg_shock_soundRoomType (15 characters, default empty)
-    // +0x38..0x60 cg_shock_volume_*, in the record's order (0..1): auto, auto2d, menu, body, item, weapon, voice,
-    // local, music, announcer, shellshock.
+    // +0x38..0x60 cg_shock_volume_*, in the port's name-indexed order (0..1): auto, auto2d, menu, body, item, weapon, voice,
+    // local, music, announcer, shellshock. The exe's own order is auto, auto2d, menu, weapon, voice, item, body, local,
+    // music, announcer, shellshock (registrations 0x4a22a2..); everything here is indexed by name, so behaviour is the same.
     float volume[11] = {0.1f, 0.1f, 1.0f, 0.1f, 0.1f, 0.5f, 0.2f, 1.0f, 1.0f, 1.0f, 1.0f}; // registration defaults
     int soundModEndDelayMs = 2000;     // +0x64 cg_shock_soundModEndDelay
     int loopFadeMs = 1500;            // +0x68 cg_shock_soundLoopFadeTime

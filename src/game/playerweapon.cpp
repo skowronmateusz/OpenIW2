@@ -234,7 +234,8 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
         if (maskHeld) return;
         if (st >= 1 && st <= 16) return; // only from the ready state (0x4df9fb..0x4dfa60)
     }
-    // ps+0x104 (damage this frame) also cancels. TODO(spec): the command byte +0xd (0x4dfa8a) is not modelled (taken as unchanged).
+    // ps+0x104 (damage this frame) also cancels. The exe also compares usercmd byte +0xd with the previous command's +0x3d (0x4dfa8a, next to the weapon
+    // byte +0xc / +0x3c); its writer and meaning are not identified, so it is taken as unchanged. TODO(spec): the +0xd byte.
     const bool cancel = in.damaged || in.weapon != prevCmdWeapon_ || maskHeld;
     if (inBinoc() && cancel) {
         binocularCancel(in.fire);

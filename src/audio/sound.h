@@ -109,7 +109,8 @@ public:
     // snd_slaveFadeTime (default 500 ms, 0..5000): how long the duck of slave aliases takes to build up / release (0x443bb0).
     int slaveFadeMs = 500;
     float masterVolume = 0.75f; // snd_volume (default 1.0, 0..1) * 0.75 (0x443ab3 -> 0x793a24)
-    // Per-channel volume scales in the order auto, auto2d, menu, body, item, weapon, voice, local, music, announcer,
+    // Per-channel volume scales (the exe's slot table at 0x793a34 holds {cur,target,step} per channel, applied as
+    // master * slot.cur * voice volume, see docs/spec/sound.md) in the port's name-indexed order auto, auto2d, menu, body, item, weapon, voice, local, music, announcer,
     // shellshock (the shell shock channel volumes, shellshock.h); 1 = unchanged.
     float channelScale[11] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
     // Pause (0x442dc0 / 0x442df0 / 0x444690: when cl_paused changes, 0x442a30 pauses and 0x442bf0 resumes the playing samples whose
