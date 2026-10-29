@@ -1800,6 +1800,13 @@ int main(int argc, char** argv) {
                     // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
                     int killed = 0;
                     const bool killGate = actionsSinceProgress <= 3; // once per no-progress cycle, then force / stall (which restarts the chase)
+                    // An entity some thread waits on from a function whose name says "missionfail" (beltot.gsc missionfailedondamage on the
+                    // prisoner): killing it ends the mission, so the kill gate leaves it alone.
+                    const auto protectedEntity = [&](const iw2::script::ObjectPtr& o) {
+                        for (const auto& w2 : waiters)
+                            if (w2.object == o && w2.site.find("missionfail") != std::string::npos) return true;
+                        return false;
+                    };
                     if (killGate && std::getenv("IW2_AUTOPLAY_DEBUG")) // debug: what the "death" waits are on
                         for (const auto& w : waiters)
                             if (w.event == "death")
@@ -1811,7 +1818,9 @@ int main(int argc, char** argv) {
                         for (const auto& e : world.entities())
                             if (e->obj == w.object && !e->obj->removed && e.get() != world.player() && e->number != world.player()->usingVehicle && killed < 10 &&
                                 (e->isActor ? world.isAlive(*e) : (e->obj->get("health").isNumber() && e->obj->get("health").asInt() > 0)) && // vehicles, flak guns, turrets, models with health
-                                !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies")) { // never friendlies (missionfailed)
+                                !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies") && // never friendlies (missionfailed)
+                                !(e->obj->get("script_team").isString() && e->obj->get("script_team").asString() == "allies") && // allied vehicles (downtown_assault's tank)
+                                !protectedEntity(e->obj)) { // an entity another thread guards with a missionfailed handler (beltot's prisoner)
                                 world.debugDamage(*e, 100000);
                                 ++killed;
                             }
@@ -1821,7 +1830,7 @@ int main(int argc, char** argv) {
                         what = "axis actors";
                         for (const auto& e : world.entities()) {
                             const auto team = e->obj->get("team");
-                            if (e->isActor && !e->obj->removed && world.isAlive(*e) && team.isString() && team.asString() == "axis") {
+                            if (e->isActor && !e->obj->removed && world.isAlive(*e) && team.isString() && team.asString() == "axis" && !protectedEntity(e->obj)) {
                                 world.debugDamage(*e, 100000);
                                 ++killed;
                             }
