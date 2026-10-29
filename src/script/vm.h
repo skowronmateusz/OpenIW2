@@ -155,6 +155,12 @@ public:
     std::vector<std::string> describeThreads() const;
     std::string describeThread(uint64_t id) const; // debug: wait site of one thread (empty if gone)
     std::vector<std::string> describeThreadsOf(const ObjectPtr& self) const; // debug: wait sites of the threads whose innermost self is `self`
+    // Debug (iw2game --autoplay): every thread suspended in waittill / waittillmatch: the object and event it waits for and
+    // its innermost wait site ("file:line function"). Read-only.
+    struct Waiter { ObjectPtr object; std::string event; std::string site; };
+    std::vector<Waiter> waiters() const;
+    // Debug hook: called at the start of every notify (object, event), before endons and waiters run. Empty by default.
+    std::function<void(const ObjectPtr&, const std::string&)> notifyHook;
     // Debug: " < file:line function" for each frame of a thread, outermost first.
     std::string backtrace(const Thread& t) const;
     const std::vector<std::string>& errors() const { return errors_; }

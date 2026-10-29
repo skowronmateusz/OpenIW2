@@ -28,6 +28,7 @@
 #include <iostream>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -679,6 +680,16 @@ int main(int argc, char** argv) {
         std::string saveDir;   // --save-dir DIR: write the saves of the level (autosaves, --save-at) to DIR/<name>.svg
         std::string loadFile;  // --load FILE: start from a savegame instead of running the level script
         std::vector<std::pair<float, std::string>> saveAts; // --save-at T name: queue a manual save (type 0, flags 6) at T seconds
+        // --autoplay [stallSecs]: a god-mode bot follows the level's own gating: when no
+        // novel level notify / objective change / autosave / level change has happened for stallSecs of sim time it enters the
+        // nearest trigger a script thread waits for, then kills the actors a script waits the death of (or the remaining axis),
+        // then (with --autoplay-force) notifies the level event a script waits for, else records the stall with the wait sites.
+        bool autoplay = false, autoplayForce = false;
+        // Substrings of a waiting function's name / a trigger's targetname that keep the autoplay bot out of a trigger (kill-player,
+        // desertion, minefield triggers); --autoplay-skip a,b adds more.
+        std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail"};
+        float stallSecs = 25.0f;
+        std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--save-dir" && i + 1 < argc) {
@@ -757,6 +768,21 @@ int main(int argc, char** argv) {
             } else if (a == "--pmove") {
                 pmove = true; // the player stands still under pmove (pushed by entities, falls) as in iw2view
             } else if (a == "--mixer") {
+            } else if (a == "--autoplay") {
+                autoplay = true;
+                if (i + 1 < argc && std::string(argv[i + 1]).find_first_not_of("0123456789.") == std::string::npos) stallSecs = std::stof(argv[++i]);
+            } else if (a == "--autoplay-skip" && i + 1 < argc) {
+                std::string list = argv[++i];
+                for (size_t p = 0; p <= list.size();) {
+                    const size_t q = list.find(',', p);
+                    autoplaySkip.push_back(list.substr(p, q == std::string::npos ? std::string::npos : q - p));
+                    if (q == std::string::npos) break;
+                    p = q + 1;
+                }
+            } else if (a == "--autoplay-force") {
+                autoplay = autoplayForce = true;
+            } else if (a == "--report" && i + 1 < argc) {
+                reportFile = argv[++i];
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
@@ -784,6 +810,26 @@ int main(int argc, char** argv) {
             else ++soundsUnknown[alias];
             return 1;
         };
+        // Progress record (--autoplay / --report): first occurrence of every level notify, objective states, saves, level change.
+        std::set<std::string> seenNotifies;
+        std::vector<std::string> notifyTimeline; // "T name" of each first occurrence
+        std::vector<std::string> autoplayLog;    // every autoplay action / stall record
+        std::vector<std::string> forcedEvents;
+        std::map<int, int> enteredTriggers;
+        float lastProgressT = 0.0f;
+        int stallCount = 0, savesSeen = 0;
+        int actionsSinceProgress = 0; // autoplay actions since the last real progress: escalation level
+        float lastActionT = 0.0f, lastSeenProgressT = 0.0f;
+        std::array<int, 16> objStates{};
+        world.vm().notifyHook = [&](const iw2::script::ObjectPtr& o, const std::string& ev) {
+            if (o->kind != "level") return;
+            if (seenNotifies.insert(ev).second) {
+                char buf[64];
+                std::snprintf(buf, sizeof buf, "%.2f ", world.timeMs() / 1000.0f);
+                notifyTimeline.push_back(buf + ev);
+                lastProgressT = world.timeMs() / 1000.0f;
+            }
+        };
         const auto t0 = std::chrono::steady_clock::now();
         if (!loadFile.empty()) {
             std::ifstream lf(loadFile, std::ios::binary);
@@ -800,6 +846,8 @@ int main(int argc, char** argv) {
         }
         auto writeSaves = [&] {
             for (auto& f : world.takeSaveFiles()) {
+                ++savesSeen;
+                lastProgressT = world.timeMs() / 1000.0f;
                 if (saveDir.empty()) { std::cout << "save " << f.name << " (" << f.bytes.size() << " bytes, not written: no --save-dir)\n"; continue; }
                 const std::filesystem::path path = std::filesystem::path(saveDir) / (f.name + ".svg");
                 std::filesystem::create_directories(path.parent_path());
@@ -1351,6 +1399,201 @@ int main(int argc, char** argv) {
                           << (ch->victoryScreen ? ": openvictoryscreen, nextlevel loads it" : ch->failed ? " (failed)" : "") << "\n";
             }
             writeSaves();
+            for (int i = 0; i < 16; ++i)
+                if (world.objectives()[size_t(i)].state != objStates[size_t(i)]) {
+                    objStates[size_t(i)] = world.objectives()[size_t(i)].state;
+                    lastProgressT = f * 0.05f;
+                }
+            if (autoplay && lastChange) break; // the level ends (victory screen, load, mission failed): nothing more to follow
+            if (lastProgressT != lastSeenProgressT) { lastSeenProgressT = lastProgressT; actionsSinceProgress = 0; }
+            if (autoplay && world.player() && f * 0.05f - std::max(lastProgressT, lastActionT) >= stallSecs) {
+                const float t = f * 0.05f;
+                char head[64];
+                std::snprintf(head, sizeof head, "[autoplay %.2f] ", t);
+                const auto waiters = world.vm().waiters();
+                const auto po = world.player()->obj->get("origin").asVector();
+                // Walking distance over the AI path graph (nearest usable nodes, A*, leg lengths) so the chase follows the level's
+                // route order rather than straight lines through walls; unreachable or node-less: straight-line distance x4.
+                const auto& graph = world.paths();
+                const auto nearestNode = [&](const iw2::game::Vec3& p) {
+                    int best = -1;
+                    float bd = 0;
+                    for (size_t i = 0; i < graph.size() && i < world.nodes().size(); ++i) {
+                        if (world.nodes()[i].typeNum == 0 || graph.links(i).empty()) continue;
+                        const auto& q = graph.position(i);
+                        const float d = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]) * 4;
+                        if (best < 0 || d < bd) { best = int(i); bd = d; }
+                    }
+                    return best;
+                };
+                const int playerNode = nearestNode(po);
+                std::vector<int> bestRoute; // the node route to the chosen trigger (empty: straight line)
+                std::vector<iw2::game::Entity*> forbidden; // kill / minefield triggers (skip list): never entered, routes through them are refused
+                const auto walkDistance = [&](const iw2::game::Vec3& c, std::vector<int>* routeOut = nullptr) {
+                    const float straight = std::sqrt((c[0] - po[0]) * (c[0] - po[0]) + (c[1] - po[1]) * (c[1] - po[1]) + (c[2] - po[2]) * (c[2] - po[2]));
+                    const int n = playerNode >= 0 ? nearestNode(c) : -1;
+                    if (n < 0) return straight * 4;
+                    const auto route = graph.findPath(playerNode, n);
+                    if (route.empty()) return straight * 4;
+                    if (routeOut) *routeOut = route;
+                    float d = 0;
+                    for (size_t i = 1; i < route.size(); ++i) {
+                        const auto& a = graph.position(size_t(route[i - 1]));
+                        const auto& b = graph.position(size_t(route[i]));
+                        d += std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+                    }
+                    return d;
+                };
+                // 1. the nearest trigger a script thread waits for ("trigger"), reachable by the player (not AI-only, not disabled)
+                iw2::game::Entity* best = nullptr;
+                float bestD = 0;
+                int bestRank = 0; // triggers waited by the map's own scripts (maps/<map>*.gsc) come before library ones (_load autospawn, _vehicle, ...)
+                std::string bestSite;
+                const std::string mapPrefix = std::string("maps/") + argv[2];
+                for (const auto& w : waiters) {
+                    if (w.event != "trigger") continue;
+                    const int rank = w.site.rfind(mapPrefix, 0) == 0 ? 0 : 1;
+                    for (const auto& e : world.entities()) {
+                        if (e->obj != w.object || e->obj->removed || e->isSpawner) continue;
+                        if (e->classname != "trigger_multiple" && e->classname != "trigger_once" && e->classname != "trigger_radius") continue;
+                        if (e->obj->get("$disabled").truthy()) continue;
+                        const auto sf = e->obj->get("spawnflags");
+                        if (sf.isNumber() && (sf.asInt() & 8)) continue;
+                        if (enteredTriggers[e->number] >= 2) continue;
+                        { // skip the triggers a player would never enter on purpose: kill / desertion / minefield triggers, by the waiting
+                          // function's name and the targetname (--autoplay-skip adds substrings)
+                            std::string names = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
+                            const auto tn = e->obj->get("targetname");
+                            if (tn.isString()) names += " " + tn.asString();
+                            for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                            bool skip = false;
+                            for (const auto& sub : autoplaySkip) skip = skip || names.find(sub) != std::string::npos;
+                            if (skip) { forbidden.push_back(e.get()); continue; }
+                        }
+                        const auto ov = e->obj->get("origin");
+                        const auto o = ov.isVector() ? ov.asVector() : iw2::game::Vec3{0, 0, 0};
+                        iw2::game::Vec3 mn, mx, c = o;
+                        const auto m = e->obj->get("model");
+                        if (m.isString() && world.submodelBounds(m.asString(), mn, mx))
+                            for (int k = 0; k < 3; ++k) c[k] = o[k] + (mn[k] + mx[k]) * 0.5f;
+                        const float d = walkDistance(c);
+                        if (!best || rank < bestRank || (rank == bestRank && d < bestD)) { best = e.get(); bestD = d; bestRank = rank; bestSite = w.site; }
+                    }
+                }
+                iw2::game::Vec3 entry;
+                if (actionsSinceProgress >= 3) best = nullptr; // three fruitless trigger entries since the last progress: escalate to the kill gate, then force
+                if (best && world.debugTriggerEntryPoint(*best, entry)) {
+                    ++enteredTriggers[best->number];
+                    const auto tn = best->obj->get("targetname");
+                    char buf[512];
+                    std::snprintf(buf, sizeof buf, "%senter trigger #%d %s %s at %.0f,%.0f,%.0f (dist %.0f) waited by %s", head, best->number, best->classname.c_str(),
+                                  tn.isString() ? tn.asString().c_str() : "-", entry[0], entry[1], entry[2], bestD, bestSite.c_str());
+                    autoplayLog.push_back(buf);
+                    std::cout << buf << "\n";
+                    // Walk there at 250 u/s along the AI node route (through --player-at's interpolation) instead of teleporting, so
+                    // the triggers on the way fire, minefields / walls are avoided like the AI does and distance / time based checks
+                    // (desertion, friendly chain) see a moving player. Without a route: a straight line.
+                    walkDistance(entry, &bestRoute);
+                    playerPath = {{t, po}};
+                    float at = t;
+                    iw2::game::Vec3 prev = po;
+                    const auto leg = [&](const iw2::game::Vec3& q) {
+                        at += std::max(std::sqrt((q[0] - prev[0]) * (q[0] - prev[0]) + (q[1] - prev[1]) * (q[1] - prev[1]) + (q[2] - prev[2]) * (q[2] - prev[2])) / 250.0f, 0.05f);
+                        playerPath.push_back({at, q});
+                        prev = q;
+                    };
+                    for (const int n : bestRoute) leg(graph.position(size_t(n)));
+                    leg(entry);
+                    // Refuse a route that crosses a kill / minefield trigger (a player would see the signs): sample it every 32 units.
+                    iw2::game::Entity* crossed = nullptr;
+                    for (size_t i = 1; i < playerPath.size() && !crossed; ++i) {
+                        const auto& a = playerPath[i - 1].second;
+                        const auto& b = playerPath[i].second;
+                        const float len = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
+                        for (float s = 0; s <= len && !crossed; s += 32.0f) {
+                            const float u = len > 0 ? s / len : 0;
+                            const iw2::game::Vec3 p{a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u};
+                            for (auto* fe : forbidden)
+                                if (world.debugTriggerTouches(*fe, p)) { crossed = fe; break; }
+                        }
+                    }
+                    if (crossed) {
+                        const auto ctn = crossed->obj->get("targetname");
+                        std::snprintf(buf, sizeof buf, "%s  route to #%d refused: it crosses kill/minefield trigger #%d %s", head, best->number, crossed->number, ctn.isString() ? ctn.asString().c_str() : "-");
+                        autoplayLog.push_back(buf);
+                        std::cout << buf << "\n";
+                        playerPath.clear();
+                        enteredTriggers[best->number] = 2;
+                        lastActionT = t;
+                    } else {
+                        lastActionT = std::min(at, t + 60.0f);
+                    }
+                    ++actionsSinceProgress;
+                } else if (best) {
+                    char buf[256];
+                    std::snprintf(buf, sizeof buf, "%strigger #%d %s has no entry point for the player box", head, best->number, best->classname.c_str());
+                    autoplayLog.push_back(buf);
+                    std::cout << buf << "\n";
+                    enteredTriggers[best->number] = 2;
+                    lastActionT = t; ++actionsSinceProgress;
+                } else {
+                    // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
+                    int killed = 0;
+                    for (const auto& w : waiters) {
+                        if (w.event != "death" || killed >= 10) continue;
+                        for (const auto& e : world.entities())
+                            if (e->obj == w.object && !e->obj->removed && (e->isActor || e->vehicle) && world.isAlive(*e) && killed < 10 &&
+                                !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies")) { // never friendlies (missionfailed)
+                                world.debugDamage(*e, 100000);
+                                ++killed;
+                            }
+                    }
+                    const char* what = "death-waited entities";
+                    if (killed == 0) {
+                        what = "axis actors";
+                        for (const auto& e : world.entities()) {
+                            const auto team = e->obj->get("team");
+                            if (e->isActor && !e->obj->removed && world.isAlive(*e) && team.isString() && team.asString() == "axis") {
+                                world.debugDamage(*e, 100000);
+                                ++killed;
+                            }
+                        }
+                    }
+                    if (killed > 0) {
+                        char buf[256];
+                        std::snprintf(buf, sizeof buf, "%skilled %d %s", head, killed, what);
+                        autoplayLog.push_back(buf);
+                        std::cout << buf << "\n";
+                        lastActionT = t; ++actionsSinceProgress;
+                    } else {
+                        // 3. --autoplay-force: notify the level event a level-script thread waits for (masks bugs; listed in the report)
+                        std::string forced;
+                        if (autoplayForce) // the map's own scripts' level waits first (maps/<map>*.gsc), then the library's (maps/_*.gsc)
+                            for (const std::string& prefix : {mapPrefix, std::string("maps/")}) {
+                                for (const auto& w : waiters)
+                                    if (w.object == world.vm().level() && w.site.rfind(prefix, 0) == 0 && std::find(forcedEvents.begin(), forcedEvents.end(), w.event) == forcedEvents.end()) { forced = w.event; break; }
+                                if (!forced.empty()) break;
+                            }
+                        if (!forced.empty()) {
+                            forcedEvents.push_back(forced);
+                            autoplayLog.push_back(head + std::string("forced level notify ") + forced);
+                            std::cout << autoplayLog.back() << "\n";
+                            world.vm().notify(world.vm().level(), forced, {});
+                            lastActionT = t; ++actionsSinceProgress;
+                        } else {
+                            // 4. a real stall: record the level-script wait sites (maps/*.gsc, not the animscripts)
+                            ++stallCount;
+                            std::map<std::string, int> sites;
+                            for (const auto& d : world.vm().describeThreads())
+                                if (d.rfind("maps/", 0) == 0) ++sites[d];
+                            autoplayLog.push_back(head + std::string("stall: no progress for ") + std::to_string(int(stallSecs)) + " s, " + std::to_string(sites.size()) + " level-script wait sites");
+                            std::cout << autoplayLog.back() << "\n";
+                            for (const auto& [k, n] : sites) autoplayLog.push_back("    x" + std::to_string(n) + " " + k);
+                            lastActionT = t; actionsSinceProgress = 0;
+                        }
+                    }
+                }
+            }
             if (!menuAnswers.empty())
                 for (const auto& cmd : world.takeClientCommands())
                     if (cmd.name == "popupopen") {
@@ -1519,6 +1762,46 @@ int main(int argc, char** argv) {
         for (const char* n : {"mis_01", "mis_02", "mis_03", "mis_04", "ui_nextMission", "mis_difficulty"}) std::cout << "cvar " << n << " = " << world.cvars[n] << "\n";
         std::cout << "unimplemented built-ins called: " << top.size() << "\n";
         for (size_t i = 0; i < top.size() && i < 60; ++i) std::cout << "  " << top[i].second << " x" << top[i].first << "\n";
+        if (autoplay) std::cout << "autoplay: " << autoplayLog.size() << " log lines, " << stallCount << " stalls, " << forcedEvents.size() << " forced notifies\n";
+        if (!reportFile.empty()) { // --report FILE: uncapped, deterministic (no wall time) summary for tools/script_sweep.sh
+            std::ofstream r(reportFile);
+            r << "map " << argv[2] << "\n";
+            r << "seed " << (std::getenv("IW2_SCRIPT_SEED") ? std::getenv("IW2_SCRIPT_SEED") : "1") << "\n";
+            r << "seconds " << seconds << "\n";
+            r << "sim_ms " << world.timeMs() << "\n";
+            int loopKills = 0;
+            for (const auto& e : world.vm().errors())
+                if (e.find("potential infinite loop") != std::string::npos) ++loopKills;
+            r << "runtime_errors " << world.vm().errors().size() << "\n";
+            r << "loop_guard_kills " << loopKills << "\n";
+            r << "unimplemented_builtins " << top.size() << "\n";
+            r << "live_threads " << world.vm().liveThreadCount() << "\n";
+            r << "notifies " << seenNotifies.size() << "\n";
+            r << "saves " << savesSeen << "\n";
+            r << "stalls " << stallCount << "\n";
+            r << "forced " << forcedEvents.size() << "\n";
+            if (auto ch = lastChange ? lastChange : world.dueLevelChange())
+                r << "level_change " << ch->map << (ch->failed ? " failed" : ch->victoryScreen ? " victory" : ch->persistent ? " persistent" : " load") << "\n";
+            else
+                r << "level_change none\n";
+            if (world.player()) r << "player_health " << world.player()->obj->get("health").toString() << "\n";
+            r << "[errors]\n";
+            for (const auto& [e, n] : errs) r << n << " " << e << "\n";
+            r << "[builtins]\n";
+            for (const auto& [n, f2] : top) r << n << " " << f2 << "\n";
+            r << "[objectives]\n";
+            for (int i = 0; i < 16; ++i)
+                if (world.objectives()[size_t(i)].state) r << i << " " << world.objectives()[size_t(i)].state << " " << world.objectives()[size_t(i)].text << "\n";
+            r << "[notifies]\n";
+            for (const auto& l : notifyTimeline) r << l << "\n";
+            r << "[autoplay]\n";
+            for (const auto& l : autoplayLog) r << l << "\n";
+            r << "[level_waits]\n";
+            std::map<std::string, int> sites;
+            for (const auto& d : world.vm().describeThreads())
+                if (d.rfind("maps/", 0) == 0) ++sites[d];
+            for (const auto& [k, n] : sites) r << n << " " << k << "\n";
+        }
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

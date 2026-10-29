@@ -703,6 +703,10 @@ public:
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
     }
     void debugDamage(Entity& e, int amount);
+    // Debug (iw2game --autoplay): a point where the player's standing box touches the trigger entity (triggerContact with the
+    // player box of runTriggers), sampled over the trigger's bounds (brush submodel or radius); false when none is found.
+    bool debugTriggerEntryPoint(Entity& e, Vec3& out);
+    bool debugTriggerTouches(Entity& e, const Vec3& feet); // the player standing box at `feet` touches the trigger
     // Test hooks (iw2game IW2_TOUCH_TEST / IW2_ROCKET_TEST): the vehicle touch callback with the vehicle placed 100 units
     // behind `t` moving at 400 units/s towards it; a vehicle rocket fired from 300 units away at `t`.
     void debugVehicleTouch(Entity& v, Entity& t);
