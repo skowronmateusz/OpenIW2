@@ -323,7 +323,7 @@ void World::runGrenade(Entity& e) {
             // (explosionInnerDamage +0x37c, attacker = the grenade itself) and the action with MOD_GRENADE (3), before the
             // impact is handled. TODO(spec): the z adjustments of 0x526e94..0x526f84 to the end point and the +0x128 & 0x8000
             // hit-entity call 0x5268b0 (0x526e01..0x526e23).
-            triggerDamageSegment(&e, o, {tr.endPos[0], tr.endPos[1], tr.endPos[2]}, weaponInt(g.weapon, "explosionInnerDamage"), 3);
+            triggerDamageSegment(&e, o, {tr.endPos[0], tr.endPos[1], tr.endPos[2]}, weaponInt(g.weapon, "explosionInnerDamage"), 3, true);
             if (e.obj->removed) return;
             if (tr.fraction < 1.0f) {
                 if (tr.surfaceFlags & 0x10) {
@@ -851,9 +851,13 @@ void World::launchItem(Entity& item, const Entity& dropper) {
 // After the first floor hit the item sits 0.125 (the trace epsilon) above the floor with trType 3; the next frame's re-base
 // probes 1 unit down from there, which ends at once (fraction 0): it settles one frame after the hit. A wall hit (fraction
 // >= 0.01) does not settle; the item drops straight down from the wall afterwards (zero velocity after the re-base).
-// A map-placed item (FinishSpawningItem 0x5225e0, unless spawnflags 1 = suspended) is dropped 4096 down once, retried from 15
-// down when the first trace starts solid; still solid -> freed; it rests there (trType 0) with the trace's entity as ground
-// (0x52283f).
+// G_SpawnItem (0x522c70) picks the start by the spawn-vars byte 0x1c60548 (set to 1 by G_ParseSpawnVars 0x5360a0 for each map
+// entity, 0 once the entity string is exhausted): a map-placed item gets handler 0x17 (think FinishSpawningItem 0x5225e0) at
+// levelTime + 100 (0x522da4..0x522db3); FinishSpawningItem (unless spawnflags 1 = suspended) drops it 4096 down once, retried
+// from 15 down when the first trace starts solid; still solid -> freed; it rests there (trType 0) with the trace's entity as
+// ground (0x52283f). A script-spawned item (`spawn`, e.g. maps/_spawner.gsc spawn_grenade_bag) gets handler 0x18 (no think) and
+// starts stationary at its origin; unless suspended its ground is 0x7ff and a weapon item's roll gets +90 (0x5920bc)
+// (0x522dbf..0x522e8f), so the next G_RunItem re-bases it to gravity and it falls (scriptSpawnItem).
 void World::runItem(Entity& e) {
     const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1}; // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): other item types use z 0..2
     {
@@ -862,6 +866,7 @@ void World::runItem(Entity& e) {
         const bool suspended = sf.isNumber() && (sf.asInt() & 1);
         if (!e.obj->get("$trtype").isNumber()) {
             if (e.obj->get("$itemsettled").truthy()) return;
+            if (timeMs_ < 100) return; // map entities spawn at level time 0; FinishSpawningItem runs at 0 + 100
             e.obj->set("$itemsettled", Value(true));
             e.obj->set("$trtype", Value(int32_t(0)));
             if (suspended) return; // groundEntityNum stays unset; the suspended flag blocks the re-base (step 1)
@@ -1017,6 +1022,27 @@ TraceResult World::missileTrace(const Vec3& from, const Vec3& to, uint32_t clip,
         tr = collision_->trace(from, to, {0, 0, 0}, {0, 0, 0}, clip, pass);
     }
     return tr;
+}
+
+// G_SpawnItem's runtime branch (0x522dbf..0x522e8f) for an item spawned after level load.
+void World::scriptSpawnItem(Entity& e) {
+    const Value sf = e.obj->get("spawnflags");
+    const bool suspended = sf.isNumber() && (sf.asInt() & 1);
+    const Value ov = e.obj->get("origin");
+    const Vec3 o = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+    if (!suspended) {
+        const Value av = e.obj->get("angles");
+        Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+        a[2] += 90.0f; // weapon items (item type 1); every port item is a weapon item
+        e.obj->set("angles", Value(a));
+    }
+    e.obj->set("$trtype", Value(int32_t(0)));
+    e.obj->set("$trtime", Value(0.0f));
+    e.obj->set("$trduration", Value(int32_t(0)));
+    e.obj->set("$trbase", Value(o));
+    e.obj->set("$trdelta", Value(Vec3{0, 0, 0}));
+    e.obj->set("$groundent", Value(int32_t(kItemNoGround)));
+    e.obj->set("$itemsettled", Value(true));
 }
 
 } // namespace iw2::game

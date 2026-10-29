@@ -148,7 +148,8 @@ MOD_GRENADE) (0x526f90..0x526fbb), before the impact is handled. It lists entiti
 bounds (0x424560, 0x419ea0), keeps classname trigger_damage (0x1c7f0ea) with +0x128 & 0x4000 whose model the zero-box segment
 touches (0x44c5b0), notifies "damage" (damage, attacker), runs the action 0x5293c0 and, without an accumulate value (+0x158),
 resets the health to 32000: the missile twin of the bullet test 0x5295f0. Port: `triggerDamageSegment` from `runGrenade`.
-TODO(spec): the port (like its bullet twin) filters by classname only, not by the +0x128 & 0x4000 gate.
+The +0x128 & 0x4000 gate is set only by enablegrenadetouchdamage (0x4f8000: trigger_damage only, else "Currently on supported on
+damage triggers"; tankhunt.gsc triggerHintThink); the bullet / melee twin 0x5295f0 has no such gate. Port: `$grenadetouchdamage`.
 
 Missile water entry (0x526d6b..0x526df7, all missiles): when |trDelta.z| > 30 (0x591e08) and the origin's point contents
 (0x44c840) have no 0x20, the move trace uses clipmask | 0x20. A trace whose surface is water ((surfaceFlags & 0x1f00000) ==
@@ -204,6 +205,16 @@ Why settling works with the 0.125 trace epsilon: a hit leaves the item 0.125 abo
 frame re-bases it (zero velocity) and probes 1 unit down, which enters at once ((d1 − eps)/(d1 − d2) = 0), so the item settles one
 frame after its first floor hit (headless: toujane straight drop, first hit frame 9, settled frame 10, z = the 4096-unit floor
 trace). A wall hit (fraction >= 0.01) does not settle; the item then drops straight down from the wall with zero velocity.
+G_SpawnItem (0x522c70): with the spawn-vars byte 0x1c60548 set (G_ParseSpawnVars 0x5360a0 sets it per map entity; it is 0
+once the entity string is exhausted) the item gets handler 0x17 (think FinishSpawningItem 0x5225e0, table 0x5a5730) at
+levelTime + 100; otherwise (script `spawn`, e.g. _spawner.gsc spawn_grenade_bag = spawn("weapon_Stielhandgranate", corpse +
+(0, 0, 44))) handler 0x18 (no think), and unless spawnflags & 1: groundEntityNum 0x7ff, weapon items roll += 90 (0x5920bc),
+stationary trajectory at the origin, so G_RunItem re-bases it and it falls (the grenade
+bag is a weapon item). The item table 0x5a66f8 (stride 0x2c) holds the weapon items (0..128, named at run time), then
+item_ammo_stielhandgranate_open / _closed (type 2) and item_health_small / _large (type 3); the ammo items are only spawned by the
+commented-out _load.gsc setup_grenade_powerups, and the 39 SP maps place 274 weapon_* and 3 item_health entities, so weapon items
+are the only ones that run in practice (health items: dead code in SP). Both handlers have touch 0x521a90. Port: `scriptSpawnItem` from `spawn`; headless the bag falls 44 units
+and rests on the floor after 11 frames (tests/test_itemdrop.cpp), so "bags hang in the air" is not reproduced headless.
 LaunchItem (0x521e00): eType 2, weapon items (item type 1) box (−1, −1, −1)..(1, 1, 1), other items (−1, −1, 0)..(1, 1, 2);
 TR_GRAVITY from the origin at the level time; no owner is set. FinishSpawningItem (0x5225e0) map items rest with trType 0 and
 groundEntityNum = the drop trace's entity (0x52283f). Port: a ground entity counts as moving while its mover position channel is
@@ -211,7 +222,8 @@ active; passEnt is the item itself (owner unset); only weapon items run.
 
 ## Rockets (G_FireRocket 0x527810, G_RunMissile, decoded)
 - +0x168 = destabilizeDistance (+0x5ac, int) / projectileSpeed (+0x384, int) · 1000 (0x52795d..0x527973); the shooter's +0x128 &
-  0x20000 is copied (0x527979..0x52798d) and disables the destabilization (no writer of that flag found; the port leaves it clear).
+  0x20000 is copied (0x527979..0x52798d) and disables the destabilization; setstablemissile(bool) (0x4efde0, eType 9 / 0xc / 1
+  only, else "Type should be a sentient or a vehicle") sets / clears it (crossroads.gsc). Port: `$stablemissile`, RocketState::stable.
   0x4d6110 (end of G_FireRocket and LaunchItem) builds the server dobj from the model index +0x114 and attachments +0x1d4: no
   gameplay beyond the model.
 - G_RunMissile without a hit (0x527017..0x527061): |trDelta| != 0 → groundEntityNum = 0x7ff, and for weaponType (+0x78) 2
@@ -223,5 +235,7 @@ active; passEnt is the item itself (owner unset); only weapon items run.
   +0x168 · destabilizationTimeReductionRatio (+0x5a4). Shipped: panzerfaust 1000 / 2800 → 357 ms, then 100, 80, 64 … ms,
   angle 10°; tank turrets angle 0 (only re-based). Port: `destabilizeRocket`, test in tests/test_itemdrop.cpp.
 - projectileDLight (client, CG_Missile 0x4ab3fe..0x4ab43c): when weapon info +0x14c (float of projectileDLight +0x45c, 0x4b3cab)
-  is not 0, *0x617b1c(lerp origin, radius, info +0x150, +0x154, +0x158). TODO(spec): the writer of info +0x150..+0x158 was not
-  found (projectileRed / Green / Blue are weapon +0x460 / +0x464 / +0x468; panzerfaust / panzerschreck: 200, (0.75, 0.3, 1)).
+  is not 0, *0x617b1c(lerp origin, radius, info +0x150, +0x154, +0x158). CG_RegisterWeapon zeroes the whole 0x1b8-byte info
+  (0x4b2cd7) and writes only +0x14c; no register-relative access to weapon +0x460..+0x468 (projectileRed / Green / Blue; panzerfaust /
+  panzerschreck 0.75, 0.3, 1) or stores to info +0x150..+0x158, so the light's colour is (0, 0, 0) and it adds nothing. Not ported.
+  TODO(spec): only a store through a computed pointer could contradict this.

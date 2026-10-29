@@ -80,6 +80,35 @@ int main() {
         CHECK(!item.obj->removed && item.obj->get("origin").asVector()[2] == r.at[2]);
     }
 
+    // 1b. A script-spawned item (maps/_spawner.gsc spawn_grenade_bag: spawn("weapon_Stielhandgranate", origin) 44 units above
+    // a corpse, then setmodel / angles) falls under G_RunItem and rests on the floor.
+    {
+        const Vec3 start{p[0] + 24.0f, p[1], p[2] + 44.0f};
+        const TraceResult down = w.collision().trace(start, {start[0], start[1], start[2] - 4096.0f}, mins, maxs, 0x491);
+        w.vm().start("maps/_spawner", "spawn_grenade_bag", {Value(start), Value(Vec3{0, 30, 0}), Value("axis")});
+        w.vm().drainReady();
+        Entity* bag = nullptr;
+        for (const auto& ep : w.entities())
+            if (!ep->obj->removed && ep->obj->get("model").toString() == "xmodel/german_grenade_bag") bag = ep.get();
+        CHECK(bag != nullptr);
+        if (bag) {
+            int settled = -1;
+            for (int i = 1; i <= 40 && settled < 0; ++i) {
+                w.frame();
+                if (bag->obj->get("$trtype").isNumber() && bag->obj->get("$trtype").asInt() == 0 && bag->obj->get("$groundent").isNumber() &&
+                    bag->obj->get("$groundent").asInt() != World::kItemNoGround)
+                    settled = i;
+            }
+            const Vec3 at = bag->obj->get("origin").asVector();
+            const Vec3 ang = bag->obj->get("angles").asVector();
+            std::cout << "grenade bag (" << bag->classname << "): settled after " << settled << " frames at z " << at[2] << " (floor " << down.endPos[2]
+                      << "), angles " << ang[0] << " " << ang[1] << " " << ang[2] << "\n";
+            CHECK(settled > 3); // it falls 44 units under gravity (script spawn, handler 0x18), not the instant 4096 drop of a map item
+            CHECK(std::fabs(at[2] - down.endPos[2]) < 0.05f);
+            CHECK(ang[2] == 90.0f);
+        }
+    }
+
     // 2. Thrown at the nearest wall in one of 8 directions at 40 units up: it must end on the floor, not on the wall.
     {
         const Vec3 start{p[0], p[1], p[2] + 40.0f};
@@ -150,6 +179,13 @@ int main() {
         }
         // The first frame whose level time is past trTime + 357 = t0 - 50 + 357.
         CHECK(at > 0 && at > t0 + 307 && at <= t0 + 357);
+        // A shooter with setstablemissile(true) (flag 0x20000, copied by G_FireRocket) fires rockets that never destabilize.
+        w.player()->obj->set("$stablemissile", Value(true));
+        Entity& st = w.debugSpawnRocket("panzerfaust", start, dir);
+        const Vec3 d0 = st.rocket->trDelta;
+        for (int i = 0; i < 12 && !st.obj->removed; ++i) w.frame();
+        if (!st.obj->removed) CHECK(!st.rocket->destabilized && st.rocket->trDelta == d0);
+        w.player()->obj->set("$stablemissile", Value(false));
     }
     // 5. Missile water entry (0x526b40): a grenade falling (trDelta.z = -200) onto a water surface near the rhine player start
     // sends the splash (event 0xb8) once and goes on below the surface.
