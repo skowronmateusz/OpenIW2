@@ -5411,8 +5411,8 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // Grenade indicator (cgame 0x4be210, after the crosshair, only with pm_type < 4): for each moving grenade within
-            // range (src/game/grenadeindicator.h) a hud_grenadepointer box and a hud_grenadeicon box around the screen centre,
+            // Grenade indicator (cgame 0x4be210, after the crosshair, only with pm_type < 4): for each grenade at rest (|trDelta|^2
+            // <= 1) within range (src/game/grenadeindicator.h) a hud_grenadepointer box and a hud_grenadeicon box around the screen centre,
             // colour white with the pulsing alpha. Not under a scope overlay unless cg_hudGrenadeIconInScope (0).
             // TODO(spec): the exe reads the entity state's pos.trBase / pos.trDelta (a flying grenade keeps its launch / last
             // bounce base) and the 0x793940 / 0x793944 scales are taken as the uniform virtual-unit scale used elsewhere here.

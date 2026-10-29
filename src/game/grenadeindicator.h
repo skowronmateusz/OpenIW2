@@ -26,11 +26,14 @@ struct GrenadeIndicatorCfg {
 };
 
 // 0x4be120. `base` / `delta` are the entity state's pos.trBase (es+0x20) / pos.trDelta (es+0x2c); `origin` is the predicted player
-// origin (ps+0x14, 0xf708fc) and `viewHeight` ps+0xd4 (0xf709bc). Shown only for a moving grenade (|delta|^2 > 1), within
-// cg_hudGrenadeIconMaxHeight below the player, within MaxHeight above the eye height, and within MaxRange (3D).
+// origin (ps+0x14, 0xf708fc) and `viewHeight` ps+0xd4 (0xf709bc). Shown only when |delta|^2 <= 1 (0x4be12d..0x4be157: fcomps
+// against 1.0 (0x591e20), `test ah, 0x41; je` returns false when |delta|^2 > 1). A flying grenade (launch / bounce velocity in
+// trDelta) is hidden; a grenade at rest (G_SetOrigin 0x4d8380 from the missile stop 0x5260c2: trType 0, trDelta 0) is shown until
+// it explodes and leaves the snapshot. Further: within cg_hudGrenadeIconMaxHeight below the player, within MaxHeight above the
+// eye height, and within MaxRange (3D).
 inline bool grenadeIndicatorVisible(const GrenadeIndicatorCfg& c, const std::array<float, 3>& base, const std::array<float, 3>& delta,
                                     const std::array<float, 3>& origin, float viewHeight) {
-    if (!(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2] > 1.0f)) return false;
+    if (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2] > 1.0f) return false;
     const float dx = base[0] - origin[0], dy = base[1] - origin[1], dz = base[2] - origin[2];
     if (dz >= 0.0f) {
         if (viewHeight + c.maxHeight < dz) return false;

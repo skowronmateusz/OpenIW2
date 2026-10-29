@@ -491,7 +491,7 @@ namespace iw2::game {
 
 // Using a weapon item (0x5341a0 type 2 → Touch_Item 0x521a90 → 0x521ad0 → Pickup_Weapon 0x521170): "touch" on the
 // item with the player; a weapon the player does not own is taken: with no free primary slot the current weapon
-// is dropped as its item where the player stands (0x5220f0) and its slot gets the new one; the item's ammo is
+// is dropped as its item in the used item's place (0x5220f0, then 0x521551..0x52157c) and its slot gets the new one; the item's ammo is
 // given (item +0x148 stock / +0x154 clip) and the player switches to it (0x532060); the item goes away (0x4d7c30).
 // TODO(spec): the exact slot test (weaponSlot class +0x80 and the per-slot ammo loop of 0x521170), the item ammo
 // rules for map-placed items (0x370/0x374 random ranges), "menu_show_notify" and the pickup events 0x90/0x91.
@@ -532,11 +532,25 @@ void World::pickUpWeaponItem(Entity& item) {
             dropped.obj->set("$ammoClip", Value(int32_t(cl != 0 ? cl : -1)));
             st = cl = 0;
         }
-        dropped.obj->set("origin", player_->obj->get("origin"));
-        dropped.obj->set("angles", player_->obj->get("angles"));
         const std::string wm = weaponField(cur, "worldModel");
         if (!wm.empty()) dropped.obj->set("model", Value(wm));
-        launchItem(dropped, *player_); // 0x5220f0 → 0x521f70
+        // 0x5220f0 launches the new item from the player (LaunchItem 0x521f70, ecx = 0), but Pickup_Weapon then overrides that
+        // (0x521551..0x52157c): spawnflags +0x124 and groundEntityNum +0xc are copied from the used item, G_SetOrigin (0x4d8380:
+        // trBase = the used item's currentOrigin +0xdc, trType 0, trTime / trDuration 0, trDelta 0) and G_SetAngles (0x4d83c0:
+        // the used item's currentAngles +0xe8, apos stationary), then the item is linked (0x44b2d0). So the swap is static: the
+        // old weapon lies exactly where the used item lay (which Touch_Item frees afterwards, 0x521c4a) and does not fly.
+        dropped.obj->set("origin", item.obj->get("origin"));
+        dropped.obj->set("angles", item.obj->get("angles").isVector() ? item.obj->get("angles") : Value(Vec3{0, 0, 0}));
+        if (item.obj->get("spawnflags").isNumber()) dropped.obj->set("spawnflags", item.obj->get("spawnflags"));
+        dropped.obj->set("$trtype", Value(int32_t(0)));
+        dropped.obj->set("$trtime", Value(0.0f));
+        dropped.obj->set("$trduration", Value(int32_t(0)));
+        dropped.obj->set("$trbase", dropped.obj->get("origin"));
+        dropped.obj->set("$trdelta", Value(Vec3{0, 0, 0}));
+        {
+            const Value g = item.obj->get("$groundent");
+            dropped.obj->set("$groundent", g.isNumber() ? g : Value(int32_t(kItemNoGround)));
+        }
         const int slot = inv.slot[1] == cur ? 1 : 2;
         takeWeapon(inv, cur);
         // 0x4dc8a0: taking the held weapon clears ps weapon at once, so the swap has no putaway.
@@ -614,6 +628,19 @@ void World::compassPing(const Entity& actor, const Vec3& pos, int durationMs) {
 void World::debugSpawnItem(const std::string& weapon) {
     Entity& e = spawnEntity("weapon_" + weapon);
     e.obj->set("origin", player_->obj->get("origin"));
+}
+
+Entity& World::debugSpawnWeaponItem(const std::string& weapon, const Vec3& origin, const Vec3& angles) {
+    Entity& e = spawnEntity("weapon_" + weapon);
+    e.obj->set("origin", Value(origin));
+    e.obj->set("angles", Value(angles));
+    return e;
+}
+
+Entity* World::debugUseItem(Entity& item) {
+    const size_t before = entities_.size();
+    pickUpWeaponItem(item);
+    return entities_.size() > before ? entities_.back().get() : nullptr;
 }
 
 Entity* World::debugUseWeaponItem(const std::string& weapon, int stock, int clip) {

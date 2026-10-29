@@ -696,6 +696,10 @@ public:
     // Test hook: a weapon item of `weapon` with the given item ammo (stock, clip; 0 = unset) at the player, used like F (0x5341a0 ->
     // Pickup_Weapon). Returns the dropped item (the swapped-out weapon), or nullptr.
     Entity* debugUseWeaponItem(const std::string& weapon, int stock, int clip);
+    // Test hooks: a weapon item at `origin` / `angles` (left to G_RunItem, it settles like a map item), and using an existing item
+    // like F; debugUseItem returns the dropped item (the swapped-out weapon), or nullptr.
+    Entity& debugSpawnWeaponItem(const std::string& weapon, const Vec3& origin, const Vec3& angles);
+    Entity* debugUseItem(Entity& item);
     void debugSetClip(const std::string& weapon, int rounds);
     std::pair<int, int> debugAmmo(const std::string& weapon);
     // Tests: the hit-location multiplier (0x528100) for an attacker holding `weapon` ("" = no weapon).
