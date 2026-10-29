@@ -20,6 +20,7 @@
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
+#include "game/grenadeindicator.h"
 #include "game/hudfade.h"
 #include "game/textmessage.h"
 #include "game/clientinput.h"
@@ -3112,7 +3113,7 @@ int main(int argc, char** argv) {
     float shotViewHeight = 60;
     float shotLean = 0;
     bool shotAds = false;
-    bool godMode = false; // --god / F10: the "god" cheat (0x4e9f90 toggles FL_GODMODE on the player)
+    bool pendingGod = false, pendingDemigod = false, pendingNotarget = false; // --god / --demigod / --notarget, F10 = god: the cheat commands (0x4e9f90 / 0x4ea030 / 0x4ea0d0; need sv_cheats)
     bool pendingNoclip = false, pendingUfo = false; // --noclip / --ufo: the cheat commands run once when the level is up (need sv_cheats)
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
     std::string language = "polish";
@@ -3155,7 +3156,9 @@ int main(int argc, char** argv) {
             else if (a == "--blur") forcedBlur = std::stof(next());
             else if (a == "--shoot") shootMarks = std::stoi(next());
             else if (a == "--no-audio") audioOn = false;
-            else if (a == "--god") godMode = true;
+            else if (a == "--god") pendingGod = true;
+            else if (a == "--demigod") pendingDemigod = true;
+            else if (a == "--notarget") pendingNotarget = true;
             else if (a == "--noclip") pendingNoclip = true;
             else if (a == "--ufo") pendingUfo = true;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
@@ -4994,7 +4997,7 @@ int main(int argc, char** argv) {
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
             // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
             // TODO(spec): the dvars it also tests.
-            if (world && mantleHint && mantleHintItem && !input.objectivesHeld()) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
+            if (world && mantleHint && mantleHintItem && !input.objectivesHeld() && menuEnv.getCvar("cg_drawpaused") != "0" /* 0x4a9fb1 */) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
                 const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
@@ -5031,7 +5034,7 @@ int main(int argc, char** argv) {
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
             // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
             // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
-            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && menuEnv.getCvar("cl_paused") != "1" /* 0x104309c */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
+            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && menuEnv.getCvar("cg_drawpaused") != "0" /* 0x4a9e4c */ && menuEnv.getCvar("cl_paused") != "1" /* 0x104309c */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
@@ -5362,6 +5365,35 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Grenade indicator (cgame 0x4be210, after the crosshair, only with pm_type < 4): for each moving grenade within
+            // range (src/game/grenadeindicator.h) a hud_grenadepointer box and a hud_grenadeicon box around the screen centre,
+            // colour white with the pulsing alpha. Not under a scope overlay unless cg_hudGrenadeIconInScope (0).
+            // TODO(spec): the exe reads the entity state's pos.trBase / pos.trDelta (a flying grenade keeps its launch / last
+            // bounce base) and the 0x793940 / 0x793944 scales are taken as the uniform virtual-unit scale used elsewhere here.
+            if (world && world->player() && !(scopeAlpha() > 0) &&
+                !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
+                const game::GrenadeIndicatorCfg gcfg;
+                const std::array<float, 3> pOrigin{c.pos.x, c.pos.y, c.pos.z - hudViewHeight};
+                const float ga = game::grenadeIndicatorAlpha(gcfg, world->timeMs());
+                for (const auto& g : world->hudGrenades()) {
+                    const std::array<float, 3> gb{g.base[0], g.base[1], g.base[2]}, gd{g.delta[0], g.delta[1], g.delta[2]};
+                    if (!game::grenadeIndicatorVisible(gcfg, gb, gd, pOrigin, hudViewHeight)) continue;
+                    const float ang = game::grenadeIndicatorAngle(gb[0] - pOrigin[0], gb[1] - pOrigin[1], c.yaw);
+                    const auto lay = game::grenadeIndicatorLayout(gcfg, float(w) * 0.5f, float(h) * 0.5f, sc, sc, ang);
+                    const struct { const game::GrenadeIndicatorQuad* quad; const char* mat; } parts[2] = {{&lay.pointer, "hud_grenadepointer"}, {&lay.icon, "hud_grenadeicon"}};
+                    for (const auto& part : parts) {
+                        Quad2D q{0, 0, 0, 0};
+                        q.free = true;
+                        for (int k = 0; k < 4; ++k) {
+                            q.qx[k] = part.quad->xy[size_t(k) * 2];
+                            q.qy[k] = part.quad->xy[size_t(k) * 2 + 1];
+                        }
+                        q.rgba[3] = uint8_t(std::clamp(ga, 0.0f, 1.0f) * 255.0f);
+                        q.texture = materialTexture(part.mat);
+                        out.push_back(q);
+                    }
+                }
+            }
             // Crosshair target names (cgame 0x4bf8b0, drawn when cl_paused is 0): the server's configstrings 0xb / 0xc (0x534aa0:
             // the target actor's name and weapon display name) as localized text at CENTER/CENTER alignment (0x440e60 mode 2):
             // line 1 at (+25, -2) in green (0 1 0 1), line 2 at (+25, +18) in white alpha 0.7, textscale 1/3, style 3
@@ -5393,7 +5425,10 @@ int main(int argc, char** argv) {
             // Fade (0x4a7600 / 0x4b0900): dvar seconds 0 -> 1; else touch == 0 or elapsed >= ticks -> 0, else min(1, (ticks - elapsed) / 700).
             // Ammo backdrop / text use hud_fade_ammodisplay (default 2 s, 0x10438d8) from the ammo touch time; the firemode icon the same dvar
             // but a fixed 0x708 = 1800 ms window from the weapon change time (0xf796e4); the compass hud_fade_compass (default 8 s).
+            // cg_drawpaused == 0 forces alpha 0 first (0x4a7600, and inline in the compass / stance handlers 0x4a90e2, 0x4a9222, 0x4a8214).
+            const bool drawPausedOn = menuEnv.getCvar("cg_drawpaused") != "0";
             auto fadeAlpha = [&](int64_t touch, float dvarSeconds, int ticksMs) {
+                if (!drawPausedOn) return 0.0f;
                 if (dvarSeconds == 0.0f) return 1.0f;
                 const int64_t now = world ? world->timeMs() : 0, el = now - touch;
                 if (touch == 0 || el >= ticksMs) return 0.0f;
@@ -5407,8 +5442,13 @@ int main(int argc, char** argv) {
             // def +0x1d4 / +0x1d8 are maxAmmo / clipSize: weapon field table 0x5a7e80 (docs/spec/inventory.md; the table is in the
             // packed .data, read at run time), and givemaxammo (0x538020) reads +0x1d4 at 0x538109 for the stock limit.
             const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
-            const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
-            const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
+            // clipOnly weapons (def +0x340): the clip is "invalid" for the ownerdraw (0x4a7a13) and the displayed stock is the
+            // clip count itself (0x4dcd60 without a shared-ammo group returns ps.ammoclip[clipIndex] for them, ps.ammo[ammoIndex]
+            // otherwise). TODO(spec): the shared-ammo-group sum of 0x4dcd60 (def +0x1e4 >= 0) is not modelled.
+            const bool clipOnly = pweapon.hudNumber("clipOnly") != 0.0f;
+            const int dispStock = clipOnly ? pweapon.clip() : pweapon.stock();
+            const bool stockLow = maxAmmo >= 0 && float(std::min(dispStock, 999)) <= maxAmmo * 0.2f;
+            const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
                 const float rightEdge = float(w), bottomEdge = float(h); // RIGHT / BOTTOM alignment, safe area 0
                 if (ammoBackItem && !ammoBackItem->background.empty()) {
@@ -5438,7 +5478,7 @@ int main(int argc, char** argv) {
                             return tw;
                         };
                         const float x0 = rightEdge + r.x * sc, y0 = bottomEdge + r.y * sc, w0 = r.w * sc;
-                        const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", pweapon.stock());
+                        const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", dispStock);
                         const int st = ammoTextItem->textStyle;
                         // Colours (0x4a7930): alpha = the fade; the clip keeps the item colour, "|" and the stock turn red when the
                         // stock is low; a low clip is overdrawn in red with a sawtooth alpha (800 ms, 1 -> 0, restarting),
@@ -5446,17 +5486,22 @@ int main(int argc, char** argv) {
                         col[3] = uint8_t(std::clamp(ammoAlpha, 0.0f, 1.0f) * 255.0f);
                         uint8_t col2[4] = {col[0], col[1], col[2], col[3]};
                         if (stockLow) col2[0] = uint8_t(0.89f * 255.0f), col2[1] = uint8_t(0.18f * 255.0f), col2[2] = uint8_t(0.01f * 255.0f);
-                        hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
-                        if (clipLow) {
-                            const int64_t now = world ? world->timeMs() : 0;
-                            if (hudFade.flashStart > now || hudFade.flashStart + 800 < now) hudFade.flashStart = now;
-                            const float saw = float(hudFade.flashStart - now + 800) * 0.00125f;
-                            const uint8_t flash[4] = {uint8_t(0.89f * 255.0f), uint8_t(0.18f * 255.0f), uint8_t(0.01f * 255.0f),
-                                                      uint8_t(std::clamp(std::min(saw, ammoAlpha), 0.0f, 1.0f) * 255.0f)};
-                            hudText(out, clip, x0, y0, gs, *f, flash, 0.0f, 1.0f, st);
+                        if (clipOnly) {
+                            // Clip invalid, stock valid (0x4a7d28): the stock text alone, centred in the rect, colour as above.
+                            hudText(out, stock, x0 + (w0 - width(stock)) * 0.5f, y0, gs, *f, col2, 0.0f, 1.0f, st);
+                        } else {
+                            hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
+                            if (clipLow) {
+                                const int64_t now = world ? world->timeMs() : 0;
+                                if (hudFade.flashStart > now || hudFade.flashStart + 800 < now) hudFade.flashStart = now;
+                                const float saw = float(hudFade.flashStart - now + 800) * 0.00125f;
+                                const uint8_t flash[4] = {uint8_t(0.89f * 255.0f), uint8_t(0.18f * 255.0f), uint8_t(0.01f * 255.0f),
+                                                          uint8_t(std::clamp(std::min(saw, ammoAlpha), 0.0f, 1.0f) * 255.0f)};
+                                hudText(out, clip, x0, y0, gs, *f, flash, 0.0f, 1.0f, st);
+                            }
+                            hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col2, 0.0f, 1.0f, st);
+                            hudText(out, stock, x0 + w0, y0, gs, *f, col2, 1.0f, 1.0f, st);
                         }
-                        hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col2, 0.0f, 1.0f, st);
-                        hudText(out, stock, x0 + w0, y0, gs, *f, col2, 1.0f, 1.0f, st);
                     }
                 }
             }
@@ -6906,8 +6951,7 @@ int main(int argc, char** argv) {
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
-                    godMode = !godMode;
-                    std::cout << (godMode ? "godmode ON" : "godmode OFF") << "\n"; // GAME_GODMODE_ON / _OFF
+                    pendingGod = true; // the god command, behind the sv_cheats / alive gate
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
@@ -7156,7 +7200,12 @@ int main(int argc, char** argv) {
                 cam.pos = cam.pos + normalize(move) * speed;
             }
 
-            if (world && world->player()) world->player()->obj->set("$godmode", script::Value(godMode));
+            if (world && world->player() && (pendingGod || pendingDemigod || pendingNotarget)) {
+                if (pendingGod) world->cheatGod();
+                if (pendingDemigod) world->cheatDemigod();
+                if (pendingNotarget) world->cheatNotarget();
+                pendingGod = pendingDemigod = pendingNotarget = false;
+            }
             if (world && world->player() && (pendingNoclip || pendingUfo)) { // cheat commands noclip / ufo (0x4ea9b1 / 0x4ea9d8)
                 if (pendingNoclip) world->cheatNoclip();
                 if (pendingUfo) world->cheatUfo();
@@ -7240,7 +7289,7 @@ int main(int argc, char** argv) {
                 }
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
-                    if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    if (e.kind == game::PlayerWeapon::Event::ReloadBegin) { input.clearAds(); if (e.weapon.empty()) ps.ads = false; } // event 0x95 (0x4bafbc); 0x4dd090 (the empty-named ones) also clears pm_flags 0x40
                     else if (e.kind == game::PlayerWeapon::Event::EjectBrass) viewFlash->brassPending = true; // event 0xa2 (0x4bb113)
                     else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
                         ps.aimSpread = e.alt ? std::max(ps.aimSpread, 128.0f) : 255.0f;

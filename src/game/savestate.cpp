@@ -1081,10 +1081,18 @@ void World::processSaves() {
             continue;
         }
         if (p.flags & 6) {
+            // A write with flags & 6 while a save is still uncommitted (slot state 4) and the player is alive (health 0x1b1603c > 0) first
+            // commits that save, with byte 0x1b15ac1 set (0x4e3fec..0x4e4003, 0x4e4064..0x4e4081 -> commit 0x4d5660).
+            const Value hp = player_ ? player_->obj->get("health") : Value();
+            if (uncommitted_ && hp.isNumber() && hp.asInt() > 0) {
+                saveFiles_.push_back(std::move(uncommitted_->second));
+                uncommitted_.reset();
+                commitRequested_ = true;
+            }
             saveFiles_.push_back(std::move(f));
-            // The commit of a savegame() write (flag 2) runs with byte 0x1b15ac1 set (0x4e4029..0x4e402b before the commit 0x4d5660), so
-            // a later commitsave returns without doing anything. TODO(spec): the other setters (0x4e3ffc, 0x4e4081, 0x4e40c0: a write
-            // that commits a still-pending savegamenocommit save, gated by 0x1b1603c) and the engine-side 0x4d5830.
+            // The commit of a savegame() write (flag 2) runs with byte 0x1b15ac1 set (0x4e4029..0x4e402b, 0x4e40c0 before the commit
+            // 0x4d5660), so a later commitsave returns without doing anything. TODO(spec): the byte setter 0x4d5830 (a stub that sets it
+            // and jumps to the commit; no direct caller in the exe) and the post-commit step 0x4d56f0.
             if (p.flags & 2) commitRequested_ = true;
         }
         else uncommitted_ = std::make_pair(p.saveId, std::move(f)); // savegamenocommit: kept until commitsave

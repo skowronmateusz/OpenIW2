@@ -589,6 +589,17 @@ public:
     // Return whether the flag was toggled.
     bool cheatNoclip() { return cheatToggle(noclip_, "GAME_NOCLIPON", "GAME_NOCLIPOFF"); }
     bool cheatUfo() { return cheatToggle(ufo_, "GAME_UFOON", "GAME_UFOOFF"); }
+    // god / demigod / notarget (0x4e9f90 / 0x4ea030 / 0x4ea0d0, same gate 0x4e9500): toggle client-entity flags +0x128 & 1 / 2 / 4 and print
+    // GAME_GODMODE_ON/OFF, GAME_DEMI_GODMODE_ON/OFF, GAME_NOTARGETON/OFF. Effects: god is read by combat ($godmode on the player);
+    // Consumers: god and demigod in G_Damage (0x5282b3 / 0x5283d2: the entity objects carry `$godmode` / `$demigod`), notarget in the enemy search
+    // 0x54e230 (0x54e326), the cover script check 0x54bb30 (0x54bbc9) and getclosestenemysqdist 0x53c290 (0x53c37b): `$notarget` next to `ignoreme`.
+    // TODO(spec): the entity event at 0x4e776b (damage 100000, means of death 0xc) that god / demigod (flags & 3) skip is not ported.
+    bool cheatGod();
+    bool cheatDemigod();
+    bool cheatNotarget();
+    bool playerGod() const { return god_; }
+    bool playerDemigod() const { return demigod_; }
+    bool playerNotarget() const { return notarget_; }
     bool playerNoclip() const { return noclip_; }
     bool playerUfo() const { return ufo_; }
     // ClientThink's pm_type for the player (0x4e7c05..0x4e7c5a): noclip 2, ufo 3, else by health and the link
@@ -636,6 +647,10 @@ public:
 
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
+    // HUD grenade indicator input (cgame 0x4be210 reads pos.trBase / pos.trDelta of eType 3 entities whose weapon has
+    // projExplosionType "grenade", def +0x390 == 0): one entry per live grenade missile.
+    struct HudGrenade { Vec3 base, delta; };
+    std::vector<HudGrenade> hudGrenades();
 
     const std::array<Objective, 16>& objectives() const { return objectives_; }
     // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
@@ -912,6 +927,7 @@ private:
     std::array<Objective, 16> objectives_{};
     std::vector<ClientCommand> clientCommands_;
     bool noclip_ = false, ufo_ = false; // client+0x8628 / +0x862c
+    bool god_ = false, demigod_ = false, notarget_ = false; // entity flags +0x128 & 1 / 2 / 4
     bool cheatToggle(bool& flag, const char* on, const char* off);
     std::vector<std::string> shockNames_;                 // precacheshellshock names (index - 1)
     std::vector<std::shared_ptr<const ShockRecord>> shockRecords_; // parallel to shockNames_

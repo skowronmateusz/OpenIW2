@@ -360,7 +360,7 @@ bool World::coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& scr
             Entity* g = e.ai.grenade;
             if (g && !covers(vecField(g->obj, "origin"))) return true;
         }
-    } else if (!enemy->obj->get("ignoreme").truthy()) { // TODO(spec): also not with notarget (+0x128 & 4)
+    } else if (!enemy->obj->get("ignoreme").truthy() && !enemy->obj->get("$notarget").truthy()) { // 0x54bbc9: also not with notarget (+0x128 & 4)
         auto it = e.sentientInfo.find(enemy->obj.get());
         if (it != e.sentientInfo.end() && it->second.lastKnownMs > 0) {
             bool check = true;

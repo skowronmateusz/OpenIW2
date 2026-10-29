@@ -1049,4 +1049,15 @@ void World::scriptSpawnItem(Entity& e) {
     e.obj->set("$itemsettled", Value(true));
 }
 
+std::vector<World::HudGrenade> World::hudGrenades() {
+    std::vector<HudGrenade> out;
+    for (Entity* e : grenades_) {
+        if (!e || !e->grenade || e->obj->removed) continue;
+        const GrenadeState& g = *e->grenade;
+        if (explosionType(lowerStr(weaponField(g.weapon, "projExplosionType"))) != 0) continue;
+        out.push_back({g.trBase, g.trDelta});
+    }
+    return out;
+}
+
 } // namespace iw2::game

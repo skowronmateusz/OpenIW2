@@ -273,7 +273,7 @@ void World::selectEnemy(Entity& actor) {
     bool bestAware = onTurret;
     for (const auto& ep : entities_) {
         Entity& t = *ep;
-        if (!isSentient(t) || t.obj->get("team").toString() != other || t.obj->get("ignoreme").truthy()) continue;
+        if (!isSentient(t) || t.obj->get("team").toString() != other || t.obj->get("ignoreme").truthy() || t.obj->get("$notarget").truthy()) continue; // 0x54e326: notarget (flags & 4) / sentient ignoreme
         auto it = actor.sentientInfo.find(t.obj.get());
         if (it == actor.sentientInfo.end() || it->second.lastKnownMs <= 0) continue;
         const SentientInfo& info = it->second;
