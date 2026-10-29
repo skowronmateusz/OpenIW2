@@ -37,6 +37,10 @@ struct Material {
     std::string name;
     std::string referenceImage;
     std::string techniqueSet;
+    // File byte 0x0d: the draw sort byte. The 1.3 renderer copies the 0x44-byte header verbatim (0x100171a0 / 0x10017203, rep movsl x17)
+    // and the material table comparator 0x10016ae0 sorts by it ascending first (values in the shipped data: 3 opaque default, 4 sky,
+    // 5 sun, 7-16 decals, 25-26 effect blends, 27 additive; ties are broken by the techset load order).
+    uint8_t sortByte = 0;
     std::vector<MaterialTexture> textures;
     std::vector<MaterialConstant> constants;
 

@@ -41,6 +41,7 @@ Material parseMaterial(std::span<const uint8_t> d) {
     m.referenceImage = str(d, u32(d, 0x04));
     const uint16_t textureCount = u16(d, 0x34);
     const uint16_t constantCount = u16(d, 0x36);
+    m.sortByte = d[0x0d];
     m.techniqueSet = str(d, u32(d, 0x38));
 
     const uint32_t texTable = u32(d, 0x3c);
