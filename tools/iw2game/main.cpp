@@ -1530,7 +1530,9 @@ int main(int argc, char** argv) {
                         if (!reachable && std::fabs(c[2] - po[2]) > 1000.0f) continue; // off the node graph and far above / below: a vehicle or out-of-world trigger
                         // Score: walking distance, plus the distance from the current objective marker (a player follows it), plus
                         // 2000 for library waiters (autospawn, vehicle paths: they fire on the way anyway).
-                        const float score = d + objWeight(c) + (rank ? 2000.0f : 0.0f);
+                        // (the marker pull only for use / look / shoot targets: trigger entry follows the route order, which the walking
+                        // distance already gives, and a far marker would make the bot skip the gates on the way)
+                        const float score = d + (kind == Enter ? 0.0f : objWeight(c)) + (rank ? 2000.0f : 0.0f);
                         if (!best || score < bestD) { best = e.get(); bestKind = kind; bestD = score; bestRank = rank; bestSite = w.site; bestTarget = c; }
                     }
                 }
