@@ -564,9 +564,14 @@ children (count word at +0, first index word at +6 into the tree's child table a
 either node has no anim index (word +4 = 0); otherwise it picks the xanim (a node with a zero word uses 1.0 as the note time; a negative note
 index asks 0x479380 first) and calls 0x475de0(R, T, noteTime, d). 0x475de0 returns 1.0 when R.b == 1.0; else, with R = {a, b, ..., loops at +0xa}
 and T = {.., time at +4, loops at +0xa}, it returns (float(R.loops - T.loops [+1 in the a > x case]) + (x - T.time)) / d for the cases of the
-three comparisons a >= b, a <= x, b vs x, and 1.0 in the others. TODO(spec): which fields of R and T are old time, new time and the note
-time was not pinned down; the port takes the linear position of the first note crossed by the leaves that report notes ("end" counts at time 1
-for non-looping anims). TODO(spec): the exe's per-actor scratch snapshot (an
+three comparisons a >= b, a <= x, b vs x, and 1.0 in the others. Field map read from the leaf case of 0x476c80 (0x476cbc..0x476db0): with
+S = the node's state record (0xa0a200 + index * 40 + 0xc) the leaf takes S[+0x10] / S[+0x14] as the two weights (both 0.0 = skip, 1.0 result),
+steps newT = S[+4] + xanim[+8] * S[+0x18] * dt (the base time of the step plus rate-scaled dt; a looping anim wraps newT below 1.0 and counts
+loops up, a non-looping one clamps at 1.0), and passes 0x475ea0 a block R = {+0 newT, +4 S[+0] (the time reached by the previous step),
++8 new loop count, +0xa S[+8] (old loop count)} and S itself as T (time at +4, loop at +0xa); 0x475de0's `a` / `b` are then newT / the previous
+time. TODO(spec): the meaning of the three comparisons (which crossing of the note time x counts, the +1 loop in the wrapped case) was not
+proven, so `AnimState::noteFraction` is unchanged: it takes the linear position of the first note crossed by the leaves that report notes
+("end" counts at time 1 for non-looping anims). TODO(spec): the exe's per-actor scratch snapshot (an
 endprediction on another actor than the begin); the move block fields the port keeps outside `ActorAi` (nothing found).
 ### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
 
