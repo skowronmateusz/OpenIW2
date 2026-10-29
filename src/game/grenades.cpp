@@ -1006,7 +1006,11 @@ Entity& World::debugDropItem(const std::string& weaponName, const Vec3& origin, 
 TraceResult World::missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta) {
     uint32_t mask = clip;
     if (std::fabs(trDelta[2]) > 30.0f && !collision_->trace(from, from, {0, 0, 0}, {0, 0, 0}, 0x20).startSolid) mask |= 0x20;
-    TraceResult tr = collision_->trace(from, to, {0, 0, 0}, {0, 0, 0}, mask, pass);
+    // 0x526840 is G_LocationalTrace (0x44bf00) with the default priority map 0x5a9584, like Bullet_Fire: xmodel collision surfaces
+    // (script models, vehicles) and actor hit boxes are hit instead of their boxes / collmap brushes.
+    int location = 0;
+    const Entity* passEnt = pass >= 0 ? entityByNumber(pass) : nullptr;
+    TraceResult tr = locationalTrace(from, to, mask, passEnt, kHitPriorityDefault, location);
     if ((tr.surfaceFlags & 0x1f00000u) == 0x1400000u) {
         Vec3 d = trDelta;
         const float l = len(d);
@@ -1019,7 +1023,7 @@ TraceResult World::missileTrace(const Vec3& from, const Vec3& to, uint32_t clip,
         if (!normalFx.empty()) fxEvents_.push_back({normalFx, from, n});
         if (!reflectFx.empty()) fxEvents_.push_back({reflectFx, from, d});
         ++stats.waterSplashes;
-        tr = collision_->trace(from, to, {0, 0, 0}, {0, 0, 0}, clip, pass);
+        tr = locationalTrace(from, to, clip, passEnt, kHitPriorityDefault, location);
     }
     return tr;
 }

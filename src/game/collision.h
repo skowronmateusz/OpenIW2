@@ -49,6 +49,7 @@ struct EntityClip {
     Vec mins{}, maxs{}; // box bounds relative to the origin (model 0)
     uint32_t contents = 0;
     bool hitBoxes = false; // ent+0xa2 & 2: locational traces with a priority map test its bones instead
+    bool collSurfs = false; // ent+0xa2 & 4 (script_vehicle 0x50d844): locational traces test its xmodel collision surfaces instead
 };
 
 class CollisionWorld {
@@ -63,9 +64,9 @@ public:
     // As in the original, the box is traced as a vertical capsule (docs/spec/collision.md).
     // Clips against the world and the entity clips set with setEntityClips.
     // Skips `passEntity`, entities it owns and its owner (0x44b840), and with `skipHitBoxes` the clips with hit boxes
-    // (the caller tests their bones).
+    // (the caller tests their bones), with `skipCollSurfs` the clips with xmodel collision surfaces (locational traces).
     TraceResult trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask, int passEntity = -1,
-                      bool skipHitBoxes = false) const;
+                      bool skipHitBoxes = false, bool skipCollSurfs = false) const;
     // The temporary box model 0x3ff at `origin` (FUN_00417c20 → FUN_00417640: FUN_00416120 / FUN_00417060).
     TraceResult traceBox(const Vec& origin, const Vec& boxMins, const Vec& boxMaxs, uint32_t boxContents, const Vec& start,
                          const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const;

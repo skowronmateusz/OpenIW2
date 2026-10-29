@@ -68,6 +68,13 @@ uint32_t World::entityContents(const Entity& e) const {
     if (e.obj->get("$notsolid").truthy()) return 0;
     if (e.classname == "script_brushmodel") return 1;
     if (e.classname == "script_model") return 0x2080;
+    // script_vehicle init 0x50d820: contents 0x2080 (0x202080 with spawnflag 1), then the collmap (0x50dc40) gives 0x800000 (0xa00000).
+    if (e.vehicle) {
+        const Value sf = e.obj->get("spawnflags");
+        const bool one = sf.isNumber() && (sf.asInt() & 1);
+        if (e.vehicle->collmapSet && !e.vehicle->collmap.empty()) return one ? 0xa00000u : 0x800000u;
+        return one ? 0x202080u : 0x2080u;
+    }
     return 0;
 }
 
@@ -107,6 +114,7 @@ void World::syncEntityClips() {
             if (a.isVector()) c.angles = a.asVector();
             const Value sf = e.obj->get("spawnflags");
             c.contents = (sf.isNumber() && (sf.asInt() & 1)) ? 0xa00000u : 0x800000u;
+            c.collSurfs = true; // ent+0xa2 = 4 (0x50d844)
             clips.push_back(c);
             continue;
         }

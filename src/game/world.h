@@ -675,6 +675,8 @@ public:
     static constexpr int kItemNoGround = 0x7ff; // groundEntityNum (+0xc) ENTITYNUM_NONE
     // Test hook: a rocket of `weapon` fired by the player from `start` along `dir` (G_FireRocket 0x527810).
     Entity& debugSpawnRocket(const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(*player_, weapon, start, dir); }
+    // Test hook: Bullet_Fire from the player along start -> end; the entity the bullet hit, else null.
+    Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }
     Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
         return spawnGrenade(*player_, weapon, start, velocity, fuseMs);
     }
