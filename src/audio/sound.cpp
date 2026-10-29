@@ -524,7 +524,9 @@ void Mixer::setPaused(bool paused) {
     std::lock_guard lock(mutex_);
     if (paused == paused_) return;
     paused_ = paused;
-    for (Voice& v : voices_) v.held = paused && v.chan != 2; // channel 2 = menu, the only one not paused by default
+    // Only the channels whose flag 0x793d6f[channel] is set pause (0x442a30); the defaults leave out "menu" and openvictoryscreen
+    // (0x4a6d7f) also clears "music", so the level-end theme keeps playing under the victory screen.
+    for (Voice& v : voices_) v.held = paused && (v.chan < 0 || channelPausable[v.chan]);
 }
 
 void Mixer::mix(float* out, int frames) {

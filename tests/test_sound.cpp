@@ -273,6 +273,14 @@ int main() {
         m.setPaused(false);
         for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
         CHECK(m.active() == 0);
+        // openvictoryscreen (0x4a6d7f) clears the music flag: voices on a non-pausable channel keep playing while cl_paused is set.
+        for (bool& f : m.channelPausable) f = false;
+        CHECK(m.play("land_plr_dirt") != 0);
+        m.setPaused(true);
+        for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
+        CHECK(m.active() == 0);
+        m.setPaused(false);
+        m.resetPausable();
     }
     if (failures) return 1;
     std::cout << "sound tests passed\n";
