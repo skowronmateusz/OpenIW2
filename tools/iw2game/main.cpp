@@ -689,7 +689,7 @@ int main(int argc, char** argv) {
         bool autoplay = false, autoplayForce = false;
         // Substrings of a waiting function's name / a trigger's targetname that keep the autoplay bot out of a trigger (kill-player,
         // desertion, minefield triggers); --autoplay-skip a,b adds more.
-        std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail"};
+        std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail", "wrongway"};
         float stallSecs = 25.0f;
         std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
         std::vector<std::string> targets; // --targets FILE: the level notifies a complete run of this map reaches (`map: a b c` lines), "reached k of n"
@@ -833,6 +833,16 @@ int main(int argc, char** argv) {
         std::vector<std::string> autoplayLog;    // every autoplay action / stall record
         std::vector<std::string> forcedEvents;
         std::map<int, int> enteredTriggers;
+        // Driving: when the player rides a usable vehicle (libya, 88ridge tanks) the bot drives it at the target instead of walking:
+        // forward held, the view yaw at the target and the jump button (the hull turns toward the view).
+        bool driving = false;
+        iw2::game::Vec3 driveTarget{};
+        float driveUntilT = 0.0f, driveStartT = 0.0f, unstickUntil = 0.0f;
+        float unstickSide = 1.0f;
+        iw2::game::Vec3 lastDrivePos{};
+        bool driveFollow = false; // after two stuck events: follow the nearest moving allied vehicle instead of driving straight
+        int stuckCount = 0;
+        std::map<int, iw2::game::Vec3> vehicleLastPos;
         std::set<int> placedItems; // weapon_* entities present at the first autoplay decision (map-placed, not AI drops)
         bool placedItemsTaken = false;
         float lastProgressT = 0.0f;
@@ -1381,6 +1391,72 @@ int main(int argc, char** argv) {
                     }
                 world.setPlayerCommand(pc);
             }
+            if (driving && world.player()) { // autoplay vehicle controller (overrides the look / use commands of this frame)
+                const iw2::game::Entity* v = nullptr;
+                for (const auto& e : world.entities())
+                    if (e->number == world.player()->usingVehicle) v = e.get();
+                const float t = f * 0.05f;
+                if (!v || world.player()->usingVehicle < 0 || t > driveUntilT + 10.0f) {
+                    driving = false;
+                } else {
+                    const auto o = v->obj->get("origin").asVector();
+                    // Follow mode (after getting stuck twice on a straight drive): the target is the nearest allied vehicle that is moving;
+                    // the squad's path knows the way through the canyon (88ridge "follow the tank squad", libya's formation).
+                    iw2::game::Vec3 goal = driveTarget;
+                    bool following = false;
+                    if (driveFollow) {
+                        float bd = 0;
+                        for (const auto& e : world.entities()) {
+                            if (!e->vehicle || e->obj->removed || e.get() == v) continue;
+                            const auto tm = e->obj->get("script_team"), tm2 = e->obj->get("team");
+                            if (!((tm.isString() && tm.asString() == "allies") || (tm2.isString() && tm2.asString() == "allies"))) continue;
+                            const auto eo = e->obj->get("origin").asVector();
+                            const auto it = vehicleLastPos.find(e->number);
+                            const bool moving = it == vehicleLastPos.end() || std::fabs(it->second[0] - eo[0]) + std::fabs(it->second[1] - eo[1]) > 1.0f;
+                            if (f % 20 == 0) vehicleLastPos[e->number] = eo;
+                            if (!moving) continue;
+                            const float d = std::sqrt((eo[0] - o[0]) * (eo[0] - o[0]) + (eo[1] - o[1]) * (eo[1] - o[1]));
+                            if (!following || d < bd) { following = true; bd = d; goal = eo; }
+                        }
+                    }
+                    const float dx = goal[0] - o[0], dy = goal[1] - o[1];
+                    const float dist = std::sqrt(dx * dx + dy * dy);
+                    iw2::game::World::PlayerCommand cmd;
+                    cmd.viewAngles = {0, std::atan2(dy, dx) * 180.0f / 3.14159265f, 0};
+                    if (std::getenv("IW2_AUTOPLAY_DEBUG") && f % 100 == 0) // debug: the driven vehicle every 5 s
+                        std::printf("[autoplay %.2f]   vehicle #%d at %.0f,%.0f,%.0f dist %.0f to %.0f,%.0f\n", t, v->number, o[0], o[1], o[2], dist, driveTarget[0], driveTarget[1]);
+                    if (following && dist < 400.0f) {
+                        world.setPlayerCommand(cmd); // close behind the squad: wait for it to move on
+                    } else if (dist < 150.0f) {
+                        driving = false; // arrived: stop (the trigger test uses the player's box at tag_player)
+                    } else if (t < unstickUntil) {
+                        // Stuck against something: back up for 3 s with the hull turned 70 degrees to one side (alternating), then retry.
+                        cmd.forward = -127;
+                        cmd.viewAngles[1] += unstickSide * 70.0f;
+                        cmd.buttons |= 0x400;
+                    } else {
+                        const float moved = std::sqrt((o[0] - lastDrivePos[0]) * (o[0] - lastDrivePos[0]) + (o[1] - lastDrivePos[1]) * (o[1] - lastDrivePos[1]));
+                        if (f % 40 == 0) { // every 2 s: less than 40 units of progress at full throttle = stuck
+                            if (moved < 40.0f && t > driveStartT + 3.0f) {
+                                unstickUntil = t + 3.0f;
+                                unstickSide = -unstickSide;
+                                if (++stuckCount >= 2 && !driveFollow) {
+                                    driveFollow = true;
+                                    char hb[64];
+                                    std::snprintf(hb, sizeof hb, "[autoplay %.2f] ", t);
+                                    autoplayLog.push_back(hb + std::string("  stuck twice: following the allied vehicles from now on"));
+                                    std::cout << autoplayLog.back() << "\n";
+                                }
+                                if (std::getenv("IW2_AUTOPLAY_DEBUG")) std::printf("[autoplay %.2f]   vehicle #%d stuck at %.0f,%.0f: backing up\n", t, v->number, o[0], o[1]);
+                            }
+                            lastDrivePos = o;
+                        }
+                        cmd.forward = 127;
+                        cmd.buttons |= 0x400; // the hull turns toward the view
+                    }
+                    world.setPlayerCommand(cmd);
+                }
+            }
             if (pmove && world.player()) {
                 if (!pmoveInit) {
                     const auto o = world.player()->obj->get("origin").asVector();
@@ -1492,6 +1568,10 @@ int main(int argc, char** argv) {
                 for (const auto& w : waiters) {
                     if (w.event != "trigger" && w.event != "damage") continue;
                     const int rank = w.site.rfind(mapPrefix, 0) == 0 ? 0 : 2;
+                    // Library triggers that never gate the flow (sound / ambient / autosave / exploder hooks): entering them only costs time.
+                    if (rank && (w.site.find("tank_rumble") != std::string::npos || w.site.find("ambient_thread") != std::string::npos ||
+                                 w.site.rfind("maps/_autosave.gsc", 0) == 0 || w.site.find("exploder_load") != std::string::npos))
+                        continue;
                     for (const auto& e : world.entities()) {
                         if (e->obj != w.object || e->obj->removed || e->isSpawner) continue;
                         Kind kind;
@@ -1514,9 +1594,11 @@ int main(int argc, char** argv) {
                             const auto tn = e->obj->get("targetname");
                             if (tn.isString()) names += " " + tn.asString();
                             for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                            bool skip = false;
-                            for (const auto& sub : autoplaySkip) skip = skip || names.find(sub) != std::string::npos;
-                            if (skip) { if (kind == Enter) forbidden.push_back(e.get()); continue; }
+                            bool skip = false, lethal = false;
+                            for (const auto& sub : autoplaySkip)
+                                if (names.find(sub) != std::string::npos) { skip = true; lethal = lethal || sub != "wrongway"; }
+                            // not targeted; the lethal ones (kill / minefield / desertion) also refuse routes through them
+                            if (skip) { if (kind == Enter && lethal) forbidden.push_back(e.get()); continue; }
                         }
                         const auto ov = e->obj->get("origin");
                         if (!ov.isVector()) continue;
@@ -1527,7 +1609,8 @@ int main(int argc, char** argv) {
                             for (int k = 0; k < 3; ++k) c[k] = o[k] + (mn[k] + mx[k]) * 0.5f;
                         bool reachable = false;
                         const float d = walkDistance(c, nullptr, &reachable);
-                        if (!reachable && std::fabs(c[2] - po[2]) > 1000.0f) continue; // off the node graph and far above / below: a vehicle or out-of-world trigger
+                        // off the node graph and far above / below: a vehicle-path or out-of-world trigger (a driven tank crosses ridges: 4000)
+                        if (!reachable && std::fabs(c[2] - po[2]) > (world.player()->usingVehicle >= 0 ? 4000.0f : 1000.0f)) continue;
                         // Score: walking distance, plus the distance from the current objective marker (a player follows it), plus
                         // 2000 for library waiters (autospawn, vehicle paths: they fire on the way anyway).
                         // (the marker pull only for use / look / shoot targets: trigger entry follows the route order, which the walking
@@ -1617,7 +1700,9 @@ int main(int argc, char** argv) {
                     // Walk there at 250 u/s along the AI node route (through --player-at's interpolation) instead of teleporting, so
                     // the triggers on the way fire, minefields / walls are avoided like the AI does and distance / time based checks
                     // (desertion, friendly chain) see a moving player. Without a route: a straight line.
+                    const bool inVehicle = world.player()->usingVehicle >= 0;
                     walkDistance(entry, &bestRoute);
+                    if (inVehicle) bestRoute.clear(); // a vehicle drives straight at it (the desert maps have no path nodes out there)
                     playerPath = {{t, po}};
                     float at = t;
                     iw2::game::Vec3 prev = po;
@@ -1654,6 +1739,17 @@ int main(int argc, char** argv) {
                         lastActionT = t;
                     } else {
                         at = std::min(at, t + 60.0f);
+                        if (inVehicle) { // drive instead of walking: the controller below moves the vehicle until it is at the target
+                            playerPath.clear();
+                            driving = true;
+                            driveTarget = entry;
+                            driveStartT = t; lastDrivePos = po; unstickUntil = 0;
+                            autoplayLog.push_back(head + std::string("  driving vehicle #") + std::to_string(world.player()->usingVehicle) + " there");
+                            std::cout << autoplayLog.back() << "\n";
+                            const float straight = std::sqrt((entry[0] - po[0]) * (entry[0] - po[0]) + (entry[1] - po[1]) * (entry[1] - po[1]));
+                            at = t + std::min(straight / 300.0f + 2.0f, 120.0f); // a tank at ~300-500 u/s
+                            driveUntilT = at;
+                        }
                         if (bestKind != Enter) { // the action on arrival: the existing --player-use / --player-look / --player-fire-at paths
                             const iw2::game::Vec3 eye{entry[0], entry[1], entry[2] + 60.0f};
                             const float dx = bestTarget[0] - eye[0], dy = bestTarget[1] - eye[1], dz = bestTarget[2] - eye[2];
@@ -1683,13 +1779,38 @@ int main(int argc, char** argv) {
                     enteredTriggers[best->number] = 2;
                     lastActionT = t; ++actionsSinceProgress;
                 } else {
+                    // In a vehicle with nothing to enter: drive toward the current objective marker (libya / 88ridge: follow the
+                    // formation, reach the flak positions), once per no-progress cycle.
+                    const float objDist = haveObj ? std::sqrt((objPos[0] - po[0]) * (objPos[0] - po[0]) + (objPos[1] - po[1]) * (objPos[1] - po[1])) : 0.0f;
+                    // Without a marker: follow the allied vehicles for a minute (they drive the level's route).
+                    const bool markerDrive = world.player()->usingVehicle >= 0 && !driving && actionsSinceProgress < 3 && (!haveObj || objDist > 400.0f);
+                    if (markerDrive) {
+                        driving = true;
+                        driveTarget = haveObj ? objPos : po;
+                        if (!haveObj) driveFollow = true;
+                        driveStartT = t; lastDrivePos = po; unstickUntil = 0;
+                        driveUntilT = t + (haveObj ? std::min(objDist / 300.0f + 2.0f, 120.0f) : 60.0f);
+                        char buf[256];
+                        if (haveObj) std::snprintf(buf, sizeof buf, "%sdrive vehicle #%d to the objective marker %.0f,%.0f,%.0f (dist %.0f)", head, world.player()->usingVehicle, objPos[0], objPos[1], objPos[2], objDist);
+                        else std::snprintf(buf, sizeof buf, "%sdrive vehicle #%d after the allied vehicles (no objective marker)", head, world.player()->usingVehicle);
+                        autoplayLog.push_back(buf);
+                        std::cout << buf << "\n";
+                        lastActionT = driveUntilT; ++actionsSinceProgress;
+                    } else {
                     // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
                     int killed = 0;
                     const bool killGate = actionsSinceProgress <= 3; // once per no-progress cycle, then force / stall (which restarts the chase)
+                    if (killGate && std::getenv("IW2_AUTOPLAY_DEBUG")) // debug: what the "death" waits are on
+                        for (const auto& w : waiters)
+                            if (w.event == "death")
+                                for (const auto& e : world.entities())
+                                    if (e->obj == w.object)
+                                        std::printf("%s  death wait on #%d %s health %s team %s removed %d (%s)\n", head, e->number, e->classname.c_str(), e->obj->get("health").toString().c_str(), e->obj->get("team").toString().c_str(), int(e->obj->removed), w.site.c_str());
                     for (const auto& w : waiters) {
                         if (!killGate || w.event != "death" || killed >= 10) continue;
                         for (const auto& e : world.entities())
-                            if (e->obj == w.object && !e->obj->removed && (e->isActor || e->vehicle) && world.isAlive(*e) && killed < 10 &&
+                            if (e->obj == w.object && !e->obj->removed && e.get() != world.player() && e->number != world.player()->usingVehicle && killed < 10 &&
+                                (e->isActor ? world.isAlive(*e) : (e->obj->get("health").isNumber() && e->obj->get("health").asInt() > 0)) && // vehicles, flak guns, turrets, models with health
                                 !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies")) { // never friendlies (missionfailed)
                                 world.debugDamage(*e, 100000);
                                 ++killed;
@@ -1742,6 +1863,7 @@ int main(int argc, char** argv) {
                             lastActionT = t; actionsSinceProgress = 0;
                         }
                     }
+                    } // markerDrive
                 }
             }
             if (!menuAnswers.empty())
