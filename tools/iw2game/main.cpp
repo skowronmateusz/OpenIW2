@@ -1687,10 +1687,10 @@ int main(int argc, char** argv) {
                             }
                             kind = Shoot;
                         } else if (e->classname == "trigger_multiple" || e->classname == "trigger_once" || e->classname == "trigger_radius") {
-                            // Entered twice without progress: the third try throws a grenade into it (moscow's potato training waits for a
-                            // grenade entity to touch `nade_train_trig`, not the player).
+                            // Only a grenade-polled trigger gets grenades (moscow's potato training waits for a grenade entity to touch
+                            // `nade_train_trig`): lobbing at any trigger entered twice killed friendlies on matmata (killfriends_missionfail).
                             if (grenadePoll && !haveGrenade) continue;
-                            kind = grenadePoll || (enteredTriggers[e->number] >= 2 && haveGrenade) ? Throw : Enter;
+                            kind = grenadePoll ? Throw : Enter;
                         }
                         else if (e->classname == "trigger_use" || e->classname == "trigger_use_touch") kind = Use;
                         else if (e->classname == "trigger_lookat") kind = Lookat;
@@ -1926,8 +1926,8 @@ int main(int argc, char** argv) {
                     // An entity some thread waits on from a function whose name says "missionfail" (beltot.gsc missionfailedondamage on the
                     // prisoner): killing it ends the mission, so the kill gate leaves it alone.
                     const auto protectedEntity = [&](const iw2::script::ObjectPtr& o) {
-                        for (const auto& w2 : waiters)
-                            if (w2.object == o && w2.site.find("missionfail") != std::string::npos) return true;
+                        for (const auto& w2 : waiters) // map-own sites only: the library's killfriends_missionfail_think guards every ally anyway
+                            if (w2.object == o && w2.site.rfind(mapPrefix, 0) == 0 && w2.site.find("missionfail") != std::string::npos) return true;
                         return false;
                     };
                     if (killGate && std::getenv("IW2_AUTOPLAY_DEBUG")) // debug: what the "death" waits are on
@@ -1935,7 +1935,7 @@ int main(int argc, char** argv) {
                             if (w.event == "death")
                                 for (const auto& e : world.entities())
                                     if (e->obj == w.object)
-                                        std::printf("%s  death wait on #%d %s health %s team %s removed %d (%s)\n", head, e->number, e->classname.c_str(), e->obj->get("health").toString().c_str(), e->obj->get("team").toString().c_str(), int(e->obj->removed), w.site.c_str());
+                                        std::printf("%s  death wait on #%d %s health %s team %s removed %d protected %d (%s)\n", head, e->number, e->classname.c_str(), e->obj->get("health").toString().c_str(), e->obj->get("team").toString().c_str(), int(e->obj->removed), int(protectedEntity(e->obj)), w.site.c_str());
                     for (const auto& w : waiters) {
                         if (!killGate || w.event != "death" || killed >= 10) continue;
                         for (const auto& e : world.entities())
