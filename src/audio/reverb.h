@@ -1,5 +1,5 @@
 #pragma once
-// Client-side environment-effects (reverb) state of the sound system, implemented from CoD2SP_s.exe 1.3:
+// Client-side environment-effects (reverb) state of the sound system, reimplemented from the behaviour of CoD2SP_s.exe 1.3:
 //   CG_ReverbCmd 0x4a6350 ("reverb <prio> <room> <dry> <wet> <fade s>"), CG_DeactivateReverbCmd 0x4a6500,
 //   snd_setEnvironmentEffects 0x441260, snd_deactivateEnvironmentEffects 0x4413d0, activate 0x443ec0,
 //   deactivate 0x443fd0, per-frame ramp 0x4442xx..0x4443xx, init 0x444aa4.

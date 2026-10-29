@@ -3129,7 +3129,7 @@ int main(int argc, char** argv) {
     bool pendingGod = false, pendingDemigod = false, pendingNotarget = false; // --god / --demigod / --notarget, F10 = god: the cheat commands (0x4e9f90 / 0x4ea030 / 0x4ea0d0; need sv_cheats)
     bool pendingNoclip = false, pendingUfo = false; // --noclip / --ufo: the cheat commands run once when the level is up (need sv_cheats)
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
-    std::string language = "polish";
+    std::string language; // empty: detected from the localized_<language>_*.iwd packs in the game directory (see below)
     bool scripts = true;
     bool spawnAll = false;
     std::vector<std::pair<std::string, std::string>> extraCvars; // --cvar name=value (e.g. start=ride)
@@ -3198,6 +3198,16 @@ int main(int argc, char** argv) {
     try {
         fs::Vfs vfs;
         vfs.mountDirectory(args[0]);
+        if (language.empty()) { // the shipped game keeps one localized_<language>_iw*.iwd set per install
+            language = "english";
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(args[0], ec)) {
+                const std::string n = e.path().filename().string();
+                if (n.rfind("localized_", 0) != 0) continue;
+                const size_t end = n.find("_iw", 10);
+                if (end != std::string::npos) { language = n.substr(10, end - 10); break; }
+            }
+        }
         if (const char* overlay = std::getenv("IW2_OVERLAY")) vfs.mountDirectory(overlay); // debug: loose test scripts override the game files
 
         if (!SDL_Init(SDL_INIT_VIDEO | (shot.empty() && audioOn ? SDL_INIT_AUDIO : 0))) sdlFail("SDL_Init");

@@ -160,3 +160,5 @@ described in the code that reads them.
 - Env `IW2_CANSHOOT_LOG=<entity number>` (or `-1` for all; iw2game/iw2view): prints every muzzle trace 0x54cf40 (`canshoot`, 0x54d010) of that actor: `[canshoot <ms>] #n muzzle (..) target (..) fraction f hit <ent> -> 0|1`. Debug only.
 
 Cvar `player_scopeExitOnDamage` (set with `--cvar player_scopeExitOnDamage=1`, default 0): iw2view feeds it to the player weapon; a damaged frame drops the aim of a scope weapon at once.
+
+- `iw2view --language NAME`: UI/subtitle language (`english`, `polish`, ...). Without it the language is detected from the first `localized_<language>_iw*.iwd` pack in the game directory, else `english`.
