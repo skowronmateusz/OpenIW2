@@ -127,6 +127,27 @@ body
                 p.updateWeights(0.05f);
                 CHECK(!p.updateTruncated(0.05f, false, [&](const std::string&, const std::string&) { called = true; }));
                 CHECK(!called && p.time(reload) > t0);
+                // The 0x478220 call after a set (time only, from the old time) fires the notetracks of the first 50 ms at once; the
+                // frame's weight stage sets the old time to the new one, so the next time stage continues after them: the animation
+                // runs one step ahead, and no notetrack is sent twice.
+                iw2::game::AnimState a1(*tree, lib), a2(*tree, lib);
+                for (auto* st : {&a1, &a2}) {
+                    st->set(body, on);
+                    st->set(reload, args);
+                }
+                std::vector<std::string> n1, n2;
+                a1.updateTruncated(0.05f, true, [&](const std::string&, const std::string& n) { n1.push_back(n); }); // post-set step
+                for (int i = 0; i < 400; ++i) {
+                    a1.updateWeights(0.05f);
+                    a1.updateTruncated(0.05f, true, [&](const std::string&, const std::string& n) { n1.push_back(n); });
+                    a2.updateWeights(0.05f);
+                    a2.updateTruncated(0.05f, true, [&](const std::string&, const std::string& n) { n2.push_back(n); });
+                }
+                // ("end" is sent again every step of a finished non-looping node, so only the other notes are compared.)
+                n1.erase(std::remove(n1.begin(), n1.end(), "end"), n1.end());
+                n2.erase(std::remove(n2.begin(), n2.end(), "end"), n2.end());
+                CHECK(n1 == n2);
+                CHECK(!n2.empty());
             }
         }
     }

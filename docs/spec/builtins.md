@@ -558,8 +558,15 @@ Implemented (src/game/actorpredict.cpp, tests/test_actorpredict.cpp, tests/test_
   (plain blend node: children with dt * rate; synced node: 0x476bb0; leaf: 0x475ea0 -> 0x475de0). `AnimState::updateTruncated` /
   `noteFraction`. Both are time-only updates stepping from the nodes' old time (the weight update sets it), which is why
   predictoriginandangles runs the weight update: a script loop `PredictAnim; PredictOriginAndAngles` advances one frame per round.
-TODO(spec): the notetrack search helpers 0x475ea0 / 0x475de0 / 0x476bb0 are not decoded (the port takes the linear position of the first
-note crossed by the leaves that report notes; "end" counts at time 1 for non-looping anims); the exe's per-actor scratch snapshot (an
+Notetrack search helpers (partly decoded): 0x476bb0(tree, entry, node, x, d) calls 0x475ea0 for the node's own range, then loops over the node's
+children (count word at +0, first index word at +6 into the tree's child table at +8) and recurses for every child whose anim table entry
+(0xa0a200 + index * 40) has both weight-like fields +0x1c and +0x20 non-zero (0.0 = 0x591e00), keeping the minimum. 0x475ea0 returns 1.0 when
+either node has no anim index (word +4 = 0); otherwise it picks the xanim (a node with a zero word uses 1.0 as the note time; a negative note
+index asks 0x479380 first) and calls 0x475de0(R, T, noteTime, d). 0x475de0 returns 1.0 when R.b == 1.0; else, with R = {a, b, ..., loops at +0xa}
+and T = {.., time at +4, loops at +0xa}, it returns (float(R.loops - T.loops [+1 in the a > x case]) + (x - T.time)) / d for the cases of the
+three comparisons a >= b, a <= x, b vs x, and 1.0 in the others. TODO(spec): which fields of R and T are old time, new time and the note
+time was not pinned down; the port takes the linear position of the first note crossed by the leaves that report notes ("end" counts at time 1
+for non-looping anims). TODO(spec): the exe's per-actor scratch snapshot (an
 endprediction on another actor than the begin); the move block fields the port keeps outside `ActorAi` (nothing found).
 ### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
 

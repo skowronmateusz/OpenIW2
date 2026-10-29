@@ -1062,6 +1062,7 @@ private:
     int predictionDepth_ = 0;                      // 0x1c6104c
     std::map<int, PredictionSave> predictionSaves_; // by entity number (the exe: scratch snapshot 0x1c7edac / 0x1c7edb0)
     void registerPredictionBuiltins();
+    void postSetAnimUpdate(Entity& e); // 0x478220 after a setanim / animscripted start
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);

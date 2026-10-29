@@ -86,8 +86,7 @@ void World::startScriptedAnim(Entity& e, const Vec3& origin, const Vec3& angles,
     a.notify = notify;
     a.restart = !e.anim->looping(anim); // restart unless the animation loops (0x53b7ca)
     e.anim->set(anim, a);
-    // TODO(spec): 0x478220 (an immediate 0.05 s tree update up to the next notetrack) is not modelled, as for the
-    // setanim built-ins.
+    postSetAnimUpdate(e); // 0x53b86d: 0x478220(tree, 1, 0.05) as after the setanim built-ins
     updateScriptedPose(e, false);
 }
 

@@ -697,12 +697,19 @@ void World::frame(bool advanceTime) {
     // waiting for another entity's "end" in the same frame (duhoc_assault: the drag camera and the dragging soldier end
     // together). TODO(spec): the exe splits the step at every notetrack; here the threads run after the whole 50 ms step,
     // and the weight update (stage 2, for all entities before any time step) runs inside each entity's update.
+    // Stage 2 (0x447ec0 -> 0x476960): the weight update of every entity first, which also moves each node's old time up ...
+    for (size_t ei = 0; ei < entities_.size(); ++ei) {
+        Entity* e = entities_[ei].get();
+        if (e->anim && !e->obj->removed) e->anim->updateWeights(0.05f);
+    }
+    // ... stage 4 (0x4dacd0): the time step, cut at the first notetrack (0x476c80 fraction * 0.05 + 0.001; the rest of the
+    // 50 ms is not played), the woken threads run at once after a cut step.
     for (size_t ei = 0; ei < entities_.size(); ++ei) {
         Entity* e = entities_[ei].get();
         if (!e->anim || e->obj->removed) continue;
         ObjectPtr obj = e->obj;
         bool notified = false;
-        e->anim->update(0.05f, [this, obj, &notified](const std::string& notifyName, const std::string& note) {
+        e->anim->updateTruncated(0.05f, true, [this, obj, &notified](const std::string& notifyName, const std::string& note) {
             vm_.notify(obj, notifyName, {Value(note)});
             notified = true;
         });
@@ -1152,6 +1159,16 @@ void World::useAnimTree(Entity& e, const std::string& tree) {
 
 // setanim and friends (signatures as documented in the shipped animscripts, e.g.
 // "setflaggedanimknoballrestart(notifyName, anim, rootAnim, goalWeight, goalTime, rate)"). Defaults are inferred.
+// 0x4f5d10 and the inlined copies after the setanim family (0x4f6613 ... 0x4f74fd) and the animscripted start (0x53b86d): unless the
+// entity has the no-physics flag (+0x128 & 0x1000) and has a model anim table entry, 0x478220(tree, 1, 0.05) steps the time up to the
+// next notetrack at once. It steps from the nodes' old time, so it repeats the frame's step and fires the notetracks of the first
+// 50 ms now. Notifies are queued (VM_Notify), the woken threads run later in the frame.
+void World::postSetAnimUpdate(Entity& e) {
+    if (!e.anim || (e.isActor && e.ai.noPhysicsFlag)) return;
+    ObjectPtr obj = e.obj;
+    e.anim->updateTruncated(0.05f, true, [this, obj](const std::string& notifyName, const std::string& note) { vm_.notify(obj, notifyName, {Value(note)}); });
+}
+
 void World::registerAnimBuiltins() {
     auto node = [this](CallContext& c, const Value& v) -> std::pair<Entity*, int> {
         Entity* e = entityOf(c.self);
@@ -1171,7 +1188,7 @@ void World::registerAnimBuiltins() {
         {"setflaggedanimknoball", true, true, true, false}, {"setflaggedanimknoballrestart", true, true, true, true},
     };
     for (const Variant& var : variants) {
-        vm_.registerBuiltin(var.name, [node, var](CallContext& c) {
+        vm_.registerBuiltin(var.name, [this, node, var](CallContext& c) {
             size_t i = 0;
             AnimState::SetArgs a;
             if (var.flagged) a.notify = c.arg(i++).toString();
@@ -1187,6 +1204,7 @@ void World::registerAnimBuiltins() {
             ++i;
             if (c.arg(i).isDefined()) a.rate = c.arg(i).asFloat();
             e->anim->set(n, a);
+            postSetAnimUpdate(*e);
             return Value();
         });
     }
