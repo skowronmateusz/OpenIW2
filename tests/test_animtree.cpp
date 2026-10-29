@@ -101,6 +101,32 @@ body
                     for (size_t i = 0; i < want.size(); ++i) CHECK(got[i] == want[i]);
                     CHECK(got.back() == "end");
                 }
+
+                // Snapshot / restore (0x4796c0 / 0x478db0 / 0x478e10) and the truncated update (0x478220): a fresh state steps
+                // in 50 ms pieces, each cut at the next notetrack; every notetrack except "end" is reported by exactly one
+                // truncated step, and restoring the snapshot puts the time back.
+                iw2::game::AnimState p(*tree, lib);
+                p.set(body, on);
+                p.set(reload, args);
+                const auto snap = p.snapshot();
+                const float t0 = p.time(reload);
+                std::vector<std::string> seen;
+                int stops = 0;
+                for (int i = 0; i < 2000 && std::count(seen.begin(), seen.end(), "reload done") == 0; ++i)
+                    {
+                        if (p.updateTruncated(0.05f, true, [&](const std::string&, const std::string& n) { seen.push_back(n); })) ++stops;
+                        p.updateWeights(0.05f); // the next frame's weight update moves the old time up
+                    }
+                CHECK(stops >= 1);
+                CHECK(std::count(seen.begin(), seen.end(), "reload done") == 1);
+                CHECK(p.time(reload) > t0);
+                p.restore(snap);
+                CHECK(p.time(reload) == t0);
+                // Without the notetrack flag the update is a plain one: no callbacks, never a stop.
+                bool called = false;
+                p.updateWeights(0.05f);
+                CHECK(!p.updateTruncated(0.05f, false, [&](const std::string&, const std::string&) { called = true; }));
+                CHECK(!called && p.time(reload) > t0);
             }
         }
     }

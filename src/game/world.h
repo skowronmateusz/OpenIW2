@@ -685,6 +685,7 @@ public:
     // Test hook: a rocket of `weapon` fired by the player from `start` along `dir` (G_FireRocket 0x527810).
     Entity& debugSpawnRocket(const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(*player_, weapon, start, dir); }
     // Test hook: Bullet_Fire from the player along start -> end; the entity the bullet hit, else null.
+    void debugResetPrediction() { predictionDepth_ = 0; predictionSaves_.clear(); } // test hook: a script error leaves the counter set
     Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }
     Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
         return spawnGrenade(*player_, weapon, start, velocity, fuseMs);
@@ -1051,6 +1052,16 @@ private:
     int enemyPositionNode(Entity& e, Entity& target, const SentientInfo* rec); // 0x5432f0 / 0x547330
     bool faceThreat(Entity& e, bool override);                        // 0x505790
     void actorMoveFrame(Entity& e);                                   // 0x504450 / 0x504160
+    // Prediction built-ins (src/game/actorpredict.cpp): the state beginprediction saves and endprediction puts back.
+    struct PredictionSave {
+        ActorAi ai;
+        Vec3 origin{}, angles{}, velocity{};
+        AnimState::Snapshot anim;
+        bool hasAnim = false;
+    };
+    int predictionDepth_ = 0;                      // 0x1c6104c
+    std::map<int, PredictionSave> predictionSaves_; // by entity number (the exe: scratch snapshot 0x1c7edac / 0x1c7edb0)
+    void registerPredictionBuiltins();
     void updateActorPath(Entity& e);
     bool actorHasPath(const Entity& e) const;
     void clearActorPath(Entity& e);
