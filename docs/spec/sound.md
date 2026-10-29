@@ -194,3 +194,7 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   0xf584a0[word +0xae * 12]. ET_SOUND_BLEND (eType 6) is 0x4ac8a0 via 0x442900 (two aliases at cent +0x12c / +0x12e).
 - Not decoded (TODO(spec)): the other callers' owners; brass-delay gating (the bolt-action brass is in weapons.md) and the usercmd
   byte +0xd compared with +0x3d in the binocular cancel (0x4dfa8a).
+
+## Channel volume slots and level changes
+
+The sound system keeps five channel-volume slots (set 0x4431f0, clear 0x443390); the highest active slot applies. The stop-all routine 0x444730 clears slots 1..4 (unless its flag 0x10 is set) and runs on level load and disconnect, so the level-end `setchannelvol` (slot 1, victoryscreen.shock) never reaches the next level. The port keeps these in `audio::ChannelVolumeSlots`. VAs in the patch 1.3 SP executable.

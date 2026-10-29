@@ -6852,7 +6852,8 @@ int main(int argc, char** argv) {
         game::ShockRecord holdBreathRec;
         // Sound volume slot 1 (setchannelvol, docs/spec/campaign.md "Victory screen"): the channel volumes of shock/victoryscreen.shock,
         // reached linearly over `ms` from full volume. TODO(spec): the slot fade of 0x4431f0 is not decoded (linear assumed).
-        struct { bool active = false; game::ShockRecord rec; uint64_t startNs = 0; int ms = 1; } victoryVol;
+        audio::ChannelVolumeSlots volSlots; // slot 1 doubles as the victory-screen volume (cleared on level load, 0x444730)
+        struct { game::ShockRecord rec; uint64_t startNs = 0; int ms = 1; } victoryVol;
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
         else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
@@ -7393,11 +7394,21 @@ int main(int argc, char** argv) {
                         const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
                         const float f = rec && rec->sound ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
                         const float bb = breathSnd.volumeBlend();
-                        const float vb = victoryVol.active ? std::clamp(float(SDL_GetTicksNS() - victoryVol.startNs) * 1e-6f / float(victoryVol.ms), 0.0f, 1.0f) : 0.0f;
-                        for (int c = 0; c < 11; ++c)
-                            mixer.channelScale[c] = f > 0 ? game::shockChannelVolume(*rec, c, f)
-                                                  : bb != 0 ? game::shockChannelVolume(holdBreathRec, c, bb)
-                                                  : victoryVol.active ? game::shockChannelVolume(victoryVol.rec, c, vb) : 1.0f;
+                        const float vb = volSlots.active[1] ? std::clamp(float(SDL_GetTicksNS() - victoryVol.startNs) * 1e-6f / float(victoryVol.ms), 0.0f, 1.0f) : 0.0f;
+                        float sc[11];
+                        if (volSlots.active[1]) {
+                            for (int c = 0; c < 11; ++c) sc[c] = game::shockChannelVolume(victoryVol.rec, c, vb);
+                            volSlots.set(1, sc);
+                        }
+                        if (bb != 0) {
+                            for (int c = 0; c < 11; ++c) sc[c] = game::shockChannelVolume(holdBreathRec, c, bb);
+                            volSlots.set(2, sc);
+                        } else volSlots.clear(2);
+                        if (f > 0) {
+                            for (int c = 0; c < 11; ++c) sc[c] = game::shockChannelVolume(*rec, c, f);
+                            volSlots.set(4, sc);
+                        } else volSlots.clear(4);
+                        volSlots.resolve(mixer.channelScale);
                     }
                     if (rec && rec->sound) {
                         const int el = int(world->timeMs() - ss.startMs);
@@ -7566,7 +7577,7 @@ int main(int argc, char** argv) {
                         // (0x4c679e: no close-all, cursor to (320, 448), UI key catcher) opens the menu, whose onOpen pauses the game.
                         // 0x4022b0 opens it only while the client is active (state 4) and not playing a timedemo.
                         for (int c = 0; c < 11; ++c) mixer.channelPausable[c] = c != 2 && c != 8;
-                        victoryVol.active = false;
+                        volSlots.clear(1);
                         menuMx = 320.0f, menuMy = 448.0f;
                         frontStack.open("victoryscreen");
                         std::cout << "victory screen (next map " << world->storedNextMap() << ")\n";
@@ -7576,7 +7587,7 @@ int main(int argc, char** argv) {
                         a >> slot >> shockName >> ms;
                         if (const auto f = vfs.read("shock/" + shockName + ".shock")) {
                             victoryVol.rec = game::parseShockFile(std::string(f->begin(), f->end()));
-                            victoryVol.active = true;
+                            volSlots.active[1] = true;
                             victoryVol.startNs = SDL_GetTicksNS();
                             victoryVol.ms = std::max(ms, 1);
                         }
@@ -7700,6 +7711,8 @@ int main(int argc, char** argv) {
                 frontStack.closeAll();
                 frontStack.open("main");
                 mixer.resetPausable();
+                volSlots.clearAll();
+                for (float& v : mixer.channelScale) v = 1;
             }
             if (!deferredExec.empty()) execText(std::exchange(deferredExec, std::string()));
             std::optional<game::LoadedSave> loadedSave;
@@ -7739,6 +7752,8 @@ int main(int argc, char** argv) {
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);
                 mixer.resetPausable(); // 0x40cc80: channel pause flags back to the defaults on the new connection
+                volSlots.clearAll();   // 0x444730 clears volume slots 1..4 (the previous level's victory-screen volume must not carry over)
+                for (float& v : mixer.channelScale) v = 1;
                 loadMapAliases(pendingLevel->first);
                 frontStack.closeAll();
                 frontStack.open("briefing");

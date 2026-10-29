@@ -79,6 +79,30 @@ struct PlayOptions {
 
 // Mixes playing sounds into interleaved stereo float samples. play()/stop()/setListener() run on the game
 // thread, mix() on the audio thread.
+// The five channel-volume slots of the sound system (0x793a34; set 0x4431f0, clear 0x443390). The scales of the highest active slot apply,
+// none active means 1. Slot 1 is the level-end "setchannelvol" (victory screen), 2 the hold-breath blend, 4 shell shock. The stop-all
+// routine 0x444730 clears slots 1..4 unless its flag 0x10 is set; it runs on every level load and disconnect (0x40cc80, 0x40ccbd), so a
+// slot set by the previous level never reaches the next one.
+struct ChannelVolumeSlots {
+    static constexpr int kSlots = 5;
+    bool active[kSlots] = {};
+    float scale[kSlots][11] = {};
+    void set(int slot, const float* s) {
+        active[slot] = true;
+        for (int c = 0; c < 11; ++c) scale[slot][c] = s[c];
+    }
+    void clear(int slot) { active[slot] = false; }
+    void clearAll() { for (int i = 1; i < kSlots; ++i) active[i] = false; }
+    void resolve(float* out) const {
+        for (int c = 0; c < 11; ++c) out[c] = 1.0f;
+        for (int i = kSlots - 1; i >= 0; --i)
+            if (active[i]) {
+                for (int c = 0; c < 11; ++c) out[c] = scale[i][c];
+                return;
+            }
+    }
+};
+
 class Mixer {
 public:
     Mixer(const fs::Vfs& vfs, const SoundAliases& aliases, int outputRate);
