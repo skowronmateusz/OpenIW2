@@ -113,6 +113,8 @@ struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
     int depth = 0;
     int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); slide move only (default on)
+    float hitNormal[2] = {0, 0};              // +0x324 / +0x328 (block +0x100 / +0x104): wall normal x / y recorded by the slide move; persists between moves (only +0x318 / +0x32d are reset per move)
+    bool deflected = false;                   // +0x32d (block byte +0x109): the last slide move was stopped short by a trace (gethityaw / isdeflected)
     int groundEnt = 0x7fe;                    // block +0x18 (ground entity of the actor slide move; 0x7fe at init, 0x500d27)
     int64_t baseStateMs = 0;                  // +0x20 time the bottom state was last set
     struct Request { int type, state; };      // 1 replace, 2 push, 3 pop

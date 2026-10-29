@@ -217,6 +217,11 @@ int main() {
         CHECK(near(stopSoonScale(500, 0.0f), 0.19f, 1e-5f) && near(stopSoonScale(50, 0.0f), 1.0f, 1e-5f));
         CHECK(near(stopSoonScale(500, 0.5f), 0.38f, 1e-5f));
     }
+    {
+        // gethityaw: the yaw of the reversed hit normal, 0..360; zero vector gives 0
+        CHECK(near(actorHitYaw(-1, 0), 0.0f) && near(actorHitYaw(0, -1), 90.0f) && near(actorHitYaw(1, 0), 180.0f) && near(actorHitYaw(0, 1), 270.0f));
+        CHECK(actorHitYaw(0, 0) == 0.0f);
+    }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;
 }

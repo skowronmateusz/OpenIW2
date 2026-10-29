@@ -677,7 +677,8 @@ methods (entity from the self object, the "entity" check at 0x468ed0 error path)
   the 0x43-dword AI struct, velocity/origin/angles) plus an animation-state snapshot (0x4796c0 / 0x478db0 / 0x478e10); nested
   through counter 0x1c6104c and a per-depth table at 0x1c7e52c. `predictoriginandangles` 0x53ff50 and `predictanim` 0x540020
   (tail-jumps to 0x5045c0) run an animation step inside such a snapshot and return the resulting origin/angles. They need a
-  C++ copy of ActorAi plus the animation-step internals (animscripted domain), so they are not implemented.
+  C++ copy of ActorAi plus the animation-step internals (animscripted domain), so they are not implemented. `gethityaw`,
+  `isdeflected` and `lerpposition` are implemented; full decode in docs/spec/builtins.md "Prediction built-ins".
 
 ### Bumped entity +0x318: writer analysis (historical; now wired, see the slide move sections)
 

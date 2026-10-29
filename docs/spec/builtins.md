@@ -501,7 +501,7 @@ handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, develope
 
 | Name | SP files | Where | Notes |
 |---|---|---|---|
-| `predictanim`, `predictoriginandangles`, `lerpposition`, `gethityaw`, `isdeflected`, `beginprediction`, `endprediction` | 1-2 | animscripts/predict.gsc, death.gsc | balcony stumble/tumble death prediction (anim playback against world collision) |
+| `predictanim`, `predictoriginandangles`, `beginprediction`, `endprediction` | 1-2 | animscripts/predict.gsc, death.gsc | balcony stumble/tumble death prediction; decoded, not implemented (see "Prediction built-ins" below) |
 | `getgroundenttype` | 2 | animscripts/death.gsc, traverse/window.gsc | exe 0x5401c0 |
 | `getcommandfromkey` | 1 | moscow_str | key-binding text (table 0x5d2730) for hint strings |
 | `buttonpressed` | 1 | _briefing | key-name keyed query (binding table 0x5d2728) |
@@ -519,9 +519,42 @@ The remaining names (team scores, ranks, `logprint`, `obituary`, `closeingamemen
 - `enablegrenadetouchdamage` (0x4f8000): only a trigger_damage ("Currently on supported on damage triggers", 0x58542c), sets entity flag
   0x4000. The only reader found is the grenade segment test 0x5297b0 (`testb $0x40` on +0x128 >> 8), so a grenade flying through a
   trigger_damage only fires it when the flag is set; the bullet test 0x5295f0 has no such check. `triggerDamageSegment` mod 3 now gates on it.
-- Not done: `predictanim` (0x540020 -> 0x5045c0), `predictoriginandangles` (0x53ff50), `beginprediction` (0x53f960, snapshots the actor's
+- Not done (see "Prediction built-ins"): `predictanim` (0x540020 -> 0x5045c0), `predictoriginandangles` (0x53ff50), `beginprediction` (0x53f960, snapshots the actor's
   anim state and the +0x224 move block into a scratch actor) / `endprediction` (0x53fb80): a sandboxed actor anim + slide-move step; needs
   the actor frame (0x5045c0) factored so it can run on a copy. `setstablemissile` (sets +0x128 bit 0x20000): no reader was found by text search of the
   disassembly (`testl $0x20000, reg` hits are too many to attribute). `getcommandfromkey`/`buttonpressed` need the key-binding table
   (0x5d2728/0x5d2730), which the port does not model. The aitype `spawner` handle is resolved at map load (0x4eaf9f, stored at spawn-table entry +8);
   the call site was not located.
+
+### Prediction built-ins (actor death prediction, animscripts/predict.gsc)
+
+All are actor-only ("not an actor", 0x591798 otherwise).
+
+Implemented:
+- `gethityaw` (0x540110): errors "nothing was hit" (0x59121c) when the bumped entity (actor +0x318) is 0x7ff; else the vector yaw
+  (0x421890, same as `getmotionangle`) of (-N.x, -N.y, 0) where N is the slide move block's hit normal at actor +0x324 / +0x328
+  (block +0x100 / +0x104, written by the first wall hit; the exe stores normal.x for both, see actorslide.cpp). The block keeps them
+  between moves (0x5487c0 resets only +0xf4, +0x70, +0x109), so `ActorAi::hitNormal` persists too.
+- `isdeflected` (0x540220): the byte at actor +0x32d (block +0x109), pushed as an integer; 0x5487c0 clears it, the slide move sets it
+  when a trace stops short (`ActorSlide::blocked`; `ActorAi::deflected`).
+- `lerpposition origin angles` (0x53fdb0): error "cannot lerp position if animMode is not 'nophysics'" (0x59127c) unless the anim mode
+  override (+0x21c) is 8. Entity angles = angles; base facing block (0x5048b0) = quantised pitch/yaw, target = quantised yaw;
+  block velocity (+0x230) = (origin - current origin) * 20; move delta (+0x250) = 0 (not stored in the port: transient); entity origin = origin;
+  ground entity (+0x23c) = 0x7ff.
+
+Decoded, not implemented (need the animation tree stepped on a snapshot, not available in the port):
+- `beginprediction` (0x53f960): error "beginPrediction already called" (0x5912d0) if the nesting counter 0x1c6104c is set, then
+  increments it; saves the actor's animation state with 0x4796c0 (slot = actor index) into the scratch snapshot 0x1c7edac and copies into
+  the snapshot record 0x1c7edb0: +0x218 / +0x21c / +0x220 anim mode words, the 0x43 dwords at +0x224 (the move block), +0x114..+0x123,
+  +0x104..+0x113 (facing blocks), +0x124, gentity +0xdc / +0xe8 (origin, angles), actor +0xe0.. (look axes).
+- `endprediction` (0x53fb80): decrements the counter, error "endPrediction already called" (0x5912b0) when it is not zero afterwards; restores
+  the animation state (0x4796c0, 0x478db0, 0x478e10) and every field above.
+- `predictoriginandangles` (0x53ff50): errors "cannot predict when linked to an entity" (0x591254, gentity +0x1c8 set) and "cannot predict when
+  using no physics" (0x59122c, +0x21c == 8); anim mode (+0x218) = override or 4; +0x220 = 1; then the path step 0x504160, the actor physics
+  0x501d00 and 0x447ec0(gentity, 0.05).
+- `predictanim bool` (0x540020 -> 0x5045c0): script arg 0 selects the mode; with the actor's model anim table entry (0x74a980 -> 0x74c200 stride
+  0x64) missing it returns 0; else `0x478220(tree, flag, 0.05)`: flag 0 = tree update of 50 ms (0x476490); flag 1 = time to the next notetrack
+  (0x476c80), update by min(that, 50 ms) and return 1 when it stopped at the notetrack. Needs the tree update with truncated dt and
+  notetrack stop (the same missing 0x478220 as `setanim`, docs/spec/animscripted.md).
+TODO(spec): the above four; the balcony death anims (death.gsc through predict.gsc stumbleWall / tumbleWall) rely on them and keep running
+the unpredicted path.

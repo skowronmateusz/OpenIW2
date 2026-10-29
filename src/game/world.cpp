@@ -936,6 +936,8 @@ void World::moveActor(Entity& e, float dt) {
             pm.origin[a] = before[a];
             pm.moveDelta[a] = o[a] - before[a];
         }
+        pm.hitNormal[0] = e.ai.hitNormal[0]; // block +0x100 survives between moves
+        pm.hitNormal[1] = e.ai.hitNormal[1];
         pm.dt = dt;
         pm.timeMs = int(dt * 1000.0f + 0.5f);
         pm.mode = 1;
@@ -1014,6 +1016,9 @@ void World::moveActor(Entity& e, float dt) {
         e.ai.slideContactNz = pm.contactNormalZ;
         grounded = pm.groundEnt != 0x7ff;
         linkBumpedActor(e, pm.hitEnt);
+        e.ai.hitNormal[0] = pm.hitNormal[0];
+        e.ai.hitNormal[1] = pm.hitNormal[1];
+        e.ai.deflected = pm.blocked;
         // groundtype (actor +0x24c = move block +0x28, the surface type of the ground probe); getter 0x5367b0: 0 is undefined,
         // 1..22 the surface table 0x5a0344 (the pmove names), anything else "default".
         e.obj->set("groundtype", pm.surfaceType == 0 ? Value() : Value(std::string(surfaceAliasName(pm.surfaceType >= 23 ? 0 : pm.surfaceType))));
@@ -1058,6 +1063,8 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
         pm.moveDelta[a] = delta[size_t(a)];
         pm.velocity[a] = e.ai.slideVel[a]; // block +0xc = actor +0x230 (in place, see slideVel)
     }
+    pm.hitNormal[0] = e.ai.hitNormal[0];
+    pm.hitNormal[1] = e.ai.hitNormal[1];
     pm.dt = dt;
     pm.timeMs = int(dt * 1000.0f + 0.5f);
     pm.mode = kind;
@@ -1085,6 +1092,9 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
     e.ai.slideContactNz = pm.contactNormalZ;
     e.velocity = {(o[0] - before[0]) / dt, (o[1] - before[1]) / dt, (o[2] - before[2]) / dt};
     linkBumpedActor(e, pm.hitEnt);
+    e.ai.hitNormal[0] = pm.hitNormal[0];
+    e.ai.hitNormal[1] = pm.hitNormal[1];
+    e.ai.deflected = pm.blocked;
 }
 
 // 0x501d00 after the move block (0x5487c0) returned 0 (the step could not be placed): the block's origin is dropped for
@@ -1518,6 +1528,43 @@ void World::registerBuiltins() {
             for (const EntityClip& k : collision_->entityClips())
                 if (k.id == b && (k.contents & 0x400)) return Value(std::string("obstacle"));
         return Value(std::string("world"));
+    });
+    // gethityaw 0x540110: actor-only; errors when the bumped entity (+0x318) is 0x7ff; else the yaw (0x421890, same as getmotionangle's
+    // vector yaw) of (-hitNormal.x, -hitNormal.y, 0) with the block's hit normal at actor +0x324 / +0x328.
+    vm_.registerBuiltin("gethityaw", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("gethityaw on a non-actor");
+        if (e->ai.bumpedEnt == 0x7ff) throw std::runtime_error("nothing was hit");
+        return Value(actorHitYaw(e->ai.hitNormal[0], e->ai.hitNormal[1]));
+    });
+    // lerpposition 0x53fdb0 (origin, angles): actor-only, needs the nophysics anim mode (+0x21c == 8, else "lerpPosition ..."
+    // error 0x59127c). Writes the entity angles, the base facing block (0x5048b0: pitch, yaw quantised; target = quantised yaw),
+    // the block velocity (+0x230) = (origin - current origin) * 20, zeroes the move delta (+0x250), sets the entity origin
+    // and clears the ground entity (+0x23c = 0x7ff).
+    vm_.registerBuiltin("lerpposition", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("lerpposition on a non-actor");
+        if (e->ai.animModeOverride != 8) throw std::runtime_error("cannot lerp position if animMode is not 'nophysics'");
+        if (!c.arg(0).isVector() || !c.arg(1).isVector()) throw std::runtime_error("lerpposition: origin and angles must be vectors");
+        const Vec3 org = c.arg(0).asVector(), ang = c.arg(1).asVector();
+        const Vec3 cur = e->obj->get("origin").isVector() ? e->obj->get("origin").asVector() : Vec3{0, 0, 0};
+        e->obj->set("angles", Value(ang));
+        setFacing(*e, false, ang[0], ang[1]);
+        for (int a = 0; a < 3; ++a) {
+            const float v = (org[size_t(a)] - cur[size_t(a)]) * 20.0f;
+            e->velocity[size_t(a)] = v;
+            e->ai.blockVel[size_t(a)] = v;
+            e->ai.slideVel[a] = v;
+        }
+        e->obj->set("origin", Value(org));
+        e->ai.groundEnt = 0x7ff;
+        return Value();
+    });
+    // isdeflected 0x540220: actor-only; the byte at actor +0x32d (move block +0x109), pushed as an integer.
+    vm_.registerBuiltin("isdeflected", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("isdeflected on a non-actor");
+        return Value(int32_t(e->ai.deflected ? 1 : 0));
     });
     // enablegrenadetouchdamage (0x4f8000): sets entity flag 0x4000 (+0x128); only a trigger_damage (entity type word 0x1c7f0ea) is
     // accepted, else "Currently on supported on damage triggers" (0x58542c). Grenade flight tests only flagged triggers
