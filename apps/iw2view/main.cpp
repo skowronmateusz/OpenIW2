@@ -4997,7 +4997,7 @@ int main(int argc, char** argv) {
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
             // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
             // TODO(spec): the dvars it also tests.
-            if (world && mantleHint && mantleHintItem && !input.objectivesHeld()) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
+            if (world && mantleHint && mantleHintItem && !input.objectivesHeld() && menuEnv.getCvar("cg_drawpaused") != "0" /* 0x4a9fb1 */) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
                 const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont");
@@ -5034,7 +5034,7 @@ int main(int argc, char** argv) {
             // int(width / 2), baseline y = rect.y (no half-height offset, unlike the mantle hint). Hidden in a vehicle
             // (the weapon lookup 0x4dc6a0 -> 0x4dc660 then finds a turret-type weapon only). pm_flags 0x4000 is the
             // hold-breath flag of PM_UpdateHoldBreath 0x4dd350 (PlayerState::holdingBreath): the hint is hidden while it is set.
-            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && menuEnv.getCvar("cl_paused") != "1" /* 0x104309c */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
+            if (world && world->player() && holdBreathItem && !input.objectivesHeld() /* 0xf791fc, 0x4a9e5d */ && menuEnv.getCvar("cg_drawpaused") != "0" /* 0x4a9e4c */ && menuEnv.getCvar("cl_paused") != "1" /* 0x104309c */ && !(world->playerPmFlags() & 0x20000) && !(world->playerPmFlags() & 0x4000) && pweapon.adsFrac() == 1.0f) {
                 const std::string reticle = pweapon.field("adsOverlayReticle");
                 if (!reticle.empty() && reticle != "none" && pweapon.field("weaponClass") != "item") {
                     const float ts = holdBreathItem->textScale;
@@ -5425,7 +5425,10 @@ int main(int argc, char** argv) {
             // Fade (0x4a7600 / 0x4b0900): dvar seconds 0 -> 1; else touch == 0 or elapsed >= ticks -> 0, else min(1, (ticks - elapsed) / 700).
             // Ammo backdrop / text use hud_fade_ammodisplay (default 2 s, 0x10438d8) from the ammo touch time; the firemode icon the same dvar
             // but a fixed 0x708 = 1800 ms window from the weapon change time (0xf796e4); the compass hud_fade_compass (default 8 s).
+            // cg_drawpaused == 0 forces alpha 0 first (0x4a7600, and inline in the compass / stance handlers 0x4a90e2, 0x4a9222, 0x4a8214).
+            const bool drawPausedOn = menuEnv.getCvar("cg_drawpaused") != "0";
             auto fadeAlpha = [&](int64_t touch, float dvarSeconds, int ticksMs) {
+                if (!drawPausedOn) return 0.0f;
                 if (dvarSeconds == 0.0f) return 1.0f;
                 const int64_t now = world ? world->timeMs() : 0, el = now - touch;
                 if (touch == 0 || el >= ticksMs) return 0.0f;
@@ -5439,8 +5442,13 @@ int main(int argc, char** argv) {
             // def +0x1d4 / +0x1d8 are maxAmmo / clipSize: weapon field table 0x5a7e80 (docs/spec/inventory.md; the table is in the
             // packed .data, read at run time), and givemaxammo (0x538020) reads +0x1d4 at 0x538109 for the stock limit.
             const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
-            const bool stockLow = maxAmmo >= 0 && float(std::min(pweapon.stock(), 999)) <= maxAmmo * 0.2f;
-            const bool clipLow = clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
+            // clipOnly weapons (def +0x340): the clip is "invalid" for the ownerdraw (0x4a7a13) and the displayed stock is the
+            // clip count itself (0x4dcd60 without a shared-ammo group returns ps.ammoclip[clipIndex] for them, ps.ammo[ammoIndex]
+            // otherwise). TODO(spec): the shared-ammo-group sum of 0x4dcd60 (def +0x1e4 >= 0) is not modelled.
+            const bool clipOnly = pweapon.hudNumber("clipOnly") != 0.0f;
+            const int dispStock = clipOnly ? pweapon.clip() : pweapon.stock();
+            const bool stockLow = maxAmmo >= 0 && float(std::min(dispStock, 999)) <= maxAmmo * 0.2f;
+            const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
                 const float rightEdge = float(w), bottomEdge = float(h); // RIGHT / BOTTOM alignment, safe area 0
                 if (ammoBackItem && !ammoBackItem->background.empty()) {
@@ -5470,7 +5478,7 @@ int main(int argc, char** argv) {
                             return tw;
                         };
                         const float x0 = rightEdge + r.x * sc, y0 = bottomEdge + r.y * sc, w0 = r.w * sc;
-                        const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", pweapon.stock());
+                        const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", dispStock);
                         const int st = ammoTextItem->textStyle;
                         // Colours (0x4a7930): alpha = the fade; the clip keeps the item colour, "|" and the stock turn red when the
                         // stock is low; a low clip is overdrawn in red with a sawtooth alpha (800 ms, 1 -> 0, restarting),
@@ -5478,17 +5486,22 @@ int main(int argc, char** argv) {
                         col[3] = uint8_t(std::clamp(ammoAlpha, 0.0f, 1.0f) * 255.0f);
                         uint8_t col2[4] = {col[0], col[1], col[2], col[3]};
                         if (stockLow) col2[0] = uint8_t(0.89f * 255.0f), col2[1] = uint8_t(0.18f * 255.0f), col2[2] = uint8_t(0.01f * 255.0f);
-                        hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
-                        if (clipLow) {
-                            const int64_t now = world ? world->timeMs() : 0;
-                            if (hudFade.flashStart > now || hudFade.flashStart + 800 < now) hudFade.flashStart = now;
-                            const float saw = float(hudFade.flashStart - now + 800) * 0.00125f;
-                            const uint8_t flash[4] = {uint8_t(0.89f * 255.0f), uint8_t(0.18f * 255.0f), uint8_t(0.01f * 255.0f),
-                                                      uint8_t(std::clamp(std::min(saw, ammoAlpha), 0.0f, 1.0f) * 255.0f)};
-                            hudText(out, clip, x0, y0, gs, *f, flash, 0.0f, 1.0f, st);
+                        if (clipOnly) {
+                            // Clip invalid, stock valid (0x4a7d28): the stock text alone, centred in the rect, colour as above.
+                            hudText(out, stock, x0 + (w0 - width(stock)) * 0.5f, y0, gs, *f, col2, 0.0f, 1.0f, st);
+                        } else {
+                            hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
+                            if (clipLow) {
+                                const int64_t now = world ? world->timeMs() : 0;
+                                if (hudFade.flashStart > now || hudFade.flashStart + 800 < now) hudFade.flashStart = now;
+                                const float saw = float(hudFade.flashStart - now + 800) * 0.00125f;
+                                const uint8_t flash[4] = {uint8_t(0.89f * 255.0f), uint8_t(0.18f * 255.0f), uint8_t(0.01f * 255.0f),
+                                                          uint8_t(std::clamp(std::min(saw, ammoAlpha), 0.0f, 1.0f) * 255.0f)};
+                                hudText(out, clip, x0, y0, gs, *f, flash, 0.0f, 1.0f, st);
+                            }
+                            hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col2, 0.0f, 1.0f, st);
+                            hudText(out, stock, x0 + w0, y0, gs, *f, col2, 1.0f, 1.0f, st);
                         }
-                        hudText(out, "|", x0 + (w0 - width("|")) * 0.5f - 5.0f * sc, y0, gs, *f, col2, 0.0f, 1.0f, st);
-                        hudText(out, stock, x0 + w0, y0, gs, *f, col2, 1.0f, 1.0f, st);
                     }
                 }
             }
