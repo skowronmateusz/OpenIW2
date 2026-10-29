@@ -31,8 +31,8 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
 
 ## Spawning (implemented; partly inferred)
 
-- `actor_*` entities are spawners. Those without spawnflag 1 (`SPAWNER`, described in the aitype headers as
-  "makes this a spawner instead of a guy") spawn an AI at load.
+- `actor_*` entities are spawners. Those without spawnflag 1 (`SPAWNER`, which the aitype headers describe as
+  turning the entity into a spawner rather than a placed AI) spawn an AI at load.
 - `dospawn()` / `stalingradspawn()` on a spawner create an AI. It copies the spawner's key/values, decrements
   `count`, runs `aitype main()` with `self` = the AI, starts `animscripts/init::main()` (handle 0x1c7e0f8, 0x532558)
   and the bottom AI state, and then notifies the spawner `"spawned"` with the AI (0x5325ad).

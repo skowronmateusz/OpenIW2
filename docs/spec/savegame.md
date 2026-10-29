@@ -189,7 +189,7 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   material `unknownsave` (0x581340, registered via 0x617ac0). Otherwise the entry's +8 string (= header +0x320, the image name; script
   default `$default`) is registered (0x617ac4, cached by name in 0x11073d0 / handle 0x11073cc, case-insensitive compare); an empty name
   or a failed registration falls back to `unknownsave`. The quad covers the item rect (0x4d4790 with the ownerdraw's colour argument).
-  The menu comment "located in /save/images/<savegamename>.tga" does not match 1.3: no per-save picture exists (section 2.1).
+  A menu comment says that each save has its own picture under save/images/; that does not match 1.3: no per-save picture exists (section 2.1).
 - UI_SAVEGAMENAME (262) and `textsavegame` items show the UI-state strings +0x31e / +0x41e that the feeder selection 0x4c6050 fills.
   TODO(spec): their draw handlers (font, wrapping of the multi-line detail text) are not decoded; openiw2 draws them with the item's
   text settings.

@@ -81,7 +81,7 @@ shooting and opens `invert_axis2`). Evidence:
 - The menu command `scriptMenuResponse "x"` (command table entry 0x4c8e20) sends `cmd mr <menu index> x`; the server command
   `mr` (0x4ea700) notifies the player `menuresponse` with (menu name, response): argc != 3 gives ("", "bad"), an index outside
   0..31 an empty name.
-- `execnow "toggle ui_mousePitch"` (0x433b80 -> 0x433a10) flips the bool dvar; `uiScript update ui_mousePitch` (0x4c5118) sets
+- The invert-mouse item toggles the bool dvar `ui_mousePitch` (exec path 0x433b80 -> 0x433a10); the uiScript update for that dvar (0x4c5118) sets
   the cvar `m_pitch` to -0.022 (0xbcb43958) when the bool is set and +0.022 (0x3cb43958) otherwise. At UI start-up
   `ui_mousePitch = (m_pitch < 0)` (0x4c30db). The mouse look pitch change is `dy * m_pitch`, so a negative value inverts it.
 - invert_axis1: "Tak" -> toggle + response `try_invert`; "Nie" and ESC -> `accept_normal`. invert_axis2 reverses the roles

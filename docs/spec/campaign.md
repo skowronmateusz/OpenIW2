@@ -84,7 +84,7 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
   game object (0x9bef30, pushed by the VM's `game` opcode 0x46980d, re-created by G_InitGame 0x4da481). So after
   `missionSuccess("demolition", false)` demolition starts with an empty `game[]`: `_loadout.gsc` sees no `gaveweapons` and
   gives the SVT40 / PPSh loadout. A persistent change also writes the client into a memory save (0x4d9dd1 -> 0x4e6c20) that
-  carries the player's weapons into the next level ("weapons carry over but are REFILLED", `_loadout.gsc`).
+  carries the player's weapons into the next level (`_loadout.gsc`: the weapons are kept, with full ammunition).
 - When the change falls due (0x4d9f90; due time 0x1c60f54 = now + exit + 1000 ms, set by 0x4d9da0): the movie-pending flag
   0x1c60fe4 (set by `missionsuccess` 0x4f4066 and `cinematic` 0x4f4220) is cleared and either the stored cinematic plays
   (`cinematic <name> 0`, its end loads the map) or, without a name, the server sends the client `openvictoryscreen`
