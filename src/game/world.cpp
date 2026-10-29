@@ -1290,6 +1290,12 @@ bool World::cheatToggle(bool& flag, const char* on, const char* off) {
     return true;
 }
 
+bool World::cheatGod() {
+    const bool t = cheatToggle(god_, "GAME_GODMODE_ON", "GAME_GODMODE_OFF");
+    if (t && player_) player_->obj->set("$godmode", Value(god_));
+    return t;
+}
+
 int World::playerPmType() const {
     const Value h = player_ ? player_->obj->get("health") : Value();
     return pmClientType(noclip_, ufo_, h.isNumber() ? h.asInt() : 1, playerLink_.has_value());

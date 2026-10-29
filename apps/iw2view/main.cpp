@@ -3112,7 +3112,7 @@ int main(int argc, char** argv) {
     float shotViewHeight = 60;
     float shotLean = 0;
     bool shotAds = false;
-    bool godMode = false; // --god / F10: the "god" cheat (0x4e9f90 toggles FL_GODMODE on the player)
+    bool pendingGod = false, pendingDemigod = false, pendingNotarget = false; // --god / --demigod / --notarget, F10 = god: the cheat commands (0x4e9f90 / 0x4ea030 / 0x4ea0d0; need sv_cheats)
     bool pendingNoclip = false, pendingUfo = false; // --noclip / --ufo: the cheat commands run once when the level is up (need sv_cheats)
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
     std::string language = "polish";
@@ -3155,7 +3155,9 @@ int main(int argc, char** argv) {
             else if (a == "--blur") forcedBlur = std::stof(next());
             else if (a == "--shoot") shootMarks = std::stoi(next());
             else if (a == "--no-audio") audioOn = false;
-            else if (a == "--god") godMode = true;
+            else if (a == "--god") pendingGod = true;
+            else if (a == "--demigod") pendingDemigod = true;
+            else if (a == "--notarget") pendingNotarget = true;
             else if (a == "--noclip") pendingNoclip = true;
             else if (a == "--ufo") pendingUfo = true;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
@@ -6906,8 +6908,7 @@ int main(int argc, char** argv) {
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
-                    godMode = !godMode;
-                    std::cout << (godMode ? "godmode ON" : "godmode OFF") << "\n"; // GAME_GODMODE_ON / _OFF
+                    pendingGod = true; // the god command, behind the sv_cheats / alive gate
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
@@ -7156,7 +7157,12 @@ int main(int argc, char** argv) {
                 cam.pos = cam.pos + normalize(move) * speed;
             }
 
-            if (world && world->player()) world->player()->obj->set("$godmode", script::Value(godMode));
+            if (world && world->player() && (pendingGod || pendingDemigod || pendingNotarget)) {
+                if (pendingGod) world->cheatGod();
+                if (pendingDemigod) world->cheatDemigod();
+                if (pendingNotarget) world->cheatNotarget();
+                pendingGod = pendingDemigod = pendingNotarget = false;
+            }
             if (world && world->player() && (pendingNoclip || pendingUfo)) { // cheat commands noclip / ufo (0x4ea9b1 / 0x4ea9d8)
                 if (pendingNoclip) world->cheatNoclip();
                 if (pendingUfo) world->cheatUfo();
@@ -7240,7 +7246,7 @@ int main(int argc, char** argv) {
                 }
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
-                    if (e.kind == game::PlayerWeapon::Event::ReloadBegin) input.clearAds(); // event 0x95 (0x4bafbc)
+                    if (e.kind == game::PlayerWeapon::Event::ReloadBegin) { input.clearAds(); if (e.weapon.empty()) ps.ads = false; } // event 0x95 (0x4bafbc); 0x4dd090 (the empty-named ones) also clears pm_flags 0x40
                     else if (e.kind == game::PlayerWeapon::Event::EjectBrass) viewFlash->brassPending = true; // event 0xa2 (0x4bb113)
                     else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
                         ps.aimSpread = e.alt ? std::max(ps.aimSpread, 128.0f) : 255.0f;

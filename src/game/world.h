@@ -587,6 +587,15 @@ public:
     // Return whether the flag was toggled.
     bool cheatNoclip() { return cheatToggle(noclip_, "GAME_NOCLIPON", "GAME_NOCLIPOFF"); }
     bool cheatUfo() { return cheatToggle(ufo_, "GAME_UFOON", "GAME_UFOOFF"); }
+    // god / demigod / notarget (0x4e9f90 / 0x4ea030 / 0x4ea0d0, same gate 0x4e9500): toggle client-entity flags +0x128 & 1 / 2 / 4 and print
+    // GAME_GODMODE_ON/OFF, GAME_DEMI_GODMODE_ON/OFF, GAME_NOTARGETON/OFF. Effects: god is read by combat ($godmode on the player);
+    // TODO(spec): the demigod (health floor) and notarget (AI target selection) consumers are not implemented.
+    bool cheatGod();
+    bool cheatDemigod() { return cheatToggle(demigod_, "GAME_DEMI_GODMODE_ON", "GAME_DEMI_GODMODE_OFF"); }
+    bool cheatNotarget() { return cheatToggle(notarget_, "GAME_NOTARGETON", "GAME_NOTARGETOFF"); }
+    bool playerGod() const { return god_; }
+    bool playerDemigod() const { return demigod_; }
+    bool playerNotarget() const { return notarget_; }
     bool playerNoclip() const { return noclip_; }
     bool playerUfo() const { return ufo_; }
     // ClientThink's pm_type for the player (0x4e7c05..0x4e7c5a): noclip 2, ufo 3, else by health and the link
@@ -907,6 +916,7 @@ private:
     std::array<Objective, 16> objectives_{};
     std::vector<ClientCommand> clientCommands_;
     bool noclip_ = false, ufo_ = false; // client+0x8628 / +0x862c
+    bool god_ = false, demigod_ = false, notarget_ = false; // entity flags +0x128 & 1 / 2 / 4
     bool cheatToggle(bool& flag, const char* on, const char* off);
     std::vector<std::string> shockNames_;                 // precacheshellshock names (index - 1)
     std::vector<std::shared_ptr<const ShockRecord>> shockRecords_; // parallel to shockNames_
