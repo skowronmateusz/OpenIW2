@@ -234,6 +234,22 @@ G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero prio
   `edge0(p) + edge1(p) ≤ 1.001` (0x5920c8 / 0x5920c4). The result keeps the plane normal (turned back out of the bone
   space, then out of the entity space by the caller) and the surface's surface flags; partName = the bone's name.
   The caller sets the entity number and contents = the entity's contents (ent+0xc0).
+- `script_vehicle` init (0x50d820): `ent+0xa2 = 4` (0x50d844), contents 0x2080 (0x202080 with spawnflag 1), handler 9, entity type 0xc; the
+  collmap link (0x50dc40) then replaces the contents with 0x800000 (0xa00000) and sets the brush model. So a vehicle is hit in a
+  locational trace by its xmodel collision surfaces (the entity contents must overlap the mask: 0x800000 is in the bullet mask
+  0x280e831 and the rocket mask 0x280e891), never by its collmap brush: the collmap brushes of libya (crusader, panzer II) are all
+  `clip_nosight` (0x8031640), which no bullet or rocket mask overlaps, so a plain (non-locational) trace passes through the tank
+  while movement traces (player clip 0x281c011, vehicle 0x810211: bits 0x10000 / 0x200) stop at it.
+- Missiles are locational too: the missile move trace 0x526840 (rockets and grenades, called by G_RunMissile 0x526c30 through
+  0x526b40) calls G_LocationalTrace (0x44bf00) with locational = 1 and the default priority map 0x5a9584, exactly like Bullet_Fire
+  (0x5313db). `World::missileTrace` therefore uses `locationalTrace`, so a rocket explodes on a vehicle's or a script model's
+  collision surfaces and on an actor's bone boxes.
+- Fix (`EntityClip::collSurfs`, `CollisionWorld::trace(..., skipCollSurfs)`, `World::entityContents` for vehicles): a locational trace
+  skips the vehicle's collmap clip and tests its collision surfaces instead (tests/test_vehiclehit.cpp: libya crusader hit by
+  Bullet_Fire and a panzerfaust rocket, player box stopped by the hull). Before, only `script_model` entities were handled, so a
+  bullet or rocket went straight through every vehicle.
+- Vehicle bone pose: the collision surfaces are posed with the bind pose (turret and wheel controls are not applied). TODO(spec).
+  A vehicle without a DObj would be skipped by 0x4746b0 (not examined).
 - OpenIW2 (`traceCollSurfs`, `World::locationalTrace`): as above with the full entity angles. TODO(spec):
   `FUN_004746b0`, the DObj bounds pre-test `FUN_00473800` (a sphere around the xmodel bounds instead), the
   per-surface bounds cull, and the r.mins / r.maxs box script models get in traces that are not locational.

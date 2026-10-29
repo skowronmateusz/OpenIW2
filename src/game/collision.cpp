@@ -1791,12 +1791,12 @@ void clipAbsBounds(const EntityClip& c, const Vec& modelMins, const Vec& modelMa
 // G_Trace (FUN_0044bf00): the world, then each entity clip whose contents match the mask and whose absolute bounds
 // the swept box touches (0x41a590 / 0x44b840); the closest hit wins and names the entity.
 TraceResult CollisionWorld::trace(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask, int passEntity,
-                                  bool skipHitBoxes) const {
+                                  bool skipHitBoxes, bool skipCollSurfs) const {
     TraceResult tr = traceWorld(start, end, mins, maxs, mask);
     if (!d_ || tr.fraction == 0.0f) return tr;
     const int passOwner = ownerOf(passEntity);
     for (const EntityClip& c : d_->entityClips) {
-        if (skipClip(c, mask, passEntity, passOwner) || (skipHitBoxes && c.hitBoxes)) continue;
+        if (skipClip(c, mask, passEntity, passOwner) || (skipHitBoxes && c.hitBoxes) || (skipCollSurfs && c.collSurfs)) continue;
         if (c.model != 0 && (c.model < 0 || size_t(c.model) >= d_->models.size())) continue;
         Vec amin, amax;
         if (c.model) {

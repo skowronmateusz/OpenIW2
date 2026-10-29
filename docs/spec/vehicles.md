@@ -425,6 +425,11 @@ VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0
 ## Vehicle triggers (G_TouchTriggers 0x4e7320)
 
 The vehicle think calls G_TouchTriggers right after the solid touch 0x50ff00 (0x512c50). A vehicle (+0x108 set) uses area mask 8; trigger_multiple / once / radius get contents 8 when spawnflags & 16 (0x528dc0), so they fire for vehicles every frame of contact (notify "trigger", the vehicle as toucher). Box: origin + the collmap brush bounds (zero without a collmap). Implemented in `World::vehicleTouchTriggers` (src/game/vehicletriggers.cpp); toujane `killtank` (spawnflags 16) starts the opening tank kill this way (test `vehicletrigger_world`). trigger_hurt also hurts a damageable vehicle (touch 0x5291d0, same rules as for the player). Not run for vehicles: trigger_friendlychain (touch 0x529140 needs a sentient, a vehicle has none). Box: unrotated r.mins/maxs (0x4e7440..0x4e7472), inferred to be the model bounds.
+## Hit surfaces of a vehicle
+
+Bullets and missiles hit a vehicle through its xmodel collision surfaces (`ent+0xa2 = 4`, 0x50d844), see docs/spec/collision.md
+"Script model collision surfaces"; the collmap brush only answers movement, sight-class and other non-locational traces.
+
 ## Damage filter (G_Damage on a vehicle)
 
 G_Damage (0x528050) calls the vehicle filter 0x5122f0 first whenever the entity has vehicle info (ent+0x108); a nonzero

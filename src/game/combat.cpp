@@ -346,8 +346,9 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
                                    int& location) {
     location = 0;
     const int passNum = pass ? pass->number : -1;
-    TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, mask, passNum, priority != nullptr);
+    TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, mask, passNum, priority != nullptr, true);
     if (tr.fraction == 0) return tr;
+    const int passOwnerNum = collision_->ownerOf(passNum);
     // Script models (ent+0xa2 & 4, set at spawn 0x533480; contents 0x2080, 0 after notsolid 0x534050) are traced
     // against their xmodel collision surfaces in a locational trace whether or not there is a priority map
     // (0x44b840 → FUN_00474440); the hit names the entity with its contents (ent+0xc0) and the surface's surface
@@ -355,8 +356,9 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
     // sphere around the xmodel bounds), and the box (r.mins / r.maxs) used by traces that are not locational.
     for (const auto& ep : entities_) {
         Entity& e = *ep;
-        if (e.obj->removed || e.classname != "script_model" || e.number == passNum) continue;
-        if (!(mask & 0x2080u) || e.obj->get("$notsolid").truthy()) continue;
+        if (e.obj->removed || (e.classname != "script_model" && !e.vehicle) || e.number == passNum || e.number == passOwnerNum) continue;
+        const uint32_t entContents = entityContents(e); // ent+0xc0: 0x2080 script_model, a script_vehicle's 0x2080 / collmap 0x800000
+        if (!(mask & entContents)) continue;
         const Value mv = e.obj->get("model"), ov = e.obj->get("origin");
         if (!mv.isString() || !ov.isVector()) continue;
         if (!skeleton(mv.asString())) continue;
@@ -388,7 +390,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
         tr.normal = assets::rotate(er, h.normal);
         tr.surfaceFlags = uint32_t(h.surfaceFlags);
         tr.material = -1;
-        tr.contents = 0x2080u;
+        tr.contents = entContents;
         tr.entity = e.number;
         tr.startSolid = tr.allSolid = false;
         location = 0;
