@@ -64,7 +64,8 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
   for no-commit saves only one per frame (−2, `Attempting to save multiple times in a single frame`); at most 3
   pending saves (−3). `savegamenocommit` returns the save id.
 - `commitsave(id)`: errors `Attempting to commit an invalid save`, `Save Commit attempted on incorrect save
-  currentsave:%i, commit:%i`, `Save Commit attempted with no valid committable save available`.
+  currentsave:%i, commit:%i`, `Save Commit attempted with no valid committable save available`. Byte 0x1b15ac1 (set by the engine's
+  own commit of a `savegame()` write): while set, commitsave clears it and returns silently, before these checks.
 - `issavesuccessful()`, `issaverecentlyloaded()` read engine flags.
 - Console commands registered by FUN_00447370: `loadgame`, `loadgame_continue`, `nextlevel`,
   `difficultyEasy/Medium/Hard/Fu`, `savegame_lastcommit`, `map_restart`, `fast_restart`, `spmap`, `devmap`.

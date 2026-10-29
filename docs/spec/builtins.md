@@ -503,8 +503,8 @@ handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, develope
 |---|---|---|---|
 | `predictanim`, `predictoriginandangles`, `beginprediction`, `endprediction` | 1-2 | animscripts/predict.gsc, death.gsc | balcony stumble/tumble death prediction; decoded, not implemented (see "Prediction built-ins" below) |
 | `getgroundenttype` | 2 | animscripts/death.gsc, traverse/window.gsc | exe 0x5401c0 |
-| `getcommandfromkey` | 1 | moscow_str | key-binding text (table 0x5d2730) for hint strings |
-| `buttonpressed` | 1 | _briefing | key-name keyed query (binding table 0x5d2728) |
+| `getcommandfromkey` | 1 | moscow_str | implemented: binding text of a key (table 0x5d2730), "" for unknown / unbound; see below |
+| `buttonpressed` | 1 | _briefing | implemented: down flag of a key (table 0x5d2728); see below |
 | `setstablemissile` | 1 | crossroads | sets entity flag 0x20000 (+0x128); G_FireRocket copies it, no destabilization (implemented) |
 | `enablegrenadetouchdamage` | 1 | tankhunt | sets entity flag 0x4000 (+0x128); gate of the grenade path test 0x5297b0 (implemented) |
 | `setdebugorigin`, `setdebugangles`, `getdebugeye` | 1 | _load, utility | developer only |
@@ -522,8 +522,7 @@ The remaining names (team scores, ranks, `logprint`, `obituary`, `closeingamemen
 - Not done (see "Prediction built-ins"): `predictanim` (0x540020 -> 0x5045c0), `predictoriginandangles` (0x53ff50), `beginprediction` (0x53f960, snapshots the actor's
   anim state and the +0x224 move block into a scratch actor) / `endprediction` (0x53fb80): a sandboxed actor anim + slide-move step; needs
   the actor frame (0x5045c0) factored so it can run on a copy. `setstablemissile` (sets +0x128 bit 0x20000): no reader was found by text search of the
-  disassembly (`testl $0x20000, reg` hits are too many to attribute). `getcommandfromkey`/`buttonpressed` need the key-binding table
-  (0x5d2728/0x5d2730), which the port does not model. The aitype `spawner` handle is resolved at map load (0x4eaf9f, stored at spawn-table entry +8);
+  disassembly (`testl $0x20000, reg` hits are too many to attribute). `getcommandfromkey`/`buttonpressed` are now implemented, see "Key table built-ins" below. The aitype `spawner` handle is resolved at map load (0x4eaf9f, stored at spawn-table entry +8);
   the call site was not located.
 
 ### Prediction built-ins (actor death prediction, animscripts/predict.gsc)
@@ -558,3 +557,23 @@ Decoded, not implemented (need the animation tree stepped on a snapshot, not ava
   notetrack stop (the same missing 0x478220 as `setanim`, docs/spec/animscripted.md).
 TODO(spec): the above four; the balcony death anims (death.gsc through predict.gsc stumbleWall / tumbleWall) rely on them and keep running
 the unpredicted path.
+### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
+
+The exe keeps a 256-entry key table of 12-byte entries at 0x5d2728: +0 the down flag (written by the key event 0x40c0fd from its
+`down` argument, for every key, bound or not), +4 the repeat count (0x5d272c), +8 the binding text (0x5d2730).
+
+- Key name to key number (0x40b880): an empty name gives -1; a one-character name is the character itself (`movsbl`, no case
+  folding); `0x??` (exactly four characters) is the byte read as two digits (decimal digit or lowercase a-f, anything else counts
+  as 0); anything else is a case-insensitive lookup (0x43f6d0) in the name table at 0x59a0e0 (`TAB`, `ENTER`, `ESCAPE`, `SPACE`,
+  `BACKSPACE`, the arrows, `ALT`/`CTRL`/`SHIFT`, `F1`..`F12`, `INS`..`END`, `MOUSE1`..`MOUSE5`, `MWHEELUP/DOWN`, `AUX1`..`AUX16`,
+  `KP_*`, `PAUSE`, `SEMICOLON`, `COMMAND`, and entries 128..147 named by the decimal code of the extended character); -1 when unknown.
+  Implemented as `ClientInput::keyNumber` (the table is copied into src/game/clientinput.cpp).
+- `buttonpressed(name)` (0x538980): player-only (self that is not an entity: error `not an entity`; not a client:
+  `entity %i is not a player`); an empty or missing name is the error `usage: buttonPressed(<button name>)`; the result is int 1
+  when the key number is valid and the down flag is nonzero, else 0. The only caller (`_briefing`, console branch) passes
+  `BUTTON_A`, which is no PC key name, so on the PC it always gives 0.
+- `getcommandfromkey(name)` (0x4ece00): the binding text of the key, or the empty string (0x56cd07) when the name gives -1 or
+  the key is unbound. `moscow_str` asks for `BUTTON_RSTICK` / `BUTTON_LSTICK` (console names), so on the PC it gives "".
+- Port: `World::clientInput` points at the client's `ClientInput`; `ClientInput::key()` keeps the down set and
+  `keyDown()` / `commandFromKey()` answer by name. TODO(spec): the exe takes a one-character name literally (`w` is key 119, `W` 87)
+  and the key event decides which of the two a pressed letter is; the port stores one-character keys upper-cased.

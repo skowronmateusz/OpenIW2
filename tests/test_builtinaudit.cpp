@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <string>
 #include "fs/vfs.h"
+#include "game/clientinput.h"
 #include "game/world.h"
 
 #include <cmath>
@@ -42,15 +43,28 @@ int main() {
              "\tlevel.move = self getnormalizedmovement();\n"
              "\tlevel.ammonone = self getammocount(\"none\");\n"
              "\tself playlooprumble(\"x\");\n"
-             "\tlevel.done = 1;\n}\n";
+             "\tlevel.bp_w = self buttonpressed(\"w\");\n"
+             "\tlevel.bp_f = self buttonpressed(\"F\");\n"
+             "\tlevel.bp_pad = self buttonpressed(\"BUTTON_A\");\n"
+             "\tlevel.cmd_w = getcommandfromkey(\"W\");\n"
+             "\tlevel.cmd_mouse = getcommandfromkey(\"mouse1\");\n"
+             "\tlevel.cmd_pad = getcommandfromkey(\"BUTTON_RSTICK\");\n"
+             "\tlevel.done = 1;\n}\n"
+             "save()\n{\n\tsavegame(\"zz\", \"d\", \"$default\");\n}\n"
+             "commit()\n{\n\tcommitsave(0);\n\tlevel.committed = 1;\n}\n";
     }
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(main);
     vfs.mountDirectory(dir.string());
     iw2::game::World w(vfs, "moscow");
     for (const char* n : {"attackbuttonpressed", "usebuttonpressed", "getplayerangles", "getnormalizedmovement", "getammocount",
-                          "setspawnerteam", "playlooprumble"})
+                          "setspawnerteam", "playlooprumble", "buttonpressed", "getcommandfromkey"})
         CHECK(!w.stubbedBuiltins().count(n));
+    iw2::game::ClientInput keys; // buttonpressed / getcommandfromkey read the client key table
+    keys.loadConfig("unbindall\nbind w \"+forward\"\nbind MOUSE1 \"+attack\"\n");
+    keys.key("w", true);
+    keys.key("f", true); // an unbound key still has a down flag
+    w.clientInput = &keys;
     w.prepareStart();
     CHECK(w.player() != nullptr);
     if (!w.player()) return 1;
@@ -72,6 +86,10 @@ int main() {
     const auto m = lv->get("move").asVector();
     CHECK(std::fabs(m[0] - 1.0f) < 1e-5f && std::fabs(m[1] + 1.0f) < 1e-5f && m[2] == 0);
     CHECK(lv->get("ammonone").asInt() == 0);
+    // buttonpressed (0x538980): the key's down flag; a name that is no key (console BUTTON_*) is 0. getcommandfromkey (0x4ece00).
+    CHECK(lv->get("bp_w").asInt() == 1 && lv->get("bp_f").asInt() == 1 && lv->get("bp_pad").asInt() == 0);
+    CHECK(lv->get("cmd_w").toString() == "+forward" && lv->get("cmd_mouse").toString() == "+attack");
+    CHECK(lv->get("cmd_pad").toString().empty());
     // The previous command's buttons count as well (the exe ORs client+0x8640 with +0x8634).
     cmd.buttons = 1;
     w.setPlayerCommand(cmd);
@@ -86,6 +104,43 @@ int main() {
         for (int i = 0; i < 40; ++i) t.frame();
         for (const auto& e : t.vm().errors()) CHECK(e.find("supported on damage") == std::string::npos);
         CHECK(!t.stubbedBuiltins().count("enablegrenadetouchdamage") && !t.stubbedBuiltins().count("getgroundenttype"));
+    }
+    // commitsave (0x4f3db0): after a savegame() write (byte 0x1b15ac1 set by the engine's own commit) the first commitsave returns
+    // at once; the byte is consumed, so the next one reaches the checks and fails for lack of a pending save.
+    {
+        iw2::game::World s(vfs, "moscow");
+        s.prepareStart();
+        s.vm().start("maps/zz_builtinaudit.gsc", "save", {}, iw2::script::Value(s.player()->obj));
+        s.vm().drainReady();
+        s.frame();
+        CHECK(s.takeSaveFiles().size() == 1);
+        s.vm().start("maps/zz_builtinaudit.gsc", "commit", {}, iw2::script::Value(s.player()->obj));
+        s.vm().drainReady();
+        CHECK(s.vm().errors().empty() && s.vm().level()->get("committed").isInt());
+        s.vm().start("maps/zz_builtinaudit.gsc", "commit", {}, iw2::script::Value(s.player()->obj));
+        s.vm().drainReady();
+        CHECK(!s.vm().errors().empty());
+    }
+    // The cheat commands noclip / ufo (0x4ea170 / 0x4ea220 behind the gate 0x4e9500): sv_cheats and health decide.
+    {
+        iw2::game::World c(vfs, "moscow");
+        c.prepareStart();
+        CHECK(!c.cheatNoclip() && !c.playerNoclip());
+        auto cmds = c.takeClientCommands();
+        CHECK(cmds.size() == 1 && cmds[0].name == "print" && cmds[0].arg == "GAME_CHEATSNOTENABLED");
+        c.cvars["sv_cheats"] = "1";
+        CHECK(c.cheatNoclip() && c.playerNoclip() && c.playerPmType() == 2);
+        cmds = c.takeClientCommands();
+        CHECK(cmds.size() == 1 && cmds[0].arg == "GAME_NOCLIPON");
+        CHECK(c.cheatUfo() && c.playerUfo() && c.playerPmType() == 2); // noclip wins over ufo
+        CHECK(c.cheatNoclip() && !c.playerNoclip() && c.playerPmType() == 3);
+        CHECK(c.cheatUfo() && c.playerPmType() == 0);
+        cmds = c.takeClientCommands();
+        CHECK(cmds.back().arg == "GAME_UFOOFF");
+        c.player()->obj->set("health", iw2::script::Value(int32_t(0)));
+        CHECK(!c.cheatNoclip() && c.playerPmType() == 4);
+        cmds = c.takeClientCommands();
+        CHECK(cmds.size() == 1 && cmds[0].arg == "GAME_MUSTBEALIVECOMMAND");
     }
     fs::remove_all(dir);
     if (failures) std::cerr << failures << " failure(s)\n";

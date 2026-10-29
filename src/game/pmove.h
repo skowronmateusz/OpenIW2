@@ -72,6 +72,14 @@ inline float stanceSpeedFactor(int viewHeightTarget, int64_t timeMs, int64_t ler
 // and shell shock factors (the function returns right after it). 1 for every other type.
 inline float pmTypeSpeedFactor(int pmType) { return pmType == 2 ? 3.0f : pmType == 3 ? 6.0f : 1.0f; }
 
+// The player's pm_type as ClientThink sets it (0x4e7c05..0x4e7c5a): the noclip flag gives 2, else the ufo flag 3, else with
+// health (ps+0x108) above 0 linked (entity +0x1c8 set) 1 / not 0, and with health 0 or below 4 + linked, so 4 or 5.
+inline int pmClientType(bool noclip, bool ufo, int health, bool linked) {
+    if (noclip) return 2;
+    if (ufo) return 3;
+    return health > 0 ? (linked ? 1 : 0) : (linked ? 5 : 4);
+}
+
 // Whether the lean buttons count this step (0x50adf1..0x50ae37): not with pm_flags 0x8000 (controlsFrozen), not with pm_type >= 4, not
 // airborne (groundEntityNum ps+0x60 == 0x7ff) unless pm_type == 1 (linked), and not with eFlags & 0x20300.
 inline bool leanInputAllowed(int pmType, bool controlsFrozen, bool onGround, bool eFlagsNoLean) {

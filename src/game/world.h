@@ -38,6 +38,8 @@
 
 namespace iw2::game {
 
+class ClientInput;
+
 struct ShockRecord;
 
 using script::ObjectPtr;
@@ -579,6 +581,19 @@ public:
     // playerlinktodelta / playerlinktoabsolute: the player is placed by the link (pm_type 1, no own movement);
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
+    // The cheat commands noclip / ufo (G_ClientCommand 0x4ea9b1 / 0x4ea9d8 -> 0x4ea170 / 0x4ea220): behind the cheat gate
+    // (0x4e9500: sv_cheats set, else the client command `print "GAME_CHEATSNOTENABLED"`; player health above 0, else
+    // `print "GAME_MUSTBEALIVECOMMAND"`) they toggle client+0x8628 / +0x862c and print GAME_NOCLIPON/OFF, GAME_UFOON/OFF.
+    // Return whether the flag was toggled.
+    bool cheatNoclip() { return cheatToggle(noclip_, "GAME_NOCLIPON", "GAME_NOCLIPOFF"); }
+    bool cheatUfo() { return cheatToggle(ufo_, "GAME_UFOON", "GAME_UFOOFF"); }
+    bool playerNoclip() const { return noclip_; }
+    bool playerUfo() const { return ufo_; }
+    // ClientThink's pm_type for the player (0x4e7c05..0x4e7c5a): noclip 2, ufo 3, else by health and the link
+    // (pmClientType, pmove.h). `linked` is the playerlinkto link (TODO(spec): other entity links, ent+0x1c8).
+    int playerPmType() const;
+    // The key table of the client (buttonpressed / getcommandfromkey); null in a headless run, where no key is bound or down.
+    const ClientInput* clientInput = nullptr;
     // Bone controls of a turret model (0x51d740 / 0x4ab0d0) for turret pitch and yaw relative to its angles.
     // Client prone tilt of an actor's tag_origin at client time `nowMs` (0x4c1cc0): mode 1 (prone) pitch = f x +0x168,
     // roll 0; mode 2 (corpse blend) pitch f x +0x168, roll f x +0x16c; lift f x +0x164; false when neither applies.
@@ -891,6 +906,8 @@ private:
     void objectiveMessage(int state, const std::string& text);
     std::array<Objective, 16> objectives_{};
     std::vector<ClientCommand> clientCommands_;
+    bool noclip_ = false, ufo_ = false; // client+0x8628 / +0x862c
+    bool cheatToggle(bool& flag, const char* on, const char* off);
     std::vector<std::string> shockNames_;                 // precacheshellshock names (index - 1)
     std::vector<std::shared_ptr<const ShockRecord>> shockRecords_; // parallel to shockNames_
     ShellShockState shellShock_;

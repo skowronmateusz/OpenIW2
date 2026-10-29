@@ -1080,7 +1080,13 @@ void World::processSaves() {
             saveFailed_ = true;
             continue;
         }
-        if (p.flags & 6) saveFiles_.push_back(std::move(f));
+        if (p.flags & 6) {
+            saveFiles_.push_back(std::move(f));
+            // The commit of a savegame() write (flag 2) runs with byte 0x1b15ac1 set (0x4e4029..0x4e402b before the commit 0x4d5660), so
+            // a later commitsave returns without doing anything. TODO(spec): the other setters (0x4e3ffc, 0x4e4081, 0x4e40c0: a write
+            // that commits a still-pending savegamenocommit save, gated by 0x1b1603c) and the engine-side 0x4d5830.
+            if (p.flags & 2) commitRequested_ = true;
+        }
         else uncommitted_ = std::make_pair(p.saveId, std::move(f)); // savegamenocommit: kept until commitsave
     }
 }
@@ -1109,10 +1115,15 @@ void World::registerSaveBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("savegamenocommit", [request](CallContext& c) { return Value(int32_t(request(c, 1))); });
-    // commitsave(id) (0x4f3db0): writes the uncommitted save of that id. Byte 0x1b15ac1 (set by 0x4d5830 and G_WriteGame 0x4e3ffc..0x4e40c0): when set, the exe clears it and returns without committing. TODO(spec): model it (needs the G_WriteGame caller flow).
+    // commitsave(id) (0x4f3db0): writes the uncommitted save of that id. Byte 0x1b15ac1 (the engine already committed: set around the
+    // commits of G_WriteGame 0x4e3ffc..0x4e40c0 and by 0x4d5830, cleared by the save requests 0x4f3b7a / 0x4f3d1a): when set, the exe
+    // clears it right after reading the argument (0x4f3dc1..0x4f3dca) and returns without checks or commit.
     vm_.registerBuiltin("commitsave", [this](CallContext& c) {
         const int id = c.arg(0).asInt();
-        commitRequested_ = false;
+        if (commitRequested_) {
+            commitRequested_ = false;
+            return Value();
+        }
         if (!uncommitted_) throw std::runtime_error("Save Commit attempted with no valid committable save available");
         if (uncommitted_->first != id)
             throw std::runtime_error("Save Commit attempted on incorrect save currentsave:" + std::to_string(uncommitted_->first) +

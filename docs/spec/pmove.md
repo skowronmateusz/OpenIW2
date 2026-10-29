@@ -48,7 +48,7 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   slowdown factor with flag 0x80000), velocity scaled by max(speed − drop, 0)/speed.
 - Command scale (0x508140 walking, 0x5080a0 in the air): g_speed ·
   max(|forward| (×player_backSpeedScale when negative, walking only), |right| · player_strafeSpeedScale) /
-  (sqrt(forward² + right²) · 127); ×0.4 with ps flag 0x100 or a nonzero ps+0x4c; ×3 / ×6 for pm_type 2 / 3;
+  (sqrt(forward² + right²) · 127); ×0.4 with ps flag 0x100 or a nonzero ps+0x4c; ×3 / ×6 for pm_type 2 / 3 (ClientThink sets pm_type: noclip flag 2, ufo flag 3, else health > 0: linked 1 / 0, health <= 0: 4 + linked; `pmClientType`);
   walking: ×0.15 prone, ×0.65 crouched, blended during crouch/prone transitions (0x509760), × the weapon's
   `moveSpeedScale` (weapon def +0x264) when > 0; ×0.4 with command flag 0x800.
 - Accelerate (0x507eb0): addspeed = wishspeed − v·wishdir; if > 0, accelspeed =

@@ -3113,6 +3113,7 @@ int main(int argc, char** argv) {
     float shotLean = 0;
     bool shotAds = false;
     bool godMode = false; // --god / F10: the "god" cheat (0x4e9f90 toggles FL_GODMODE on the player)
+    bool pendingNoclip = false, pendingUfo = false; // --noclip / --ufo: the cheat commands run once when the level is up (need sv_cheats)
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
     std::string language = "polish";
     bool scripts = true;
@@ -3155,6 +3156,8 @@ int main(int argc, char** argv) {
             else if (a == "--shoot") shootMarks = std::stoi(next());
             else if (a == "--no-audio") audioOn = false;
             else if (a == "--god") godMode = true;
+            else if (a == "--noclip") pendingNoclip = true;
+            else if (a == "--ufo") pendingUfo = true;
             else if (a == "--stance") { const std::string st = next(); shotViewHeight = st == "prone" ? 11.0f : st == "crouch" ? 40.0f : 60.0f; }
             else if (a == "--ads") shotAds = true;
             else if (a == "--use") shotUse = true;
@@ -3262,6 +3265,7 @@ int main(int argc, char** argv) {
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             if (carriedPlayer) w->setCarriedPlayer(std::move(*carriedPlayer));
+            w->clientInput = &input; // buttonpressed / getcommandfromkey read its key table
             // The bindings from default.cfg, reported to scripts through getkeybinding.
             for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
             if (save) { // savegame load: map entities, then the saved state instead of the level script (docs/spec/savegame.md 5)
@@ -7022,8 +7026,8 @@ int main(int argc, char** argv) {
                 in.leanRight = (buttons & game::Button::LeanRight) != 0 && !(world->playerPmFlags() & 0x4000000u);
                 in.yaw = cam.yaw;
                 in.dead = playerDead;
-                // ps+4 (ClientThink 0x4e7bc0: linked -> 1, dead -> 5), ps+0xc & 0x8000 and ps+0x7c & 0x20300 for the lean gates (0x50ade0).
-                ps.pmType = playerDead ? 5 : world->playerLinked() ? 1 : 0;
+                // ps+4 (ClientThink 0x4e7bc0: noclip 2, ufo 3, linked 1, dead 4 + linked), ps+0xc & 0x8000 and ps+0x7c & 0x20300 for the lean gates (0x50ade0).
+                ps.pmType = world->playerPmType(); // noclip 2, ufo 3, else by health and link: 0 / 1 / 4 / 5
                 in.controlsFrozen = world->playerControlsFrozen();
                 in.eFlagsNoLean = inVehicle || world->playerOnTurret();
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
@@ -7153,6 +7157,11 @@ int main(int argc, char** argv) {
             }
 
             if (world && world->player()) world->player()->obj->set("$godmode", script::Value(godMode));
+            if (world && world->player() && (pendingNoclip || pendingUfo)) { // cheat commands noclip / ufo (0x4ea9b1 / 0x4ea9d8)
+                if (pendingNoclip) world->cheatNoclip();
+                if (pendingUfo) world->cheatUfo();
+                pendingNoclip = pendingUfo = false;
+            }
             if (world) {
                 syncWeapon();
                 game::PlayerWeapon::Input wi;
@@ -7185,6 +7194,8 @@ int main(int argc, char** argv) {
                 {
                     static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
                     wi.damaged = world->playerDamageFeedback().event != binocDamageEvent;
+                    const auto sx = world->cvars.find("player_scopeExitOnDamage");
+                    wi.scopeExitOnDamage = sx != world->cvars.end() && std::atoi(sx->second.c_str()) != 0;
                     binocDamageEvent = world->playerDamageFeedback().event;
                 }
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
@@ -7439,7 +7450,9 @@ int main(int argc, char** argv) {
                 }
                 for (const auto& cmd : world->takeClientCommands()) {
                     std::istringstream a(cmd.arg);
-                    if (cmd.name == "popupopen" || cmd.name == "popupclose") {
+                    if (cmd.name == "print") { // client command `print "%s"` (0x584038): console text, here stdout
+                        std::cout << "[print] " << cmd.arg << "\n";
+                    } else if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "openvictoryscreen") {
                         // Client 0x4a6d6a: the channel pause flags become "all but menu and music" (0x4429e0 with the 11-byte block at

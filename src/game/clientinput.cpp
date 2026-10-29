@@ -40,7 +40,58 @@ std::vector<std::string> tokens(const std::string& line) {
     return out;
 }
 
+struct KeyName {
+    const char* name;
+    int num;
+};
+// The key-name table at 0x59a0e0 ({name, key number} pairs up to the null entry); the 128..147 entries are named by the
+// decimal code of the extended character.
+const KeyName kKeyNames[] = {{"TAB", 9}, {"ENTER", 13}, {"ESCAPE", 27}, {"SPACE", 32}, {"BACKSPACE", 127}, {"UPARROW", 154}, {"DOWNARROW", 155}, {"LEFTARROW", 156}, {"RIGHTARROW", 157}, {"ALT", 158}, {"CTRL", 159}, {"SHIFT", 160}, {"CAPSLOCK", 151}, {"F1", 167}, {"F2", 168}, {"F3", 169}, {"F4", 170}, {"F5", 171}, {"F6", 172}, {"F7", 173}, {"F8", 174}, {"F9", 175}, {"F10", 176}, {"F11", 177}, {"F12", 178}, {"INS", 161}, {"DEL", 162}, {"PGDN", 163}, {"PGUP", 164}, {"HOME", 165}, {"END", 166}, {"MOUSE1", 200}, {"MOUSE2", 201}, {"MOUSE3", 202}, {"MOUSE4", 203}, {"MOUSE5", 204}, {"MWHEELUP", 206}, {"MWHEELDOWN", 205}, {"AUX1", 207}, {"AUX2", 208}, {"AUX3", 209}, {"AUX4", 210}, {"AUX5", 211}, {"AUX6", 212}, {"AUX7", 213}, {"AUX8", 214}, {"AUX9", 215}, {"AUX10", 216}, {"AUX11", 217}, {"AUX12", 218}, {"AUX13", 219}, {"AUX14", 220}, {"AUX15", 221}, {"AUX16", 222}, {"KP_HOME", 182}, {"KP_UPARROW", 183}, {"KP_PGUP", 184}, {"KP_LEFTARROW", 185}, {"KP_5", 186}, {"KP_RIGHTARROW", 187}, {"KP_END", 188}, {"KP_DOWNARROW", 189}, {"KP_PGDN", 190}, {"KP_ENTER", 191}, {"KP_INS", 192}, {"KP_DEL", 193}, {"KP_SLASH", 194}, {"KP_MINUS", 195}, {"KP_PLUS", 196}, {"KP_NUMLOCK", 197}, {"KP_STAR", 198}, {"KP_EQUALS", 199}, {"PAUSE", 153}, {"SEMICOLON", 59}, {"COMMAND", 150}, {"181", 128}, {"191", 129}, {"223", 130}, {"224", 131}, {"225", 132}, {"228", 133}, {"229", 134}, {"230", 135}, {"231", 136}, {"232", 137}, {"233", 138}, {"236", 139}, {"241", 140}, {"242", 141}, {"243", 142}, {"246", 143}, {"248", 144}, {"249", 145}, {"250", 146}, {"252", 147}};
+
+// 0x43f6d0: a case-insensitive comparison (ASCII letters only) that stops at the end of both strings.
+bool nameEquals(const std::string& a, const char* b) {
+    size_t i = 0;
+    for (; i < a.size() && b[i]; ++i)
+        if (std::toupper(static_cast<unsigned char>(a[i])) != std::toupper(static_cast<unsigned char>(b[i]))) return false;
+    return i == a.size() && !b[i];
+}
+
+int hexDigit(char c) { // 0x40b8c2..0x40b911: a decimal digit or a-f (lowercase); anything else counts as 0
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return 0;
+}
+
+// The name the port stores a key under for a key number.
+std::string portKeyName(int num) {
+    for (const KeyName& k : kKeyNames)
+        if (k.num == num) return upper(k.name);
+    if (num > 0 && num < 128) return upper(std::string(1, char(num)));
+    return std::string();
+}
+
 } // namespace
+
+int ClientInput::keyNumber(const std::string& name) {
+    if (name.empty()) return -1;
+    if (name.size() == 1) return int(static_cast<signed char>(name[0]));
+    if (name.size() == 4 && name[0] == '0' && name[1] == 'x') return hexDigit(name[2]) * 16 + hexDigit(name[3]);
+    for (const KeyName& k : kKeyNames)
+        if (nameEquals(name, k.name)) return k.num;
+    return -1;
+}
+
+bool ClientInput::keyDown(const std::string& name) const {
+    const int n = keyNumber(name);
+    return n >= 0 && keysDown_.count(portKeyName(n)) != 0;
+}
+
+std::string ClientInput::commandFromKey(const std::string& name) const {
+    const int n = keyNumber(name);
+    if (n < 0) return std::string();
+    const auto it = binds_.find(portKeyName(n));
+    return it == binds_.end() ? std::string() : it->second;
+}
 
 void ClientInput::loadConfig(const std::string& text) {
     std::istringstream in(text);
@@ -86,6 +137,8 @@ std::string ClientInput::formatBindings() const {
 }
 
 void ClientInput::key(const std::string& keyName, bool down) {
+    if (down) keysDown_.insert(upper(keyName)); // the key table's down flag exists for unbound keys too (0x40c0fd)
+    else keysDown_.erase(upper(keyName));
     auto it = binds_.find(upper(keyName));
     if (it == binds_.end()) return;
     const std::string& c = it->second;

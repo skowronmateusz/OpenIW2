@@ -390,6 +390,17 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
             return ms > 0 ? float(ms) * 0.001f : fallback;
         };
         const bool can = adsNum("aimDownSight", 0) != 0;
+        // player_scopeExitOnDamage (0x4dd0fe..0x4dd137): with the dvar set, a frame that took damage (ps+0x104) and a weapon with a
+        // scope overlay (def +0x278, adsOverlayReticle) drop the aim at once: 0x4dd090 clears pm_flags 0x40 and queues event 0x95
+        // (the cgame clears the toggled aim), the aim fraction (ps+0xb8) and the exit timer (ps+0xbc) become 0, and the rest of
+        // the aim update is skipped.
+        const std::string scopeRet = binocActive_ ? defValue(binocDef_, "adsOverlayReticle") : fieldValue("adsOverlayReticle");
+        if (in.scopeExitOnDamage && in.damaged && !scopeRet.empty() && scopeRet != "none") {
+            adsFrac_ = 0;
+            adsExitTimer_ = 0;
+            zoomingIn_ = true;
+            events_.push_back({Event::ReloadBegin, std::string()}); // 0x95
+        } else {
         // The allowed flag of 0x4dd0d0 (dl): not in the reload states (a non-segmented reload releases the aim in its last
         // adsReloadTransTime, a segmented one in states 5..8 never and in state 9 by the same test), not while rechambering
         // unless rechamberWhileAds; otherwise the aim button (pm_flags 0x40). adsFire (+0x348) holds the aim in state 3
@@ -415,6 +426,7 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
         adsFrac_ = std::clamp(adsFrac_, 0.0f, 1.0f);
         if (adsFrac_ == 0) zoomingIn_ = true;
         if (adsFrac_ == 1) zoomingIn_ = false;
+        }
     }
     animTime_ += dt;
     if (pendingIdle_) {
