@@ -1072,6 +1072,10 @@ int main(int argc, char** argv) {
                         std::printf("drive t=%.1f phase %d: origin %.1f %.1f %.1f angles %.1f %.1f %.1f speed %.1f turret %s flags %x\n",
                                     t * 0.05f, phase, o[0], o[1], o[2], a[0], a[1], a[2], v->vehicle ? v->vehicle->forwardSpeed : 0.0f,
                                     ta.toString().c_str(), world.playerPmFlags());
+                        iw2::game::Vec3 tp{}, tu{}, ey{};
+                        if (world.playerVehicleSeat(tp, tu, ey))
+                            std::printf("  seat tag %.1f %.1f %.1f up %.3f %.3f %.3f eye %.1f %.1f %.1f (eye-tag %.1f %.1f %.1f)\n", tp[0], tp[1], tp[2], tu[0], tu[1], tu[2],
+                                        ey[0], ey[1], ey[2], ey[0] - tp[0], ey[1] - tp[1], ey[2] - tp[2]);
                         if (v->vehicle) std::printf("  velocity %.1f %.1f %.1f\n", v->vehicle->velocity[0], v->vehicle->velocity[1], v->vehicle->velocity[2]);
                     }
                     ++t;

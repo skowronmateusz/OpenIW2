@@ -414,3 +414,7 @@ add_test(NAME actorpredict COMMAND test_actorpredict)
 add_executable(test_balcony tests/test_balcony.cpp)
 target_link_libraries(test_balcony PRIVATE iw2_game)
 add_test(NAME balcony COMMAND test_balcony)
+
+add_executable(test_vehicleseat tests/test_vehicleseat.cpp)
+target_link_libraries(test_vehicleseat PRIVATE iw2_game)
+add_test(NAME vehicleseat COMMAND test_vehicleseat)
