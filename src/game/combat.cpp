@@ -1119,8 +1119,15 @@ void World::registerCombatBuiltins() {
         return Value(v.fireTimerMs <= 0);
     });
     // dontinterpolate (0x4edf90): toggles bit 2 (the teleport bit) of the client's eFlags (+0x7c) or the entity's (+0x128) so the
-    // renderer skips interpolation for one snapshot. No interpolation state here, so nothing to do.
-    vm_.registerBuiltin("dontinterpolate", [](CallContext&) { return Value(); });
+    // renderer skips interpolation for one snapshot. The client case (ps eFlags) has no interpolation state here. The entity case xors
+    // bit 2 of the gentity flags, the very bit the demigod cheat uses (0x4edfe1, G_Damage 0x5283d2), so on an entity without a client
+    // (an actor) the call toggles demigod: the port reproduces that through `$demigod`. (0x526540 is no flag user: it xors bit 2 of the
+    // entityState eFlags, ent+0x10, of a recycled missile.)
+    vm_.registerBuiltin("dontinterpolate", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (e && !e->isPlayer) e->obj->set("$demigod", Value(!e->obj->get("$demigod").truthy()));
+        return Value();
+    });
     // earthquake(scale, duration, origin, radius) (0x4f4330): scale, duration and radius must be > 0; event 0xc7 goes to the clients.
     vm_.registerBuiltin("earthquake", [this](CallContext& c) {
         const float scale = c.arg(0).asFloat(), dur = c.arg(1).asFloat(), radius = c.arg(3).asFloat();

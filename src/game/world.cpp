@@ -687,6 +687,7 @@ void World::frame(bool advanceTime) {
     // Stage 1. The player's move itself runs in the front end before this frame; the use part of ClientThink runs here.
     runPlayerUse();
     updatePlayerMoved();
+    playerNodeClaim(); // 0x4e826b, before the triggers
     runTriggers(); // G_TouchTriggers' triggers; their "trigger" notifies are stage 3
     touchItems();  // G_TouchTriggers' items (Touch_Item 0x521a90)
     vm_.drainReady(); // 0x4dac2a: the threads the trigger notifies woke run before the animation step

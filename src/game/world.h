@@ -1074,6 +1074,8 @@ private:
     void linkOverlappingNodes();                    // 0x52d990 (lazily, once)
     void claimNode(Entity& e, int node, bool takeOver = false);  // takeOver: 0x519050 (evicts a claiming owner without the 0x40 flag test)
     void releaseNode(Entity& e);
+    void releaseNodeTimed(Entity& e); // 0x519200: the owner keeps the node (and its links) for 5 s
+    void playerNodeClaim();           // 0x4e7910, every player frame
     void giveUpClaimedNode(Entity& e);
     void blockNodeForTeam(int node, Entity& e);
     // Friendly chains (src/game/friendlychain.cpp)

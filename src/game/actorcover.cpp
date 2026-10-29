@@ -199,6 +199,54 @@ void World::releaseNode(Entity& e) {
     e.obj->set("node", Value());
 }
 
+// 0x519200: release with a hold: the node and (with no claims left) its linked nodes stay with the former claimant for 5 s.
+void World::releaseNodeTimed(Entity& owner) {
+    if (owner.claimedNode < 0) return;
+    PathNode& on = nodes_[size_t(owner.claimedNode)];
+    owner.claimedNode = -1;
+    owner.obj->set("node", Value());
+    on.owner = &owner;
+    on.ownerUntilMs = timeMs_ + 5000;
+    for (int l : on.link) {
+        if (l < 0) continue;
+        PathNode& L = nodes_[size_t(l)];
+        if (--L.linkClaims == 0) {
+            L.owner = &owner;
+            L.ownerUntilMs = timeMs_ + 5000;
+        }
+    }
+}
+
+// The player's node claim (0x4e7910, between the node cache reset 0x515720 and 0x515390 in 0x4e8180): the player's node (0x515040, 192
+// units) counts only within 32 units (xy distance² <= 1024, 0x5922a0) of the player, else none. A different node than the claimed one:
+// the old claim is released, with the 5 s hold (0x519200) when the crosshair target (ps+0x8678) is a sentient without a claimed node,
+// else plainly (0x5191a0); then a node nobody owns, or whose owner is 15 units or more away from it (distance² >= 225, 0x592004),
+// is taken over (0x519050).
+void World::playerNodeClaim() {
+    if (!player_) return;
+    Entity& p = *player_;
+    int node = sentientNode(p);
+    if (node >= 0) {
+        const Vec3 po = vecField(p.obj, "origin"), no = vecField(nodes_[size_t(node)].obj, "origin");
+        const float dx = no[0] - po[0], dy = no[1] - po[1];
+        if (dx * dx + dy * dy > 1024.0f) node = -1;
+    }
+    if (node == p.claimedNode) return;
+    if (p.claimedNode >= 0) {
+        Entity* t = crosshairTarget_ >= 0 ? entityByNumber(crosshairTarget_) : nullptr;
+        if (t && isSentient(*t) && t->claimedNode < 0) releaseNodeTimed(p);
+        else releaseNode(p);
+    }
+    if (node < 0) return;
+    const PathNode& n = nodes_[size_t(node)];
+    if (n.owner && n.owner != &p) {
+        const Vec3 oo = vecField(n.owner->obj, "origin"), no = vecField(n.obj, "origin");
+        const float dx = oo[0] - no[0], dy = oo[1] - no[1];
+        if (dx * dx + dy * dy < 225.0f) return;
+    }
+    claimNode(p, node, true);
+}
+
 // 0x519300: the node failed for the sentient's team (no path, given up): its owner of that team leaves it (0x519200:
 // the owner keeps the node and its linked ones with a 5 s hold) and the team may not use it for 5 s. With no claims on
 // its links (+0x56 = 0) the hold is cleared again, and so are the owner and hold of the linked nodes that have no
@@ -209,21 +257,7 @@ void World::blockNodeForTeam(int node, Entity& e) {
     const int team = teamIndex(e.obj->get("team"));
     if (n.owner && teamIndex(n.owner->obj->get("team")) == team) {
         Entity* owner = n.owner;
-        if (owner->claimedNode >= 0) { // 0x519200
-            PathNode& on = nodes_[size_t(owner->claimedNode)];
-            owner->claimedNode = -1;
-            owner->obj->set("node", Value());
-            on.owner = owner;
-            on.ownerUntilMs = timeMs_ + 5000;
-            for (int l : on.link) {
-                if (l < 0) continue;
-                PathNode& L = nodes_[size_t(l)];
-                if (--L.linkClaims == 0) {
-                    L.owner = owner;
-                    L.ownerUntilMs = timeMs_ + 5000;
-                }
-            }
-        }
+        releaseNodeTimed(*owner); // 0x519200
         n.owner = nullptr;
     }
     if (team > 0) n.teamBlockedMs[size_t(team)] = timeMs_ + 5000;

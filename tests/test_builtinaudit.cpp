@@ -176,6 +176,30 @@ int main() {
         CHECK(c.cheatNotarget() && c.player()->obj->get("$notarget").truthy());
         CHECK(c.cheatNotarget() && !c.player()->obj->get("$notarget").truthy());
     }
+    // The player's node claim (0x4e7910): standing on a free node claims it, leaving releases it; a dontinterpolate on an entity
+    // without a client toggles the demigod bit (0x4edfe1); the cooked grenade event is skipped by god / demigod (0x4e776b).
+    {
+        iw2::game::World c(vfs, "moscow");
+        c.prepareStart();
+        if (!c.nodes().empty()) {
+            int idx = -1;
+            for (size_t i = 0; i < c.nodes().size() && idx < 0; ++i)
+                if (!c.nodes()[i].owner && c.nodes()[i].ownerUntilMs == 0 && (c.nodes()[i].spawnflags & 1) == 0) idx = int(i);
+            CHECK(idx >= 0);
+            if (idx >= 0) {
+                c.player()->obj->set("origin", c.nodes()[size_t(idx)].obj->get("origin"));
+                c.frame();
+                CHECK(c.player()->claimedNode >= 0);
+                c.player()->obj->set("origin", iw2::script::Value(iw2::game::Vec3{1.0e5f, 1.0e5f, 1.0e5f}));
+                c.frame();
+                CHECK(c.player()->claimedNode < 0);
+            }
+        }
+        c.cvars["sv_cheats"] = "1";
+        c.cheatGod();
+        c.playerGrenadeInHand({0, 0, 0});
+        CHECK(c.player()->obj->get("health").asInt() > 0);
+    }
     // The cheat commands noclip / ufo (0x4ea170 / 0x4ea220 behind the gate 0x4e9500): sv_cheats and health decide.
     {
         iw2::game::World c(vfs, "moscow");
