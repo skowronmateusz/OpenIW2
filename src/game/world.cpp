@@ -1316,7 +1316,7 @@ bool World::cheatNotarget() {
 
 int World::playerPmType() const {
     const Value h = player_ ? player_->obj->get("health") : Value();
-    return pmClientType(noclip_, ufo_, h.isNumber() ? h.asInt() : 1, playerLink_.has_value());
+    return pmClientType(noclip_, ufo_, h.isNumber() ? h.asInt() : 1, playerHasLinkParent());
 }
 
 void World::runTriggers() {
