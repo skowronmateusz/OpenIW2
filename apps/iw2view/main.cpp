@@ -3113,6 +3113,7 @@ int main(int argc, char** argv) {
     float shotViewHeight = 60;
     float shotLean = 0;
     bool shotAds = false;
+    bool pendingF10 = false; // F10: god -> demigod -> off through the cheat commands
     bool pendingGod = false, pendingDemigod = false, pendingNotarget = false; // --god / --demigod / --notarget, F10 = god: the cheat commands (0x4e9f90 / 0x4ea030 / 0x4ea0d0; need sv_cheats)
     bool pendingNoclip = false, pendingUfo = false; // --noclip / --ufo: the cheat commands run once when the level is up (need sv_cheats)
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
@@ -6951,7 +6952,7 @@ int main(int argc, char** argv) {
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
-                    pendingGod = true; // the god command, behind the sv_cheats / alive gate
+                    pendingF10 = true; // cycle off -> god -> demigod -> off, each step a cheat command behind the sv_cheats / alive gate
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
@@ -7200,6 +7201,12 @@ int main(int argc, char** argv) {
                 cam.pos = cam.pos + normalize(move) * speed;
             }
 
+            if (world && world->player() && pendingF10) {
+                pendingF10 = false;
+                if (world->godOn()) { if (world->cheatGod()) world->cheatDemigod(); } // god -> demigod (the gate was checked by the first call)
+                else if (world->demigodOn()) world->cheatDemigod();                    // demigod -> off
+                else world->cheatGod();                                                // off -> god
+            }
             if (world && world->player() && (pendingGod || pendingDemigod || pendingNotarget)) {
                 if (pendingGod) world->cheatGod();
                 if (pendingDemigod) world->cheatDemigod();

@@ -596,6 +596,8 @@ public:
     // TODO(spec): the entity event at 0x4e776b (damage 100000, means of death 0xc) that god / demigod (flags & 3) skip is not ported.
     bool cheatGod();
     bool cheatDemigod();
+    bool godOn() const { return god_; }
+    bool demigodOn() const { return demigod_; }
     bool cheatNotarget();
     bool playerGod() const { return god_; }
     bool playerDemigod() const { return demigod_; }
