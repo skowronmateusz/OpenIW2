@@ -51,6 +51,7 @@ int main() {
              "\tlevel.cmd_pad = getcommandfromkey(\"BUTTON_RSTICK\");\n"
              "\tlevel.done = 1;\n}\n"
              "save()\n{\n\tsavegame(\"zz\", \"d\", \"$default\");\n}\n"
+             "nocommit()\n{\n\tlevel.sid = savegamenocommit(\"zy\", \"d\", \"$default\");\n}\n"
              "commit()\n{\n\tcommitsave(0);\n\tlevel.committed = 1;\n}\n";
     }
     iw2::fs::Vfs vfs;
@@ -120,6 +121,41 @@ int main() {
         s.vm().start("maps/zz_builtinaudit.gsc", "commit", {}, iw2::script::Value(s.player()->obj));
         s.vm().drainReady();
         CHECK(!s.vm().errors().empty());
+    }
+    // A savegame() write while a savegamenocommit save is still uncommitted and the player is alive commits that save first
+    // (0x4e3fec..0x4e4003), with the byte set, so a commitsave afterwards returns silently.
+    {
+        iw2::game::World s(vfs, "moscow");
+        s.prepareStart();
+        s.vm().start("maps/zz_builtinaudit.gsc", "nocommit", {}, iw2::script::Value(s.player()->obj));
+        s.vm().drainReady();
+        s.frame();
+        CHECK(s.takeSaveFiles().empty());
+        s.vm().start("maps/zz_builtinaudit.gsc", "save", {}, iw2::script::Value(s.player()->obj));
+        s.vm().drainReady();
+        s.frame();
+        CHECK(s.takeSaveFiles().size() == 2);
+        s.vm().start("maps/zz_builtinaudit.gsc", "commit", {}, iw2::script::Value(s.player()->obj));
+        s.vm().drainReady();
+        CHECK(s.vm().errors().empty());
+    }
+    // The cheat commands god / demigod / notarget (0x4e9f90 / 0x4ea030 / 0x4ea0d0): same gate, flags +0x128 & 1 / 2 / 4.
+    {
+        iw2::game::World c(vfs, "moscow");
+        c.prepareStart();
+        CHECK(!c.cheatGod() && !c.playerGod());
+        auto cmds = c.takeClientCommands();
+        CHECK(cmds.size() == 1 && cmds[0].arg == "GAME_CHEATSNOTENABLED");
+        c.cvars["sv_cheats"] = "1";
+        CHECK(c.cheatGod() && c.playerGod() && c.player()->obj->get("$godmode").truthy());
+        CHECK(c.cheatDemigod() && c.playerDemigod() && c.cheatNotarget() && c.playerNotarget());
+        cmds = c.takeClientCommands();
+        CHECK(cmds.size() == 3 && cmds[0].arg == "GAME_GODMODE_ON" && cmds[1].arg == "GAME_DEMI_GODMODE_ON" && cmds[2].arg == "GAME_NOTARGETON");
+        CHECK(c.cheatGod() && !c.playerGod() && !c.player()->obj->get("$godmode").truthy() && c.cheatNotarget() && !c.playerNotarget());
+        cmds = c.takeClientCommands();
+        CHECK(cmds[0].arg == "GAME_GODMODE_OFF" && cmds[1].arg == "GAME_NOTARGETOFF");
+        c.player()->obj->set("health", iw2::script::Value(int32_t(0)));
+        CHECK(!c.cheatGod());
     }
     // The cheat commands noclip / ufo (0x4ea170 / 0x4ea220 behind the gate 0x4e9500): sv_cheats and health decide.
     {
