@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 
 using namespace iw2::game;
 
@@ -87,6 +88,33 @@ int main() {
     std::cout << "rocket removed " << r.obj->removed << " at x " << r.obj->get("origin").asVector()[0] << " tank x " << o[0] << "\n";
     CHECK(r.obj->removed);
     CHECK(std::fabs(r.obj->get("origin").asVector()[0] - tank->obj->get("origin").asVector()[0]) < 250);
+
+    // Every vehicle model on its map: Bullet_Fire from the four sides at three heights hits it at least once (models whose xmodel
+    // has no collision surfaces, e.g. flakpanzer, planes and ships, are not hit, as in the original).
+    for (const char* map : {"elalamein", "toujane", "eldaba", "trainyard", "duhoc_assault"}) {
+        World m(vfs, map);
+        m.start();
+        for (int i = 0; i < 200; ++i) m.frame();
+        std::map<std::string, std::pair<int, int>> seen; // model -> {vehicles, vehicles hit}
+        for (const auto& e : m.entities()) {
+            if (!e->vehicle || e->obj->removed || !e->obj->get("origin").isVector()) continue;
+            const Vec3 p = e->obj->get("origin").asVector();
+            int hits = 0;
+            for (float dz : {30.f, 60.f, 90.f})
+                for (int d = 0; d < 4; ++d) {
+                    const float dx = (d == 0 ? -1.f : d == 1 ? 1.f : 0.f) * 60, dy = (d == 2 ? -1.f : d == 3 ? 1.f : 0.f) * 60;
+                    const Vec3 a{p[0] + dx, p[1] + dy, p[2] + dz}, b{p[0] - dx * 0.1f, p[1] - dy * 0.1f, p[2] + dz};
+                    if (m.debugFireBullet(a, b) == e.get()) ++hits;
+                }
+            auto& s = seen[e->obj->get("model").toString()];
+            ++s.first;
+            if (hits) ++s.second;
+        }
+        for (const auto& kv : seen)
+            if (kv.first.find("crusader") != std::string::npos || kv.first.find("panzer") != std::string::npos || kv.first.find("halftrack") != std::string::npos || kv.first.find("jeep") != std::string::npos || kv.first.find("blitz") != std::string::npos)
+                CHECK(kv.second.first == kv.second.second);
+        for (const auto& kv : seen) std::cout << map << " " << kv.first << ": vehicles " << kv.second.first << " hit " << kv.second.second << "\n";
+    }
     std::cout << (failures ? "FAILED\n" : "vehicle hit test OK\n");
     return failures ? 1 : 0;
 }

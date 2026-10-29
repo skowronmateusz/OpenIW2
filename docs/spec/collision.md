@@ -248,8 +248,17 @@ G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero prio
   skips the vehicle's collmap clip and tests its collision surfaces instead (tests/test_vehiclehit.cpp: libya crusader hit by
   Bullet_Fire and a panzerfaust rocket, player box stopped by the hull). Before, only `script_model` entities were handled, so a
   bullet or rocket went straight through every vehicle.
-- Vehicle bone pose: the collision surfaces are posed with the bind pose (turret and wheel controls are not applied). TODO(spec).
-  A vehicle without a DObj would be skipped by 0x4746b0 (not examined).
+- Vehicle bone pose (checked): the server DObj of a vehicle carries no bone controls. The DObj control setter 0x474850 is called only
+  by the cgame turret / vehicle code (0x4ab3xx region) and the server turret think 0x51d740, never from the vehicle code 0x50d000..0x513fff;
+  turret yaw / pitch and the wheels (0x4ac2b0) are cgame-only. The collision surfaces of a vehicle are therefore posed with the bind
+  pose (an animtree pose if one is set), which is what `entityModels` builds for an entity without `turret`. 0x4746b0 is a DObj
+  filter: true when any model of the DObj has a bit of the trace mask in its xmodel word +0x5c. TODO(spec): that xmodel word is not
+  parsed, the port assumes it passes.
+- Models: collision surfaces exist for crusader2 (20), panzer_ii (18), tiger_woodland (25), sherman (24), halftracks (22-23), jeeps (8),
+  opel_blitz (12), kubel (12), armored_car (10), higgins (5), ltv4_buffalo (6); none for flakpanzer, cargoship, condor, p51, spitfire
+  (planes and ships and the flakpanzer cannot be hit by bullets). tests/test_vehiclehit.cpp fires at every vehicle on elalamein,
+  toujane, eldaba, trainyard and duhoc_assault: crusaders, flak88s, jeeps, blitz, halftrack and panzer II are all hit; a higgins is hit
+  only for 3 of 9 boats by the test's short fire lines (not investigated; the higgins hull may be larger than the 60-unit test radius).
 - OpenIW2 (`traceCollSurfs`, `World::locationalTrace`): as above with the full entity angles. TODO(spec):
   `FUN_004746b0`, the DObj bounds pre-test `FUN_00473800` (a sphere around the xmodel bounds instead), the
   per-surface bounds cull, and the r.mins / r.maxs box script models get in traces that are not locational.
