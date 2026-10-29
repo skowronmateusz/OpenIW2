@@ -3,7 +3,23 @@
 A from-scratch, native macOS (Apple Silicon) engine that plays the **Call of Duty 2** single-player campaign
 using the game data from your own retail copy.
 
-> Status: early. Asset loading (packs, textures, maps, materials) and a first native Metal map viewer work. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> Status: playable but unfinished. Mission scripts run, AI, vehicles, menus and save games work; see [Status](#status).
+
+## Status
+
+State as of 2026-10-29. Behavior is specified in [`docs/spec/`](docs/spec); open points are marked `TODO(spec)` in the specs and code.
+
+| # | Area | Works | Missing |
+|---|---|---|---|
+| M0 | Asset filesystem (`.iwd` packs, search order, case-insensitive paths) | Lists and reads every file of a retail install (`iw2fs`) | – |
+| M1 | Asset decoders (textures, maps, materials, models, animations) | `.iwi` textures, `.d3dbsp` maps with lightmaps, materials/techsets, `xmodel*`, `xanim` (`iw2asset`) | Remaining rare texture variants and unusual material combinations (see `TODO(spec)` in `src/assets/`) |
+| M2 | Renderer + map viewer (SDL3, Metal; `iw2view`) | Textured, lightmapped maps with sun, light grid, water, fog, glow/bloom, distortion, dynamic lights, effects; MSL shaders are own code that reproduces the behavior of the shipped HLSL shaders | Some effect sorting details, a few post effects, performance tuning |
+| M3 | Models and animation | Static and animated models, characters and weapons with animation trees, notetracks and scripted animation | Rarely used blend and notetrack corner cases |
+| M4 | GSC compiler + VM | All shipped `maps/*.gsc` compile; level scripts run; built-in function table implemented (`iw2script`, `docs/spec/builtins.md`) | A few built-ins and error paths still marked `TODO(spec)` |
+| M5 | Game simulation | Entities, collision, player movement, weapons, grenades, damage, mantling, turrets, player-driven vehicles | Remaining weapon and movement corner cases |
+| M6 | AI | Pathnodes, animscripts (GSC), cover, squads, grenades, vehicles | Some squad and escort behaviors differ from the original |
+| M7 | Audio, UI, cinematics | Sound aliases and mixing, subtitles, `.menu` UI, main menu and mission select, RoQ cinematics (`iw2roq`) | Reverb and some audio details |
+| M8 | Save/load, objectives, campaign | Objectives, HUD, compass, level changes, save games, difficulty | The full campaign has not been verified end to end by a human; scripted autoplay reaches mission success on 7 of 28 maps ([`tools/iw2game`]) |
 
 ## What this repository contains, and what it does not
 
