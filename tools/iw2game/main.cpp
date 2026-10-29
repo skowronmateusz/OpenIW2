@@ -849,9 +849,12 @@ int main(int argc, char** argv) {
         float unstickSide = 1.0f;
         iw2::game::Vec3 lastDrivePos{};
         bool driveFollow = false; // after two stuck events: follow the nearest moving allied vehicle instead of driving straight
+        int startVehicle = -2;    // the vehicle the player rides at the first decision (libya / 88ridge tanks): the only one the bot drives;
+                                  // a vehicle entered later (beltot's truck) follows its own script path and is only ridden
         int stuckCount = 0;
         std::map<int, iw2::game::Vec3> vehicleLastPos;
         std::set<int> placedItems; // weapon_* entities present at the first autoplay decision (map-placed, not AI drops)
+        int pickupsDone = 0, squadWaits = 0, squadWaitsTotal = 0, actorShots = 0;
         bool placedItemsTaken = false;
         float lastProgressT = 0.0f;
         int stallCount = 0, savesSeen = 0;
@@ -1575,6 +1578,7 @@ int main(int argc, char** argv) {
                         const auto tn = e->obj->get("targetname");
                         if (tn.isString()) names += " " + tn.asString();
                         for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        if (names.find("warn") != std::string::npos) continue; // hill400_assault's minefield_warn* triggers only print the warning
                         for (const auto& sub : autoplaySkip)
                             if (sub != "wrongway" && names.find(sub) != std::string::npos && std::find(forbidden.begin(), forbidden.end(), e.get()) == forbidden.end()) { forbidden.push_back(e.get()); break; }
                     }
@@ -1689,7 +1693,8 @@ int main(int argc, char** argv) {
                         Kind kind;
                         if (w.event == "damage") {
                             if (e->vehicle || e->classname.rfind("trigger_", 0) == 0 || e.get() == world.player()) continue;
-                            if (w.site.rfind("maps/_interactable_objects.gsc", 0) == 0) continue; // decoration (breakables, helmets): never a gate
+                            if (rank != 0) continue; // only the map's own damage waits are gates (_interactable_objects decoration, _utility
+                                                     // detectfriendlyfire on hill400_defend's allied drones are not)
                             if (e->isActor) { // a named actor the map's own script waits the damage of: shoot it only when the waiting function's name says
                                               // it is a target (sniper / shoot / kill / target); never allies, prisoners or scene actors (moscow's
                                               // melee_scene_damage on the prisoner ends the mission)
@@ -1699,6 +1704,9 @@ int main(int argc, char** argv) {
                                 const bool targetLike = fn.find("sniper") != std::string::npos || fn.find("shoot") != std::string::npos || fn.find("kill") != std::string::npos || fn.find("target") != std::string::npos;
                                 if (rank != 0 || !targetLike || !world.isAlive(*e) || (tm.isString() && tm.asString() == "allies") ||
                                     e->classname.find("prisoner") != std::string::npos || e->classname.find("civilian") != std::string::npos) continue;
+                                // one shot per actor and four per map: a shot that does not progress must give way to the kill gate
+                                // (hill400_defend's mortar crew is a kill-gate stage, the shots only cost its waves)
+                                if (actorShots >= 4 || enteredTriggers[e->number] >= 1) continue;
                             }
                             kind = Shoot;
                         } else if (e->classname == "trigger_multiple" || e->classname == "trigger_once" || e->classname == "trigger_radius") {
@@ -1716,7 +1724,9 @@ int main(int argc, char** argv) {
                         if (kind == Enter && sf.isNumber() && (sf.asInt() & 8)) continue;
                         // a model whose "damage" wait survived the shot is meleed the second time; a grenade target gets up to three lobs (poll
                         // loops) or one after two fruitless entries
-                        if (enteredTriggers[e->number] >= (kind == Throw ? 5 : 2)) continue;
+                        // an escort-chain trigger (the tank follows while the player stands in the next one) may be entered four times
+                        const int cap = kind == Throw ? 5 : (kind == Enter && w.site.find("escort") != std::string::npos) ? 4 : 2;
+                        if (enteredTriggers[e->number] >= cap) continue;
                         { // skip the triggers a player would never enter on purpose: kill / desertion / minefield triggers, by the waiting
                           // function's name and the targetname (--autoplay-skip adds substrings)
                             std::string names = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
@@ -1753,6 +1763,7 @@ int main(int argc, char** argv) {
                 // so only an item near the objective marker or with nothing else around is picked up.
                 if (!placedItemsTaken) {
                     placedItemsTaken = true;
+                    startVehicle = world.player()->usingVehicle;
                     for (const auto& e : world.entities())
                         if (!e->obj->removed && !e->isSpawner && e->classname.rfind("weapon_", 0) == 0) placedItems.insert(e->number);
                 }
@@ -1760,7 +1771,8 @@ int main(int argc, char** argv) {
                     if (e->obj->removed || e->isSpawner || e->classname.rfind("weapon_", 0) != 0 || !placedItems.count(e->number) || enteredTriggers[e->number] >= 1) continue;
                     const auto ov = e->obj->get("origin");
                     if (!ov.isVector()) continue;
-                    const float score = walkDistance(ov.asVector()) + objWeight(ov.asVector()) + 1000.0f;
+                    if (pickupsDone >= 6) break; // at most six pickups per map (trainyard spent its budget on rifles instead of its triggers)
+                    const float score = walkDistance(ov.asVector()) + objWeight(ov.asVector()) + 1500.0f;
                     if (!best || score < bestD) { best = e.get(); bestKind = Use; bestD = score; bestRank = 1; bestSite = "item pickup"; bestTarget = ov.asVector(); bestTarget[2] += 8.0f; }
                 }
                 iw2::game::Vec3 entry;
@@ -1819,7 +1831,42 @@ int main(int argc, char** argv) {
                         haveStand = true;
                     }
                 }
+                // Squad pacing: before a map-own trigger entry, when the map has allied actors and none is within 800 units of the
+                // player, wait 15 s (up to four times in a row) so the squad catches up (duhoc_assault / decoytrenches assert on allies
+                // alive at a stage, dialogue and spawns key off the squad). Riding a path vehicle: nothing to do but wait.
+                bool paceWait = false;
                 if (best && haveStand) {
+                    // "outran the squad" = at least two allies alive and none within 1500 units (800 and unlimited waits cost tankhunt and
+                    // toujane their missionsuccess in the budget and the hold-out maps their waves)
+                    int allies = 0;
+                    bool allyNear = false;
+                    for (const auto& a : world.entities()) {
+                        if (!a->isActor || !world.isAlive(*a)) continue;
+                        const auto at2 = a->obj->get("team");
+                        if (!(at2.isString() && at2.asString() == "allies")) continue;
+                        ++allies;
+                        const auto ao = a->obj->get("origin").asVector();
+                        if (std::fabs(ao[0] - po[0]) < 1500.0f && std::fabs(ao[1] - po[1]) < 1500.0f) allyNear = true;
+                    }
+                    const bool anyAlly = allies >= 2;
+                    bool ridingNow = false;
+                    for (const auto& e : world.entities())
+                        if (e->number == world.player()->usingVehicle && e->vehicle && e->vehicle->started) ridingNow = true;
+                    if (ridingNow || (bestKind == Enter && bestRank == 0 && anyAlly && !allyNear && squadWaits < 3 && squadWaitsTotal < 3)) {
+                        paceWait = true;
+                        squadWaits = ridingNow ? squadWaits : squadWaits + 1;
+                        if (!ridingNow) ++squadWaitsTotal; // at most 6 waits (1 min) per map: a squad that never comes (trainyard) must not eat the budget
+                        char buf[200];
+                        std::snprintf(buf, sizeof buf, "%s%s", head, ridingNow ? "riding a path vehicle: waiting" : "waiting 10 s for the squad before the next trigger");
+                        autoplayLog.push_back(buf);
+                        std::cout << buf << "\n";
+                        lastActionT = t + 10.0f - stallSecs;
+                    } else if (!(bestKind == Enter && bestRank == 0)) {
+                        squadWaits = 0;
+                    }
+                }
+                if (best && haveStand && !paceWait) {
+                    if (bestKind == Enter && bestRank == 0) squadWaits = 0;
                     ++enteredTriggers[best->number];
                     const auto tn = best->obj->get("targetname");
                     char buf[512];
@@ -1830,7 +1877,13 @@ int main(int argc, char** argv) {
                     // Walk there at 250 u/s along the AI node route (through --player-at's interpolation) instead of teleporting, so
                     // the triggers on the way fire, minefields / walls are avoided like the AI does and distance / time based checks
                     // (desertion, friendly chain) see a moving player. Without a route: a straight line.
-                    const bool inVehicle = world.player()->usingVehicle >= 0;
+                    // Drive only a vehicle that is not on a script path (beltot's truck follows its own path with the player riding;
+                    // driving it off the path raised the truck_pause assert): otherwise just ride.
+                    const iw2::game::Entity* playerVeh = nullptr;
+                    for (const auto& e : world.entities())
+                        if (e->number == world.player()->usingVehicle) playerVeh = e.get();
+                    const bool riding = playerVeh && playerVeh->vehicle && playerVeh->vehicle->started;
+                    const bool inVehicle = world.player()->usingVehicle >= 0 && !riding && world.player()->usingVehicle == startVehicle;
                     walkDistance(entry, &bestRoute);
                     if (inVehicle) bestRoute.clear(); // a vehicle drives straight at it (the desert maps have no path nodes out there)
                     playerPath = {{t, po}};
@@ -1862,6 +1915,48 @@ int main(int argc, char** argv) {
                                         std::printf("%s  crossing at leg %zu of %zu, point %.0f,%.0f,%.0f (%.0f units along), route nodes %zu\n", head, i, playerPath.size() - 1, p[0], p[1], p[2], walked + s, bestRoute.size());
                                     break;
                                 }
+                        }
+                    }
+                    if (crossed) {
+                        // Detour around the field: its bounds expanded by 96 units give four corners; the first corner whose two straight
+                        // legs (player -> corner -> target) cross no lethal trigger replaces the route (rhine's and hill400_assault's minefields).
+                        const auto crossesLeg = [&](const iw2::game::Vec3& a, const iw2::game::Vec3& b) {
+                            const float len = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
+                            for (float s = 0; s <= len; s += 16.0f) {
+                                const float u = len > 0 ? s / len : 0;
+                                const iw2::game::Vec3 p{a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u};
+                                for (auto* fe : forbidden)
+                                    if (world.debugTriggerTouches(*fe, p)) return true;
+                            }
+                            return false;
+                        };
+                        iw2::game::Vec3 fmn, fmx;
+                        const auto fm = crossed->obj->get("model");
+                        const auto fov = crossed->obj->get("origin");
+                        // Only minefields are worth a detour: a desertion / exit trigger marks the area the player must not leave, and a
+                        // way around it leads outside (hill400_defend's exitTrig sent the bot on long walks away from the bunkers).
+                        std::string ctnLower = crossed->obj->get("targetname").toString();
+                        for (auto& ch : ctnLower) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        if (ctnLower.find("mine") != std::string::npos && fm.isString() && world.submodelBounds(fm.asString(), fmn, fmx)) {
+                            const auto fo = fov.isVector() ? fov.asVector() : iw2::game::Vec3{0, 0, 0};
+                            for (int k = 0; k < 3; ++k) { fmn[k] += fo[k]; fmx[k] += fo[k]; }
+                            const iw2::game::Vec3 corners[4] = {{fmn[0] - 96, fmn[1] - 96, po[2]}, {fmx[0] + 96, fmn[1] - 96, po[2]}, {fmn[0] - 96, fmx[1] + 96, po[2]}, {fmx[0] + 96, fmx[1] + 96, po[2]}};
+                            for (const auto& c0 : corners) {
+                                iw2::game::Vec3 c = c0;
+                                const int cn = nearestNode(c);
+                                if (cn >= 0) { const auto& q = graph.position(size_t(cn)); if (std::fabs(q[0] - c[0]) < 300.0f && std::fabs(q[1] - c[1]) < 300.0f) c[2] = q[2]; }
+                                if (crossesLeg(po, c) || crossesLeg(c, entry)) continue;
+                                playerPath = {{t, po}};
+                                at = t;
+                                prev = po;
+                                leg(c);
+                                leg(entry);
+                                std::snprintf(buf, sizeof buf, "%s  detour around #%d %s via %.0f,%.0f,%.0f", head, crossed->number, crossed->obj->get("targetname").toString().c_str(), c[0], c[1], c[2]);
+                                autoplayLog.push_back(buf);
+                                std::cout << buf << "\n";
+                                crossed = nullptr;
+                                break;
+                            }
                         }
                     }
                     if (crossed) {
@@ -1906,22 +2001,29 @@ int main(int argc, char** argv) {
                             at += 2.0f;
                             at -= std::max(stallSecs - 8.0f, 0.0f); // the effect of a use / look / shot is immediate: decide again 8 s later
                         }
+                        // An escort trigger: stay in it for 40 s so the escorted vehicle catches up (demolition's escort chain).
+                        if (bestKind == Enter && bestSite.find("escort") != std::string::npos) at += 40.0f;
                         lastActionT = at;
                     }
+                    if (bestKind == Use && bestSite == "item pickup") ++pickupsDone;
+                    if (bestKind == Shoot && best->isActor) ++actorShots;
                     ++actionsSinceProgress;
-                } else if (best) {
+                } else if (best && !paceWait) {
                     char buf[256];
                     std::snprintf(buf, sizeof buf, "%strigger #%d %s has no entry point for the player box", head, best->number, best->classname.c_str());
                     autoplayLog.push_back(buf);
                     std::cout << buf << "\n";
                     enteredTriggers[best->number] = 2;
                     lastActionT = t; ++actionsSinceProgress;
-                } else {
+                } else if (!paceWait) {
                     // In a vehicle with nothing to enter: drive toward the current objective marker (libya / 88ridge: follow the
                     // formation, reach the flak positions), once per no-progress cycle.
                     const float objDist = haveObj ? std::sqrt((objPos[0] - po[0]) * (objPos[0] - po[0]) + (objPos[1] - po[1]) * (objPos[1] - po[1])) : 0.0f;
                     // Without a marker: follow the allied vehicles for a minute (they drive the level's route).
-                    const bool markerDrive = world.player()->usingVehicle >= 0 && !driving && actionsSinceProgress < 3 && (!haveObj || objDist > 400.0f);
+                    bool ridingPath = false; // the player's vehicle follows a script path: never drive it
+                    for (const auto& e : world.entities())
+                        if (e->number == world.player()->usingVehicle && e->vehicle && e->vehicle->started) ridingPath = true;
+                    const bool markerDrive = world.player()->usingVehicle >= 0 && world.player()->usingVehicle == startVehicle && !ridingPath && !driving && actionsSinceProgress < 3 && (!haveObj || objDist > 400.0f);
                     if (markerDrive) {
                         driving = true;
                         driveTarget = haveObj ? objPos : po;
@@ -1945,19 +2047,60 @@ int main(int argc, char** argv) {
                             if (w2.object == o && w2.site.rfind(mapPrefix, 0) == 0 && w2.site.find("missionfail") != std::string::npos) return true;
                         return false;
                     };
+                    // A vehicle with a map-own trigger_use gate within 200 units (sticky bombs, explosives) is planted, never shot.
+                    const auto plantable = [&](const iw2::game::Entity& v) {
+                        const auto vo = v.obj->get("origin").asVector();
+                        for (const auto& w2 : waiters) {
+                            if (w2.event != "trigger" || w2.site.rfind(mapPrefix, 0) != 0) continue;
+                            for (const auto& te : world.entities()) {
+                                if (te->obj != w2.object || te->obj->removed || (te->classname != "trigger_use" && te->classname != "trigger_use_touch")) continue;
+                                // the trigger's bounds centre (a brush entity's origin is often 0,0,0 with the brush offset baked in)
+                                const auto tov = te->obj->get("origin");
+                                iw2::game::Vec3 to = tov.isVector() ? tov.asVector() : iw2::game::Vec3{0, 0, 0}, tmn, tmx;
+                                const auto tmv = te->obj->get("model");
+                                if (tmv.isString() && world.submodelBounds(tmv.asString(), tmn, tmx))
+                                    for (int k = 0; k < 3; ++k) to[k] += (tmn[k] + tmx[k]) * 0.5f;
+                                if (std::fabs(to[0] - vo[0]) < 300.0f && std::fabs(to[1] - vo[1]) < 300.0f && std::fabs(to[2] - vo[2]) < 300.0f) return true;
+                            }
+                        }
+                        return false;
+                    };
+                    // A vehicle without a team field is an enemy only when an axis actor stands within 200 units and no ally does (the
+                    // flak88 guns have axis crews on them; downtown_assault's intro tank has the allied squad around it).
+                    const auto enemyVehicle = [&](const iw2::game::Entity& v, const std::string& site) {
+                        const auto st = v.obj->get("script_team"), tm = v.obj->get("team");
+                        if ((st.isString() && st.asString() == "axis") || (tm.isString() && tm.asString() == "axis")) return true;
+                        if ((st.isString() && st.asString() == "allies") || (tm.isString() && tm.asString() == "allies")) return false;
+                        const bool mapOwnWait = site.rfind(mapPrefix, 0) == 0; // the map's own script waits for its death (rhine's five tanks)
+                        if (site.find("_flak88.gsc") != std::string::npos) return true; // flak88 guns are always the enemy's (newvillers, 88ridge)
+                        const auto vo = v.obj->get("origin").asVector();
+                        bool axisNear = false, alliesNear = false;
+                        for (const auto& a : world.entities()) {
+                            if (!a->isActor || !world.isAlive(*a)) continue;
+                            const auto ao = a->obj->get("origin").asVector();
+                            if (std::fabs(ao[0] - vo[0]) > 200.0f || std::fabs(ao[1] - vo[1]) > 200.0f || std::fabs(ao[2] - vo[2]) > 200.0f) continue;
+                            const auto at = a->obj->get("team");
+                            if (at.isString() && at.asString() == "axis") axisNear = true;
+                            if (at.isString() && at.asString() == "allies") alliesNear = true;
+                        }
+                        return (axisNear || mapOwnWait) && !alliesNear;
+                    };
                     if (killGate && std::getenv("IW2_AUTOPLAY_DEBUG")) // debug: what the "death" waits are on
                         for (const auto& w : waiters)
                             if (w.event == "death")
                                 for (const auto& e : world.entities())
                                     if (e->obj == w.object)
                                         std::printf("%s  death wait on #%d %s health %s team %s removed %d protected %d (%s)\n", head, e->number, e->classname.c_str(), e->obj->get("health").toString().c_str(), e->obj->get("team").toString().c_str(), int(e->obj->removed), int(protectedEntity(e->obj)), w.site.c_str());
+                    // Up to 20 per gate, actors first (a hold-out wave's mortar teams must die in one gate: hill400_defend's "snipe the
+                    // mortar" stage ends only when every team is gone), then vehicles and other health-bearing entities.
+                    for (int pass = 0; pass < 2 && killGate; ++pass)
                     for (const auto& w : waiters) {
-                        if (!killGate || w.event != "death" || killed >= 10) continue;
+                        if (w.event != "death" || killed >= 20) continue;
                         for (const auto& e : world.entities())
-                            if (e->obj == w.object && !e->obj->removed && e.get() != world.player() && e->number != world.player()->usingVehicle && killed < 10 &&
+                            if (e->obj == w.object && (pass == 0) == e->isActor && !e->obj->removed && e.get() != world.player() && e->number != world.player()->usingVehicle && killed < 20 &&
                                 (e->isActor ? world.isAlive(*e) : (e->obj->get("health").isNumber() && e->obj->get("health").asInt() > 0)) && // vehicles, flak guns, turrets, models with health
                                 !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies") && // never friendlies (missionfailed)
-                                !(e->obj->get("script_team").isString() && e->obj->get("script_team").asString() == "allies") && // allied vehicles (downtown_assault's tank)
+                                (!e->vehicle || (!plantable(*e) && enemyVehicle(*e, w.site))) && // vehicles only when they are the enemy's and carry no planting trigger (downtown_assault's / tankhunt's tanks are planted, not shot)
                                 !protectedEntity(e->obj)) { // an entity another thread guards with a missionfailed handler (beltot's prisoner)
                                 world.debugDamage(*e, 100000);
                                 ++killed;
