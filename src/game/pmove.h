@@ -183,6 +183,9 @@ const char* mantleAnimName(int index);
 // PM_Weapon's weapon change (0x4de880) puts the weapon away while mantling (mantle_enable and pm_flags 4) unless the
 // mantle's over animation is player_mantle_over_low (tree index 10, table 0x5a94bc).
 bool mantleLowersWeapon(const PlayerState& ps);
+// The same weapon change puts the weapon away on a ladder (pm_flags 0x20, 0x4de91b) and in a vehicle (eFlags 0x20000
+// without 0x80000, 0x4de923), besides the mantle case above.
+bool moveLowersWeapon(const PlayerState& ps, bool inVehicle);
 // Mantle view yaw cap (0x525b60): while mantling the view yaw stays within mantle yaw ± mantle_view_yawcap.
 float mantleClampYaw(const PlayerState& ps, float yaw);
 
@@ -197,6 +200,7 @@ struct MoveParams {
     float friction = 5.5f;            // friction
     float stopSpeed = 100.0f;         // stopspeed
     float jumpHeight = 39.0f;         // jump_height
+    float jumpLadderPushVel = 128.0f; // jump_ladderPushVel (0x1cbac3c, registered at 0x54122c, 0..1024)
     float backSpeedScale = 0.7f;      // player_backSpeedScale
     float strafeSpeedScale = 0.8f;    // player_strafeSpeedScale
     float weaponSpeedScale = 0.0f;    // current weapon's moveSpeedScale (0 = none)

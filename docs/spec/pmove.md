@@ -59,9 +59,8 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   since the previous jump, a standing view height; vertical speed = sqrt(2 · jump_height · gravity); sets the
   landing-slowdown flag (applied by 0x541300 only when `jump_slowdownEnable`).
 
-Implemented in `src/game/pmove.cpp`. Not implemented yet (TODO there): inertiaMax, ladders (0x50bd90 is the ladder
-check, 0x50c070 the ladder move), mantling (0x5257f0), landing damage/slowdown (0x508fe0), movement-direction yaw
-(0x508390).
+Implemented in `src/game/pmove.cpp`. Not implemented yet (TODO there): inertiaMax, landing damage/slowdown
+(0x508fe0), movement-direction yaw (0x508390). Ladders: see the Ladder section below.
 
 ## Ground, slide and step
 
@@ -133,3 +132,36 @@ state not 5–9: the ×0.4 of cmdScale.
 Mantle brushes are found with contents
 0x1000000 and surface flags 0x2000000 (MANTLE_ON) / 0x4000000 (MANTLE_OVER); the move follows the delta translation
 of player_mantle_up_* (+ player_mantle_over_*) rotated by the mantle yaw.
+
+## Ladder (0x50bd90 check, 0x50c070 move, 0x541560 jump, 0x54f409 step, 0x4de91b weapon)
+
+- Grab (0x50bd90): a box 6 units narrower than the player (feet raised to z +8) is swept 8 units (walking) or 30
+  units (airborne) along the flat facing, or straight into the stored ladder normal when already climbing in the
+  air. A hit on a surface with flag 0x8 sets pm_flags 0x20 and stores the hit normal (ps+0x64). A walking player
+  must press forward. No grab while pm_flags 0x40000 (ladder just left) is set, prone, or within 300 ms of a jump.
+  Losing the surface clears 0x20 and sets 0x40000; 0x40000 is dropped once walking again.
+- Move (0x50c070): first the jump check; if it jumps, the air move runs instead. Otherwise forward climbs with a
+  speed scaled by how far the view looks up (looking down climbs down), strafe runs along the ladder plane,
+  acceleration 9; without forward the vertical speed decays by gravity, in the air the speed into the wall is
+  replaced by a 50 units/s push into the ladder for a mostly vertical climb; then the step slide move.
+- Jump on a ladder (0x5416b0 -> 0x5414d0, 0x541640, 0x541560): the normal jump gate applies (newly pressed, 500 ms
+  since the last jump, standing view height, pm_flags 0x1000 / 0x4 clear, pm_type below 4); there is no ground
+  requirement. The normal jump start runs (vertical speed sqrt(2 · jump_height · gravity)) and the event is the
+  ladder jump 0x5b. Then, because pm_flags 0x20 is still set: the vertical speed is multiplied by 0.75 (0x591e38);
+  the view forward with z zeroed and normalized is the push direction; when it points into the ladder (dot with
+  the ladder normal below 0, 0x5415a5) it is mirrored off the ladder plane (d - 2 (d·n) n, 0x59216c = -2) and
+  normalized again; the horizontal velocity becomes direction × `jump_ladderPushVel` (dvar at 0x1cbac3c,
+  registered at 0x54122c: default 128, range 0..1024). pm_flags 0x20 is cleared directly (0x54162c), without
+  0x40000, so the ladder can be grabbed again 300 ms later. Space therefore jumps the player away from the ladder;
+  it does not climb.
+- Step slide on a ladder (0x54f2f8, 0x54f409..0x54f421): on a ladder the ground plane counts as absent (no stick to
+  ground, no stairs event) and the jump flag 0x80000 is cleared. Airborne, the step-up is normally only tried for a
+  jump step; with pm_flags 0x20 set and an upward vertical speed after the slide it is tried as well: a blocked
+  slide is repeated from up to 18 units higher (10 prone) and lowered back by the same amount. This is how the
+  player gets off at the top: the push into the ladder hits the top edge, the step-up lifts the box over it and
+  the lowered position lands on the floor above.
+- Weapon (0x4de880, branch 0x4de91b..0x4de947): while pm_flags 0x20 is set the weapon change goes to weapon 0
+  (the weapon is put away), the same path as mantling and vehicles; it is raised again when the flag is gone.
+  The busy weapon states that skip the whole change check (0x4de883..0x4de8ea) apply as for mantling.
+- TODO(spec): the landing-time adjustment of the jump speed inside 0x5414d0 (0x541490, pm_flags 0x80000 and
+  pm_time <= 1800) and the pm_flags 0x1000 / 0x4 jump gates are not modelled by the port's jump check.

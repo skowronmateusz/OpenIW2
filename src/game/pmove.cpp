@@ -340,9 +340,13 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
             ps.jumping = false;
             ps.jumpOriginZ = 0;
         }
-        if (!hit || !ps.jumping || !jumpStep(ps, startO[2], stepSize, mp)) return;
-        if (stepSize < 1.0f) return;
-        jumpStepped = true;
+        if (!hit || !ps.jumping || !jumpStep(ps, startO[2], stepSize, mp)) {
+            // 0x54f409: climbing a ladder upwards still tries the step-up (how the player gets over the ladder's top).
+            if (!ps.onLadder || ps.velocity[2] <= 0) return;
+        } else {
+            if (stepSize < 1.0f) return;
+            jumpStepped = true;
+        }
     }
     const Vec downO = ps.origin, downV = ps.velocity;
     float up = 0;
@@ -579,6 +583,24 @@ void updateLean(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in,
     }
 }
 
+// Jump off a ladder (0x541560, after the jump start while pm_flags 0x20 is set): the vertical speed is cut to 0.75; the
+// horizontal speed is jump_ladderPushVel along the flat view direction, mirrored off the ladder plane when it faces
+// into the ladder. The ladder flag is cleared without the "just left" flag 0x40000.
+void ladderJumpPush(PlayerState& ps, const PlayerInput& in, const MoveParams& mp) {
+    ps.velocity[2] *= 0.75f;
+    const float yaw = in.yaw * float(M_PI) / 180.0f;
+    Vec d{std::cos(yaw), std::sin(yaw), 0};
+    const Vec& n = ps.vLadder;
+    const float dn = dot(d, n);
+    if (dn < 0) {
+        d = {d[0] - 2.0f * dn * n[0], d[1] - 2.0f * dn * n[1], d[2] - 2.0f * dn * n[2]};
+        normalize(d);
+    }
+    ps.velocity[0] = d[0] * mp.jumpLadderPushVel;
+    ps.velocity[1] = d[1] * mp.jumpLadderPushVel;
+    ps.onLadder = false;
+}
+
 // Jump (0x5416b0, 0x5414d0): standing on the ground, newly pressed, 500 ms after the previous jump; vertical speed
 // sqrt(2 · jump_height · gravity). Leaves the ground and remembers the jump's origin z (ps+0x74).
 bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParams& mp) {
@@ -597,6 +619,7 @@ bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParam
     if (ps.onLadder) addPlayerEvent(ps, 0x5b);
     else if (const int surf = surfaceTypeOf(pml.groundTrace.surfaceFlags)) addPlayerEvent(ps, 0x46 + surf);
     ps.aimSpread = std::min(ps.aimSpread + mp.jumpSpreadAdd, 255.0f); // jump_spreadAdd (0x54153a)
+    if (ps.onLadder) ladderJumpPush(ps, in, mp);
     return true;
 }
 
@@ -1365,6 +1388,7 @@ void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac) {
 }
 
 bool mantleLowersWeapon(const PlayerState& ps) { return ps.mantling && kMantleTrans[ps.mantleTrans].over != 10; }
+bool moveLowersWeapon(const PlayerState& ps, bool inVehicle) { return mantleLowersWeapon(ps) || ps.onLadder || inVehicle; }
 
 bool MantleAnims::loaded() const {
     for (size_t i = 1; i < anims.size(); ++i)

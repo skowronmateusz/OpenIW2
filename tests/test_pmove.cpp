@@ -185,6 +185,16 @@ int main() {
                                 bool ev = false;
                                 for (int k = seq0; k < cl.eventSeq; ++k) ev |= (cl.events[k & 3] & 0xff) == 0x5b;
                                 CHECK(ev);
+                                // The ladder jump (0x541560) pushes the player away from the ladder at jump_ladderPushVel (128),
+                                // keeps 0.75 of the jump speed and leaves the ladder without the "just left" flag 0x40000.
+                                const Vec n = cl.vLadder;
+                                const float hs = std::sqrt(cl.velocity[0] * cl.velocity[0] + cl.velocity[1] * cl.velocity[1]);
+                                const float vz0 = 0.75f * std::sqrt(2.0f * 39.0f * 800.0f);
+                                std::cout << "ladder jump: v " << cl.velocity[0] << " " << cl.velocity[1] << " " << cl.velocity[2] << "\n";
+                                CHECK(!cl.onLadder && !cl.ladderLeft);
+                                CHECK(cl.velocity[0] * n[0] + cl.velocity[1] * n[1] > 100.0f); // away from the ladder
+                                CHECK(hs > 115.0f && hs < 140.0f);
+                                CHECK(cl.velocity[2] > vz0 - 20.0f && cl.velocity[2] < vz0 + 1.0f);
                             }
                         }
             CHECK(found);
@@ -216,7 +226,22 @@ int main() {
             for (int i = 0; i < 60; ++i) playerMove(cw, lp, li, 1.0f / 60.0f);
             std::cout << "moscow ladder: rose " << lp.origin[2] - z0 << " (on ladder " << lp.onLadder << ")\n";
             CHECK(lp.onLadder && lp.origin[2] - z0 > 40.0f);
+            // Getting off at the top (0x54f409): while climbing upwards the step slide move still steps up, so the push into the
+            // ladder carries the player over its top edge onto the floor above (z -115, south of the ladder).
+            for (int i = 0; i < 240 && !(lp.onGround && lp.origin[2] > -116.0f); ++i) playerMove(cw, lp, li, 1.0f / 60.0f);
+            for (int i = 0; i < 30; ++i) playerMove(cw, lp, li, 1.0f / 60.0f);
+            std::cout << "moscow ladder top: " << lp.origin[0] << " " << lp.origin[1] << " " << lp.origin[2] << " ground " << lp.onGround
+                      << " ladder " << lp.onLadder << "\n";
+            CHECK(lp.onGround && !lp.onLadder && lp.origin[2] > -116.0f && lp.origin[1] < 766.0f);
         }
+    }
+    {
+        // The weapon is put away while mantling, on a ladder (pm_flags 0x20, 0x4de91b) or in a vehicle (0x4de880).
+        PlayerState w;
+        CHECK(!moveLowersWeapon(w, false));
+        CHECK(moveLowersWeapon(w, true));
+        w.onLadder = true;
+        CHECK(moveLowersWeapon(w, false));
     }
     {
         // Stance speed blend (0x509760 / 0x50aaaf): flat factors, the crouch -> prone lerp (400 ms), the prone -> crouch lerp (400 ms).

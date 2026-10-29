@@ -7294,7 +7294,7 @@ int main(int argc, char** argv) {
                     prevSelect = weaponSelect;
                 }
                 wi.weapon = weaponSelect;
-                wi.holster = game::mantleLowersWeapon(ps) || inVehicle; // 0x4de880
+                wi.holster = game::moveLowersWeapon(ps, inVehicle); // 0x4de880: mantle, ladder (0x4de91b), vehicle
                 wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
                 wi.binoculars = (buttons & game::Button::Binoculars) != 0;
                 wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
