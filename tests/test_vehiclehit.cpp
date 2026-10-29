@@ -82,6 +82,20 @@ int main() {
         CHECK(ps.origin[0] < o[0]);
     }
 
+    // A driven vehicle traces a point at its own origin height (0x50d970: mins/maxs zero): the collmap must reach down to it.
+    {
+        Vec3 bm{}, bx{};
+        w.submodelBounds("*181", bm, bx);
+        std::cout << "collmap *181 bounds " << bm[0] << " " << bm[1] << " " << bm[2] << " .. " << bx[0] << " " << bx[1] << " " << bx[2] << "\n";
+        int pointHits = 0;
+        for (float dy : {-20.f, 0.f, 20.f}) {
+            const Vec3 a{o[0] - 300, o[1] + dy, o[2]}, b{o[0] + 300, o[1] + dy, o[2]};
+            if (w.collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, 0x810211u, -1).entity == tank->number) ++pointHits;
+        }
+        std::cout << "point hits at the origin height " << pointHits << "/3\n";
+        CHECK(pointHits == 3);
+    }
+
     // A rocket flying at the hull explodes on it.
     Entity& r = w.debugSpawnRocket("panzerfaust", {o[0] - 600, o[1], o[2] + 50}, {1, 0, 0});
     for (int i = 0; i < 100 && !r.obj->removed; ++i) w.frame();
@@ -114,6 +128,36 @@ int main() {
             if (kv.first.find("crusader") != std::string::npos || kv.first.find("panzer") != std::string::npos || kv.first.find("halftrack") != std::string::npos || kv.first.find("jeep") != std::string::npos || kv.first.find("blitz") != std::string::npos)
                 CHECK(kv.second.first == kv.second.second);
         for (const auto& kv : seen) std::cout << map << " " << kv.first << ": vehicles " << kv.second.first << " hit " << kv.second.second << "\n";
+    // A destroyed tank (maps/_vehicle.gsc calls freevehicle on death: script_vehicle_corpse, vehicle state dropped) keeps its
+    // contents and brush model (0x511c80 writes neither), so walking and driving still stop at the wreck.
+    {
+        World w2(vfs, "libya");
+        w2.start();
+        for (int i = 0; i < 40; ++i) w2.frame();
+        Entity* t2 = nullptr;
+        for (const auto& e : w2.entities())
+            if (e->vehicle && !e->obj->removed && e->obj->get("model").toString() == "xmodel/vehicle_crusader2") { t2 = e.get(); break; }
+        CHECK(t2 != nullptr);
+        if (!t2) return 1;
+        w2.debugDamage(*t2, 100000);
+        for (int i = 0; i < 100; ++i) w2.frame();
+        CHECK(t2->classname == "script_vehicle_corpse");
+        const Vec3 c = t2->obj->get("origin").asVector();
+        int wreckHits = 0;
+        for (float dy : {-30.f, 0.f, 30.f}) {
+            const Vec3 a{c[0] - 300, c[1] + dy, c[2] + 40}, b{c[0] + 300, c[1] + dy, c[2] + 40};
+            if (w2.collision().trace(a, b, {-15, -15, 0}, {15, 15, 70}, 0x281c011u, -1).entity == t2->number) ++wreckHits; // walking
+            if (w2.collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, 0x810211u, -1).entity == t2->number) ++wreckHits;         // a driven vehicle's ray
+        }
+        std::cout << "wreck hits " << wreckHits << "/6\n";
+        CHECK(wreckHits == 6);
+        PlayerState ps;
+        ps.origin = {c[0] - 200, c[1], c[2] + 40};
+        PlayerInput in;
+        in.forward = 1;
+        for (int f = 0; f < 200; ++f) playerMove(w2.collision(), ps, in, 1.0f / 60.0f);
+        CHECK(!w2.collision().trace(ps.origin, ps.origin, {-15, -15, 0}, {15, 15, 70}, 0x281c011u, -1).startSolid);
+        CHECK(ps.origin[0] < c[0]);
     }
     std::cout << (failures ? "FAILED\n" : "vehicle hit test OK\n");
     return failures ? 1 : 0;

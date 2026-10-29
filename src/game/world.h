@@ -625,6 +625,7 @@ public:
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
     std::string vehicleCollmap(Entity& vehicle);
     std::string lookupVehicleCollmap(Entity& vehicle);
+    static std::string corpseCollmap(const Entity& e); // the collmap brush ("*N") a freed vehicle keeps, else empty
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
     void updateVehicleEngineSound(Entity& e);
     void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
