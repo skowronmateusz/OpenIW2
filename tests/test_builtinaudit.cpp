@@ -52,6 +52,7 @@ int main() {
              "\tlevel.done = 1;\n}\n"
              "save()\n{\n\tsavegame(\"zz\", \"d\", \"$default\");\n}\n"
              "nocommit()\n{\n\tlevel.sid = savegamenocommit(\"zy\", \"d\", \"$default\");\n}\n"
+             "hit()\n{\n\tself dodamage(500, (0, 0, 0));\n\tlevel.hit = 1;\n}\n"
              "commit()\n{\n\tcommitsave(0);\n\tlevel.committed = 1;\n}\n";
     }
     iw2::fs::Vfs vfs;
@@ -156,6 +157,24 @@ int main() {
         CHECK(cmds[0].arg == "GAME_GODMODE_OFF" && cmds[1].arg == "GAME_NOTARGETOFF");
         c.player()->obj->set("health", iw2::script::Value(int32_t(0)));
         CHECK(!c.cheatGod());
+    }
+    // demigod (flags & 2, 0x5283d2): a lethal hit is cut to health - 1; god (flags & 1, 0x5282b3) takes no damage; notarget is the
+    // `$notarget` mark next to ignoreme that the enemy search (0x54e326) and getclosestenemysqdist (0x53c37b) skip.
+    {
+        iw2::game::World c(vfs, "moscow");
+        c.prepareStart();
+        c.cvars["sv_cheats"] = "1";
+        c.player()->obj->set("health", iw2::script::Value(int32_t(100)));
+        CHECK(c.cheatDemigod());
+        c.vm().start("maps/zz_builtinaudit.gsc", "hit", {}, iw2::script::Value(c.player()->obj));
+        c.vm().drainReady();
+        CHECK(c.player()->obj->get("health").asInt() == 1);
+        CHECK(c.cheatDemigod() && c.cheatGod());
+        c.vm().start("maps/zz_builtinaudit.gsc", "hit", {}, iw2::script::Value(c.player()->obj));
+        c.vm().drainReady();
+        CHECK(c.player()->obj->get("health").asInt() == 1);
+        CHECK(c.cheatNotarget() && c.player()->obj->get("$notarget").truthy());
+        CHECK(c.cheatNotarget() && !c.player()->obj->get("$notarget").truthy());
     }
     // The cheat commands noclip / ufo (0x4ea170 / 0x4ea220 behind the gate 0x4e9500): sv_cheats and health decide.
     {

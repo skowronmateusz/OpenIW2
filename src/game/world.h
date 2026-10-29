@@ -591,10 +591,12 @@ public:
     bool cheatUfo() { return cheatToggle(ufo_, "GAME_UFOON", "GAME_UFOOFF"); }
     // god / demigod / notarget (0x4e9f90 / 0x4ea030 / 0x4ea0d0, same gate 0x4e9500): toggle client-entity flags +0x128 & 1 / 2 / 4 and print
     // GAME_GODMODE_ON/OFF, GAME_DEMI_GODMODE_ON/OFF, GAME_NOTARGETON/OFF. Effects: god is read by combat ($godmode on the player);
-    // TODO(spec): the demigod (health floor) and notarget (AI target selection) consumers are not implemented.
+    // Consumers: god and demigod in G_Damage (0x5282b3 / 0x5283d2: the entity objects carry `$godmode` / `$demigod`), notarget in the enemy search
+    // 0x54e230 (0x54e326), the cover script check 0x54bb30 (0x54bbc9) and getclosestenemysqdist 0x53c290 (0x53c37b): `$notarget` next to `ignoreme`.
+    // TODO(spec): the entity event at 0x4e776b (damage 100000, means of death 0xc) that god / demigod (flags & 3) skip is not ported.
     bool cheatGod();
-    bool cheatDemigod() { return cheatToggle(demigod_, "GAME_DEMI_GODMODE_ON", "GAME_DEMI_GODMODE_OFF"); }
-    bool cheatNotarget() { return cheatToggle(notarget_, "GAME_NOTARGETON", "GAME_NOTARGETOFF"); }
+    bool cheatDemigod();
+    bool cheatNotarget();
     bool playerGod() const { return god_; }
     bool playerDemigod() const { return demigod_; }
     bool playerNotarget() const { return notarget_; }

@@ -1301,6 +1301,18 @@ bool World::cheatGod() {
     return t;
 }
 
+bool World::cheatDemigod() {
+    const bool t = cheatToggle(demigod_, "GAME_DEMI_GODMODE_ON", "GAME_DEMI_GODMODE_OFF");
+    if (t && player_) player_->obj->set("$demigod", Value(demigod_));
+    return t;
+}
+
+bool World::cheatNotarget() {
+    const bool t = cheatToggle(notarget_, "GAME_NOTARGETON", "GAME_NOTARGETOFF");
+    if (t && player_) player_->obj->set("$notarget", Value(notarget_));
+    return t;
+}
+
 int World::playerPmType() const {
     const Value h = player_ ? player_->obj->get("health") : Value();
     return pmClientType(noclip_, ufo_, h.isNumber() ? h.asInt() : 1, playerLink_.has_value());
