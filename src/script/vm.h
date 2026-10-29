@@ -161,6 +161,9 @@ public:
     std::vector<Waiter> waiters() const;
     // Debug hook: called at the start of every notify (object, event), before endons and waiters run. Empty by default.
     std::function<void(const ObjectPtr&, const std::string&)> notifyHook;
+    // Debug: with n > 0 the "potential infinite loop" guard kills a script after n backward jumps without suspending instead
+    // of after 2500 ms of wall time (0x46aae9, the exe behaviour), so headless runs are deterministic (iw2game sets it).
+    void setLoopGuardIterations(size_t n) { loopGuardIterations_ = n; }
     // Debug: " < file:line function" for each frame of a thread, outermost first.
     std::string backtrace(const Thread& t) const;
     const std::vector<std::string>& errors() const { return errors_; }
@@ -213,6 +216,8 @@ private:
     std::unordered_map<std::string, File> files_;
     std::vector<CompiledFunction> functions_;
     std::chrono::steady_clock::time_point runStart_ = std::chrono::steady_clock::now(); // 0x9ff01c: start of the running script
+    size_t loopGuardIterations_ = 0; // debug: > 0 replaces the 2500 ms wall-clock loop guard by a backward-jump count (deterministic)
+    size_t backwardJumps_ = 0;       // backward jumps of the running script since its run started
     std::unordered_map<std::string, int> builtinIndex_;
     std::vector<Builtin> builtins_;
     std::vector<std::string> builtinNames_;

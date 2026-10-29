@@ -676,7 +676,7 @@ void VM::run(Thread& t) {
     bool suspended = false;
     const bool wasRunning = t.running;
     t.running = true;
-    if (!wasRunning) runStart_ = std::chrono::steady_clock::now();
+    if (!wasRunning) { runStart_ = std::chrono::steady_clock::now(); backwardJumps_ = 0; }
     while (!suspended && t.state != ThreadState::Done) {
         try {
             step(t, suspended);
@@ -930,8 +930,10 @@ void VM::step(Thread& t, bool& suspended) {
     case Op::Jump:
         // Backward jump (0x46aae9): a script that has run 2500 ms of wall time without suspending is killed
         // ("potential infinite loop in script - killing thread.", developer off).
-        if (size_t(in.a) <= fr.pc &&
-            std::chrono::steady_clock::now() - runStart_ >= std::chrono::milliseconds(2500))
+        // Wall time makes the kill point (and so the random draws a spinning loop made) differ from run to run; iw2game
+        // replaces it by a backward-jump count (setLoopGuardIterations).
+        if (size_t(in.a) <= fr.pc && (loopGuardIterations_ > 0 ? ++backwardJumps_ >= loopGuardIterations_
+                                                               : std::chrono::steady_clock::now() - runStart_ >= std::chrono::milliseconds(2500)))
             throw std::runtime_error("potential infinite loop in script - killing thread.");
         fr.pc = size_t(in.a);
         break;

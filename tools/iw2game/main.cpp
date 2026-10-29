@@ -792,6 +792,9 @@ int main(int argc, char** argv) {
             }
         }
         world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
+        // Deterministic loop guard: a script spinning without suspending is killed after IW2_LOOP_GUARD_ITERS backward jumps
+        // (default 200000) instead of after 2500 ms of wall time (the exe's rule, kept by iw2view); 0 restores the wall clock.
+        world.vm().setLoopGuardIterations(std::getenv("IW2_LOOP_GUARD_ITERS") ? size_t(std::strtoull(std::getenv("IW2_LOOP_GUARD_ITERS"), nullptr, 10)) : 200000u);
         // Sounds are not played here; count requests and aliases that do not resolve.
         iw2::audio::SoundAliases aliases;
         aliases.load(vfs, argv[2]);

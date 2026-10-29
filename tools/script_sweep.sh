@@ -77,6 +77,12 @@ do_smoke() {
     if ! diff -q "$out/demolition-s1-plain.txt" "$out/demolition-s1-plain2.txt" > /dev/null; then
         echo "SMOKE FAIL: demolition is not deterministic for seed 1"; diff "$out/demolition-s1-plain.txt" "$out/demolition-s1-plain2.txt" | head -20; rc=1
     fi
+    # toujane has a script loop the loop guard kills; with the wall-clock guard the kill point, and so the run, differed.
+    run toujane 1 60 plain
+    run toujane 1 60 plain2
+    if ! diff -q "$out/toujane-s1-plain.txt" "$out/toujane-s1-plain2.txt" > /dev/null; then
+        echo "SMOKE FAIL: toujane is not deterministic for seed 1"; diff "$out/toujane-s1-plain.txt" "$out/toujane-s1-plain2.txt" | head -20; rc=1
+    fi
     [ $rc -eq 0 ] && echo "script smoke OK, reports in $out"
     exit $rc
 }
