@@ -114,9 +114,9 @@ int main() {
             if (!e->vehicle || e->obj->removed || !e->obj->get("origin").isVector()) continue;
             const Vec3 p = e->obj->get("origin").asVector();
             int hits = 0;
-            for (float dz : {30.f, 60.f, 90.f})
+            for (float dz : {-40.f, 0.f, 30.f, 60.f, 90.f, 140.f})
                 for (int d = 0; d < 4; ++d) {
-                    const float dx = (d == 0 ? -1.f : d == 1 ? 1.f : 0.f) * 60, dy = (d == 2 ? -1.f : d == 3 ? 1.f : 0.f) * 60;
+                    const float dx = (d == 0 ? -1.f : d == 1 ? 1.f : 0.f) * 400, dy = (d == 2 ? -1.f : d == 3 ? 1.f : 0.f) * 400;
                     const Vec3 a{p[0] + dx, p[1] + dy, p[2] + dz}, b{p[0] - dx * 0.1f, p[1] - dy * 0.1f, p[2] + dz};
                     if (m.debugFireBullet(a, b) == e.get()) ++hits;
                 }
