@@ -29,6 +29,8 @@
 #include <map>
 #include <random>
 #include <set>
+#include <queue>
+#include <limits>
 #include <sstream>
 #include <cstring>
 #include <string>
@@ -1525,7 +1527,7 @@ int main(int argc, char** argv) {
                     }
                     return best;
                 };
-                const int playerNode = nearestNode(po);
+                int playerNode = nearestNode(po); // re-chosen below when lethal triggers are around (the leg to it must not cross one)
                 // The current objective's marker (state 4, first position): a player follows it, so candidates near it come first.
                 bool haveObj = false;
                 iw2::game::Vec3 objPos{};
@@ -1537,13 +1539,89 @@ int main(int argc, char** argv) {
                 };
                 std::vector<int> bestRoute; // the node route to the chosen trigger (empty: straight line)
                 std::vector<iw2::game::Entity*> forbidden; // kill / minefield triggers (skip list): never entered, routes through them are refused
+                // Pre-pass: the lethal triggers (kill-player / minefield / desertion waiters), so that routes can avoid them.
+                for (const auto& w : waiters) {
+                    if (w.event != "trigger") continue;
+                    for (const auto& e : world.entities()) {
+                        if (e->obj != w.object || e->obj->removed || e->isSpawner) continue;
+                        if (e->classname != "trigger_multiple" && e->classname != "trigger_once" && e->classname != "trigger_radius") continue;
+                        std::string names = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
+                        const auto tn = e->obj->get("targetname");
+                        if (tn.isString()) names += " " + tn.asString();
+                        for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        for (const auto& sub : autoplaySkip)
+                            if (sub != "wrongway" && names.find(sub) != std::string::npos && std::find(forbidden.begin(), forbidden.end(), e.get()) == forbidden.end()) { forbidden.push_back(e.get()); break; }
+                    }
+                }
+                // Node route that avoids the lethal triggers: Dijkstra over the path graph with the nodes inside a forbidden trigger
+                // blocked (hill400_assault's and rhine's minefields fence the direct A* route). Plain A* when there is none.
+                std::vector<char> blockedNode;
+                const auto routeAvoiding = [&](int from, int to) -> std::vector<int> {
+                    if (forbidden.empty()) return graph.findPath(from, to);
+                    if (blockedNode.empty()) {
+                        blockedNode.assign(graph.size(), 0);
+                        for (size_t i = 0; i < graph.size(); ++i) {
+                            const auto& q = graph.position(i);
+                            for (auto* fe : forbidden)
+                                if (world.debugTriggerTouches(*fe, iw2::game::Vec3{q[0], q[1], q[2]})) { blockedNode[i] = 1; break; }
+                        }
+                    }
+                    const size_t n = graph.size();
+                    std::vector<float> dist(n, std::numeric_limits<float>::infinity());
+                    std::vector<int> prev(n, -1);
+                    std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int>>, std::greater<>> pq;
+                    dist[size_t(from)] = 0;
+                    pq.push({0.0f, from});
+                    while (!pq.empty()) {
+                        const auto [d, u] = pq.top();
+                        pq.pop();
+                        if (d > dist[size_t(u)]) continue;
+                        if (u == to) break;
+                        for (const auto& l : graph.links(size_t(u))) {
+                            const int v = int(l.target);
+                            if (blockedNode[size_t(v)] && v != to) continue;
+                            const float nd = d + l.distance;
+                            if (nd < dist[size_t(v)]) { dist[size_t(v)] = nd; prev[size_t(v)] = u; pq.push({nd, v}); }
+                        }
+                    }
+                    std::vector<int> route;
+                    if (!std::isfinite(dist[size_t(to)])) return route;
+                    for (int v = to; v != -1; v = prev[size_t(v)]) route.push_back(v);
+                    std::reverse(route.begin(), route.end());
+                    return route;
+                };
+                // The player's start node when lethal triggers are around: among the 12 nearest usable nodes, the first one that is not
+                // inside a lethal trigger and whose straight leg from the player does not cross one (hill400_assault: the player stands
+                // beside a minefield and the nearest node is across it).
+                if (!forbidden.empty() && playerNode >= 0) {
+                    routeAvoiding(playerNode, playerNode); // computes blockedNode
+                    std::vector<std::pair<float, int>> near;
+                    for (size_t i = 0; i < graph.size() && i < world.nodes().size(); ++i) {
+                        if (world.nodes()[i].typeNum == 0 || graph.links(i).empty() || blockedNode[i]) continue;
+                        const auto& q = graph.position(i);
+                        near.push_back({(q[0] - po[0]) * (q[0] - po[0]) + (q[1] - po[1]) * (q[1] - po[1]) + (q[2] - po[2]) * (q[2] - po[2]) * 4, int(i)});
+                    }
+                    std::sort(near.begin(), near.end());
+                    for (size_t k = 0; k < near.size() && k < 12; ++k) {
+                        const auto& q = graph.position(size_t(near[k].second));
+                        const float len = std::sqrt((q[0] - po[0]) * (q[0] - po[0]) + (q[1] - po[1]) * (q[1] - po[1]) + (q[2] - po[2]) * (q[2] - po[2]));
+                        bool crosses = false;
+                        for (float s = 50.0f; s <= len && !crosses; s += 16.0f) {
+                            const float u = s / len;
+                            const iw2::game::Vec3 p{po[0] + (q[0] - po[0]) * u, po[1] + (q[1] - po[1]) * u, po[2] + (q[2] - po[2]) * u};
+                            for (auto* fe : forbidden)
+                                if (world.debugTriggerTouches(*fe, p)) { crosses = true; break; }
+                        }
+                        if (!crosses) { playerNode = near[k].second; break; }
+                    }
+                }
                 const auto walkDistance = [&](const iw2::game::Vec3& c, std::vector<int>* routeOut = nullptr, bool* reachable = nullptr) {
                     const float straight = std::sqrt((c[0] - po[0]) * (c[0] - po[0]) + (c[1] - po[1]) * (c[1] - po[1]) + (c[2] - po[2]) * (c[2] - po[2]));
                     if (reachable) *reachable = false;
                     const int n = playerNode >= 0 ? nearestNode(c) : -1;
                     if (n < 0) return straight * 4;
                     if (std::fabs(graph.position(size_t(n))[2] - c[2]) > 500.0f) return straight * 4; // no node near it vertically (below / above the map)
-                    const auto route = graph.findPath(playerNode, n);
+                    const auto route = routeAvoiding(playerNode, n);
                     if (route.empty()) return straight * 4;
                     if (routeOut) *routeOut = route;
                     if (reachable) *reachable = true;
@@ -1598,11 +1676,9 @@ int main(int argc, char** argv) {
                             const auto tn = e->obj->get("targetname");
                             if (tn.isString()) names += " " + tn.asString();
                             for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                            bool skip = false, lethal = false;
-                            for (const auto& sub : autoplaySkip)
-                                if (names.find(sub) != std::string::npos) { skip = true; lethal = lethal || sub != "wrongway"; }
-                            // not targeted; the lethal ones (kill / minefield / desertion) also refuse routes through them
-                            if (skip) { if (kind == Enter && lethal) forbidden.push_back(e.get()); continue; }
+                            bool skip = false;
+                            for (const auto& sub : autoplaySkip) skip = skip || names.find(sub) != std::string::npos;
+                            if (skip) continue; // not targeted; the lethal ones are in `forbidden` (pre-pass) and routes avoid them
                         }
                         const auto ov = e->obj->get("origin");
                         if (!ov.isVector()) continue;
@@ -1730,7 +1806,12 @@ int main(int argc, char** argv) {
                             const float u = len > 0 ? s / len : 0;
                             const iw2::game::Vec3 p{a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u};
                             for (auto* fe : forbidden)
-                                if (world.debugTriggerTouches(*fe, p)) { crossed = fe; break; }
+                                if (world.debugTriggerTouches(*fe, p)) {
+                                    crossed = fe;
+                                    if (std::getenv("IW2_AUTOPLAY_DEBUG"))
+                                        std::printf("%s  crossing at leg %zu of %zu, point %.0f,%.0f,%.0f (%.0f units along), route nodes %zu\n", head, i, playerPath.size() - 1, p[0], p[1], p[2], walked + s, bestRoute.size());
+                                    break;
+                                }
                         }
                     }
                     if (crossed) {
