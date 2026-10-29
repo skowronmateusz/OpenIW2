@@ -281,6 +281,22 @@ int main() {
         CHECK(m.active() == 0);
         m.setPaused(false);
         m.resetPausable();
+        // The level-end theme (music channel) under the victory screen: pausable flags as openvictoryscreen leaves them, cl_paused set.
+        iw2::audio::SoundAliases ra;
+        ra.load(vfs, "88ridge");
+        iw2::audio::Mixer rm(vfs, ra, 48000);
+        for (int c = 0; c < 11; ++c) rm.channelPausable[c] = c != 2 && c != 8;
+        const int mh = rm.play("ridge88_victory_music", std::nullopt, nullptr, {.dedicated = true});
+        CHECK(mh != 0);
+        rm.pausedChannels = true;
+        rm.setPaused(true);
+        double energy = 0;
+        for (int i = 0; i < 48000 * 3 / 1024; ++i) {
+            rm.mix(buf.data(), 1024);
+            for (float x : buf) energy += double(x) * x;
+        }
+        std::cout << "victory theme energy while paused: " << energy << " active " << rm.active() << "\n";
+        CHECK(energy > 0.0 && rm.active() == 1);
     }
     if (failures) return 1;
     std::cout << "sound tests passed\n";
