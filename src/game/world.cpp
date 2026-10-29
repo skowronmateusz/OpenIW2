@@ -1614,6 +1614,7 @@ void World::registerBuiltins() {
         if (!e || !e->isActor) throw std::runtime_error("isdeflected on a non-actor");
         return Value(int32_t(e->ai.deflected ? 1 : 0));
     });
+    registerPredictionBuiltins();
     // enablegrenadetouchdamage (0x4f8000): sets entity flag 0x4000 (+0x128); only a trigger_damage (entity type word 0x1c7f0ea) is
     // accepted, else "Currently on supported on damage triggers" (0x58542c). Grenade flight tests only flagged triggers
     // (triggerDamageSegment).

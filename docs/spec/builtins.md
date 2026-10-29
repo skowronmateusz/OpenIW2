@@ -501,7 +501,7 @@ handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, develope
 
 | Name | SP files | Where | Notes |
 |---|---|---|---|
-| `predictanim`, `predictoriginandangles`, `beginprediction`, `endprediction` | 1-2 | animscripts/predict.gsc, death.gsc | balcony stumble/tumble death prediction; decoded, not implemented (see "Prediction built-ins" below) |
+| `predictanim`, `predictoriginandangles`, `beginprediction`, `endprediction` | 1-2 | animscripts/predict.gsc, death.gsc | balcony stumble/tumble death prediction; implemented (see "Prediction built-ins" below) |
 | `getgroundenttype` | 2 | animscripts/death.gsc, traverse/window.gsc | exe 0x5401c0 |
 | `getcommandfromkey` | 1 | moscow_str | implemented: binding text of a key (table 0x5d2730), "" for unknown / unbound; see below |
 | `buttonpressed` | 1 | _briefing | implemented: down flag of a key (table 0x5d2728); see below |
@@ -519,11 +519,8 @@ The remaining names (team scores, ranks, `logprint`, `obituary`, `closeingamemen
 - `enablegrenadetouchdamage` (0x4f8000): only a trigger_damage ("Currently on supported on damage triggers", 0x58542c), sets entity flag
   0x4000. The only reader found is the grenade segment test 0x5297b0 (`testb $0x40` on +0x128 >> 8), so a grenade flying through a
   trigger_damage only fires it when the flag is set; the bullet test 0x5295f0 has no such check. `triggerDamageSegment` mod 3 now gates on it.
-- Not done (see "Prediction built-ins"): `predictanim` (0x540020 -> 0x5045c0), `predictoriginandangles` (0x53ff50), `beginprediction` (0x53f960, snapshots the actor's
-  anim state and the +0x224 move block into a scratch actor) / `endprediction` (0x53fb80): a sandboxed actor anim + slide-move step; needs
-  the actor frame (0x5045c0) factored so it can run on a copy. `setstablemissile` (sets +0x128 bit 0x20000): no reader was found by text search of the
-  disassembly (`testl $0x20000, reg` hits are too many to attribute). `getcommandfromkey`/`buttonpressed` are now implemented, see "Key table built-ins" below. The aitype `spawner` handle is resolved at map load (0x4eaf9f, stored at spawn-table entry +8);
-  the call site was not located.
+- Prediction built-ins are implemented, see "Prediction built-ins". Not done: `setstablemissile` (sets +0x128 bit 0x20000): no reader was found by text search of the
+  disassembly (`testl $0x20000, reg` hits are too many to attribute). `getcommandfromkey`/`buttonpressed` are now implemented, see "Key table built-ins" below. The aitype `spawner` handle call site is decoded in ai.md.
 
 ### Prediction built-ins (actor death prediction, animscripts/predict.gsc)
 
@@ -541,22 +538,29 @@ Implemented:
   block velocity (+0x230) = (origin - current origin) * 20; move delta (+0x250) = 0 (not stored in the port: transient); entity origin = origin;
   ground entity (+0x23c) = 0x7ff.
 
-Decoded, not implemented (need the animation tree stepped on a snapshot, not available in the port):
+Implemented (src/game/actorpredict.cpp, tests/test_actorpredict.cpp, tests/test_animtree.cpp):
 - `beginprediction` (0x53f960): error "beginPrediction already called" (0x5912d0) if the nesting counter 0x1c6104c is set, then
   increments it; saves the actor's animation state with 0x4796c0 (slot = actor index) into the scratch snapshot 0x1c7edac and copies into
   the snapshot record 0x1c7edb0: +0x218 / +0x21c / +0x220 anim mode words, the 0x43 dwords at +0x224 (the move block), +0x114..+0x123,
-  +0x104..+0x113 (facing blocks), +0x124, gentity +0xdc / +0xe8 (origin, angles), actor +0xe0.. (look axes).
+  +0x104..+0x113 (facing blocks), +0x124, gentity +0xdc / +0xe8 (origin, angles), actor +0xe0.. (look axes). The tree snapshot is a copy
+  of every 0x28-byte node entry (0x4796c0: ten dwords per entry); the port saves `AnimState::snapshot()`, a copy of its `ActorAi`
+  (all of the fields above live there), the entity origin / angles / velocity.
 - `endprediction` (0x53fb80): decrements the counter, error "endPrediction already called" (0x5912b0) when it is not zero afterwards; restores
-  the animation state (0x4796c0, 0x478db0, 0x478e10) and every field above.
+  the animation state (0x4796c0, 0x478db0, 0x478e10) and every field above. Nothing but the counter is cleared when a script error
+  aborts between the two (the exe has the same single counter).
 - `predictoriginandangles` (0x53ff50): errors "cannot predict when linked to an entity" (0x591254, gentity +0x1c8 set) and "cannot predict when
-  using no physics" (0x59122c, +0x21c == 8); anim mode (+0x218) = override or 4; +0x220 = 1; then the path step 0x504160, the actor physics
-  0x501d00 and 0x447ec0(gentity, 0.05).
+  using no physics" (0x59122c, +0x21c == 8); anim mode (+0x218) = override or 4; +0x220 = 1; then the path step 0x504160 (`actorMoveFrame`),
+  the actor physics 0x501d00 (inside it) and 0x447ec0(gentity, 0.05), the weight update 0x476960 (`AnimState::updateWeights`).
 - `predictanim bool` (0x540020 -> 0x5045c0): script arg 0 selects the mode; with the actor's model anim table entry (0x74a980 -> 0x74c200 stride
-  0x64) missing it returns 0; else `0x478220(tree, flag, 0.05)`: flag 0 = tree update of 50 ms (0x476490); flag 1 = time to the next notetrack
-  (0x476c80), update by min(that, 50 ms) and return 1 when it stopped at the notetrack. Needs the tree update with truncated dt and
-  notetrack stop (the same missing 0x478220 as `setanim`, docs/spec/animscripted.md).
-TODO(spec): the above four; the balcony death anims (death.gsc through predict.gsc stumbleWall / tumbleWall) rely on them and keep running
-the unpredicted path.
+  0x64) missing it returns 0; else `0x478220(tree, flag, 0.05)`: flag 0 = time update of 50 ms without notetrack callbacks (0x476490); flag 1 =
+  0x476c80 gives the fraction of dt up to the next notetrack (1.0 = none: a plain update with callbacks, result 0); otherwise the update
+  runs for fraction * dt + 0.001 when that does not exceed dt, with callbacks, and the result is 1. 0x476c80 recurses over the tree
+  (plain blend node: children with dt * rate; synced node: 0x476bb0; leaf: 0x475ea0 -> 0x475de0). `AnimState::updateTruncated` /
+  `noteFraction`. Both are time-only updates stepping from the nodes' old time (the weight update sets it), which is why
+  predictoriginandangles runs the weight update: a script loop `PredictAnim; PredictOriginAndAngles` advances one frame per round.
+TODO(spec): the notetrack search helpers 0x475ea0 / 0x475de0 / 0x476bb0 are not decoded (the port takes the linear position of the first
+note crossed by the leaves that report notes; "end" counts at time 1 for non-looping anims); the exe's per-actor scratch snapshot (an
+endprediction on another actor than the begin); the move block fields the port keeps outside `ActorAi` (nothing found).
 ### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
 
 The exe keeps a 256-entry key table of 12-byte entries at 0x5d2728: +0 the down flag (written by the key event 0x40c0fd from its

@@ -328,6 +328,20 @@ void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const Note
     const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
     const float before = s.time;
     const bool wrapped = toCycle > s.cycle;
+    if (probe_ && notes && a && !s.notify.empty() && !a->notes.empty()) {
+        // Position of each note on the unwrapped time line of this step, as a fraction of it.
+        const float span = (to + float(toCycle - s.cycle)) - before;
+        if (span > 0) {
+            for (int c = 0; c <= toCycle - s.cycle; ++c)
+                for (const auto& note : a->notes) {
+                    if (note.name == "end" && !a->looping) continue; // "end" is the time-1 notification below
+                    const float pos = note.time + float(c);
+                    if (pos > before && pos <= before + span) *probe_ = std::min(*probe_, (pos - before) / span);
+                    if (!a->looping) break;
+                }
+            if (!a->looping && before < 1.0f && to >= 1.0f) *probe_ = std::min(*probe_, (1.0f - before) / span);
+        }
+    }
     if (notes && a && !s.notify.empty()) {
         if (a->looping) {
             if (wrapped) {
@@ -421,10 +435,37 @@ void AnimState::syncTo(int n, const AnimNodeState& top, bool notes, const NoteFn
     for (int c : node.children) syncTo(c, top, notes, onNote);
 }
 
-void AnimState::update(float dt, const NoteFn& onNote) {
+void AnimState::update(float dt, const NoteFn& onNote, bool notes) {
     bool alive = false, playing = false;
     updateWeight(0, 0.0f, 0, dt, true, alive, playing);
+    updateTime(0, dt, notes, onNote);
+}
+
+float AnimState::noteFraction(float dt) {
+    const Snapshot saved = nodes_;
+    float f = 1.0f;
+    probe_ = &f;
+    updateTime(0, dt, true, [](const std::string&, const std::string&) {});
+    probe_ = nullptr;
+    nodes_ = saved;
+    return f;
+}
+
+bool AnimState::updateTruncated(float dt, bool toNotetrack, const NoteFn& onNote) {
+    if (!toNotetrack) {
+        updateTime(0, dt, false, onNote);
+        return false;
+    }
+    const float f = noteFraction(dt);
+    if (f != 1.0f) {
+        const float stop = f * dt + 0.001f;
+        if (stop <= dt) {
+            updateTime(0, stop, true, onNote);
+            return true;
+        }
+    }
     updateTime(0, dt, true, onNote);
+    return false;
 }
 
 std::string AnimState::debugString() const {

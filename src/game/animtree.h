@@ -102,7 +102,27 @@ public:
     void restart(int n);
 
     // Advances time; `onNote(notifyName, noteName)` is called for crossed notetracks and "end".
-    void update(float dt, const std::function<void(const std::string&, const std::string&)>& onNote);
+    void update(float dt, const std::function<void(const std::string&, const std::string&)>& onNote, bool notes = true);
+
+    // 0x4796c0 / 0x478db0 / 0x478e10: the whole per-node state (the exe copies each 0x28-byte entry) is saved and put back.
+    using Snapshot = std::vector<AnimNodeState>;
+    Snapshot snapshot() const { return nodes_; }
+    void restore(const Snapshot& s) { nodes_ = s; }
+
+    // 0x478220 (a time update only, 0x476490: it steps from each node's old time, which the weight update 0x476960 sets; calling it
+    // twice without updateWeights repeats the same step): with `toNotetrack` false an update of dt without notetrack callbacks (0x476490 with the callback flag 0); with
+    // it true the fraction of dt up to the first notetrack (0x476c80) shortens the update to fraction * dt + 0.001 when that does
+    // not exceed dt, notetracks reported, and the result is true when it stopped there. TODO(spec): the notetrack search
+    // helpers 0x475ea0 / 0x475de0 / 0x476bb0 are not decoded; the fraction is taken as the linear position of the first note
+    // crossed by the leaves that report notes.
+    bool updateTruncated(float dt, bool toNotetrack, const std::function<void(const std::string&, const std::string&)>& onNote);
+    // 0x476c80 for the whole tree: the fraction (0..1) of dt after which the first notetrack is crossed, 1 when there is none.
+    float noteFraction(float dt);
+    // 0x476960 (via 0x447ec0): the weight update alone.
+    void updateWeights(float dt) {
+        bool alive = false, playing = false;
+        updateWeight(0, 0.0f, 0, dt, true, alive, playing);
+    }
 
     float time(int n) const { return nodes_[size_t(n)].time; }
     const AnimTree& tree() const { return tree_; }
@@ -145,6 +165,7 @@ private:
     const AnimTree& tree_;
     AnimLibrary& lib_;
     std::vector<AnimNodeState> nodes_;
+    float* probe_ = nullptr; // noteFraction: receives the smallest fraction of a crossed notetrack
 };
 
 } // namespace iw2::game
