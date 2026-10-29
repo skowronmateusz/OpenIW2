@@ -550,7 +550,7 @@ read-only"); 0x536480 clamps to [0, 1] and 0x536520 to ≥ 0 (strings "actor fie
 | maxsightdistsqrd | 0x1770 | float | | useable | 0x211b | byte |
 | followmin / followmax | 0x714 / 0x718 | int | | dropweapon | 0x211c | int |
 | chainfallback | 0x738 | 1 | | drawoncompass | 0x2120 | int |
-| interval | 0x71c | float | | scriptstate / lastscriptstate / statechangereason | 0x2140 / 0x2142 / 0x2144 | string, ro |
+| interval | 0x71c | float | | scriptstate / lastscriptstate / statechangereason | 0x2140 / 0x2142 / 0x2144 | string, ro; set only by trackscriptstate (0x5402d6: last = old state, state, reason), read by a debug print (0x5005d6), released by the animscript switch 0x53ac90; not modelled (trackscriptstate is a no-op, the shipped scripts only copy `self.scriptState` into an unused local) |
 | damagetaken / damagedir / damageyaw | 0x1e4 / 0x1ec / 0x1e8 | ro | | groundtype | 0x24c | string, ro |
 | damagelocation / damageweapon | 0x1f8 / 0x1fa | string, ro | | anim_pose | 0x146 | string |
 | proneok | 0x154 | int, ro | | goalradius | 0x770 | float ≥ 4 |
