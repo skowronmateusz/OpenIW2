@@ -8,7 +8,7 @@ described in the code that reads them.
 | Variable | Tool | Effect |
 |---|---|---|
 | `IW2_TURRET_POSE_DEBUG=1` | iw2game, iw2view | Once per second of game time, every AI turret gunner in the pose step (`World::turretPoseStep`, exe 0x549ba0) prints `DBG turretpose <actor> turret <n> node <setturretanim node> probe <i>/<count> h <height> tagYaw <deg> at <origin> pose <posed origin> yaw <deg>` and its anim tree weights. |
-| `IW2_NO_CULL=1` | iw2view | Disables frustum culling of animated-entity skinning (actors are skinned even when off screen). For comparing output/perf. |
+| `IW2_NO_CULL=1` | iw2view | Disables frustum culling of animated-entity skinning (actors are skinned even when off screen) and the near / far depth-plane cull of brush-model entities (viewcull.h). For comparing output/perf. |
 | `IW2_SPEC_SCALE=x` | iw2view | r_specularColorScale (DLL dvar 0x101ce638, default 1, clamped 0.01..100): scales lightSpecular0 of the lmap_s path. |
 | `IW2_COS_SHIFT=x` | iw2view | r_cosinePowerMapShift (DLL dvar 0x101ce680, default 0, clamped -1..1): shifts the `$specularity` power ramp (t = clamp(x/30 + shift)). |
 | `IW2_NO_SPEC=1` | iw2view | Disables the lmap_s specular path (world batches of `phong_*_spec*` materials fall back to the plain lightmap shader, no normal map). For A/B comparison. |

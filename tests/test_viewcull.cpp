@@ -1,5 +1,6 @@
 // Near / far plane box cull of the gfx renderer (viewcull.h) and the shadow-cookie budget controller (shadowcookie.h).
 #include "game/shadowcookie.h"
+#include "game/spritesortkey.h"
 #include "game/viewcull.h"
 #include <cmath>
 #include <cstdio>
@@ -34,6 +35,17 @@ int main() {
     const float mn[3] = {1000, 1000, -5}, mx[3] = {1010, 1010, 5};
     chk(boxCulledByDepthPlanes(mn, mx, eye2, f2, 500.0f), __LINE__);  // depth >= 1400
     chk(!boxCulledByDepthPlanes(mn, mx, eye2, f2, 5000.0f), __LINE__);
+
+    // Transformed bounds: yaw 90 degrees (basis f = +y, l = -x) plus translation.
+    {
+        const float m[16] = {0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 10, 20, 30, 1};
+        const float lm[3] = {0, 0, 0}, lx[3] = {4, 2, 1};
+        float a[3], b[3];
+        transformedBoxBounds(lm, lx, m, a, b);
+        chk(a[0] == 8 && b[0] == 10 && a[1] == 20 && b[1] == 24 && a[2] == 30 && b[2] == 31, __LINE__);
+    }
+    chk(materialSortLess(1, 9, 2, 0) && !materialSortLess(2, 0, 1, 9), __LINE__); // sort byte first
+    chk(materialSortLess(3, 1, 3, 2) && !materialSortLess(3, 2, 3, 2), __LINE__); // then techset order
 
     // Shadow cookie controller.
     ShadowCookieParams p;

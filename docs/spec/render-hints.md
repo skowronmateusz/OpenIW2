@@ -30,9 +30,11 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
     xmodel scene entities (0x100087e0: world box from 0x10008500, then 0x10006420, then a small-object test) and brush-model entities
     (0x10009210: box from 0x10008900). So there is no per-surface test: a world surface is far-culled with its AABB-tree node.
   - OpenIW2 has the pure planes and box test as `viewcull.h` (tests/test_viewcull.cpp).
-- Not wired into iw2view: the world is drawn from one merged vertex buffer per material (no AABB-tree node ranges), `DrawItem`s carry no
-  world bounds and static models are merged too, so applying the test would need new per-node / per-item bounds; nothing here is verified
-  visually. TODO(spec): the r_zfar default (taken as 0), the exponential-fog contribution to FarDist, the four side planes, the loader that
+- Wired into iw2view only for brush-model entities (`Scene::brushBounds` = local bounds of the model's drawn soup vertices, enclosing world box
+  via `transformedBoxBounds`, then `boxCulledByDepthPlanes` with `farPlaneDistance`; `IW2_NO_CULL=1` disables). Blockers for the rest: the
+  static world is one merged vertex buffer per material with no AABB-tree node ranges (lumps 10 / 11 not mapped to nodes), static models
+  are merged, and xmodel entity `DrawItem`s carry no local bounds (xmodel bounds were not read). Needs a human visual check: a brush
+  model (door / elevator) beyond a setculldist or fog far must disappear, and none may pop out near the screen edge. TODO(spec): the r_zfar default (taken as 0), the exponential-fog contribution to FarDist, the four side planes, the loader that
   turns lump 10 / 11 (cull groups, runtime copy at 0x101ae378) into the AABB-tree nodes used above (not decoded; the runtime layout
   copied by 0x10004340 is mins[3], maxs[3], count, first index).
 

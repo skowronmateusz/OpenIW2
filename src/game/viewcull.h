@@ -41,4 +41,17 @@ inline bool boxCulledByDepthPlanes(const float mins[3], const float maxs[3], con
     return farDist != 0.0f && boxOutsidePlane(farViewPlane(eye, fwd, farDist), mins, maxs);
 }
 
+// World-space axis-aligned box of a local box under a column-major 4x4 transform (columns 0..2 = the basis vectors, column 3 = origin):
+// the min / max over the eight transformed corners. (The dll's own box builders, 0x10008500 / 0x10008900, are not decoded; this is
+// the plain enclosing box, which never culls more than any tighter box would.)
+inline void transformedBoxBounds(const float mins[3], const float maxs[3], const float m[16], float outMin[3], float outMax[3]) {
+    for (int i = 0; i < 3; ++i) outMin[i] = outMax[i] = m[12 + i];
+    for (int i = 0; i < 3; ++i)
+        for (int a = 0; a < 3; ++a) {
+            const float lo = m[a * 4 + i] * mins[a], hi = m[a * 4 + i] * maxs[a];
+            outMin[i] += lo < hi ? lo : hi;
+            outMax[i] += lo < hi ? hi : lo;
+        }
+}
+
 } // namespace iw2::game
