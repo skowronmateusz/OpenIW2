@@ -14,6 +14,21 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   `death`, `grenade_return_throw`, `init`, `pain`, `move`, `scripted`, `stop`, `grenade_cower` (strings at
   0x587e50–0x587f4c). These are the AI state scripts the engine starts as the actor's state changes.
 
+### aitype `spawner()` / `precache()` call sites (decoded)
+
+- Loading (0x4eae00, per `actor_*` entity): the three labels `main`, `precache`, `spawner` (strings 0x573c90 / 0x587ff4 /
+  0x587fec) of `aitype/<name>` are resolved into a handle struct {+0 main, +4 precache, +8 spawner}, cached in the hash table at
+  0x744d18 keyed by the aitype name.
+- Running (0x4fdf30, called from G_InitGame at 0x4da4fa, after the map entities are spawned and before 0x516b70): for each
+  in-use entity of type 9 or 10 it looks the struct up by the entity's aitype name; for type 10 (actor spawner) it executes the
+  `spawner` handle (+8) once with self = that entity (0x46db10 then 0x464ea0 frees the thread), and, for either type, executes
+  the `precache` handle (+4) once and clears it. This is why `setspawnerteam` (0x4f8750) works on the spawner: it is only valid
+  for an actor spawner. The port does not run `spawner()`; it uses the team named by the class name as fallback in
+  `getspawnerteamarray` (every shipped aitype `spawner()` sets exactly that team, see builtins.md). A second loop (0x4fe03c)
+  then runs `main` of each remaining aitype struct with the animscripts init handle 0x1c7e0f8 (not decoded further).
+  TODO(spec): the exact condition of the second loop; whether any shipped `spawner()` does more than `setspawnerteam`
+  (only the 100 team calls were counted).
+
 ## Spawning (implemented; partly inferred)
 
 - `actor_*` entities are spawners. Those without spawnflag 1 (`SPAWNER`, described in the aitype headers as

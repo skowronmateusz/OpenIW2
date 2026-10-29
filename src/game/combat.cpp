@@ -358,7 +358,9 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
     // Script models (ent+0xa2 & 4, set at spawn 0x533480; contents 0x2080, 0 after notsolid 0x534050) are traced
     // against their xmodel collision surfaces in a locational trace whether or not there is a priority map
     // (0x44b840 → FUN_00474440); the hit names the entity with its contents (ent+0xc0) and the surface's surface
-    // flags. TODO(spec): FUN_004746b0 (the DObj check), the DObj bounds pre-test (FUN_00473800; OpenIW2 culls with a
+    // flags. FUN_004746b0 (0x44b903 / 0x44bd41) returns whether any model of the DObj has (xmodel +0x5c & mask), where +0x5c is the
+    // OR of its surfaces' contents (loader 0x47d0cb): traceCollSurfs' per-surface test implies it, so it needs no separate step.
+    // TODO(spec): the DObj bounds pre-test (FUN_00473800; OpenIW2 culls with a
     // sphere around the xmodel bounds), and the box (r.mins / r.maxs) used by traces that are not locational.
     for (const auto& ep : entities_) {
         Entity& e = *ep;

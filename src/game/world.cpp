@@ -1425,7 +1425,7 @@ void World::registerBuiltins() {
         for (const auto& e : entities_) {
             if (!e->isSpawner || e->obj->removed) continue;
             // The spawner's team (entity +0x154) is set by the aitype spawner() through setspawnerteam; every shipped
-            // aitype sets the team its class name names, which is the fallback while spawner() is not run.
+            // aitype sets the team its class name names, which is the fallback while spawner() is not run (call site: docs/spec/ai.md, G_InitGame 0x4da4fa -> 0x4fdf30).
             const Value st = e->obj->get("$spawnerteam");
             if (st.isDefined() ? st.toString() == team : startsWith(e->classname, prefix)) out.push_back(e->obj);
         }

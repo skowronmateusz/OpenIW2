@@ -83,7 +83,8 @@ XModel parseXModel(std::span<const uint8_t> data) {
         cs.mins = r.vec3();
         cs.maxs = r.vec3();
         cs.bone = r.get<int32_t>();
-        cs.contents = r.get<uint32_t>();
+        // The loader (0x47d0cb) stores contents & 0xdffffffb and ORs it into the xmodel word +0x5c.
+        cs.contents = r.get<uint32_t>() & 0xdffffffbu;
         cs.surfaceFlags = r.get<int32_t>();
         m.collSurfs.push_back(std::move(cs));
     }
