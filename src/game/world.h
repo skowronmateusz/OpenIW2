@@ -651,6 +651,8 @@ public:
     // projExplosionType "grenade", def +0x390 == 0): one entry per live grenade missile.
     struct HudGrenade { Vec3 base, delta; };
     std::vector<HudGrenade> hudGrenades();
+    // HUD stock of the player's weapon when it has a shared cap group (0x4dcd60 group sum); -1 otherwise (use the weapon's own counters).
+    int hudGroupStock(const std::string& weapon);
 
     const std::array<Objective, 16>& objectives() const { return objectives_; }
     // The worldspawn "northyaw" (configstring 10) as degrees; 0 when empty.
@@ -955,6 +957,7 @@ private:
     void touchItems();                // G_TouchTriggers for weapon items (0x4e7320 -> Touch_Item 0x521a90)
     bool touchWeaponItem(Entity& item); // Pickup_Weapon (0x521170) by touch; true when the item was used up
     int weaponRoom(Inventory& inv, const std::string& weapon); // 0x4dcc00
+    int hudStock(Inventory& inv, const std::string& weapon); // 0x4dcd60 (HUD stock incl. the shared-ammo-cap group sum)
     void trimSharedAmmo(Inventory& inv, const std::string& weapon); // 0x520f3d..0x520ff5 (sharedAmmoCap over-fill)
     uint32_t meleeSeed_ = 0x89abcdef; // rand() state (0x5a56f4) for the melee damage spread
     std::string weaponField(const std::string& weaponName, const char* key);

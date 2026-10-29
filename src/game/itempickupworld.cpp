@@ -39,6 +39,35 @@ int World::weaponRoom(Inventory& inv, const std::string& w) {
     return room;
 }
 
+// Stock shown by the HUD (0x4dcd60). No shared cap group (def +0x1e4 < 0): the clip of a clipOnly weapon, else the stock. With a group:
+// the sum over the owned weapons of the same group of their clip (clipOnly) or stock, each clip pool and each stock pool counted once
+// (separate per-index "already counted" flags for clips and stocks, 0x4dcd90 / 0x4dcda2).
+int World::hudStock(Inventory& inv, const std::string& w) {
+    const std::string group = weaponField(w, "sharedAmmoCapName");
+    if (group.empty()) {
+        return weaponInt(w, "clipOnly") ? inv.clip[weaponField(w, "clipName")] : inv.ammo[weaponField(w, "ammoName")];
+    }
+    int total = 0;
+    std::set<std::string> clips, stocks;
+    for (const std::string& o : inv.owned) {
+        if (weaponField(o, "sharedAmmoCapName") != group) continue;
+        if (weaponInt(o, "clipOnly")) {
+            const std::string c = weaponField(o, "clipName");
+            if (clips.insert(c).second) total += inv.clip[c];
+        } else {
+            const std::string a = weaponField(o, "ammoName");
+            if (stocks.insert(a).second) total += inv.ammo[a];
+        }
+    }
+    return total;
+}
+
+int World::hudGroupStock(const std::string& w) {
+    if (!player_ || weaponField(w, "sharedAmmoCapName").empty()) return -1;
+    Inventory& inv = inventory(*player_);
+    return inv.owned.count(w) ? hudStock(inv, w) : -1;
+}
+
 // After an ammo add (0x520e40 tail, 0x520f3d..0x520ff5): a weapon in a shared-cap group (def +0x1e4 >= 0) whose room (0x4dcc00) went
 // negative gives the excess back: from the clip of a clipOnly weapon (+0x340), else from the stock, not below 0; a clipOnly weapon left
 // with an empty clip is taken away (0x4dc8a0).
