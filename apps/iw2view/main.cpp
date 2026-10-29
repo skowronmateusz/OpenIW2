@@ -7003,7 +7003,7 @@ int main(int argc, char** argv) {
                 camLinkHeight = ps.viewHeight;
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
-            } else if (walk) {
+            } else if (walk && world) {
                 camLinkLerp = false;
                 if (havePrevBody) { // just got out: continue from where the vehicle code put the player (tag_detach)
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
