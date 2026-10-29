@@ -419,6 +419,10 @@ add_executable(test_balcony tests/test_balcony.cpp)
 target_link_libraries(test_balcony PRIVATE iw2_game)
 add_test(NAME balcony COMMAND test_balcony)
 
+add_executable(test_melee_start tests/test_melee_start.cpp)
+target_link_libraries(test_melee_start PRIVATE iw2_assets iw2_fs)
+add_test(NAME melee_start COMMAND test_melee_start)
+
 add_executable(test_vehicleseat tests/test_vehicleseat.cpp)
 target_link_libraries(test_vehicleseat PRIVATE iw2_game)
 add_test(NAME vehicleseat COMMAND test_vehicleseat)
