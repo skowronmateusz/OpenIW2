@@ -578,7 +578,7 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
 // tag_body / tag_turret / tag_barrel follows the init order 0x5071b4..0x5071e3 and the cgame use (0x4ac354).
 // turnedForward (optional): the world direction the body's forward axis takes through the controls of this tag
 // (rotation of the controlled tag times the inverse of its bind rotation, rotated into the world).
-Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward) {
+Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward, std::array<Vec3, 3>* tagAxis) {
     found = false;
     const Value model = e.obj->get("model");
     const assets::XModelParts* parts = model.isString() ? skeleton(model.asString()) : nullptr;
@@ -610,9 +610,29 @@ Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* tu
         for (int i = 0; i < 3; ++i)
             (*turnedForward)[size_t(i)] = up[size_t(i)] * m[2] - right[size_t(i)] * m[1] + fwd[size_t(i)] * m[0];
     }
+    if (tagAxis) { // the tag's own axes (forward, left, up) in the world: controlled pose rotation through the entity axes
+        static const Vec3 units[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        for (int r = 0; r < 3; ++r) {
+            const auto l = assets::rotate(pose.rotation[tagBone], units[r]);
+            for (int i = 0; i < 3; ++i) (*tagAxis)[size_t(r)][size_t(i)] = up[size_t(i)] * l[2] - right[size_t(i)] * l[1] + fwd[size_t(i)] * l[0];
+        }
+    }
     Vec3 w;
     for (int i = 0; i < 3; ++i) w[size_t(i)] = up[size_t(i)] * o[2] - right[size_t(i)] * o[1] + fwd[size_t(i)] * o[0] + origin[size_t(i)];
     return w;
+}
+
+// The driver is linked to tag_player through the generic link (0x4d6540 stores ent+0x1c8), so ClientEndFrame runs the same
+// 0x4d6ec0 as for playerlinkto: eye = tag origin + tag up * view height, origin = that minus the view height in z. With the
+// view height 60 a tilted hull moves the eye along the tag's up axis, not straight up the world z.
+Vec3 World::vehicleSeatOrigin(Entity& vehicle, bool& found) {
+    std::array<Vec3, 3> axis{};
+    Vec3 pos = vehicleTagPosition(vehicle, "tag_player", found, nullptr, &axis);
+    if (!found) return pos;
+    constexpr float kVh = 60.0f; // pm_flags 0x20000 stands with view height 60 (0x509d10)
+    for (int i = 0; i < 3; ++i) pos[size_t(i)] += axis[2][size_t(i)] * kVh;
+    pos[2] -= kVh;
+    return pos;
 }
 
 // Turns the turret towards its target (0x5102e0): relative pitch/yaw of the target seen from tag_barrel in the
@@ -1059,7 +1079,7 @@ void World::thinkVehicle(Entity& e) {
         // The driver rides at tag_player (linked in VEH_LinkPlayer).
         if (Entity* owner = v.owner >= 0 ? entityByNumber(v.owner) : nullptr) {
             bool found = false;
-            const Vec3 pos = vehicleTagPosition(e, "tag_player", found);
+            const Vec3 pos = vehicleSeatOrigin(e, found);
             if (found) owner->obj->set("origin", Value(pos));
         }
     }
@@ -1076,7 +1096,7 @@ void World::linkPlayerToVehicle(Entity& vehicle, Entity& player) {
     if (player.usingVehicle >= 0) throw std::runtime_error("VEH_LinkPlayer: Player is already using a vehicle");
     if (v.owner >= 0) throw std::runtime_error("VEH_LinkPlayer: Vehicle already has an owner");
     bool found = false;
-    const Vec3 pos = vehicleTagPosition(vehicle, "tag_player", found);
+    const Vec3 pos = vehicleSeatOrigin(vehicle, found); // the first ClientEndFrame (0x4d6ec0) puts the eye on tag + up * 60
     if (!found) throw std::runtime_error("VEH_LinkPlayer: Trying to use vehicle without a bone [tag_player]");
     const Vec3 a = vehicle.obj->get("angles").asVector();
     player.obj->set("origin", Value(pos));
@@ -1182,6 +1202,20 @@ bool World::playerVehicleBodyAxis(std::array<Vec3, 3>& axis) {
         const Vec3 l = assets::rotate(q, units[r]);
         for (int i = 0; i < 3; ++i) axis[size_t(r)][size_t(i)] = fwd[size_t(i)] * l[0] + left[size_t(i)] * l[1] + up[size_t(i)] * l[2];
     }
+    return true;
+}
+
+bool World::playerVehicleSeat(Vec3& tagPos, Vec3& tagUp, Vec3& eye) {
+    if (!player_ || player_->usingVehicle < 0 || !(pmFlags_ & 0x20000)) return false;
+    Entity* e = entityByNumber(player_->usingVehicle);
+    if (!e || e->obj->removed) return false;
+    bool found = false;
+    std::array<Vec3, 3> axis{};
+    tagPos = vehicleTagPosition(*e, "tag_player", found, nullptr, &axis);
+    if (!found) return false;
+    tagUp = axis[2];
+    const Vec3 o = player_->obj->get("origin").asVector();
+    eye = {o[0], o[1], o[2] + 60.0f};
     return true;
 }
 

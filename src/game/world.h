@@ -619,6 +619,9 @@ public:
                                                                          float drop = 0.0f);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
+    // The ridden vehicle's tag_player world position and up axis, and the player's eye (origin + view height 60); false
+    // when the player is not in a vehicle. For --drive output and tests.
+    bool playerVehicleSeat(Vec3& tagPos, Vec3& tagUp, Vec3& eye);
     // The tank direction ownerdraws' (90 / 91, cgame 0x4aa1b0 / 0x4aa360) world yaws: the ridden vehicle's angles[1] (centity +0x158)
     // and the yaw of its tag_barrel forward (0x4ab9e0 + axis to angles 0x424b70); false when not in a vehicle.
     bool playerVehicleHudYaws(float& bodyYaw, float& barrelYaw, bool& hasBarrel);
@@ -1301,7 +1304,10 @@ private:
     int vehicleNodeIndex(const script::Value& v) const;
     const VehicleInfo* vehicleInfo(const std::string& type);
     void updateVehicleTurret(Entity& e);
-    Vec3 vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward = nullptr);
+    Vec3 vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward = nullptr, std::array<Vec3, 3>* tagAxis = nullptr);
+    // The origin the exe leaves the driver at each ClientEndFrame (0x4d6ec0): eye = tag_player + tag up * 60 (view height in a
+    // vehicle), origin = eye - (0, 0, 60). Falls back to the plain tag position when the tag is missing.
+    Vec3 vehicleSeatOrigin(Entity& vehicle, bool& found);
     void linkPlayerToVehicle(Entity& vehicle, Entity& player);
     void unlinkPlayerFromVehicle(Entity& vehicle, Entity& player);
     void alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle);
