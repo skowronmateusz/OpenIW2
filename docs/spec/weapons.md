@@ -80,6 +80,13 @@ adsFireAnim, adsLastShotAnim, adsRechamberAnim, adsUpAnim, adsDownAnim; slots 1�
   Enfield, Sten, Bren, Springfield and Mosin, whose idle and adsDown poses are turned ±90° in opposite directions)
   and the aimed sight picture match screenshots of the original.
 
+Melee start pose (data property, not an engine fault): the view model switches to the melee animation at weight 1 with
+no blend-in, so its first frame is shown at once. For the Kar98k, Mosin-Nagant and M1 Garand the first melee frame is
+within about 2 degrees (mean per bone) of the idle pose; the SVT-40 melee animation (17 frames at 30 fps) is authored
+starting at a different pose (mean 28.8 degrees, tag_weapon about 168 degrees, wrists 100-150 degrees) and ends on the
+idle pose, so the weapon appears swung out on the first frame. Nothing in the engine changes this; covered by the
+`melee_start` test.
+
 ## Hit-location damage multiplier (G_Damage 0x528100..0x528143)
 
 For a sentient target the damage is `trunc(amount × table[location])` (`_ftol`); a result <= 0 leaves G_Damage before any
