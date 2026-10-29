@@ -81,13 +81,27 @@ int main() {
         CHECK(ps.origin[0] < o[0]);
     }
 
+    // A driven vehicle traces a point at its own origin height (0x50d970: mins/maxs zero): the collmap must reach down to it.
+    {
+        Vec3 bm{}, bx{};
+        w.submodelBounds("*181", bm, bx);
+        std::cout << "collmap *181 bounds " << bm[0] << " " << bm[1] << " " << bm[2] << " .. " << bx[0] << " " << bx[1] << " " << bx[2] << "\n";
+        int pointHits = 0;
+        for (float dy : {-20.f, 0.f, 20.f}) {
+            const Vec3 a{o[0] - 300, o[1] + dy, o[2]}, b{o[0] + 300, o[1] + dy, o[2]};
+            if (w.collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, 0x810211u, -1).entity == tank->number) ++pointHits;
+        }
+        std::cout << "point hits at the origin height " << pointHits << "/3\n";
+        CHECK(pointHits == 3);
+    }
+
     // A rocket flying at the hull explodes on it.
     Entity& r = w.debugSpawnRocket("panzerfaust", {o[0] - 600, o[1], o[2] + 50}, {1, 0, 0});
     for (int i = 0; i < 100 && !r.obj->removed; ++i) w.frame();
     std::cout << "rocket removed " << r.obj->removed << " at x " << r.obj->get("origin").asVector()[0] << " tank x " << o[0] << "\n";
     CHECK(r.obj->removed);
     CHECK(std::fabs(r.obj->get("origin").asVector()[0] - tank->obj->get("origin").asVector()[0]) < 250);
-    // A destroyed tank (the libya death script calls freevehicle: script_vehicle_corpse, vehicle state dropped) keeps its
+    // A destroyed tank (maps/_vehicle.gsc calls freevehicle on death: script_vehicle_corpse, vehicle state dropped) keeps its
     // contents and brush model (0x511c80 writes neither), so walking and driving still stop at the wreck.
     {
         World w2(vfs, "libya");
