@@ -1,4 +1,6 @@
-// Map viewer shaders (MSL). Written for this project; not derived from the game's shaders.
+// Map viewer shaders (MSL), written for this project as an own reimplementation. The behaviour (formulas, technique structure) was
+// read from the shipped game shaders and is reproduced for fidelity; the comments below cite the source file and, in places, a
+// single expression. This is not a mechanical translation and no shader files are included in this repository.
 R"MSL(
 #include <metal_stdlib>
 using namespace metal;

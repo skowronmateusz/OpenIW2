@@ -328,7 +328,11 @@ add_executable(test_savestate tests/test_savestate.cpp)
 target_link_libraries(test_savestate PRIVATE iw2_game)
 add_test(NAME savestate COMMAND test_savestate)
 # The World round trip needs the game files; registered only when they are found.
-set(IW2_TEST_MAIN "$ENV{IW2_MAIN}")
+# Override with -DIW2_TEST_MAIN=<dir> or the IW2_MAIN environment variable.
+set(IW2_TEST_MAIN "" CACHE PATH "Directory holding the game's iw_*.iwd files, for the *_world tests")
+if(NOT IW2_TEST_MAIN AND DEFINED ENV{IW2_MAIN})
+  set(IW2_TEST_MAIN "$ENV{IW2_MAIN}")
+endif()
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   add_test(NAME savestate_world COMMAND test_savestate)
   set_tests_properties(savestate_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
