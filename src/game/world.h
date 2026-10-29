@@ -583,6 +583,8 @@ public:
     // playerlinktodelta / playerlinktoabsolute: the player is placed by the link (pm_type 1, no own movement);
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
+    // Entity +0x1c8 (tagInfo) is set by every link to a parent (`linkto`, the vehicle seat, `playerlinkto*`): ClientThink 0x4e7c05 reads it for pm_type.
+    bool playerHasLinkParent() const { return playerLink_.has_value() || (player_ && links_.count(player_->number) != 0); }
     // The cheat commands noclip / ufo (G_ClientCommand 0x4ea9b1 / 0x4ea9d8 -> 0x4ea170 / 0x4ea220): behind the cheat gate
     // (0x4e9500: sv_cheats set, else the client command `print "GAME_CHEATSNOTENABLED"`; player health above 0, else
     // `print "GAME_MUSTBEALIVECOMMAND"`) they toggle client+0x8628 / +0x862c and print GAME_NOCLIPON/OFF, GAME_UFOON/OFF.
@@ -675,6 +677,8 @@ public:
     // Test hook (IW2_KILL_VEHICLES): damage an entity as an explosion without an attacker.
     // Debug (iw2game --item-test): a weapon item at the player's origin and the player's stock / clip of a weapon.
     void debugSpawnItem(const std::string& weapon);
+    void debugLinkPlayer(int parent) { Link l; l.parent = parent; l.tag = ""; links_[player_->number] = l; } // as `player linkto(parent)`
+    void debugUnlinkPlayer() { links_.erase(player_->number); }
     // Test hook: a weapon item of `weapon` at `origin` flying with `velocity` (TR_GRAVITY from now), run by G_RunItem (runItems).
     Entity& debugDropItem(const std::string& weapon, const Vec3& origin, const Vec3& velocity);
     static constexpr int kItemNoGround = 0x7ff; // groundEntityNum (+0xc) ENTITYNUM_NONE

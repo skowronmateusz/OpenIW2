@@ -7053,7 +7053,7 @@ int main(int argc, char** argv) {
                 camLinkHeight = 60.0f;
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
-            } else if (world && world->playerLinked()) {
+            } else if (world && world->playerHasLinkParent()) {
                 // Linked by script (pm_type 1): the link places the player (src/game/playerlink.cpp); no own movement.
                 const script::Vec3 po = world->player()->obj->get("origin").asVector();
                 cam.pos = {po[0], po[1], po[2] + ps.viewHeight};

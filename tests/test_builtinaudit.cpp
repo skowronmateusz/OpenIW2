@@ -221,6 +221,18 @@ int main() {
         cmds = c.takeClientCommands();
         CHECK(cmds.size() == 1 && cmds[0].arg == "GAME_MUSTBEALIVECOMMAND");
     }
+    // pm_type 1 / 5 for every link parent (ent+0x1c8), not only playerlinkto: `linkto` and the vehicle seat set it too.
+    {
+        iw2::game::World c(vfs, "moscow");
+        c.prepareStart();
+        CHECK(c.playerPmType() == 0 && !c.playerHasLinkParent());
+        c.debugLinkPlayer(c.player()->number == 0 ? 1 : 0);
+        CHECK(c.playerHasLinkParent() && !c.playerLinked() && c.playerPmType() == 1);
+        c.player()->obj->set("health", iw2::script::Value(int32_t(0)));
+        CHECK(c.playerPmType() == 5);
+        c.debugUnlinkPlayer();
+        CHECK(c.playerPmType() == 4);
+    }
     fs::remove_all(dir);
     if (failures) std::cerr << failures << " failure(s)\n";
     else std::cout << "builtinaudit ok\n";
