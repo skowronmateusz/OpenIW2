@@ -3274,9 +3274,9 @@ int main(int argc, char** argv) {
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
-            w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration) {
+            w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration, int owner) {
                 float dur = 0;
-                const int handle = mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, &dur);
+                const int handle = mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, &dur, {.owner = owner});
                 if (duration) *duration = dur;
                 // A started alias with a subtitle column shows its caption for max(sound length, cg_subtitleMinTime 3 s) (0x4a3540).
                 if (handle && !mixer.lastSubtitle().empty()) subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS(), dur});

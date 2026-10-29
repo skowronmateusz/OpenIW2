@@ -446,6 +446,18 @@ void Mixer::setListener(const Vec3& origin, const Vec3& forward, const Vec3& rig
     right_ = right;
 }
 
+std::vector<std::string> Mixer::describeVoices() const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> out;
+    for (const Voice& v : voices_) {
+        char b[256];
+        std::snprintf(b, sizeof b, "%s pool=%d prio=%d owner=%d loop=%d held=%d rem=%.1fs", v.name.c_str(), v.pool, v.prio, v.owner, int(v.loop), int(v.held),
+                      v.loop ? -1.0 : (double(v.wav->frames()) - v.pos) / v.step / double(rate_));
+        out.push_back(b);
+    }
+    return out;
+}
+
 int Mixer::active() const {
     std::lock_guard lock(mutex_);
     return int(voices_.size());

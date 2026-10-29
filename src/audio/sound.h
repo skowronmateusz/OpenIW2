@@ -130,6 +130,8 @@ public:
     void mix(float* out, int frames);
 
     int active() const;
+    // Debug: one line per live voice (alias, pool, priority, owner, loop, remaining seconds).
+    std::vector<std::string> describeVoices() const;
     // snd_slaveFadeTime (default 500 ms, 0..5000): how long the duck of slave aliases takes to build up / release (0x443bb0).
     int slaveFadeMs = 500;
     float masterVolume = 0.75f; // snd_volume (default 1.0, 0..1) * 0.75 (0x443ab3 -> 0x793a24)

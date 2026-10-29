@@ -263,7 +263,7 @@ void World::explodeGrenade(Entity& e) {
         // anything else → 0xc2 (no surface sound or impact; only projExplosionEffect / projExplosionSound below).
         const int type = explosionType(lowerStr(weaponField(g.weapon, "projExplosionType")));
         if (type < 2 && surface < 23) {
-            startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at);
+            startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at, nullptr, {}, kWorldSoundOwner);
             const std::string& impact = impactEffect(type == 0 ? 9 : 10, surface);
             if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
             if (std::getenv("IW2_GRENADE_DEBUG"))
@@ -343,7 +343,7 @@ void World::runGrenade(Entity& e) {
                     const int surface = int((tr.surfaceFlags >> 20) & 0x1f);
                     if (surface < 23) {
                         const Vec3 at = grenadePosition(g, hitMs);
-                        startSound(std::string(lowerStr(g.weapon) == "potato" ? "potato_bounce_" : "grenade_bounce_") + kSurf[surface], &at);
+                        startSound(std::string(lowerStr(g.weapon) == "potato" ? "potato_bounce_" : "grenade_bounce_") + kSurf[surface], &at, nullptr, {}, kWorldSoundOwner);
                         const std::string& fx = impactEffect(8, surface);
                         if (!fx.empty()) fxEvents_.push_back({fx, at, Vec3{tr.normal[0], tr.normal[1], tr.normal[2]}});
                     }

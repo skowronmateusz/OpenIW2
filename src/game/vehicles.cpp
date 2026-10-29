@@ -1022,12 +1022,12 @@ void World::updateVehicleEngineSound(Entity& e) {
     };
     // Turret sounds (0x510be0): state 2 loops turretSpinSnd (es+6), state 1 plays turretStopSnd once (event 0xb3).
     if (v.turretSnd == 2 && alive && !v.info->turretSpinSnd.empty()) {
-        if (!v.spinHandle) v.spinHandle = playSound(v.info->turretSpinSnd, &origin, nullptr);
+        if (!v.spinHandle) v.spinHandle = playSound(v.info->turretSpinSnd, &origin, nullptr, -1);
     } else if (v.spinHandle) {
         stopSound(v.spinHandle);
         v.spinHandle = 0;
     }
-    if (v.turretSnd == 1 && alive && !v.info->turretStopSnd.empty()) playSound(v.info->turretStopSnd, &origin, nullptr);
+    if (v.turretSnd == 1 && alive && !v.info->turretStopSnd.empty()) playSound(v.info->turretStopSnd, &origin, nullptr, -1);
     pair(v.idleHandle, v.info->lowIdleSnd, v.info->highIdleSnd, v.idleFrac);
     pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac);
 }

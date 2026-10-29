@@ -173,8 +173,15 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   sets 0x793db8 = 0x793db4 (the sound time in ms). So a loop started through the generic play lives only while its caller keeps re-playing it each frame. Slot stamps start
   as 0x793db8 (0x44182b). Entity loops (`playloopsound`) store a configstring index in the entity state (Round 4) and the client replays them each frame.
   Implemented in `Mixer` as an opt-in: `PlayOptions{owner, dedicated, refresh}` + `sweepLoops(soundTimeMs)`; the port's script/turret loops keep their handle instead.
-  The entity-loop re-player is 0x4aaf90 (see "Channel volume slots" below). TODO(spec): the owners passed by the other ~30 callers of 0x4423d0; the port's own callers only
-  pass `dedicated` for music / ambient, so pools and exclusivity are exercised by tests, and by live play only through the pool caps and distance culling.
+  The entity-loop re-player is 0x4aaf90 (see "Channel volume slots" below).
+  Slot owners proven and passed by the port (`World::playSound(alias, origin, &duration, owner)` -> `PlayOptions.owner`): Bullet_Fire's fire sound = the shooter's entity
+  number (0x4b7800 -> 0x4a35c0 -> 0x4423d0); grenade bounce, grenade explosion and rocket explosion = 0x7fe (0x4bb2ec, 0x4bb370, 0x4bb47c); script playsound /
+  playsoundasmaster = the entity number (G_AddEvent on self 0x4ef2c0..0x4ef35b, client handler 0x4bb5ea..0x4bb69e). Without the shooter's owner every shot kept its own
+  slot for the whole sample (weapon channel, priority 3, no secondary alias), a firefight filled all 8 3D sample slots and the grenade bounce / explosion aliases (channel
+  auto, priority 0, which may only steal priority-0 slots) were refused for as long as the shooting went on (demolition, assault on the German post). With the owner a
+  burst holds one slot per shooter (tests/test_soundpool.cpp). Remaining refusals are distance culls or more than 8 distinct owners, as in the original.
+  TODO(spec): the owners of the other callers of 0x4423d0 (playlocalsound, impact / whizby sounds, projectile explosion sounds, vehicle / turret sounds, exact script-playsound
+  event ids); the port's loops still pass `dedicated` / keep their handle, `sweepLoops` is not wired into the frame.
 
 ## Channel volume slots (0x793a34 / 0x793cdc) and the entity-loop re-player
 

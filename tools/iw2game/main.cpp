@@ -823,9 +823,14 @@ int main(int argc, char** argv) {
             if (std::string(argv[i]) == "--mixer") mixer = std::make_unique<iw2::audio::Mixer>(vfs, aliases, 44100);
         const bool soundLog = std::getenv("IW2_SOUND_LOG") != nullptr; // debug: every sound start with its sim time
         world.soundExists = [&](const std::string& n) { return aliases.exists(n); };
-        world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration) {
+        world.playSound = [&](const std::string& alias, const iw2::game::Vec3* origin, float* duration, int owner) {
             if (soundLog) std::cout << "[sound " << world.timeMs() << "ms] " << alias << "\n";
-            if (mixer) return mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration);
+            if (mixer) {
+                const int h = mixer->play(alias, origin ? std::optional<iw2::audio::Vec3>(*origin) : std::nullopt, duration, {.owner = owner});
+                if (soundLog && !h) std::cout << "[sound " << world.timeMs() << "ms] NOT STARTED " << alias << " (mixer voices " << mixer->active() << ")\n";
+                if (soundLog && !h && alias.rfind("grenade", 0) == 0) for (const auto& d : mixer->describeVoices()) std::cout << "    voice " << d << "\n";
+                return h;
+            }
             if (aliases.pick(alias, soundRng)) ++soundsPlayed[alias];
             else ++soundsUnknown[alias];
             return 1;
@@ -1505,6 +1510,16 @@ int main(int argc, char** argv) {
                     it = saveAts.erase(it);
                 } else ++it;
             world.frame();
+            if (mixer) { // advance the unheard mixer by one 50 ms frame so finished voices leave their slots
+                if (const auto* pl = world.player()) {
+                    const auto o = pl->obj->get("origin").asVector();
+                    mixer->setListener({o[0], o[1], o[2]}, {1, 0, 0}, {0, -1, 0});
+                }
+                static std::vector<float> mixBuf(2205 * 2);
+                mixer->mix(mixBuf.data(), 2205);
+                if (soundLog && f % 20 == 0) std::cout << "[sound " << world.timeMs() << "ms] mixer voices " << mixer->active() << "\n";
+                if (soundLog && f % 200 == 0) for (const auto& d : mixer->describeVoices()) std::cout << "    voice " << d << "\n";
+            }
             if (auto ch = world.takeDueLevelChange()) { // 0x4d9f90: the change falls due (iw2game does not load the next map)
                 lastChange = ch;
                 std::cout << "[" << world.timeMs() << " ms] level change to " << ch->map << (ch->persistent ? " (persistent)" : "")

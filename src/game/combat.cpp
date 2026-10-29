@@ -520,7 +520,9 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         }
         if (snd) {
             float seconds = 0;
-            playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds);
+            // The owner is the shooter's entity number (0x4b7800 pushes word [es+8] as the owner of 0x4a35c0 -> 0x4423d0): the weapon channel then
+            // replaces the shooter's previous shot (0x44250a -> 0x441b50), so a burst holds one sample slot.
+            playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds, shooter.number);
             // EV_FIRE_WEAPON (0x4b7800): for an actor (entity type 9, 0x4b79ac) whose fire alias resolved (0x4b792a), 0x4c0e20 pings
             // the compass with the length of the started sound (0x4a35c0 -> 0x4423d0, ms) at the sound position (0x4b79b7).
             // TODO(spec): actor projectile weapons send the same event; no actor projectile fire path exists here yet.

@@ -50,7 +50,7 @@ described in the code that reads them.
 | `IW2_KILL_VEHICLES=<s>` | iw2game | At sim time `<s>` deals 100000 damage (attacker: the player) to every script vehicle, to test the death chain. |
 | `IW2_THREADS_PREFIX=<p>` | iw2game | Lists every live script thread whose wait site starts with `<p>`. |
 | `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time and, when the first argument is a string, that argument in quotes (the notetrack name of an animation flag notify). For walking mission flows. |
-| `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). |
+| `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). Also prints `NOT STARTED` lines for refused sounds (with a dump of the busy voices for refused grenade sounds) and a periodic voice dump. Under `--mixer` the mixer advances 50 ms per frame with the listener at the player. |
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
 | `IW2_ACTOR_DUMP=<team\|all>` | iw2game | At the end of the run prints `actor #N classname (origin) script_noteworthy` for every living actor of the team (`axis`, `allies`, ...) or of all. Used to aim `--player-fire-at`. |
 | `IW2_CHAIN_LOG=1` | iw2game | Prints a line whenever a `trigger_friendlychain` changes the player's friendly chain node (trigger entity number, node name, time). Also prints `setgoalentity at <ms> from <file:line function>` for every `setgoalentity` call. |

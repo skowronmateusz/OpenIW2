@@ -8,9 +8,9 @@ namespace iw2::game {
 
 using namespace script;
 
-int World::startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj, const std::string& notify) {
+int World::startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj, const std::string& notify, int owner) {
     float duration = 0;
-    const int handle = playSound(alias, origin, &duration);
+    const int handle = playSound(alias, origin, &duration, owner);
     // A notify name asks for "<name>" when the sound finishes (immediately if nothing played).
     if (notifyObj && !notify.empty())
         pendingNotifies_.push_back({timeMs_ + int64_t(std::max(0.0f, duration) * 1000.0f), notifyObj, notify});
@@ -129,14 +129,18 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("playsound", [this, originOf](CallContext& c) {
         const auto o = originOf(c);
         const bool local = c.self.isObject() && entityOf(c.self) && entityOf(c.self)->isPlayer;
+        // 0x4ef2c0..0x4ef35b queues the alias on the entity itself (G_AddEvent 0x4d8020); the client plays it (0x4bb5ea..0x4bb69e -> 0x4a3610 /
+        // 0x4a3660 -> 0x4423d0) with the entity number as the slot owner, so the entity's channel replaces its own previous sound.
+        const Entity* self = entityOf(c.self);
         startSound(c.arg(0).toString(), local || !o ? nullptr : &*o, c.self.isObject() ? c.self.asObject() : nullptr,
-                   c.args.size() > 1 ? c.arg(1).toString() : std::string());
+                   c.args.size() > 1 ? c.arg(1).toString() : std::string(), self ? self->number : -1);
         return Value();
     });
     vm_.registerBuiltin("playsoundasmaster", [this, originOf](CallContext& c) {
         const auto o = originOf(c);
+        const Entity* self = entityOf(c.self);
         startSound(c.arg(0).toString(), o ? &*o : nullptr, c.self.isObject() ? c.self.asObject() : nullptr,
-                   c.args.size() > 1 ? c.arg(1).toString() : std::string());
+                   c.args.size() > 1 ? c.arg(1).toString() : std::string(), self ? self->number : -1);
         return Value();
     });
     vm_.registerBuiltin("playlocalsound", [this](CallContext& c) {

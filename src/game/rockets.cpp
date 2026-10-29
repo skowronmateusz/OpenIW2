@@ -86,7 +86,7 @@ void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at,
                                                 "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
     const int type = explosionType(lowerStr(weaponField(weaponName, "projExplosionType")));
     if (type < 2 && surface >= 0 && surface < 23) {
-        startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at);
+        startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at, nullptr, {}, kWorldSoundOwner);
         const std::string& impact = impactEffect(type == 0 ? 9 : 10, surface);
         if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
     }

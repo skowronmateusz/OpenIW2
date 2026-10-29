@@ -643,9 +643,10 @@ public:
     const std::set<std::string>& stubbedBuiltins() const { return stubbed_; }
     std::function<void(const std::string&)> print = [](const std::string&) {};
 
-    // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds)
+    // Sound output, set by the front end. playSound(alias, origin or nullptr for local, &duration seconds, owner): `owner` is the slot owner of the
+    // generic play 0x4423d0 (entity number, kWorldSoundOwner for world events, -1 none), see audio::PlayOptions.
     // returns a handle (0 = nothing played); stopSound(handle).
-    std::function<int(const std::string&, const Vec3*, float*)> playSound = [](const std::string&, const Vec3*, float*) { return 0; };
+    std::function<int(const std::string&, const Vec3*, float*, int)> playSound = [](const std::string&, const Vec3*, float*, int) { return 0; };
     std::function<bool(const std::string&)> soundExists = [](const std::string&) { return true; }; // soundexists (0x4ef380 -> 0x428320)
     std::function<void(int)> stopSound = [](int) {};
     // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
@@ -690,6 +691,8 @@ public:
     // Test hook: Bullet_Fire from the player along start -> end; the entity the bullet hit, else null.
     void debugResetPrediction() { predictionDepth_ = 0; predictionSaves_.clear(); } // test hook: a script error leaves the counter set
     Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }
+    // Test hook: Bullet_Fire from any entity (its `weapon` field names the weapon, as for actors).
+    Entity* debugFireBulletFrom(Entity& shooter, const Vec3& start, const Vec3& end) { return fireBullet(shooter, start, end, 10, &shooter); }
     Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
         return spawnGrenade(*player_, weapon, start, velocity, fuseMs);
     }
@@ -991,7 +994,8 @@ private:
     bool giveWeapon(Inventory& inv, const std::string& weapon);
     void takeWeapon(Inventory& inv, const std::string& weapon);
     std::vector<ObjectPtr> hudElems_;
-    int startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj = nullptr, const std::string& notify = {});
+    int startSound(const std::string& alias, const Vec3* origin, ObjectPtr notifyObj = nullptr, const std::string& notify = {}, int owner = -1);
+    static constexpr int kWorldSoundOwner = 0x7fe; // owner of the grenade / rocket bounce and explosion event sounds (0x4bb2ec, 0x4bb370, 0x4bb47c)
     struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
     std::vector<PendingNotify> pendingNotifies_;
 
