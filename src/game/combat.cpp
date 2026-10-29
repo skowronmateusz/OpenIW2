@@ -279,6 +279,12 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // G_Damage (0x5284d3): the target's sentient remembers its attacker (sentient +0x28); the AI events 5/6
     // reveal it to the actors around.
     if (attacker) target.lastAttacker = attacker;
+    // FL_DEMI_GODMODE (flags & 2, toggled by the "demigod" cheat 0x4ea030): a hit that would take health to 0 or below is cut to health - 1
+    // (0x5283d2..0x5283ec, after the blood accumulation; the "damage" notify carries the cut amount).
+    if (target.obj->get("$demigod").truthy()) {
+        const int h0 = target.obj->get("health").asInt();
+        if (h0 - amount <= 0) amount = h0 - 1;
+    }
     const int health = target.obj->get("health").asInt() - amount;
     target.obj->set("health", Value(int32_t(health)));
     target.obj->set("damagetaken", Value(int32_t(amount)));
@@ -1262,12 +1268,27 @@ void World::registerCombatBuiltins() {
             if (p.timeMs != 0 && !p.shortLived) return Value(true);
         return Value(false);
     });
+    // getclosestenemysqdist (0x53c290): self must be a sentient ("not a sentient", 0x590bd8); the smallest squared distance from self's origin
+    // to the origin of an enemy-team sentient (team mask table 0x53c2e7: allies 2, axis 1) that self has a known record of (+0x1784 > 0),
+    // skipping notarget (flags & 4, 0x53c37b) and ignoreme (sentient byte +0xc) ones; 1e8 (0x4cbebc20) when there is none.
     vm_.registerBuiltin("getclosestenemysqdist", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
-        Entity* en = a ? entityOf(a->obj->get("enemy")) : nullptr;
-        if (!a || !en) return Value(1e10f);
-        const Vec3 d = sub(en->obj->get("origin").asVector(), a->obj->get("origin").asVector());
-        return Value(dot(d, d));
+        if (!a || !isSentient(*a)) throw std::runtime_error("not a sentient");
+        float best = 1e8f;
+        const std::string myTeam = a->obj->get("team").toString(); const std::string other = myTeam == "axis" ? "allies" : myTeam == "allies" ? "axis" : std::string(); // table {0, 2, 1, 0, 0}
+        if (!other.empty()) {
+            const Vec3 ao = a->obj->get("origin").asVector();
+            for (const auto& ep : entities_) {
+                Entity& t = *ep;
+                if (!isSentient(t) || t.obj->get("team").toString() != other) continue;
+                const auto it = a->sentientInfo.find(t.obj.get());
+                if (it == a->sentientInfo.end() || it->second.lastKnownMs <= 0) continue;
+                if (t.obj->get("$notarget").truthy() || t.obj->get("ignoreme").truthy()) continue;
+                const Vec3 d = sub(t.obj->get("origin").asVector(), ao);
+                best = std::min(best, dot(d, d));
+            }
+        }
+        return Value(best);
     });
     vm_.registerBuiltin("enablehealthshield", [](CallContext&) { return Value(); });
     vm_.registerBuiltin("setnormalhealth", [this](CallContext& c) {
