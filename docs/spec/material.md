@@ -12,7 +12,7 @@ Every offset field is relative to the start of the file and is turned into a poi
 |---|---|---|---|
 | 0x00 | uint32 | offset of material name | observed (relocated) |
 | 0x04 | uint32 | offset of a second name (the reference image; equals the colorMap image in the samples) | relocated; meaning inferred |
-| 0x08–0x2b | – | sort key and other flags | mostly not decoded; byte 0x0c: bit 8 sky (1.0 DLL FUN_10002a00), bit 4 no marks (1.3 DLL FUN_100157f0); bytes 0x0e / 0x0f: atlas rows / columns (0x10017580, 0x1003fa60) |
+| 0x08–0x2b | – | sort key and other flags | mostly not decoded; **byte 0x0d = draw sort byte** (1.3 DLL: the loader copies the 0x44-byte header verbatim, 0x100171a0, and nothing rewrites it; the table sort 0x10016ae0 orders by it ascending, then by techset allocation address = techset first-load order, 0x1001c280 allocates 0x8c bytes per techset; shipped values: 3 default/opaque (2120 files), 4 sky, 5 sun, 7 backdrops, 8-16 decals, 19-23 alpha, 25-26 effect blends, 27 additive (518), 28); byte 0x0c: bit 8 sky (1.0 DLL FUN_10002a00), bit 4 no marks (1.3 DLL FUN_100157f0); bytes 0x0e / 0x0f: atlas rows / columns (0x10017580, 0x1003fa60) |
 | 0x2c | uint32 | state bits word 0 (blend: mtlDestBlend 0xf0, mtlBlendOpAlpha 0x7000000, mtlSrcBlendAlpha 0xf0000, mtlDestBlendAlpha 0xf00000, mtlCullFace 0xc000, colour write 0x8000000 / 0x10000000, mtlFog 0x20000000) | statemap variable table 1.3 DLL 0x1018fd80 |
 | 0x30 | uint32 | state bits word 1 (mtlDepthTest 0xe, mtlDepthWrite 0x1, mtlPolygonOffset 0x30, mtlStencil 0xc0, stencil func / ops 0xe0000 / 0x700 / 0x3800 / 0x1c000) | same table |
 | 0x34 | uint16 | texture count | observed (loop bound) |
