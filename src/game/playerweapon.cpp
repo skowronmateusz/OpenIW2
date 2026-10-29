@@ -353,6 +353,20 @@ sw:
 }
 
 int PlayerWeapon::update(float dt, const Input& in) {
+    // PM_Weapon (0x4dfc30) with pm_type >= 4 (not the aim-flag 0x1000 case): ps weapon (+0xb0) = 0 and nothing else runs, so no
+    // fire, reload, melee, offhand, switch, shot sounds, events or ammo use. The weapon is put away at once (no drop animation).
+    if (in.dead) {
+        if (!name_.empty()) {
+            ammo_[name_] = {clip_, stock_};
+            if (writeAmmo) writeAmmo(name_, clip_, stock_);
+        }
+        name_.clear();
+        holstered_ = true;
+        fuse_ = 0;
+        firePrev_ = in.fire;
+        enter(State::Ready, nullptr, 0);
+        return 0;
+    }
     // The ammunition lives in the player state (the world inventory): scripts, pickups and the HUD see the same counters.
     if (!name_.empty() && readAmmo)
         if (const auto a = readAmmo(name_)) clip_ = a->first, stock_ = a->second;

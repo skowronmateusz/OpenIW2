@@ -33,6 +33,7 @@ public:
         bool inVehicle = false;   // ps eFlags 0x20000: the binocular cancel mask lacks attack (0x30014 instead of 0x30015)
         bool toggleBinoculars = true; // player_toggleBinoculars (0x1c7f004, registered 0x4faaac, default 1)
         float adsExitDelay = 0;   // player_adsExitDelay (0x1c7efb8, int ms 0..1000, default 0) in seconds
+        bool dead = false;        // pm_type >= 4 (health <= 0): PM_Weapon (0x4dfc30) only clears ps weapon (+0xb0) and returns
         bool damaged = false;     // ps+0x104 (damageCount of P_DamageFeedback 0x4e7040) != 0: the player was hurt this frame
         bool scopeExitOnDamage = false; // player_scopeExitOnDamage (0x1c7eff0, registered 0x4faacc, default 0, flags 0x1082)
     };

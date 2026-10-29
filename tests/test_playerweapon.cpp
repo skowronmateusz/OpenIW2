@@ -602,7 +602,32 @@ void adsFire() {
     CHECK(r.adsFrac() > 0.9f);  // back in the last 0.5 s
 }
 
+// PM_Weapon (0x4dfc30) with pm_type >= 4: the weapon is cleared and nothing fires, reloads, throws or switches.
+void deadPlayer() {
+    const PlayerWeapon::Def d{{"firetime", "0.1"}, {"clipsize", "5"}, {"startammo", "10"}, {"raisetime", "0.1"},
+                              {"meleedamage", "100"}, {"meleetime", "0.5"}, {"reloadtime", "1"}};
+    PlayerWeapon w;
+    w.lookup = [&](const std::string&) { return &d; };
+    w.equip("g", d);
+    PlayerWeapon::Input in;
+    in.weapon = "g";
+    for (int i = 0; i < 30; ++i) w.update(0.01f, in);
+    CHECK(w.equipped());
+    const int clip = w.clip();
+    in.dead = true;
+    in.fire = in.reload = in.melee = in.frag = in.smoke = true;
+    int shots = 0;
+    for (int i = 0; i < 100; ++i) shots += w.update(0.01f, in);
+    CHECK(shots == 0);
+    CHECK(!w.equipped());
+    CHECK(w.stateNumber() == 0);
+    CHECK(w.takeSounds().empty());
+    CHECK(w.takeEvents().empty());
+    CHECK(w.clip() == clip);
+}
+
 int main() {
+    deadPlayer();
     scopeExitOnDamage();
     adsFire();
     adsExitDelay();

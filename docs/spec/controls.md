@@ -41,6 +41,9 @@ Player-state fields: weapon +0xb0, state +0xb4, weaponTime +0x34, weaponDelay +0
 both timers are 0. View animation numbers paired with their timers: 2 fire, 4 rechamber, 8 melee, 9 drop,
 10 raise, 15 altDrop, 16 altRaise, 17 quickDrop, 18 quickRaise, 19 holdFire.
 
+- **Dead player** (0x4dfc30, start): with pm_flags 0x1000 clear and pm_type ≥ 4 (health ≤ 0) PM_Weapon only sets the
+  player's weapon (+0xb0) to 0 and returns: no fire, reload, melee, offhand or weapon change runs, so no shot, sound,
+  event or ammo use follows (the port clears the weapon at once, without a putaway). TODO(spec): the pm_flags 0x1000 branch.
 - **Weapon change** (0x4de880 → 0x4ddb40): not in states 12–22; with the timer running only a rechamber or reload
   (states 4–9) may be interrupted, firing (3) and melee (10, 11) or a running delay may not. A command weapon
   different from the player's starts the drop: state 2 with `altDropTime` (view 15) when it is the current

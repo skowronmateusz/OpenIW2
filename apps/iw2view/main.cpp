@@ -7298,6 +7298,7 @@ int main(int argc, char** argv) {
                 wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
                 wi.binoculars = (buttons & game::Button::Binoculars) != 0;
                 wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
+                wi.dead = playerDead; // PM_Weapon 0x4dfc30: pm_type >= 4 clears the weapon and does nothing else
                 wi.inVehicle = inVehicle;
                 {
                     static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
