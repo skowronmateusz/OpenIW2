@@ -173,5 +173,24 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   sets 0x793db8 = 0x793db4 (the sound time in ms). So a loop started through the generic play lives only while its caller keeps re-playing it each frame. Slot stamps start
   as 0x793db8 (0x44182b). Entity loops (`playloopsound`) store a configstring index in the entity state (Round 4) and the client replays them each frame.
   Implemented in `Mixer` as an opt-in: `PlayOptions{owner, dedicated, refresh}` + `sweepLoops(soundTimeMs)`; the port's script/turret loops keep their handle instead.
-  TODO(spec): which cgame callers of 0x4423d0 (about 30) pass which owner / re-play per frame (the entity loop caller was not identified); the port's own callers only
+  The entity-loop re-player is 0x4aaf90 (see "Channel volume slots" below). TODO(spec): the owners passed by the other ~30 callers of 0x4423d0; the port's own callers only
   pass `dedicated` for music / ambient, so pools and exclusivity are exercised by tests, and by live play only through the pool caps and distance culling.
+
+## Channel volume slots (0x793a34 / 0x793cdc) and the entity-loop re-player
+
+- Table 0x793a34: 5 slots of 0x88 bytes. Per channel c a `{cur, target, step}` float triple at c*12; an active flag at +0x84.
+  0x793cdc is a pointer to the highest active slot. Setter (fade) 0x4431f0, clear 0x443390, per-frame step 0x4437a0.
+- Application: `master(0x793a24) * slot[ch].cur * voice volume`, with `ch = (alias +0x2c >> 7) & 0xf`. Sites: 0x49f574, 0x49f7ed,
+  0x49fb8d, 0x49fdff, 0x4a0d10, 0x4a0eed, 0x4a106c.
+- Channel order in the exe (shock volumes and registrations at 0x4a22a2..): auto, auto2d, menu, weapon, voice, item, body, local,
+  music, announcer, shellshock; defaults auto .1, auto2d .1, menu 1, weapon .5, voice .2, item .1, body .1, the rest 1. The port keeps a
+  name-indexed order (`kShockChannelNames`, `channelIndex`); behaviour is identical because lookups are by name.
+- 0x4423d0 (generic play) takes 9 stack args: alias, alias2, frac, owner entity, origin ptr, out handle ptr, a7, a8, a9. It does the
+  secondary alias, distance cull, loop refresh (0x441f80), exclusivity stop (0x441b50), volume/pitch draw (0x442310) and start (0x441e10).
+- Entity-loop re-player: 0x4aaf90, called per entity every frame from the dispatcher 0x4acf30 (eType at cent +0xa0, jump table
+  0x4acfb0). It reads cent word +0xa6 (loopSound configstring index), resolves it via 0x62072a / 0x8aed00 (+4 + idx*8), looks up
+  (0x428320) and picks (0x428a20) the alias, then 0x4a3610 (play at an origin, owner = word +0xa8, arg9 = 1, sound length through
+  0x4a3540) -> 0x4423d0. Origin = cent +0x148, or, when dword +0x120 == 0xffffff, +0x148 plus the brush model centre
+  0xf584a0[word +0xae * 12]. ET_SOUND_BLEND (eType 6) is 0x4ac8a0 via 0x442900 (two aliases at cent +0x12c / +0x12e).
+- Not decoded (TODO(spec)): the other callers' owners; brass-delay gating (the bolt-action brass is in weapons.md) and the usercmd
+  byte +0xd compared with +0x3d in the binocular cancel (0x4dfa8a).
