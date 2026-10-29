@@ -29,6 +29,8 @@
 #include <map>
 #include <random>
 #include <set>
+#include <sstream>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -690,6 +692,7 @@ int main(int argc, char** argv) {
         std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail"};
         float stallSecs = 25.0f;
         std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
+        std::vector<std::string> targets; // --targets FILE: the level notifies a complete run of this map reaches (`map: a b c` lines), "reached k of n"
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--save-dir" && i + 1 < argc) {
@@ -783,6 +786,17 @@ int main(int argc, char** argv) {
                 autoplay = autoplayForce = true;
             } else if (a == "--report" && i + 1 < argc) {
                 reportFile = argv[++i];
+            } else if (a == "--targets" && i + 1 < argc) {
+                std::ifstream tf(argv[++i]);
+                for (std::string line; std::getline(tf, line);) {
+                    if (line.empty() || line[0] == '#' || line.rfind(std::string(argv[2]) + ":", 0) != 0) continue;
+                    // `map: name one; name two;` (notify names may contain spaces, so ';' separates them)
+                    std::istringstream ss(line.substr(std::strlen(argv[2]) + 1));
+                    for (std::string n; std::getline(ss, n, ';');) {
+                        const size_t b = n.find_first_not_of(" \t"), e = n.find_last_not_of(" \t\r");
+                        if (b != std::string::npos) targets.push_back(n.substr(b, e - b + 1));
+                    }
+                }
             } else if (a == "--cvar" && i + 1 < argc) {
                 const std::string kv = argv[++i];
                 const auto eq = kv.find('=');
@@ -819,6 +833,8 @@ int main(int argc, char** argv) {
         std::vector<std::string> autoplayLog;    // every autoplay action / stall record
         std::vector<std::string> forcedEvents;
         std::map<int, int> enteredTriggers;
+        std::set<int> placedItems; // weapon_* entities present at the first autoplay decision (map-placed, not AI drops)
+        bool placedItemsTaken = false;
         float lastProgressT = 0.0f;
         int stallCount = 0, savesSeen = 0;
         int actionsSinceProgress = 0; // autoplay actions since the last real progress: escalation level
@@ -1430,15 +1446,27 @@ int main(int argc, char** argv) {
                     return best;
                 };
                 const int playerNode = nearestNode(po);
+                // The current objective's marker (state 4, first position): a player follows it, so candidates near it come first.
+                bool haveObj = false;
+                iw2::game::Vec3 objPos{};
+                for (const auto& ob : world.objectives())
+                    if (ob.state == 4 && (ob.positions[0][0] != 0 || ob.positions[0][1] != 0 || ob.positions[0][2] != 0)) { objPos = ob.positions[0]; haveObj = true; break; }
+                const auto objWeight = [&](const iw2::game::Vec3& c) {
+                    if (!haveObj) return 0.0f;
+                    return 0.5f * std::sqrt((c[0] - objPos[0]) * (c[0] - objPos[0]) + (c[1] - objPos[1]) * (c[1] - objPos[1]) + (c[2] - objPos[2]) * (c[2] - objPos[2]));
+                };
                 std::vector<int> bestRoute; // the node route to the chosen trigger (empty: straight line)
                 std::vector<iw2::game::Entity*> forbidden; // kill / minefield triggers (skip list): never entered, routes through them are refused
-                const auto walkDistance = [&](const iw2::game::Vec3& c, std::vector<int>* routeOut = nullptr) {
+                const auto walkDistance = [&](const iw2::game::Vec3& c, std::vector<int>* routeOut = nullptr, bool* reachable = nullptr) {
                     const float straight = std::sqrt((c[0] - po[0]) * (c[0] - po[0]) + (c[1] - po[1]) * (c[1] - po[1]) + (c[2] - po[2]) * (c[2] - po[2]));
+                    if (reachable) *reachable = false;
                     const int n = playerNode >= 0 ? nearestNode(c) : -1;
                     if (n < 0) return straight * 4;
+                    if (std::fabs(graph.position(size_t(n))[2] - c[2]) > 500.0f) return straight * 4; // no node near it vertically (below / above the map)
                     const auto route = graph.findPath(playerNode, n);
                     if (route.empty()) return straight * 4;
                     if (routeOut) *routeOut = route;
+                    if (reachable) *reachable = true;
                     float d = 0;
                     for (size_t i = 1; i < route.size(); ++i) {
                         const auto& a = graph.position(size_t(route[i - 1]));
@@ -1447,22 +1475,39 @@ int main(int argc, char** argv) {
                     }
                     return d;
                 };
-                // 1. the nearest trigger a script thread waits for ("trigger"), reachable by the player (not AI-only, not disabled)
+                // 1. the nearest thing a script thread waits for that the player can satisfy: a trigger to walk into
+                // ("trigger" on trigger_multiple/once/radius), a trigger_use / trigger_use_touch to press the use key at, a
+                // trigger_lookat to look at, or a target to shoot (trigger_damage, or a non-actor entity whose "damage" a thread
+                // waits for: bottles, bears, barrels). Reachable by the player (not AI-only, not disabled), ranked by the map's own
+                // waiters first, then walking distance.
+                enum Kind { Enter, Use, Lookat, Shoot };
+                static const char* const kindName[] = {"enter", "use", "look at", "shoot"};
                 iw2::game::Entity* best = nullptr;
+                Kind bestKind = Enter;
                 float bestD = 0;
                 int bestRank = 0; // triggers waited by the map's own scripts (maps/<map>*.gsc) come before library ones (_load autospawn, _vehicle, ...)
                 std::string bestSite;
+                iw2::game::Vec3 bestTarget{};
                 const std::string mapPrefix = std::string("maps/") + argv[2];
                 for (const auto& w : waiters) {
-                    if (w.event != "trigger") continue;
-                    const int rank = w.site.rfind(mapPrefix, 0) == 0 ? 0 : 1;
+                    if (w.event != "trigger" && w.event != "damage") continue;
+                    const int rank = w.site.rfind(mapPrefix, 0) == 0 ? 0 : 2;
                     for (const auto& e : world.entities()) {
                         if (e->obj != w.object || e->obj->removed || e->isSpawner) continue;
-                        if (e->classname != "trigger_multiple" && e->classname != "trigger_once" && e->classname != "trigger_radius") continue;
+                        Kind kind;
+                        if (w.event == "damage") {
+                            if (e->isActor || e->vehicle || e->classname.rfind("trigger_", 0) == 0 || e.get() == world.player()) continue;
+                            if (w.site.rfind("maps/_interactable_objects.gsc", 0) == 0) continue; // decoration (breakables, helmets): never a gate
+                            kind = Shoot;
+                        } else if (e->classname == "trigger_multiple" || e->classname == "trigger_once" || e->classname == "trigger_radius") kind = Enter;
+                        else if (e->classname == "trigger_use" || e->classname == "trigger_use_touch") kind = Use;
+                        else if (e->classname == "trigger_lookat") kind = Lookat;
+                        else if (e->classname == "trigger_damage") kind = Shoot;
+                        else continue;
                         if (e->obj->get("$disabled").truthy()) continue;
                         const auto sf = e->obj->get("spawnflags");
-                        if (sf.isNumber() && (sf.asInt() & 8)) continue;
-                        if (enteredTriggers[e->number] >= 2) continue;
+                        if (kind == Enter && sf.isNumber() && (sf.asInt() & 8)) continue;
+                        if (enteredTriggers[e->number] >= 2) continue; // a model whose "damage" wait survived the shot is meleed the second time
                         { // skip the triggers a player would never enter on purpose: kill / desertion / minefield triggers, by the waiting
                           // function's name and the targetname (--autoplay-skip adds substrings)
                             std::string names = w.site.substr(w.site.find(' ') == std::string::npos ? 0 : w.site.find(' ') + 1);
@@ -1471,25 +1516,99 @@ int main(int argc, char** argv) {
                             for (auto& ch : names) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                             bool skip = false;
                             for (const auto& sub : autoplaySkip) skip = skip || names.find(sub) != std::string::npos;
-                            if (skip) { forbidden.push_back(e.get()); continue; }
+                            if (skip) { if (kind == Enter) forbidden.push_back(e.get()); continue; }
                         }
                         const auto ov = e->obj->get("origin");
-                        const auto o = ov.isVector() ? ov.asVector() : iw2::game::Vec3{0, 0, 0};
+                        if (!ov.isVector()) continue;
+                        const auto o = ov.asVector();
                         iw2::game::Vec3 mn, mx, c = o;
                         const auto m = e->obj->get("model");
                         if (m.isString() && world.submodelBounds(m.asString(), mn, mx))
                             for (int k = 0; k < 3; ++k) c[k] = o[k] + (mn[k] + mx[k]) * 0.5f;
-                        const float d = walkDistance(c);
-                        if (!best || rank < bestRank || (rank == bestRank && d < bestD)) { best = e.get(); bestD = d; bestRank = rank; bestSite = w.site; }
+                        bool reachable = false;
+                        const float d = walkDistance(c, nullptr, &reachable);
+                        if (!reachable && std::fabs(c[2] - po[2]) > 1000.0f) continue; // off the node graph and far above / below: a vehicle or out-of-world trigger
+                        // Score: walking distance, plus the distance from the current objective marker (a player follows it), plus
+                        // 2000 for library waiters (autospawn, vehicle paths: they fire on the way anyway).
+                        const float score = d + objWeight(c) + (rank ? 2000.0f : 0.0f);
+                        if (!best || score < bestD) { best = e.get(); bestKind = kind; bestD = score; bestRank = rank; bestSite = w.site; bestTarget = c; }
                     }
                 }
+                // Weapon items (weapon_* entities, use pickups) when no map-own waiter is reachable: a flow that waits for `hasweapon`
+                // (moscow's rifle, basement goods) has no trigger to enter. Rank 1 (after the map's own triggers, before library
+                // ones) until the first stall; from then on rank 0, competing with the map's triggers by distance.
+                // Map-placed weapon items (the ones present at the first decision: the drops of dead AI are never a gate): score + 1000,
+                // so only an item near the objective marker or with nothing else around is picked up.
+                if (!placedItemsTaken) {
+                    placedItemsTaken = true;
+                    for (const auto& e : world.entities())
+                        if (!e->obj->removed && !e->isSpawner && e->classname.rfind("weapon_", 0) == 0) placedItems.insert(e->number);
+                }
+                for (const auto& e : world.entities()) {
+                    if (e->obj->removed || e->isSpawner || e->classname.rfind("weapon_", 0) != 0 || !placedItems.count(e->number) || enteredTriggers[e->number] >= 1) continue;
+                    const auto ov = e->obj->get("origin");
+                    if (!ov.isVector()) continue;
+                    const float score = walkDistance(ov.asVector()) + objWeight(ov.asVector()) + 1000.0f;
+                    if (!best || score < bestD) { best = e.get(); bestKind = Use; bestD = score; bestRank = 1; bestSite = "item pickup"; bestTarget = ov.asVector(); bestTarget[2] += 8.0f; }
+                }
                 iw2::game::Vec3 entry;
-                if (actionsSinceProgress >= 3) best = nullptr; // three fruitless trigger entries since the last progress: escalate to the kill gate, then force
-                if (best && world.debugTriggerEntryPoint(*best, entry)) {
+                if (actionsSinceProgress >= 3) best = nullptr; // three fruitless actions since the last progress: escalate to the kill gate, then force
+                // Where to stand: inside the trigger for Enter / Use (the use test needs the player box touching a trigger_use_touch and
+                // the eye within 72 units of a trigger_use), else `standOff` units away from the target toward the player.
+                bool haveStand = false;
+                if (best) {
+                    if (bestKind == Enter || (bestKind == Use && best->classname == "trigger_use_touch")) haveStand = world.debugTriggerEntryPoint(*best, entry);
+                    if (!haveStand && bestKind == Use) {
+                        // A use target: try 8 directions x 2 distances around it, feet at the nearest node's height, and keep the first
+                        // stand point from which the use scan (0x534490: distance, facing, eye -> target line) picks this entity.
+                        for (int ring = 0; ring < 2 && !haveStand; ++ring)
+                            for (int k = 0; k < 8 && !haveStand; ++k) {
+                                const float ang = float(k) * 3.14159265f / 4.0f, off = ring == 0 ? 40.0f : 60.0f;
+                                iw2::game::Vec3 feet{bestTarget[0] + std::cos(ang) * off, bestTarget[1] + std::sin(ang) * off, bestTarget[2] - 50.0f};
+                                const int fn = nearestNode(feet);
+                                if (fn >= 0) {
+                                    const auto& q = graph.position(size_t(fn));
+                                    if (std::fabs(q[0] - feet[0]) < 256.0f && std::fabs(q[1] - feet[1]) < 256.0f && std::fabs(q[2] - feet[2]) < 200.0f) feet[2] = q[2];
+                                }
+                                const iw2::game::Vec3 eye{feet[0], feet[1], feet[2] + 60.0f};
+                                iw2::game::Vec3 fwd{bestTarget[0] - eye[0], bestTarget[1] - eye[1], bestTarget[2] - eye[2]};
+                                const float l = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+                                if (l > 0) for (auto& c : fwd) c /= l;
+                                if (world.debugUseTarget(eye, fwd) == best) { entry = feet; haveStand = true; }
+                            }
+                        if (!haveStand) { // nowhere to use it from: drop the candidate
+                            char buf[256];
+                            std::snprintf(buf, sizeof buf, "%suse #%d %s: no stand point from which the use scan picks it", head, best->number, best->classname.c_str());
+                            autoplayLog.push_back(buf);
+                            std::cout << buf << "\n";
+                            enteredTriggers[best->number] = 2;
+                            best = nullptr;
+                            lastActionT = t; ++actionsSinceProgress;
+                        }
+                    }
+                    if (best && !haveStand && bestKind != Enter) {
+                        // Shoot: 200 units for the first try, 40 for the second (a melee blow: MOD_MELEE gates such as moscow's mannequin).
+                        const bool meleeTry = bestKind == Shoot && enteredTriggers[best->number] == 1 && best->classname != "trigger_damage";
+                        const float standOff = bestKind == Use ? 40.0f : bestKind == Lookat ? 120.0f : meleeTry ? 40.0f : 200.0f;
+                        float dx = po[0] - bestTarget[0], dy = po[1] - bestTarget[1];
+                        const float len = std::sqrt(dx * dx + dy * dy);
+                        if (len < 1.0f) { dx = 1; dy = 0; } else { dx /= len; dy /= len; }
+                        entry = {bestTarget[0] + dx * standOff, bestTarget[1] + dy * standOff, bestTarget[2] - 50.0f};
+                        // Feet on the floor: the nearest path node's height when one is within 256 units (items lie on tables, lookat
+                        // and damage targets hang on walls); the player would otherwise stand inside the floor and the use trace fails.
+                        const int fn = nearestNode(entry);
+                        if (fn >= 0) {
+                            const auto& q = graph.position(size_t(fn));
+                            if (std::fabs(q[0] - entry[0]) < 256.0f && std::fabs(q[1] - entry[1]) < 256.0f && std::fabs(q[2] - entry[2]) < 200.0f) entry[2] = q[2];
+                        }
+                        haveStand = true;
+                    }
+                }
+                if (best && haveStand) {
                     ++enteredTriggers[best->number];
                     const auto tn = best->obj->get("targetname");
                     char buf[512];
-                    std::snprintf(buf, sizeof buf, "%senter trigger #%d %s %s at %.0f,%.0f,%.0f (dist %.0f) waited by %s", head, best->number, best->classname.c_str(),
+                    std::snprintf(buf, sizeof buf, "%s%s #%d %s %s at %.0f,%.0f,%.0f (dist %.0f) waited by %s", head, kindName[bestKind], best->number, best->classname.c_str(),
                                   tn.isString() ? tn.asString().c_str() : "-", entry[0], entry[1], entry[2], bestD, bestSite.c_str());
                     autoplayLog.push_back(buf);
                     std::cout << buf << "\n";
@@ -1509,11 +1628,14 @@ int main(int argc, char** argv) {
                     leg(entry);
                     // Refuse a route that crosses a kill / minefield trigger (a player would see the signs): sample it every 32 units.
                     iw2::game::Entity* crossed = nullptr;
+                    float walked = 0;
                     for (size_t i = 1; i < playerPath.size() && !crossed; ++i) {
                         const auto& a = playerPath[i - 1].second;
                         const auto& b = playerPath[i].second;
                         const float len = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
-                        for (float s = 0; s <= len && !crossed; s += 32.0f) {
+                        if (i > 1) walked += std::sqrt((a[0] - playerPath[i - 2].second[0]) * (a[0] - playerPath[i - 2].second[0]) + (a[1] - playerPath[i - 2].second[1]) * (a[1] - playerPath[i - 2].second[1]) + (a[2] - playerPath[i - 2].second[2]) * (a[2] - playerPath[i - 2].second[2]));
+                        for (float s = 0; s <= len && !crossed; s += 16.0f) {
+                            if (walked + s < 50.0f) continue; // the first 50 units: the player may already stand next to / inside the hazard
                             const float u = len > 0 ? s / len : 0;
                             const iw2::game::Vec3 p{a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u};
                             for (auto* fe : forbidden)
@@ -1529,7 +1651,26 @@ int main(int argc, char** argv) {
                         enteredTriggers[best->number] = 2;
                         lastActionT = t;
                     } else {
-                        lastActionT = std::min(at, t + 60.0f);
+                        at = std::min(at, t + 60.0f);
+                        if (bestKind != Enter) { // the action on arrival: the existing --player-use / --player-look / --player-fire-at paths
+                            const iw2::game::Vec3 eye{entry[0], entry[1], entry[2] + 60.0f};
+                            const float dx = bestTarget[0] - eye[0], dy = bestTarget[1] - eye[1], dz = bestTarget[2] - eye[2];
+                            const float yaw = std::atan2(dy, dx) * 180.0f / 3.14159265f, pitch = -std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * 180.0f / 3.14159265f;
+                            if (bestKind == Use) playerUses.push_back({at + 0.3f, {yaw, pitch}});
+                            if (bestKind == Lookat || bestKind == Shoot) playerLooks.push_back({at + 0.3f, {yaw, pitch}});
+                            const bool melee = bestKind == Shoot && enteredTriggers[best->number] >= 2 && best->classname != "trigger_damage"; // second try
+                            if (melee) { // the blow aims at chest height of a model standing on its origin (the mannequin)
+                                playerMelees.push_back({at + 0.5f, iw2::game::Vec3{bestTarget[0], bestTarget[1], bestTarget[2] + 40.0f}});
+                            } else if (bestKind == Shoot) { // aimed (ADS) shots: training scripts count only `playerads` shots (moscow bottles 2)
+                                playerAds.push_back({at + 0.3f, 1.0f});
+                                playerFireAts.push_back({at + 0.8f, bestTarget});
+                                playerFireAts.push_back({at + 1.3f, bestTarget});
+                                playerAds.push_back({at + 2.0f, 0.0f});
+                            }
+                            at += 2.0f;
+                            at -= std::max(stallSecs - 8.0f, 0.0f); // the effect of a use / look / shot is immediate: decide again 8 s later
+                        }
+                        lastActionT = at;
                     }
                     ++actionsSinceProgress;
                 } else if (best) {
@@ -1542,8 +1683,9 @@ int main(int argc, char** argv) {
                 } else {
                     // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
                     int killed = 0;
+                    const bool killGate = actionsSinceProgress <= 3; // once per no-progress cycle, then force / stall (which restarts the chase)
                     for (const auto& w : waiters) {
-                        if (w.event != "death" || killed >= 10) continue;
+                        if (!killGate || w.event != "death" || killed >= 10) continue;
                         for (const auto& e : world.entities())
                             if (e->obj == w.object && !e->obj->removed && (e->isActor || e->vehicle) && world.isAlive(*e) && killed < 10 &&
                                 !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies")) { // never friendlies (missionfailed)
@@ -1552,7 +1694,7 @@ int main(int argc, char** argv) {
                             }
                     }
                     const char* what = "death-waited entities";
-                    if (killed == 0) {
+                    if (killed == 0 && killGate) {
                         what = "axis actors";
                         for (const auto& e : world.entities()) {
                             const auto team = e->obj->get("team");
@@ -1589,7 +1731,10 @@ int main(int argc, char** argv) {
                             std::map<std::string, int> sites;
                             for (const auto& d : world.vm().describeThreads())
                                 if (d.rfind("maps/", 0) == 0) ++sites[d];
-                            autoplayLog.push_back(head + std::string("stall: no progress for ") + std::to_string(int(stallSecs)) + " s, " + std::to_string(sites.size()) + " level-script wait sites");
+                            size_t reached = 0;
+                            for (const auto& n : targets) reached += seenNotifies.count(n);
+                            autoplayLog.push_back(head + std::string("stall: no progress for ") + std::to_string(int(stallSecs)) + " s, " + std::to_string(sites.size()) + " level-script wait sites" +
+                                                  (targets.empty() ? std::string() : ", reached " + std::to_string(reached) + " of " + std::to_string(targets.size()) + " stages"));
                             std::cout << autoplayLog.back() << "\n";
                             for (const auto& [k, n] : sites) autoplayLog.push_back("    x" + std::to_string(n) + " " + k);
                             lastActionT = t; actionsSinceProgress = 0;
@@ -1783,6 +1928,12 @@ int main(int argc, char** argv) {
             r << "saves " << savesSeen << "\n";
             r << "stalls " << stallCount << "\n";
             r << "forced " << forcedEvents.size() << "\n";
+            {
+                size_t reached = 0;
+                for (const auto& n : targets) reached += seenNotifies.count(n);
+                r << "targets_total " << targets.size() << "\n";
+                r << "targets_reached " << reached << "\n";
+            }
             if (auto ch = lastChange ? lastChange : world.dueLevelChange())
                 r << "level_change " << ch->map << (ch->failed ? " failed" : ch->victoryScreen ? " victory" : ch->persistent ? " persistent" : " load") << "\n";
             else
@@ -1799,6 +1950,9 @@ int main(int argc, char** argv) {
             for (const auto& l : notifyTimeline) r << l << "\n";
             r << "[autoplay]\n";
             for (const auto& l : autoplayLog) r << l << "\n";
+            r << "[targets_missed]\n";
+            for (const auto& n : targets)
+                if (!seenNotifies.count(n)) r << n << "\n";
             r << "[level_waits]\n";
             std::map<std::string, int> sites;
             for (const auto& d : world.vm().describeThreads())

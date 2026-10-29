@@ -663,6 +663,12 @@ bool World::debugTriggerEntryPoint(Entity& e, Vec3& out) {
     return false;
 }
 
+Entity* World::debugUseTarget(const Vec3& eye, const Vec3& forward) {
+    if (!player_) return nullptr;
+    const auto list = scanUsables(eye, forward);
+    return list.empty() ? nullptr : list.front().e;
+}
+
 bool World::debugTriggerTouches(Entity& e, const Vec3& feet) {
     const float height = playerBoxHeight();
     return triggerContact(e, Vec3{feet[0] - 15, feet[1] - 15, feet[2]}, Vec3{feet[0] + 15, feet[1] + 15, feet[2] + height});
