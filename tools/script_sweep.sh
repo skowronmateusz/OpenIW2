@@ -21,7 +21,7 @@ maps=""
 force=""
 while [ $# -gt 0 ]; do
     case "$1" in
-    --full | --smoke | --determinism) mode="${1#--}" ;;
+    --full | --smoke | --determinism | --summarize) mode="${1#--}" ;;
     --bin) bin="$2"; shift ;;
     --seeds) seeds="$2"; shift ;;
     --seconds) seconds="$2"; shift ;;
@@ -57,7 +57,7 @@ run() {
     return $rc
 }
 field() { awk -v k="$2" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }' "$1"; }
-count_done_objectives() { awk '/^\[objectives\]/ { s = 1; next } /^\[/ { s = 0 } s && $2 == 3 { n++ } END { print n + 0 }' "$1"; }
+count_done_objectives() { awk '/^\[objectives\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s && $2 == 3 { n++ } END { print n + 0 }' "$1"; }
 
 do_smoke() {
     # Cheap ctest subset: maps known to run clean, 60 s, plain; one autoplay run; one determinism check. Fails on any
@@ -112,30 +112,34 @@ do_full() {
     done
     wait
     wall=$(( $(date +%s) - started ))
+    write_summary
+}
+do_summarize() { wall=0; seconds="?"; seeds="?"; write_summary; }
+write_summary() {
     {
         echo "# Script sweep $(date '+%Y-%m-%d %H:%M'), $seconds s, seeds: $seeds, $wall s wall"
         echo
         echo "| map | seed | mode | errors | loop kills | missing built-ins | objectives done | notifies | stalls | forced | level change | exit |"
         echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
-        for r in "$out"/*.txt; do
+        for r in "$out"/*-s*-*.txt; do
             b=$(basename "$r" .txt)
             m=${b%-s*}; rest=${b#*-s}; seed=${rest%%-*}; tag=${rest#*-}
             echo "| $m | $seed | $tag | $(field "$r" runtime_errors) | $(field "$r" loop_guard_kills) | $(field "$r" unimplemented_builtins) | $(count_done_objectives "$r") | $(field "$r" notifies) | $(field "$r" stalls) | $(field "$r" forced) | $(field "$r" level_change) | $(field "$r" exit) |"
         done
         echo
         echo "## Errors: count, run, site"
-        for r in "$out"/*.txt; do
-            awk -v b="$(basename "$r" .txt)" '/^\[errors\]/ { s = 1; next } /^\[/ { s = 0 } s { print "- " b ": " $0 }' "$r"
+        for r in "$out"/*-s*-*.txt; do
+            awk -v b="$(basename "$r" .txt)" '/^\[errors\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s { print "- " b ": " $0 }' "$r"
         done
         echo
         echo "## Unimplemented built-ins: count, run, name"
-        for r in "$out"/*.txt; do
-            awk -v b="$(basename "$r" .txt)" '/^\[builtins\]/ { s = 1; next } /^\[/ { s = 0 } s { print "- " b ": " $0 }' "$r"
+        for r in "$out"/*-s*-*.txt; do
+            awk -v b="$(basename "$r" .txt)" '/^\[builtins\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s { print "- " b ": " $0 }' "$r"
         done
         echo
         echo "## Stalls: autoplay runs that ran out of triggers and kill gates"
         for r in "$out"/*-auto.txt; do
-            awk -v b="$(basename "$r" .txt)" '/^\[autoplay\]/ { s = 1; next } /^\[/ { s = 0 } s && /stall:/ { print "- " b ": " $0 } s && /^    / { print "  " $0 }' "$r"
+            awk -v b="$(basename "$r" .txt)" '/^\[autoplay\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s && /stall:/ { print "- " b ": " $0 } s && /^    / { print "  " $0 }' "$r"
         done
     } > "$out/summary.md"
     echo "summary: $out/summary.md"

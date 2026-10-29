@@ -770,7 +770,7 @@ int main(int argc, char** argv) {
             } else if (a == "--mixer") {
             } else if (a == "--autoplay") {
                 autoplay = true;
-                if (i + 2 < argc && std::string(argv[i + 1]).find_first_not_of("0123456789.") == std::string::npos) stallSecs = std::stof(argv[++i]);
+                if (i + 1 < argc && std::string(argv[i + 1]).find_first_not_of("0123456789.") == std::string::npos) stallSecs = std::stof(argv[++i]);
             } else if (a == "--autoplay-skip" && i + 1 < argc) {
                 std::string list = argv[++i];
                 for (size_t p = 0; p <= list.size();) {
