@@ -37,6 +37,14 @@ void recordHit(ActorSlide& pm, uint16_t ent, float nx, float ny) {
 }
 } // namespace
 
+float actorHitYaw(float nx, float ny) {
+    const float x = -nx, y = -ny;
+    if (x == 0.0f && y == 0.0f) return 0.0f;
+    float a = std::atan2(y, x) * 180.0f / 3.14159274f;
+    if (a < 0.0f) a += 360.0f;
+    return a;
+}
+
 void addTouch(ActorSlide& pm, uint16_t entity) {
     if (entity == 0x7fe || pm.touchCount == 0x20) return;
     for (int i = 0; i < pm.touchCount; ++i)

@@ -52,6 +52,9 @@ struct ActorSlide {
     uint16_t touch[0x20] = {};   // +0x74
 };
 
+// gethityaw (0x540110): the yaw (0x421890: 0 for a zero vector, else atan2 in degrees, 0..360) of the reversed hit normal (-x, -y).
+float actorHitYaw(float nx, float ny);
+
 // PM_ClipVelocity 0x547540: slope-aware clip (normal.z >= 0.7 and |v.z|² <= |v.xy|²: slide along the ramp scaled by n.z).
 void clipVelocity(const float in[3], const float normal[3], float out[3], float overbounce);
 
