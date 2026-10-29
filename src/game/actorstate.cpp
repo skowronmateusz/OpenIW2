@@ -295,6 +295,14 @@ void World::setActorAnimScript(Entity& e, const std::string& name, int movemode,
         return;
     }
     killActorAnimScript(e);
+    // Another script (0x53acf1..0x53ad96): besides the kill (0x53ac40), the anim mode override +0x21c is dropped (the mode is then the
+    // argument), the gentity no-physics flag (+0x128 & 0x1000) is cleared and so are keepclaimednode / keepclaimednodeingoal
+    // (+0x740 / +0x741). TODO(spec): the words +0x2140 / +0x2144 (freed there) and +0x20d0 are not modelled.
+    ai.animModeOverride = 0;
+    ai.animMode = animMode;
+    ai.noPhysicsFlag = false;
+    e.obj->set("keepclaimednode", Value(int32_t(0)));
+    e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
     ai.movemode = movemode;
     e.obj->set("movemode", Value(kMovemodes[movemode]));
     e.animScript = name;
