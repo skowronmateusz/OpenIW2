@@ -128,6 +128,7 @@ int main() {
             if (kv.first.find("crusader") != std::string::npos || kv.first.find("panzer") != std::string::npos || kv.first.find("halftrack") != std::string::npos || kv.first.find("jeep") != std::string::npos || kv.first.find("blitz") != std::string::npos)
                 CHECK(kv.second.first == kv.second.second);
         for (const auto& kv : seen) std::cout << map << " " << kv.first << ": vehicles " << kv.second.first << " hit " << kv.second.second << "\n";
+    }
     // A destroyed tank (maps/_vehicle.gsc calls freevehicle on death: script_vehicle_corpse, vehicle state dropped) keeps its
     // contents and brush model (0x511c80 writes neither), so walking and driving still stop at the wreck.
     {
