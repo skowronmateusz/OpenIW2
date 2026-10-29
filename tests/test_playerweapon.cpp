@@ -535,6 +535,36 @@ void adsExitDelay() {
     CHECK(w.adsFrac() == 0.0f); // then released
 }
 
+// player_scopeExitOnDamage (0x4dd0fe): a damaged frame drops the aim of a scope weapon at once (event 0x95), only with the dvar.
+void scopeExitOnDamage() {
+    PlayerWeapon w;
+    w.equip("sniper", {{"firetime", "0.1"}, {"clipsize", "5"}, {"startammo", "20"}, {"raisetime", "0"}, {"aimdownsight", "1"},
+                       {"adstransintime", "0.1"}, {"adstransouttime", "0.5"}, {"adsoverlayreticle", "default"}});
+    PlayerWeapon::Input in;
+    in.ads = true;
+    for (int i = 0; i < 30; ++i) w.update(0.01f, in);
+    CHECK(w.adsFrac() == 1.0f);
+    w.takeEvents();
+    in.damaged = true; // dvar off: the aim stays
+    w.update(0.01f, in);
+    CHECK(w.adsFrac() == 1.0f);
+    in.scopeExitOnDamage = true;
+    w.update(0.01f, in);
+    CHECK(w.adsFrac() == 0.0f);
+    bool ev = false;
+    for (const auto& e : w.takeEvents()) ev = ev || e.kind == PlayerWeapon::Event::ReloadBegin;
+    CHECK(ev);
+    // A weapon without a scope overlay keeps its aim.
+    PlayerWeapon p;
+    p.equip("pistol", {{"firetime", "0.1"}, {"clipsize", "5"}, {"startammo", "20"}, {"raisetime", "0"}, {"aimdownsight", "1"},
+                       {"adstransintime", "0.1"}, {"adstransouttime", "0.5"}});
+    in.damaged = false;
+    for (int i = 0; i < 30; ++i) p.update(0.01f, in);
+    in.damaged = true;
+    p.update(0.01f, in);
+    CHECK(p.adsFrac() == 1.0f);
+}
+
 // adsFire (+0x348, 0x4dea00 / 0x4dd1b2): a hip press starts the fire state with weaponDelay = the remaining aim time; the aim
 // is held and the shot comes when it is complete. A non-segmented reload releases the aim only in its last adsReloadTransTime.
 void adsFire() {
@@ -573,6 +603,7 @@ void adsFire() {
 }
 
 int main() {
+    scopeExitOnDamage();
     adsFire();
     adsExitDelay();
     reloadAddTiming();

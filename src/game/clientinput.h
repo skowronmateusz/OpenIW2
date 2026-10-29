@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,14 @@ public:
 
     // A key went down or up: runs its bound command ("+x" on down, "-x" on up, others on down only).
     void key(const std::string& keyName, bool down);
+    // Key name -> key number (0x40b880): a one-character name is the character itself, "0x??" (4 characters, lowercase hex
+    // digits) the byte, anything else a case-insensitive lookup in the key-name table (0x59a0e0); -1 when unknown.
+    static int keyNumber(const std::string& name);
+    // The key table of the exe (12-byte entries at 0x5d2728: +0 down, +4 repeats, +8 binding), looked up by key name.
+    // buttonpressed (0x538980) reads the down flag, getcommandfromkey (0x4ece00) the binding text; a name that is not a key
+    // gives false / "". The port stores keys under upper-cased names (TODO(spec): the exe keeps one-character names as typed).
+    bool keyDown(const std::string& name) const;
+    std::string commandFromKey(const std::string& name) const;
     // Runs one command as the console would.
     void command(const std::string& cmd, bool down = true, const std::string& keyName = {});
 
@@ -59,6 +68,7 @@ private:
     bool stanceLocked() const { return prone_.active || moveDown_.active; }
 
     std::map<std::string, std::string> binds_;
+    std::set<std::string> keysDown_; // key-table down flags (0x5d2728, written by CL_KeyEvent 0x40c0fd), upper-cased names
     std::map<std::string, int> seq_; // binding order per key (slot order of a command)
     int nextSeq_ = 0;
     KButton attack_, melee_, holdBreath_, frag_, smoke_, binoculars_, activate_, reload_, useReload_, leanLeft_,

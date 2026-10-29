@@ -1,6 +1,8 @@
 #include "game/world.h"
 #include "game/actorfields.h"
 #include "game/actorslide.h"
+#include "game/clientinput.h"
+#include "game/pmove.h"
 #include "game/playerevents.h"
 #include "game/triggerdamage.h"
 
@@ -1259,10 +1261,32 @@ bool World::triggerContact(Entity& e, const Vec3& absmin, const Vec3& absmax) {
 // (15,15,r.maxs[2]) around the origin; ClientThink copies the pmove box into r.mins / r.maxs (0x4e7d68..0x4e7da2), so the
 // height follows the stance (playerBoxHeight). G_RunFrame runs this in its first stage (0x4da9aa -> 0x4e8180 ->
 // 0x4e829b, for a player with pm_type < 4 and neither noclip (client +0x8628) nor ufo (+0x862c, toggled by 0x4ea170 /
-// 0x4ea220 with GAME_NOCLIPON/OFF, GAME_UFOON/OFF; not modelled, the port has neither); the
+// 0x4ea220, World::cheatNoclip / cheatUfo); the
 // "trigger" notifies it queues (0x528cb0) are delivered in the third stage (0x4dab00), before the animation step.
+bool World::cheatToggle(bool& flag, const char* on, const char* off) {
+    const auto print = [this](const char* key) { clientCommands_.push_back({"print", key}); }; // `print "%s"` (0x584038)
+    const auto cv = cvars.find("sv_cheats");
+    if (cv == cvars.end() || cv->second.empty() || std::atoi(cv->second.c_str()) == 0) {
+        print("GAME_CHEATSNOTENABLED"); // 0x58413c
+        return false;
+    }
+    const Value h = player_ ? player_->obj->get("health") : Value();
+    if (!player_ || !h.isNumber() || h.asInt() <= 0) {
+        print("GAME_MUSTBEALIVECOMMAND"); // 0x58411c
+        return false;
+    }
+    flag = !flag;
+    print(flag ? on : off);
+    return true;
+}
+
+int World::playerPmType() const {
+    const Value h = player_ ? player_->obj->get("health") : Value();
+    return pmClientType(noclip_, ufo_, h.isNumber() ? h.asInt() : 1, playerLink_.has_value());
+}
+
 void World::runTriggers() {
-    if (!player_) return;
+    if (!player_ || noclip_ || ufo_ || playerPmType() >= 4) return;
     const Value po = player_->obj->get("origin");
     if (!po.isVector()) return;
     const Vec3 p = po.asVector();
@@ -1669,6 +1693,23 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("usebuttonpressed", [this, playerOnly](CallContext& c) {
         playerOnly(c);
         return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 0x28u) ? 1 : 0));
+    });
+    // buttonpressed(name) (0x538980): player-only ("not an entity" 0x587de4 for a non-entity self, "entity %i is not a player"),
+    // the argument is a string (an empty one is the error "usage: buttonPressed(<button name>)", 0x590a3c). The name is turned
+    // into a key number (0x40b880, ClientInput::keyNumber) and the result is the key table's down flag (0x5d2728, set by
+    // CL_KeyEvent 0x40c0fd): int 1 while the key is held, 0 when it is not or the name is no key (-1), e.g. the console button
+    // names BUTTON_A used by _briefing.
+    vm_.registerBuiltin("buttonpressed", [this, playerOnly](CallContext& c) {
+        playerOnly(c);
+        const std::string name = c.args.empty() ? std::string() : c.arg(0).toString();
+        if (name.empty()) throw std::runtime_error("usage: buttonPressed(<button name>)");
+        return Value(int32_t(clientInput && clientInput->keyDown(name) ? 1 : 0));
+    });
+    // getcommandfromkey(name) (0x4ece00): the binding text of the key (key table +8, 0x5d2730), "" when the name is no key
+    // or the key is unbound (0x56cd07). moscow_str asks for BUTTON_RSTICK / BUTTON_LSTICK, which are no PC key names.
+    vm_.registerBuiltin("getcommandfromkey", [this](CallContext& c) {
+        const std::string name = c.args.empty() ? std::string() : c.arg(0).toString();
+        return Value(clientInput ? clientInput->commandFromKey(name) : std::string());
     });
     // getplayerangles (0x538600): the vector at client+0xc4 (the player state's view angles).
     vm_.registerBuiltin("getplayerangles", [this, playerOnly](CallContext& c) {

@@ -100,7 +100,7 @@ void addPlayerEvent(PlayerState& ps, int event, int parm) {
 namespace {
 
 // Applies PM_CrashLand: the landing report the cgame turns into the view dip, the speed loss and the event.
-// TODO(spec): the exact velocity at the start of the step is the pml copy; the pm_time of a damaging landing only
+// The pml fields are the origin/velocity copy at 0x50c67f..0x50c6c4 (before any movement), as the port does. TODO(spec): the pm_time of a damaging landing only
 // matters through the walk accel (x0.25) and friction (x0.3) of pm_flags 0x200.
 void crashLand(PlayerState& ps, const Pml& pml) {
     const float g = pml.gravity;

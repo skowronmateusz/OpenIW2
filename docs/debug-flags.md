@@ -66,7 +66,8 @@ described in the code that reads them.
 ## Command-line options
 - iw2view: `--menu` (front end without a level), `--cvar name=value`, `--ride F,R` / `--ride-after S` / `--ride-fire`
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,
-  `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`.
+  `--force-turret p,y`, `--force-jolt p,r`, `--spawn-all`, `--noclip` / `--ufo` (run the `noclip` / `ufo` cheat command once the level is up; they
+  need `--cvar sv_cheats=1`, otherwise the client prints `GAME_CHEATSNOTENABLED`), `--god`.
 - iw2game: `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--player-throw frag|smoke` (holds +frag / +smoke 1 s..2 s through PM_Weapon; prints the throw and the explosion time: frag 3.5 s, smoke 4 s after the throw on 88ridge), `--lookat-test`.
 - iw2game: `--god` (the player takes no damage, as the `god` cheat), `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--level-call T file.gsc function` (thread on level), `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--lookat-test`.
 - iw2game `<main> <map> --item-test [weapon=N] weapon ...`: spawns weapon items at the player and prints stock / clip after the touch pickup (`weapon=N` first sets that weapon's clip, e.g. `mk1britishfrag=0 fraggrenade fraggrenade`).
@@ -147,3 +148,5 @@ described in the code that reads them.
 - iw2view logs `victory screen (next map X)`, `changing level to X (persistent)` and `player weapons: ...` after each load.
 - `--shot` runs open all menus with their fades already finished (`MenuStack::settleFades`).
 - Env `IW2_CANSHOOT_LOG=<entity number>` (or `-1` for all; iw2game/iw2view): prints every muzzle trace 0x54cf40 (`canshoot`, 0x54d010) of that actor: `[canshoot <ms>] #n muzzle (..) target (..) fraction f hit <ent> -> 0|1`. Debug only.
+
+Cvar `player_scopeExitOnDamage` (set with `--cvar player_scopeExitOnDamage=1`, default 0): iw2view feeds it to the player weapon; a damaged frame drops the aim of a scope weapon at once.

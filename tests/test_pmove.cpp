@@ -238,6 +238,11 @@ int main() {
         using iw2::game::pmTypeSpeedFactor;
         CHECK(pmTypeSpeedFactor(0) == 1.0f && pmTypeSpeedFactor(1) == 1.0f && pmTypeSpeedFactor(4) == 1.0f);
         CHECK(pmTypeSpeedFactor(2) == 3.0f && pmTypeSpeedFactor(3) == 6.0f);
+        // ClientThink's pm_type (0x4e7c05..0x4e7c5a): noclip 2, ufo 3, health > 0 linked 1 / 0, else 4 + linked.
+        using iw2::game::pmClientType;
+        CHECK(pmClientType(true, true, 100, true) == 2 && pmClientType(false, true, 0, false) == 3);
+        CHECK(pmClientType(false, false, 100, false) == 0 && pmClientType(false, false, 100, true) == 1);
+        CHECK(pmClientType(false, false, 0, false) == 4 && pmClientType(false, false, -5, true) == 5);
         CHECK(leanInputAllowed(0, false, true, false));
         CHECK(!leanInputAllowed(0, true, true, false));   // pm_flags 0x8000 (freezecontrols / absolute playerlinkto)
         CHECK(!leanInputAllowed(0, false, false, false)); // airborne

@@ -42,6 +42,24 @@ void bindings() {
     CHECK(in.forwardMove() == 0);
 }
 
+// Key names (0x40b880) and the key table reads of buttonpressed / getcommandfromkey (0x5d2728 down, 0x5d2730 binding).
+void keyTable() {
+    CHECK(ClientInput::keyNumber("w") == 'w' && ClientInput::keyNumber("W") == 'W');
+    CHECK(ClientInput::keyNumber("0x41") == 0x41 && ClientInput::keyNumber("0x4") == -1);
+    CHECK(ClientInput::keyNumber("space") == 32 && ClientInput::keyNumber("MOUSE1") == 200 && ClientInput::keyNumber("f12") == 178);
+    CHECK(ClientInput::keyNumber("181") == 128 && ClientInput::keyNumber("BUTTON_A") == -1 && ClientInput::keyNumber("") == -1);
+    ClientInput in;
+    in.loadConfig(kCfg);
+    CHECK(in.commandFromKey("w") == "+forward" && in.commandFromKey("Mouse1") == "+attack" && in.commandFromKey("SPACE") == "+gostand");
+    CHECK(in.commandFromKey("BUTTON_RSTICK").empty() && in.commandFromKey("z").empty()); // unknown name / unbound key
+    CHECK(!in.keyDown("w") && !in.keyDown("BUTTON_A"));
+    in.key("W", true);
+    in.key("z", true); // unbound keys have a down flag as well
+    CHECK(in.keyDown("w") && in.keyDown("Z") && !in.keyDown("SPACE"));
+    in.key("w", false);
+    CHECK(!in.keyDown("W") && in.keyDown("z"));
+}
+
 void rebinding() {
     ClientInput in;
     in.loadConfig(kCfg);
@@ -106,6 +124,7 @@ void adsAndWeapons() {
 } // namespace
 
 int main() {
+    keyTable();
     bindings();
     stance();
     adsAndWeapons();
