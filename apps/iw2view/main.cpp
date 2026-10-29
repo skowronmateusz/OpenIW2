@@ -4123,6 +4123,12 @@ int main(int argc, char** argv) {
         std::string deferredExec; // console text after a `wait`, run on the next frame
         int loadScreenPhase = 0; // 1: the briefing load screen is up for one frame before the synchronous load (UI_SetActiveMenu(13))
         std::optional<std::string> pendingLoad;                   // savegame to load ("loadgame X", loadgame_continue)
+        // The save reload after a death (loadgame_continue from the dead screen): no briefing frame and no pregame prompt, the
+        // level resumes at once. The exe opens the load screen only once a load has lasted 100 ms of real time (the progress
+        // callback 0x4a2fcf / 0x4b91d0 first stores the start time and then calls 0x4022b0 at most every 100 ms) and opens
+        // pregame at the end only when a menu is open (0x449a2c tests the menu count 0x10fed5c), so a quick reload shows neither.
+        // TODO(spec): the exe's real load time is not modelled; openiw2 loads synchronously, so the screen is never shown here.
+        bool quickReload = false;
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
         menuEnv.getCvar = [&](const std::string& n) {
@@ -7692,7 +7698,7 @@ int main(int argc, char** argv) {
                 }
                 if (auto change = world->takeDueLevelChange()) {
                     const std::string last = menuEnv.getCvar("sv_lastSaveGame");
-                    if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last;
+                    if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last, quickReload = true;
                     else if (change->victoryScreen) {} // the client command openvictoryscreen opens the menu; `nextlevel` loads the map
                     else pendingLevel = std::make_pair(change->map, change->failed), pendingPersistent = change->persistent && !change->failed;
                 }
@@ -7733,6 +7739,7 @@ int main(int argc, char** argv) {
             static std::optional<game::LoadedSave> heldSave; // a savegame load waiting for the load-screen frame
             static script::ObjectPtr heldGame;               // game[] of a persistent change (0x9bef30 survives, 0x4d9d3c)
             static std::optional<game::World::CarriedPlayer> heldPlayer;
+            bool loadNow = pendingLevel && loadScreenPhase == 1; // the load-screen frame was drawn last pass
             if (pendingLevel && loadScreenPhase == 0) {
                 // Leaving the level (G_ShutdownGame 0x4d9ce0): a cinematic() recorded by the script plays first (0x4d9f90); game[] and the
                 // player's weapons are kept only for a persistent change. Then the client starts the map load (0x40ce90: maps/<map>.csv
@@ -7756,10 +7763,13 @@ int main(int argc, char** argv) {
                 for (float& v : mixer.channelScale) v = 1;
                 loadMapAliases(pendingLevel->first);
                 frontStack.closeAll();
-                frontStack.open("briefing");
+                if (!quickReload) frontStack.open("briefing");
                 loadScreenPhase = 1;
-            } else if (pendingLevel) {
+                if (quickReload) loadNow = true; // no load screen: load in the same pass
+            }
+            if (loadNow) {
                     loadScreenPhase = 0;
+                    const bool wasQuick = std::exchange(quickReload, false);
                     loadedSave = std::move(heldSave);
                     heldSave.reset();
                     // Level change or restart: rebuild the world and the scene for the next map.
@@ -7793,7 +7803,7 @@ int main(int argc, char** argv) {
                     // Load finished (0x449a2c, client state 4): with ui_autoContinue (bool, default 0, flags 0x1000, 0x4c32c4) or a
                     // timedemo (0x4c5530) the game starts at once (0x4c54c0); otherwise cl_paused 1, every menu closed and "pregame"
                     // ("click to start the mission") opened; its click runs uiScript playerstart.
-                    if (std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0) {
+                    if (std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0 && !wasQuick) {
                         menuEnv.setCvar("cl_paused", "1");
                         frontStack.open("pregame");
                     } else menuEnv.setCvar("cl_paused", "0");
