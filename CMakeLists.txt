@@ -422,3 +422,7 @@ add_test(NAME balcony COMMAND test_balcony)
 add_executable(test_vehicleseat tests/test_vehicleseat.cpp)
 target_link_libraries(test_vehicleseat PRIVATE iw2_game)
 add_test(NAME vehicleseat COMMAND test_vehicleseat)
+
+add_executable(test_swapdrop tests/test_swapdrop.cpp)
+target_link_libraries(test_swapdrop PRIVATE iw2_game)
+add_test(NAME swapdrop COMMAND test_swapdrop)
