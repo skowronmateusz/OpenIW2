@@ -146,7 +146,9 @@ void World::aiMelee(Entity& a) {
 // Event 200 (0x4e775d): a cooked grenade went off in the player's hand: 100000 damage to the player, MOD_SUICIDE.
 // TODO(spec): it goes through the radius damage 0x527d80 (others nearby are hurt too).
 void World::playerGrenadeInHand(const Vec3& eye) {
-    if (player_ && isAlive(*player_)) damage(*player_, player_, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
+    // Skipped with god / demigod (flags & 3, 0x4e776b); otherwise health and ps+0x108 become 0 and player_die runs (0x4e778b..0x4e7791).
+    if (player_ && isAlive(*player_) && !player_->obj->get("$godmode").truthy() && !player_->obj->get("$demigod").truthy())
+        damage(*player_, player_, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
 }
 
 void World::notifyPlayer(const std::string& name) {
