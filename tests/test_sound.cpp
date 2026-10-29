@@ -204,7 +204,31 @@ void testMixer() {
 
 } // namespace
 
+// Channel volume slots (0x793a34): the highest active slot wins; the stop-all routine (0x444730) clears slots 1..4, so the victory
+// screen's channel volumes do not leak into the next level (bug: nothing but music and menu was audible after demolition).
+static void testVolumeSlots() {
+    iw2::audio::ChannelVolumeSlots s;
+    float out[11];
+    s.resolve(out);
+    CHECK(out[5] == 1.0f);
+    float victory[11], shock[11];
+    for (int c = 0; c < 11; ++c) victory[c] = c == 8 ? 1.0f : 0.0f, shock[c] = 0.5f;
+    s.set(1, victory);
+    s.resolve(out);
+    CHECK(out[5] == 0.0f && out[8] == 1.0f);
+    s.set(4, shock);
+    s.resolve(out);
+    CHECK(out[5] == 0.5f);
+    s.clear(4);
+    s.resolve(out);
+    CHECK(out[5] == 0.0f);
+    s.clearAll();
+    s.resolve(out);
+    for (int c = 0; c < 11; ++c) CHECK(out[c] == 1.0f);
+}
+
 int main() {
+    testVolumeSlots();
     const auto bytes = makeWav({100, -200, 16384}, 22050);
     const auto w = iw2::audio::parseWav(bytes);
     CHECK(w.rate == 22050 && w.channels == 1 && w.frames() == 3);
