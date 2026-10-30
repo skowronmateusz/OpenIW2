@@ -70,7 +70,7 @@ void World::registerCampaignBuiltins() {
         return Value();
     });
     // TODO(spec): objective_string's message (FUN_004f18c0) is not decompiled; the text is stored only.
-    auto setString = [this, index, setState](CallContext& c) {
+    auto setString = [this, index](CallContext& c) {
         // The further arguments (the "&&N" values, formatted by 0x4eb9b0 like iprintln's) follow after \x1f.
         std::string text = textOf(c.arg(1));
         for (size_t i = 2; i < c.args.size(); ++i) text += "\x1f" + c.arg(i).toString();
@@ -79,15 +79,15 @@ void World::registerCampaignBuiltins() {
     };
     vm_.registerBuiltin("objective_string", setString);
     vm_.registerBuiltin("objective_string_nomessage", setString);
-    vm_.registerBuiltin("objective_icon", [this, index, setState](CallContext& c) {
+    vm_.registerBuiltin("objective_icon", [this, index](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))].icon = c.arg(1).toString();
         return Value();
     });
-    vm_.registerBuiltin("objective_position", [this, index, setState](CallContext& c) {
+    vm_.registerBuiltin("objective_position", [this, index](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))].positions[0] = c.arg(1).asVector();
         return Value();
     });
-    vm_.registerBuiltin("objective_additionalposition", [this, index, setState](CallContext& c) {
+    vm_.registerBuiltin("objective_additionalposition", [this, index](CallContext& c) {
         const int n = c.arg(1).asInt();
         if (n < 0 || n > 7) throw std::runtime_error("objective_additionalposition: position index must be 0 to 7");
         objectives_[size_t(index(c.arg(0)))].positions[size_t(n)] = c.arg(2).asVector();
@@ -108,13 +108,13 @@ void World::registerCampaignBuiltins() {
         for (const auto& a : c.args) setState(objectives_[size_t(index(a))], 4);
         return Value();
     });
-    vm_.registerBuiltin("objective_ring", [this, index, setState](CallContext& c) {
+    vm_.registerBuiltin("objective_ring", [this, index](CallContext& c) {
         Objective& o = objectives_[size_t(index(c.arg(0)))];
         o.ring = !o.ring;
         o.ringStartMs = timeMs_; // the "ring" configstring value changed (0x4c0b8c)
         return Value();
     });
-    vm_.registerBuiltin("objective_delete", [this, index, setState](CallContext& c) {
+    vm_.registerBuiltin("objective_delete", [this, index](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))] = Objective{};
         return Value();
     });

@@ -1651,10 +1651,10 @@ struct FragmentUniforms {
     float lmWeights[4];
     float params[4];
     float ambient[4];
-    float scroll[4]; // x: V offset subtracted from the texture coordinate (tread scroll)
-    float fogParams[4]; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
-    float fogColor[4];
-    float probe[6][4]; // light-grid coefficients R0,R1,G0,G1,B0,B1 (lightprobe.hlsl lightGridColors); used when sunDirection.w == 1
+    float scroll[4]{}; // x: V offset subtracted from the texture coordinate (tread scroll)
+    float fogParams[4]{}; // x: 1 = on, y: scale, z: shift, w: exponent (!= 0: exponential fog)
+    float fogColor[4]{};
+    float probe[6][4]{}; // light-grid coefficients R0,R1,G0,G1,B0,B1 (lightprobe.hlsl lightGridColors); used when sunDirection.w == 1
 };
 
 // An entity model to draw this frame.
@@ -4209,7 +4209,6 @@ int main(int argc, char** argv) {
         // Script menus (openmenu, docs/spec/ui.md): loaded from "ui/scriptmenus/<name>.menu" on the first "popupopen" (0x4c3ad0).
         ui::MenuLibrary scriptMenus(vfs);
         float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
-        SDL_Window* menuWindow = nullptr; // set once the window exists
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
         bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
@@ -6785,7 +6784,6 @@ int main(int argc, char** argv) {
         if (!SDL_ClaimWindowForGPUDevice(dev, window)) sdlFail("SDL_ClaimWindowForGPUDevice");
         renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window));
         SDL_SetWindowRelativeMouseMode(window, true);
-        menuWindow = window;
 
         if (menuMode) frontStack.open("main"); // UI_SetActiveMenu(MAIN) opens "main" (0x4c6520)
         uint64_t last = SDL_GetTicksNS();

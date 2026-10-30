@@ -623,7 +623,6 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
     if (inOffhand() || state_ == State::Dropping || state_ == State::Melee || state_ == State::MeleeEnd || name_.empty())
         return 0;
     const bool automatic = fieldValue("semiAuto") != "1";
-    const int clipSize = std::max(1, std::atoi(fieldValue("clipSize").c_str()));
     int shots = 0;
     if (!in.fire) triggerReleased_ = true;
     // A fresh attack press during a segmented reload round turns state 7 into 8 and 5 into 6 (0x4de3d3): the reload

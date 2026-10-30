@@ -221,8 +221,12 @@ void worldRoundTrip() {
                 std::istringstream sa(xa), sb(xb);
                 std::string la, lb;
                 int shown = 0;
-                while (shown < 12 && (bool(std::getline(sa, la)) | bool(std::getline(sb, lb))))
+                // Both streams advance on every line, so the two reads must not short-circuit.
+                while (shown < 12) {
+                    const bool gotA = bool(std::getline(sa, la)), gotB = bool(std::getline(sb, lb));
+                    if (!gotA && !gotB) break;
                     if (la != lb) { std::cerr << "frame " << i + 1 << "\n  saved : " << la << "\n  loaded: " << lb << "\n"; ++shown; }
+                }
             }
         }
     }

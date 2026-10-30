@@ -778,7 +778,7 @@ const std::string& World::impactEffect(int type, int surface) {
         static const char* const kSurf[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
                                             "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
                                             "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
-        for (const std::string dir : {std::string("fx/"), "fx/maps/" + mapName_ + "/"}) {
+        for (const std::string& dir : {std::string("fx/"), "fx/maps/" + mapName_ + "/"}) {
             std::vector<std::string> files;
             for (const auto& f : vfs_.list(dir)) {
                 const std::string rest = f.substr(dir.size());

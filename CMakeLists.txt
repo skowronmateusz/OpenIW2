@@ -14,6 +14,14 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+# Every target of this project (libraries, tools, app, tests) builds warning-free; a new warning fails the build.
+# Third-party code is only found through find_package, so these flags never reach it. Off by default so newer compilers do not break builds from source; maintainers and the release build use -DIW2_WERROR=ON.
+option(IW2_WERROR "Treat compiler warnings as errors" OFF)
+add_compile_options(-Wall -Wextra -Wpedantic)
+if(IW2_WERROR)
+  add_compile_options(-Werror)
+endif()
+
 find_package(ZLIB REQUIRED)
 
 add_library(iw2_fs
@@ -22,7 +30,6 @@ add_library(iw2_fs
   src/fs/gamedir.cpp)
 target_include_directories(iw2_fs PUBLIC src)
 target_link_libraries(iw2_fs PUBLIC ZLIB::ZLIB)
-target_compile_options(iw2_fs PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_assets
   src/assets/iwi.cpp
@@ -36,7 +43,6 @@ add_library(iw2_assets
   src/util/png.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
-target_compile_options(iw2_assets PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_audio
   src/audio/sound.cpp
@@ -51,12 +57,10 @@ if(APPLE)
 else()
   message(FATAL_ERROR "mp3 decoding is only implemented with AudioToolbox (macOS)")
 endif()
-target_compile_options(iw2_audio PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_video
   src/video/roq.cpp)
 target_include_directories(iw2_video PUBLIC src)
-target_compile_options(iw2_video PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_script
   src/script/parser.cpp
@@ -66,7 +70,6 @@ add_library(iw2_script
   src/script/stateio.cpp
   src/script/builtins_core.cpp)
 target_include_directories(iw2_script PUBLIC src)
-target_compile_options(iw2_script PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(iw2script tools/iw2script/main.cpp)
 target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
@@ -88,7 +91,6 @@ add_library(iw2_game
   src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
-target_compile_options(iw2_game PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(iw2_ui
   src/ui/menu.cpp
@@ -99,7 +101,6 @@ add_library(iw2_ui
   src/ui/savegame.cpp)
 target_include_directories(iw2_ui PUBLIC src)
 target_link_libraries(iw2_ui PUBLIC iw2_fs)
-target_compile_options(iw2_ui PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(iw2game tools/iw2game/main.cpp)
 target_link_libraries(iw2game PRIVATE iw2_game iw2_audio)
@@ -108,7 +109,7 @@ add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)
 
 add_executable(iw2asset tools/iw2asset/main.cpp)
-target_link_libraries(iw2asset PRIVATE iw2_fs iw2_assets iw2_audio)
+target_link_libraries(iw2asset PRIVATE iw2_assets iw2_audio) # iw2_fs comes with iw2_audio
 
 add_executable(iw2roq tools/iw2roq/main.cpp)
 target_link_libraries(iw2roq PRIVATE iw2_fs iw2_assets iw2_video)
@@ -133,8 +134,7 @@ find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp)
   target_link_libraries(iw2view PRIVATE iw2_game iw2_audio iw2_ui iw2_video SDL3::SDL3)
-  target_compile_options(iw2view PRIVATE -Wall -Wextra)
-else()
+  else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")
 endif()
 
