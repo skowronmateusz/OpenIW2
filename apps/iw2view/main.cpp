@@ -23,6 +23,7 @@
 #include "game/compassspring.h"
 #include "game/hudlayers.h"
 #include "game/grenadeindicator.h"
+#include "game/framescale.h"
 #include "game/hudfade.h"
 #include "game/textmessage.h"
 #include "game/clientinput.h"
@@ -7126,6 +7127,8 @@ int main(int argc, char** argv) {
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
             frameDt = std::min(dt, 0.1f);
+            // The frame scale (time_slow) scales every Com_Frame msec (0x42eb70): player movement, weapon and view run at it too.
+            const float simDt = game::scaledFrameTime(dt, slowmo);
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
             const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
@@ -7245,7 +7248,7 @@ int main(int argc, char** argv) {
                     in.breathWeapon = breathWeapon;
                 }
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
-                float remaining = std::min(dt, 0.1f);
+                float remaining = std::min(simDt, 0.1f);
                 // With a running level the player clips against the world and its solid entities (brush models,
                 // actors) like G_Trace in the original pmove (0x507b00 → 0x4db7f0 → 0x44bf00), skipping itself.
                 game::MoveParams pmp = mp;
@@ -7417,10 +7420,10 @@ int main(int argc, char** argv) {
                 }
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
-                const int shots = onTurret ? 0 : pweapon.update(std::min(dt, 0.1f), wi);
+                const int shots = onTurret ? 0 : pweapon.update(std::min(simDt, 0.1f), wi);
                 if (shots > 0) game::breathOnFire(ps, mp, pweapon.adsFrac(), breathWeapon); // 0x4dee18 -> 0x4dd2b0
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
-                aimBlend.update(pweapon.viewAiming(), std::min(dt, 0.1f));
+                aimBlend.update(pweapon.viewAiming(), std::min(simDt, 0.1f));
                 writeWeapon();
                 {
                     // HUD fade touches. 0x4a6130(n) touches one HUD menu's fade time (menu flag +0xe8 |= 4): 0 Health (0xf79a3c),
@@ -7541,7 +7544,7 @@ int main(int argc, char** argv) {
                 if (!onTurret && (pweapon.equipped() || pweapon.binocularsUp()) && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
                     // Hold-breath sounds (0x4b6840 from the first-person weapon pass 0x4b69b0: a weapon, eFlags & 0x300 clear, in a
                     // vehicle only in weapon states 0x11-0x16). The heartbeat loop lives while it is played every frame.
-                    const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(dt, 0.1f) * 1000.0f), game::BreathSoundParams{},
+                    const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(simDt, 0.1f) * 1000.0f), game::BreathSoundParams{},
                                                      [&](const char* a) {
                                                          if (std::strcmp(a, "weap_sniper_heartbeat") == 0) {
                                                              if (!heartbeatLoop) heartbeatLoop = mixer.play(a);
@@ -7553,12 +7556,12 @@ int main(int argc, char** argv) {
                                                      });
                     if (!hb && heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
                 } else if (heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
-                vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
+                vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
                 {
                     const std::string ret = pweapon.field("adsOverlayReticle");
-                    vmMotion.sway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), cam.pitch, cam.yaw,
+                    vmMotion.sway([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f), cam.pitch, cam.yaw,
                                   pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
                                   !ret.empty() && ret != "none", shockRatio);
                 }
@@ -7571,7 +7574,7 @@ int main(int argc, char** argv) {
                     rawGunBob = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
                                              ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
-                recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
+                recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
                                           pweapon.adsZoomingIn());
@@ -7607,12 +7610,8 @@ int main(int argc, char** argv) {
                 }
                 // time_slow: the frame scale moves linearly from `from` to `to` over the real time (0x4bee00).
                 if (slowStartNs) {
-                    const uint64_t nowNs = SDL_GetTicksNS();
-                    if (nowNs >= slowEndNs) slowmo = slowTo, slowStartNs = slowEndNs = 0;
-                    else if (nowNs > slowStartNs) {
-                        const float t = float(nowNs - slowStartNs) / float(slowEndNs - slowStartNs);
-                        slowmo = (1.0f - t) * slowFrom + slowTo * t;
-                    }
+                    slowmo = game::frameScaleAt(int64_t(slowStartNs / 1000), int64_t(slowEndNs / 1000), int64_t(SDL_GetTicksNS() / 1000), slowFrom, slowTo, slowmo);
+                    if (SDL_GetTicksNS() >= slowEndNs) slowStartNs = slowEndNs = 0;
                 }
                 mixer.fadeStep(dt * 1000.0f);
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
@@ -8041,7 +8040,7 @@ int main(int argc, char** argv) {
                 }
             if (!onTurret && !playerDead && (pweapon.equipped() || pweapon.binocularsUp()) && pweapon.adsFrac() != 0) { // scope sway of the view (0x4ae060)
                 const std::string ret = pweapon.field("adsOverlayReticle");
-                const auto ss = vmMotion.scopeSway([&](const char* k) { return pweapon.number(k); }, int(std::min(dt, 0.1f) * 1000.0f),
+                const auto ss = vmMotion.scopeSway([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f),
                                                    pweapon.adsFrac(), ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0,
                                                    ps.breathScale, !ret.empty() && ret != "none");
                 cam.pitch += ss[0];

@@ -127,6 +127,14 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
   msec × scale × timescale, 0x42eb70); `scr_blur <ms> <radius> <realtime> <priority>` (0x4beb80) lerps the blur radius
   from the current one, `clear_blur` (0x4bebf0) zeroes it; `opendeadscreen` stores cg.time (0xf7966c),
   `closedeadscreen` clears it.
+- Slow motion (death): the scale is not applied at death but when the client receives `time_slow`, i.e. with the death
+  screen, 1700 ms of level time after the death (a dead body therefore moves at full speed until then). The curve is
+  linear in real ms from 1 to 0.1 over `g_deathDelay` (0x4bee00); afterwards the scale stays at the end value 0.1, it never
+  reaches 0 (the level reloads at the same moment, 0x4d9f90). The scale multiplies every Com_Frame msec (0x42eb70, min 1 ms)
+  before the server frame and the client run (0x40cf60), so level time, player movement, actors and effects all slow
+  down. Nothing else freezes the dead player: movement commands are cleared and the ground move loses 20 speed per step
+  (0x508a10, 0x50c733). iw2view applies the scale to the player's movement and weapon/view steps too (`game/framescale.h`).
+  TODO(spec): the per-step friction depends on the step length of the original's frames, not read.
 - The quote is ownerdraw `CG_DEADQUOTE` (0x4aa2a0) of hud.menu's `deadscreen` menu (item `quote`, textscale 0.4, rect
   80 200 480 20, centred): after `opendeadscreen`, alpha = elapsed cg time / `hud_deathQuoteFadeTime` (int, default
   1000, 0..100000), text = `ui_deadquote` without a leading `@`, localized. 0x4cc6a0 wraps at spaces to the rect
