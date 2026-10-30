@@ -49,6 +49,32 @@ Draw order (inferred): elements are sorted by `sort`. Elements with `foreground`
 engine's own HUD (crosshair, ammo counter), then elements with `foreground` true, so the intro screen's black
 backdrop hides the crosshair and ammo counter.
 
+## Text drawing (2D)
+
+All from the 1.3 binaries:
+
+- Glyph scale = textScale · 48 / font pixel height (gfx refexport +0x128 = DLL 0x1000bfa0; 48.0 at 0x1019bdf8).
+  A fontscale-1 text is 48 virtual units (10 % of 480) tall regardless of the font's pixel height.
+- The text origin is snapped to whole screen pixels before drawing: the UI text wrapper adds 2^-30 (0x591f20)
+  and converts x and y with `fistp` (exe 0x4c37be–0x4c37d3 and 0x4c37df–0x4c37f1; the hudelem path repeats it
+  at 0x4c3830+), then calls DrawText (refexport 0x617be4 → DLL 0x1000c070). Glyph offsets after the origin stay
+  fractional; the DLL backend emits float vertices (0x1002e880).
+- Hudelem text font (exe 0x4c27b0, font value 0 "default"): textScale = fontscale · 0.25 (0x591fe0),
+  s = textScale · screen height / 480 (0x793944); s ≤ ui_smallFont (0.25) → $smallfont, s < ui_bigFont (0.4) →
+  $font (normalFont), s < ui_extraBigFont (0.55) → $bigfont, else $extrabigfont (font handles 0x1107448
+  $bigfont, 0x110744c $smallfont, 0x1107450 $consolefont, 0x1107454 $boldfont, 0x1107458 $font,
+  0x110745c $extrabigfont, from the RegisterFont sequence 0x4c3487–0x4c34fe; dvars registered 0x4c312c–0x4c317e).
+  Font value 1: textScale = fontscale · 0.5 (0x591e10), pick $smallfont / $font / $boldfont (< 0.55). Font
+  value 2: textScale = fontscale / 3 (0x592250), always $consolefont.
+- The font atlas `fonts/gamefonts` (512×1024 DXT5, 8 stored mip levels, 1 texel per font pixel in both axes)
+  is sampled from mip level 0 only: its material sampler state is 0x02. The 1.3 renderer decodes a material's
+  sampler-state byte (byte 4 of each texture-table entry) in its D3D9 SetSamplerState wrapper 0x1003ddc0:
+  bits 0–1 → D3DSAMP_MINFILTER (6) and MAGFILTER (5) — mag gets the min value — through table 0x10190714
+  {NONE, POINT, LINEAR, ANISOTROPIC}; bits 2–3 → MIPFILTER (7); bits 4/5/6 → ADDRESSU/V/W (1/2/3) with set =
+  D3DTADDRESS_CLAMP (3), clear = WRAP (1). A byte with no filter bits (bits & 0xf == 0) gets the r_textureMode
+  default ORed in (0x1003dec6; default byte 0x1070c4be = table 0x101906b0[r_textureMode], default index 2
+  "bilinear" = 6, i.e. LINEAR min/mag, POINT mip). For state 0x02 that is LINEAR min/mag with mip NONE.
+
 ## Mission intro screen (`maps/_introscreen.gsc`)
 
 `maps/_load.gsc` starts `maps\_introscreen::main()`, which picks the level's title/place/date/info strings by
