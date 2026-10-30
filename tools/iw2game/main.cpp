@@ -858,6 +858,7 @@ int main(int argc, char** argv) {
         bool placedItemsTaken = false;
         float lastProgressT = 0.0f;
         int stallCount = 0, savesSeen = 0;
+        std::map<const void*, float> deathSeen; // autoplay: sim time a "death" wait on an object was first seen
         int actionsSinceProgress = 0; // autoplay actions since the last real progress: escalation level
         float lastActionT = 0.0f, lastSeenProgressT = 0.0f;
         std::array<int, 16> objStates{};
@@ -1536,6 +1537,9 @@ int main(int argc, char** argv) {
                 }
             if (autoplay && lastChange) break; // the level ends (victory screen, load, mission failed): nothing more to follow
             if (lastProgressT != lastSeenProgressT) { lastSeenProgressT = lastProgressT; actionsSinceProgress = 0; }
+            if (autoplay && world.player() && f % 40 == 0) // when each "death" wait first showed up (the kill gate takes the oldest wave first)
+                for (const auto& w : world.vm().waiters())
+                    if (w.event == "death") deathSeen.emplace(w.object.get(), f * 0.05f);
             if (autoplay && world.player() && f * 0.05f - std::max(lastProgressT, lastActionT) >= stallSecs) {
                 const float t = f * 0.05f;
                 char head[64];
@@ -1787,7 +1791,7 @@ int main(int argc, char** argv) {
                         // stand point from which the use scan (0x534490: distance, facing, eye -> target line) picks this entity.
                         for (int ring = 0; ring < 2 && !haveStand; ++ring)
                             for (int k = 0; k < 8 && !haveStand; ++k) {
-                                const float ang = float(k) * 3.14159265f / 4.0f, off = ring == 0 ? 40.0f : 60.0f;
+                                const float ang = float(k) * 3.14159265f / 4.0f, off = ring == 0 ? 40.0f : 120.0f;
                                 iw2::game::Vec3 feet{bestTarget[0] + std::cos(ang) * off, bestTarget[1] + std::sin(ang) * off, bestTarget[2] - 50.0f};
                                 const int fn = nearestNode(feet);
                                 if (fn >= 0) {
@@ -1827,6 +1831,31 @@ int main(int argc, char** argv) {
                         if (fn >= 0) {
                             const auto& q = graph.position(size_t(fn));
                             if (std::fabs(q[0] - entry[0]) < 256.0f && std::fabs(q[1] - entry[1]) < 256.0f && std::fabs(q[2] - entry[2]) < 200.0f) entry[2] = q[2];
+                        }
+                        // A shot needs a clear bullet line (static models such as barbed wire, furniture and sandbags stop bullets and
+                        // sight): when the default stand point is blocked, take the first of 16 directions x 5 distances from which the
+                        // eye -> target line reaches the target (moscow's bottle range sits behind a barbed-wire fence).
+                        if (bestKind == Shoot && !meleeTry) {
+                            const auto clearFrom = [&](const iw2::game::Vec3& feet) {
+                                const iw2::game::Vec3 eye{feet[0], feet[1], feet[2] + 60.0f};
+                                const auto tr = world.collision().trace(eye, bestTarget, {0, 0, 0}, {0, 0, 0}, iw2::game::Contents::BulletMask, world.player()->number);
+                                return tr.fraction >= 0.98f || tr.entity == best->number;
+                            };
+                            if (!clearFrom(entry)) {
+                                static const float rings[5] = {200.0f, 140.0f, 100.0f, 60.0f, 260.0f};
+                                bool found = false;
+                                for (int ring = 0; ring < 5 && !found; ++ring)
+                                    for (int k = 0; k < 16 && !found; ++k) {
+                                        const float ang = float(k) * 3.14159265f / 8.0f;
+                                        iw2::game::Vec3 feet{bestTarget[0] + std::cos(ang) * rings[ring], bestTarget[1] + std::sin(ang) * rings[ring], bestTarget[2] - 50.0f};
+                                        const int gn = nearestNode(feet);
+                                        if (gn < 0) continue;
+                                        const auto& q = graph.position(size_t(gn));
+                                        if (std::fabs(q[0] - feet[0]) > 96.0f || std::fabs(q[1] - feet[1]) > 96.0f || std::fabs(q[2] - feet[2]) > 200.0f) continue;
+                                        feet[2] = q[2];
+                                        if (clearFrom(feet)) { entry = feet; found = true; }
+                                    }
+                            }
                         }
                         haveStand = true;
                     }
@@ -1957,6 +1986,30 @@ int main(int argc, char** argv) {
                                 crossed = nullptr;
                                 break;
                             }
+                            // Two corners (along one side of the field): the straight legs to a single corner often cross the field or its
+                            // warning triggers (hill400_assault from the start area).
+                            auto cornerAt = [&](const iw2::game::Vec3& c0) {
+                                iw2::game::Vec3 c = c0;
+                                const int cn = nearestNode(c);
+                                if (cn >= 0) { const auto& q = graph.position(size_t(cn)); if (std::fabs(q[0] - c[0]) < 300.0f && std::fabs(q[1] - c[1]) < 300.0f) c[2] = q[2]; }
+                                return c;
+                            };
+                            for (int i = 0; i < 4 && crossed; ++i)
+                                for (int j = 0; j < 4 && crossed; ++j) {
+                                    if (i == j) continue;
+                                    const iw2::game::Vec3 ca = cornerAt(corners[i]), cb = cornerAt(corners[j]);
+                                    if (crossesLeg(po, ca) || crossesLeg(ca, cb) || crossesLeg(cb, entry)) continue;
+                                    playerPath = {{t, po}};
+                                    at = t;
+                                    prev = po;
+                                    leg(ca);
+                                    leg(cb);
+                                    leg(entry);
+                                    std::snprintf(buf, sizeof buf, "%s  detour around #%d %s via %.0f,%.0f,%.0f and %.0f,%.0f,%.0f", head, crossed->number, crossed->obj->get("targetname").toString().c_str(), ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
+                                    autoplayLog.push_back(buf);
+                                    std::cout << buf << "\n";
+                                    crossed = nullptr;
+                                }
                         }
                     }
                     if (crossed) {
@@ -2039,6 +2092,7 @@ int main(int argc, char** argv) {
                     } else {
                     // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
                     int killed = 0;
+                    std::vector<std::pair<iw2::game::Entity*, float>> gateCands;
                     const bool killGate = actionsSinceProgress <= 3; // once per no-progress cycle, then force / stall (which restarts the chase)
                     // An entity some thread waits on from a function whose name says "missionfail" (beltot.gsc missionfailedondamage on the
                     // prisoner): killing it ends the mission, so the kill gate leaves it alone.
@@ -2117,9 +2171,24 @@ int main(int argc, char** argv) {
                                 !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies") && // never friendlies (missionfailed)
                                 (!e->vehicle || (!plantable(*e) && enemyVehicle(*e, w.site))) && // vehicles only when they are the enemy's and carry no planting trigger (downtown_assault's / tankhunt's tanks are planted, not shot)
                                 !unsealedMortarTeam(*e) && !protectedEntity(e->obj)) { // an entity another thread guards with a missionfailed handler (beltot's prisoner)
-                                world.debugDamage(*e, 100000);
-                                ++killed;
+                                bool dup = false;
+                                for (const auto& gc : gateCands) dup = dup || gc.first == e.get();
+                                if (dup) continue;
+                                const auto seen = deathSeen.find(w.object.get());
+                                gateCands.push_back({e.get(), seen == deathSeen.end() ? t : seen->second});
+                                ++killed; // counts candidates here; the kills below
                             }
+                    }
+                    // Oldest wave first: waits that appeared more than 120 s after the oldest candidate's belong to a later stage (bergstein's
+                    // final-house guys spawn when the player is inside; killing them together with the MG42 gunner completes the house before
+                    // the script has added its objective, and the objective waits for a notify that has already gone). The next gate takes them.
+                    static const float killWave = std::getenv("IW2_AUTOPLAY_WAVE") ? float(std::atof(std::getenv("IW2_AUTOPLAY_WAVE"))) : 120.0f;
+                    if (!gateCands.empty()) {
+                        float oldest = gateCands[0].second;
+                        for (const auto& gc : gateCands) oldest = std::min(oldest, gc.second);
+                        killed = 0;
+                        for (const auto& gc : gateCands)
+                            if (gc.second <= oldest + killWave) { world.debugDamage(*gc.first, 100000); ++killed; }
                     }
                     const char* what = "death-waited entities";
                     if (killed == 0 && killGate) {

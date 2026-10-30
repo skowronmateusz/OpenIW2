@@ -168,3 +168,4 @@ described in the code that reads them.
 Cvar `player_scopeExitOnDamage` (set with `--cvar player_scopeExitOnDamage=1`, default 0): iw2view feeds it to the player weapon; a damaged frame drops the aim of a scope weapon at once.
 
 - `iw2view --language NAME`: UI/subtitle language (`english`, `polish`, ...). Without it the language is detected from the first `localized_<language>_iw*.iwd` pack in the game directory, else `english`.
+- iw2game `--autoplay` obeys static-model cover: a shot target is approached from a stand point whose eye-to-target bullet trace is clear (16 directions x 5 distances around the target), a route through a minefield may use two bounds corners, and a kill gate takes the oldest wave of `death` waits first (waits first seen more than 120 s after the oldest candidate wait for the next gate). Env `IW2_AUTOPLAY_WAVE=<seconds>` changes that window (a huge value restores the old kill-everything gate).
