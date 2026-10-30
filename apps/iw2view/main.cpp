@@ -16,6 +16,7 @@
 #include "assets/xanim.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
+#include "fs/gamedir.h"
 #include "audio/sound.h"
 #include "game/screenfade.h"
 #include "video/roq.h"
@@ -3106,6 +3107,88 @@ static std::string keyName(SDL_Scancode sc) {
     }
 }
 
+// Start without arguments (from Finder / the .app): stdout and stderr go to ~/Library/Logs/OpenIW2/openiw2.log (the previous
+// log is kept as .1), the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a folder dialog, and it is
+// checked before it is mounted (src/fs/gamedir.h). Returns false when the user quits.
+struct AppStart { std::string mainDir, language; std::filesystem::path pref; uint32_t width = 0, height = 0; };
+static bool appStartup(AppStart& out) {
+    if (const char* home = std::getenv("HOME")) {
+        const std::filesystem::path log = std::filesystem::path(home) / "Library/Logs/OpenIW2/openiw2.log";
+        if (fs::rotateLog(log)) {
+            std::freopen(log.string().c_str(), "w", stdout);
+            std::freopen(log.string().c_str(), "a", stderr);
+            std::setvbuf(stdout, nullptr, _IOLBF, 0);
+            std::setvbuf(stderr, nullptr, _IONBF, 0);
+        }
+    }
+    if (!SDL_Init(SDL_INIT_VIDEO)) { std::cerr << "SDL_Init: " << SDL_GetError() << "\n"; return false; }
+    char* prefC = SDL_GetPrefPath("OpenIW2", "OpenIW2");
+    if (!prefC) { std::cerr << "SDL_GetPrefPath: " << SDL_GetError() << "\n"; return false; }
+    out.pref = prefC;
+    SDL_free(prefC);
+    const std::filesystem::path settings = out.pref / "settings.cfg";
+    std::cout << "app start, preferences in " << out.pref.string() << "\n";
+
+    std::optional<std::filesystem::path> dir = fs::readMainPath(settings);
+    if (!dir && fs::checkGameDir(out.pref / "main").ok()) dir = out.pref / "main"; // a `main` folder put next to the settings
+    bool explained = false;
+    for (;;) {
+        if (dir) {
+            const fs::GameDirCheck c = fs::checkGameDir(*dir);
+            if (c.ok()) {
+                out.mainDir = dir->string();
+                out.language = c.language;
+                fs::writeMainPath(settings, *dir);
+                break;
+            }
+            std::string text = "The folder\n" + dir->string() + "\nis not a complete Call of Duty 2 `main` folder. Missing:\n";
+            for (size_t i = 0; i < c.missing.size() && i < 20; ++i) text += "  " + c.missing[i] + "\n";
+            if (c.missing.size() > 20) text += "  ... and " + std::to_string(c.missing.size() - 20) + " more\n";
+            text += "\nYou need your own Call of Duty 2 (PC) game files, patched to 1.3.";
+            std::cerr << text << "\n";
+            const SDL_MessageBoxButtonData buttons[] = {
+                {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Choose Another Folder"},
+                {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit"},
+            };
+            SDL_MessageBoxData mb{};
+            mb.flags = SDL_MESSAGEBOX_WARNING;
+            mb.title = "OpenIW2";
+            mb.message = text.c_str();
+            mb.numbuttons = 2;
+            mb.buttons = buttons;
+            int hit = 0;
+            if (!SDL_ShowMessageBox(&mb, &hit) || hit != 1) return false;
+            explained = true;
+        }
+        if (!explained) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "OpenIW2",
+                                     "OpenIW2 plays Call of Duty 2 with your own game files.\n\nIn the next window, choose the `main` folder of "
+                                     "your Call of Duty 2 (PC) installation, patched to 1.3. It contains iw_00.iwd ... iw_15.iwd and the "
+                                     "localized_<language>_iw00.iwd ... files. OpenIW2 remembers the folder.",
+                                     nullptr);
+            explained = true;
+        }
+        struct Pick { bool done = false; std::optional<std::filesystem::path> path; } pick;
+        SDL_ShowOpenFolderDialog(
+            [](void* user, const char* const* list, int) {
+                auto* p = static_cast<Pick*>(user);
+                if (list && list[0]) p->path = std::filesystem::path(list[0]);
+                p->done = true;
+            },
+            &pick, nullptr, dir ? dir->string().c_str() : nullptr, false);
+        while (!pick.done) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {}
+            SDL_Delay(10);
+        }
+        if (!pick.path) return false; // cancelled
+        dir = pick.path;
+    }
+    std::cout << "game folder: " << out.mainDir << ", language " << out.language << "\n";
+    if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) out.width = uint32_t(m->w), out.height = uint32_t(m->h);
+    return true;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // line-buffered, so a log written to a file is current while playing
     std::vector<std::string> args;
@@ -3140,6 +3223,17 @@ int main(int argc, char** argv) {
     float followDist = 400.0f, followYaw = 180.0f, followPitch = 12.0f;
     std::optional<std::array<float, 2>> forceTurret, forceJolt;
     Renderer renderer;
+    // No arguments (or only the -psn_ argument older macOS versions pass to apps): the app start (appStartup above).
+    std::optional<AppStart> app;
+    if (argc == 1 || (argc == 2 && std::string(argv[1]).rfind("-psn_", 0) == 0)) {
+        app.emplace();
+        if (!appStartup(*app)) { SDL_Quit(); return 0; }
+        args = {app->mainDir};
+        language = app->language;
+        menuMode = true;
+        if (app->width && app->height) width = app->width, height = app->height;
+        argc = 1;
+    }
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -3255,7 +3349,8 @@ int main(int argc, char** argv) {
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
         // and the profile name when none is chosen, here "default").
-        const std::filesystem::path playersDir = std::filesystem::path(args[0]).parent_path() / "players";
+        // The app start keeps profiles and saves in its preference folder, so the game folder may stay read-only.
+        const std::filesystem::path playersDir = app ? app->pref / "players" : std::filesystem::path(args[0]).parent_path() / "players";
         std::string profileName = "default";
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
@@ -4272,8 +4367,9 @@ int main(int argc, char** argv) {
         std::string saveDetail;   // UI state +0x41e: detail text of the selected savegame (drawn by textsavegame items)
         std::string saveSelName;  // UI state +0x31e: entry +0 of the selected savegame (ownerdraw UI_SAVEGAMENAME 262)
         int saveSel = -1;         // selected row (ownerdraw UI_SAVEGAME_SHOT 258 reads its image name, entry +8)
-        // Savegame directory (IW2_SAVE_DIR, default <main dir>/save; docs/debug-flags.md).
+        // Savegame directory (IW2_SAVE_DIR, default <main dir>/save, or <pref>/save for the app start; docs/debug-flags.md).
         const std::filesystem::path saveDir = std::getenv("IW2_SAVE_DIR") ? std::filesystem::path(std::getenv("IW2_SAVE_DIR"))
+                                              : app                       ? app->pref / "save"
                                                                           : std::filesystem::path(args[0]) / "save";
         menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
             if (name == "quit") execText("quit");
@@ -6683,7 +6779,7 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        SDL_Window* window = SDL_CreateWindow(("iw2view - " + args[1]).c_str(), int(width), int(height),
+        SDL_Window* window = SDL_CreateWindow(app ? "OpenIW2" : ("iw2view - " + (menuMode ? std::string("menu") : args[1])).c_str(), int(width), int(height),
                                               SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (!window) sdlFail("SDL_CreateWindow");
         if (!SDL_ClaimWindowForGPUDevice(dev, window)) sdlFail("SDL_ClaimWindowForGPUDevice");
@@ -6894,6 +6990,11 @@ int main(int argc, char** argv) {
                 if (++profReports >= 2) running = false;
             }
             const uint64_t profFrameStart = SDL_GetTicksNS();
+            // Text events only while a menu edit field has the focus (both the app start and --menu run this loop).
+            if (frontStack.wantsTextInput() != SDL_TextInputActive(window)) {
+                if (frontStack.wantsTextInput()) SDL_StartTextInput(window);
+                else SDL_StopTextInput(window);
+            }
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
                 if (!frontStack.empty()) {

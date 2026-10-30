@@ -18,7 +18,8 @@ find_package(ZLIB REQUIRED)
 
 add_library(iw2_fs
   src/fs/zip_archive.cpp
-  src/fs/vfs.cpp)
+  src/fs/vfs.cpp
+  src/fs/gamedir.cpp)
 target_include_directories(iw2_fs PUBLIC src)
 target_link_libraries(iw2_fs PUBLIC ZLIB::ZLIB)
 target_compile_options(iw2_fs PRIVATE -Wall -Wextra -Wpedantic)
@@ -116,6 +117,9 @@ enable_testing()
 add_executable(test_vfs tests/test_vfs.cpp)
 target_link_libraries(test_vfs PRIVATE iw2_fs)
 add_test(NAME vfs COMMAND test_vfs)
+add_executable(test_gamedir tests/test_gamedir.cpp)
+target_link_libraries(test_gamedir PRIVATE iw2_fs)
+add_test(NAME gamedir COMMAND test_gamedir)
 
 add_executable(test_iwi tests/test_iwi.cpp)
 target_link_libraries(test_iwi PRIVATE iw2_assets)

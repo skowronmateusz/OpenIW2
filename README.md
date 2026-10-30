@@ -46,6 +46,9 @@ contains files named `iw_00.iwd` … `iw_15.iwd` and `localized_<language>_iw00.
 
 Open **OpenIW2** from Applications. On the first start it asks you to choose your `main` folder, checks that all
 needed files are there, and remembers the folder. If something is missing, it tells you which files.
+It starts in the game's main menu. Your profiles and saved games are kept in
+`~/Library/Application Support/OpenIW2/`, so your `main` folder is never changed. A log of the last two starts is in
+`~/Library/Logs/OpenIW2/` (`openiw2.log` and `openiw2.log.1`); attach it when you report a problem.
 
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
 opens the pause menu.

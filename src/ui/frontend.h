@@ -70,6 +70,9 @@ public:
     int editCursor() const { return editCursor_; }
     int editOffset() const { return editOffset_; }
     bool editOverstrike() const { return overstrike_; }
+    // True while an edit field takes typed characters: the platform layer turns OS text input on only then
+    // (SDL3 delivers no text events until it is started, and game keys must not open an input method).
+    bool wantsTextInput() const { return !stack_.empty() && editItem() != nullptr; }
     // Characters typed (ASCII 0x20..0x7e), applied to the editing item.
     void textInput(const std::string& text);
 

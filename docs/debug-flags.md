@@ -142,7 +142,12 @@ described in the code that reads them.
 - Env `IW2_MAIN=<game main dir>` (test_savestate): also runs the World round trip on a real map (save after 5 s, load into a
   fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
   `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
-- Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads).
+- Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads); with no arguments `<pref>/save`).
+- iw2view with no arguments (the app started from Finder): stdout/stderr go to `~/Library/Logs/OpenIW2/openiw2.log` (previous log
+  kept as `openiw2.log.1`); the `main` folder is read from `mainPath=` in `<pref>/settings.cfg` (`<pref>` = SDL_GetPrefPath
+  `~/Library/Application Support/OpenIW2/`), else `<pref>/main`, else chosen in a folder dialog; it must hold `iw_00.iwd`..`iw_15.iwd`
+  and one complete `localized_<language>_iw00.iwd`..`iw10.iwd` set (names case-insensitive). Starts as `--menu` at the desktop size;
+  profiles go to `<pref>/players`. Any argument keeps the command-line behaviour.
 - iw2game `<main> <map> --ladder-test x,y,z`: finds a ladder surface (flag 8) within 64 units around x,y,z in the running level's collision,
   puts a pmove player 20 units in front of it and holds forward looking up for 4 s; exit 0 when it climbed > 40 units. Env
   `IW2_LADDER_RAISE=targetname` first puts that entity back at its realOrigin (maps/_utility.gsc triggerOn, e.g. moscow's `regroup_ladder`),

@@ -171,6 +171,7 @@ int main() {
     // Edit field (VALIDFILEFIELD, maxChars 5): editing starts at focus with the cursor at 0 and overstrike on.
     CHECK(st.click(410, 55));
     CHECK(st.editItem() && st.editItem()->name == "field" && st.editCursor() == 0 && st.editOffset() == 0 && st.editOverstrike());
+    CHECK(st.wantsTextInput()); // the app starts OS text input while the field edits
     st.textInput("a b!c^");
     CHECK(cv["newname"] == "abc");
     st.textInput("defgh");
@@ -206,6 +207,7 @@ int main() {
     CHECK(st.editCursor() == 4);
     st.key(Key::Enter);
     CHECK(cv["accepted"] == "1" && !st.editItem());
+    CHECK(!st.wantsTextInput());
     st.textInput("q");
     CHECK(cv["newname"] == "a^1bc"); // not editing any more
 
