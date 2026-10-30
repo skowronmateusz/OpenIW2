@@ -363,6 +363,9 @@ int PlayerWeapon::update(float dt, const Input& in) {
         name_.clear();
         holstered_ = true;
         fuse_ = 0;
+        // The ps weapon is 0, so the view code (CG_CalcFov 0x4ae7b0, scope overlay 0x4b6d7c) reads weapon 0's definition: no zoom, no overlay.
+        adsFrac_ = 0;
+        zoomingIn_ = true;
         firePrev_ = in.fire;
         enter(State::Ready, nullptr, 0);
         return 0;

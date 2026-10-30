@@ -611,7 +611,8 @@ void deadPlayer() {
     w.equip("g", d);
     PlayerWeapon::Input in;
     in.weapon = "g";
-    for (int i = 0; i < 30; ++i) w.update(0.01f, in);
+    in.ads = true;
+    for (int i = 0; i < 100; ++i) w.update(0.01f, in);
     CHECK(w.equipped());
     const int clip = w.clip();
     in.dead = true;
@@ -620,6 +621,7 @@ void deadPlayer() {
     for (int i = 0; i < 100; ++i) shots += w.update(0.01f, in);
     CHECK(shots == 0);
     CHECK(!w.equipped());
+    CHECK(w.adsFrac() == 0.0f); // death ends the zoom
     CHECK(w.stateNumber() == 0);
     CHECK(w.takeSounds().empty());
     CHECK(w.takeEvents().empty());

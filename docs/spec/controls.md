@@ -43,7 +43,7 @@ both timers are 0. View animation numbers paired with their timers: 2 fire, 4 re
 
 - **Dead player** (0x4dfc30, start): with pm_flags 0x1000 clear and pm_type ≥ 4 (health ≤ 0) PM_Weapon only sets the
   player's weapon (+0xb0) to 0 and returns: no fire, reload, melee, offhand or weapon change runs, so no shot, sound,
-  event or ammo use follows (the port clears the weapon at once, without a putaway). TODO(spec): the pm_flags 0x1000 branch.
+  event or ammo use follows (the port clears the weapon at once, without a putaway). The view code (CG_CalcFov 0x4ae7b0) takes the zoom from the definition of the player's weapon, which is 0 after death, so the field of view is the unzoomed cg_fov and the scope overlay is gone (the port zeroes the aim fraction). TODO(spec): the pm_flags 0x1000 branch.
 - **Weapon change** (0x4de880 → 0x4ddb40): not in states 12–22; with the timer running only a rechamber or reload
   (states 4–9) may be interrupted, firing (3) and melee (10, 11) or a running delay may not. A command weapon
   different from the player's starts the drop: state 2 with `altDropTime` (view 15) when it is the current
