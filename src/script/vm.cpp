@@ -1031,6 +1031,7 @@ void VM::step(Thread& t, bool& suspended) {
         const Value obj = pop();
         if (!obj.isObject()) throw std::runtime_error("waittill on " + obj.typeName());
         t.state = ThreadState::WaitingNotify;
+        t.waitSeq = ++waitSeq_; // registration order of the waiters of one notify
         t.waitObject = obj.asObject();
         t.waitEvent = ev.toString();
         t.waitMatch = match;
@@ -1125,9 +1126,12 @@ void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<V
         finishNotifyWait(*th, args);
         woken.push_back(th.get());
     }
-    // The frame list takes new entries at its head (0x4643a0) and the waiters are walked last-registered first (0x46c130): the
-    // waiters of this notify run in registration order, before anything an earlier notify woke (docs/spec/gsc-vm.md).
-    for (auto it = woken.rbegin(); it != woken.rend(); ++it) ready_.push_front(*it);
+    // The waiters of one notify run newest-registered first: beltot's truck_pause_node waiter (registered after the generic
+    // vehicle-node trigger thread of _vehicle.gsc) must send its `pause` before the argument-less one (docs/spec/gsc-vm.md).
+    // The frame list takes new entries at its head (0x4643a0), so they are queued oldest first. What an earlier notify woke
+    // runs after them.
+    std::sort(woken.begin(), woken.end(), [](const Thread* a, const Thread* b) { return a->waitSeq < b->waitSeq; });
+    for (Thread* th : woken) ready_.push_front(th);
 }
 
 void VM::freeObject(const ObjectPtr& object) {

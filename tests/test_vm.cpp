@@ -233,6 +233,76 @@ inner()
         CHECK(h.joined() == "7|0|");
     }
 
+    // Several waiters of one notify run newest-registered first (beltot: the generic vehicle-node trigger thread, created
+    // at load, sends `pause` without arguments; the truck_pause_node thread registered later sends it with script_wait.
+    // The truck's waittill takes the first notify, so the later waiter must run first).
+    {
+        Harness h;
+        h.files["test/waiterorder.gsc"] = R"(
+main()
+{
+    node = spawnstruct();
+    truck = spawnstruct();
+    node thread early(truck);
+    wait 0.05;
+    truck thread pauser();
+    wait 0.05;
+    node thread late(truck);
+    wait 0.05;
+    node notify("trigger");
+    wait 0.05;
+}
+early(truck)
+{
+    self waittill("trigger");
+    truck notify("pause");
+}
+late(truck)
+{
+    self waittill("trigger");
+    truck notify("pause", 1);
+}
+pauser()
+{
+    self waittill("pause", t);
+    println(isdefined(t));
+}
+)";
+        h.vm.start("test/waiterorder.gsc", "main");
+        for (int t = 50; t <= 500; t += 50) h.vm.runFrame(t);
+        CHECK(h.vm.errors().empty());
+        CHECK(h.joined() == "1|");
+    }
+
+    // Registration order, not thread creation order: a thread created first that registers later is the newer waiter.
+    {
+        Harness h;
+        h.files["test/waiterorder2.gsc"] = R"(
+main()
+{
+    level thread slow("slow");
+    level thread fast("fast");
+    wait 0.1;
+    level notify("go");
+    wait 0.05;
+}
+slow(name)
+{
+    wait 0.05;
+    level waittill("go");
+    println(name);
+}
+fast(name)
+{
+    level waittill("go");
+    println(name);
+}
+)";
+        h.vm.start("test/waiterorder2.gsc", "main");
+        for (int t = 50; t <= 500; t += 50) h.vm.runFrame(t);
+        CHECK(h.joined() == "slow|fast|");
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;
