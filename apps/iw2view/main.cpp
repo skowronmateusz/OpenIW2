@@ -8020,7 +8020,7 @@ int main(int argc, char** argv) {
                 const game::V3 eye{cam.pos.x, cam.pos.y, cam.pos.z};
                 for (const auto& ev : world->takeShakeEvents())
                     viewShake.add({ev.origin[0], ev.origin[1], ev.origin[2]}, ev.scale, ev.durationMs, ev.radius, ev.startMs, eye);
-                const game::V3 sh = viewShake.update(world->timeMs(), eye);
+                const game::V3 sh = viewShake.update(game::clientRenderTimeMs(world->timeMs(), lerpFrac), eye);
                 cam.pitch += sh[0];
                 cam.yaw += sh[1];
                 cam.roll += sh[2];

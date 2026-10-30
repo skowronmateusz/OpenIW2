@@ -79,6 +79,11 @@ V3 turretViewJitter(float vertJitter, float horizJitter, unsigned& seed);
 // phase) * m * b * 16 and sin(T*12pi + phase) * m * b * 10 with T = time / 600 ms. The phase (rand * 2 - 1) * pi is
 // re-rolled on every frame without a shake. A new shake takes the first free slot (start in the future or already
 // ended), else the weakest slot when that one is weaker than the new out1, else it is dropped.
+// The client time of a rendered frame (cg.time 0xf708dc, read per drawn frame by the shake 0x4bf540 / 0x4bf700): the display time lags
+// the newest server frame by one 50 ms step and advances by the interpolation fraction between two steps, so it changes every rendered
+// frame, not once per server frame (the same expression drives the effect system's time).
+inline int64_t clientRenderTimeMs(int64_t serverMs, float lerpFrac) { return serverMs - 50 + int64_t(lerpFrac * 50.0f); }
+
 class ViewShake {
 public:
     void add(const V3& origin, float scale, int durationMs, float radius, int64_t nowMs, const V3& eye);

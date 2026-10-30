@@ -55,6 +55,13 @@ int main() {
             peak = std::max({peak, std::fabs(v[0]), std::fabs(v[1]), std::fabs(v[2])});
         }
         CHECK(peak > 0.5f && peak <= 0.4f * 0.4f * 18.0f + 1e-3f);
+        {   // per rendered frame: render times inside one 50 ms server step give different offsets
+            ViewShake q;
+            q.add({0, 0, 0}, 0.4f, 4000, 100.0f, 1000, eye);
+            const V3 a = q.update(clientRenderTimeMs(1500, 0.25f), eye), b = q.update(clientRenderTimeMs(1500, 0.75f), eye);
+            CHECK(clientRenderTimeMs(1500, 1.0f) == 1500 && clientRenderTimeMs(1500, 0.0f) == 1450);
+            CHECK(a[0] != b[0] && a[1] != b[1]);
+        }
         const V3 gone = sh.update(2100, eye);
         CHECK(gone[0] == 0.0f && gone[1] == 0.0f && gone[2] == 0.0f);
         sh.add({0, 0, 0}, 0.4f, 1000, 100.0f, 3000, {200, 0, 0}); // outside the radius: a < 0, never selected

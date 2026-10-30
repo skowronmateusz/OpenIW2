@@ -60,3 +60,15 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
 - Not implemented: the cookie render itself (0x10027b20: per-caster cookie texture render and receiver projection). TODO(spec): that
   function, the sc_blur / sc_length / sc_offscreenCasterLodBias use, and the receiver pass; no shadow rendering in iw2view (`dynamicShadow`
   stays 1), so nothing is verified visually.
+
+## Exponential fog: density and distance
+
+- The script's setExpFog density goes unscaled into the fog record's slot +0x18 (R_SetFog, gfx 0x1000bb90; the exponential type is chosen
+  when the command's third value is below 1). The per-frame blend 0x100244d0 lerps the three floats at +0x10 / +0x14 / +0x18 (near, far,
+  density) and the colour bytes with the same fraction, so density interpolation between two exponential fogs is linear in time. A change
+  of fog type takes the target at once (0x100244fa).
+- Constants 0x10034db0: exponent = -density; the shaders compute exp(dist * exponent) from the radial eye distance in world units
+  (lib/fogcalc.hlsl, Fog_ExponentialFactor). So 50% fog lies at ln 2 / density: 0.00002 (hill400_defend start) 34657 units, 0.00035
+  (moscow) 1980, 0.00075 (hill400 barrage) 924. A shipped value that small is nearly invisible by design; OpenIW2 measured the same
+  blend factors (fog colour mix 1 - exp(-density * d)) in headless shots, and the state reaches the renderer on moscow, hill400_defend, beltot.
+- Sky is drawn with the no-fog technique; Multiply / Additive passes remain TODO(spec).

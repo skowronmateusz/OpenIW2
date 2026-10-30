@@ -210,3 +210,9 @@ impulse of the player weapon is zero for them.
 - restoredefaultdroppitch (0x51cf10): tag poses are the dobj's (including the turret bone controls); the points are carried to the
   world by the full entity angles (e+0xe8) at the origin, not the yaw alone.
 - Compass ping of a turret shot (0x4bb069): the user's centity byte +0x140 is "in the current snapshot" (0x4a4336).
+
+## Screen shake time base
+
+The shake (0x4bf540 elapsed time, 0x4bf700 sine phase T) reads the client time 0xf708dc, which advances every drawn frame. OpenIW2 therefore
+evaluates ViewShake at the render time of each frame (`clientRenderTimeMs`: server time - 50 + interpolation fraction * 50), not at the 20 Hz
+server time; the offset then changes smoothly between server steps (tested in test_recoil).
