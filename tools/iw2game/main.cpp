@@ -2047,6 +2047,16 @@ int main(int argc, char** argv) {
                             if (w2.object == o && w2.site.rfind(mapPrefix, 0) == 0 && w2.site.find("missionfail") != std::string::npos) return true;
                         return false;
                     };
+                    // hill400_defend: a mortar team that dies before the bunker is sealed is not counted (the script counts eliminations
+                    // only after the `bunkersealed` flag) but its spawn is, and no team is spawned beyond the required number, so a
+                    // team killed too early makes the stage unwinnable. The kill gates spare the team members until the flag is set.
+                    const auto unsealedMortarTeam = [&](const iw2::game::Entity& e) {
+                        const auto sq = e.obj->get("script_squadname");
+                        if (!sq.isString() || sq.asString().rfind("mortarteam", 0) != 0) return false;
+                        const auto flags = world.vm().level()->get("flag");
+                        const iw2::script::Value* sealed = flags.isArray() ? std::get<iw2::script::ArrayPtr>(flags.v)->get(iw2::script::ArrayKey{true, 0, "bunkersealed"}) : nullptr;
+                        return !(sealed && sealed->truthy());
+                    };
                     // A vehicle with a map-own trigger_use gate within 200 units (sticky bombs, explosives) is planted, never shot.
                     const auto plantable = [&](const iw2::game::Entity& v) {
                         const auto vo = v.obj->get("origin").asVector();
@@ -2085,6 +2095,11 @@ int main(int argc, char** argv) {
                         }
                         return (axisNear || mapOwnWait) && !alliesNear;
                     };
+                    if (killGate && std::getenv("IW2_AUTOPLAY_DEBUG")) { // debug: hill400_defend's mortar-stage counters
+                        const auto lv = world.vm().level();
+                        std::printf("%s  level counters: mortarTeamsDeployed %s eliminated %s required %s slots %s\n", head, lv->get("mortarteamsdeployed").toString().c_str(),
+                                    lv->get("mortarteamseliminated").toString().c_str(), lv->get("mortarteamsrequired").toString().c_str(), lv->get("mortarteamslots").toString().c_str());
+                    }
                     if (killGate && std::getenv("IW2_AUTOPLAY_DEBUG")) // debug: what the "death" waits are on
                         for (const auto& w : waiters)
                             if (w.event == "death")
@@ -2101,7 +2116,7 @@ int main(int argc, char** argv) {
                                 (e->isActor ? world.isAlive(*e) : (e->obj->get("health").isNumber() && e->obj->get("health").asInt() > 0)) && // vehicles, flak guns, turrets, models with health
                                 !(e->obj->get("team").isString() && e->obj->get("team").asString() == "allies") && // never friendlies (missionfailed)
                                 (!e->vehicle || (!plantable(*e) && enemyVehicle(*e, w.site))) && // vehicles only when they are the enemy's and carry no planting trigger (downtown_assault's / tankhunt's tanks are planted, not shot)
-                                !protectedEntity(e->obj)) { // an entity another thread guards with a missionfailed handler (beltot's prisoner)
+                                !unsealedMortarTeam(*e) && !protectedEntity(e->obj)) { // an entity another thread guards with a missionfailed handler (beltot's prisoner)
                                 world.debugDamage(*e, 100000);
                                 ++killed;
                             }
@@ -2111,7 +2126,7 @@ int main(int argc, char** argv) {
                         what = "axis actors";
                         for (const auto& e : world.entities()) {
                             const auto team = e->obj->get("team");
-                            if (e->isActor && !e->obj->removed && world.isAlive(*e) && team.isString() && team.asString() == "axis" && !protectedEntity(e->obj)) {
+                            if (e->isActor && !e->obj->removed && world.isAlive(*e) && team.isString() && team.asString() == "axis" && !unsealedMortarTeam(*e) && !protectedEntity(e->obj)) {
                                 world.debugDamage(*e, 100000);
                                 ++killed;
                             }
