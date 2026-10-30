@@ -5,3 +5,4 @@ build/
 *.iwi
 /main/
 .DS_Store
+build-*/
