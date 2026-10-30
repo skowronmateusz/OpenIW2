@@ -253,6 +253,7 @@ CollSurfResult traceCollSurfs(const std::vector<HitBoxModel>& models, const V3& 
                 res.hit = true;
                 res.fraction = f;
                 res.surfaceFlags = cs.surfaceFlags;
+                res.contents = cs.contents;
                 res.normal = assets::rotate(q, {t.plane[0], t.plane[1], t.plane[2]});
                 res.model = int(mi);
                 res.bone = cs.bone;

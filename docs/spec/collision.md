@@ -278,12 +278,24 @@ G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero prio
 - Used by `maps/_load.gsc` explodable barrels (prop_barrel_benzin): every hit adds to self.damageTaken; burning
   (barrel_ignite / barrel_fire) until level.barrelHealth, then barrelExp, the broken model and radiusdamage 250.
 
-## Static models (misc_model) in bullet and sight traces
+## Static models (misc_model) in point and sight traces
 
-`misc_model` entities are baked into the BSP by the compiler; their collision is the model-0 brushes and triangle soups. The
-fallen trees on rhine (`xmodel/tree_destroyed_fallen_tree_a`, e.g. at 363 13332 99) are material `clip_nosight` (lump 0
-contents 0x28031640, 0x8031640 after the 0xdffffffb mask, surface flags 0x15440a0): 0x10000 / 0x20000 player and AI clip, 0x1000 (in
-the sight mask 0x280d803) and bits that are in no bullet mask. Bullet_Fire's mask 0x280e831 (exe 0x5313c7, the same for AI and
-player shots) therefore passes through the trunk while sight traces and movement are blocked: the tree is sight and movement
-cover, not bullet cover (tests/test_rhinecover.cpp). TODO(spec): whether the original has any further bullet-blocking
-collision for static models (none is reachable from the server-side trace code that was read).
+- Map load (VA 0x4152b0 in the patch 1.3 SP executable) walks the entity string a second time: every `misc_model` whose `model` starts with
+  `xmodel/` (or a backslash) becomes a static model with `origin`, `angles` (default 0), `modelscale` (one value for all axes) or
+  `modelscale_vec` (x y z), default scale 1. 0x4151f0 drops a model that fails to load and one with a zero scale component; 0x4150a0
+  builds the entity axes and their inverse (0x422b50, divides by the scale) and the world bounds of the collision surfaces (0x47db20).
+  Entries are linked into the nodes of the point-trace tree (stride 0x50 per model).
+- Point traces (the node walk 0x41a060, the zero-extent path) test every model linked to a node the segment crosses when
+  `xmodel +0x5c & mask` (the OR of its collision-surface contents) and the segment touches its bounds (0x419450): start and end go to model
+  space, 0x47c210 (same triangle test as script models above) finds a hit closer than the current fraction, the result keeps the
+  surface's contents and surface flags, names the world entity (0x7fe) and the normal is turned back out of model space (0x414de0).
+  The sight walk (0x41a330, test 0x414f70) is blocked when any such hit exists over the whole segment. Box traces (movement) use another
+  walk and never see static models.
+- So a bullet (mask 0x280e831) hits e.g. the hill400 / military hedgehogs (surface contents 1, surface flags 0xd00000: surface type 13,
+  metal) and the dragon's teeth (0x500000), and the impact event of Bullet_Fire carries that surface type; the older note that static
+  models have no bullet collision was wrong for these models. The clip brushes baked around them (`clip`, contents 0x28030200) are
+  player / AI clip only; fallen trees with only a `clip_nosight` brush stay sight and movement cover (tests/test_rhinecover.cpp) unless
+  their xmodel has collision surfaces.
+- OpenIW2: `World::loadStaticModels` -> `CollisionWorld::setStaticModels`; `traceWorld` (point) and `sightBlocked` test them
+  (tests/test_staticmodelhit.cpp). TODO(spec): the exact normal normalisation of 0x414de0 under non-uniform scale, impact marks (decals)
+  on static models, and whether `angle` (single yaw key) is read (the loader only reads `angles`).

@@ -121,6 +121,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     bsp_ = std::make_unique<assets::D3dBsp>(bspData_);
     keyTypes_ = loadKeyTypes(vfs_);
     collision_ = std::make_unique<CollisionWorld>(*bsp_);
+    loadStaticModels();
     const auto models = bsp_->lump(35);
     for (size_t i = 0; i + 48 <= models.size(); i += 48) {
         Vec3 mn, mx;

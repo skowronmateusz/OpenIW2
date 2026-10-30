@@ -910,6 +910,8 @@ private:
         assets::Quat rotation;
     };
     const assets::XModelParts* skeleton(const std::string& model);
+    // misc_model entities of the map as static collision (FUN_004152b0), set on the collision world; docs/spec/collision.md.
+    void loadStaticModels();
     std::unordered_map<std::string, BoneXform> entityBones(Entity& e);
     // The entity's models (body, then attachments) posed in entity space, with their hit boxes.
     std::vector<HitBoxModel> entityModels(Entity& e);

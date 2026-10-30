@@ -2,6 +2,7 @@
 #pragma once
 
 #include "assets/d3dbsp.h"
+#include "game/hitboxes.h"
 
 #include <array>
 #include <cstdint>
@@ -52,6 +53,16 @@ struct EntityClip {
     bool collSurfs = false; // ent+0xa2 & 4 (script_vehicle 0x50d844): locational traces test its xmodel collision surfaces instead
 };
 
+// A misc_model baked into the map, traced by point traces against its xmodel collision surfaces (docs/spec/collision.md,
+// "Static models"). `inverse` rows are the world axes divided by the model scale: local = inverse · (p − origin).
+struct StaticModel {
+    Vec origin{};
+    std::array<Vec, 3> axes{};  // world-space model axes (forward, left, up)
+    Vec scale{1, 1, 1};
+    Vec mins{}, maxs{};         // world-space bounds of the collision surfaces
+    HitBoxModel model;          // bind pose of the xmodel (collision surfaces only are used)
+};
+
 class CollisionWorld {
 public:
     CollisionWorld();
@@ -86,6 +97,9 @@ public:
     // Contents of a submodel's brushes and triangles (0 for an unknown model).
     uint32_t modelContents(int model) const;
     void setEntityClips(std::vector<EntityClip> clips);
+    // Static models of the map (FUN_004152b0); point traces of the world (and sight traces) test their collision surfaces.
+    void setStaticModels(std::vector<StaticModel> models);
+    size_t staticModelCount() const;
 
     size_t brushCount() const;
     size_t triangleCount() const;

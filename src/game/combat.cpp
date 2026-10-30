@@ -38,6 +38,67 @@ assets::Quat yawQuat(float yawDeg) {
 
 } // namespace
 
+// FUN_004152b0 (map load): every misc_model entity whose model path starts "xmodel/" becomes a static model with its origin,
+// angles (default 0), modelscale (one value) or modelscale_vec (x y z; default 1). FUN_004151f0 skips a model that does not load;
+// a model without collision surfaces is never hit (its contents word is 0). The axes are the entity axes of the renderer.
+void World::loadStaticModels() {
+    std::vector<StaticModel> list;
+    auto vec3 = [](const std::string& v, float def) {
+        Vec r{def, def, def};
+        std::sscanf(v.c_str(), "%f %f %f", &r[0], &r[1], &r[2]);
+        return r;
+    };
+    for (const auto& be : bsp_->entities()) {
+        const std::string* cls = be.get("classname");
+        const std::string* model = be.get("model");
+        if (!cls || !model || lowerStr(*cls) != "misc_model" || model->size() < 7) continue;
+        if (lowerStr(model->substr(0, 6)) != "xmodel" || ((*model)[6] != '/' && (*model)[6] != '\\')) continue;
+        StaticModel m;
+        Vec angles{0, 0, 0};
+        if (auto o = be.get("origin")) m.origin = vec3(*o, 0);
+        if (auto a = be.get("angles")) angles = vec3(*a, 0);
+        if (auto sv = be.get("modelscale_vec")) m.scale = vec3(*sv, 1);
+        else if (auto sc = be.get("modelscale")) m.scale = {float(std::atof(sc->c_str())), float(std::atof(sc->c_str())), float(std::atof(sc->c_str()))};
+        if (m.scale[0] == 0 || m.scale[1] == 0 || m.scale[2] == 0) continue;
+        const std::string name = *model;
+        const assets::XModelParts* parts = skeleton(name);
+        auto cit = collSurfs_.find(name);
+        if (!parts || cit == collSurfs_.end() || cit->second.empty()) continue;
+        const float d2r = float(M_PI) / 180;
+        const float sp = std::sin(angles[0] * d2r), cp = std::cos(angles[0] * d2r);
+        const float sy = std::sin(angles[1] * d2r), cy = std::cos(angles[1] * d2r);
+        const float sr = std::sin(angles[2] * d2r), cr = std::cos(angles[2] * d2r);
+        m.axes[0] = {cp * cy, cp * sy, -sp};
+        m.axes[1] = {sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp};
+        m.axes[2] = {cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp};
+        const assets::XPose pose = assets::bindPose(*parts);
+        m.model.parts = parts;
+        m.model.collSurfs = &cit->second;
+        m.model.position = pose.position;
+        m.model.rotation = pose.rotation;
+        // World bounds: the corners of every surface's bounds in the bone's bind pose (FUN_0047db20), scaled and rotated.
+        m.mins = {1e30f, 1e30f, 1e30f};
+        m.maxs = {-1e30f, -1e30f, -1e30f};
+        for (const assets::XCollSurf& cs : cit->second) {
+            if (cs.bone < 0 || size_t(cs.bone) >= pose.position.size()) continue;
+            for (int c = 0; c < 8; ++c) {
+                const std::array<float, 3> p{(c & 1) ? cs.mins[0] : cs.maxs[0], (c & 2) ? cs.mins[1] : cs.maxs[1],
+                                             (c & 4) ? cs.mins[2] : cs.maxs[2]};
+                const auto r = assets::rotate(pose.rotation[size_t(cs.bone)], p);
+                for (size_t i = 0; i < 3; ++i) {
+                    float w = m.origin[i];
+                    for (size_t k = 0; k < 3; ++k) w += m.axes[k][i] * (r[k] + pose.position[size_t(cs.bone)][k]) * m.scale[k];
+                    m.mins[i] = std::min(m.mins[i], w - 1.0f);
+                    m.maxs[i] = std::max(m.maxs[i], w + 1.0f);
+                }
+            }
+        }
+        if (m.mins[0] > m.maxs[0]) continue;
+        list.push_back(std::move(m));
+    }
+    collision_->setStaticModels(std::move(list));
+}
+
 const assets::XModelParts* World::skeleton(const std::string& model) {
     auto it = skeletons_.find(model);
     if (it == skeletons_.end()) {

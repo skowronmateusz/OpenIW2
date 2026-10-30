@@ -136,6 +136,7 @@ struct CollisionWorld::Data {
     };
     std::vector<Model> models;
     std::vector<EntityClip> entityClips;
+    std::vector<StaticModel> staticModels;
 
     // Per-trace visit stamps (one thread, like the original's thread-local copies).
     mutable uint32_t checkcount = 0;
@@ -1650,6 +1651,58 @@ void anglesToAxis(const Vec& a, Vec& fwd, Vec& right, Vec& up) {
 } // namespace
 
 // FUN_00417640 for model 0.
+
+namespace {
+
+// Static models (FUN_0041a060 / FUN_0041a330 → FUN_00414de0 / FUN_00414f70 → FUN_0047c210): the segment's path in model space
+// is traced against the xmodel collision surfaces; the hit normal is turned back into the world.
+bool staticSegmentTouches(const StaticModel& m, const Vec& start, const Vec& end, float fraction) {
+    float enter = 0, leave = fraction;
+    for (size_t i = 0; i < 3; ++i) {
+        const float d = end[i] - start[i];
+        if (d == 0) {
+            if (start[i] < m.mins[i] || start[i] > m.maxs[i]) return false;
+            continue;
+        }
+        float t0 = (m.mins[i] - start[i]) / d, t1 = (m.maxs[i] - start[i]) / d;
+        if (t0 > t1) std::swap(t0, t1);
+        enter = std::max(enter, t0);
+        leave = std::min(leave, t1);
+        if (enter > leave) return false;
+    }
+    return true;
+}
+
+CollSurfResult traceStaticModel(const StaticModel& m, const Vec& start, const Vec& end, uint32_t mask, float fraction) {
+    std::array<float, 3> ls{}, le{};
+    for (size_t k = 0; k < 3; ++k) {
+        float a = 0, b = 0;
+        for (size_t i = 0; i < 3; ++i) {
+            a += (start[i] - m.origin[i]) * m.axes[k][i];
+            b += (end[i] - m.origin[i]) * m.axes[k][i];
+        }
+        ls[k] = a / m.scale[k];
+        le[k] = b / m.scale[k];
+    }
+    CollSurfResult r = traceCollSurfs({m.model}, ls, le, mask, fraction);
+    if (r.hit) {
+        Vec n{};
+        for (size_t k = 0; k < 3; ++k)
+            for (size_t i = 0; i < 3; ++i) n[i] += m.axes[k][i] * r.normal[k] / m.scale[k];
+        const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len > 0) for (float& c : n) c /= len;
+        r.normal = n;
+    }
+    return r;
+}
+
+} // namespace
+
+void CollisionWorld::setStaticModels(std::vector<StaticModel> models) {
+    if (d_) d_->staticModels = std::move(models);
+}
+size_t CollisionWorld::staticModelCount() const { return d_ ? d_->staticModels.size() : 0; }
+
 TraceResult CollisionWorld::traceWorld(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
     TraceResult tr;
     tr.endPos = end;
@@ -1672,6 +1725,22 @@ TraceResult CollisionWorld::traceWorld(const Vec& start, const Vec& end, const V
         const float p1[4] = {tw.start[0], tw.start[1], tw.start[2], 0};
         const float p2[4] = {tw.end[0], tw.end[1], tw.end[2], tr.fraction};
         d.traceThroughTree(tw, 0, p1, p2, tr);
+        // Point traces also walk the static models of the nodes they cross; a closer surface hit replaces the result
+        // and keeps the surface's contents and surface flags (the world entity, FUN_00414de0).
+        if (size == Vec{0, 0, 0} && tr.fraction > 0.0f) {
+            for (const StaticModel& m : d.staticModels) {
+                if (!staticSegmentTouches(m, s, e, tr.fraction)) continue;
+                const CollSurfResult h = traceStaticModel(m, s, e, mask, tr.fraction);
+                if (!h.hit || !(h.fraction < tr.fraction)) continue;
+                tr.fraction = h.fraction;
+                tr.normal = h.normal;
+                tr.surfaceFlags = uint32_t(h.surfaceFlags);
+                tr.contents = h.contents;
+                tr.material = -1;
+                tr.entity = -1;
+                tr.startSolid = tr.allSolid = false;
+            }
+        }
     }
     for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
     return tr;
@@ -1856,6 +1925,10 @@ bool CollisionWorld::sightBlocked(const Vec& start, const Vec& end, const Vec& m
         const float p1[4] = {tw.start[0], tw.start[1], tw.start[2], 0};
         const float p2[4] = {tw.end[0], tw.end[1], tw.end[2], 1};
         if (d.sightThroughTree(tw, 0, p1, p2, tr)) return true;
+        // Point sight traces test the static models' collision surfaces over the whole segment (FUN_0041a330).
+        if (mins == maxs)
+            for (const StaticModel& m : d.staticModels)
+                if (staticSegmentTouches(m, tw.start, tw.end, 1.0f) && traceStaticModel(m, tw.start, tw.end, mask, 1.0f).hit) return true;
     }
     auto passed = [](const EntityClip& c, int pass) { return pass >= 0 && (c.id == pass || c.owner == pass); };
     for (const EntityClip& c : d.entityClips) {

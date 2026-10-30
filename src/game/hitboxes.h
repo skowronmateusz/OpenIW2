@@ -45,6 +45,7 @@ struct CollSurfResult {
     float fraction = 1.0f;
     std::array<float, 3> normal{}; // entity space
     int32_t surfaceFlags = 0;
+    uint32_t contents = 0; // contents of the surface that was hit (as stored, bit masked at load)
     int model = -1, bone = -1;
 };
 
