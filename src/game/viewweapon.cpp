@@ -508,6 +508,16 @@ void RecoilKick::update(const Field& w, int ms, bool hasWeapon, float adsFrac) {
 
 namespace iw2::game {
 // ---- Screen shake (0x4bf540 / 0x4bf5e0 / 0x4bf700) ----
+V3 turretViewJitter(float vertJitter, float horizJitter, unsigned& seed) {
+    auto crandom = [&seed]() {
+        seed = seed * 1103515245u + 12345u; // the exe uses the CRT rand(); a deterministic LCG stands in for it
+        return float((seed >> 16) & 0x7fff) / 32768.0f * 2.0f - 1.0f;
+    };
+    const float p = crandom() * vertJitter; // evaluation order: the pitch draw first (0x4aeead..0x4aeeb4)
+    const float y = crandom() * horizJitter;
+    return {p, y, 0};
+}
+
 float ViewShake::rand01() {
     seed_ = seed_ * 1103515245u + 12345u;
     return float((seed_ >> 16) & 0x7fff) / 32768.0f;

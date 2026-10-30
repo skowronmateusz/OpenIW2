@@ -149,6 +149,28 @@ Without it the setturretanim blend node has no weighted leaf and the gunner show
   actor-turret link itself (the port computes the link height from the current origins); 0x54e3f0 / 0x503e10 and the start
   argument that keeps flag 0x10 / +0x60 at 6; the debug string at actor +0x21a0.
 
+## Fire view shake (player on a turret)
+
+Two effects shake the first-person view while the player fires a mounted turret. Neither reads a view-kick field of the turret
+weapon: the shipped turret weapon files (mg42_bipod_*, 30cal_*, mg42_tank_*) define no gunKick / viewKick keys, so the fire
+impulse of the player weapon is zero for them.
+
+1. View jitter (cgame 0x4aee10, run before the view offsets and the screen shake in the per-frame view setup). The weapon keys
+   `horizViewJitter` (def +0x57c) and `vertViewJitter` (def +0x580) are floats in degrees (0.5 / 0.5 in every shipped turret
+   weapon). While the player is on a turret (ps eflags 0x300), the view-lock word ps+0x564 is 2 and `cl_paused` is 0, every
+   rendered frame adds `crandom() * vertViewJitter` to the view pitch and then `crandom() * horizViewJitter` to the yaw
+   (crandom = 2 * rand / 32768 - 1). The draws are fresh every frame and are not accumulated or decayed, so the view buzzes by up
+   to +-0.5 degrees for as long as the turret keeps firing. The view-lock word is set to 1 by the turret idle think (0x51b2b0 and
+   0x51b140) and to 2 by the fire function 0x51b250 right after the shot (0x51ada0), so it is 2 exactly in frames where the
+   think fired. Implemented as `World::playerTurretFireJitter` (the lock word is `playerViewLocked_`) and
+   `turretViewJitter` (src/game/viewweapon.cpp); iw2view adds the result next to the recoil view kick.
+   TODO(spec): the value 2 of ps+0x564 is only read as "fired this think"; other writers (0x51b150, 0x51b45a) set 1 and 0 for
+   getting on and off.
+2. Screen shake (cgame 0x4bf5e0 / 0x4bf700). The fire event 0xaf also adds a shake of scale 0.05, 100 ms, radius 100 at the
+   turret origin (`ViewShake`). With the eye (tag_player) about 50 units from the origin the peak is about 0.02 degrees, so
+   it is nearly invisible; the jitter above is the visible part. Constants checked in the 1.3 executable: 18 / 16 / 10 degree
+   gains, 8 pi / 15 pi / 12 pi rates, 600 ms time base.
+
 ## Not implemented (TODO)
 
 - Full AI gunner rules of 0x51c630 / 0x51cc80 (remembered target +0x60, suppression and visibility from node

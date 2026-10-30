@@ -65,6 +65,11 @@ private:
     unsigned seed_ = 1;
 };
 
+// Turret view jitter (cgame 0x4aee10, before the view offsets 0x4ae290 and the screen shake): while the player's turret fires,
+// every rendered frame adds crandom() * vertViewJitter to the view pitch and then crandom() * horizViewJitter to the yaw
+// (crandom = 2 * rand() / 32768 - 1, a fresh pair per frame, no accumulation). Returns {pitch, yaw, 0} degrees to add.
+V3 turretViewJitter(float vertJitter, float horizJitter, unsigned& seed);
+
 // Screen shake (cgame 0x4bf5e0 add, per-frame combine 0x4bf700 called at 0x4af609 after the view offsets). Fed by the
 // EV_FIRE_WEAPON_MG42 event 0xaf (scale 0.05, 100 ms, radius 100, at the turret entity origin) and the earthquake event
 // 0xc7 (scale, ms, radius from the event; origin of the event entity). Four slots {start, scale, duration, radius,

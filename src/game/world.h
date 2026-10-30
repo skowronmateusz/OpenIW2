@@ -568,6 +568,14 @@ public:
     // 0xf70998), the entity number VEH_LinkPlayer stores there (0x511774, 0x7ff = none); 0x4bd000 reads that entity's centity byte
     // +0xa2 = entityState weapon (+2), which the vehicle setup writes (0x50d8a3) as the weapon index of its turretWeapon name.
     std::string playerVehicleTurretWeapon();
+    // The turret view jitter (cgame 0x4aee10): true while the player's turret fired in its last think (ps+0x564 == 2, set by the
+    // fire function 0x51b250 after the idle think set it to 1); vert / horiz are the weapon's vertViewJitter / horizViewJitter (degrees).
+    bool playerTurretFireJitter(float& vert, float& horiz) {
+        if (!playerOnTurret() || !playerTurret_ || !playerTurret_->turret || playerViewLocked_ != 2) return false;
+        vert = weaponFloat(playerTurret_->turret->weapon, "vertviewjitter");
+        horiz = weaponFloat(playerTurret_->turret->weapon, "horizviewjitter");
+        return true;
+    }
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
     // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).
@@ -1337,6 +1345,7 @@ private:
     void playerUseTurret(Entity& t);
     void thinkPlayerTurret();
     void releasePlayerTurret(Entity& t);
+    int playerViewLocked_ = 0;           // ps+0x564 while on a turret: 1 idle, 2 fired this think
     int playerUseState_ = 0;             // player entity +0x112: 1 on a turret, 2 getting off
     Entity* playerTurret_ = nullptr;     // ps+0x568
     uint32_t playerEFlags_ = 0;          // ps eFlags 0x100 / 0x200 (both: on a standing turret)

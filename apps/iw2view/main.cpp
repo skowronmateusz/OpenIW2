@@ -3807,6 +3807,7 @@ int main(int argc, char** argv) {
         };
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
+        unsigned turretJitterSeed = 12345; // turret view jitter RNG
         game::ViewShake viewShake; // cgame 0x4bf5e0 / 0x4bf700: MG42 fire and earthquake shake
         game::AimBlend aimBlend; // the view model aim layers' cross-fade (0x4b25e0)
         std::string aimBlendWeapon;
@@ -7907,6 +7908,14 @@ int main(int argc, char** argv) {
             const Camera camBase = cam;
             cam.pitch += recoil.viewKick()[0]; // view kick spring (0x4ae327)
             cam.yaw += recoil.viewKick()[1];
+            if (world && onTurret && menuEnv.getCvar("cl_paused") != "1") { // turret view jitter (0x4aee10) while the turret fires
+                float vj = 0, hj = 0;
+                if (world->playerTurretFireJitter(vj, hj)) {
+                    const game::V3 j = game::turretViewJitter(vj, hj, turretJitterSeed);
+                    cam.pitch += j[0];
+                    cam.yaw += j[1];
+                }
+            }
             if (world) { // screen shake (0x4bf700, after the view offsets): pitch, yaw, roll
                 const game::V3 eye{cam.pos.x, cam.pos.y, cam.pos.z};
                 for (const auto& ev : world->takeShakeEvents())

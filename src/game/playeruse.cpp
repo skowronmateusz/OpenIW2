@@ -413,6 +413,7 @@ void World::releasePlayerTurret(Entity& t) {
     playerEFlags_ &= ~0x300u;
     playerTurret_ = nullptr;
     playerUseState_ = 0;
+    playerViewLocked_ = 0;
     if (ts.inUse) vm_.notify(t.obj, "turret_deactivate");
     ts.inUse = false;
     ts.owner.reset();
@@ -445,6 +446,7 @@ void World::thinkPlayerTurret() {
     const Vec3 f = viewForward({base[0] + ts.pitch, base[1] + ts.yaw, 0});
     const Vec3 to = t.obj->get("origin").asVector(), po = player_->obj->get("origin").asVector();
     player_->obj->set("origin", Value(Vec3{to[0] - f[0] * 34.0f, to[1] - f[1] * 34.0f, po[2]}));
+    playerViewLocked_ = 1; // 0x51b2df
     ts.fireTimerMs -= 50;
     if (ts.fireTimerMs < 1) {
         ts.fireTimerMs = 0;
@@ -454,6 +456,7 @@ void World::thinkPlayerTurret() {
             const auto it = w ? w->find("firetime") : std::map<std::string, std::string>::const_iterator{};
             ts.fireTimerMs = w && it != w->end() ? int(std::atof(it->second.c_str()) * 1000.0f) : 0;
             shootTurret(t);
+            playerViewLocked_ = 2; // 0x51b287
         }
     }
     turretFireSound(t, true);
