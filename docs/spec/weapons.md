@@ -139,3 +139,19 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
   dynamic light (0x4ab404 → *0x617b1c). OpenIW2 queues the trail at the launch (rockets.cpp). TODO(spec): the dlight.
 - The view flash (`viewFlashEffect` panzerschreck_flash.efx) already played on the view model's tag_flash; in first person
   that tag lies outside the default field of view, so the visible launch effect is mostly the rocket and its trail.
+
+## Fire sound for every weapon type and the view flash under a scope (exe evidence)
+
+- EV_FIRE_WEAPON (cgame 0x4b7800) plays the weapon's fire sound for every weapon type; it is not part of the bullet path. The alias is
+  the weapon info's fireSound (0xf48e60 + weapon * 0x1b8); the player's fireSoundPlayer (0xf48e64) replaces it only when it is set;
+  on the last round of the clip lastShotSoundPlayer (0xf48e6c) or lastShotSound (0xf48e68) replaces it when set (0x4b7800, before
+  0x4a35c0). Shipped panzerschreck and panzerfaust define only fireSound (the AI alias of the panzerfaust fire sample), so the player
+  hears that alias, and the player's reload of the panzerschreck uses its own reloadSound. OpenIW2 had played the sound only from the
+  bullet trace, so projectile weapons were silent; `World::playWeaponFireSound` now serves the bullet and the projectile branch of
+  `World::playerFire`, with the fireSound fallback for the player.
+- The same event sets the per-entity flash flag (cent +0x142, 0x4b7800). The view weapon pass 0x4b69b0 (only caller 0x4b6d40) clears
+  the flag every frame it runs (0x4b6c13) but plays viewFlashEffect (0x4b6660) only when its third argument is non-zero. 0x4b6d40 passes
+  zero while the scope overlay (0x4bc8a0) reports itself active, yet still poses the gun. So a shot fired under a scope overlay
+  produces no flash at all, now or later. OpenIW2 skipped the whole pass under the overlay, which left the flag set and played the
+  flash on leaving the scope (`consumeViewFlash`). Brass (event time, 0x4b7730) is not gated by the overlay; the gun is posed so its
+  tag exists. TODO(spec): the exact overlay-active condition of 0x4bc8a0 is approximated by the overlay alpha > 0.01.

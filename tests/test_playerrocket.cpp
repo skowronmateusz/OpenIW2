@@ -8,6 +8,9 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -35,6 +38,8 @@ int main() {
     (void)w.takeFxEvents();
     w.player()->obj->set("$weapon", iw2::script::Value(std::string("panzerschreck")));
     const iw2::script::Vec3 o = w.player()->obj->get("origin").asVector();
+    std::vector<std::pair<std::string, bool>> sounds; // alias, positional
+    w.playSound = [&](const std::string& a, const iw2::game::Vec3* pos, float*, int) { sounds.emplace_back(a, pos != nullptr); return 0; };
     const int impactsBefore = w.stats.bulletImpacts;
     const auto kick = w.playerFire({o[0], o[1], o[2] + 60}, {1, 0, 0});
     CHECK(kick[0] == 64.0f && kick[1] == 0.0f && kick[2] == 0.0f); // 0x531b1b: forward * 64
@@ -50,11 +55,15 @@ int main() {
             CHECK(w.entityTagOrientation(e.entity, "tag_origin", p, ax, hasAxes)); // the bolt resolves on the missile model
         }
     CHECK(trail);
+    // EV_FIRE_WEAPON (0x4b7800) plays the fire sound for projectile weapons too; the panzerschreck has no fireSoundPlayer, so the
+    // player hears its fireSound (non-positional for the player).
+    CHECK(sounds.size() == 1 && sounds[0].first == "weap_panzerfaust_fire" && !sounds[0].second);
     // A bullet weapon still traces.
     w.player()->obj->set("$weapon", iw2::script::Value(std::string("kar98k")));
     const auto bulletKick = w.playerFire({o[0], o[1], o[2] + 60}, {1, 0, 0}, false, 5.0f); // spread draws two rand()s
     CHECK(bulletKick[0] == 0.0f);
     CHECK(w.stats.rockets == 1);
+    CHECK(sounds.size() >= 2 && sounds[1].first == "weap_kar98k_fire_plr" || (sounds.size() >= 3 && sounds[2].first == "weap_kar98k_fire_plr")); // bullet weapons keep their player alias
     if (failures) std::cerr << failures << " failure(s)\n";
     else std::cout << "playerrocket ok\n";
     return failures ? 1 : 0;

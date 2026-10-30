@@ -30,6 +30,7 @@
 #include "game/shellshock.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
+#include "game/viewflash.h"
 #include "game/watersim.h"
 #include "game/fx.h"
 #include "game/fog.h"
@@ -3966,7 +3967,7 @@ int main(int argc, char** argv) {
             world->player()->obj->set("$weapon", script::Value(pweapon.name()));
             weaponWritten = pweapon.name();
         };
-        auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c) {
+        auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c, bool drawn = true) { // drawn = 0x4b69b0's third argument (0 under the scope overlay)
             if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
             const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
             const Scene::CpuModel* gun = sceneCpuModel(scene, dev, vfs, pweapon.gunModel());
@@ -4099,9 +4100,9 @@ int main(int argc, char** argv) {
                             }
                         }
                         if (viewFlash->pending && world) {
-                            viewFlash->pending = false;
+                            const bool play = game::consumeViewFlash(viewFlash->pending, drawn); // cleared in every posed frame (0x4b6c13), played only when drawn (0x4b6c37)
                             const std::string path = pweapon.field("viewFlashEffect");
-                            if (!path.empty()) {
+                            if (play && !path.empty()) {
                                 auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // tag_flash origin + axes (0x48abb0)
                                     o.origin = vf->pos;
                                     o.axes = vf->axes;
@@ -6759,9 +6760,9 @@ int main(int argc, char** argv) {
             // tag the bolted particles follow).
             std::vector<DrawItem> shotVmItems;
             if (!(world && world->playerOnTurret()) && !(world && scopeAlpha() > 0)) addViewModel(shotVmItems, cam);
-            else if (viewFlash->pending && !(world && world->playerOnTurret())) {
+            else if ((viewFlash->pending || viewFlash->brassPending) && !(world && world->playerOnTurret())) {
                 std::vector<DrawItem> scratch;
-                addViewModel(scratch, cam);
+                addViewModel(scratch, cam, false);
             }
             auto shotItems = gatherItems(cam);
             shotItems.insert(shotItems.end(), shotVmItems.begin(), shotVmItems.end());
@@ -8069,8 +8070,13 @@ int main(int argc, char** argv) {
             const int wstate = pweapon.stateNumber();
             if (!(world && world->playerOnTurret()) &&
                 !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
-                if (!(world && scopeAlpha() > 0) && !(world && world->playerDeadWeaponless())) // scope overlay (0x4b6d7c); dead: entity weapon 0 (0x4b6a0a)
-                    addViewModel(vmItems, cam);
+                if (!(world && world->playerDeadWeaponless())) { // dead: entity weapon 0 (0x4b6a0a)
+                    if (!(world && scopeAlpha() > 0)) addViewModel(vmItems, cam);
+                    else if (viewFlash->pending || viewFlash->brassPending) { // scope overlay (0x4b6d7c): posed, not drawn; the flash is consumed unplayed
+                        std::vector<DrawItem> scratch;
+                        addViewModel(scratch, cam, false);
+                    }
+                }
             auto items = gatherItems(cam);
             items.insert(items.end(), vmItems.begin(), vmItems.end());
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);

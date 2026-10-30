@@ -922,6 +922,7 @@ private:
                 const std::string& location = "none", int dflags = 0);
     // attacker: the entity credited with the damage (nullptr = the world).
     bool playerLastShot_ = false;
+    void playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot);
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
                       const std::string& weaponName = std::string(), int depth = 0);
     int weaponDamage(const std::string& weaponName);

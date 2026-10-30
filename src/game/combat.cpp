@@ -508,27 +508,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     }
     if (hit && !takesDamage(*hit)) hit = nullptr;
     ++stats.shots;
-    if (def) {
-        // Weapon sound: fireSoundPlayer without position for the player, fireSound at the shooter otherwise.
-        auto it = def->find(shooter.isPlayer ? "firesoundplayer" : "firesound");
-        const std::string* snd = it != def->end() && !it->second.empty() ? &it->second : nullptr;
-        // The last shot of a clip (event 0xa0, 0x4b7800) overrides it with lastShotSoundPlayer (player) or lastShotSound.
-        if (shooter.isPlayer && playerLastShot_) {
-            auto ls = def->find("lastshotsoundplayer");
-            if (ls == def->end() || ls->second.empty()) ls = def->find("lastshotsound");
-            if (ls != def->end() && !ls->second.empty()) snd = &ls->second;
-        }
-        if (snd) {
-            float seconds = 0;
-            // The owner is the shooter's entity number (0x4b7800 pushes word [es+8] as the owner of 0x4a35c0 -> 0x4423d0): the weapon channel then
-            // replaces the shooter's previous shot (0x44250a -> 0x441b50), so a burst holds one sample slot.
-            playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds, shooter.number);
-            // EV_FIRE_WEAPON (0x4b7800): for an actor (entity type 9, 0x4b79ac) whose fire alias resolved (0x4b792a), 0x4c0e20 pings
-            // the compass with the length of the started sound (0x4a35c0 -> 0x4423d0, ms) at the sound position (0x4b79b7).
-            // TODO(spec): actor projectile weapons send the same event; no actor projectile fire path exists here yet.
-            if (!shooter.isPlayer && shooter.obj->kind == "actor") compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
-        }
-    }
+    if (def) playWeaponFireSound(shooter, *def, start, playerLastShot_);
     if (hit) {
         ++stats.hits;
         const Vec3 dir = scale(sub(end, start), 1.0f / std::max(1.0f, len(sub(end, start))));
@@ -662,6 +642,34 @@ int World::weaponDamage(const std::string& weaponName) {
     return it == w->end() ? 35 : std::max(1, std::atoi(it->second.c_str()));
 }
 
+// EV_FIRE_WEAPON sound (0x4b7800), played for every weapon type (bullet, grenade, projectile): fireSound (weapon info 0xf48e60)
+// is the base, the player's fireSoundPlayer (0xf48e64) replaces it only when set, and on the last round of the clip
+// lastShotSoundPlayer (0xf48e6c, player) or lastShotSound (0xf48e68) replaces that when set. A weapon without a player variant
+// (panzerschreck, panzerfaust) therefore plays its fireSound for the player too.
+void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot) {
+    const auto field = [&](const char* k) -> const std::string* {
+        auto it = def.find(k);
+        return it != def.end() && !it->second.empty() ? &it->second : nullptr;
+    };
+    const std::string* snd = field("firesound");
+    if (shooter.isPlayer)
+        if (const std::string* p = field("firesoundplayer")) snd = p;
+    if (shooter.isPlayer && lastShot) {
+        const std::string* ls = field("lastshotsoundplayer");
+        if (!ls) ls = field("lastshotsound");
+        if (ls) snd = ls;
+    }
+    if (!snd) return;
+    float seconds = 0;
+    // The owner is the shooter's entity number (0x4b7800 pushes word [es+8] as the owner of 0x4a35c0 -> 0x4423d0): the weapon channel then
+    // replaces the shooter's previous shot (0x44250a -> 0x441b50), so a burst holds one sample slot.
+    playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds, shooter.number);
+    // EV_FIRE_WEAPON (0x4b7800): for an actor (entity type 9, 0x4b79ac) whose fire alias resolved (0x4b792a), 0x4c0e20 pings
+    // the compass with the length of the started sound (0x4a35c0 -> 0x4423d0, ms) at the sound position (0x4b79b7).
+    // TODO(spec): actor projectile weapons send the same event; no actor projectile fire path exists here yet.
+    if (!shooter.isPlayer && shooter.obj->kind == "actor") compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
+}
+
 Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, float spreadDeg, const Vec3& gunOffset) {
     if (!player_ || !isAlive(*player_)) return {0, 0, 0};
     playerLastShot_ = lastShot;
@@ -688,6 +696,7 @@ Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, floa
         const float l = len(dir);
         if (l > 0) dir = scale(dir, 1.0f / l);
         spawnRocket(*player_, w.asString(), origin, dir);
+        if (const auto* wd = weapon(w.asString())) playWeaponFireSound(*player_, *wd, origin, lastShot); // EV_FIRE_WEAPON also for projectiles
         playerLastShot_ = false;
         // 0x531b1b: the shooter's velocity loses the unperturbed forward * 64 (0x56f6e0); the caller owns the velocity.
         return scale(axes[0], 64.0f);
