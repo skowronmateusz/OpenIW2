@@ -153,3 +153,25 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
 synchronous load and `pregame` after it, and copies `game[]` and the player's weapons only for a persistent change. Inferred and marked TODO: `objective_string`'s message, how long
 objective messages stay on screen (4 s). Death screen as above, except: no save games (`loadgame_continue` restarts
 the level), no blur pass (`scr_blur` ignored), no text shadow, the volume step per frame is inferred.
+
+## HUD fixes: compass friendlies, low-health overlay, overlay draw order
+
+Compass friendlies (ownerdraw 87). The flag the per-frame actor pass tests (global 0x1c61050) is set to 1 by level init (VA 0x4d9c83
+in the patch 1.3 SP executable) and the `drawcompassfriendlies` built-in (0x4f4450) only overwrites it; no shipped SP script calls it, so
+in the campaign it stays on. The pass (0x4db31f) marks an actor when the flag is set, its `drawoncompass` field (+0x2120) is non-zero and
+its sentient team is 2 (allies); ownerdraw 87 (0x4c0f20, rules above) draws the marked actors. Scripts and map keys switch single actors
+off with `drawoncompass` 0. Implemented: the World flag defaults to on.
+
+Low-health overlay. SP has no code-driven overlay: the hud.menu "Low Health" definition (ownerdraw CG_PLAYER_LOW_HEALTH_OVERLAY) is
+commented out in the shipped menu, and the `hud_healthOverlay_*` pulse dvars belong to an unused ownerdraw path (0x4a8d70 / 0x4a8f00,
+draws nothing in SP). The red screen effect is a full-screen script hud element with the `overlay_low_health` material that the
+skill script fades and pulses while health / maxhealth is at or below `level.healthOverlayCutoff` (Regular 0.28, Hardened and Veteran
+0.35, Recruit 0.01). The engine's default `g_gameskill` is 1 (0x446b33); the former default of 0 (Recruit) made the cutoff 0.01 so the
+overlay hardly ever appeared. Implemented: the default is 1; the difficulty menu still sets it. TODO(spec): the damage-direction icon is
+unchanged (see player HUD notes); no further native blood overlay was found.
+
+Overlay draw order. The 2D pass (0x4bfa70) draws: damage icons (0x4bdcb0), the crosshair step (0x4bd760), which draws the scope /
+binocular overlay (0x4bcdd0) and returns the crosshair fade, then the hud elements of layer 0 (0x4c3030 with 0), the HUD menus, the
+hud elements of layer 1, and later the subtitles and fades. The overlay therefore lies below every script hud element and subtitle.
+Implemented: iw2view splices the overlay quads in below the hud-element quads (game/hudlayers.h). TODO(spec): that the hudelem layer
+word (+0x7c) is the script `foreground` flag is inferred.

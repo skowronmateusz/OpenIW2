@@ -574,10 +574,10 @@ void World::prepareStart() {
     // level script starts (docs/spec/ui.md, intro screen).
     cvars["mapname"] = mapName_;
     // Skill-health dvar cluster (registered in FUN_00449b10, defaults per the 1.3 exe): g_gameskill range 0..3
-    // (0x446b33, default 1), g_player_maxhealth 500, player_healthEasy/Medium/Hard/Fu 500/275/165/115,
-    // player_deathInvulnerableTime 1000 ms. DEVIATION: g_gameskill defaults to 0 (easy), not the original's 1,
-    // because openiw2 has no menu UI to pick a difficulty (Mateusz 2026-10-27).
-    if (cvars.find("g_gameskill") == cvars.end()) cvars["g_gameskill"] = "0";
+    // (0x446b33, default 1 = Regular), g_player_maxhealth 500, player_healthEasy/Medium/Hard/Fu 500/275/165/115,
+    // player_deathInvulnerableTime 1000 ms. The default is the exe's 1: with 0 (Easy) the scripts' low-health cutoff is 0.01
+    // and the red screen overlay practically never shows. The front end's difficulty menu sets the cvar before a start.
+    if (cvars.find("g_gameskill") == cvars.end()) cvars["g_gameskill"] = "1";
     cvars["player_healthEasy"] = "500";
     cvars["player_healthMedium"] = "275";
     cvars["player_healthHard"] = "165";

@@ -1415,7 +1415,7 @@ private:
     float fogSightSq_ = 3.4028235e38f;    // 0x1c61038: ((far - near) * 0.828 + near)² of linear fog, else FLT_MAX (0x4e96e0)
     float cullDist_ = 0;                  // setculldist (configstring 8): renderer far-plane distance, docs/spec/render-hints.md
     std::string northYaw_ = "0";
-    bool drawCompassFriendlies_ = false;
+    bool drawCompassFriendlies_ = true; // level init (VA 0x4d9c83 in the patch 1.3 SP executable) sets the flag to 1; the builtin only toggles it
     CompassPings compassPings_;
     int crosshairTarget_ = -1; // ps+0x8678 as an entity number (updateCrosshairTarget)
     std::vector<FxSightBlocker> fxSightBlockers_;

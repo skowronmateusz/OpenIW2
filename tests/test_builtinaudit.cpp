@@ -140,6 +140,26 @@ int main() {
         s.vm().drainReady();
         CHECK(s.vm().errors().empty());
     }
+    // Compass friendlies (flag 0x1c61050): level init sets it to 1 (0x4d9c83), so living allies with drawoncompass are listed
+    // without any script call; the drawcompassfriendlies builtin (0x4f4450) only toggles it.
+    {
+        iw2::game::World c(vfs, "toujane");
+        c.start();
+        for (int i = 0; i < 5; ++i) c.frame();
+        CHECK(c.drawCompassFriendlies());
+        CHECK(c.cvars["g_gameskill"] == "1"); // the exe's default (Regular): the low-health overlay cutoff is 0.28, not Easy's 0.01
+        size_t expected = 0;
+        for (const auto& e : c.entities()) {
+            if (e->obj->removed || e->obj->kind != "actor") continue;
+            const auto team = e->obj->get("team");
+            const auto hp = e->obj->get("health");
+            if (team.isString() && team.asString() == "allies" && hp.isNumber() && hp.asInt() > 0 && e->obj->get("drawoncompass").truthy()) ++expected;
+        }
+        CHECK(expected > 0);
+        CHECK(c.compassFriendlies().size() == expected);
+        c.setDrawCompassFriendlies(false);
+        CHECK(c.compassFriendlies().empty());
+    }
     // The cheat commands god / demigod / notarget (0x4e9f90 / 0x4ea030 / 0x4ea0d0): same gate, flags +0x128 & 1 / 2 / 4.
     {
         iw2::game::World c(vfs, "moscow");

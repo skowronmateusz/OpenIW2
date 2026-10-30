@@ -21,6 +21,7 @@
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
+#include "game/hudlayers.h"
 #include "game/grenadeindicator.h"
 #include "game/hudfade.h"
 #include "game/textmessage.h"
@@ -4714,6 +4715,8 @@ int main(int argc, char** argv) {
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
             menuScreenH = float(h);
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
+            std::vector<Quad2D> scopeQuads; // scope / binocular overlay: drawn below the script HUD elements and subtitles (see below)
+            size_t hudElemStart = 0;
             const float sc = float(h) / 480.0f;               // virtual pixel to screen pixel
             const float left43 = (float(w) - 640.0f * sc) * 0.5f; // left edge of the 4:3 area
             auto field = [](const script::ObjectPtr& o, const char* k, float def) {
@@ -4726,6 +4729,7 @@ int main(int argc, char** argv) {
                 return std::clamp((float(world->timeMs()) - st.asFloat()) / tm.asFloat(), 0.0f, 1.0f);
             };
             if (world) {
+                hudElemStart = out.size();
                 std::vector<script::ObjectPtr> elems = world->hudElems();
                 std::stable_sort(elems.begin(), elems.end(), [&](const auto& a, const auto& b) { return field(a, "sort", 0) < field(b, "sort", 0); });
                 for (const auto& o : elems) {
@@ -5007,7 +5011,7 @@ int main(int argc, char** argv) {
                         Quad2D q{x0, y0, x1, y1, s0, t0, s1, t1};
                         std::memcpy(q.rgba, col, 4);
                         q.texture = tex;
-                        out.push_back(q);
+                        scopeQuads.push_back(q);
                     };
                     float l, r, t, b;
                     if (ow > 320.0f || oh > 240.0f) {
@@ -6318,6 +6322,9 @@ int main(int argc, char** argv) {
                 const uint8_t yellow[4] = {255, 230, 120, 255};
                 if (const assets::Font* f = font("bigfont")) hudText(out, t ? *t : key, float(w) * 0.5f, 80 * sc, 0.8f * sc, *f, yellow, 0.5f, 0);
             }
+            // Draw order of CG_DrawActive (0x4bfa70): damage icons, crosshair + scope overlay (0x4bd760 -> 0x4bcdd0), then the hud
+            // elements of both layers (0x4c3030), the HUD menus, the subtitles and the rest: the overlay lies below all of them.
+            game::insertBelow(out, hudElemStart, scopeQuads);
             out.insert(out.end(), front.begin(), front.end());
             // Without menus the fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
             if (!fadeDrawn) drawScreenFade();
