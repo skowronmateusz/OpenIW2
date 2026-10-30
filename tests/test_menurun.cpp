@@ -1,4 +1,4 @@
-// Menu event scripts: the invert-axis popup of moscow (synthetic copy of the structure of ui/scriptmenus/invert_axis1.menu).
+// Menu event scripts: a synthetic yes/no popup with the same kind of actions as the invert-axis popup of moscow.
 #include <unistd.h>
 #include <string>
 #include "ui/menurun.h"
@@ -26,17 +26,17 @@ int main() {
     std::ofstream(dir / "ui/popup.menu") << R"({
 	menuDef
 	{
-		name invert_axis1
+		name test_popup
 		rect 204 160 235 160
 		popup
-		onESC { scriptMenuResponse "accept_normal"; close "invert_axis1"; }
+		onESC { scriptMenuResponse "popup_no"; close "test_popup"; }
 		itemDef
 		{
 			name invert_enabled
 			type 1
 			rect 70 90 100 20
 			visible 1
-			action { play "mouse_click"; execnow "toggle ui_mousePitch"; uiScript update ui_mousePitch; scriptMenuResponse "try_invert"; close invert_axis1; }
+			action { play "test_click"; scriptMenuResponse "popup_yes"; execnow "toggle ui_mousePitch"; uiScript update ui_mousePitch; close test_popup; }
 		}
 		itemDef
 		{
@@ -44,7 +44,7 @@ int main() {
 			type 1
 			rect 70 50 100 20
 			visible 1
-			action { play "mouse_click"; scriptMenuResponse "accept_normal"; close invert_axis1; }
+			action { play "test_click"; scriptMenuResponse "popup_no"; close test_popup; }
 		}
 		itemDef { name title text "x" rect 0 0 10 10 visible 1 decoration }
 	}
@@ -53,7 +53,7 @@ int main() {
     vfs.mountDirectory(dir);
     iw2::ui::MenuLibrary lib(vfs);
     CHECK(lib.loadFile("ui/popup.menu"));
-    const iw2::ui::Menu* m = lib.find("invert_axis1");
+    const iw2::ui::Menu* m = lib.find("test_popup");
     CHECK(m != nullptr);
     if (!m) return 1;
 
@@ -84,28 +84,28 @@ int main() {
     CHECK(iw2::ui::itemAt(*m, 300, 300) == nullptr);
     if (!yes || !no) return 1;
 
-    // "Yes" inverts: the bool flips, m_pitch changes sign, the script gets "try_invert".
+    // "Yes" inverts: the bool flips, m_pitch changes sign, the script gets "popup_yes".
     log.clear();
     iw2::ui::runScript(yes->action, m->name, env);
     CHECK(cvars["ui_mousePitch"] == "1");
     CHECK(cvars["m_pitch"] == "-0.022");
-    CHECK((log == std::vector<std::string>{"play mouse_click", "resp invert_axis1 try_invert", "close invert_axis1"}));
+    CHECK((log == std::vector<std::string>{"play test_click", "resp test_popup popup_yes", "close test_popup"}));
 
     // "No": nothing changes but the response.
     log.clear();
     iw2::ui::runScript(no->action, m->name, env);
     CHECK(cvars["m_pitch"] == "-0.022");
-    CHECK((log == std::vector<std::string>{"play mouse_click", "resp invert_axis1 accept_normal", "close invert_axis1"}));
+    CHECK((log == std::vector<std::string>{"play test_click", "resp test_popup popup_no", "close test_popup"}));
 
     // A second toggle restores it (the second popup's "No").
     iw2::ui::runScript(yes->action, m->name, env);
     CHECK(cvars["ui_mousePitch"] == "0");
     CHECK(cvars["m_pitch"] == "0.022");
 
-    // ESC answers accept_normal.
+    // ESC answers popup_no.
     log.clear();
     iw2::ui::runScript(m->onEsc, m->name, env);
-    CHECK((log == std::vector<std::string>{"resp invert_axis1 accept_normal", "close invert_axis1"}));
+    CHECK((log == std::vector<std::string>{"resp test_popup popup_no", "close test_popup"}));
 
     // execOnDvar*Value (0x4c8ce0..0x4c8d80): string compare is case-insensitive, float compare has a 1e-5 tolerance.
     {
