@@ -91,6 +91,7 @@ described in the code that reads them.
 | `IW2_SHOT_SET=dvar=value,...` | Sets cvars before a `--menu --shot`. |
 | `IW2_MENU_KEYS` tokens | `open:name`, `click:X/Y`, `left`, `right` (besides the existing tokens, `quit`). |
 | `IW2_EXIT_AFTER=N` | Exits iw2view after N seconds. |
+| `IW2_START_TRACE=1` | iw2view | Prints `[start-trace]` lines for the level start: real ms and level ms of the world creation, every script sound start (handle and length), the end of the load, and the first presented frames (with the voices still held). |
 
 
 - Env `IW2_ACC_DEBUG=1` (iw2game/iw2view): prints one `ACC #<ent> (<origin>) <weapon> <ai|player> dist <d> chance <c> hit|miss clip <n>` line per AI/player shot (combat.cpp); `clip` is the shooter's script field `bulletsInClip` (the animscripts ammo count, decremented by the scripts after each shot; `undefined` before the first refill).

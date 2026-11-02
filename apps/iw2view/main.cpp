@@ -3366,16 +3366,39 @@ int main(int argc, char** argv) {
         }
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
+        // Debug IW2_START_TRACE=1: level start timing (real ms since this point, level time, sound starts, load end, first frames).
+        const bool startTrace = std::getenv("IW2_START_TRACE") != nullptr;
+        const uint64_t traceT0 = SDL_GetTicksNS();
+        bool firstFramePending = false; // the first frame after a load (pipeline and upload warm-up) is not frame time either
+        int traceFramesAfterLoad = -1; // >= 0: counting presented frames since the load ended
+        auto trace = [&](const std::string& what, int64_t levelMs) {
+            if (startTrace) std::cout << "[start-trace] real " << (SDL_GetTicksNS() - traceT0) / 1000000ull << " ms, level " << levelMs << " ms: " << what << "\n";
+        };
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame, const game::LoadedSave* save = nullptr,
                              std::optional<game::World::CarriedPlayer> carriedPlayer = std::nullopt) {
+            mixer.setLoading(true); // the level's sounds wait for the end of the load (see Mixer::setLoading)
             auto w = std::make_unique<game::World>(vfs, map);
+            trace("world created", 0);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
-            w->playSound = [&mixer, &subtitles](const std::string& alias, const game::Vec3* origin, float* duration, int owner) {
+            w->playSound = [&mixer, &subtitles, &trace, wp = w.get()](const std::string& alias, const game::Vec3* origin, float* duration, int owner) {
                 float dur = 0;
+                // The level script's first sounds start before the client has a view (the map load): the first cgame frame (0x402ac0)
+                // plays them with the listener at the first snapshot's view, so the player's spawn stands in for it; at the origin
+                // a dialogue line would be culled by distance (0x4424e6) and the script would see no sound at all.
+                if (mixer.loading() && wp->player()) {
+                    const script::Value o = wp->player()->obj->get("origin"), an = wp->player()->obj->get("angles");
+                    if (o.isVector()) {
+                        const float yaw = (an.isVector() ? an.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
+                        const script::Vec3 p = o.asVector();
+                        mixer.setListener({p[0], p[1], p[2]}, {std::cos(yaw), std::sin(yaw), 0}, {std::sin(yaw), -std::cos(yaw), 0});
+                    }
+                }
+                trace("sound " + alias, wp->timeMs());
                 const int handle = mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, &dur, {.owner = owner});
                 if (duration) *duration = dur;
+                trace("  -> handle " + std::to_string(handle) + ", length " + std::to_string(dur) + " s", wp->timeMs());
                 // A started alias with a subtitle column shows its caption for max(sound length, cg_subtitleMinTime 3 s) (0x4a3540).
                 if (handle && !mixer.lastSubtitle().empty()) subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS(), dur});
                 return handle;
@@ -3398,6 +3421,7 @@ int main(int argc, char** argv) {
             } else {
                 w->start();
             }
+            trace("world started", w->timeMs());
             return w;
         };
         std::string currentMap = menuMode ? std::string() : args[1];
@@ -4535,6 +4559,17 @@ int main(int argc, char** argv) {
             menuEnv.setCvar("cl_paused", "1");
             frontStack.open("pregame");
         }
+        // End of a level load (0x449340: the first cgame frame 0x402ac0 starts the sounds the level script queued, then cl_paused
+        // is decided, client state 4): the pause state reaches the mixer before the held voices are released, so a pregame
+        // keeps them where they started; the next frame then counts from here (0x449340 resets the Com_Frame clock 0x74a92c).
+        auto endLoad = [&]() {
+            mixer.setPaused(menuEnv.getCvar("cl_paused") == "1");
+            mixer.setLoading(false);
+            traceFramesAfterLoad = 0;
+            firstFramePending = true;
+            trace(menuEnv.getCvar("cl_paused") == "1" ? "load ended (pregame, paused)" : "load ended (running)", world ? world->timeMs() : 0);
+        };
+        endLoad();
         // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
         // TODO(spec): the "1" (openmenunomouse) variant keeps the cursor hidden; here the cursor is always shown.
         auto menuCommand = [&](const std::string& name, const std::string& arg) {
@@ -7622,7 +7657,7 @@ int main(int argc, char** argv) {
                 }
                 mixer.fadeStep(dt * 1000.0f);
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
-                if (menuEnv.getCvar("cl_paused") != "1") gameClock += std::min(dt, 0.25f) * slowmo; // cl_paused freezes the simulation
+                if (menuEnv.getCvar("cl_paused") != "1") gameClock += game::comFrameSeconds(dt, slowmo); // cl_paused freezes the simulation
                 mixer.setPaused(menuEnv.getCvar("cl_paused") == "1"); // the sound update pauses the non-menu channels (0x442dc0)
                 while (gameClock >= 0.05f) {
                     // The previous server frame's entity placement, for the client interpolation below.
@@ -7642,6 +7677,7 @@ int main(int argc, char** argv) {
                     }
                     if (world->player()) prevPlayerO = world->player()->obj->get("origin").asVector();
                     world->frame();
+                    if (startTrace && traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) trace("server frame run", world->timeMs());
                     gameClock -= 0.05f;
                 }
                 lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
@@ -7927,6 +7963,8 @@ int main(int argc, char** argv) {
                         menuEnv.setCvar("cl_paused", "1");
                         frontStack.open("pregame");
                     } else menuEnv.setCvar("cl_paused", "0");
+                    endLoad();
+                    last = SDL_GetTicksNS(); // 0x449340 ends with the Com_Frame clock set to the end of the load: the load time is no frame time
                     cam = scene.start;
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
@@ -8134,6 +8172,14 @@ int main(int argc, char** argv) {
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;
             }
             SDL_SubmitGPUCommandBuffer(cmd);
+            if (std::exchange(firstFramePending, false)) last = SDL_GetTicksNS(); // see endLoad
+            if (traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) {
+                std::string what = "frame presented #" + std::to_string(++traceFramesAfterLoad);
+                if (traceFramesAfterLoad == 1)
+                    for (const std::string& v : mixer.describeVoices())
+                        if (!v.empty()) what += " [" + v + "]"; // the opening dialogue's remaining length
+                trace(what, world ? world->timeMs() : 0);
+            }
             profFrame += double(SDL_GetTicksNS() - profFrameStart) * 1e-6;
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
             cam.yaw = camBase.yaw;

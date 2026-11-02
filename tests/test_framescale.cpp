@@ -25,6 +25,14 @@ int main() {
     CHECK(frameScaleAt(1000, 4000, 4000, 1, 0.1f, 0.3f) == 0.1f); // ends at 0.1, not 0
     CHECK(frameScaleAt(1000, 4000, 9000, 1, 0.1f, 0.3f) == 0.1f);
 
+    // 0x42eb70: the frame time is clamped to 1..200 ms with a server running (a load or a slow first frame is no more than 4 server frames).
+    CHECK(comFrameSeconds(3.0f, 1.0f) == 0.2f);
+    CHECK(comFrameSeconds(0.0f, 1.0f) == 0.001f);
+    CHECK(comFrameSeconds(0.016f, 1.0f) == 0.016f);
+    CHECK(comFrameSeconds(1.0f, 0.1f) == 0.1f);      // scaled first, then clamped
+    CHECK(comFrameSeconds(3.0f, 1.0f, false) == 3.0f); // no server: up to 5000 ms
+    CHECK(comFrameSeconds(9.0f, 1.0f, false) == 5.0f);
+
     // A dead player in free fall (pm_type >= 4, no world): with the scale at 0.1 one real second moves it the distance
     // of 0.1 s of play, not of a full second.
     CollisionWorld empty;

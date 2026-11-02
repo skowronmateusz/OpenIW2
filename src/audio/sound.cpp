@@ -541,6 +541,11 @@ void Mixer::setPaused(bool paused) {
     for (Voice& v : voices_) v.held = paused && (v.chan < 0 || channelPausable[v.chan]);
 }
 
+void Mixer::setLoading(bool loading) {
+    std::lock_guard lock(mutex_);
+    loading_ = loading;
+}
+
 void Mixer::mix(float* out, int frames) {
     std::fill(out, out + size_t(frames) * 2, 0.0f);
     std::lock_guard lock(mutex_);
@@ -563,7 +568,7 @@ void Mixer::mix(float* out, int frames) {
         else duck_ = std::clamp(duck_ + (masterPlaying ? 1.0f : -1.0f) * float(frames) * 1000.0f / (float(rate_) * float(slaveFadeMs)), 0.0f, 1.0f);
     }
     for (Voice& v : voices_) {
-        if (v.held) continue;
+        if (v.held || loading_) continue;
         if (pausedChannels && v.chan >= 0 && channelPausable[v.chan]) continue; // paused samples keep their position
         float gl, gr;
         gains(v, gl, gr);

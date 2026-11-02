@@ -112,6 +112,36 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
   (0x4c54c0: cl_paused 0, console `fade 0 0 0 0 3`, close all), else cl_paused 1, close all, open `pregame` ("click to start
   the mission"; the click runs uiScript `playerstart` -> 0x4c54c0).
 
+## Level start timing
+
+VAs in the patch 1.3 SP executable. The `map` command (0x449340) loads a level in one call:
+
+1. The server spawn (0x4488b0) runs the frame start (level time 50), the entity spawn, the level's main thread and one full server frame
+   (0x4da470); see gsc-vm.md. A sound the script starts here (`playsound` = a G_AddEvent on the entity, 0x4ef230) is only an entity event
+   at this point: nothing is audible during the load.
+2. The client then runs one cgame frame by hand (0x402ac0 -> 0x4a4ad0). Its entity event pass (0x4bb850, at most the newest four events per
+   entity) starts the sounds of step 1 through the generic play routine 0x4423d0, which culls 3D sounds by distance from the listener
+   (0x4424e6), so the listener is the first snapshot's view, not an unset origin.
+3. The pregame decision follows (`ui_autoContinue` or `cl_paused 1` + `pregame`, 0x4c54c0), client state becomes 4, and the Com_Frame clock
+   (0x74a92c) is set to the end of the load, so the load time (the engine prints it) is not frame time of the first frame.
+
+Server frames beyond the spawn frame run only with client state 4 (0x44ab70), in 50 ms steps (0x44a9d0), and not while `cl_paused` is set
+(its loop breaks). The frame time given to that accumulator is clamped to 1..200 ms while a server is running (5000 ms otherwise,
+0x42eb70, after the scale), so a slow first frame runs at most four server frames. The sound update pauses the pausable channels when
+`cl_paused` changes (0x442a30, sound.md), so the opening dialogue waits for the click on `pregame` at the position where it started.
+
+openiw2 (iw2view): the world is built before the scene loads and the audio thread mixes in real time, so:
+- `Mixer::setLoading` holds every voice from the world's creation until the end of the load; a started voice keeps its handle and length
+  (the script's `playsound` notify depends on it). At the end of the load the mixer takes `cl_paused` first and then releases the voices,
+  so a pregame keeps them at position 0.
+- While loading, a script sound uses the player's spawn as the listener (the stand-in for step 2). Before this, Hill 400 (defend) lost its
+  first line: the 3D sound of Randall's intro line was culled at the origin (handle 0, length 0), the script saw no sound and the next
+  line started 0.1 s later; the rest of the opening ran ahead of the audio.
+- The first frame after a load is no frame time (the pipeline and upload warm-up is part of the load): the frame clock restarts after it,
+  and the simulation step per frame is clamped as above (`comFrameSeconds`, was 250 ms).
+- TODO(spec): when a culled sound reports its length to a `playsound` notify (a far-away line with a notify name still returns length 0
+  here); which cgame call places the listener before the entity event pass of step 2.
+
 ## Death screen
 
 - Player death: `player_die` (0x527d80) sets the client respawn time to level time + 1700 ms (0x527e85). The client

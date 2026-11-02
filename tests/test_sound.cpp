@@ -297,6 +297,32 @@ int main() {
         m.setPaused(false);
         for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
         CHECK(m.active() == 0);
+        // Level load (Mixer::setLoading): a voice the script starts during the load keeps its position until the load ends, and when the
+        // level then opens the pregame (cl_paused 1) it stays held until the click.
+        CHECK(m.play("land_plr_dirt") != 0);
+        m.setLoading(true);
+        for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
+        CHECK(m.active() == 1);
+        m.setPaused(true);
+        m.setLoading(false);
+        for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
+        CHECK(m.active() == 1);
+        m.setPaused(false);
+        for (int i = 0; i < 48000 * 2 / 1024; ++i) m.mix(buf.data(), 1024);
+        CHECK(m.active() == 0);
+        // Hill 400 (defend) opening: Randall's first line is a 3D voice-channel sound at his position. With the listener still at the
+        // origin of an unset view it is culled by distance (handle 0, length 0, so the script sees no sound); with the listener at the
+        // player's spawn it starts and reports its length.
+        {
+            iw2::audio::SoundAliases ha;
+            ha.load(vfs, "hill400_defend");
+            iw2::audio::Mixer hm(vfs, ha, 48000);
+            const iw2::audio::Vec3 randall{20000.0f, 20000.0f, 0.0f};
+            float len = 0;
+            CHECK(hm.play("hill400_defend_rnd_intro1", randall, &len) == 0 && len == 0.0f);
+            hm.setListener({20100.0f, 20000.0f, 0.0f}, {1, 0, 0}, {0, -1, 0});
+            CHECK(hm.play("hill400_defend_rnd_intro1", randall, &len) != 0 && len > 1.0f);
+        }
         // openvictoryscreen (0x4a6d7f) clears the music flag: voices on a non-pausable channel keep playing while cl_paused is set.
         for (bool& f : m.channelPausable) f = false;
         CHECK(m.play("land_plr_dirt") != 0);

@@ -153,6 +153,12 @@ public:
     // (0x442bf0) continues the marked voices where they stopped. Voices started while paused play.
     void setPaused(bool paused);
     bool paused() const { return paused_; }
+    // Level load (docs/spec/campaign.md "Level start timing"): the server spawn (0x4488b0) runs the level's main thread and its first frame
+    // during the map load, but the client's first sound update only comes at the end of the load (0x449340 calls 0x402ac0 right
+    // before client state 4), so a voice started by the script during the load does not advance until then. While `loading` is set
+    // every voice holds its position (a started voice still gets its handle and length); clearing it releases them.
+    void setLoading(bool loading);
+    bool loading() const { return loading_; }
     void fadeStep(float ms);
     // Environment effects (reverb) state, see audio/reverb.h. `enableReverb` is the dvar snd_enableReverb (default 1).
     // TODO(spec): the reverb DSP is Miles' (mss32.dll), so only the state is modelled.
@@ -166,6 +172,7 @@ public:
 private:
     std::string lastSubtitle_;
     bool paused_ = false;
+    bool loading_ = false;
     struct Voice {
         int handle = 0;
         std::shared_ptr<const Wav> wav;
