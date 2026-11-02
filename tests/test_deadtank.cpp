@@ -118,6 +118,83 @@ int main() {
     for (int id : tigers(c)) c.debugDamage(*ent(c, id), 100000);
     for (int i = 0; i < 300; ++i) c.frame();
     for (int id : tigers(c)) CHECK(hasClip(c, id));
+    // Flak88 shells (flak88_turret, direct hit MOD_PROJECTILE, the player as the shooter) kill both tigers one after the other; a save
+    // taken while the second one is dead but not yet freed (the tank_down autosave) must keep its clip after the load too.
+    {
+        World d(vfs, "rhine");
+        startTigers(d);
+        std::vector<int> t2 = tigers(d);
+        CHECK(t2.size() == 2);
+        if (t2.size() != 2) return 1;
+        auto shoot = [&](int id) {
+            for (int tries = 0; tries < 12; ++tries) {
+                Entity* t = ent(d, id);
+                if (!t->vehicle || t->obj->get("health").asFloat() <= 0) break;
+                const Vec3 o = t->obj->get("origin").asVector();
+                const float a = float(tries) * 0.5236f;
+                Entity& r = d.debugSpawnRocket("flak88_turret", {o[0] - std::cos(a) * 500, o[1] - std::sin(a) * 500, o[2] + 70}, {std::cos(a), std::sin(a), 0});
+                for (int i = 0; i < 60 && !r.obj->removed; ++i) d.frame();
+            }
+        };
+        shoot(t2[0]);
+        for (int i = 0; i < 100; ++i) d.frame();
+        shoot(t2[1]);
+        for (int i = 0; i < 5; ++i) d.frame();
+        CHECK(ent(d, t2[1])->vehicle != nullptr); // dead (wreck model, health below 1) but not freed yet
+        SaveRequest rq;
+        rq.name = "t";
+        rq.description = "tank_down";
+        LoadedSave sv;
+        CHECK(parseSaveFile(buildSaveFile(d, rq), sv).empty());
+        World e2(vfs, "rhine");
+        e2.prepareStart();
+        restoreSave(e2, sv);
+        for (int i = 0; i < 3; ++i) e2.frame();
+        CHECK(hasClip(e2, t2[1]));
+        for (int i = 0; i < 1500; ++i) { d.frame(); e2.frame(); }
+        for (World* wp : {&d, &e2})
+            for (int id : t2) {
+                Entity* t = ent(*wp, id);
+                CHECK(t && t->classname == "script_vehicle_corpse");
+                CHECK(hasClip(*wp, id));
+                if (t) CHECK(walkInside(*wp, *t) == 0);
+                // bullets hit the wreck through the xmodel collision surfaces of the wreck model (ent+0xa2 stays 4 after freevehicle)
+                if (t) {
+                    const Vec3 o = t->obj->get("origin").asVector();
+                    int hits = 0;
+                    for (float dz : {60.f, 100.f, 140.f})
+                        for (int dd = 0; dd < 8; ++dd) {
+                            const float an = float(dd) * 0.785398f, dx = std::cos(an) * 500, dy = std::sin(an) * 500;
+                            if (wp->debugBulletTraceEntity({o[0] + dx, o[1] + dy, o[2] + dz}, {o[0], o[1], o[2] + dz}) == id) ++hits;
+                        }
+                    CHECK(hits >= 4);
+                }
+            }
+    }
+    // A freed flak88 (rhine flak0..4) is still hit by bullet traces: its wreck model has collision surfaces.
+    {
+        World f(vfs, "rhine");
+        f.start();
+        for (int i = 0; i < 100; ++i) f.frame();
+        Entity* flak = nullptr;
+        for (const auto& e : f.entities())
+            if (e->vehicle && !e->obj->removed && e->obj->get("model").toString().find("flak88") != std::string::npos) { flak = e.get(); break; }
+        CHECK(flak != nullptr);
+        if (flak) {
+            const int id = flak->number;
+            f.debugDamage(*flak, 100000);
+            for (int i = 0; i < 400; ++i) f.frame();
+            CHECK(flak->classname == "script_vehicle_corpse");
+            const Vec3 o = flak->obj->get("origin").asVector();
+            int hits = 0;
+            for (float dz : {30.f, 60.f, 90.f})
+                for (int dd = 0; dd < 4; ++dd) {
+                    const float dx = (dd == 0 ? -1.f : dd == 1 ? 1.f : 0.f) * 400, dy = (dd == 2 ? -1.f : dd == 3 ? 1.f : 0.f) * 400;
+                    if (f.debugBulletTraceEntity({o[0] + dx, o[1] + dy, o[2] + dz}, {o[0], o[1], o[2] + dz}) == id) ++hits;
+                }
+            CHECK(hits >= 4);
+        }
+    }
     std::cout << (failures ? "FAILED\n" : "dead tank test OK\n");
     return failures ? 1 : 0;
 }

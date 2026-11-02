@@ -425,7 +425,11 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
     // sphere around the xmodel bounds), and the box (r.mins / r.maxs) used by traces that are not locational.
     for (const auto& ep : entities_) {
         Entity& e = *ep;
-        if (e.obj->removed || (e.classname != "script_model" && !e.vehicle) || e.number == passNum || e.number == passOwnerNum) continue;
+        // A freed vehicle (script_vehicle_corpse) keeps ent+0xa2 = 4: 0x511c80 does not write it, so its wreck is still hit through the
+        // xmodel collision surfaces of its current (wreck) model, while its collmap brush is skipped by this trace.
+        if (e.obj->removed || (e.classname != "script_model" && !e.vehicle && e.classname != "script_vehicle_corpse") || e.number == passNum ||
+            e.number == passOwnerNum)
+            continue;
         const uint32_t entContents = entityContents(e); // ent+0xc0: 0x2080 script_model, a script_vehicle's 0x2080 / collmap 0x800000
         if (!(mask & entContents)) continue;
         const Value mv = e.obj->get("model"), ov = e.obj->get("origin");

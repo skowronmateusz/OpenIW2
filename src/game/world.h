@@ -696,6 +696,12 @@ public:
     static constexpr int kItemNoGround = 0x7ff; // groundEntityNum (+0xc) ENTITYNUM_NONE
     // Test hook: a rocket of `weapon` fired by the player from `start` along `dir` (G_FireRocket 0x527810).
     Entity& debugSpawnRocket(const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(*player_, weapon, start, dir); }
+    // tests: id of the entity a bullet-mask locational trace (Bullet_Fire, mask 0x280e831) from start to end hits first, -1 for none.
+    int debugBulletTraceEntity(const Vec3& start, const Vec3& end) {
+        int loc = 0;
+        return locationalTrace(start, end, 0x280e831u, nullptr, nullptr, loc).entity;
+    }
+    Entity& debugSpawnRocketFrom(Entity& parent, const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(parent, weapon, start, dir); }
     // Test hook: Bullet_Fire from the player along start -> end; the entity the bullet hit, else null.
     void debugResetPrediction() { predictionDepth_ = 0; predictionSaves_.clear(); } // test hook: a script error leaves the counter set
     Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }

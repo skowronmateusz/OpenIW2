@@ -85,10 +85,13 @@ uint32_t World::entityContents(const Entity& e) const {
         if (e.vehicle->collmapSet && !e.vehicle->collmap.empty()) return one ? 0xa00000u : 0x800000u;
         return one ? 0x202080u : 0x2080u;
     }
-    // freevehicle (0x513850 -> 0x511c80) keeps the contents word and the brush model.
-    if (corpseCollmap(e).size() > 1) {
+    // freevehicle (0x513850 -> 0x511c80) keeps the contents word and the brush model: the collmap's 0x800000 / 0xa00000, or the
+    // vehicle's own 0x2080 / 0x202080 when its model had no collmap.
+    if (e.classname == "script_vehicle_corpse") {
         const Value sf = e.obj->get("spawnflags");
-        return (sf.isNumber() && (sf.asInt() & 1)) ? 0xa00000u : 0x800000u;
+        const bool one = sf.isNumber() && (sf.asInt() & 1);
+        if (corpseCollmap(e).size() > 1) return one ? 0xa00000u : 0x800000u;
+        return one ? 0x202080u : 0x2080u;
     }
     return 0;
 }
