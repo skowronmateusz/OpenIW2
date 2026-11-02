@@ -95,6 +95,14 @@ public:
     int stateNumber() const { return int(state_); }
     // The offhand fuse (ps+0x3c) in ms: non-zero while a grenade is being cooked.
     int fuseMs() const { return int(fuse_ * 1000.0f); }
+    // openiw2 option iw2_grenadeCook (default on; a deliberate deviation from the shipped data): a frag-class offhand grenade cooks
+    // as if its cookOffHold were 1. A weapon file with cookOffHold != 0 always cooks. Smoke grenades only with the file field.
+    bool grenadeCook = true;
+    // True while the held offhand grenade cooks (fuse burns, crosshair pulses); the 0x33c test of 0x4df5a0 / 0x4bd2c0.
+    bool cooking() const {
+        if (!offhandActive_ || defValue(offDef_, "weaponType") != "grenade") return false;
+        return defNumber(offDef_, "cookOffHold") != 0 || (grenadeCook && defValue(offDef_, "offhandClass") == "Frag Grenade");
+    }
     // The throw consumes ps+0x3c (0x527625 stores 0 after the grenade takes it as its fuse); returns the cooked fuse in ms.
     bool hasBrassPending() const { return brassInChamber_; } // ps+0x530 bit of the equipped weapon
     int takeFuseMs() { const int ms = fuseMs(); fuse_ = 0; return ms; }

@@ -166,6 +166,9 @@ danger planes (+0x2050), the end-point z adjustments 0x526e94..0x526f84 and the 
 hit entity +0x128 & 0x8000), the direction-byte quantisation of event 0xb8.
 
 ## Cooked fuse and bounce angular re-base (decoded)
+Cooking itself only happens for weapons with `cookOffHold` (see controls.md); the shipped grenades all have it at 0, so the
+client fuse is always `fuseTime` there. openiw2 deviates by default: the option `iw2_grenadeCook` (default 1) lets frag grenades
+cook (see controls.md); with 0 the shipped behaviour applies.
 - Spawn 0x5275f0: if the thrower has a client and client +0x3c (ps grenade fuse, ms) is non-zero, the entity fuse +0x138 =
   levelTime + that value and client +0x3c is set to 0 (0x527605..0x52762c); otherwise levelTime + the fuse argument (the weapon
   fuseTime, 0x531990 passes weapon +0x248). Port: `playerThrowGrenade(..., cookedFuseMs)` fed by `PlayerWeapon::takeFuseMs()`.

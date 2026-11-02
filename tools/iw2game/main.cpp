@@ -962,6 +962,7 @@ int main(int argc, char** argv) {
                     const std::string& other = inv.slot[inv.slot[2] == weaponSelect ? 1 : 2];
                     if (!other.empty()) weaponSelect = other;
                 }
+                pweapon.grenadeCook = world.cvarFloat("iw2_grenadeCook", 1.0f) != 0;
                 iw2::game::PlayerWeapon::Input wi;
                 wi.fire = b & iw2::game::Button::Attack;
                 wi.melee = b & iw2::game::Button::Melee;
@@ -979,7 +980,7 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     ++weaponEvents[int(e.kind)];
                     if (e.kind == iw2::game::PlayerWeapon::Event::MeleeHit) world.playerMelee(eye, {0, 0, 0});
-                    if (e.kind == iw2::game::PlayerWeapon::Event::OffhandThrow) world.playerThrowGrenade(e.weapon, eye, {-20, 0, 0}, {0, 0, 0});
+                    if (e.kind == iw2::game::PlayerWeapon::Event::OffhandThrow) world.playerThrowGrenade(e.weapon, eye, {-20, 0, 0}, {0, 0, 0}, pweapon.takeFuseMs());
                     if (e.kind == iw2::game::PlayerWeapon::Event::OffhandExplode) world.playerGrenadeInHand(eye);
                     std::printf("controls t=%.2f event %d %s (state %d, weapon %s, stance %d)\n", f * 0.05f, int(e.kind),
                                 e.weapon.c_str(), pweapon.stateNumber(), pweapon.name().c_str(), input.stance());

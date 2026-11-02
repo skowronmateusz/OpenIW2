@@ -5532,7 +5532,7 @@ int main(int argc, char** argv) {
                 const std::string center = pweapon.field("reticleCenter"), side = pweapon.field("reticleSide");
                 if (!center.empty()) {
                     float cs = num("reticleCenterSize");
-                    if (num("cookOffHold") != 0 && pweapon.fuseMs() != 0 && pweapon.field("weaponType") == "grenade")
+                    if (pweapon.cooking() && pweapon.fuseMs() != 0)
                         cs += float(pweapon.fuseMs() % 1000) * 0.01f;
                     cs *= scale;
                     pic(cx - cs * 0.5f, cy - cs * 0.5f, cs, center, 0);
@@ -7430,6 +7430,7 @@ int main(int argc, char** argv) {
             }
             if (world) {
                 syncWeapon();
+                pweapon.grenadeCook = world->cvarFloat("iw2_grenadeCook", 1.0f) != 0; // openiw2 option (docs/debug-flags.md)
                 game::PlayerWeapon::Input wi;
                 // weapnext / weapprev (cgame 0x4b7410): the weapon in the other of the two slots (primary, primaryb).
                 if (const int cycle = input.takeWeaponCycle(); cycle && world->player()) {

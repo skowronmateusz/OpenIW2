@@ -63,7 +63,16 @@ both timers are 0. View animation numbers paired with their timers: 2 fire, 4 re
   then 15: `fireTime`, view 2, event 0xa6 (the throw), one round off the grenade's clip (event 0x94 when the last).
   15 → 16: the weapon's `quickRaiseTime`, view 18 (no weapon: delay 1); 16 → 0 (0x4df0a0). Cooking (0x4df5a0): only
   with `cookOffHold` the fuse counts down while flag 0x10 is set; at 0 event 200 (the grenade goes off in the hand:
-  0x527d80 with 100000 damage, MOD_SUICIDE).
+  0x527d80 with 100000 damage, MOD_SUICIDE). The weapon field is at +0x33c of the weapon definition (field table entry
+  at 0x5a8708). No shipped weapon file (single-player or multiplayer grenades) sets `cookOffHold` (all are 0), and
+  0x4df5a0 is the only decrement of ps+0x3c found (TODO(spec): no exhaustive search of every writer), so in the shipped game a held grenade does not cook: the fuse stays at
+  `fuseTime` and the throw gives the grenade `fuseTime` whatever the hold time. This is not a defect of the port
+  (tests/test_grenadecook.cpp, tests/test_playerweapon.cpp `cooking`); a mod weapon with `cookOffHold 1` does cook.
+  openiw2 option (deliberate deviation from the shipped data): the cvar `iw2_grenadeCook` (default 1, settable with `--cvar` or
+  from config) makes frag-class offhand grenades (offhandClass "Frag Grenade") behave as if `cookOffHold` were 1 in both
+  places that test +0x33c (the fuse burn 0x4df5a0 and the crosshair size term 0x4bd2c0: the size grows by (fuse ms mod 1000) · 0.01
+  pixels-before-scale, a sawtooth). Smoke grenades only cook with the file field. With `iw2_grenadeCook 0` the shipped behaviour applies.
+  Port: `PlayerWeapon::cooking()`, tests/test_grenadecook.cpp.
 
 Firing, rechambering and reloading are still the inferred machine of `docs/spec/weapons.md`.
 

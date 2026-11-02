@@ -485,7 +485,7 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
 
     // Cooking (0x4df5a0): a grenade with cookOffHold burns its fuse while held; at 0 it goes off in the hand.
     if (offhandActive_ && defValue(offDef_, "weaponType") == "grenade" && fuse_ > 0) {
-        if (defNumber(offDef_, "cookOffHold") != 0) fuse_ -= dt;
+        if (cooking()) fuse_ -= dt;
         if (fuse_ <= 0) events_.push_back({Event::OffhandExplode, offhand_});
     }
 

@@ -247,6 +247,56 @@ void offhand() {
     CHECK(w.stateNumber() == 0 && w.name() == "a");
 }
 
+
+// Cooking (0x4df5a0): the held grenade's fuse (ps+0x3c) only counts down when the weapon has cookOffHold (+0x33c). Without it
+// the fuse stays at fuseTime and the throw hands that to the grenade (0x527605). With it the fuse burns while held, the throw
+// carries the shortened fuse, and at 0 event 200 goes off in the hand.
+struct CookRun { int throws = 0, explodes = 0, fuseAtThrowMs = -1; int fuseWhileHeldMs = -1; };
+CookRun cookRun(const char* cookOffHold, float holdSeconds) {
+    const Def a{{"quickdroptime", "0.1"}, {"quickraisetime", "0.1"}, {"raisetime", "0"}, {"quickdropanim", "qd"}};
+    const Def g{{"weapontype", "grenade"}, {"holdfiretime", "0.3"}, {"firetime", "0.2"}, {"fusetime", "3"},
+                {"cookoffhold", cookOffHold}};
+    PlayerWeapon w;
+    w.lookup = [&](const std::string& n) -> const Def* { return n == "frag" ? &g : &a; };
+    w.findOffhand = [](const std::string& cls) { return cls == "Frag Grenade" ? std::string("frag") : std::string(); };
+    w.equip("a", a);
+    PlayerWeapon::Input in;
+    in.weapon = "a";
+    w.update(0.01f, in);
+    in.frag = true;
+    CookRun r;
+    const int heldTicks = int(holdSeconds * 100 + 0.5f);
+    for (int i = 0; i < 12 + 30 + heldTicks; ++i) { // quick drop 0.11 s, pin 0.3 s, then held
+        w.update(0.01f, in);
+        for (const auto& e : w.takeEvents()) r.explodes += e.kind == PlayerWeapon::Event::OffhandExplode;
+        if (r.explodes) return r;
+    }
+    r.fuseWhileHeldMs = w.fuseMs();
+    in.frag = false;
+    for (int i = 0; i < 3; ++i) {
+        w.update(0.01f, in);
+        for (const auto& e : w.takeEvents()) {
+            if (e.kind == PlayerWeapon::Event::OffhandThrow) ++r.throws, r.fuseAtThrowMs = w.takeFuseMs();
+            if (e.kind == PlayerWeapon::Event::OffhandExplode) ++r.explodes;
+        }
+    }
+    return r;
+}
+
+void cooking() {
+    const CookRun plain = cookRun("0", 1.5f); // cookOffHold 0 (every shipped grenade): holding burns nothing
+    CHECK(plain.explodes == 0 && plain.throws == 1);
+    CHECK(plain.fuseWhileHeldMs == 3000 && plain.fuseAtThrowMs == 3000);
+    const CookRun plainLong = cookRun("0", 10.0f);
+    CHECK(plainLong.explodes == 0 && plainLong.fuseAtThrowMs == 3000);
+    const CookRun cooked = cookRun("1", 1.5f); // cookOffHold 1: the fuse runs while held, the throw carries what is left
+    CHECK(cooked.explodes == 0 && cooked.throws == 1);
+    CHECK(cooked.fuseWhileHeldMs > 1300 && cooked.fuseWhileHeldMs < 1600);
+    CHECK(cooked.fuseAtThrowMs > 1200 && cooked.fuseAtThrowMs <= cooked.fuseWhileHeldMs);
+    const CookRun burst = cookRun("1", 4.0f); // held past the fuse: event 200, no throw
+    CHECK(burst.explodes == 1 && burst.throws == 0);
+}
+
 } // namespace
 
 // Weapon sounds follow the cgame priority chains (0x4ba8d0): player variants first, one sound per event.
@@ -644,6 +694,7 @@ int main() {
     weaponChange();
     melee();
     offhand();
+    cooking();
     binoculars();
     inventoryAmmo();
     if (failures) return 1;
