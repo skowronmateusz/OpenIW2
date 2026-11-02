@@ -1313,6 +1313,15 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
         // pm_flags 0x80 (0x50c70e / 0x50c728): set by a backward command, cleared by a forward one or sideways-only.
     if (fwdMove < 0) ps.movingBack = true;
     else if (fwdMove > 0 || rightMove != 0) ps.movingBack = false;
+    // Dead move (0x508a10, called at 0x50ca6c only for pm_type 4, after the ground trace and before PM_CheckLadderMove 0x50ca83,
+    // which clears the walking state of a dead player): on the ground the speed drops by 20 per PmoveSingle step, to 0. The 20
+    // does not scale with the step length; Pmove (0x50cc10) runs one step per usercmd, up to 66 ms, so a caller that splits a
+    // longer frame into sub-steps passes mp.deadSpeedStep only for the first sub-step of each 66 ms.
+    if (in.dead && ps.pmType != 5 && pml.walking && mp.deadSpeedStep) {
+        const float sp = std::sqrt(dot(ps.velocity, ps.velocity)) - 20.0f;
+        if (sp <= 0) ps.velocity = {0, 0, 0};
+        else { normalize(ps.velocity); ps.velocity = scale(ps.velocity, sp); }
+    }
     // PM_CheckLadderMove runs before the pm_time countdown (0x50ca83).
         const Vec cf{std::cos(in.yaw * float(M_PI) / 180.0f), std::sin(in.yaw * float(M_PI) / 180.0f), 0};
         checkLadder(w, ps, pml, in, fwdMove * 127.0f, cf);
@@ -1331,12 +1340,6 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     const float yaw = in.yaw * float(M_PI) / 180.0f;
     const Vec fwd{std::cos(yaw), std::sin(yaw), 0}, right{std::sin(yaw), -std::cos(yaw), 0};
     const float f = fwdMove * 127.0f, r = rightMove * 127.0f;
-    // Dead move (0x508a10, PmoveSingle 0x50ca6c): on the ground the speed drops by 20 per step, to 0.
-    if (in.dead && pml.walking) {
-        const float sp = std::sqrt(dot(ps.velocity, ps.velocity)) - 20.0f;
-        if (sp <= 0) ps.velocity = {0, 0, 0};
-        else { normalize(ps.velocity); ps.velocity = scale(ps.velocity, sp); }
-    }
     if (ps.onLadder) ladderMove(w, ps, pml, in, f, r, mp);
     else if (pml.walking) walkMove(w, ps, pml, in, f, r, fwd, right, mp);
     else airMove(w, ps, pml, f, r, fwd, right, mp);

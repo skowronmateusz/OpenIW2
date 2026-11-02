@@ -196,6 +196,7 @@ Vec leanOffset(float yawDeg, float lean);
 // Movement settings: dvar defaults and constants read from CoD2SP_s.exe (docs/spec/pmove.md).
 struct MoveParams {
     int speed = 190;                  // g_speed
+    bool deadSpeedStep = true;        // dead ground move: the fixed 20 speed drop belongs to a PmoveSingle step (0x508a10), not to a sub-step
     float gravity = 800.0f;           // g_gravity
     float friction = 5.5f;            // friction
     float stopSpeed = 100.0f;         // stopspeed

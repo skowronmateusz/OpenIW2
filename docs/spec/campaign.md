@@ -134,7 +134,16 @@ Superseded in detail by docs/spec/savegame.md sections 2-6 (implemented: src/gam
   before the server frame and the client run (0x40cf60), so level time, player movement, actors and effects all slow
   down. Nothing else freezes the dead player: movement commands are cleared and the ground move loses 20 speed per step
   (0x508a10, 0x50c733). iw2view applies the scale to the player's movement and weapon/view steps too (`game/framescale.h`).
-  TODO(spec): the per-step friction depends on the step length of the original's frames, not read.
+  Step length (decoded): the client makes one usercmd per client frame (0x409e50 -> 0x409da0; command time = client server time, the
+  frame time of the cmd is the time delta capped at 200 ms), and Pmove (0x50cc10) runs one PmoveSingle (0x50c4a0, clamped to
+  1..200 ms) per cmd, in chunks of at most 66 ms. Under time_slow the frame time and so every cmd time is scaled, so friction
+  and gravity (both multiplied by the step's frametime) and the noclip / ufo move (0x508a90, 0x508cec: also per cmd frametime)
+  all follow the scaled step, and the noclip camera of a running level is slowed by the same factor (tests/test_pmove.cpp).
+  The dead ground move (0x508a10, called at 0x50ca6c only for pm_type 4, before PM_CheckLadderMove 0x50ca83) subtracts a fixed 20
+  from the speed per PmoveSingle step, independent of the step length (one per usercmd up to 66 ms). That call precedes the ladder
+  check, which leaves a dead player in the air move; the port ran the drop after it, where the ground state was already gone, so it
+  never fired. It now runs at 0x50ca6c's position, once per 66 ms chunk (the viewer's 1/60 s sub-steps share one drop).
+  TODO(spec): the minimum of 1 ms per Com_Frame (0x42eb70) is not applied to iw2view's float frame time.
 - The quote is ownerdraw `CG_DEADQUOTE` (0x4aa2a0) of hud.menu's `deadscreen` menu (item `quote`, textscale 0.4, rect
   80 200 480 20, centred): after `opendeadscreen`, alpha = elapsed cg time / `hud_deathQuoteFadeTime` (int, default
   1000, 0..100000), text = `ui_deadquote` without a leading `@`, localized. 0x4cc6a0 wraps at spaces to the rect

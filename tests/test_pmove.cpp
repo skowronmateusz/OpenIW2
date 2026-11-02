@@ -77,6 +77,27 @@ int main() {
         CHECK(ps.onGround);
         const Vec floor = ps.origin;
 
+        // Dead ground move (0x508a10): the speed drops by a fixed 20 per PmoveSingle step whatever the step length, so a 1 ms
+        // step (slow motion, minimum frame) takes as much as a 50 ms one; a sub-step without deadSpeedStep takes none.
+        // The drop is taken before PM_CheckLadderMove (0x50ca83), which leaves a dead player in the air move, so no ground friction
+        // follows and only the 20 shows in the speed.
+        {
+            PlayerInput dead;
+            dead.dead = true;
+            PlayerState d1 = ps, d2 = ps, d3 = ps;
+            d1.velocity = d2.velocity = d3.velocity = {300, 0, 0};
+            MoveParams dmp;
+            playerMove(cw, d1, dead, 0.001f, dmp);
+            playerMove(cw, d2, dead, 0.05f, dmp);
+            dmp.deadSpeedStep = false;
+            playerMove(cw, d3, dead, 0.001f, dmp);
+            const float drop1 = 300.0f - d1.velocity[0], drop2 = 300.0f - d2.velocity[0], drop3 = 300.0f - d3.velocity[0];
+            std::cout << "dead drops: 1 ms " << drop1 << ", 50 ms " << drop2 << ", no step " << drop3 << "\n";
+            CHECK(drop1 >= 20.0f && drop1 < 20.5f);
+            CHECK(drop2 >= 20.0f && drop2 < 20.5f);
+            CHECK(drop3 < 2.0f);
+        }
+
         // Two seconds forward at g_speed 190 (friction and acceleration settle within the first frames).
         PlayerInput in;
         in.forward = 1;
@@ -343,6 +364,26 @@ int main() {
         k.landTimer = true;
         playerMove(empty, k, none, 0.05f, mp);
         CHECK(k.pmTimeMs == 0 && !k.landTimer);
+    }
+    {
+        // The death slow motion shortens every command's time (Com_Frame msec x scale, 0x42eb70; usercmd time -> Pmove 0x50cc10), and
+        // the noclip move (0x508a90) runs per command in that time: the same simulated time as many short steps or a few long ones
+        // gives about the same distance, so a frame scale of 0.1 slows noclip by exactly that factor (no separate real-time path).
+        CollisionWorld empty;
+        MoveParams mp;
+        PlayerInput fwd;
+        fwd.forward = 1.0f;
+        PlayerState slow, normal;
+        slow.pmType = normal.pmType = 2;
+        for (int i = 0; i < 120; ++i) playerMove(empty, slow, fwd, 0.002f, mp);   // 0.24 s of simulated time in 2 ms commands
+        for (int i = 0; i < 12; ++i) playerMove(empty, normal, fwd, 0.02f, mp);   // the same time in 20 ms commands
+        const float dSlow = slow.origin[0], dNormal = normal.origin[0];
+        std::cout << "noclip 0.24 s: 2 ms steps " << dSlow << ", 20 ms steps " << dNormal << "\n";
+        CHECK(dNormal > 10.0f && std::fabs(dSlow - dNormal) < 0.15f * dNormal);
+        PlayerState tenth;
+        tenth.pmType = 2;
+        for (int i = 0; i < 12; ++i) playerMove(empty, tenth, fwd, 0.002f, mp);   // a tenth of the time (frame scale 0.1)
+        CHECK(tenth.origin[0] < 0.2f * dNormal);
     }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;

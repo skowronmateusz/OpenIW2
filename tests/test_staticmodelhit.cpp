@@ -5,6 +5,7 @@
 #include "game/collision.h"
 #include "game/world.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -40,6 +41,31 @@ int main() {
     if (bulletHits == 0 || sightBlocked == 0 || boxHits != 0) {
         std::cerr << "expected hedgehog hits for point traces only\n";
         return 1;
+    }
+    // The use scan's line test is the sight trace (0x44c1b0): a point sight trace has no 0.125 surface margin, while the
+    // clip trace blocks a target within 0.125 of a face. Over random segments around the hedgehogs, every segment the clip
+    // trace blocks but the sight trace does not is such a margin case: pushing its end 0.3 into the face blocks the sight too.
+    {
+        int clipOnly = 0, marginCases = 0;
+        unsigned seed = 7;
+        auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return float(seed >> 8) / float(1 << 24); };
+        for (int i = 0; i < 20000; ++i) {
+            const Vec a{c[0] + (rnd() - 0.5f) * 160, c[1] + (rnd() - 0.5f) * 160, c[2] + rnd() * 80};
+            const Vec b{c[0] + (rnd() - 0.5f) * 160, c[1] + (rnd() - 0.5f) * 160, c[2] + rnd() * 80};
+            const TraceResult t = w.collision().trace(a, b, {0, 0, 0}, {0, 0, 0}, 0x11, -1, false);
+            if (t.fraction >= 1.0f || t.startSolid || w.collision().sightBlocked(a, b, {0, 0, 0}, {0, 0, 0}, 0x11, -1, 0x7ff)) continue;
+            // A grazing segment (almost parallel to the face) needs more than 0.3 of push to cross it; those are left out.
+            const Vec d{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            if (std::fabs(d[0] * t.normal[0] + d[1] * t.normal[1] + d[2] * t.normal[2]) < 0.2f * std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])) continue;
+            ++clipOnly;
+            const Vec deeper{b[0] - 0.3f * t.normal[0], b[1] - 0.3f * t.normal[1], b[2] - 0.3f * t.normal[2]};
+            if (w.collision().sightBlocked(a, deeper, {0, 0, 0}, {0, 0, 0}, 0x11, -1, 0x7ff)) ++marginCases;
+        }
+        std::cout << "clip-only blocks " << clipOnly << ", margin cases " << marginCases << "\n";
+        if (clipOnly == 0 || marginCases != clipOnly) {
+            std::cerr << "expected the clip trace's surface margin to be the only difference from the sight line\n";
+            return 1;
+        }
     }
     return 0;
 }

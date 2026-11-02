@@ -26,7 +26,8 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
 ## Frame
 
 `Pmove` (0x50cc10) splits the command time into steps of at most 66 ms; `PmoveSingle`
-(0x50c4a0) clamps a step to 1–200 ms.
+(0x50c4a0) clamps a step to 1–200 ms. The dead ground move (0x508a10) runs once per PmoveSingle at 0x50ca6c, before the ladder check
+(0x50ca83), and takes a fixed 20 off the speed (see campaign.md, death slow motion).
 
 ## Stances (0x509d10, 0x509840)
 

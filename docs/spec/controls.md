@@ -84,6 +84,13 @@ Firing, rechambering and reloading are still the inferred machine of `docs/spec/
 
 ## Use key and turrets
 
+The use scan's line-of-sight test (0x534490, second pass; sorted candidates get +10000 and drop off when blocked) calls 0x44c1b0 with
+the zero box, the eye as start, the candidate's absbox centre (a turret: its tag_player) as end, the player's entity as the pass
+entity (ps+0xa8), 0x7ff as the second pass entity and content mask 0x11. That is a sight trace (zero extent takes the point path 0x41ada0; TODO(spec): that it is the
+same walk as the AI sight trace the port's sightBlocked implements), not a clip trace: the sight walk keeps no 0.125 surface margin
+(DAT_00591f80), so a target lying within 0.125 of a face (an item or key on a surface) stays visible, where a clip trace of the
+same line is blocked. The port used the clip trace; it now calls the sight trace (tests/test_staticmodelhit.cpp).
+
 The use scan (0x534d40 → 0x534490) also offers turrets (entity type 8) through 0x51dac0: turret info flag 0x1000
 (set by the turret setup with 1|2: info+8 = 0x1003 at 0x51e4ec), not in use (+0x112), 0x51d8a0, no grenade fuse
 and the player on the ground. 0x51d8a0 compares the flat arc-centre direction (yaw + right arc + (|right| +

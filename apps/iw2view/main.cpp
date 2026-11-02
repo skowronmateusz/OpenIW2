@@ -7270,8 +7270,12 @@ int main(int argc, char** argv) {
                 in.pitch = cam.pitch;
                 in.adsFrac = pweapon.adsFrac();
                 const game::CollisionWorld& pcw = world ? world->collision() : *scene.collision; // null reference only in the front end, where it is unused
+                float pmoveChunkLeft = 0; // Pmove (0x50cc10) runs one PmoveSingle per usercmd of up to 66 ms: the dead move's fixed speed drop (0x508a10) is per such step
                 while (remaining > 0 && scene.collision) {
                     const float step = std::min(remaining, 1.0f / 60.0f);
+                    pmp.deadSpeedStep = pmoveChunkLeft <= 0;
+                    if (pmp.deadSpeedStep) pmoveChunkLeft = 0.066f;
+                    pmoveChunkLeft -= step;
                     game::RecordedMove rec{ps, {}, in, step, pmp, pcw.entityClips()};
                     game::playerMove(pcw, ps, in, step, pmp);
                     // Mantle stance events (0x8d crouch, 0x8c stand) set the client stance.

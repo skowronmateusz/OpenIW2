@@ -121,7 +121,7 @@ bool World::playerTurretEye(Vec3& eye) {
 // player's box (score −144); any other within 128 (vehicles) or 72 of the eye, measured to its absbox centre, scores
 // distance + (1 − (dir · forward + 1) / 2) · 144, −144 more for a trigger_use. Sorted; then each one but a
 // trigger_use_touch gets +10000 and drops off the end when the eye → absbox centre line (a turret: its tag_player)
-// is blocked (mask 0x11); sorted again.
+// is blocked for the sight trace 0x44c1b0 (mask 0x11); sorted again.
 // Weapon items are candidates (pick: 0x534c80), and so are actors with useable (+0x211b). TODO(spec): other items; trigger absboxes
 // ignore the entity angles.
 std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3& forward) {
@@ -206,7 +206,10 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
             }
             point = {(mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f};
         }
-        if (collision_->trace(eye, point, {0, 0, 0}, {0, 0, 0}, 0x11, player_->number).fraction < 1.0f) {
+        // The line test is the sight trace 0x44c1b0 (zero box: 0x41ada0, the point sight walk of the world, static models and
+        // entities) with the player's entity as the pass entity (ps+0xa8) and 0x7ff as the second one: unlike a clip trace it
+        // keeps no 0.125 surface epsilon, so a target lying on a surface is not blocked by that surface's margin.
+        if (collision_->sightBlocked(eye, point, {0, 0, 0}, {0, 0, 0}, 0x11, player_->number, 0x7ff)) {
             c.score += 10000.0f;
             ++blocked;
         }
