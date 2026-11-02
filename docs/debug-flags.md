@@ -171,3 +171,12 @@ Cvar `player_scopeExitOnDamage` (set with `--cvar player_scopeExitOnDamage=1`, d
 
 - `iw2view --language NAME`: UI/subtitle language (`english`, `polish`, ...). Without it the language is detected from the first `localized_<language>_iw*.iwd` pack in the game directory, else `english`.
 - iw2game `--autoplay` obeys static-model cover: a shot target is approached from a stand point whose eye-to-target bullet trace is clear (16 directions x 5 distances around the target), a route through a minefield may use two bounds corners, and a kill gate takes the oldest wave of `death` waits first (waits first seen more than 120 s after the oldest candidate wait for the next gate). Env `IW2_AUTOPLAY_WAVE=<seconds>` changes that window (a huge value restores the old kill-everything gate)). When a gate leaves later waves alone, the next gate follows after the stall time (not after two more trigger chases), so a lone early straggler cannot delay the waves behind it.
+
+## On-screen messages for cheat toggles and developer keys
+
+God, demigod, notarget, noclip and ufo queue the client command `print` with the localized GAME_* string (the original sends it to the
+console). iw2view also shows each such message in the game-message window (top left, 5 s like con_gamemessagetime, then it fades out),
+localized through the loaded strings. The developer keys L and V have no original string: they show the English texts
+"fullbright ON" / "fullbright OFF" and "walk mode ON" / "fly mode ON" through the same path. All of these need `sv_cheats` as before; without it
+the key shows the localized "cheats not enabled" message. TODO(spec): the original draws console text on screen only with con_minicon
+(default 0); the position and fade of that mini console are not proven, so the game-message window is used.

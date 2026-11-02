@@ -29,6 +29,7 @@
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
+#include "game/screenmessages.h"
 #include "game/shellshock.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
@@ -3439,7 +3440,7 @@ int main(int argc, char** argv) {
         }
         Scene scene = menuMode ? emptyScene(dev) : loadScene(dev, vfs, args[1], !world);
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
-        struct ScreenMessage { std::string text; uint64_t untilNs; bool bold = false; uint64_t startNs = 0, endNs = 0; };
+        using game::ScreenMessage;
         std::vector<ScreenMessage> screenMessages;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -4912,7 +4913,7 @@ int main(int argc, char** argv) {
             }
             {
                 const uint64_t now = SDL_GetTicksNS();
-                std::erase_if(screenMessages, [&](const ScreenMessage& m) { return m.untilNs < now; });
+                game::expireScreenMessages(screenMessages, now);
                 // Game messages (client commands obj_update / obj_complete, 0x4a6c7f): the string "^2%s" (0x57f6a0, ^2 = green
                 // (0,1,0,1) in the colour table at 0x56cd98) goes to the game-message window (type 1; 0x404830 → 0x403aa0
                 // → window base of 0x5cc2b0), shown for con_gamemessagetime 5 s (0x571118; 0x403890 case 1), wrapped at
@@ -7163,12 +7164,16 @@ int main(int argc, char** argv) {
                 }
                 // V (walk/fly) and L (fullbright) are openiw2 developer keys: like the cheat commands, they need sv_cheats.
                 else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_V) && !cheatsOn()) {}
-                else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
+                else if (ev.key.scancode == SDL_SCANCODE_L) {
+                    renderer.fullbright = !renderer.fullbright;
+                    game::addScreenMessage(screenMessages, renderer.fullbright ? "fullbright ON" : "fullbright OFF", false, SDL_GetTicksNS()); // openiw2 text, no original string
+                }
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
                     pendingF10 = true; // cycle off -> god -> demigod -> off, each step a cheat command behind the sv_cheats / alive gate
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_V) {
                     walk = !walk;
+                    game::addScreenMessage(screenMessages, walk ? "walk mode ON" : "fly mode ON", false, SDL_GetTicksNS()); // openiw2 text, no original string
                     if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_P) {
@@ -7743,6 +7748,8 @@ int main(int argc, char** argv) {
                     std::istringstream a(cmd.arg);
                     if (cmd.name == "print") { // client command `print "%s"` (0x584038): console text, here stdout
                         std::cout << "[print] " << cmd.arg << "\n";
+                        // openiw2: shown for con_gamemessagetime in the game-message window (cheat toggles etc.), see screenmessages.h.
+                        game::addScreenMessage(screenMessages, game::printMessageText(cmd.arg), false, SDL_GetTicksNS());
                     } else if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "openvictoryscreen") {
