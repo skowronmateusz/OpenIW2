@@ -4227,6 +4227,9 @@ int main(int argc, char** argv) {
         // pregame at the end only when a menu is open (0x449a2c tests the menu count 0x10fed5c), so a quick reload shows neither.
         // TODO(spec): the exe's real load time is not modelled; openiw2 loads synchronously, so the screen is never shown here.
         bool quickReload = false;
+        // loadgame_continue (death / mission failure): when the named save cannot be loaded (missing file, old format, damaged) the level
+        // restarts instead of staying in the dead world with the death screen up (docs/spec/campaign.md "Death screen").
+        bool continueRestart = false;
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
         menuEnv.getCvar = [&](const std::string& n) {
@@ -4331,7 +4334,7 @@ int main(int argc, char** argv) {
                     else pendingLoad = a1;
                 } else if (c == "loadgame_continue") {
                     const std::string last = menuEnv.getCvar("sv_lastSaveGame");
-                    if (!last.empty()) pendingLoad = last;
+                    if (!last.empty()) pendingLoad = last, continueRestart = !currentMap.empty();
                     else if (!currentMap.empty()) pendingLevel = std::make_pair(currentMap, true); // no save yet: restart the level
                 }
             }
@@ -7810,7 +7813,8 @@ int main(int argc, char** argv) {
                 }
                 if (auto change = world->takeDueLevelChange()) {
                     const std::string last = menuEnv.getCvar("sv_lastSaveGame");
-                    if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg"))) pendingLoad = last, quickReload = true;
+                    if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg")))
+                        pendingLoad = last, quickReload = true, continueRestart = true;
                     else if (change->victoryScreen) {} // the client command openvictoryscreen opens the menu; `nextlevel` loads the map
                     else pendingLevel = std::make_pair(change->map, change->failed), pendingPersistent = change->persistent && !change->failed;
                 }
@@ -7836,16 +7840,20 @@ int main(int argc, char** argv) {
             std::optional<game::LoadedSave> loadedSave;
             if (pendingLoad) {
                 const std::filesystem::path path = saveDir / (*pendingLoad + ".svg");
-                std::ifstream lf(path, std::ios::binary);
-                const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(lf)), {});
                 game::LoadedSave ls;
-                const std::string err = bytes.empty() ? "Can't find savegame " + *pendingLoad : game::parseSaveFile(bytes, ls);
+                const std::string err = game::readSaveFile(path.string(), *pendingLoad, ls);
                 if (err.empty()) {
                     loadedSave = std::move(ls);
                     pendingLevel = std::make_pair(loadedSave->info.mapName, false);
                 } else {
                     std::cout << path.string() << ": " << err << "\n";
+                    if (std::exchange(continueRestart, false) && !currentMap.empty()) { // loadgame_continue found no usable save: restart
+                        std::cout << "loadgame_continue: no usable save, restarting " << currentMap << "\n";
+                        pendingLevel = std::make_pair(currentMap, true);
+                    }
+                    quickReload = false;
                 }
+                continueRestart = false;
                 pendingLoad.reset();
             }
             static std::optional<game::LoadedSave> heldSave; // a savegame load waiting for the load-screen frame
@@ -7886,7 +7894,7 @@ int main(int argc, char** argv) {
                     heldSave.reset();
                     // Level change or restart: rebuild the world and the scene for the next map.
                     currentMap = pendingLevel->first;
-                    std::cout << (pendingLevel->second ? "mission failed, restarting " : "changing level to ") << currentMap
+                    std::cout << (pendingLevel->second ? "mission failed, restarting " : loadedSave ? "loading save " + loadedSave->name + ": " : "changing level to ") << currentMap
                               << (pendingPersistent ? " (persistent)" : "") << "\n";
                     fogState.clear();
                     screenFade.clear(); // the new level starts unfaded

@@ -20,5 +20,8 @@ int main() {
     const auto pb = iw2::ui::parseConfig(iw2::ui::formatConfig({{"mis_01", "10"}, {"mis_none", "0"}, {"mis_difficulty", prog}}));
     check(pb.size() == 3 && pb.at("mis_01") == "10" && pb.at("mis_difficulty") == prog, __LINE__);
     check(iw2::ui::registeredDefault("mis_difficulty") == std::string(50, '0') && iw2::ui::registeredDefault("mis_10") == "0", __LINE__);
+    // sv_lastSaveGame is archived (flags 0x1001, 0x449d78): the last committed save survives a restart, so loadgame_continue finds it.
+    const auto ls = iw2::ui::parseConfig(iw2::ui::formatConfig({{"sv_lastSaveGame", "autosave/hill400_defend-6"}, {"sv_running", "1"}}));
+    check(ls.size() == 1 && ls.at("sv_lastSaveGame") == "autosave/hill400_defend-6", __LINE__);
     return failures ? 1 : 0;
 }

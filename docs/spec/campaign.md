@@ -192,3 +192,15 @@ binocular overlay (0x4bcdd0) and returns the crosshair fade, then the hud elemen
 hud elements of layer 1, and later the subtitles and fades. The overlay therefore lies below every script hud element and subtitle.
 Implemented: iw2view splices the overlay quads in below the hud-element quads (game/hudlayers.h). TODO(spec): that the hudelem layer
 word (+0x7c) is the script `foreground` flag is inferred.
+
+## loadgame_continue in openiw2 (implementation notes)
+
+- Original (VAs in the patch 1.3 SP executable): the due-change handler 0x4d9f90 queues `loadgame_continue` when the failed flag 0x1c60fe8 is
+  set; the command (0x447190) loads the save named by `sv_lastSaveGame`, i.e. the newest committed (non-internal) save, normally the
+  last autosave or checkpoint; it does not restart the map ("Unable to find save." when none is named). openiw2 does the same with its own
+  save container (docs/spec/savegame.md section 5).
+- openiw2 addition: when the named save cannot be used (file missing, old openiw2 format, damaged), the front end restarts the level
+  (the failed-mission restart) instead of staying in the old world with the death screen up. The original has no such case (its save
+  always loads or the error is printed); TODO(spec): the original's behaviour after "Unable to find save.".
+- `ui/menus.txt` lists `ui/rec_restart.menu`, which no archive contains; the original's menu loader meets the same missing file (the
+  menu is not on the death or mission-failure path, which uses the `deadscreen` HUD menu and the `opendeadscreen` command).

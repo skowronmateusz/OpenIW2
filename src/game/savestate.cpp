@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <type_traits>
 #include <zlib.h>
@@ -1002,6 +1004,12 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
     if (ver != kStateVersion && ver != 1 && ver != 3) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
+}
+
+std::string readSaveFile(const std::string& path, const std::string& name, LoadedSave& out) {
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), {});
+    return bytes.empty() ? "Can't find savegame " + name : parseSaveFile(bytes, out);
 }
 
 void restoreSave(World& world, const LoadedSave& save) {

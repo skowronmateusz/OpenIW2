@@ -35,6 +35,9 @@ struct LoadedSave {
 // Checks the header like G_LoadGame (0x4d5270: size, version 0x99, size limits) and inflates the body. Returns an error text
 // ("" = ok); a file whose body is not an openiw2 stream (an original CoD2 save) gives "not an openiw2 save".
 std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out);
+// Reads and checks a save file from disk (loadgame / loadgame_continue): "" = ok, else the message ("Can't find savegame <name>" for a
+// missing or empty file, or parseSaveFile's). loadgame_continue restarts the level when this fails (docs/spec/campaign.md).
+std::string readSaveFile(const std::string& path, const std::string& name, LoadedSave& out);
 // Restores the state into a world freshly constructed for out.info.mapName with prepareStart() already run.
 void restoreSave(World& world, const LoadedSave& save);
 
