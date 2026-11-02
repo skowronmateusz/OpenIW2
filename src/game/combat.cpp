@@ -774,7 +774,7 @@ void World::registerCombatBuiltins() {
         if (!e) throw std::runtime_error("gettagorigin on a non-entity");
         const auto bones = entityBones(*e);
         auto it = bones.find(lowerStr(c.arg(0).toString()));
-        if (it == bones.end()) throw std::runtime_error("tag " + c.arg(0).toString() + " not found");
+        if (it == bones.end()) throw std::runtime_error("tag '" + c.arg(0).toString() + "' does not exist in model '" + (e->obj->get("model").isString() ? e->obj->get("model").asString() : std::string()) + "' (or any attached submodels)");
         return Value(it->second.position);
     });
     vm_.registerBuiltin("gettagangles", [this](CallContext& c) {
@@ -782,7 +782,7 @@ void World::registerCombatBuiltins() {
         if (!e) throw std::runtime_error("gettagangles on a non-entity");
         const auto bones = entityBones(*e);
         auto it = bones.find(lowerStr(c.arg(0).toString()));
-        if (it == bones.end()) throw std::runtime_error("tag " + c.arg(0).toString() + " not found");
+        if (it == bones.end()) throw std::runtime_error("tag '" + c.arg(0).toString() + "' does not exist in model '" + (e->obj->get("model").isString() ? e->obj->get("model").asString() : std::string()) + "' (or any attached submodels)");
         const auto fwd = assets::rotate(it->second.rotation, {1, 0, 0});
         const float yaw = std::atan2(fwd[1], fwd[0]) * 180.0f / float(M_PI);
         const float pitch = -std::atan2(fwd[2], std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1])) * 180.0f / float(M_PI);

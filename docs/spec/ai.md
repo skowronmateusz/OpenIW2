@@ -1102,3 +1102,18 @@ Player use of actors (scripts such as demolition's offerExplosives set `useable`
 an actor (+0x100) whose field +0x211b is non-zero; the pick (0x534d40, byte table 0x534fb4, case 3 at 0x534ec5) gives the
 hint (type 4, string +0x2124) for sentient team 2 or 3 and ends the search; the press (0x5341a0) hands the actor's held node to the player (0x519050, as the follow retarget) and notifies "trigger" with
 the player.
+
+## Animscript switch order (observed 0x53ac90, 0x53ac40; src/game/actorstate.cpp setActorAnimScript)
+- Starting another animscript (VAs in the patch 1.3 SP executable): 0x53ac90 lowers the script frame counter (0x9bef20), kills the
+  running script (0x53ac40: clears the thread slot +0x200 and notifies "killanimscript" on the actor), then runs the frame list
+  (0x46de90) at once. Because of the lowered counter the woken waiters sit in a list of their own, and they have finished before the
+  new thread is created (0x46db10, started at 0x4da5e0). Afterwards the list is run again, the frame-end threads (0x467150) run, and the
+  counter is restored. The pain and animscripted paths that call 0x53ac40 alone do not run the list.
+- Consequence seen in breakout: an MG42 gunner puts the gun away (animscripts/mg42/common.gsc:22) and a thread waits for the kill to
+  put it back (common.gsc:161). When a hit makes the gunner let go of the turret, the next script (combat) starts after that thread
+  has re-attached the gun. If the new script ran first, exposedcombat.gsc:206 -> utility.gsc:2353 asked the gun-less actor for
+  tag_flash.
+- A missing tag is a script error in the engine too: 0x4eec20 (shared by gettagorigin 0x4eee10 and gettagangles 0x4eee30) raises a
+  script error "tag '%s' does not exist in model '%s' (or any attached submodels)" through 0x468ed0, which aborts the calling thread
+  (longjmp to the script error handler). No value is returned. An entity without a model gets its own error, and a non-entity
+  likewise. The lookup caches the last (entity, level time, tag) result, so a repeat call in one frame skips the search.

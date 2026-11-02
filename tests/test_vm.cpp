@@ -170,6 +170,37 @@ timed(ent)
         if (h.joined() != "back 0|back 1|later|") std::cerr << h.joined() << "\n";
     }
 
+    // notifyRun: the woken waiter runs inside the call, ahead of an older queued thread, and the queue order is kept.
+    {
+        Harness h;
+        h.files["test/notifyrun.gsc"] = R"(
+main()
+{
+    level.ent = spawnstruct();
+    thread early();
+    thread late();
+}
+early()
+{
+    level waittill("first");
+    println("early");
+}
+late()
+{
+    level.ent waittill("kill");
+    println("late");
+}
+)";
+        h.vm.start("test/notifyrun.gsc", "main");
+        h.vm.notify(h.vm.level(), "first");
+        CHECK(h.joined() == "");
+        h.vm.notifyRun(h.vm.level()->get("ent").asObject(), "kill");
+        CHECK(h.joined() == "late|"); // ran at once, before the thread an earlier notify queued
+        h.vm.drainReady();
+        CHECK(h.joined() == "late|early|");
+        if (h.joined() != "late|early|") std::cerr << h.joined() << "\n";
+    }
+
     // A call ended by endon in the middle of an assignment (`w = inner();`) leaves no reference behind: the
     // caller's own pending assignment still targets its variable (crossroads --spawn-all wrote past the locals).
     {

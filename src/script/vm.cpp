@@ -1173,6 +1173,23 @@ void VM::processFreedObjects() {
     }
 }
 
+void VM::notifyRun(const ObjectPtr& object, const std::string& event) {
+    std::deque<Thread*> saved;
+    saved.swap(ready_);
+    notify(object, event);
+    const bool wasDraining = draining_;
+    draining_ = true;
+    while (!ready_.empty()) {
+        Thread* th = ready_.front();
+        ready_.pop_front();
+        if (th->state == ThreadState::Ready && !th->running) run(*th);
+    }
+    draining_ = wasDraining;
+    // What the run queued for later (none normally) goes behind the earlier entries.
+    for (Thread* th : ready_) saved.push_back(th);
+    ready_.swap(saved);
+}
+
 void VM::drainReady() {
     if (draining_) return; // a nested call: the outer drain picks up what was queued
     draining_ = true;

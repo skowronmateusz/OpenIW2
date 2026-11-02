@@ -136,6 +136,10 @@ public:
     // (0x46f5c0 -> 0x46de90 -> 0x46d560) runs, re-reading its head until it is empty. So they run after the notifying
     // thread yields, at the next runFrame()/drainReady(); `thread f()` still runs f at once.
     void notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args = {});
+    // notify, then runs at once what that notify woke (and what those threads wake in turn), ahead of the rest of the queue:
+    // the actor's animscript switch (0x53ac90) lowers the frame counter, so the "killanimscript" waiters sit in a list of
+    // their own that 0x46de90 runs before the new script thread starts.
+    void notifyRun(const ObjectPtr& object, const std::string& event);
     // Frees an entity's script object (Scr_FreeEntityNum 0x4670b0, from G_FreeEntity 0x4d7c30): the object reads as
     // undefined at once; the threads registered on its notify list (waittill and endon) end when the freed-object list is
     // processed (0x467150 -> 0x46d1f0), which the exe does after a script run returns to the engine.

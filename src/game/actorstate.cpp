@@ -294,7 +294,14 @@ void World::setActorAnimScript(Entity& e, const std::string& name, int movemode,
         }
         return;
     }
-    killActorAnimScript(e);
+    // 0x53acf1: the frame counter is lowered before the kill (0x53ac40), and the list that holds the "killanimscript" waiters is
+    // run (0x46de90) before the new script thread is created (0x46db10 / 0x4da5e0). A thread waiting for the kill (the mg42
+    // gunner's put-the-gun-back thread) is therefore done before the new script's first line runs.
+    if (e.animScriptThread) {
+        vm_.notifyRun(e.obj, "killanimscript");
+        e.animScriptThread = 0;
+    }
+    e.animScript.clear();
     // Another script (0x53acf1..0x53ad96): besides the kill (0x53ac40), the anim mode override +0x21c is dropped (the mode is then the
     // argument), the gentity no-physics flag (+0x128 & 0x1000) is cleared and so are keepclaimednode / keepclaimednodeingoal
     // (+0x740 / +0x741), and the solved grenade throw +0x20d0 is dropped. The string words +0x2140 / +0x2144 (scriptstate /
