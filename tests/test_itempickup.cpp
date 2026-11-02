@@ -7,6 +7,8 @@
 #include <cstdlib>
 
 #include <iostream>
+#include <string>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -66,6 +68,18 @@ int main() {
         const ItemAmmo eq = actorDropAmmo(3, 3, 0, seed);
         CHECK(eq.clip == 0 && eq.stock == 3);
     }
+    const auto known = [](const std::string& n) { return n == "weap_bar_ammopickup"; };
+    CHECK(pickupSoundAlias("", true, known) == "weap_ammo_pickup");
+    CHECK(pickupSoundAlias("", false, known) == "weap_pickup");
+    CHECK(pickupSoundAlias("weap_bar_ammopickup", true, known) == "weap_bar_ammopickup");
+    CHECK(pickupSoundAlias("no_such_alias", true, known) == "weap_ammo_pickup"); // unresolved key: the fixed alias
+    CHECK(pickupSoundAlias("no_such_alias", false, known) == "weap_pickup");
+    // Client HUD part of the pickup events (0x4ba680): nothing for item-class weapons, the select / offhand touch only when nothing is selected.
+    CHECK(pickupHudAction(true, false, false, false) == PickupHudAction::None);
+    CHECK(pickupHudAction(false, false, false, true) == PickupHudAction::SelectPrimary);
+    CHECK(pickupHudAction(false, false, true, false) == PickupHudAction::None);
+    CHECK(pickupHudAction(false, true, true, false) == PickupHudAction::TouchOffhand);
+    CHECK(pickupHudAction(false, true, false, true) == PickupHudAction::None);
     // World (IW2_MAIN): an emptied MP40 swapped for a kar98k keeps its (empty) counters on the dropped item; an NPC's MP40 picked up
     // afterwards brings its own clip (Pickup_Weapon sets the clip slot to the item's clip, 0x521611), not the old empty one.
     if (const char* main = std::getenv("IW2_MAIN")) {
@@ -77,7 +91,24 @@ int main() {
         Inventory& inv = world.inventory(*world.player());
         inv = Inventory{};
         world.debugUseWeaponItem("mp40", 0, 0);
+        std::vector<std::string> sounds;
+        world.playSound = [&](const std::string& a, const Vec3*, float*, int) { sounds.push_back(a); return 0; };
         world.debugUseWeaponItem("enfield", 0, 0); // second slot
+        CHECK(sounds.size() == 1 && sounds[0] == "weap_pickup"); // full pickup by use: event 0x90
+        {
+            const auto evs = world.takePickupEvents();
+            CHECK(!evs.empty() && evs.back().weapon == "enfield" && !evs.back().ammoOnly && !evs.back().itemClass && !evs.back().offhand);
+        }
+        sounds.clear();
+        // Ammunition only (event 0x91): touching a dropped MP40 while carrying one plays the fixed ammo alias (the weapon file's key is empty).
+        world.debugSpawnItem("mp40");
+        world.frame();
+        CHECK(!sounds.empty() && sounds[0] == "weap_ammo_pickup");
+        {
+            const auto evs = world.takePickupEvents();
+            CHECK(!evs.empty() && evs.back().weapon == "mp40" && evs.back().ammoOnly); // event 0x91
+        }
+        sounds.clear();
         CHECK(inv.owned.count("mp40") && inv.owned.count("enfield"));
         const auto mp = world.debugAmmo("mp40");
         std::cout << "mp40 from an unset item: stock " << mp.first << " clip " << mp.second << "\n";
@@ -102,7 +133,12 @@ int main() {
         world.debugSpawnItem("stielhandgranate");
         for (const auto& e : world.entities())
             if (!e->obj->removed && e->classname == "weapon_stielhandgranate") e->obj->set("$ammoClip", iw2::script::Value(int32_t(3)));
+        sounds.clear();
         world.frame();
+        // A grenade bag goes through the same Pickup_Weapon path: a grenade type not carried yet raises event 0x90 (weap_pickup; the grenade
+        // weapon files leave pickupSound empty). The item table's separate ammo / health items (grenade_pickup, health_pickup_*) are never
+        // spawned in single player (docs/spec/sound.md).
+        CHECK(!sounds.empty() && sounds[0] == "weap_pickup");
         const auto st = world.debugAmmo("stielhandgranate");
         std::cout << "stielhandgranate after the shared cap: clip " << st.second << " owned " << inv.owned.count("stielhandgranate") << "\n";
         CHECK(world.debugAmmo("fraggrenade").second + st.second <= 4);

@@ -71,4 +71,15 @@ ItemAmmo itemAmmoAfterPartial(ItemAmmo item, int added) {
     return item;
 }
 
+PickupHudAction pickupHudAction(bool itemClass, bool offhand, bool primarySelected, bool offhandSelected) {
+    if (itemClass) return PickupHudAction::None;
+    if (offhand) return offhandSelected ? PickupHudAction::None : PickupHudAction::TouchOffhand;
+    return primarySelected ? PickupHudAction::None : PickupHudAction::SelectPrimary;
+}
+
+std::string pickupSoundAlias(const std::string& key, bool ammoOnly, const std::function<bool(const std::string&)>& exists) {
+    if (!key.empty() && (!exists || exists(key))) return key;
+    return ammoOnly ? "weap_ammo_pickup" : "weap_pickup";
+}
+
 } // namespace iw2::game

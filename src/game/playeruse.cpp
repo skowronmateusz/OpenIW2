@@ -597,6 +597,8 @@ void World::pickUpWeaponItem(Entity& item) {
         trimSharedAmmo(inv, w); // 0x520f3d..0x520ff5
     }
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
+    startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player (Touch_Item 0x521c41)
+    raisePickupEvent(w, false);
     item.obj->removed = true;
 }
 

@@ -18,6 +18,17 @@ bool isOffhandLike(const std::string& offhandClass, const std::string& weaponCla
 }
 } // namespace
 
+void World::raisePickupEvent(const std::string& w, bool ammoOnly) {
+    PickupEvent ev;
+    ev.weapon = w;
+    ev.ammoOnly = ammoOnly;
+    ev.itemClass = lower(weaponField(w, "weaponClass")) == "item";
+    const std::string oc = lower(weaponField(w, "offhandClass"));
+    ev.offhand = !oc.empty() && oc != "none";
+    ev.isCurrentOffhand = player_ && inventory(*player_).offhand == w;
+    pickupEvents_.push_back(std::move(ev));
+}
+
 // Room for more ammunition (0x4dcc00): clip-only weapons count the clip against clipSize, others the stock against
 // maxAmmo; a shared cap (sharedAmmoCapName group, sharedAmmoCap) limits the total over the owned weapons of the group.
 int World::weaponRoom(Inventory& inv, const std::string& w) {
@@ -107,7 +118,7 @@ void World::touchItems() {
     }
 }
 
-// Returns true when the item was used up. TODO(spec): the HUD pickup call 0x4ba680, the flag 0x9bef24 of the touch
+// Returns true when the item was used up. TODO(spec): the flag 0x9bef24 of the touch
 // notify and the AI-drop path of 0x521170; the offhand replacement rule of 0x531e30 (an offhand is only set when none).
 bool World::touchWeaponItem(Entity& item) {
     const std::string w = lower(item.classname.substr(7));
@@ -143,8 +154,8 @@ bool World::touchWeaponItem(Entity& item) {
             item.obj->set("$ammoClip", Value(rest.clip));
         }
         clientCommands_.push_back({"gm", std::string(clipOnly ? "GAME_PICKUP_CLIPONLY_AMMO" : "GAME_PICKUP_AMMO") + "\x14" + display});
-        const std::string snd = weaponField(w, "ammoPickupSound");
-        if (!snd.empty()) startSound(snd, nullptr);
+        startSound(pickupSoundAlias(weaponField(w, "ammoPickupSound"), true, soundExists), nullptr); // event 0x91 on the player
+        raisePickupEvent(w, true);
     } else {
         giveWeapon(inv, w);
         // 0x5215c3..0x521611: the clip slot is set to the item's clip (over clipSize goes to the stock), the stock is added (0x520e40).
@@ -156,8 +167,8 @@ bool World::touchWeaponItem(Entity& item) {
         if (weaponInt(w, "clipOnly") == 0) inv.ammo[a] = std::min(inv.ammo[a], weaponInt(w, "maxAmmo"));
         inv.clip[c] = std::min(inv.clip[c], weaponInt(w, "clipSize"));
         trimSharedAmmo(inv, w);
-        const std::string snd = weaponField(w, "pickupSound");
-        if (!snd.empty()) startSound(snd, nullptr);
+        startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player
+        raisePickupEvent(w, false);
     }
     vm_.notify(item.obj, "trigger", {Value(player_->obj)});
     vm_.notify(player_->obj, "pickup", {Value(item.obj)});

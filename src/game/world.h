@@ -792,6 +792,12 @@ public:
     struct ShakeEvent { Vec3 origin; float scale; int durationMs; float radius; int64_t startMs; };
     std::vector<ShakeEvent> takeShakeEvents() { return std::exchange(shakeEvents_, {}); }
     std::vector<ShakeEvent> shakeEvents_;
+    // The local player's pickup events 0x90 (new weapon) / 0x91 (ammunition only) for the front end's HUD part (0x4ba680): the weapon, its
+    // class "item" / offhand flags (def weaponClass, offhandClass) and whether the weapon is now the player's offhand.
+    struct PickupEvent { std::string weapon; bool ammoOnly = false, itemClass = false, offhand = false, isCurrentOffhand = false; };
+    std::vector<PickupEvent> takePickupEvents() { return std::exchange(pickupEvents_, {}); }
+    std::vector<PickupEvent> pickupEvents_;
+    void raisePickupEvent(const std::string& weapon, bool ammoOnly);
     std::vector<FxEvent> fxEvents_;
     // Bullet tracers requested by impact events (0x4b8140): muzzle point and impact point; the host applies the
     // cg_tracerchance roll and draws them (FxSystem::addTracer).

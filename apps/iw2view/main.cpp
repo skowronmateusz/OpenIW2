@@ -18,6 +18,7 @@
 #include "fs/vfs.h"
 #include "fs/gamedir.h"
 #include "audio/sound.h"
+#include "game/itempickup.h"
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
@@ -7526,6 +7527,19 @@ int main(int argc, char** argv) {
                     hudFade.buttons = buttons;
                     // +scores / -scores (0x4a4d40 / 0x4a4d20): each change of the objectives key stamps the touch time 0xf79200.
                     if (!std::getenv("IW2_SHOT_OBJECTIVES") && input.objectivesHeld() != hudFade.objectivesHeld) hudFade.objectivesHeld = input.objectivesHeld(), hudFade.objectives = nowMs;
+                }
+                for (const auto& pe : world->takePickupEvents()) { // events 0x90 / 0x91 for the local client (0x4bad52 -> 0x4ba680)
+                    const int64_t nowMs = world->timeMs();
+                    // TODO(spec): the offhand-selected state 0xf79700 (stored by 0x4b8ba0, reset elsewhere) is taken as "the weapon became the
+                    // player's offhand"; the primary state 0xf796e0 is weaponSelect.
+                    switch (game::pickupHudAction(pe.itemClass, pe.offhand, !weaponSelect.empty(), !pe.isCurrentOffhand)) {
+                    case game::PickupHudAction::SelectPrimary: // 0x4b8360
+                        weaponSelect = pe.weapon;
+                        hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
+                        break;
+                    case game::PickupHudAction::TouchOffhand: hudFade.offhand = nowMs; break; // 0x4b8ba0
+                    case game::PickupHudAction::None: break;
+                    }
                 }
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
