@@ -217,7 +217,7 @@ int main() {
         }
         c.cvars["sv_cheats"] = "1";
         c.cheatGod();
-        c.playerGrenadeInHand({0, 0, 0});
+        c.playerGrenadeInHand({0, 0, 0}, "fraggrenade");
         CHECK(c.player()->obj->get("health").asInt() > 0);
     }
     // The cheat commands noclip / ufo (0x4ea170 / 0x4ea220 behind the gate 0x4e9500): sv_cheats and health decide.

@@ -845,7 +845,7 @@ public:
     void playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity,
                             int cookedFuseMs = 0);
     std::string playerOffhandFor(const std::string& offhandClass);
-    void playerGrenadeInHand(const Vec3& eye);
+    void playerGrenadeInHand(const Vec3& eye, const std::string& weaponName);
     // Script notify on the player entity (ClientEvents 0x4e75f0: binocular events 0xa8..0xac -> "binocular_enter", "_exit",
     // "_fire", "_release", "_drop" via 0x46d0f0).
     void notifyPlayer(const std::string& name);

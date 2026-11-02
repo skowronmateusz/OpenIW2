@@ -5,6 +5,7 @@
 
 #include "fs/vfs.h"
 #include "game/playerweapon.h"
+#include "game/world.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -97,6 +98,41 @@ int main() {
             }
             CHECK(throws == 1);
             if (cooks) CHECK(fuseMs < int(fuse * 1000.0f) - 400 && fuseMs > 0); else CHECK(fuseMs == int(fuse * 1000.0f));
+        }
+    }
+    // Event 200 in the World (IW2_MAIN): the held frag goes off. The client side plays the grenade_explode_default sound and the
+    // default-surface grenade_explode impact effect (0x4ba8d0 case 200); radius damage hurts a nearby actor (openiw2 deviation, the
+    // shipped game only kills the player); god mode spares the player (0x4e776b) but the explosion still plays.
+    if (const char* mainDir = std::getenv("IW2_MAIN")) {
+        for (const bool god : {false, true}) {
+            iw2::fs::Vfs vfs;
+            vfs.mountDirectory(mainDir);
+            iw2::game::World w(vfs, "toujane");
+            w.start();
+            for (int i = 0; i < 5; ++i) w.frame();
+            iw2::game::Entity* actor = nullptr;
+            for (const auto& e : w.entities())
+                if (e->isActor && e->obj->get("health").isNumber() && e->obj->get("health").asInt() > 0) actor = e.get();
+            CHECK(actor != nullptr);
+            if (!actor || !w.player()) return 1;
+            const iw2::game::Vec3 ao = actor->obj->get("origin").asVector();
+            w.player()->obj->set("origin", iw2::script::Value(iw2::game::Vec3{ao[0] + 30.0f, ao[1], ao[2]}));
+            if (god) w.player()->obj->set("$godmode", iw2::script::Value(1));
+            std::vector<std::string> sounds;
+            w.playSound = [&](const std::string& a, const iw2::game::Vec3*, float*, int) { sounds.push_back(a); return 0; };
+            (void)w.takeFxEvents();
+            const int before = actor->obj->get("health").asInt();
+            const int playerBefore = w.player()->obj->get("health").isNumber() ? w.player()->obj->get("health").asInt() : 1;
+            w.playerGrenadeInHand({ao[0] + 30.0f, ao[1], ao[2] + 40.0f}, "fraggrenade");
+            bool sound = false;
+            for (const auto& a : sounds) sound = sound || a == "grenade_explode_default";
+            CHECK(sound);
+            bool fx = false;
+            for (const auto& e : w.takeFxEvents()) fx = fx || (!e.path.empty() && e.forward[2] == 1.0f);
+            CHECK(fx);
+            CHECK(!actor->obj->get("health").isNumber() || actor->obj->get("health").asInt() < before); // hurt (or dead)
+            const bool playerHurt = !w.player()->obj->get("health").isNumber() || w.player()->obj->get("health").asInt() < playerBefore;
+            CHECK(playerHurt == !god);
         }
     }
     if (failures) return 1;

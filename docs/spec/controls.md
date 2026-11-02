@@ -63,7 +63,11 @@ both timers are 0. View animation numbers paired with their timers: 2 fire, 4 re
   then 15: `fireTime`, view 2, event 0xa6 (the throw), one round off the grenade's clip (event 0x94 when the last).
   15 → 16: the weapon's `quickRaiseTime`, view 18 (no weapon: delay 1); 16 → 0 (0x4df0a0). Cooking (0x4df5a0): only
   with `cookOffHold` the fuse counts down while flag 0x10 is set; at 0 event 200 (the grenade goes off in the hand:
-  0x527d80 with 100000 damage, MOD_SUICIDE). The weapon field is at +0x33c of the weapon definition (field table entry
+  game side 0x4e775d: unless god / demigod the client fuse and health become 0 and player_die 0x527d80 runs; no grenade entity,
+  no radius damage in the original. Client side, case 200 of 0x4ba8d0: the sound at 0xf5b7a4 (grenade_explode, surface default)
+  at the player's origin (0x4bb1a7) and the grenade_explode impact effect of surface 0, direction up (media +0x33c, 0x4853f0), whether or
+  not the player died. openiw2 adds, for cooked frags only, the weapon's radius damage from the hand (MOD_GRENADE_SPLASH,
+  player excluded; `World::playerGrenadeInHand`, tests/test_grenadecook.cpp). The weapon field is at +0x33c of the weapon definition (field table entry
   at 0x5a8708). No shipped weapon file (single-player or multiplayer grenades) sets `cookOffHold` (all are 0), and
   0x4df5a0 is the only decrement of ps+0x3c found (TODO(spec): no exhaustive search of every writer), so in the shipped game a held grenade does not cook: the fuse stays at
   `fuseTime` and the throw gives the grenade `fuseTime` whatever the hold time. This is not a defect of the port

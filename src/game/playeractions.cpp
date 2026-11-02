@@ -143,11 +143,27 @@ void World::aiMelee(Entity& a) {
     meleeBlow(a, eye, f, r, u, wn.isString() ? wn.asString() : std::string());
 }
 
-// Event 200 (0x4e775d): a cooked grenade went off in the player's hand: 100000 damage to the player, MOD_SUICIDE.
-// TODO(spec): it goes through the radius damage 0x527d80 (others nearby are hurt too).
-void World::playerGrenadeInHand(const Vec3& eye) {
-    // Skipped with god / demigod (flags & 3, 0x4e776b); otherwise health and ps+0x108 become 0 and player_die runs (0x4e778b..0x4e7791).
-    if (player_ && isAlive(*player_) && !player_->obj->get("$godmode").truthy() && !player_->obj->get("$demigod").truthy())
+// Event 200: a cooked grenade went off in the player's hand (queued by the fuse burn 0x4df5a0).
+// Game side (0x4e775d, handler 0x4e75f0): unless god / demigod (flags & 3, 0x4e776b) the client fuse and health become 0 and
+// player_die (0x527d80) runs, i.e. the player dies. No grenade entity is spawned and the original has no radius damage.
+// Client side (case 200 of the entity event handler 0x4ba8d0): the world sound at 0xf5b7a4 (the first entry of the
+// grenade_explode_<surface> table, surface "default") at the player's origin (0x4bb1a7, entity 0x7fe) and the grenade_explode
+// impact effect of surface 0 (media table +0x33c, direction up, 0x4853f0), played whether or not the player was killed.
+// openiw2 deviation (the option iw2_grenadeCook is itself one; the shipped game never cooks): the held grenade also does the
+// weapon's radius damage to everyone nearby from the hand, MOD_GRENADE_SPLASH, so cooked frags hurt the people around.
+void World::playerGrenadeInHand(const Vec3& eye, const std::string& weaponName) {
+    if (!player_ || !isAlive(*player_)) return;
+    const Value ov = player_->obj->get("origin");
+    const Vec3 at = ov.isVector() ? ov.asVector() : eye;
+    startSound("grenade_explode_default", &at, nullptr, {}, kWorldSoundOwner);
+    const std::string& impact = impactEffect(9, 0);
+    if (!impact.empty()) fxEvents_.push_back({impact, at, Vec3{0, 0, 1}});
+    ++stats.grenadeExplosions;
+    if (!weaponName.empty() && weaponFloat(weaponName, "explosionInnerDamage") != 0.0f)
+        radiusDamage(eye, player_, weaponFloat(weaponName, "explosionInnerDamage"), weaponFloat(weaponName, "explosionOuterDamage"),
+                     weaponFloat(weaponName, "explosionRadius"), player_, "MOD_GRENADE_SPLASH");
+    // The kill is skipped with god / demigod; otherwise health and ps+0x108 become 0 and player_die runs (0x4e778b..0x4e7791).
+    if (isAlive(*player_) && !player_->obj->get("$godmode").truthy() && !player_->obj->get("$demigod").truthy())
         damage(*player_, player_, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
 }
 

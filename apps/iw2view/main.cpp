@@ -7530,7 +7530,7 @@ int main(int argc, char** argv) {
                     else if (e.kind == game::PlayerWeapon::Event::OffhandThrow)
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity, pweapon.takeFuseMs());
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
-                        world->playerGrenadeInHand(eye);
+                        world->playerGrenadeInHand(eye, e.weapon);
                     else if (e.kind == game::PlayerWeapon::Event::NoAmmo) setInvalidCmd(1, world->timeMs()); // event 0x92 (0x4baeb6)
                     else if (e.kind == game::PlayerWeapon::Event::NoOffhand) { // events 0x94 (touch offhand) + 0xc9 / 0xca (0x4baf06)
                         hudFade.offhand = world->timeMs();

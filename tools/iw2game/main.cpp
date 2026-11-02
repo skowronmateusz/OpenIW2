@@ -981,7 +981,7 @@ int main(int argc, char** argv) {
                     ++weaponEvents[int(e.kind)];
                     if (e.kind == iw2::game::PlayerWeapon::Event::MeleeHit) world.playerMelee(eye, {0, 0, 0});
                     if (e.kind == iw2::game::PlayerWeapon::Event::OffhandThrow) world.playerThrowGrenade(e.weapon, eye, {-20, 0, 0}, {0, 0, 0}, pweapon.takeFuseMs());
-                    if (e.kind == iw2::game::PlayerWeapon::Event::OffhandExplode) world.playerGrenadeInHand(eye);
+                    if (e.kind == iw2::game::PlayerWeapon::Event::OffhandExplode) world.playerGrenadeInHand(eye, e.weapon);
                     std::printf("controls t=%.2f event %d %s (state %d, weapon %s, stance %d)\n", f * 0.05f, int(e.kind),
                                 e.weapon.c_str(), pweapon.stateNumber(), pweapon.name().c_str(), input.stance());
                 }
