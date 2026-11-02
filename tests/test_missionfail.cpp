@@ -68,8 +68,10 @@ int main() {
     LoadedSave ls;
     CHECK(parseSaveFile(saves[0].bytes, ls).empty());
     World b(vfs, ls.info.mapName);
+    b.cvars["sv_cheats"] = "1"; // the session's sv_cheats (command line) survives the restore; the save made without it
     b.prepareStart();
     restoreSave(b, ls);
+    CHECK(b.cvars["sv_cheats"] == "1");
     CHECK(b.player() && b.isAlive(*b.player()));
     CHECK(!b.takeDueLevelChange());
     const size_t owned = b.player() ? b.inventory(*b.player()).owned.size() : 0;

@@ -543,7 +543,8 @@ void World::loadState(StateReader& r) {
         auto keepLive = [](const std::string& k) {
             std::string l = k;
             for (auto& ch : l) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile";
+            // sv_cheats belongs to the running session (command line / devmap), not to the save. TODO(spec): its dvar flags.
+            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile" || l == "sv_cheats";
         };
         std::map<std::string, std::string, CvarNameLess> live;
         for (const auto& [k, v] : cvars)
