@@ -3219,6 +3219,11 @@ int main(int argc, char** argv) {
     bool scripts = true;
     bool spawnAll = false;
     std::vector<std::pair<std::string, std::string>> extraCvars; // --cvar name=value (e.g. start=ride)
+    const auto cheatsOn = [&extraCvars]() {
+        bool on = false;
+        for (const auto& [k, v] : extraCvars) if (k == "sv_cheats") on = std::atoi(v.c_str()) != 0;
+        return on;
+    };
     std::optional<std::array<float, 2>> rideDrive; // --ride F,R: with --shot, drive the player's vehicle (forward, right in -1..1) after --ride-after
     float rideAfter = 0;
     uint32_t rideButtons = 0; // --ride-fire sets the attack button
@@ -3228,14 +3233,16 @@ int main(int argc, char** argv) {
     Renderer renderer;
     // No arguments (or only the -psn_ argument older macOS versions pass to apps): the app start (appStartup above).
     std::optional<AppStart> app;
-    if (argc == 1 || (argc == 2 && std::string(argv[1]).rfind("-psn_", 0) == 0)) {
+    // Options only (`open OpenIW2.app --args --cvar sv_cheats=1`) also take the app start; the options are parsed below.
+    const bool optionsOnly = argc >= 2 && std::string(argv[1]).rfind("--", 0) == 0;
+    if (argc == 1 || (argc == 2 && std::string(argv[1]).rfind("-psn_", 0) == 0) || optionsOnly) {
         app.emplace();
         if (!appStartup(*app)) { SDL_Quit(); return 0; }
         args = {app->mainDir};
         language = app->language;
         menuMode = true;
         if (app->width && app->height) width = app->width, height = app->height;
-        argc = 1;
+        if (!optionsOnly) argc = 1;
     }
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -7154,6 +7161,8 @@ int main(int argc, char** argv) {
                         frontStack.open("main");
                     } else running = false;
                 }
+                // V (walk/fly) and L (fullbright) are openiw2 developer keys: like the cheat commands, they need sv_cheats.
+                else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_V) && !cheatsOn()) {}
                 else if (ev.key.scancode == SDL_SCANCODE_L) renderer.fullbright = !renderer.fullbright;
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
                     pendingF10 = true; // cycle off -> god -> demigod -> off, each step a cheat command behind the sv_cheats / alive gate

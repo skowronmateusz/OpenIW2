@@ -53,6 +53,17 @@ It starts in the game's main menu. Your profiles and saved games are kept in
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
 opens the pause menu.
 
+### Cheats and developer keys
+
+Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:
+
+```bash
+open /Applications/OpenIW2.app --args --cvar sv_cheats=1
+```
+
+With cheats on, `F10` cycles god mode → demigod → off, `V` toggles walking and free flight (noclip camera), and `L`
+toggles fullbright. Without `sv_cheats` these keys do nothing (F10 prints that cheats are not enabled).
+
 ## What this repository contains, and what it does not
 
 - **Original engine code, tests and specs only.**
@@ -120,8 +131,12 @@ That starts the front end: main menu, profiles, options and mission select. To s
 The language is detected from the `localized_<language>_*.iwd` packs in your `main` folder; `--language <name>`
 overrides it.
 
-The controls are the game's own bindings from `default.cfg`. `Esc` opens the pause menu. Developer extras: `V` toggles
-walk/fly, `L` toggles fullbright, `P` prints the camera position.
+The controls are the game's own bindings from `default.cfg`. `Esc` opens the pause menu. `P` prints the camera
+position. The cheat keys (`F10`, `V`, `L`) need `--cvar sv_cheats=1`, for example:
+
+```bash
+./build/iw2view /path/to/main moscow --cvar sv_cheats=1
+```
 
 #### Tools
 
