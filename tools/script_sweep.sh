@@ -55,6 +55,14 @@ targets_opt=""
 run() {
     local map=$1 seed=$2 secs=$3 tag=$4
     shift 4
+    # Long campaign maps: the autoplay bot needs more simulated time than the default to reach the last stages (hill400_assault ends
+    # at about 1740 s of level time, moscow at about 2500 s); a shorter --seconds is raised for those maps' autoplay runs only.
+    if [ "$tag" = auto ]; then
+        case "$map" in
+        hill400_assault) [ "$secs" -ge 1800 ] || secs=1800 ;;
+        moscow) [ "$secs" -ge 2600 ] || secs=2600 ;;
+        esac
+    fi
     local base="$out/$map-s$seed-$tag"
     IW2_SCRIPT_SEED=$seed "$bin" "$IW2_MAIN" "$map" "$secs" --god --answer-menus "$answers" --report "$base.txt" $targets_opt "$@" > "$base.log" 2>&1
     local rc=$?

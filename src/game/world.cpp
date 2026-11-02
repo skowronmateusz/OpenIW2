@@ -556,6 +556,10 @@ void World::deleteEntityScripted(Entity& e) {
     vm_.notify(e.obj, "death");
     // G_FreeEntity (0x4d7c30, call at 0x4d7d87): an actor's turret (+0x2114) it owns is released (0x549a60), so the gun is usable again.
     if (e.usingTurret) turretStateFinish(e);
+    // The actor free (0x4fc960, called at 0x4d7d87 for an entity with an actor): the animscript is killed (0x4fc99f -> 0x53ac40,
+    // notify "killanimscript") while the VM runs, so the script thread of a deleted or evicted actor ends with its endon("killanimscript")
+    // instead of running on a freed entity. TODO(spec): the references other actors keep to the freed one (0x4fc9e0..0x4fca43).
+    if (e.isActor) killActorAnimScript(e);
     // G_FreeEntity (0x4d7c30) resets the entity (call 0x419700 at 0x4d7ce3; TODO(spec): confirm it is the memset), whose state holds the loop sound index (ent+6, set by playloopsound
     // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
     if (const Value h = e.obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());

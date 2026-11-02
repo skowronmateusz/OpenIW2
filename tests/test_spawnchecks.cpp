@@ -110,7 +110,11 @@ int main() {
     if (actors.size() >= 2) {
         iw2::game::Entity* far = actors[1];
         far->obj->set("origin", Value(Vec3{s[0], s[1], s[2] - 20000.0f}));
+        // A freed actor's animscript is killed (0x4fc960 -> 0x53ac40): the script thread must not outlive the entity.
+        far->animScript = "move";
+        far->animScriptThread = 1;
         CHECK(w.debugEvictForForceSpawn());
+        CHECK(far->animScriptThread == 0 && far->animScript.empty());
         CHECK(far->obj->removed);
         CHECK(liveActors(w) == 31);
         // A spawner with spawnflags 2 (forcespawn) evicts when the pool is full again.

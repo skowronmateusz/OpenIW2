@@ -692,7 +692,7 @@ int main(int argc, char** argv) {
         bool autoplay = false, autoplayForce = false;
         // Substrings of a waiting function's name / a trigger's targetname that keep the autoplay bot out of a trigger (kill-player,
         // desertion, minefield triggers); --autoplay-skip a,b adds more.
-        std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail", "wrongway"};
+        std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail", "wrongway", "shoot_prisoner"};
         float stallSecs = 25.0f;
         std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
         std::vector<std::string> targets; // --targets FILE: the level notifies a complete run of this map reaches (`map: a b c` lines), "reached k of n"

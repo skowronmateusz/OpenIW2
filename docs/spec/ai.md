@@ -74,6 +74,13 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   (3) farthest with (forward . delta)^2 < 0.5 * distance^2 (0x591e10), (4) farthest (>=). None: "Tried to force spawning
   of an AI when all AI slots are used by undeletable AI" (0x589e00). The victim is notified "death" (const 0x1c7f05c,
   string 0x587ea4) and freed (0x4d7c30), like the script delete.
+- Freeing an actor (G_FreeEntity 0x4d7c30, call at 0x4d7d87 into the actor free 0x4fc960): the turret it owns is released, then, while
+  the script VM is active (flag 0x9bef24), its animscript is killed (0x4fc99f -> 0x53ac40: notify "killanimscript"), the
+  linked corpse entity is freed, and other actors' references to it are cleared (0x4fc9e0..0x4fca43: avoided sentient +0x6ba,
+  hit entity +0x318, +0x2148, +0x728); only after that the script object is released (0x4670b0). The script object release does
+  not end threads that run with the freed entity as `self` and wait on a timer, so the animscript kill is what stops them;
+  without it a deleted actor's move/combat animscript kept running builtins on the freed entity ("not a sentient" from
+  getclosestenemysqdist). Implemented for the animscript kill; TODO(spec): the corpse entity and the other actors' references.
 - A real spawner (spawnflags 1) is never freed by a spawn (only the positive count is decremented, 0x5325ca..0x5325d8); a
   map-start placed actor is the entity itself, which the port replaces by a new entity.
 - TODO(spec): the eviction iterates actor slots; the port iterates entities (differs only for equal distances).
