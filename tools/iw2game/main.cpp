@@ -2093,6 +2093,7 @@ int main(int argc, char** argv) {
                     // 2. kill gate: the entities whose "death" a script waits for, else every living axis actor
                     int killed = 0;
                     std::vector<std::pair<iw2::game::Entity*, float>> gateCands;
+                    bool laterWaves = false; // the gate left the waits of a later wave alone
                     const bool killGate = actionsSinceProgress <= 3; // once per no-progress cycle, then force / stall (which restarts the chase)
                     // An entity some thread waits on from a function whose name says "missionfail" (beltot.gsc missionfailedondamage on the
                     // prisoner): killing it ends the mission, so the kill gate leaves it alone.
@@ -2189,6 +2190,7 @@ int main(int argc, char** argv) {
                         killed = 0;
                         for (const auto& gc : gateCands)
                             if (gc.second <= oldest + killWave) { world.debugDamage(*gc.first, 100000); ++killed; }
+                        laterWaves = size_t(killed) < gateCands.size();
                     }
                     const char* what = "death-waited entities";
                     if (killed == 0 && killGate) {
@@ -2207,6 +2209,10 @@ int main(int argc, char** argv) {
                         autoplayLog.push_back(buf);
                         std::cout << buf << "\n";
                         lastActionT = t; ++actionsSinceProgress;
+                        // A later wave is still waiting: when this kill brings no progress, the next gate takes it after the stall time instead
+                        // of after two more trigger chases (breakout's start-of-level stragglers cost four gates, 140 s each, and the
+                        // objective that needed the last wave started 240 s before the run ended).
+                        if (laterWaves) actionsSinceProgress = 3;
                     } else {
                         // 3. --autoplay-force: notify the level event a level-script thread waits for (masks bugs; listed in the report)
                         std::string forced;
