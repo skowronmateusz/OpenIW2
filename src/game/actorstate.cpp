@@ -281,6 +281,26 @@ void World::actorPerceive(Entity& e) {
     updatePerception(e);
 }
 
+// 0x5063f0 "face default": with an override (+0x114) the base block (+0x104) takes it over (mode, pitch, yaw, target) and
+// the override is cleared; without one the base block is copied into the override block, whose mode is cleared.
+void World::actorFaceDefault(ActorAi& ai) {
+    if (ai.orient != 0) {
+        ai.facing = ai.orient;
+        ai.basePitch = ai.overridePitch;
+        ai.baseYaw = ai.overrideYaw;
+        ai.baseTarget = ai.orientTarget;
+    } else {
+        ai.overridePitch = ai.basePitch;
+        ai.overrideYaw = ai.baseYaw;
+        ai.orientTarget = ai.baseTarget;
+    }
+    ai.orient = 0;
+}
+
+void World::debugSetActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode) {
+    setActorAnimScript(e, name, movemode, animMode);
+}
+
 // The actor's animscript (0x53ac90). The same script keeps running: only the anim mode changes, and a new
 // movemode notifies "movemode". Another script kills the current one ("killanimscript", 0x53ac40) and starts.
 void World::setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode) {
@@ -307,6 +327,9 @@ void World::setActorAnimScript(Entity& e, const std::string& name, int movemode,
     // (+0x740 / +0x741), and the solved grenade throw +0x20d0 is dropped. The string words +0x2140 / +0x2144 (scriptstate /
     // statechangereason, set only by trackscriptstate and read by a debug print) are released there too: not modelled, the shipped
     // scripts only copy `self.scriptState` into an unused local.
+    // 0x53ad0b: "face default" (0x5063f0) too: the orientmode override of the old script is handed to the base block and
+    // released, so a stale "face enemy" / "face angle" does not outlive its script.
+    actorFaceDefault(ai);
     ai.throwPending = false;
     ai.animModeOverride = 0;
     ai.animMode = animMode;
@@ -954,11 +977,18 @@ void World::actorFacing(Entity& e) {
     e.obj->set("desiredangle", Value(target));
     actorLookTurn(e); // 0x504be0 (0x50431b)
     if (static const char* fl = std::getenv("IW2_FACING_LOG"); fl && (std::atoi(fl) == e.number || std::atoi(fl) < 0)) {
-        const Value mv = e.obj->get("$motionyaw");
+        float gm = 0.0f; // the getmotionangle result (block velocity yaw minus the yaw)
+        if (ai.slideVel[0] * ai.slideVel[0] + ai.slideVel[1] * ai.slideVel[1] > 1.0f) {
+            gm = std::atan2(ai.slideVel[1], ai.slideVel[0]) * 180.0f / float(M_PI) - (a[1] + d);
+            while (gm > 180.0f) gm -= 360.0f;
+            while (gm < -180.0f) gm += 360.0f;
+        }
+        const Value mv = Value(gm);
         const auto ts = ai.trail.sum();
-        std::fprintf(stderr, "[facing %lld] #%d mode %d%s path %d movemode %d yaw %.1f target %.1f motion %.1f trail (%.2f %.2f)\n",
-                     (long long)timeMs_, e.number, m, ovr ? " (override)" : "", e.path.count, ai.movemode, a[1] + d, target,
-                     mv.isNumber() ? mv.asFloat() : -1.0f, ts[0], ts[1]);
+        std::fprintf(stderr, "[facing %lld] #%d %s enemy %d mode %d%s path %d movemode %d yaw %.1f target %.1f motion %.1f trail (%.2f %.2f)\n",
+                     (long long)timeMs_, e.number, e.obj->get("team").isString() ? e.obj->get("team").asString().c_str() : "?",
+                     entityOf(e.obj->get("enemy")) ? 1 : 0, m, ovr ? " (override)" : "", e.path.count, ai.movemode, a[1] + d,
+                     target, mv.isNumber() ? mv.asFloat() : -1.0f, ts[0], ts[1]);
     }
 }
 
@@ -1059,14 +1089,7 @@ void World::registerActorStateBuiltins() {
             ai.orient = 1;
             if (d[0] * d[0] + d[1] * d[1] >= 1.0f) setFacingDir(*e, true, d); // 0x53f730, 0x591e20 = 1.0
         } else if (mode == "face default") {
-            // 0x5063f0: with an override the base block takes it over; the override is cleared.
-            if (ai.orient != 0) {
-                ai.facing = ai.orient;
-                ai.basePitch = ai.overridePitch;
-                ai.baseYaw = ai.overrideYaw;
-                ai.baseTarget = ai.orientTarget;
-            }
-            ai.orient = 0;
+            actorFaceDefault(ai); // 0x5063f0
         } else {
             throw std::runtime_error("orientMode must be 'face angle', 'face current', 'face direction', 'face enemy', 'face enemy or motion', 'face goal', 'face motion', 'face point', or 'face default'");
         }

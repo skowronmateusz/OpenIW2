@@ -721,6 +721,7 @@ public:
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
     }
     void debugDamage(Entity& e, int amount);
+    void debugSetActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode); // tests: the animscript switch 0x53ac90
     // Debug (iw2game --autoplay): a point where the player's standing box touches the trigger entity (triggerContact with the
     // player box of runTriggers), sampled over the trigger's bounds (brush submodel or radius); false when none is found.
     bool debugTriggerEntryPoint(Entity& e, Vec3& out);
@@ -1060,6 +1061,7 @@ private:
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);
     void setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode);
+    static void actorFaceDefault(ActorAi& ai); // 0x5063f0
     void killActorAnimScript(Entity& e);
     bool actorAnimScriptDone(Entity& e);
     int exposedThink(Entity& e);

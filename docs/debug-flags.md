@@ -40,7 +40,7 @@ described in the code that reads them.
 | `IW2_NO_PRONE_TILT=1` | iw2view | Draws actors and corpses without the prone / corpse-blend tag_origin control (A/B check of 0x4c1cc0). |
 | `IW2_SHOT_ENT=N[,dist,yaw,height]` | iw2view `--shot` | Puts the shot camera `dist` (120) units from entity N at its yaw + `yaw` (90) and `height` (50) above its origin, looking at it. |
 | `IW2_SHOT_FREE_CAM=1` | iw2view `--shot` | Keeps the `--pos` camera when a script link carries the player (otherwise the shot is taken from the linked player, e.g. in the duhoc_assault boat). |
-| `IW2_FACING_LOG=N` | iw2game/iw2view | Per think of actor N (-1: all): facing mode (override), path count, movemode, yaw after the turn, active target, motion yaw and the trail sum (0x505d80 / 0x504ca0). |
+| `IW2_FACING_LOG=N` | iw2game/iw2view | Per think of actor N (-1: all): facing mode (override), path count, movemode, yaw after the turn, active target, the motion angle (getmotionangle, 0x53f770), team, whether the actor has an enemy, and the trail sum (0x505d80 / 0x504ca0). |
 | `IW2_PLAYER_DMG_LOG=1` | iw2game/iw2view | Prints every damage the player takes: time, amount, attacker entity / classname and means of death. |
 | `IW2_TOUCH_TEST=<s>` | iw2game | At sim time `<s>` runs the vehicle touch callback (0x512d40) for the first vehicle with collisionDamage > 0 placed 100 units behind the player, moving at 400 units/s at it; prints the target health before and after; `IW2_TEST_ACTOR=1` targets the first living actor instead of the player. |
 | `IW2_TEST_MOVER=1` | iw2game | With `IW2_TOUCH_TEST`: targets the first script_model (take-damage on, health 100) to check the eType 5 crush (0x512dd1, 999999 at once). |
@@ -48,6 +48,7 @@ described in the code that reads them.
 | `IW2_KILL_VERBOSE=1` | iw2game | With `IW2_KILL_VEHICLES`, also prints each vehicle's model and health before the kill. |
 | `IW2_FIRE_VEHICLES=<s>` | iw2game | At sim time `<s>` sends the script notify `turret_fire` to every vehicle (the AI tank fire loop in `_tank.gsc`), to test vehicle weapons headless. |
 | `IW2_KILL_VEHICLES=<s>` | iw2view `--shot` | Same as the iw2game variant below, at sim time `<s>` of the shot run (combine with `--follow-vehicle N`, `--sim-seconds`). |
+| `IW2_KILL_AXIS=<s>` | iw2game | At sim time `<s>` deals 100000 damage to every living axis actor (leaves the allies without an enemy, e.g. to watch their walking after a mission's fight). |
 | `IW2_KILL_VEHICLES=<s>` | iw2game | At sim time `<s>` deals 100000 damage (attacker: the player) to every script vehicle, to test the death chain. |
 | `IW2_THREADS_PREFIX=<p>` | iw2game | Lists every live script thread whose wait site starts with `<p>`. |
 | `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time and, when the first argument is a string, that argument in quotes (the notetrack name of an animation flag notify). For walking mission flows. |

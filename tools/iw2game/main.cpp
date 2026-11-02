@@ -669,6 +669,7 @@ int main(int argc, char** argv) {
             touchTestAt = float(std::atof(std::getenv("IW2_ROCKET_TEST")));
             touchTestIsRocket = true;
         }
+        float killAxisAt = std::getenv("IW2_KILL_AXIS") ? float(std::atof(std::getenv("IW2_KILL_AXIS"))) : -1.0f;
         float killReportAt = -1.0f, fireVehiclesReportAt = -1.0f;
         float killVehiclesAt = std::getenv("IW2_KILL_VEHICLES") ? float(std::atof(std::getenv("IW2_KILL_VEHICLES"))) : -1.0f;
         std::vector<std::pair<float, std::array<float, 2>>> playerLooks, playerFires; // --player-look / --player-fire T yaw,pitch
@@ -1104,6 +1105,16 @@ int main(int argc, char** argv) {
                     ++t;
                 }
                 world.setPlayerCommand(cmd);
+            }
+            if (killAxisAt >= 0 && f * 0.05f >= killAxisAt) { // IW2_KILL_AXIS=<s>: 100000 damage to every living axis actor
+                killAxisAt = -1;
+                int n = 0;
+                for (const auto& ep : world.entities())
+                    if (ep->isActor && !ep->obj->removed && ep->obj->get("health").asInt() > 0 && ep->obj->get("team").toString() == "axis") {
+                        world.debugDamage(*ep, 100000);
+                        ++n;
+                    }
+                std::printf("killed %d axis actors at %.1f s\n", n, f * 0.05f);
             }
             if (killVehiclesAt >= 0 && f * 0.05f >= killVehiclesAt) { // IW2_KILL_VEHICLES=<s>: 100000 damage to every vehicle
                 killVehiclesAt = -1;

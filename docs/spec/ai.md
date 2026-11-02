@@ -1071,6 +1071,14 @@ Resolved: the facing blend (see "Facing blend"). Open (from before): the ring ad
   "face current" +0x120 = +0x124 (desiredangle, not the entity yaw); "face direction" / "face point" 0x5055d0 (look pitch from
   the vector); "face default" 0x5063f0. teleport with angles (0x53e237) and the animscripted think (0x54b1f3, every frame) set
   the base block from the entity angles (teleport also the look angles).
+- Release of the override: the animscript switch (0x53ac90, another script than the current one; 0x53ad0b) calls "face default"
+  (0x5063f0) after the kill (0x53ac40). With an override set the base block takes over its mode, pitch, yaw and target and the
+  override mode is cleared; without one the base block is copied into the override block. So an orientmode "face enemy" /
+  "face angle" / "face point" set by a cover or combat script lasts only as long as that script: when the move script starts
+  the facing is the engine's own again (mode 2 on a noncombat path, 4 in combat). The port used to keep the override across
+  script switches: an actor that left cover with "face enemy" and then had no enemy kept its yaw locked while the move script
+  walked it (strafe / back-pedal quadrant of getmotionangle, which is the block velocity yaw minus the entity yaw).
+  Implemented as `World::actorFaceDefault`; an identical script (same name) keeps its override (0x53ac99 compare).
 - getmotionangle (0x53f770): block velocity (+0x230) of more than 1 (2D squared) -> its yaw (0x421890) - entity yaw; else
   with a path the lookahead direction's yaw - entity yaw; else 0. Replaces the inferred `$motionyaw` reader.
 - TODO(spec): +0x130 has no reader found; the turret user's angles from the turret (0x54a7e6, then 0x54a829) are not set.
