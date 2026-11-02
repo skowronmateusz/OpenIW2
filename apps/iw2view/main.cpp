@@ -3724,7 +3724,13 @@ int main(int argc, char** argv) {
                         else if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0), {0, 0, 0}});
                         else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0), {0, 0, 0}});
                     }
-                    assets::XPose vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
+                    // Script-animated vehicles (the flak88 firing recoil) are drawn at the client-frame anim time like actors (0x4afb70
+                    // advances the DObj of every entity per client frame), not at the last 20 Hz server frame.
+                    assets::XPose vpose;
+                    if (auto pa = prevAnim.find(e->number); e->anim && pa != prevAnim.end() && lerpFrac < 1.0f)
+                        vpose = game::clientAnimState(pa->second, lerpFrac).pose(vm->parts);
+                    else
+                        vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
                     // Wheel suspension (cgame 0x4ac2b0): each wheel bone is moved to the ground under it.
                     if (world)
                         for (const auto& wc : game::vehicleWheelControls(world->collision(), vm->parts, vpose, {ov[0], ov[1], ov[2]},
@@ -3756,8 +3762,7 @@ int main(int argc, char** argv) {
                     const game::AnimState* animNow = e->anim.get();
                     std::optional<game::AnimState> tmpAnim;
                     if (auto pa = prevAnim.find(e->number); e->anim && pa != prevAnim.end() && lerpFrac < 1.0f) {
-                        tmpAnim.emplace(pa->second); // no notifies: they already fired in the server frame
-                        tmpAnim->update(lerpFrac * 0.05f, [](const std::string&, const std::string&) {});
+                        tmpAnim.emplace(game::clientAnimState(pa->second, lerpFrac)); // no notifies: they already fired in the server frame
                         animNow = &*tmpAnim;
                         pose = tmpAnim->pose(body->parts);
                     } else {

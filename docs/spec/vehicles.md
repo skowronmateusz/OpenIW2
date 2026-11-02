@@ -321,7 +321,7 @@ command's delta angles are adjusted so the input keeps that view.
   vehicle; the pushed player goes to the front end through the setorigin / setplayerangles channel). Open: script
   movers and the touch callbacks, the entity list box, the ground entity reset, actor look yaws (0x504910). the
   ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
-- The recoil jolt, turret spin/stop sounds, and turret bone rotation in tag positions.
+- The recoil jolt and turret bone rotation in tag positions.
 - Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
   +0x26a after loading (0x5118b0, G_SoundAliasIndex 0x4d5860). Spawn (0x50dbb7): +0x1ec = 1 (engine on; script
   `startenginesound` 0x513e80 sets 1, `stopenginesound` 0x513ee0 sets 0), fractions +0x1f8 / +0x1fc = 0, and an
@@ -419,7 +419,7 @@ VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0
 
 - ps+0xc 0x8000 is the freezecontrols flag (client +0x8630). The driven vehicle's command and the fire button are blocked by it (implemented); the second source +0x8698 is TODO(spec).
 - 0x5107e0 sets ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45), 0 when the vehicle info has no steerWheels. 0x510770 (jolt step) and 0x510870 (tread scroll) were already implemented.
-- Turret spin and stop sounds, engine pitch: already implemented in updateVehicleEngineSound (0x510be0).
+- Turret spin and stop sounds, engine pitch: updateVehicleEngineSound (0x510be0). The sound state +0x18c (turret think 0x5102e0, 0x510620..0x51068c) becomes 2 when an axis has 2 degrees or more to go and AngleSubtract(turned, clamped) (0x423fd0 at 0x510617, in place on stack slots 0x20 / 0x24) is exactly 0, i.e. the span clamp did not cut the rate-limited step. Before, the turned angle itself was compared with 0, so no vehicle turret (flak88, tanks) played its spin sound. Implemented as `vehicleTurretTurning`; the flak88 vehicle file names the tank turret spin / stop aliases.
 - Wheels (cgame 0x4ac2b0, checked): bone control entries (0x4746e0) are {quat, translation, 0}; the translation (default zero vector 0x56ce9c) is added to the bone's local offset. The interpolated fields 0x16c..0x180 = es+0x64 (body pitch), +0x74 (turret yaw), +0x6c (roll), +0x70 (barrel pitch), +0x94 (steer), +0x60 * 0.001 (suspension travel; the server think 0x512cd8 stores (int)(info+0x88 * 1000)). Per wheel tag (front_left, front_right, back_left, back_right, middle_left, middle_right; P = tag bind position): axes from AngleVectors(angles) = forward, left (= -right), up; w = forward*Px + left*Py + up*Pz + origin; point trace (mask 0x211, entity skipped) from w + up*40 (0x591f78) to w - up*travel; d = max((travel + 40) * fraction, 40 - travel); hit = start - up*d; control translation = M * (hit - origin) - P (0x423480, rows forward / left / up), i.e. up*(40 - d): -travel without a hit, at most +travel. The first two wheels also get rotation angles (0, steer, 0) when steer is not 0; the others keep identity. travel 0 means no motion. Implemented as `vehicleWheelControls` (viewer draw path) with `assets::BoneControl`; steerAngle is stored by the think (needs the info key steerWheels). TODO(spec): the previous-yaw source of 0x5107e0 is the frame start yaw here; the wheel offsets use the server-frame pose (no cgame interpolation of the trace).
 
 ## Vehicle triggers (G_TouchTriggers 0x4e7320)
@@ -461,3 +461,13 @@ A driven vehicle traces a point (body mins/maxs zero, 0x50d970 and the 0x44bf00 
 used only by `--shot --walk-seconds`). Test: tests/test_vehiclehit.cpp ("wreck hits").
 Test: tests/test_barrelclip.cpp. Script barrels (`maps/_interactable_objects.gsc`): a targeted script_brushmodel clip is
 deleted on explosion (`connectpaths`, `delete`); the entity clip disappears with it (same test, libya).
+
+## Client anim time of script-animated vehicles (flak88 recoil)
+
+The flak88 is a script vehicle (type artillery) whose script plays a firing animation on it (the flak88 animtree). The cgame
+frame step 0x4afb70 walks every entity of the snapshot, whatever its type, and advances its DObj anim by the client frame time
+(weights 0x476960, then time 0x476490, dt = frame time * 0.001), then lerps origin and angles (0x4acca0, entity types below 0xf).
+So the recoil pose moves with every rendered frame; drawing the last 20 Hz server-frame state makes it step. The viewer draws
+the pose of the state before the last server frame advanced by the interpolation fraction of 50 ms (`clientAnimState`), the same
+as for actors; notetracks are not re-sent. TODO(spec): the original's cg.time interpolates between two snapshots, so a state set
+by the newest server frame appears one frame later than here.

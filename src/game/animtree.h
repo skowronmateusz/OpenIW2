@@ -168,4 +168,13 @@ private:
     float* probe_ = nullptr; // noteFraction: receives the smallest fraction of a crossed notetrack
 };
 
+// The anim state an entity is drawn with (cgame 0x4afb70: every client frame the DObj anim time advances by the frame time, weights
+// first, 0x476960 then 0x476490): the state before the last server frame advanced by `lerpFrac` of one 50 ms server frame
+// (cg.time = server time - 50 + lerpFrac * 50). No notetrack is reported; those fired in the server frame.
+inline AnimState clientAnimState(const AnimState& beforeServerFrame, float lerpFrac) {
+    AnimState s(beforeServerFrame);
+    s.update(lerpFrac * 0.05f, [](const std::string&, const std::string&) {});
+    return s;
+}
+
 } // namespace iw2::game

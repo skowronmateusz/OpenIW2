@@ -679,14 +679,13 @@ void World::updateVehicleTurret(Entity& e) {
     const float dPitch = angleDelta(want[0], v.turretPitch), dYaw = angleDelta(want[1], v.turretYaw);
     v.turretPitch = turnAngle(want[0], v.turretPitch, v.info->turretRotRate, kFrameTime);
     v.turretYaw = turnAngle(want[1], v.turretYaw, v.info->turretRotRate, kFrameTime);
-    const float turnedPitch = v.turretPitch, turnedYaw = v.turretYaw; // before the span clamp (stack 0x20/0x24)
+    const float turnedPitch = v.turretPitch, turnedYaw = v.turretYaw; // before the span clamp
     v.turretPitch = std::clamp(v.turretPitch, -v.info->turretVertSpanUp, v.info->turretVertSpanDown);
     v.turretYaw = std::clamp(v.turretYaw, -v.info->turretHorizSpanRight, v.info->turretHorizSpanLeft);
     e.obj->set("$turretangles", Value(Vec3{v.turretPitch, v.turretYaw, 0}));
-    // +0x18c (0x510620..0x51068c): 2 when |dPitch| >= 2 and the turned (unclamped) pitch is exactly 0, or |dYaw| >= 2 and the
-    // turned yaw is exactly 0 (slots: |delta| 0x14/0x18, turned angles 0x20/0x24, constants 2.0 @0x591ed0 and 0.0
-    // @0x591e00); otherwise 2 -> 1 -> 0. The "== 0" test is as the asm reads, not a guess.
-    if ((std::fabs(dPitch) >= 2.0f && turnedPitch == 0.0f) || (std::fabs(dYaw) >= 2.0f && turnedYaw == 0.0f)) v.turretMoved = true;
+    // +0x18c (0x510620..0x51068c): 2 when an axis has >= 2 degrees to go and the span clamp did not cut the step. The compared
+    // stack slots 0x20/0x24 hold AngleSubtract(turned, clamped) (0x423fd0 at 0x510617, in place), not the turned angles.
+    if (vehicleTurretTurning(dPitch, dYaw, angleDelta(turnedPitch, v.turretPitch), angleDelta(turnedYaw, v.turretYaw))) v.turretMoved = true;
     if (std::fabs(dPitch) < 1.0f && std::fabs(dYaw) < 1.0f) {
         vm_.notify(e.obj, "turret_on_target");
         if (target) {

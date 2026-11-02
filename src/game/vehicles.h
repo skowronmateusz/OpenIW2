@@ -131,6 +131,15 @@ inline bool vehicleJoltStep(float& amp, float& phase, float dirF, float dirR, fl
     return true;
 }
 
+// 0x510620..0x51068c: the turret "is turning" test of the turret think (0x5102e0). Inputs: the signed pitch / yaw difference to the
+// wanted angle before the step, and the difference (turned - clamped) per axis, i.e. how much the span clamp cut off after the
+// rate-limited step (0x423fd0 = AngleSubtract of the two angle sets). The sound state +0x18c becomes 2 when an axis still has
+// 2 degrees or more to go and the clamp did not cut it (difference exactly 0); the turret is turning freely, not stopped at
+// a span end. TODO(spec): the case where the clamp cuts the step never sets the state.
+inline bool vehicleTurretTurning(float dPitch, float dYaw, float clampCutPitch, float clampCutYaw) {
+    return (std::fabs(dPitch) >= 2.0f && clampCutPitch == 0.0f) || (std::fabs(dYaw) >= 2.0f && clampCutYaw == 0.0f);
+}
+
 // One think of 0x510870: flag 0 -> -1; else acc += (int)(speed * (1/176) * (dvar > 0 ? dvar : scale) * 0.05 * 1000).
 // speed is vehicle +0x1b0 (|forward speed|, inches per second). dvar = g_vehicleTexScrollScale (default 0).
 inline int vehicleTexScrollStep(int flag, int acc, float speed, float dvar, float scale) {
