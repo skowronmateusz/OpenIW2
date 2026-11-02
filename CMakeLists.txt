@@ -481,3 +481,7 @@ add_test(NAME vehicleseat COMMAND test_vehicleseat)
 add_executable(test_swapdrop tests/test_swapdrop.cpp)
 target_link_libraries(test_swapdrop PRIVATE iw2_game)
 add_test(NAME swapdrop COMMAND test_swapdrop)
+
+add_executable(test_deadtank tests/test_deadtank.cpp)
+target_link_libraries(test_deadtank PRIVATE iw2_game)
+add_test(NAME deadtank COMMAND test_deadtank)

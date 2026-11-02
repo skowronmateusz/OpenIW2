@@ -363,7 +363,7 @@ command's delta angles are adjusted so the input keeps that view.
   `radiusdamage` (0x4f3e70) passes 0x1c13b08 as the attacker of 0x5289d0. The "damage" / "death" callbacks therefore get an entity, never
   undefined (`_tank.gsc friendlyfire_shield` reads attacker.origin). TODO(spec): the world entity's other fields (origin zero here).
 - freevehicle (0x511c80..0x511d83) has no rider handling: health 0, think sounds silenced (0x510be0), the two sound entities (+0x1f0 / +0x1f4)
-  freed, eType 0xb, contents 0, take-damage and +0x112 cleared, vehicle data detached. Riders on death are script behaviour only
+  freed, +0x116 = 0xb, take-damage (+0x111) and +0x112 cleared, trajectories (+0x10 / +0x14 / +0x38) zeroed, vehicle data detached (+0x108 = 0); it writes neither the contents (+0xc0) nor the brush model (+0xe), see "Collision after destruction". Riders on death are script behaviour only
   (_tankai.gsc endon("death") on the tank). Running level (libya, IW2_KILL_VEHICLES): 13 of 14 vehicles become script_vehicle_corpse.
 - Vehicle weapons end to end (libya, IW2_FIRE_VEHICLES): "turret_fire" makes _tank.gsc shoot() call fireturret: 14 rockets, 0 errors.
 - Touch callbacks and script movers (eType 5) in 0x50ff00 remain TODO(spec).
@@ -459,6 +459,13 @@ after a libya tank was destroyed the player walked and drove through the wreck. 
 A driven vehicle traces a point (body mins/maxs zero, 0x50d970 and the 0x44bf00 call at 0x50e78e pass them): the libya collmap *181 spans z 0..102 above the origin, so a point trace at exactly the origin height hits (test "point hits"). Live tanks were not affected: a headless probe of libya (all 13 AI crusaders, 80 s) showed every tank with clip model 181, contents
 0x800000, and the live iw2view loop uses the same `World::collision()` as the tests (the `scene.collision` world without entities is
 used only by `--shot --walk-seconds`). Test: tests/test_vehiclehit.cpp ("wreck hits").
+Save and load: the exe writes the whole 0x1fc-byte entity record of every used entity (docs/spec/savegame.md), so a vehicle's brush model
+(+0xe) and contents (+0xc0) survive a load. OpenIW2 kept the collmap only in `VehicleState` and looked it up again from the *current*
+model after a load. rhine (maps/rhine.gsc, tank_explosives) swaps a live tiger to a tread wreck model when a sticky bomb is placed
+on a wheel, and autosaves `tank_down` after each kill; a load in that window found no collmap for the tread model, so that tiger
+(and, via freevehicle, its corpse) had no clip, while the other tiger kept it. The collmap brush is now part of the save (state
+version 5; older saves still look it up from the model). Test: tests/test_deadtank.cpp (rhine, both tigers, tread model, save, load,
+kill, trace and walk the player box). Tigers killed directly (without a save) keep their clip, as do the map-placed rhine buffalos killed in a headless probe. TODO(spec): whether the G_Damage death path of a vehicle (health reaching 0 by damage) touches contents.
 Test: tests/test_barrelclip.cpp. Script barrels (`maps/_interactable_objects.gsc`): a targeted script_brushmodel clip is
 deleted on explosion (`connectpaths`, `delete`); the entity clip disappears with it (same test, libya).
 

@@ -463,6 +463,8 @@ void World::saveState(StateWriter& w) {
             w.b(v->turretMoved);
             w.f32(v->idleFrac);
             w.f32(v->engFrac);
+            w.b(v->collmapSet); // version 5: the collmap brush model (+0xe), part of the saved gentity (docs/spec/savegame.md)
+            w.str(v->collmap);
         }
     }
 }
@@ -868,6 +870,10 @@ void World::loadState(StateReader& r) {
             v.turretMoved = r.b();
             v.idleFrac = r.f32();
             v.engFrac = r.f32();
+            if (r.version >= 5) {
+                v.collmapSet = r.b();
+                v.collmap = r.str();
+            } // older saves: looked up again from the current model at the next clip sync
             v.spinHandle = v.idleHandle = v.engHandle = 0; // sound handles: the front end restarts the loops
         }
         // runtime that is not saved starts over (see the TODO(spec) list at the top)
@@ -1003,7 +1009,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 
