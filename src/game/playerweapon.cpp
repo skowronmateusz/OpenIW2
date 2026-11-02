@@ -373,8 +373,15 @@ int PlayerWeapon::update(float dt, const Input& in) {
     // The ammunition lives in the player state (the world inventory): scripts, pickups and the HUD see the same counters.
     if (!name_.empty() && readAmmo)
         if (const auto a = readAmmo(name_)) clip_ = a->first, stock_ = a->second;
+    if (in.offhandBlocked) blockOffhand();
+    Input eff = in;
+    if (offhandLatch_ && !in.offhandBlocked) {
+        if (!in.frag && !in.smoke) offhandLatch_ = false;
+        else eff.frag = eff.smoke = false;
+    }
+    if (in.offhandBlocked) eff.frag = eff.smoke = false; // 0x4df473
     const std::string before = name_;
-    const int shots = updateImpl(dt, in);
+    const int shots = updateImpl(dt, eff);
     if (!before.empty() && before == name_ && writeAmmo) writeAmmo(name_, clip_, stock_);
     else if (!name_.empty() && writeAmmo) writeAmmo(name_, clip_, stock_);
     return shots;

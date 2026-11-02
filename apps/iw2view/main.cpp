@@ -7468,6 +7468,7 @@ int main(int argc, char** argv) {
                 wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
                 wi.dead = playerDead; // PM_Weapon 0x4dfc30: pm_type >= 4 clears the weapon and does nothing else
                 wi.inVehicle = inVehicle;
+                wi.offhandBlocked = inVehicle; // eFlags 0x20300 (0x4df473); the turret skips PM_Weapon altogether (0x4dfc59)
                 {
                     static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
                     wi.damaged = world->playerDamageFeedback().event != binocDamageEvent;
@@ -7477,6 +7478,7 @@ int main(int argc, char** argv) {
                 }
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
+                if (onTurret) pweapon.blockOffhand();
                 const int shots = onTurret ? 0 : pweapon.update(std::min(simDt, 0.1f), wi);
                 if (shots > 0) game::breathOnFire(ps, mp, pweapon.adsFrac(), breathWeapon); // 0x4dee18 -> 0x4dd2b0
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }

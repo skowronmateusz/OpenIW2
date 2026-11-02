@@ -55,6 +55,12 @@ both timers are 0. View animation numbers paired with their timers: 2 fire, 4 re
   holds the breath instead, 0x4dd350). Not in states 1, 2, 10, 11. View 8, event 0xa3; `meleeDelay` 0 → the blow at
   once, else state 10 with weaponTime `meleeTime` and delay `meleeDelay`. The blow (0x4dee30): weaponTime ≥
   `meleeTime − meleeDelay`, event 0xa4, state 11; state 11 ends in 0.
+- **Turret and vehicle** (proven): PM_Weapon (0x4dfc30) returns before any state change when player-state eFlags (+0x7c) & 0x300
+  (a turret; 0x4dfc59), so nothing advances while mounted: no offhand, no fuse countdown. The offhand step (0x4df470) itself tests
+  eFlags & 0x20300 (turret or vehicle 0x20000; 0x4df473) and returns, so a vehicle never starts a grenade either. There is no latch:
+  the original starts a grenade on the first PM_Weapon after getting off if frag is still held (it throws on release, as it never
+  cooks). openiw2 deviation, only with iw2_grenadeCook on: frag / smoke held while blocked is ignored until released, so getting off
+  a turret / flak88 with G down does not leave a primed, cooking grenade (PlayerWeapon::blockOffhand, tests/test_offhandturret.cpp).
 - **Offhand** (0x4df470): not with pm_flags 0x20300 or in states 12–15 or 17–22. +frag (class 1) / +smoke (class 2)
   held → the first weapon of that `offhandClass` with clip + stock ≠ 0 (0x4dc6d0); none → events 0x94 and 0xc9 /
   0xca. With a weapon (and not in state 16): state 12, `quickDropTime` of the weapon, view 17, then state 13; else

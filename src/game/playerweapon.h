@@ -30,6 +30,7 @@ public:
         bool holster = false; // 0x4de880: mantling (mantleLowersWeapon), on a ladder or in a vehicle: weapon 0
         bool binoculars = false;  // usercmd 0x4000 (+binoculars / +breath_binoculars)
         bool use = false;         // usercmd 0x28 (+activate 0x8 | +usereload 0x20): the binocular "fire"
+        bool offhandBlocked = false; // eFlags & 0x20300 (vehicle 0x20000 or turret 0x300): the offhand step 0x4df470 returns at once
         bool inVehicle = false;   // ps eFlags 0x20000: the binocular cancel mask lacks attack (0x30014 instead of 0x30015)
         bool toggleBinoculars = true; // player_toggleBinoculars (0x1c7f004, registered 0x4faaac, default 1)
         float adsExitDelay = 0;   // player_adsExitDelay (0x1c7efb8, int ms 0..1000, default 0) in seconds
@@ -80,6 +81,10 @@ public:
 
     // Advances by dt seconds; returns the number of shots fired during this step.
     int update(float dt, const Input& in);
+    // The player is on a turret (PM_Weapon returns early, 0x4dfc59) or in a vehicle (offhand step returns, 0x4df473). With the
+    // option grenadeCook (an openiw2 deviation) frag / smoke held at that moment is ignored until released, so getting off
+    // with the key still down does not prime a grenade. Without the option the shipped behaviour applies (no latch).
+    void blockOffhand() { if (grenadeCook) offhandLatch_ = true; }
     int updateImpl(float dt, const Input& in);
 
     const std::string& name() const { return name_; }
@@ -210,6 +215,7 @@ private:
     float brassTimer_ = 0;
     bool meleeLatch_ = false;      // ps+0xc 0x2000
     bool offhandActive_ = false;   // ps+0xc 0x10
+    bool offhandLatch_ = false;    // frag / smoke held through a turret or vehicle: ignored until released
     bool offhandHeldPrev_ = false; // previous command's 0x30000
     std::string next_;             // weapon the drop leads to
     bool holstered_ = false;
