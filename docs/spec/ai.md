@@ -1091,14 +1091,52 @@ Resolved: the facing blend (see "Facing blend"). Open (from before): the ring ad
   actors move differently, not a facing fault, so this is not a regression. breakout, duhoc_defend and hill400_assault
   end with the player dead in both builds.
 
-## Failed actor move block (0x501d00)
+## Failed actor move block (0x501d00) and the path walk's direct move
 
-When the move block (0x5487c0) returns 0, the physics step discards the block origin and nudges the entity origin
-vertically towards the nearest node (0x516950, radius 384, height 128, at most 64, any type; nearest by 3D distance²).
-With dz = node z - origin z (constants 0x592010 = 8, 0x591e00 = 0, 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz,
-dz < -18 gives -8, otherwise 0. Ported as `World::stuckRecovery`. It does not free the demolition actors that wall_hop
-leaves in the actor-clip slab near (6383, 523): they sit on the node height (dz in [-18, 0]), so the nudge is 0.
-TODO(spec): the escape from that slab is still unknown (the move block there returns 0 every frame).
+The actor physics 0x501d00 has three outcomes for a frame (VAs in the patch 1.3 SP executable; the dispatch at 0x501de6..0x501e48):
+
+1. The path mover (0x501e48 -> 0x500de0): anim mode (+0x218) 1, movemode (+0x214) non-zero, path count (+0x6b0) > 0 and
+   not followed (+0x2148 == 0). 0x500de0 runs the move block 0x5487c0 (and, on a bump, the sidestep retries around the
+   bumped actor: 0x500d80, 0x5442a0, twice more through 0x5487c0; its tail re-plans with 0x5037e0 and returns 0 when the
+   path count did not change). When 0x500de0 returns 0 the actor is moved by its raw delta: block origin (+0x224) = entity
+   origin (+0xdc) + desired delta (+0x250), with no collision (0x501eb6..0x501f1d); the block's vertical velocity (+0x238) is
+   cleared, the avoided sentient (+0x6ba) becomes 0x7ff and the lookahead budget (+0x6e0) is raised to 64 (0x56f6e0) when it
+   is lower. When 0x500de0 returns non-zero the step is done, except (0x501e53..0x501e8c) when the lookahead slope (+0x6d0,
+   the z of the lookahead direction) is above 4 (0x591e64) and the delta z (+0x258) is above 0 and the block did not lift
+   the actor (block z +0x22c <= entity z): then the direct move above. Otherwise the sentient's node flag is checked
+   (sentient +0x3d, "no node within 192"): clear -> done; set -> the cache byte +0x3c is cleared, 0x515040 re-queries, and
+   if there is still no node the direct move is taken. The node nudge below is never reached from this branch.
+2. The yield step (0x501620) for a followed actor in anim mode 1 or 7; non-zero ends the step, zero continues with the
+   path mover (path count > 0) or the nudge (3.) without any block move.
+3. Every other case (0x501f22: another anim mode, movemode stop, or no path): the gentity flags +0x128 lose bits 0x18 and
+   the move block 0x5487c0 runs on the entity origin. When it returns 0 the block origin is dropped for the entity origin
+   and nudged vertically towards the nearest node (0x501f59..0x502237: 0x516950 with 2D radius 384, |dz| <= 128, at most
+   64, any type; the smallest 3D distance², the best replaced when best >= candidate, so the last on a tie). With dz = node z
+   - origin z (0x592010 = 8, 0x591e00 = 0, 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz, dz < -18 gives -8,
+   otherwise 0; the block's vertical velocity (+0x238) is cleared; with no node found the block's partially moved origin
+   stays. Ported as `World::stuckRecovery` (used by `moveActorKind` and by the path walk only with movemode stop).
+
+Why it matters (the demolition end scene, GitHub issue 1): Lt. Leonov (the barricade guy of maps/demolition.gsc, set up in
+`leftguy`, demolition.gsc:2321) is posed by the `shout` animation on the `end_left` node (node z 65.1). The animation's delta
+track is an absolute offset from the node (the question guy's is a constant (-259.6, -53.6, -127.8); the barricade idle is
+(-4.0, 18.2, -7.8), the shout ends at (-13.8, 18.2, -15.8)), so he ends on a stair tread at (6657.8, 523.8, 49.3), 2.5
+units below the top of the AI-clip ramp over those stairs (one slanted brush, planes (+-0.5547, 0, +-0.8321) at 3736.18 /
+-3730.64, contents 0x8020000, bounds 6628..6830 x 496..592 x -63..65). The actor box (-15,-15,0)..(15,15,72), traced as a
+capsule (radius 15, half length 21; the slanted planes pushed out by |21 * nz| + 15, 0x416480), is start-solid there (upper
+plane -4.58), with mask 0x2820011 (0x500d13), in the exe as in the port; the scripted pose (0x53baf0, `normal` mode) and
+`stopanimscripted` (0x4f60d0) do not re-place him. When `engineerThink` (demolition.gsc:2371) gives him a path, every
+move block fails (the ground probe 0x548290 is start-solid, so the slide 0x5475e0 returns 2 on its first bump). The port
+used to apply the nudge of 3. here: the nearest node (6676, 518, 42.8) is 6.5 below him, the nudge is 0, and he ran in place
+for the rest of the level. The exe takes 1.: the raw delta (up to (6.4, 1.8, -3.5) per frame, shallower than the ramp)
+carries him out of the slab in a few frames and the normal physics resumes on top of the ramp. Verified headless: with the
+direct move he reaches his tnt node and the mission ends; the direct move fires for him alone (6 frames) in the whole
+ending. `World::moveActor` now models 1. (`pathSteepUnlifted`, `pathDirectBudget` in actorslide.h; the node re-query
+through `sentientNode`). TODO(spec): the sidestep retries and the replan tail of 0x500de0 (a bumped actor; the port has
+no bump source for +0x318) and the yield step's continuation into the path mover (the port keeps the origin instead) are not
+modelled. The trace flag bytes: +0x23 is start-solid (set at 0x4167b4 whenever the start is inside the brush), +0x22 all-solid (0x4167bf,
+the end is inside as well, with fraction 0); the slide's "stuck" tests at 0x5475e0 and the ground probe's retries at 0x548290
+read +0x23 and the step-up check at 0x547db0 reads +0x22 (TODO(spec): `actorslide.h` names them the other way round; the
+case above has both set so it is unaffected).
 
 ### Negotiation trigger snap (0x503ec0, 0x503fb0..0x503fda)
 

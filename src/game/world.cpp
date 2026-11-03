@@ -1020,13 +1020,36 @@ void World::moveActor(Entity& e, float dt) {
                 }
             }
         }
+        bool directMove = false;
         if (yieldNow) {
             e.ai.yieldMs = timeMs_;
             if (!yieldFollowed(e, pm, fn, before)) {
                 for (int a = 0; a < 3; ++a) pm.origin[a] = before[a]; // 0x501620 returned 0: no move this frame
             }
+        } else if (!followed && e.ai.animMode == 1 && e.ai.movemode != 0) { // 0x501e06: the path mover's dispatch
+            // The path mover (0x501e48, 0x500de0): when the block move fails the actor is moved by its raw delta from the
+            // entity origin, without collision (0x501eb6). A successful block ends the step unless the lookahead is steep
+            // and the block did not lift the actor (pathSteepUnlifted), or the sentient's node query (0x515040, 192) finds
+            // nothing even after a re-query; those take the direct move too. TODO(spec): 0x500de0's sidestep around a
+            // bumped actor (0x500d80, 0x5442a0) and its tail (a replan 0x5037e0 that leaves the path count unchanged also
+            // returns 0) are not modelled.
+            if (!moveBlock(pm, fn)) {
+                directMove = true;
+            } else if (pathSteepUnlifted(p.lookDir[2], pm.moveDelta[2], pm.origin[2], before[2])) {
+                directMove = true;
+            } else if (e.nodeUnreachable) {
+                e.nodeCached = false;
+                sentientNode(e);
+                directMove = e.nodeUnreachable;
+            }
+            if (directMove) {
+                for (int a = 0; a < 3; ++a) pm.origin[a] = before[a] + pm.moveDelta[a];
+                pm.velocity[2] = 0.0f; // +0x238
+                p.avoidEnt = 0x7ff;    // +0x6ba
+                p.budget = pathDirectBudget(p.budget);
+            }
         } else if (!moveBlock(pm, fn)) {
-            stuckRecovery(e, pm, before);
+            stuckRecovery(e, pm, before, fn); // movemode stop with a path: the plain block move 0x501f22 and its nudge
         }
         for (int a = 0; a < 3; ++a) o[a] = pm.origin[a];
         for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a]; // written back in place (block +0xc)
@@ -1035,6 +1058,17 @@ void World::moveActor(Entity& e, float dt) {
         e.ai.slideContactNz = pm.contactNormalZ;
         grounded = pm.groundEnt != 0x7ff;
         linkBumpedActor(e, pm.hitEnt);
+        if (static const char* sl = std::getenv("IW2_SLIDE_LOG"); sl && (std::atoi(sl) == e.number || std::atoi(sl) < 0)) {
+            std::fprintf(stderr, "[slide %lld] #%d delta (%.1f %.1f %.1f) from (%.1f %.1f %.1f) to (%.1f %.1f %.1f) hitEnt %d blocked %d groundEnt %d hitN (%.2f %.2f) yield %d direct %d\n",
+                         (long long)timeMs_, e.number, double(pm.moveDelta[0]), double(pm.moveDelta[1]), double(pm.moveDelta[2]), double(before[0]),
+                         double(before[1]), double(before[2]), double(pm.origin[0]), double(pm.origin[1]), double(pm.origin[2]), int(pm.hitEnt),
+                         int(pm.blocked), int(pm.groundEnt), double(pm.hitNormal[0]), double(pm.hitNormal[1]), int(yieldNow), int(directMove));
+            const SlideTrace st0 = fn(pm.origin, pm.origin);
+            const SlideTrace st1 = fn(pm.origin, std::array<float, 3>{pm.origin[0] + pm.moveDelta[0], pm.origin[1] + pm.moveDelta[1], pm.origin[2] + pm.moveDelta[2]}.data());
+            std::fprintf(stderr, "[slide probe] at origin: startSolid %d allSolid %d ent %d contents %x; along delta: frac %.3f ent %d startSolid %d n (%.2f %.2f %.2f)\n",
+                         int(st0.startSolid), int(st0.allSolid), int(st0.entity), unsigned(st0.surface), double(st1.fraction), int(st1.entity),
+                         int(st1.startSolid), double(st1.normal[0]), double(st1.normal[1]), double(st1.normal[2]));
+        }
         e.ai.hitNormal[0] = pm.hitNormal[0];
         e.ai.hitNormal[1] = pm.hitNormal[1];
         e.ai.deflected = pm.blocked;
@@ -1102,7 +1136,7 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
         t.allSolid = tr.allSolid;
         return t;
     };
-    if (!moveBlock(pm, fn)) stuckRecovery(e, pm, before);
+    if (!moveBlock(pm, fn)) stuckRecovery(e, pm, before, fn);
     const Vec3 o{pm.origin[0], pm.origin[1], pm.origin[2]};
     e.obj->set("origin", Value(o));
     for (int a = 0; a < 3; ++a) e.ai.slideVel[a] = pm.velocity[a];
@@ -1118,10 +1152,10 @@ void World::moveActorKind(Entity& e, int kind, const Vec3& delta, float dt) {
 
 // 0x501d00 after the move block (0x5487c0) returned 0 (the step could not be placed): the block's origin is dropped for
 // the entity origin and nudged vertically towards the nearest path node (0x516950: radius 384, height 128, at most 64,
-// any type; the nearest by 3D distance², the first on a tie). With dz = node z - origin z (0x592010 = 8, 0x591e00 = 0,
+// any type; the nearest by 3D distance², the last on a tie). With dz = node z - origin z (0x592010 = 8, 0x591e00 = 0,
 // 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz, dz < -18 gives -8, otherwise 0. The block's vertical velocity (0x238) is cleared; with no node
 // found the block's own (partially moved) origin stays.
-void World::stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before) {
+void World::stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before, const SlideTraceFn& fn) {
     pm.velocity[2] = 0.0f; // 0x238
     const auto near = nodesInRange(before, 384.0f, 128.0f, 64, 0xffffffffu);
     int best = -1;
@@ -1130,13 +1164,23 @@ void World::stuckRecovery(Entity& e, ActorSlide& pm, const Vec3& before) {
         const Vec3 p = nodes_[size_t(i)].obj->get("origin").asVector();
         const float dz = p[2] - before[2];
         const float d = d2 + dz * dz;
-        if (bestD > d) { bestD = d; best = i; }
+        if (nearestReplaces(bestD, d)) { bestD = d; best = i; }
+    }
+    if (std::getenv("IW2_SLIDE_LOG")) {
+        std::fprintf(stderr, "[stuck] #%d near %zu best %d", e.number, near.size(), best);
+        if (best >= 0) { const Vec3 bp = nodes_[size_t(best)].obj->get("origin").asVector(); std::fprintf(stderr, " at (%.1f %.1f %.1f)", double(bp[0]), double(bp[1]), double(bp[2])); }
+        std::fprintf(stderr, "\n");
+        if (std::getenv("IW2_SLIDE_NODES"))
+            for (const auto& [i, d2] : near) {
+                const Vec bp = nodes_[size_t(i)].obj->get("origin").asVector();
+                std::fprintf(stderr, "   node %d type %d at (%.1f %.1f %.1f) d2D %.0f\n", i, nodes_[size_t(i)].typeNum, double(bp[0]), double(bp[1]), double(bp[2]), double(d2));
+            }
     }
     if (best < 0) return; // no node: the block's partially moved origin stays
     for (int a = 0; a < 3; ++a) pm.origin[a] = before[a];
     const float dz = nodes_[size_t(best)].obj->get("origin").asVector()[2] - before[2];
     pm.origin[2] = before[2] + stuckNudge(dz);
-    (void)e;
+    (void)fn;
 }
 
 bool World::negotiationTrigger(Entity& e, const Vec3& o, bool grounded) {

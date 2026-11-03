@@ -85,6 +85,17 @@ int moveBlock(ActorSlide& pm, const SlideTraceFn& trace);
 // 0x501d00 after a failed move block: the vertical nudge towards the nearest node, from dz = node z - origin z
 // (constants 0x592010 = 8, 0x591e00 = 0, 0x592390 = -18).
 float stuckNudge(float dz);
+// 0x501fd5..0x50219c: the nearest-node loop replaces its best node when best >= candidate (the compare skips only when best < candidate),
+// so on an exact tie the later node wins.
+bool nearestReplaces(float bestD2, float candidateD2);
+// The path walk's direct move (0x501d00, 0x501e4f..0x501f1d; docs/spec/ai.md "Failed actor move block"): the nudge above
+// is only the no-path / followed-without-a-path physics. A path walker whose move block failed is moved by its raw
+// delta instead (no collision). After a successful block the same direct move applies when the lookahead slope
+// (+0x6d0) is above 4 (0x591e64), the delta goes up and the block did not raise the actor (pathSteepUnlifted), or when
+// the sentient has no node within 192 even after a re-query. The direct move also clears the block's vertical velocity,
+// the avoided sentient (+0x6ba) and raises the lookahead budget (+0x6e0) to at least 64 (0x56f6e0, pathDirectBudget).
+bool pathSteepUnlifted(float lookSlope, float deltaZ, float blockZ, float entityZ);
+float pathDirectBudget(float budget);
 // 0x503ec0 (stop soon unset): the negotiation state is pushed when the 2D squared distance to the begin point is within
 // |block velocity|^2 * 0.005 + 1e-6 (0x503fb0).
 bool negotiationInRange(float dist2, float speed2);

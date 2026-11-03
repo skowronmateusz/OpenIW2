@@ -985,10 +985,19 @@ void World::actorFacing(Entity& e) {
         }
         const Value mv = Value(gm);
         const auto ts = ai.trail.sum();
-        std::fprintf(stderr, "[facing %lld] #%d %s enemy %d mode %d%s path %d movemode %d yaw %.1f target %.1f motion %.1f trail (%.2f %.2f)\n",
+        const Vec3 org = vecField(e.obj, "origin");
+        std::fprintf(stderr, "[facing %lld] #%d %s enemy %d mode %d%s path %d movemode %d yaw %.1f target %.1f motion %.1f trail (%.2f %.2f) org (%.0f %.0f %.0f) goal (%.0f %.0f %.0f) planned %d\n",
                      (long long)timeMs_, e.number, e.obj->get("team").isString() ? e.obj->get("team").asString().c_str() : "?",
                      entityOf(e.obj->get("enemy")) ? 1 : 0, m, ovr ? " (override)" : "", e.path.count, ai.movemode, a[1] + d,
-                     target, mv.isNumber() ? mv.asFloat() : -1.0f, ts[0], ts[1]);
+                     target, mv.isNumber() ? mv.asFloat() : -1.0f, ts[0], ts[1], double(org[0]), double(org[1]),
+                     double(org[2]), double(e.path.goal[0]), double(e.path.goal[1]), double(e.path.goal[2]), e.path.planned);
+        if (std::getenv("IW2_FACING_PATH") && e.path.count > 0) { // the path points, goal first
+            std::fprintf(stderr, "[facing path]");
+            for (int k = 0; k < e.path.count; ++k)
+                std::fprintf(stderr, " (%.0f %.0f %.0f n%d)", double(e.path.pts[k].pos[0]), double(e.path.pts[k].pos[1]),
+                             double(e.path.pts[k].pos[2]), e.path.pts[k].node);
+            std::fprintf(stderr, " look %d flags %x detour %d trav %d\n", e.path.lookIndex, e.path.flags, e.path.detour, e.path.traversal);
+        }
     }
 }
 

@@ -208,6 +208,21 @@ int main() {
         CHECK(b.velocity[0] == 0.0f && b.origin[0] == 0.0f);
     }
     {
+        CHECK(nearestReplaces(10.0f, 9.0f) && nearestReplaces(10.0f, 10.0f) && !nearestReplaces(9.0f, 10.0f)); // ties: the later node
+    }
+    {
+        // The path walk's direct move after a successful block (0x501e53..0x501e8c): only a steep lookahead (slope > 4)
+        // with an upward delta that the block did not carry out.
+        CHECK(pathSteepUnlifted(5.0f, 1.0f, 10.0f, 10.0f));   // block z == entity z: not lifted
+        CHECK(pathSteepUnlifted(5.0f, 1.0f, 9.0f, 10.0f));    // block z below
+        CHECK(!pathSteepUnlifted(5.0f, 1.0f, 10.5f, 10.0f));  // the block raised the actor
+        CHECK(!pathSteepUnlifted(4.0f, 1.0f, 10.0f, 10.0f));  // slope 4 is not above 4
+        CHECK(!pathSteepUnlifted(5.0f, 0.0f, 10.0f, 10.0f));  // delta z 0 is not up
+        CHECK(!pathSteepUnlifted(5.0f, -1.0f, 9.0f, 10.0f));
+        // Budget floor of the direct move (0x56f6e0 = 64).
+        CHECK(pathDirectBudget(10.0f) == 64.0f && pathDirectBudget(64.0f) == 64.0f && pathDirectBudget(100.0f) == 100.0f);
+    }
+    {
         CHECK(stuckNudge(20) == 8 && stuckNudge(3) == 3 && stuckNudge(0) == 0 && stuckNudge(-10) == 0 && stuckNudge(-30) == -8);
         // trigger threshold at walking speed 160: 160^2 * 0.005 = 128 -> within ~11.3 units, not 13
         CHECK(negotiationInRange(127.0f, 25600.0f) && !negotiationInRange(129.0f, 25600.0f) && negotiationInRange(0.0f, 0.0f));

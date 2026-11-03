@@ -383,6 +383,17 @@ int moveBlock(ActorSlide& pm, const SlideTraceFn& trace) {
     return r;
 }
 
+// 0x501e53..0x501e8c: the direct move is taken after a successful block when all three hold (each test that fails
+// jumps to the node check instead): slope > 4, delta z > 0, block z <= entity z.
+bool pathSteepUnlifted(float lookSlope, float deltaZ, float blockZ, float entityZ) {
+    return lookSlope > 4.0f && deltaZ > 0.0f && blockZ <= entityZ;
+}
+
+// 0x501ef3..0x501f13: budget (+0x6e0) below 64 becomes 64.
+float pathDirectBudget(float budget) { return budget < 64.0f ? 64.0f : budget; }
+
+bool nearestReplaces(float bestD2, float candidateD2) { return bestD2 >= candidateD2; }
+
 float stuckNudge(float dz) { return dz > 8.0f ? 8.0f : dz > 0.0f ? dz : dz < -18.0f ? -8.0f : 0.0f; }
 bool negotiationInRange(float dist2, float speed2) { return !(dist2 > speed2 * 0.005f + 0.000001f); }
 

@@ -1318,7 +1318,19 @@ int main(int argc, char** argv) {
             }
             for (auto it = levelCalls.begin(); it != levelCalls.end();)
                 if (f * 0.05f >= it->t) {
-                    world.vm().start(it->file, it->func, {}, iw2::script::Value(world.vm().level()));
+                    // "func=a,b": the comma-separated string arguments are passed to the thread (e.g. maps/_utility.gsc flag_set=move_out)
+                    std::string fn = it->func;
+                    std::vector<iw2::script::Value> callArgs;
+                    if (const auto eq = fn.find('='); eq != std::string::npos) {
+                        std::string rest = fn.substr(eq + 1);
+                        fn.resize(eq);
+                        for (size_t b = 0; b <= rest.size();) {
+                            const size_t c = std::min(rest.find(',', b), rest.size());
+                            callArgs.emplace_back(rest.substr(b, c - b));
+                            b = c + 1;
+                        }
+                    }
+                    world.vm().start(it->file, fn, callArgs, iw2::script::Value(world.vm().level()));
                     it = levelCalls.erase(it);
                 } else {
                     ++it;
