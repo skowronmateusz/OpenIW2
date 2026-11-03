@@ -1681,6 +1681,10 @@ struct DrawItem {
     // Near plane of the depth-hack projection: the dvar r_znear_depthhack (default 0.1, registered at 0x1000ad62 / 0x10192e24)
     // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
     float zNear = 4.0f;
+    // Effect sprites / clouds (the fx sprite model). The DLL sorts type-2 (sprite) draw records after every other record of the
+    // emissive list (docs/spec/effects.md "Draw order of effect sprites"), so the blended / additive / multiplied parts of these
+    // items are drawn after the same passes of the world and the other models.
+    bool effects = false;
 };
 
 // Packs the light-grid coefficients as the lightprobe.hlsl lightGridColors{R,G,B}{0,1} constants (corner order 0..3, 4..7).
@@ -2495,8 +2499,14 @@ struct Renderer {
             for (const Batch& b : scene.batches)
                 if (b.pass == Pass::Sky) SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         }
-        for (Pass p : {Pass::Opaque, Pass::AlphaTest, Pass::Blend, Pass::Additive, Pass::Multiply}) {
-            if (p == Pass::Blend && !dlights.empty()) {
+        struct PassStep { Pass p; bool fxStep; };
+        static const std::vector<WorldGroup> noGroups;
+        for (const PassStep step : {PassStep{Pass::Opaque, false}, {Pass::AlphaTest, false}, {Pass::Blend, false}, {Pass::Additive, false},
+                                    {Pass::Multiply, false}, {Pass::Blend, true}, {Pass::Additive, true}, {Pass::Multiply, true}}) {
+            const Pass p = step.p;
+            const bool fxStep = step.fxStep; // only the effect items of this pass: after every world / model surface of the emissive passes
+            const std::vector<WorldGroup>& groups = fxStep ? noGroups : worldGroups;
+            if (p == Pass::Blend && !fxStep && !dlights.empty()) {
                 // l_point passes: every lit opaque / alpha-tested world batch once per light (the DLL collects the touched surfaces per
                 // light, 0x10014fe0; here the shader's radius falloff is the cull, TODO(spec): per-surface bounds).
                 static const float ramp[16] = {255, 255, 244, 223, 202, 181, 159, 138, 117, 96, 74, 53, 32, 11, 0, 0}; // images/falloff_linear.iwi
@@ -2504,7 +2514,7 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 for (const DLight& dl : dlights)
                     for (Pass dp : {Pass::Opaque, Pass::AlphaTest})
-                        for (const WorldGroup& wg : worldGroups)
+                        for (const WorldGroup& wg : groups)
                         for (const Batch& b : *wg.batches) {
                             if (b.pass != dp || b.lightmap == -3) continue;
                             SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
@@ -2565,7 +2575,7 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
-            if (p == Pass::Blend && postSunWanted) {
+            if (p == Pass::Blend && !fxStep && postSunWanted) {
                 // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
                 // the back buffer into resolvedPostSun), then the effect lists. ($floatz was built at the start of the frame.)
                 SDL_EndGPURenderPass(pass);
@@ -2588,11 +2598,11 @@ struct Renderer {
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
                 postSunReady = true;
             }
-            if (p == Pass::Blend) {
+            if (p == Pass::Blend && !fxStep) {
             // Water (water_l_sun.tech): after the opaque passes, before the blended ones. No polygon offset: every shipped
             // water material (iw_13.iwd materials/water_*) has polygon-offset level 0 (state byte 0x30 bits 4-5).
             // Also the water soups of visible brush models (duhoc_assault / duhoc_defend water_section) at their entity transform.
-            for (const WorldGroup& wg : worldGroups)
+            for (const WorldGroup& wg : groups)
             for (const Batch& b : *wg.batches) {
                 if (b.pass != Pass::Water) continue;
                 const WaterMat& wm = scene.waters[size_t(b.texture)];
@@ -2617,7 +2627,7 @@ struct Renderer {
             SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
-            for (const WorldGroup& wg : worldGroups) {
+            for (const WorldGroup& wg : groups) {
             VU gu = vu;
             gu.model = wg.model;
             if (wg.batches != &scene.batches) SDL_PushGPUVertexUniformData(cmd, 0, &gu, sizeof(gu));
@@ -2645,7 +2655,7 @@ struct Renderer {
             // lmap_s world batches (lib/phong.hlsl specular): tangent frame from vertex buffer 1.
             if (p == Pass::Opaque || p == Pass::AlphaTest || p == Pass::Blend) {
                 bool any = false;
-                for (const WorldGroup& wg : worldGroups)
+                for (const WorldGroup& wg : groups)
                 for (const Batch& b : *wg.batches) {
                     if (b.pass != p || b.specTex < 0 || !scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
                     if (!any) {
@@ -2682,9 +2692,11 @@ struct Renderer {
                     SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
                 }
             }
-            // Entity models of this pass.
+            // Entity models of this pass. Effect items draw their emissive parts in the last steps (fxStep).
+            const bool emissivePass = p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply;
             for (const DrawItem& it : items) {
                 if (!it.model) continue;
+                if (emissivePass && it.effects != fxStep) continue;
                 bool bound = false;
                 if (it.depthMax < 1.0f) {
                     const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
@@ -3912,6 +3924,7 @@ int main(int argc, char** argv) {
             if (const GpuModel* cm = cloudModel(scene, dev, up, vfs, fxSystem.clouds(), fxRight, fxUp)) {
                 DrawItem it;
                 it.model = cm;
+                it.effects = true;
                 it.transform = kIdentity;
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
@@ -3924,6 +3937,7 @@ int main(int argc, char** argv) {
             if (const GpuModel* fxm = spriteModel(scene, dev, up, vfs, fxSprites, fxRight, fxUp)) {
                 DrawItem it;
                 it.model = fxm;
+                it.effects = true;
                 it.transform = kIdentity;
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;

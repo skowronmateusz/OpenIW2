@@ -10,10 +10,13 @@ namespace iw2::game {
 // comparator 0x10016ae0: ascending material byte +0xd, then ascending techset pointer +0x38 in steps of 140 bytes).
 // layer: 5 bits (default 0x1f, 0x10024850). entity: scene entity index. recordType: the first dword of the record (low nibble).
 // fxSort: dvar fx_sort (0x101ce634, registered at 0x1000b9c1, default 1, flags 0x2000).
+constexpr uint32_t kMaxSceneEntity = 0x7fe; // refEntity slot limit of the allocator 0x10023f40 (compares against 0x7fe)
+
 inline uint32_t drawSortKey(uint32_t matIndex, uint32_t layer, uint32_t entity, uint32_t recordType, bool fxSort) {
     if (fxSort && recordType == 2) {
-        // Sprite records (type 2) with fx_sort: entity-major. The entity index is biased by -0x1000 (entities >= 0x1000, the
-        // effect entities, keep a clear sign bit; smaller ones wrap and sort after them as unsigned numbers).
+        // Sprite records (type 2) with fx_sort: entity-major. The entity is biased by -0x1000. The scene entity indices a sprite
+        // can carry are the refEntity slots handed out by 0x10023f40 (0 .. kMaxSceneEntity), always below 0x1000, so the bias
+        // wraps, the sign bit is set and every sprite sorts after every material-major record (all of those stay below 2^31).
         const uint32_t ent = entity - 0x1000u;
         return ((((ent << 10) + matIndex) << 5) + layer) * 16u + recordType; // 0x100247ff..0x10024816
     }
