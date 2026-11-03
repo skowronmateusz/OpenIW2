@@ -393,6 +393,9 @@ public:
     struct PlayerCommand {
         int forward = 0, right = 0;
         uint32_t buttons = 0;
+        // The usercmd buttons as the client holds them even while freezecontrols is on (ClientThink 0x4e7bc0 only sets pm_flags 0x8000 and
+        // still copies the command's buttons to client +0x8634 / +0x8640, which attackbuttonpressed / usebuttonpressed / meleebuttonpressed read).
+        uint32_t rawButtons = 0;
         Vec3 viewAngles{};
         // Player state the use code reads (pmove runs in the front end): stance (pm_flags 1 prone → 2, 2 crouch → 1,
         // else 0), eye height above the origin (ps+0xd4), on the ground (ps+0x60 ≠ none), mantling (pm_flags 4),
@@ -407,7 +410,7 @@ public:
         float adsFrac = 0.0f;  // the aim fraction (client +0xb8), read by playerads
     };
     void setPlayerCommand(const PlayerCommand& c) {
-        prevButtons_ = playerCmd_.buttons;
+        prevButtons_ = playerCmd_.buttons | playerCmd_.rawButtons;
         playerCmd_ = c;
     }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
@@ -1395,7 +1398,11 @@ private:
     };
     std::optional<PlayerLink> playerLink_;
     PlayerCommand playerCmd_;
-    uint32_t prevButtons_ = 0; // the buttons of the previous command (meleebuttonpressed)
+    uint32_t prevButtons_ = 0; // the buttons (incl. rawButtons) of the previous command (meleebuttonpressed)
+public:
+    // Script-visible button state: current | previous usercmd buttons (client +0x8640 | +0x8634), also while the controls are frozen.
+    uint32_t scriptButtons() const { return playerCmd_.buttons | playerCmd_.rawButtons | prevButtons_; }
+private:
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;
     std::vector<VehicleNode> vnodes_;

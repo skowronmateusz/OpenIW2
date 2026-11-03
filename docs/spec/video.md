@@ -25,3 +25,8 @@ Everything here is read from CoD2SP_s.exe and the shipped files; guesses are mar
 - Sync measurement (`IW2_CINEMATIC_STATS=1`, macOS, default output device): picture time minus the audio actually played by the stream (samples put minus queued; SDL pulls in ~80 ms chunks) after the first second: atvi mean 58 ms (35..80), movie_africa 64.7 s mean 29 ms (4..475, one hitch), no dropped frames; the sound lags the picture by about one to two frames plus the device latency. The original does not sync to audio either (wall clock).
 - Done: the `openvictoryscreen` path of `missionsuccess` without a cinematic (docs/spec/campaign.md "Victory screen").
 - Not done: the client state 0x5d5680 effects, the dvar 0x1c148c4 that disables requests, a console command to start a movie (use `IW2_PLAY_CINEMATIC`).
+
+## Skipping a level-change briefing (slideshow_* / movie_* maps)
+- The cinematic itself is skipped by a key or mouse button in the client (above). The slide-show maps reached through `missionsuccess("slideshow_*")` (e.g. after demolition) are briefing levels, not RoQ movies: `_briefing.gsc` skips on the script side by polling `attackbuttonpressed()` every 50 ms, after calling `freezecontrols(true)`.
+- freezecontrols (0x5392e0) only sets client +0x8630; ClientThink (0x4e7bc0) turns it into pm_flags 0x8000 and still copies the command's buttons to +0x8634 / +0x8640, so the fire button stays visible to `attackbuttonpressed` (0x538820) while the controls are frozen.
+- openiw2 (fixed): the front end passes the held buttons as `PlayerCommand::rawButtons` while frozen (menus closed); the movement / weapon code keeps the zeroed `buttons`. `World::scriptButtons()` ORs both for the button queries.

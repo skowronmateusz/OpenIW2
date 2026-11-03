@@ -7276,6 +7276,8 @@ int main(int argc, char** argv) {
                 pc.forward = controlsBlocked ? 0 : input.forwardMove();
                 pc.right = controlsBlocked ? 0 : input.rightMove();
                 pc.buttons = buttons;
+                // freezecontrols blocks movement and firing (pm_flags 0x8000) but the script still sees the held buttons (briefing 'fire to skip').
+                pc.rawButtons = (frontStack.empty() && world->controlsFrozen()) ? input.buttons(inVehicle, false) : 0u;
                 pc.viewAngles = {cam.pitch, cam.yaw, 0};
                 pc.stance = ps.stance == game::Stance::Prone ? 2 : ps.stance == game::Stance::Crouch ? 1 : 0;
                 pc.viewHeight = ps.viewHeight;

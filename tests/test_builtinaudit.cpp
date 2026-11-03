@@ -99,6 +99,21 @@ int main() {
     w.vm().drainReady();
     CHECK(lv->get("attack").asInt() == 1);
     CHECK(lv->get("use").asInt() == 1);
+    // freezecontrols zeroes the movement/firing buttons but the client still holds the held usercmd buttons: the briefing's "fire to skip"
+    // (attackbuttonpressed under freezecontrols(true)) must see them (ClientThink 0x4e7bc0 copies +0x85c8 to +0x8634 / +0x8640 regardless).
+    cmd.buttons = 0;
+    cmd.rawButtons = 0;
+    w.setPlayerCommand(cmd);
+    cmd.buttons = 0;
+    w.setPlayerCommand(cmd); // two idle commands: the previous-command OR is clear
+    w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
+    w.vm().drainReady();
+    CHECK(lv->get("attack").asInt() == 0);
+    cmd.rawButtons = 1;
+    w.setPlayerCommand(cmd);
+    w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
+    w.vm().drainReady();
+    CHECK(lv->get("attack").asInt() == 1);
     // tankhunt flags its grenade trigger with enablegrenadetouchdamage; the class check must accept it (no script error).
     {
         iw2::game::World t(vfs, "tankhunt");

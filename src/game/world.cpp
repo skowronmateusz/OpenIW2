@@ -1814,7 +1814,7 @@ void World::registerBuiltins() {
     vm_.registerBuiltin("meleebuttonpressed", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("meleebuttonpressed: entity is not a player");
-        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 4u) ? 1 : 0));
+        return Value(int32_t((scriptButtons() & 4u) ? 1 : 0));
     });
     // Player input queries, all player-only ("entity %i is not a player", 0x590ab8) and all read from the client:
     // attackbuttonpressed (0x538820) = (client+0x8640 | client+0x8634) & 1, usebuttonpressed (0x538770) = (...) & 0x28
@@ -1827,11 +1827,11 @@ void World::registerBuiltins() {
     };
     vm_.registerBuiltin("attackbuttonpressed", [this, playerOnly](CallContext& c) {
         playerOnly(c);
-        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 1u) ? 1 : 0));
+        return Value(int32_t((scriptButtons() & 1u) ? 1 : 0));
     });
     vm_.registerBuiltin("usebuttonpressed", [this, playerOnly](CallContext& c) {
         playerOnly(c);
-        return Value(int32_t(((playerCmd_.buttons | prevButtons_) & 0x28u) ? 1 : 0));
+        return Value(int32_t((scriptButtons() & 0x28u) ? 1 : 0));
     });
     // buttonpressed(name) (0x538980): player-only ("not an entity" 0x587de4 for a non-entity self, "entity %i is not a player"),
     // the argument is a string (an empty one is the error "usage: buttonPressed(<button name>)", 0x590a3c). The name is turned
