@@ -296,6 +296,14 @@ vertex GlowVOut vs_fs(uint vid [[vertex_id]]) {
 fragment float4 fs_copy(GlowVOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
     return float4(src.sample(s, in.uv).rgb, 1.0);
 }
+// Final brightness pass (docs/spec/ui.md "Brightness"): the r_gamma ramp of the original (gfx 0x10011fd0) applied to the finished 8-bit frame.
+// u.x = r_gamma, u.y = 1 / r_gamma; entry i = round(65535 * pow(i / 255, 1 / r_gamma)) / 65535 (identity at r_gamma 1).
+fragment float4 fs_gamma(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float3 idx = round(saturate(src.sample(s, in.uv).rgb) * 255.0);
+    const float3 v = idx / 255.0;
+    const float3 o = u.x == 1.0 ? v : round(65535.0 * pow(v, float3(u.y))) / 65535.0;
+    return float4(o, 1.0);
+}
 float4 glowSample(texture2d<float> scene, sampler s, float2 uv, constant GlowU& u) {
     const float4 px = scene.sample(s, uv);
     const float intensity = dot(px.rgb, float3(0.299, 0.587, 0.114));

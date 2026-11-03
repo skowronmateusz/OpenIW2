@@ -32,6 +32,7 @@
 #include "game/playerweapon.h"
 #include "game/screenmessages.h"
 #include "game/shellshock.h"
+#include "game/gammaramp.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
 #include "game/viewflash.h"
@@ -1641,6 +1642,15 @@ static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::F
     return out;
 }
 
+// r_gamma (float 0.5..3, default 1, archived; gfx 0x1000ab8a). r_ignorehwgamma (bool, default 0) switches the hardware ramp off (gfx 0x10033f65);
+// TODO(spec): its software path (gamma baked into texture bytes at load, 0x100120a0) is not implemented, the ramp is simply skipped.
+static float gammaFrom(const std::map<std::string, std::string>& cvars) {
+    const auto ig = cvars.find("r_ignorehwgamma");
+    if (ig != cvars.end() && std::atoi(ig->second.c_str()) != 0) return game::kGammaDefault;
+    const auto it = cvars.find("r_gamma");
+    return it == cvars.end() ? game::kGammaDefault : game::clampGamma(float(std::atof(it->second.c_str())));
+}
+
 // r_dlightLimit dvar (int 0..32, registered at DLL 0x1000b318 with default 4): the menu cvar store, else the registered default.
 static size_t dlightLimitFrom(const std::map<std::string, std::string>& cvars) {
     for (const char* k : {"r_dlightLimit", "r_dlightlimit"}) {
@@ -1788,6 +1798,10 @@ struct Renderer {
     SDL_GPUTexture* glowTmpTex = nullptr;
     SDL_GPUTexture* glowTex[2] = {nullptr, nullptr};
     SDL_GPUGraphicsPipeline* copyPipe = nullptr;
+    SDL_GPUGraphicsPipeline* gammaPipe = nullptr; // final r_gamma pass (fs_gamma)
+    SDL_GPUTexture* gammaTex = nullptr;           // the whole frame (scene, menus, HUD) when r_gamma != 1
+    uint32_t gammaW = 0, gammaH = 0;
+    float gamma = 1.0f;                           // r_gamma, set by the caller each frame (game/gammaramp.h)
     SDL_GPUGraphicsPipeline* glowSetupPipe = nullptr;
     SDL_GPUGraphicsPipeline* glowBlurPipe = nullptr;
     SDL_GPUGraphicsPipeline* glowApplyPipe = nullptr;
@@ -2067,6 +2081,7 @@ struct Renderer {
             glowSetupPipe = mk("fs_glow_setup", 1, 1, false, false);
             glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false);
             glowApplyPipe = mk("fs_glow_apply", 2, 1, true, true);
+            gammaPipe = mk("fs_gamma", 1, 1, false, false);
             SDL_ReleaseGPUShader(dev, gvs);
         }
         {
@@ -2295,8 +2310,44 @@ struct Renderer {
         depthH = h;
     }
 
+    // Draws the frame; with r_gamma != 1 the whole frame (menus and HUD included, like the hardware ramp of the original) goes to an
+    // offscreen texture first and a final full-screen pass applies the ramp (game/gammaramp.h, docs/spec/ui.md "Brightness").
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
               const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
+        const float g = game::clampGamma(gamma);
+        if (g == 1.0f) return drawFrame(cmd, target, w, h, scene, cam, items, overlay, blur);
+        if (!gammaTex || gammaW != w || gammaH != h) {
+            if (gammaTex) SDL_ReleaseGPUTexture(dev, gammaTex);
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = colorFormat;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = w;
+            info.height = h;
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            gammaTex = SDL_CreateGPUTexture(dev, &info);
+            if (!gammaTex) sdlFail("gamma texture");
+            gammaW = w;
+            gammaH = h;
+        }
+        drawFrame(cmd, gammaTex, w, h, scene, cam, items, overlay, blur);
+        SDL_GPUColorTargetInfo c{};
+        c.texture = target;
+        c.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        c.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &c, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(p, gammaPipe);
+        SDL_GPUTextureSamplerBinding tb{gammaTex, clampSampler};
+        SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
+        const float u[4] = {g, 1.0f / g, 0, 0};
+        SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof(u));
+        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(p);
+    }
+
+    void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
+                   const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
         ensureDepth(w, h);
         // Blur post effect: only when the composed radius is > 0 (gate in gfx 0x10030ed0); the scene goes to an offscreen
         // texture, then composite pass: scene, blurred quarter copy with alpha min(R / F, 1), then the HUD (not blurred).
@@ -3385,6 +3436,7 @@ int main(int argc, char** argv) {
             uiCvars = ui::parseConfig(cfgText);
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
+        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma") uiCvars[k] = v; // renderer dvars live in the menu store
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
         // Debug IW2_START_TRACE=1: level start timing (real ms since this point, level time, sound starts, load end, first frames).
@@ -6846,6 +6898,7 @@ int main(int argc, char** argv) {
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
             renderer.fog = fogState.consts(world ? world->timeMs() : 0);
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
+            renderer.gamma = gammaFrom(uiCvars);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
@@ -7001,6 +7054,7 @@ int main(int argc, char** argv) {
                         quads.push_back(bar);
                     }
                     quads.push_back(q);
+                    renderer.gamma = gammaFrom(uiCvars);
                     renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
                 }
                 SDL_SubmitGPUCommandBuffer(cmd);
@@ -8219,6 +8273,7 @@ int main(int argc, char** argv) {
                 updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
                 renderer.gameTimeSeconds = float(((world ? world->timeMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
+                renderer.gamma = gammaFrom(uiCvars);
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
                 profWater += double(profC - profB) * 1e-6;
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;

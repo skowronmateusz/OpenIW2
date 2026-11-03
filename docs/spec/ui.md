@@ -160,3 +160,25 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
 ## Pickup HUD part (cgame 0x4ba680)
 
 The client handler of the pickup events 0x90 / 0x91 (0x4bad52) calls 0x4ba680 with the item index only when the event's entity is the local client. It draws no pickup icon, text or flash of its own (the on-screen text is the separate `gm` message of Pickup_Weapon). It looks the index up in the item table (0x5a66f8): weapon items only. A weapon of class "item" does nothing. An offhand weapon (def +0x84 set) runs 0x4b8ba0 when no offhand is selected (0xf79700 is 0): it stores the weapon there and touches the `offhandinfo` HUD fade (0xf79a48 = level time, window flag +0xe8 |= 4, through the generic touch 0x4a6130). Any other weapon runs the weapon select 0x4b8360 when no weapon is selected (0xf796e0 is 0): the weapon becomes the selected one, the weapon-change time 0xf796e4 is stamped, `offhandinfo` (0x4a6130(4)) and the ammo display `weaponinfo` (0xf79a40) are touched, and a toggled aim ends unless the weapon is the old one's altWeapon. With a weapon already selected the pickup changes nothing on the HUD. Port: `pickupHudAction`, `World::takePickupEvents`, applied in iw2view next to the other HUD fade touches. TODO(spec): where 0xf79700 is reset (the port takes "the weapon became the player's offhand" as "none was selected").
+
+## Brightness (r_gamma)
+
+- Menu: the graphics options page (`ui/options_graphics.menu`) has a slider item bound to the float dvar `r_gamma`, range 0.5 .. 3 (the item
+  names a default of 1.3, but the renderer registers the dvar first with default 1, so a fresh profile shows 1). A second item at the same
+  place is shown instead when `r_ignorehwgamma` is 1 (a button that needs a video restart); the slider is gated by `dvarTest r_ignorehwgamma`
+  with `showdvar 0`. The in-game options page has the same kind of item (`options_graphics_set` / defaults reset it to the registered value).
+- Dvars (patch 1.3 renderer DLL, registration block): `r_gamma` float, default 1, min 0.5, max 3, flags 0x2001 (archived) at 0x1000ab8a;
+  `r_ignorehwgamma` bool, default 0, flags 0x2021 (archived, latched) at 0x1000abc0; `r_overbrightBits` int 0..1 default 1 (no ramp involvement).
+- Ramp (0x10011fd0): 256 entries of 16 bit. With e = 1 / r_gamma: if e == 1 the entry is i * 257 (identity), otherwise
+  round(65535 * pow(i / 255, e)). The same table is used for red, green and blue (0x10030c20), loaded with the Direct3D 9 device
+  SetGammaRamp call (device vtable slot 0x54, flags 0 = no calibration). Because it is the display's ramp it affects everything that
+  reaches the screen: world, view model, menus, HUD, movies.
+- When it is loaded: the end-of-frame routine around 0x10033f65 runs when the modified flag of `r_gamma` or `r_ignorehwgamma` is set, clears
+  both flags and, if `r_ignorehwgamma` is 0 and the device capability bit FULLSCREENGAMMA (caps2 bit 17, stored at 0x101d4cd0) is set, builds and loads
+  the ramp. Also at device (re)creation (0x10012a2e path). With `r_ignorehwgamma` = 1 the ramp is not loaded; the renderer instead bakes the same
+  curve into texture bytes at load (0x100120a0, only reachable after a restart). TODO(spec): that software path, and the exact behaviour of the
+  FULLSCREENGAMMA capability on windowed displays.
+- iw2view: `Renderer::gamma` is set each frame from the menu cvar store (`r_gamma`, clamped 0.5 .. 3; skipped when `r_ignorehwgamma` is non-zero).
+  At 1 nothing changes. Otherwise the whole frame (scene, post effects, menus, HUD) is drawn into an offscreen texture and a final full-screen
+  pass reads each 8-bit channel i and writes the ramp entry for i, i.e. the display's behaviour (`src/game/gammaramp.h`, `fs_gamma`).
+  `r_gamma` and `r_ignorehwgamma` are archived: they are written to the profile config.

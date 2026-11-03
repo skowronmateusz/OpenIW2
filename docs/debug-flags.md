@@ -183,3 +183,6 @@ localized through the loaded strings. The developer keys L and V have no origina
 "fullbright ON" / "fullbright OFF" and "walk mode ON" / "fly mode ON" through the same path. All of these need `sv_cheats` as before; without it
 the key shows the localized "cheats not enabled" message. TODO(spec): the original draws console text on screen only with con_minicon
 (default 0); the position and fade of that mini console are not proven, so the game-message window is used.
+
+## Brightness
+- Cvar `r_gamma` (`--cvar r_gamma=1.8` for iw2view, also the options slider; archived in the profile; 0.5 .. 3, default 1): the brightness ramp, applied to the whole frame by a final full-screen pass. `--cvar r_ignorehwgamma=1` turns the ramp off (the original's software path is not implemented). With `--shot`, `IW2_NO_HUD=1` avoids the level-start fade-in for brightness comparisons.

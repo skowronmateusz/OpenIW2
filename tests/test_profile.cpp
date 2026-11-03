@@ -23,5 +23,10 @@ int main() {
     // sv_lastSaveGame is archived (flags 0x1001, 0x449d78): the last committed save survives a restart, so loadgame_continue finds it.
     const auto ls = iw2::ui::parseConfig(iw2::ui::formatConfig({{"sv_lastSaveGame", "autosave/hill400_defend-6"}, {"sv_running", "1"}}));
     check(ls.size() == 1 && ls.at("sv_lastSaveGame") == "autosave/hill400_defend-6", __LINE__);
+    // r_gamma (the brightness slider) and r_ignorehwgamma are archived renderer dvars (gfx 0x1000ab8a / 0x1000abc0): saved to the profile,
+    // registered defaults 1 and 0 (the slider needs r_ignorehwgamma == 0 to show).
+    const auto gm = iw2::ui::parseConfig(iw2::ui::formatConfig({{"r_gamma", "1.8"}, {"r_ignorehwgamma", "0"}, {"r_picmip", "1"}}));
+    check(gm.size() == 2 && gm.at("r_gamma") == "1.8" && gm.at("r_ignorehwgamma") == "0", __LINE__);
+    check(iw2::ui::registeredDefault("r_gamma") == "1" && iw2::ui::registeredDefault("r_ignorehwgamma") == "0", __LINE__);
     return failures ? 1 : 0;
 }

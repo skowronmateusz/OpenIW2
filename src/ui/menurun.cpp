@@ -78,7 +78,7 @@ std::string registeredDefault(const std::string& n) {
         // none, dx9, dx7 -> 0; r_aspectRatio: auto, standard, wide 16:10, wide 16:9 -> 0).
         {"r_picmip", "0"}, {"r_picmip_bump", "0"}, {"r_picmip_spec", "0"}, {"r_picmip_manual", "0"},
         {"r_texturemode", "bilinear"}, {"r_aspectratio", "auto"}, {"r_rendererpreference", "none"},
-        {"r_swapinterval", "0"}, {"r_aasamples", "1"}, {"r_dlightlimit", "4"}, {"r_gamma", "1"},
+        {"r_swapinterval", "0"}, {"r_aasamples", "1"}, {"r_dlightlimit", "4"}, {"r_gamma", "1"}, {"r_ignorehwgamma", "0"}, // bool default 0 (gfx 0x1000abc0): the brightness slider shows
     };
     for (const auto& [k, v] : defaults)
         if (lowerStr(n) == lowerStr(k)) return v;
