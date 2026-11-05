@@ -599,7 +599,7 @@ void World::pickUpWeaponItem(Entity& item) {
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
     startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player (Touch_Item 0x521c41)
     raisePickupEvent(w, false);
-    item.obj->removed = true;
+    freeEntity(item);
 }
 
 } // namespace iw2::game

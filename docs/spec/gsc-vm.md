@@ -130,6 +130,23 @@ frame still see the object. Each queued object goes through 0x46d1f0, which take
   `flood_spawner` trigger in the same frame in which it started the `flood_think` threads (`kill_trigger`), and every one of them
   holds `trigger endon("antispawn")`. Those threads keep running: a refused `dospawn` sleeps in `wait(2)` and retries (trainyard
   `waittill_aigroupcleared("station")`), and a successful spawn waits for the AI's `death` and spawns the next one.
-- TODO(spec): whether a paused stack starts with a code position (then the first call would be asked too; the port ends the
-  thread when only its first call holds an endon).
+- A paused stack never starts with a code position, so the first call of a thread is never asked. A thread call (0x46a75c..0x46a7a3)
+  marks the slot below the arguments as the thread's start (its type is saved in the function frame and replaced by type 8,
+  "before the first code position"); a wait or waittill (0x46a2e9, 0x46a3f4, 0x46afa8) archives top minus start entries
+  through 0x46be00, which copies from the top down and stops above that slot. Code positions (type 7) enter the stack only
+  from calls made inside the thread, one per nested call. Restoring (0x46bfb0) opens one function frame for the stack's
+  saved position and one more per type 7 entry, which agrees with that layout. So when only the first call holds an endon,
+  0x46c2e0 runs out of stack and the thread ends (0x46c3f1..0x46c428), whatever object that endon is on.
+- Every entity free goes through this path, not only `delete()`: G_FreeEntity (0x4d7c30) calls 0x4670b0 at 0x4d7ea7 with no
+  test of the entity kind (the actor, turret and vehicle parts before it are conditional, the script object free is not).
+  So the frees the engine does itself (an exploded grenade or rocket, a picked-up item, a `trigger_once` after it fired, a
+  `trigger_damage` with its remove flag) end the waits on the entity in the same way. Shipped `maps/_load.gsc:1688`
+  (`doAutoSpawn`, a thread on a trigger_once/_multiple/... that waits for its `trigger` and holds endons only in its first
+  call) therefore ends when a `trigger_once` frees itself, instead of waiting forever. `maps/_spawner.gsc:1366`
+  (`start_tracker`, no endons, waits on its spawner) ends only when that entity is freed: a scripted `delete`, or a map-start
+  placed actor that finds the actor pool full (freed through G_FreeEntity at 0x4fc6aa). A real spawner whose count runs out
+  is not freed (0x5325ca..0x5325d8 only decrement it), and a placed actor that spawns stays the same entity (0x4fc640 turns
+  it into the actor), so its waits go on on the actor.
+- TODO(spec): the port spawns a new entity for a placed actor and only marks the placed one removed (src/game/world.cpp
+  spawnActor), so threads waiting on the placed entity (duhoc_defend `start_tracker`) stay parked instead of following the actor.
 

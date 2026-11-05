@@ -114,7 +114,7 @@ void World::touchItems() {
         if (e.obj->removed || e.classname.compare(0, 7, "weapon_") != 0 || !weapon(lower(e.classname.substr(7)))) continue;
         const Value io = e.obj->get("origin");
             if (!io.isVector() || !playerTouchesItem(po.asVector(), io.asVector())) continue;
-        if (touchWeaponItem(e)) e.obj->removed = true;
+        if (touchWeaponItem(e)) freeEntity(e);
     }
 }
 

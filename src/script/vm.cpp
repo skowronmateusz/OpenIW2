@@ -1196,8 +1196,8 @@ void VM::processFreedObjects() {
                 const bool orphan = !th.waitObject; // parked by an earlier free (0x1ffff entry)
                 if (!waitsOnObject && !(orphan && lostEndon)) continue;
                 // The topmost call that still holds an endon keeps the thread parked. The first call of the thread has no code
-                // position below it in the saved stack, so 0x46c2e0 never checks it (TODO(spec): whether a saved stack starts
-                // with one).
+                // position below it in the saved stack (the archive 0x46be00 copies only the entries above the thread's start
+                // slot, which the thread call 0x46a75c marks as type 8 and which is left out), so 0x46c2e0 never checks it.
                 size_t keep = 0;
                 for (const auto& e : th.endons)
                     if (e.frame >= 1 && e.frame < th.frames.size() && e.frame > keep) keep = e.frame;

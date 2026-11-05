@@ -52,7 +52,7 @@ void World::vehicleTouchTriggers(Entity& v) {
     for (Entity* e : fired) {
         if (e->obj->removed || v.obj->removed) continue;
         vm_.notify(e->obj, "trigger", {Value(v.obj)});
-        if (e->classname == "trigger_once") e->obj->removed = true; // as for the player (inferred)
+        if (e->classname == "trigger_once") freeEntity(*e); // as for the player (inferred)
     }
 }
 

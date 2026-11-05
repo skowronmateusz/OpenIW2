@@ -421,6 +421,33 @@ plain()
         if (h.joined() != "outer back|") std::cerr << h.joined() << "\n";
     }
 
+    { // the first call of a thread is never asked (the saved stack holds no code position below it, 0x46be00 / 0x46a75c):
+      // an endon held only there, even on an object that is not freed, does not keep the thread parked
+        Harness h;
+        h.files["test/free3.gsc"] = R"(
+main()
+{
+    level.trig = spawnstruct();
+    level.other = spawnstruct();
+    thread firstonly();
+}
+firstonly()
+{
+    level.other endon("stop");
+    level.trig waittill("never");
+    println("firstonly woke");
+}
+)";
+        h.vm.start("test/free3.gsc", "main");
+        CHECK(h.vm.describeThreads().size() == 1);
+        h.vm.freeObject(h.vm.level()->get("trig").asObject());
+        h.vm.runFrame(50);
+        CHECK(h.vm.describeThreads().empty()); // the thread ended instead of staying parked on level.other's endon
+        h.vm.notify(h.vm.level()->get("other").asObject(), "stop");
+        h.vm.drainReady();
+        CHECK(h.joined() == "");
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;

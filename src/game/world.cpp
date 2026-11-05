@@ -480,8 +480,10 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
         bool full = !actorPoolUnlimited_ && liveActors() >= 32;
         if (full && (actorFlags & 2) && freeActorForForceSpawn()) full = liveActors() >= 32;
         if (full) {
-            // a map-start placed actor is freed silently (0x4fc6a9); the message is dospawn's (0x532398)
-            if (!mapStartSpawn_) print("^3couldn't spawn from " + spawnerName + " because there are no free actors");
+            // a map-start placed actor is freed silently (G_FreeEntity at 0x4fc6aa, which frees its script object too); the
+            // message is dospawn's (0x532398)
+            if (mapStartSpawn_) freeEntity(spawner);
+            else print("^3couldn't spawn from " + spawnerName + " because there are no free actors");
             recordSpawnRefusal(spawner, count, "no free actors");
             return nullptr;
         }
@@ -571,7 +573,6 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
 void World::deleteEntityScripted(Entity& e) {
     connectEntityPaths(e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
     // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
-    // TODO(spec): the other entity frees (grenades, rockets, items, trigger_once, ...) still only mark the object removed.
     vm_.notify(e.obj, "death");
     // G_FreeEntity (0x4d7c30, call at 0x4d7d87): an actor's turret (+0x2114) it owns is released (0x549a60), so the gun is usable again.
     if (e.usingTurret) turretStateFinish(e);
@@ -584,6 +585,14 @@ void World::deleteEntityScripted(Entity& e) {
     if (const Value h = e.obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
     e.obj->set("$loopsound", Value());
     e.obj->set("$loopalias", Value());
+    vm_.freeObject(e.obj);
+}
+
+// G_FreeEntity (0x4d7c30) hands the entity's script object to 0x4670b0 (call at 0x4d7ea7) with no condition on the entity kind, so
+// every engine free (exploded grenade or rocket, picked-up item, fired trigger_once, trigger_damage with its remove flag) cancels
+// the waits and endons on the object the same way as a scripted delete (docs/spec/gsc-vm.md "Freeing a script object").
+void World::freeEntity(Entity& e) {
+    if (e.obj->removed) return; // already freed
     vm_.freeObject(e.obj);
 }
 
@@ -1443,7 +1452,7 @@ void World::runTriggers() {
         if (e->obj->removed) continue;
         if (e->classname == "trigger_friendlychain") touchFriendlyChain(*e, *player_); // touch 0x529140
         vm_.notify(e->obj, "trigger", {Value(player_->obj)});
-        if (e->classname == "trigger_once") e->obj->removed = true;
+        if (e->classname == "trigger_once") freeEntity(*e);
     }
 }
 

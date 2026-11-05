@@ -66,7 +66,7 @@ void World::triggerDamageApply(Entity& e, Entity* attacker, int damage, int mod)
         return;
     vm_.notify(e.obj, "trigger", {attackerValue(attacker)});
     e.obj->set("health", Value(int32_t(kTriggerDamageFullHealth)));
-    if (e.obj->get("$tdRemove").truthy()) e.obj->removed = true;
+    if (e.obj->get("$tdRemove").truthy()) freeEntity(e);
 }
 
 // G_Damage on a trigger_damage after the "damage" notify: the die callback (health < 1, 0x529500) and the pain
@@ -106,7 +106,7 @@ void World::triggerDamageUse(Entity& e) {
     if (threshold > 0 && accumulate + 1 < threshold) return;
     if (accumulate != 0 && kTriggerDamageFullHealth - intOf(e.obj->get("health")) < accumulate) return;
     e.obj->set("health", Value(int32_t(kTriggerDamageFullHealth)));
-    if (e.obj->get("$tdRemove").truthy()) e.obj->removed = true;
+    if (e.obj->get("$tdRemove").truthy()) freeEntity(e);
 }
 
 bool triggerDiskContact(float absminX, float absmaxX, float absminY, float absmaxY, float originX, float originY, float radius) {

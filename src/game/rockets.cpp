@@ -118,7 +118,7 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     // both ends are the origin (0x526e38..0x526e80, call at 0x526ff6).
     if (damage != 0) triggerDamageSegment(r.parent, tr.endPos, tr.endPos, damage, 5);
     if (std::atoi(weaponField(r.weapon, "projImpactExplode").c_str()) == 0) {
-        e.obj->removed = true;
+        freeEntity(e);
         return;
     }
     const Vec3 at = tr.endPos;
@@ -131,7 +131,7 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     if (inner != 0.0f)
         radiusDamage(at, r.parent, inner, weaponFloat(r.weapon, "explosionOuterDamage"), weaponFloat(r.weapon, "explosionRadius"),
                      hit, "MOD_PROJECTILE_SPLASH");
-    e.obj->removed = true;
+    freeEntity(e);
 }
 
 // G_RunMissile (0x526c30) for a linear missile: a point trace from the origin to the trajectory's position now
@@ -151,7 +151,7 @@ void World::runRocket(Entity& e) {
             const TraceResult tr = missileTrace(from, to, kRocketClip, pass, r.trDelta); // water entry 0x526b40
             e.obj->set("origin", Value(tr.endPos));
             if (tr.fraction < 1.0f) {
-                if (tr.surfaceFlags & 0x10) e.obj->removed = true;
+                if (tr.surfaceFlags & 0x10) freeEntity(e);
                 else rocketImpact(e, tr);
             } else {
                 if (vlen(r.trDelta) != 0.0f && weaponField(r.weapon, "weaponType") == "projectile" && !r.stable) destabilizeRocket(e);
@@ -161,7 +161,7 @@ void World::runRocket(Entity& e) {
                     if (inner != 0.0f)
                         radiusDamage(tr.endPos, r.parent, inner, weaponFloat(r.weapon, "explosionOuterDamage"),
                                      weaponFloat(r.weapon, "explosionRadius"), nullptr, "MOD_PROJECTILE_SPLASH");
-                    e.obj->removed = true;
+                    freeEntity(e);
                 }
             }
         }

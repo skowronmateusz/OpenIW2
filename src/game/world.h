@@ -901,6 +901,8 @@ private:
     float playerBoxHeight() const;
     // Script delete (0x4ef570): notify "death", then G_FreeEntity (0x4d7c30).
     void deleteEntityScripted(Entity& e);
+    // G_FreeEntity's script part (0x4d7c30 -> 0x4670b0 at 0x4d7ea7): every entity free queues its script object for the VM.
+    void freeEntity(Entity& e);
     // 0x1c61048: set by G_InitGame (0x4d99cb: 1, or 2 for a savegame load) and cleared by 0x4da540 once the level is
     // loaded (0x448aab, after the entity spawn, the level script's start and the first G_RunFrame). Here: until the end
     // of runLevelMain() or loadState().

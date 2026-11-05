@@ -276,7 +276,7 @@ void World::explodeGrenade(Entity& e) {
     const std::string snd = weaponField(g.weapon, "projExplosionSound");
     if (!snd.empty()) startSound(snd, &at);
     forgetGrenade(e);
-    e.obj->removed = true;
+    freeEntity(e);
 }
 
 // 0x520380: actors that know this grenade forget it; nobody goes for it any more.
@@ -328,7 +328,7 @@ void World::runGrenade(Entity& e) {
             if (tr.fraction < 1.0f) {
                 if (tr.surfaceFlags & 0x10) {
                     forgetGrenade(e);
-                    e.obj->removed = true;
+                    freeEntity(e);
                     return;
                 }
                 const int64_t hitMs = timeMs_ - 50 + int64_t(50.0f * tr.fraction);
@@ -875,7 +875,7 @@ void World::runItem(Entity& e) {
             if (tr.startSolid) {
                 o[2] -= 15.0f;
                 tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
-                if (tr.startSolid) { e.obj->removed = true; return; }
+                if (tr.startSolid) { freeEntity(e); return; }
             }
             e.obj->set("origin", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
             e.obj->set("$groundent", Value(int32_t(tr.fraction < 1.0f ? tr.entity : kItemNoGround)));
@@ -947,8 +947,8 @@ void World::runItem(Entity& e) {
         e.obj->set("$trdelta", Value(Vec3{trj.delta[0], trj.delta[1], trj.delta[2]}));
         // 7. Settle.
         if (!(tr.fraction < 0.01f)) return;
-        if (tr.normal[2] <= 0.0f) { e.obj->removed = true; return; }
-        if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { e.obj->removed = true; return; }
+        if (tr.normal[2] <= 0.0f) { freeEntity(e); return; }
+        if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { freeEntity(e); return; }
         // 0x522ea0: the item's forward vector (its pitch and yaw) is projected onto the plane of the hit normal, (n x f) x n, and
         // the angles become its vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
         // trajectory is cleared and currentAngles (+0xe8..) set.
