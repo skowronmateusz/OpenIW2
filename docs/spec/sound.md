@@ -213,3 +213,12 @@ Touch_Item (0x521a90) calls Pickup_Weapon (0x521170) and, when it took anything,
 ### Grenade and health item pickups
 
 The generic item table (0x5a66f8, stride 0x2c, field +4 = the pickup sound name) also lists four non-weapon items from index 129 on: `item_ammo_stielhandgranate_open` / `_closed` (type 2, Touch_Item branch 0x521020, pickup sound `grenade_pickup`) and `item_health_small` / `item_health_large` (type 3, branch 0x521850, `health_pickup_small` / `health_pickup_large`). The type-clearing loop 0x4dc280..0x4dc28e only covers entries 1..128, so these four keep their types, and their pickup raises event 0x90 with the table index (129..132), which the client handler 0x4bad52 maps through the same sound table (+0x1c = lookup of the entry's sound name, 0x4b4960). They are not reachable in single player, though: no shipped map entity uses any of those four classnames (the only item entities besides weapons are three `item_health` ones in trainyard, and the script `spawn("item_health")` in the spawner script, which are not table names and are rejected like any unknown item), the grenade powerup setup in the load script is commented out, and the level script's lookups for `item_health_large` find nothing. The port therefore spawns no such items; a dropped grenade bag is a weapon item and goes through Pickup_Weapon, so it plays `weap_pickup` / `weap_ammo_pickup` like any weapon (tests/test_itempickup.cpp). `pickupgrenade` (0x53f0a0) is unrelated: it puts a grenade in an AI's hand.
+
+## Interface sounds during a level
+
+The pause menu (and every in-game menu) plays the interface rows of the alias tables: `mouse_over`, `mouse_click` and the
+menu's `soundLoop` music (`music_mainmenu`). Those rows carry the loadspec `menu`, so a plain load for a level name does not
+include them. Every level start therefore loads two sets: the level's rows and the `menu` rows (`SoundAliases::loadLevel`).
+This applies to the first map of a session as well as to restarts and level changes. Loading only the level's rows on a direct
+start (`iw2view <main> trainyard`) left the pause menu silent ("menu loop music_mainmenu not started" in the log) until the first
+restart reloaded the tables. Covered by `tests/test_sound.cpp` (needs IW2_MAIN).

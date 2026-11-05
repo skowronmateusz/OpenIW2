@@ -56,6 +56,9 @@ public:
     // Adds the aliases allowed for `level`. With `menuOnly` only rows whose loadspec names "menu" are taken (the front-end and
     // pause-menu sounds).
     void load(const fs::Vfs& vfs, const std::string& level, bool menuOnly = false);
+    // The aliases of a level start: the level's own rows plus the interface rows (loadspec "menu") that the pause menu plays
+    // in game. Every level start (first map, restart, level change) must go through this, see docs/spec/sound.md.
+    void loadLevel(const fs::Vfs& vfs, const std::string& level) { load(vfs, level); load(vfs, "menu", true); }
     void clear() { aliases_.clear(); }
     // One of the variants with this name (random), nullptr if unknown.
     const SoundAlias* pick(const std::string& name, std::mt19937& rng) const;

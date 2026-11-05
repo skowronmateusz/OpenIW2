@@ -280,6 +280,22 @@ int main() {
         vfs.mountDirectory(main);
         iw2::audio::SoundAliases al;
         al.load(vfs, "toujane");
+        // A level start (also the first one, `iw2view <main> trainyard`) must carry the interface rows too: the pause menu plays
+        // mouse_over / mouse_click and its soundLoop (music_mainmenu) in game. Loading only the level's rows left them silent
+        // until the first restart.
+        {
+            iw2::audio::SoundAliases only, lv;
+            only.load(vfs, "trainyard");
+            lv.loadLevel(vfs, "trainyard");
+            for (const char* a : {"mouse_over", "mouse_click", "music_mainmenu"}) {
+                CHECK(!only.exists(a));
+                CHECK(lv.exists(a));
+            }
+            CHECK(lv.exists("bullet_small_flesh")); // level rows are still there
+            iw2::audio::Mixer lm(vfs, lv, 48000);
+            CHECK(lm.play("mouse_click") != 0);
+            CHECK(lm.play("music_mainmenu") != 0);
+        }
         iw2::audio::Mixer m(vfs, al, 48000);
         for (const char* a : {"land_plr_dirt", "step_run_plr_dirt", "gear_rattle_plr_run", "land_damage"}) {
             const int h = m.play(a);

@@ -3384,7 +3384,7 @@ int main(int argc, char** argv) {
         // Sound: aliases for this level, a software mixer and an SDL audio stream that pulls from it.
         audio::SoundAliases aliases;
         if (menuMode) aliases.load(vfs, "menu"); // front-end sounds (loadspec "menu")
-        else aliases.load(vfs, args[1]);
+        else aliases.loadLevel(vfs, args[1]); // plus the interface rows: the pause menu's music and clicks work on a direct level start
         constexpr int kAudioRate = 48000;
         audio::Mixer mixer(vfs, aliases, kAudioRate);
         SDL_AudioStream* audioStream = nullptr;
@@ -8059,8 +8059,7 @@ int main(int argc, char** argv) {
                     releaseScene(dev, scene);
                     // The level's sound aliases are loaded before its script runs (set_ambient checks them in main()).
                     aliases.clear();
-                    aliases.load(vfs, currentMap);
-                    aliases.load(vfs, "menu", true); // the pause menu keeps its interface sounds
+                    aliases.loadLevel(vfs, currentMap); // level rows + the pause menu's interface sounds
                     try {
                         world = makeWorld(currentMap, loadedSave ? nullptr : carried, loadedSave ? &*loadedSave : nullptr,
                                           loadedSave ? std::nullopt : std::exchange(heldPlayer, std::nullopt));
