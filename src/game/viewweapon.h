@@ -164,6 +164,21 @@ float shellShockRatio(int remainingMs, int fadeMs);
 // while the aim fraction rises (it becomes true at fraction 0 and false at 1).
 float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac, float adsFrac, bool zoomingIn);
 
+// The view fov on a turret (end of 0x4ae7b0, 0x4ae8a8): with eFlags & 0x300 (the player is on a turret) the result is
+// replaced by 55, whatever cg_fov and the aim fraction. The aim state itself is kept (PM_Weapon returns early on a
+// turret, 0x4dfc59), so after getting off the aimed fov comes back if the player still aims.
+constexpr float kTurretViewFov = 55.0f;
+float playerViewFov(float adsFovValue, bool onTurret);
+
+// Scope overlay alpha (0x4bc8a0): 0 without adsOverlayShader / adsOverlayReticle or at aim 0; else
+// (adsFrac − (1 − frac)) / frac with frac = adsZoomInFrac while zooming in (adsZoomOutFrac otherwise), 0 unless above
+// 0.01, capped at 1. Other cgame users (view flash, damage indicators) read this unchanged.
+float scopeOverlayAlpha(bool hasOverlay, float adsFrac, float zoomFrac);
+
+// The alpha the scope overlay is drawn with (0x4bd760): on a turret (0xf70964 & 0x300, 0x4bd76b) the function draws the
+// turret reticle (0x4bcef0) and returns before the overlay path (0x4bcdd0 → 0x4bca90), so no overlay.
+float scopeOverlayDrawAlpha(float overlayAlpha, bool onTurret);
+
 
 // Camera impulses of CG_OffsetFirstPersonView (0x4ae290): the damage kick, the landing dip and the minimum eye height.
 class ViewImpulses {

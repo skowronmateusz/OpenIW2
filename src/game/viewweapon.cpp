@@ -403,6 +403,18 @@ float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac,
     return cgFov - (cgFov - zoom) * t;
 }
 
+float playerViewFov(float adsFovValue, bool onTurret) { return onTurret ? kTurretViewFov : adsFovValue; }
+
+float scopeOverlayAlpha(bool hasOverlay, float adsFrac, float zoomFrac) {
+    if (!hasOverlay || adsFrac == 0) return 0;
+    float a = adsFrac - (1.0f - zoomFrac);
+    if (a > 0) a /= zoomFrac;
+    if (!(a > 0.01f)) return 0;
+    return std::min(a, 1.0f);
+}
+
+float scopeOverlayDrawAlpha(float overlayAlpha, bool onTurret) { return onTurret ? 0.0f : overlayAlpha; }
+
 
 // ---- Recoil ----
 float RecoilKick::rand01() {

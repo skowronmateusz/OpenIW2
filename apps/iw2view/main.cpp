@@ -4707,13 +4707,7 @@ int main(int argc, char** argv) {
             if (!pweapon.equipped() && !pweapon.binocularsUp()) return 0;
             const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
             if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
-            const float f = pweapon.adsFrac();
-            if (f == 0) return 0;
-            const float z = pweapon.number(pweapon.adsZoomingIn() ? "adsZoomInFrac" : "adsZoomOutFrac");
-            float a = f - (1.0f - z);
-            if (a > 0) a /= z;
-            if (!(a > 0.01f)) return 0;
-            return std::min(a, 1.0f);
+            return game::scopeOverlayAlpha(true, pweapon.adsFrac(), pweapon.number(pweapon.adsZoomingIn() ? "adsZoomInFrac" : "adsZoomOutFrac"));
         };
         auto hudText = [&](std::vector<Quad2D>& out, const std::string& text, float x, float y, float scale, const assets::Font& f,
                            const uint8_t rgba[4], float alignX, float alignY, int style = 0) {
@@ -5129,7 +5123,8 @@ int main(int argc, char** argv) {
             // bottom. Outside it (0x4bc980) the rest of the screen is filled with the same material: left and right
             // strips with u = 0 (t 0..1), top and bottom with v = 0 (s 0..1). TODO(spec): the centre follows the gun
             // sway (0x4bc6e0 projects the weapon angles); adsOverlayReticle drawing.
-            if (const float sa = world ? scopeAlpha() : 0.0f; sa > 0) {
+            // On a turret 0x4bd760 draws only the turret reticle, so the overlay is not drawn (the aim state is kept).
+            if (const float sa = world ? game::scopeOverlayDrawAlpha(scopeAlpha(), world->playerOnTurret()) : 0.0f; sa > 0) {
                 const std::string shader = pweapon.field("adsOverlayShader");
                 const int tex = shader.empty() ? -1 : materialTexture(shader);
                 if (tex >= 0) {
@@ -6863,8 +6858,9 @@ int main(int argc, char** argv) {
                 const game::Vec lo = game::leanOffset(cam.yaw, shotLean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
             }
-            cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
-                                      pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn());
+            cam.fovX43 = game::playerViewFov(game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
+                                      pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn()),
+                                             world && world->playerOnTurret());
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
             // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
@@ -7733,9 +7729,11 @@ int main(int argc, char** argv) {
                                              ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
-                cam.fovX43 = game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
+                // On a turret the view fov is 55 (0x4ae8a8); the aim fraction is kept for after getting off.
+                cam.fovX43 = game::playerViewFov(game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
-                                          pweapon.adsZoomingIn());
+                                          pweapon.adsZoomingIn()),
+                                                 onTurret);
                 for (const auto& snd : pweapon.takeSounds()) mixer.play(snd);
                 {
                     const Vec3 f = cam.forward(), r = cam.right();

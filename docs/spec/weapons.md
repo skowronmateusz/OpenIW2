@@ -60,6 +60,22 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
   fully at aim 1; otherwise t = (adsFrac − (1 − frac)) / frac with frac = `adsZoomInFrac` while zooming in
   (flag set at aim 0, cleared at aim 1, 0x4b5ad0) or `adsZoomOutFrac`; when t > 0, fov −= (fov − zoom) · t.
 
+### Aim on a turret (VAs in the patch 1.3 SP executable)
+
+- Getting on a turret (0x51db50) does not touch the aim fraction (ps+0xb8), the aim flag or the weapon state; it
+  only sets the turret bits in eFlags (0x100 / 0x200 / 0x300 by turret stance) and the use state.
+- While those bits are set PM_Weapon returns before its weapon step (0x4dfc59: eFlags & 0x300), so the aim
+  fraction stays where it was for the whole time on the turret.
+- The cgame hides the scope instead: the crosshair/overlay function (0x4bd760) tests eFlags & 0x300 first
+  (0x4bd76b) and on a turret draws only the turret reticle (0x4bcef0) and returns, so the overlay path
+  (0x4bcdd0 → 0x4bca90) is never reached.
+- The view fov (0x4ae7b0) is computed from cg_fov and the aim as usual, then replaced by the constant 55 when
+  eFlags & 0x300 is set (0x4ae8a8..0x4ae8b4).
+- After getting off the kept aim fraction applies again: if the aim is still held the zoom and the overlay are back
+  at once; otherwise the aim runs down at the normal rate. (implemented: `playerViewFov`, `scopeOverlayDrawAlpha`)
+- Other users of the overlay test 0x4bc8a0 (view flash 0x4b6131, damage indicators 0x4bdcb0 / 0x4be210) do not test
+  the turret bits and still see the kept aim. TODO(spec): not checked in a window whether that is visible.
+
 Not done yet: bob (0x4b4a90), sway (0x4b4dc0), idle motion (0x4b51a0), gun kick (0x4b5d10), lean. While aiming,
 OpenIW2 poses the view model with `adsUpAnim` at the aim fraction (inferred; the original's view-model anim
 tree is not specified).
