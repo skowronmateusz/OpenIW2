@@ -64,6 +64,17 @@ open /Applications/OpenIW2.app --args --cvar sv_cheats=1
 With cheats on, `F10` cycles god mode → demigod → off, `V` toggles walking and free flight (noclip camera), and `L`
 toggles fullbright. Without `sv_cheats` these keys do nothing (F10 prints that cheats are not enabled).
 
+### Reporting a bug
+
+Open an issue in [Issues](../../issues) and include:
+
+- what happened and what you expected, with the map name and roughly where in the mission;
+- steps to reproduce it, if you can;
+- a screenshot or short video for visual problems;
+- the log file `~/Library/Logs/OpenIW2/openiw2.log` (the previous start is in `openiw2.log.1`). In Finder, press
+  `Cmd+Shift+G` and paste `~/Library/Logs/OpenIW2/` to open the folder;
+- your OpenIW2 version and your Mac model.
+
 ## What this repository contains, and what it does not
 
 - **Original engine code, tests and specs only.**
