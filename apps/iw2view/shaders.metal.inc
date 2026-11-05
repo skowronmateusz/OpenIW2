@@ -30,10 +30,18 @@ struct VertexOut {
     float3 eyeVec;
 };
 
+// Clip position of a world / model vertex, shared by every vertex shader that draws world or model surfaces: a decal that reuses
+// the triangles of the surface under it (same vertices, e.g. the trainyard pipe chalk on stalingradwinter_pipe_b) relies on
+// bit-identical depth to pass the LessEqual test without a polygon offset, so the expression must not differ between shaders.
+static float4 world_clip(float4x4 viewProj, float4x4 model, float3 p, float depthBias) {
+    float4 c = viewProj * (model * float4(p, 1.0));
+    c.z += depthBias * c.w; // polygon offset: constant depth bias (D3DRS_DEPTHBIAS)
+    return c;
+}
+
 vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
     VertexOut o;
-    o.position = u.viewProj * (u.model * float4(in.position, 1.0));
-    o.position.z += u.eye.w * o.position.w; // polygon offset: constant depth bias (D3DRS_DEPTHBIAS)
+    o.position = world_clip(u.viewProj, u.model, in.position, u.eye.w);
     o.normal = (u.model * float4(in.normal, 0.0)).xyz;
     o.color = in.color;
     o.uv = in.uv;
@@ -93,6 +101,14 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
     const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
 
+    if (u.params.y > 4.5) { // multiply fog fix-up (second pass of vertcol_mul_lfog / _efog, stateMap multiply_fog: One, One):
+        // adds (1 - Cm) · fogColor · (1 - f), so a multiply decal darkens the unfogged colour only (lib/multiply_fog.hlsl).
+        float4 t = colorMap.sample(colorSampler, in.uv);
+        const float3 oneMinusCm = in.color.a - t.rgb * in.color.rgb * in.color.a;
+        const float d = length(in.eyeVec);
+        const float f = u.fogParams.w != 0.0 ? exp(d * u.fogParams.w) : d * u.fogParams.y + u.fogParams.z;
+        return float4(oneMinusCm * saturate(1.0 - f) * u.fogColor.rgb, 1.0);
+    }
     if (u.params.y > 3.5) { // effect_multiply: blends the texture towards white by the vertex alpha, no light
         float4 t = colorMap.sample(colorSampler, in.uv);
         return float4((1.0 - in.color.a) + t.rgb * in.color.rgb * in.color.a, 1.0);
@@ -219,8 +235,7 @@ struct SpecVertexOut {
 vertex SpecVertexOut vs_spec(SpecVertexIn in [[stage_in]], constant SpecVertexUniforms& u [[buffer(0)]]) {
     SpecVertexOut o;
     const float3 wp = (u.model * float4(in.position, 1.0)).xyz;
-    o.position = u.viewProj * float4(wp, 1.0);
-    o.position.z += u.eye.w * o.position.w;
+    o.position = world_clip(u.viewProj, u.model, in.position, u.eye.w); // same expression as vs_main (decals on spec surfaces)
     o.normal = (u.model * float4(in.normal, 0.0)).xyz;
     o.tangent = (u.model * float4(in.tangent, 0.0)).xyz;
     o.binormal = (u.model * float4(in.binormal, 0.0)).xyz;

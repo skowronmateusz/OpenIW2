@@ -1102,6 +1102,9 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             lights_.push_back(l);
             continue;
         }
+        // Colour bytes (0x4819b0 rgb, then 0x481a40 alpha): without useAlpha (flags 0x80) the rgb bytes are multiplied by the
+        // clamped alpha channel (each truncated, _ftol) and the alpha byte is 255, so an additive element fades through its rgb.
+        if (!(flags & 0x80)) fxPremultiplyAlpha(s.rgba);
         const auto shaders = e.list("shaders");
         if (!shaders.empty()) s.shader = shaders[std::min(p.shader, shaders.size() - 1)];
         // Frame (0x481c30): frame = start + _ftol((now − spawn) · rate); n frames; loop mode 0: frame mod n once

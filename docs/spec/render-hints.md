@@ -71,4 +71,44 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
   (lib/fogcalc.hlsl, Fog_ExponentialFactor). So 50% fog lies at ln 2 / density: 0.00002 (hill400_defend start) 34657 units, 0.00035
   (moscow) 1980, 0.00075 (hill400 barrage) 924. A shipped value that small is nearly invisible by design; OpenIW2 measured the same
   blend factors (fog colour mix 1 - exp(-density * d)) in headless shots, and the state reaches the renderer on moscow, hill400_defend, beltot.
-- Sky is drawn with the no-fog technique; Multiply / Additive passes remain TODO(spec).
+- Sky is drawn with the no-fog technique. Multiply decals: see below. Additive world surfaces remain TODO(spec) (their fogged
+  techniques fog through the fixed-function fog stage; the fog colour register those passes use was not found).
+
+## Multiply decals in fog
+
+- effect_multiply.techset maps its linear / exp fog techniques to vertcol_mul_lfog / vertcol_mul_efog, which have two passes:
+  pass 1 is the ordinary multiply (state map nofog, mul.hlsl: Cm = (1 - a) + texture * rgb * a, framebuffer * Cm), pass 2 uses
+  state map multiply_fog (blend Add One One, depth write off, depth test and polygon offset from the material, no fixed-function fog)
+  with lib/multiply_fog.hlsl: it adds (1 - Cm) * fogColor * (1 - f), f = the fog factor of the vertex. The library's own comment
+  derives it: the multiply darkened the already fogged pixel, and the added term turns the result into "multiply, then fog".
+- Without pass 2 a multiply decal far away darkens a facade that should be fully fogged: the trainyard grime decals
+  (stalingradwinter_wall_grime04_decal, 591 triangle soups, sort 12, polygon offset 1) showed as dark patches through the fog.
+- OpenIW2: iw2view draws world Multiply batches a second time with the additive state and the fix-up shader branch while fog is active.
+  The fog factor is taken per pixel (the shipped vertex shader computes it per vertex). Effects draw with the no-fog technique
+  (effects.md), so effect sprites get no fix-up.
+
+## Fog across a savegame load
+
+- R_SetFog (gfx 0x1000bb90) writes one of five 0x20-byte fog records at 0x101d616c (index * 0x20: type, near, far, density, colour);
+  R_SetFogTransition (0x1000bc20) selects a record (index at 0x101d620c) and starts the blend. The client fog command uses record 1;
+  record 0 (all zero after R_ClearFog 0x1000bb70, refexport slot 0x88, called from the client init 0x401520) is "no fog", and the
+  cgame init 0x4a5c10 selects it at once (R_SetFogTransition(0, time, 0)).
+- Refexport slot 0x84 = DLL 0x1000bca0 passes the 0xa0 bytes of records and the 4-byte selected index to the save stream's
+  read / write callback (+0x10). The exe calls it at the end of 0x402d60, which runs on save (G_WriteGame, 0x4e3804) and on load
+  (0x4e4c11). So the fog survives a savegame load, while the level script's setCullFog / setExpFog (in main(), not run again on a
+  load; the shared sender 0x4f5512 also skips the command while 0x1c61048 is 2, the save-loading state) does not resend it.
+- The AI fog sight limit (0x1c61038) is saved too (0x4e36cd) and loaded (0x4e4aab).
+- OpenIW2: the fog state lives in World::clientFog (fed by iw2view from the "fog" client commands) and the save stream (version 6)
+  stores its selected record and the sight limit; a load makes that record current at once. TODO(spec): a fog transition running at
+  save time (the records are archived, the running blend 0x101d61cc / 0x101d61ec / 0x101d61f0 is not, and how the client picks the
+  restored record after the load was not traced).
+
+## Decals on the triangles of their surface
+
+- Some world decals reuse the exact triangles of the surface under them and have polygon offset 0, e.g. the trainyard pipe chalk
+  (stalingradwinter_decal_gothisway / _gothisway2, technique set effect_add, state word 1 = 0x4): every triangle of both decals is also
+  a triangle of stalingradwinter_pipe_b (phong_replace_spec_detail) and of stalingradwinter_wall_grime04_decal. Such a decal passes
+  the LessEqual depth test only when its depth is bit-identical to the surface's, i.e. the clip position is computed the same way
+  in every vertex shader.
+- OpenIW2: all world / model vertex shaders of iw2view compute the clip position through one shared function (world_clip); before, the
+  lmap_s (specular) shader used a different expression and the chalk flickered or vanished.

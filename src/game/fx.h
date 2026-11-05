@@ -105,6 +105,17 @@ struct FxLight {
     float rgb[3]{};
 };
 
+// Colour of an element without useAlpha (exe 0x4819b0 + 0x481a40): the rgb bytes (clamped channel · 255, truncated) are each
+// multiplied by the clamped alpha channel and truncated again; the alpha byte becomes 255. rgba is 0..1 in and out.
+inline void fxPremultiplyAlpha(float rgba[4]) {
+    const float a = rgba[3] < 0.0f ? 0.0f : rgba[3] > 1.0f ? 1.0f : rgba[3];
+    for (int k = 0; k < 3; ++k) {
+        const float v = rgba[k] < 0.0f ? 0.0f : rgba[k] > 1.0f ? 1.0f : rgba[k];
+        rgba[k] = float(int(float(int(v * 255.0f)) * a)) / 255.0f;
+    }
+    rgba[3] = 1.0f;
+}
+
 struct FxSprite {
     FVec position{};
     float rgba[4]{};

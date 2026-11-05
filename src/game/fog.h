@@ -92,6 +92,13 @@ public:
         if (!from_.exponential) end_ = start_;
     }
     void clear() { *this = FogState{}; }
+    // The selected fog record (the transition target). A savegame stores it (the original archives its fog records and the selected
+    // index, not the running transition); restore() makes it the current fog at once. TODO(spec): a transition running at save time.
+    const FogParams& target() const { return to_; }
+    void restore(const FogParams& p, int64_t nowMs) {
+        from_ = to_ = p;
+        start_ = end_ = nowMs;
+    }
 
     // Blend of 0x100244d0: t = (now - start) / (end - start) clamped, near / far lerped as floats, colour bytes lerped.
     FogParams current(int64_t nowMs) const {

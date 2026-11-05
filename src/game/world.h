@@ -13,6 +13,7 @@
 #include "game/movers.h"
 #include "game/campaign.h"
 #include "game/fx.h"
+#include "game/fog.h"
 #include "game/collision.h"
 #include "game/compassping.h"
 #include "game/friendlychain.h"
@@ -371,6 +372,11 @@ public:
     int64_t timeMs() const { return timeMs_; }
     // setculldist value (configstring 8; 0 = unset). The renderer folds it into its far plane (farPlaneDistance in fog.h).
     float cullDist() const { return cullDist_; }
+    // The renderer's fog state (gfx dll records 0x101d616c, selected record 0x101d620c), fed by the front end from the "fog" client
+    // commands. The original archives those records in the savegame (0x402d60 -> refexport slot 0x84, DLL 0x1000bca0, on save
+    // 0x4e3804 and load 0x4e4c11), so a loaded save keeps its fog although the level script does not run again
+    // (docs/spec/render-hints.md "Fog across a savegame load"). Saved by saveState / restored by loadState.
+    FogState clientFog;
 
     Entity* player() { return player_; }
     const std::vector<std::unique_ptr<Entity>>& entities() const { return entities_; }

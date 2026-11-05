@@ -312,6 +312,12 @@ the script built-ins (taken from the shipped scripts' calls).
   channel, 0x4818b0) and 1 − alpha byte (+0x93) · (1/255). The alpha byte (0x481a40) is the clamped alpha channel ·
   255 truncated (`_ftol`) with `useAlpha` 0x80, else 255 (rgb is scaled by alpha instead), so a blocker without
   `useAlpha` blocks fully.
+- Element colour (0x4819b0 rgb bytes, then 0x481a40 alpha byte): with `useAlpha` (flag byte bit 7 at +0xa8) the alpha byte is the
+  clamped alpha channel * 255; without it each rgb byte is multiplied by the clamped alpha channel (truncated again) and the alpha
+  byte is 255. So an element without `useAlpha` fades through its colour, which matters for additive materials (One, One), where alpha
+  does not enter the blend: fx/impacts/pipe_impact.efx `fast_glow` (Tail, gfx_spotlight_beam, effect_add_nofog, alpha 0.035 at the
+  start) is a faint light shaft, not a white bar. OpenIW2: `fxPremultiplyAlpha` (src/game/fx.h) on every drawn sprite (clouds did it
+  already).
 - With no blockers, or when |end − start| is below the dvar `fx_visMinTraceDist` (0x617eb0; float, default 80,
   range 0..1000, registered at 0x40e544), the result is 1.
 - Otherwise, with d the unit direction and t = (blocker − start)·d, every blocker with |t − len/2| ≤ len/2 and

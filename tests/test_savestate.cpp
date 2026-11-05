@@ -188,6 +188,8 @@ void worldRoundTrip() {
             sw->path.switched.obj = e->obj; sw->path.original.obj = e->obj;
             sw->path.switched.name = "sw"; sw->path.switched.next = 7; sw->path.switched.length = 12.5f;
             sw->path.original.next = 3; break; }
+    // The renderer fog record travels with the save (0x402d60 -> gfx 0x1000bca0); the level script does not resend it on a load.
+    a.clientFog.command(0, 3000, 0.562f, 0.57f, 0.59f, 0, a.timeMs());
     iw2::game::SaveRequest req;
     req.name = "test";
     req.description = "round trip";
@@ -206,6 +208,10 @@ void worldRoundTrip() {
     }
     iw2::game::restoreSave(b, ls);
     if (b.player()) CHECK(b.compassPings().endMs(b.player()->number) == 0);
+    {
+        const iw2::game::FogConsts fa = a.clientFog.consts(a.timeMs()), fb = b.clientFog.consts(b.timeMs());
+        CHECK(fb.active && !fb.exponential && fb.scale == fa.scale && fb.shift == fa.shift && fb.color[2] == fa.color[2]);
+    }
     const std::string da = a.stateDigest(), db = b.stateDigest();
     CHECK(da == db);
     if (da != db) std::cerr << "--- saved\n" << da << "--- loaded\n" << db;

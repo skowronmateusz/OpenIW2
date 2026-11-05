@@ -48,5 +48,18 @@ int main() {
         const FogParams p = h.current(510);
         chk(std::fabs(p.nearDist - 500) < 1 && std::fabs(p.farDist - 2000) < 1 && std::abs(int(p.color[0]) - 128) <= 1, __LINE__);
     }
+    {   // A savegame restores the selected fog record and makes it current at once (no transition from "no fog").
+        FogState f;
+        f.command(0, 3000, 0.562f, 0.57f, 0.59f, 2000, 100);
+        chk(f.target().active && f.target().farDist == 3000 && f.target().color[0] == 143, __LINE__);
+        FogState g;
+        g.restore(f.target(), 777);
+        const FogParams p = g.current(777);
+        chk(p.active && !p.exponential && p.farDist == 3000 && p.color[1] == f.target().color[1], __LINE__);
+        g.command(0, 1000, 0, 0, 0, 1000, 1000); // a later transition starts from the restored record
+        chk(std::fabs(g.current(1500).farDist - 2000) < 1, __LINE__);
+        FogState none;
+        chk(!none.target().active, __LINE__);
+    }
     return bad;
 }

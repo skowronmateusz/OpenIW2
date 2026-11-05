@@ -179,6 +179,18 @@ void World::saveState(StateWriter& w) {
     w.b(levelChange_.persistent);
     w.i64(levelChange_.atMs);
     w.b(moviePending_);
+    // version 6: the AI fog sight limit (0x1c61038, saved by 0x4e36cd) and the renderer fog record (World::clientFog; the original
+    // archives the gfx fog records through 0x402d60, docs/spec/render-hints.md "Fog across a savegame load").
+    w.f32(fogSightSq_);
+    {
+        const FogParams& f = clientFog.target();
+        w.b(f.active);
+        w.b(f.exponential);
+        w.f32(f.density);
+        w.f32(f.nearDist);
+        w.f32(f.farDist);
+        for (uint8_t c : f.color) w.u32(c);
+    }
 
     w.b(playerLink_.has_value());
     if (playerLink_) {
@@ -513,6 +525,17 @@ void World::loadState(StateReader& r) {
     levelChange_.persistent = r.b();
     levelChange_.atMs = r.i64();
     moviePending_ = r.version >= 2 ? r.b() : false;
+    if (r.version >= 6) {
+        fogSightSq_ = r.f32();
+        FogParams f;
+        f.active = r.b();
+        f.exponential = r.b();
+        f.density = r.f32();
+        f.nearDist = r.f32();
+        f.farDist = r.f32();
+        for (uint8_t& c : f.color) c = uint8_t(r.u32());
+        clientFog.restore(f, timeMs_);
+    } // older saves: no fog until the script sets one again
 
     playerLink_.reset();
     if (r.b()) {
@@ -1009,7 +1032,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 

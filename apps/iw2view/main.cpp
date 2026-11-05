@@ -2696,9 +2696,22 @@ struct Renderer {
                     {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
                     {0, 0, 0, 0}};
                 detailUniforms(fu, b.detail);
-                if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
+                // Additive world surfaces: their fogged techniques (lmap_add_lfog, effect_add_lfog) fog through the fixed-function fog
+                // stage, whose colour register for these passes is not traced. TODO(spec): additive fog.
+                if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu);
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                if (p == Pass::Multiply && fog.active) {
+                    // effect_multiply.techset "unlit linear / exp fog" = vertcol_mul_lfog / _efog: pass 1 is the plain multiply
+                    // (stateMap nofog), pass 2 (stateMap multiply_fog: blend Add One One, depth write off, depth test and polygon
+                    // offset of the material) adds the fog the multiply took away (docs/spec/render-hints.md "Multiply decals in fog").
+                    bindOffset(Pass::Additive, b.polygonOffset, b.cull, gu);
+                    fu.params[1] = 5.0f;
+                    applyFog(fu);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                    bindOffset(p, b.polygonOffset, b.cull, gu);
+                }
                 if (b.polygonOffset || b.cull) bindOffset(p, 0, 0, gu);
             }
             }
@@ -3515,7 +3528,7 @@ int main(int argc, char** argv) {
         std::string ambientAlias;
         float slowFrom = 1, slowTo = 1, slowmo = 1;
         game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
-        game::FogState fogState; // "fog" server command (client 0x4a5770)
+        // The "fog" server command (client 0x4a5770) goes to World::clientFog: the renderer fog state that a savegame carries.
         game::ScreenBlur screenBlur; // scr_blur / clear_blur (0x4beb80, 0x4bebf0), updated per frame (0x4beea0)
 
         // Effects started by scripts (playfx & co.), simulated by FxSystem and drawn as sprites.
@@ -3707,7 +3720,7 @@ int main(int argc, char** argv) {
                     if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
                 return true;
             };
-            const game::FogParams fogNow = fogState.current(world->timeMs());
+            const game::FogParams fogNow = world->clientFog.current(world->timeMs());
             Uploader up(dev, false);
             ++renderStamp;
             for (const auto& e : world->entities()) {
@@ -6648,8 +6661,8 @@ int main(int argc, char** argv) {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
-                            else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
+                            if (one >= 1.0f) world->clientFog.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                            else world->clientFog.commandExp(one, r, g, b, int(ms), world->timeMs());
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
                             shotMsgs.push_back({cmd.name == "gm" ? cmd.arg : "^2\x14" + cmd.arg, world->timeMs(), false}); // obj_*: "^2%s" (0x57f6a0)
@@ -6868,7 +6881,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
-            setFxFar(fxSystem, cam, fogState.current(world ? world->timeMs() : 0), world ? world->cullDist() : 0.0f);
+            setFxFar(fxSystem, cam, (world ? world->clientFog.current(world->timeMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
@@ -6902,7 +6915,7 @@ int main(int argc, char** argv) {
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
-            renderer.fog = fogState.consts(world ? world->timeMs() : 0);
+            renderer.fog = (world ? world->clientFog.consts(world->timeMs()) : game::FogConsts{});
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             renderer.gamma = gammaFrom(uiCvars);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
@@ -7920,8 +7933,8 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        if (one >= 1.0f) fogState.command(nearD, farD, r, g, b, int(ms), world->timeMs());
-                        else fogState.commandExp(one, r, g, b, int(ms), world->timeMs());
+                        if (one >= 1.0f) world->clientFog.command(nearD, farD, r, g, b, int(ms), world->timeMs());
+                        else world->clientFog.commandExp(one, r, g, b, int(ms), world->timeMs());
                     }
                     else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
                         float alpha = 0;
@@ -8050,7 +8063,6 @@ int main(int argc, char** argv) {
                     currentMap = pendingLevel->first;
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : loadedSave ? "loading save " + loadedSave->name + ": " : "changing level to ") << currentMap
                               << (pendingPersistent ? " (persistent)" : "") << "\n";
-                    fogState.clear();
                     screenFade.clear(); // the new level starts unfaded
                     screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     const script::ObjectPtr carried = std::exchange(heldGame, script::ObjectPtr());
@@ -8232,7 +8244,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
-            setFxFar(fxSystem, cam, fogState.current(world ? world->timeMs() : 0), world ? world->cullDist() : 0.0f);
+            setFxFar(fxSystem, cam, (world ? world->clientFog.current(world->timeMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
             // The view model is posed (and its flash / brass played) before the effects are drawn: the exe adds the view weapon
             // (0x4b026f) before the effect draw, and the bolted particles re-read tag_flash / tag_brass through 0x47fcd0 ->
             // 0x48abb0 once per frame stamp 0x6221a8 (bumped at the frame start, 0x4afca3), i.e. this frame's gun pose. Posing it
@@ -8260,7 +8272,7 @@ int main(int argc, char** argv) {
             profWait += double(SDL_GetTicksNS() - profA) * 1e-6;
             if (gotSwap && swap)
             {
-                renderer.fog = fogState.consts(world ? world->timeMs() : 0);
+                renderer.fog = (world ? world->clientFog.consts(world->timeMs()) : game::FogConsts{});
                 renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);

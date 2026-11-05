@@ -74,6 +74,28 @@ int main() {
         if (sp.size() == 1) CHECK(sp[0].beamTail && std::fabs(sp[0].beamB[0] - (10.0f + 4096.0f)) < 1e-2f && sp[0].beamA[0] == 10.0f);
     }
 
+    // Colour bytes (0x4819b0 / 0x481a40): without useAlpha rgb is scaled by alpha and alpha is 255; with it alpha is kept.
+    {
+        const char* body = "\tlife 1000\n\trgb\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1 0.5 1\n\t\t]\n\t}\n"
+                           "\talpha\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 0.5\n\t\t]\n\t}\n\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n";
+        for (const bool useAlpha : {false, true}) {
+            auto fxDef = std::make_shared<iw2::assets::EfxEffect>(
+                iw2::assets::parseEfx(std::string("Particle\n{\n") + (useAlpha ? "\tflags useAlpha\n" : "") + body));
+            iw2::game::FxSystem s;
+            s.viewValid = true;
+            s.viewOrigin = {0, 500, 0};
+            s.play(fxDef, {10, 0, 0}, {1, 0, 0}, 0);
+            const auto sp = s.sprites(100);
+            CHECK(sp.size() == 1);
+            if (sp.size() != 1) continue;
+            if (useAlpha) CHECK(sp[0].rgba[0] == 1.0f && std::fabs(sp[0].rgba[3] - 0.5f) < 1e-6f);
+            else CHECK(sp[0].rgba[0] == 127.0f / 255.0f && sp[0].rgba[1] == 63.0f / 255.0f && sp[0].rgba[3] == 1.0f);
+        }
+        float c[4] = {1.0f, 0.2f, -1.0f, 2.0f}; // channels are clamped first: alpha 1 keeps the truncated bytes
+        iw2::game::fxPremultiplyAlpha(c);
+        CHECK(c[0] == 1.0f && c[1] == 51.0f / 255.0f && c[2] == 0.0f && c[3] == 1.0f);
+    }
+
     // Cylinder (0x483450 / DLL 0x100401f0): B = A + length * row0, radii size2 (A) / size (B), segments from the distance.
     {
         auto cylFx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
