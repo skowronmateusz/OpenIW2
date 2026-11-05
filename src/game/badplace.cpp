@@ -322,6 +322,7 @@ int World::badPlaceThink(Entity& e) {
 // connectpaths (0x4eff40 -> 0x5197a0): gives back the links this entity disabled (each link has a count, 0x519620 decrements it;
 // at zero the link rejoins the enabled range).
 void World::connectEntityPaths(Entity& e) {
+    e.pathsConnected = true; // 0x5197ae: flags |= 0x400
     auto it = pathRecs_.find(e.number);
     if (it == pathRecs_.end()) return;
     for (const auto& [node, link] : it->second)
@@ -337,6 +338,8 @@ void World::connectEntityPaths(Entity& e) {
 // reordering of the node's links (only affects ties in the search).
 void World::disconnectEntityPaths(Entity& e) {
     connectEntityPaths(e);
+    e.pathsConnected = false; // 0x519870: flags &= ~0x400
+    e.disconnectMs = timeMs_; // 0x519883: +0x1ec = level time
     const Value m = e.obj->get("model");
     if (!m.isString() || m.asString().size() < 2 || m.asString()[0] != '*') return;
     const int model = std::atoi(m.asString().c_str() + 1);

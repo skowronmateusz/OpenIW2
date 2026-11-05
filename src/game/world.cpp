@@ -374,7 +374,7 @@ void World::dropPathNodes() {
 
 // 0x4fc550 (actor drop to floor): the entity origin z is raised by 1 (0x591e20, written back), then a (-15,-15,0)..(15,15,30)
 // box is swept with mask 0x2820011 and no pass entity (0x7ff) from that origin to the original origin 128 (0x591e3c) below.
-// Only allsolid (+0x23) is tested: then the origin stays 1 higher and the result is 1. Otherwise the origin moves to
+// Only start-solid (+0x23, 0x4fc5e9) is tested: then the origin stays 1 higher and the result is 1. Otherwise the origin moves to
 // start + (end - start) * fraction, which is the end point when nothing is hit (no "floating" case), and the result is 0.
 bool World::dropActorToFloor(Entity& e) {
     const Value ov = e.obj->get("origin");
@@ -383,7 +383,7 @@ bool World::dropActorToFloor(Entity& e) {
     const Vec3 start{o[0], o[1], o[2] + 1.0f}, end{o[0], o[1], o[2] - 128.0f};
     e.obj->set("origin", Value(start));
     const TraceResult tr = collision_->trace(start, end, {-15, -15, 0}, {15, 15, 30}, 0x2820011u);
-    if (tr.allSolid) return true;
+    if (tr.startSolid) return true;
     e.obj->set("origin", Value(Vec3{start[0] + (end[0] - start[0]) * tr.fraction, start[1] + (end[1] - start[1]) * tr.fraction,
                                     start[2] + (end[2] - start[2]) * tr.fraction}));
     return false;
@@ -1055,13 +1055,11 @@ void World::moveActor(Entity& e, float dt) {
                 for (int a = 0; a < 3; ++a) pm.origin[a] = before[a]; // 0x501620 returned 0: no move this frame
             }
         } else if (!followed && e.ai.animMode == 1 && e.ai.movemode != 0) { // 0x501e06: the path mover's dispatch
-            // The path mover (0x501e48, 0x500de0): when the block move fails the actor is moved by its raw delta from the
-            // entity origin, without collision (0x501eb6). A successful block ends the step unless the lookahead is steep
+            // The path mover (0x501e48, 0x500de0 = pathMover): when it returns 0 the actor is moved by its raw delta from the
+            // entity origin, without collision (0x501eb6). A successful move ends the step unless the lookahead is steep
             // and the block did not lift the actor (pathSteepUnlifted), or the sentient's node query (0x515040, 192) finds
-            // nothing even after a re-query; those take the direct move too. TODO(spec): 0x500de0's sidestep around a
-            // bumped actor (0x500d80, 0x5442a0) and its tail (a replan 0x5037e0 that leaves the path count unchanged also
-            // returns 0) are not modelled.
-            if (!moveBlock(pm, fn)) {
+            // nothing even after a re-query; those take the direct move too.
+            if (!pathMover(e, pm, fn, before)) {
                 directMove = true;
             } else if (pathSteepUnlifted(p.lookDir[2], pm.moveDelta[2], pm.origin[2], before[2])) {
                 directMove = true;

@@ -599,7 +599,7 @@ clamp to the minimums: `goalradius` 4, `goalheight` 80 (instructions at 0x4fc80d
 spawnflags bit 0 (SPAWNER, +0x124): a spawner goes to the spawner init 0x532740 (eType 0xa, +0xa2 = 1, contents 0) and is
 not dropped here; any other actor entity is dropped by 0x4fc550 (0x4fc66c) before the actor slot is allocated (0x4fc8d0).
 0x4fc550: origin z += 1 (0x591e20 = 1.0, written to the entity), then G_Trace 0x44bf00 of the box (-15,-15,0)..(15,15,30)
-from that origin to (x, y, original z − 128) (0x591e3c = 128.0), pass entity 0x7ff, mask 0x2820011. Only allsolid (+0x23,
+from that origin to (x, y, original z − 128) (0x591e3c = 128.0), pass entity 0x7ff, mask 0x2820011. Only start-solid (+0x23,
 0x4fc5e9) is tested: then the result is 1 and the origin stays 1 higher. Otherwise the origin becomes start + (end −
 start)·fraction on every axis, which is the end point when nothing is hit (there is no "floating" case). dospawn
 (0x532312..0x53235c) spawns a fresh entity, copies the spawner's key/values, clears spawnflags bit 0 (0x53234e) and calls
@@ -737,9 +737,7 @@ TODO(spec): the near-field look of that surface (texture detail) has not been co
   (path index words), sets +0x6e8 |= 0x80 and clears +0x724, clears byte 0x3c of the actor goal block (+0x4), asks 0x515040
   for a goal and, when non-zero, rebuilds the path with 0x5424d0(+0x330, goal block, goal, actor origin (+0xdc), flag
   (+0x6e8 >> 4) & 1) and sets +0x6e8 |= 0x80 again. This is the path re-plan, not an entity probe.
-- 0x5442a0 (edx = path block +0x330): returns 0 (path ok) when the index at +0x380 minus 1 is not past +0x386, the point
-  at index-1 has non-negative fields, flag 0x20 of +0x3b8 is clear, 0x543bc0 is zero and the index words +0x380 / +0x382 differ
-  or 0x415c50(+0x3c8) is false; otherwise 1 (re-plan needed).
+- 0x5442a0 (edx = path block +0x330): see "The path mover with its sidestep" (it returns 1 when the sidestep may run).
 - Conclusion: the +0x318 entity comes from the actor slide move result (0x547db0 / 0x44bf00 hit entity stored at block +0xf4 and
   copied by the 0x500dc0 step), i.e. from the actor physics that World::moveActor does not model (it moves along the path
   lookahead without clipping). Wiring +0x318, gethitenttype and the +0x2148 follow link therefore needs the full actor
@@ -755,7 +753,7 @@ at most 4 bumps and 5 planes (5 planes: velocity zeroed, return 1); duplicate pl
 the normal; interact threshold 0.1 (impact speed 0x1cbac88 keeps max(-into)); crease slide uses cross(j, i) for both
 directions; third plane test zeroes the velocity. Hit bookkeeping on the block: the first wall hit (normal.z < 0.7 and
 (nx != 0 or ny != 0)) stores the entity number (+0xf4), origin xy (+0xf8) and normal xy (+0x100); a frac 0 duplicate plane
-hit and the final clipped move (normal = clipVel - vel) record it the same way; all-solid start records it with byte +0x108 = 1
+hit and the final clipped move (normal = clipVel - vel) record it the same way; a start-solid trace at fraction 0 (+0x23, 0x5477d0) records it with byte +0x108 = 1
 and returns 1 (2 when bump == 0 and byte 0x1cbac87). Touched entity numbers (not world 0x7fe) go in a list of 0x20 at +0x74
 (count +0x70). ClipVelocity: normal.z >= 0.7 and vz² <= vx²+vy² gives (vx·nz, vy·nz, -(vx·nx + vy·ny)); otherwise the usual
 backoff (divide by the overbounce when moving away, multiply into the plane). Normalize (0x421270) leaves the destination
@@ -787,21 +785,21 @@ mapped to trace_t fields in this pass; the mapping and the port follow in the ne
 
 ### Actor step slide port (0x547db0), stack offsets mapped
 
-Both scratch trace results sit at esp0 + 0x44 (fraction +0x0, normal +0x4, entity word +0x1c, startsolid +0x22, allsolid +0x23, the
+Both scratch trace results sit at esp0 + 0x44 (fraction +0x0, normal +0x4, entity word +0x1c, allsolid +0x22, startsolid +0x23, the
 same trace_t as in 0x5475e0); saved origin O0 at +0x10, saved velocity V0 at +0x34. Flow (src/game/actorslide.cpp, stepSlideMove):
 slide move; result 0 returns 1, result 2 returns 0. When the post-slide vz > 0 and the ground-entity flag 0x1cbac5c is clear, a
 down trace from O0 by the step height (0x1cbaca8) with fraction 1.0 or normal.z < 0.7 returns 1. Then an up trace from O0 to
-O0 + step: startsolid returns 0 when fraction 0 else 1. Save the block and scratch (the whole ActorSlide), hit entity := 0x7ff,
+O0 + step: allsolid (+0x22, 0x547ef6) returns 0 when fraction 0 else 1. Save the block and scratch (the whole ActorSlide), hit entity := 0x7ff,
 ground plane flag := 0, origin = (O0.x, O0.y, lerp z at the up fraction), velocity := V0, slide move again (2 restores the
 saved state, returns 1). Then trace down from the new origin by (O0.z - up z) (0x4db7f0 from the block origin), snap the origin
-to the end point unless allsolid, return 1 when fraction >= 1.0; normal.z >= 0.3 clips the velocity (1.001) and clears the hit
+to the end point unless startsolid (+0x23, 0x548011), return 1 when fraction >= 1.0; normal.z >= 0.3 clips the velocity (1.001) and clears the hit
 entity when max(O0.z, saved z) + 0.1 < origin z; otherwise the saved state is restored. Helper identities are in the previous
 section (0x4db7f0 trace wrapper, 0x47f390 lerp, 0x408ad0 max; 0x591e78 is the double 1.0). Tested with a step of height 10.
 
 ### Actor ground probe (0x548290), ported
 
 `groundProbe` in `src/game/actorslide.cpp`: trace from origin+0.25 to origin-D (D = step height when vz<=0 and a ground entity exists, else 0.25).
-All-solid: touch-add the entity and retry without content bit 0x2000000 if set, then retrace from the origin; still all-solid -> ground entity = hit entity, groundPlane=0.
+Start-solid (+0x23, 0x54831c / 0x5483dd; the 9 copied dwords put it at 0x1cbac87): touch-add the entity and retry without content bit 0x2000000 if set, then retrace from the origin; still start-solid -> ground entity = hit entity, groundPlane=0.
 Fraction 1 -> no ground. vz>0 and dot(normal, vel)>10 (0x591e8c) -> no ground. Normal z<0.7 -> groundPlane=1, no ground entity, hit record if none yet (normal.x stored in both slots, as at 0x548521/0x54852c).
 Walkable: z snaps to the trace end only if lower than the origin or mode==5; ground entity = trace entity, touch-add. The mode dispatch (0x548260/0x548200/0x548110/0x5480d0) is `moveBlock`, next section.
 
@@ -840,7 +838,7 @@ Status: stepActorPath returns early for a followed actor (as the exe skips the p
 ### Followed-actor branch of 0x504160 (decoded and ported)
 
 0x50418b (anim mode 1): the path walk runs only when movemode (+0x214) is set, the path count (+0x6b0) > 0 and +0x2148 is 0. Otherwise, with path count > 0, 0x504228 runs: 0x544ca0 (the lookahead update, `World::updatePathLook`) with shrink = 0x500d80(+0x318) and correct = 0, then the trail 0x505520; the mode word +0x264 = 1 and the desired delta +0x250..0x258 = 0. The path walk (0x505230) and its stop-soon check 0x503ec0 do not run. So a followed actor does not walk its path; the physics step 0x501d00 runs the yield step 0x501620 for it (anim mode 1 or 7), which moves it out of the followed entity's way. `World::moveActor` models this (no step, no angles write, no stop soon); `followActorPath` calls it for a followed actor.
-0x500d80 is `World::followShrink`: a bumped gentity with a sentient (actor or player) -> level time < +0x724; otherwise contents 0x400 gives 0, else signed (+0x6ec > gentity +0x1ec). TODO(spec): +0x6ec has no writer and +0x1ec is zero for non-actors, so the last branch is taken as false.
+0x500d80 is `World::followShrink`: a bumped gentity with a sentient (actor or player) -> level time < +0x724; otherwise contents 0x400 gives 0, else signed (+0x6ec > gentity +0x1ec). +0x6ec is the path plan time and gentity +0x1ec the disconnectpaths time (see "The path mover with its sidestep").
 0x505520 (trail): every think, at (level time / 100) % 10 != 0 the lookahead direction * 0.1 (0x59202c) is added to ring[+0x214c] (8 bytes per entry at +0x2150), at the tenth boundary 0x504f60 advances the ring (index 0 wraps to 10, a weighted smoothing of the other entries by 0x591e20-stepped divisors) and the entry is set to lookDir * 0.1. Decoded and ported (`src/game/actortrail.h`, test_actortrail): the ring is 10 (x, y) float entries at +0x2150, index +0x214c. 0x505520: time/100 not a multiple of 10 -> entry[idx] += look * 0.1; else advance (0x504f60) and entry[idx] = look * 0.1. 0x504f60: with prev = idx-1 and pp = prev-1 (mod 10), when cross(pp,prev) * cross(prev,cur) <= 0 and prev.cur >= 0 and prev.pp >= 0, entry[pp] = entry[cur]; then entries idx+1..9, 0..idx-1 are multiplied by k/(k+1), k = 1, 2, ... in that order; idx = (idx+1) % 10. 0x504e70 sums the entries into a vector (x, y, 0); 0x504de0 zeroes the ring and the index (at spawn 0x4fc806 and in the move script 0x5523b6). The ring is written only on the followed branch (0x50424a); its only reader is the facing 0x505630 of the path walker (calls 0x505c3a, 0x505d5e, 0x505dad; with a zero sum or the path walk it turns by 0x5055d0 / 0x504950 / 0x5048b0), so it has no effect here: TODO(spec): the facing modes / turn (0x504aa0, 0x505630) are not modelled (angles = lookDir yaw), and the 0x5523b6 clear is not wired.
 Open: the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x501e06, the ring advance 0x504f60 and facing blend, 0x519050 / +0x86b6.
 
@@ -1131,12 +1129,67 @@ for the rest of the level. The exe takes 1.: the raw delta (up to (6.4, 1.8, -3.
 carries him out of the slab in a few frames and the normal physics resumes on top of the ramp. Verified headless: with the
 direct move he reaches his tnt node and the mission ends; the direct move fires for him alone (6 frames) in the whole
 ending. `World::moveActor` now models 1. (`pathSteepUnlifted`, `pathDirectBudget` in actorslide.h; the node re-query
-through `sentientNode`). TODO(spec): the sidestep retries and the replan tail of 0x500de0 (a bumped actor; the port has
-no bump source for +0x318) and the yield step's continuation into the path mover (the port keeps the origin instead) are not
+through `sentientNode`). The sidestep retries and the replan tail of 0x500de0 are in "The path mover with its sidestep" below. TODO(spec): the yield step's continuation into the path mover (the port keeps the origin instead) is not
 modelled. The trace flag bytes: +0x23 is start-solid (set at 0x4167b4 whenever the start is inside the brush), +0x22 all-solid (0x4167bf,
 the end is inside as well, with fraction 0); the slide's "stuck" tests at 0x5475e0 and the ground probe's retries at 0x548290
-read +0x23 and the step-up check at 0x547db0 reads +0x22 (TODO(spec): `actorslide.h` names them the other way round; the
-case above has both set so it is unaffected).
+read +0x23 and the step-up check at 0x547db0 reads +0x22; `SlideTrace` in `actorslide.h` names them so (`startSolid` +0x23,
+`allSolid` +0x22, checked against the sphere test 0x416cb0: +0x23 is set unconditionally at 0x416d2d, +0x22 only when the end is
+inside too at 0x416d7d). The actor spawn drop 0x4fc550 also reads +0x23 (start-solid).
+
+### The path mover with its sidestep (0x500de0)
+
+VAs in the patch 1.3 SP executable. `this` (ebx) is the actor; the move block is actor +0x224, so the block's hit record
+lands in the actor at +0x318 (entity), +0x31c/+0x320 (position xy), +0x324/+0x328 (normal xy) and +0x32c (the start-solid
+byte, block +0x108); the desired delta (block +0x2c) is actor +0x250..+0x258. The side bits are bits 8 and 0x10 of the
+gentity flags word +0x128 (the same bits the yield step 0x501620 uses).
+
+1. Before anything, the block state that a move changes is saved: velocity (+0x230..+0x238), ground entity word (+0x23c)
+   and the three dwords +0x240..+0x248 (block +0x1c..+0x24: contact flag and contact normal z). Each attempt below first
+   restores them and sets the block origin to the gentity origin (+0xdc), so every attempt starts from the same place.
+2. Attempt 1: 0x5487c0. Result 0: clear the side bits, return 0. No hit entity (+0x318 == 0x7ff): clear the side bits,
+   return 1. Otherwise the hit entity is kept as the "first hit" and the new side value S starts at 0.
+3. The first sidestep is tried only when all of these hold: the hit was not start-solid (+0x32c == 0); 0x500d80 says the
+   hit entity is worth avoiding (below); 0x5442a0 on the path (+0x330) says the path's first segment is a plain node-to-node
+   segment the actor is still on (below). Then:
+   - D = path start (+0x6f8/+0x6fc, path +0x3c8) − hit position (+0x31c/+0x320), 2D.
+   - The hit normal at +0x324 is normalised in place in 2D (0x421160); N is that unit normal.
+   - P = the direction of the path's first segment: the dir field of point count−2 (address 0x304 + count·0x1c in the actor).
+   - s = 0.75 (0x591e38) × the 2D length of the desired delta.
+   - When D.y·P.x <= D.x·P.y (the compare at 0x500f37) the actor steps to the side S = 0x10: if the side bit 8 is clear the
+     delta xy becomes (−s·N.y, s·N.x); if bit 8 is set (it stepped the other way last time) 0.33 (0x56f6b8) of that is added
+     to the existing delta instead. Otherwise S = 8: with bit 0x10 clear the delta xy becomes (s·N.y, −s·N.x); with it set
+     0.33 of that is added. Delta z is left alone.
+   - Restore (1.), attempt 2 with 0x5487c0. Result 0: clear the side bits, return 0.
+4. The second sidestep needs only: not start-solid and 0x500d80 true for the new hit entity (no 0x5442a0 check). It uses the
+   new hit position and (normalised in place) new hit normal, the same P, s' = 0.75·s, and the same four cases (with the
+   side bits as they were on entry, the delta as left by step 3). Restore, attempt 3; result 0: clear the side bits, return 0.
+5. Tail (0x5011d7), reached after the last attempt that ran:
+   - Side change: let B = flags & 0x18. When B != 0 the bits are cleared and the side "flipped" when S != 0 and S != B.
+     Then flags |= S. Let F = flipped.
+   - The last move's hit entity H (+0x318). H == 0x7ff: +0x318 = first hit, return 1.
+   - Unless F, F becomes "blocked": true when the path budget is used up (0x543bc0: budget +0x3b0 <= 0.001, 0x591e30), else
+     true when the progress of the block origin from the gentity origin along the normalised desired delta (0x421300, 2D)
+     is less than 0.25 (0x591fe0) × the delta's 2D length.
+   - When the first hit or else H is a sentient (gentity +0x104 non-zero; the first hit wins), that entity becomes the
+     avoided sentient (+0x6ba, path +0x38a) and a detour count (+0x6b4, path +0x384) of 0 becomes −1. Then: not F ->
+     +0x318 = 0x7ff, return 1; F -> +0x318 = the first hit when that is a sentient (else H stays), return 1.
+   - Neither is a sentient: not F -> +0x318 = first hit, return 1. F -> re-plan with 0x5037e0; when the path count
+     (+0x6b0) changed, +0x318 = first hit and return 1; else return 0 (+0x318 stays H), which sends the caller to the raw
+     delta move.
+
+0x500d80 (arg = an entity number, this = actor) for a hit gentity: one with a sentient (+0x104): level time < actor +0x724
+(the detour time). Else 0 when its flags +0x128 have bit 0x400; else actor +0x6ec > gentity +0x1ec (signed). Actor +0x6ec is
+the path's plan time (path +0x3bc, written when a path is built). Gentity +0x1ec has one writer for gentities,
+disconnectpaths (0x519860: clears flag 0x400 and stores the level time at 0x519883); connectpaths (0x5197a0) sets flag
+0x400 (0x5197ae). So a non-sentient is avoided unless connectpaths was called on it, and, after a disconnectpaths, only by
+a path planned later than that call. Entities that never ran either (the world, vehicles, script models) have 0 there,
+so any planned path (plan time > 0) avoids them. (The vehicle engine flag at "+0x1ec", 0x50dbb7 / 0x513e9d, is in the
+vehicle record reached through gentity +0x108, not in the gentity.)
+
+0x5442a0 (edx = path +0x330) returns 1 when: count − 1 > the traversal index (+0x386); points count−1 and count−2 both
+have a node (node field >= 0); flag 0x20 of +0x3b8 is clear; the budget is not used up (0x543bc0 false); and either the
+count differs from the planned count (+0x382) or the path start (+0x3c8) is not exactly point count−1's position
+(0x415c50, a 3D equality test). Otherwise 0.
 
 ### Negotiation trigger snap (0x503ec0, 0x503fb0..0x503fda)
 

@@ -96,6 +96,7 @@ int main() {
         const int r = slideMove(pm, false, [&](const float*, const float*) {
             SlideTrace t;
             t.fraction = 0;
+            t.startSolid = true;
             t.allSolid = true;
             return t;
         });
@@ -111,6 +112,7 @@ int main() {
             if (solid(px, py, pz)) {
                 t.fraction = 0;
                 t.startSolid = true;
+                t.allSolid = true;
                 return t;
             }
             for (int i = 1; i <= N; ++i) {
@@ -236,6 +238,69 @@ int main() {
         // gethityaw: the yaw of the reversed hit normal, 0..360; zero vector gives 0
         CHECK(near(actorHitYaw(-1, 0), 0.0f) && near(actorHitYaw(0, -1), 90.0f) && near(actorHitYaw(1, 0), 180.0f) && near(actorHitYaw(0, 1), 270.0f));
         CHECK(actorHitYaw(0, 0) == 0.0f);
+    }
+    {
+        // 0x500de0 sidestep delta: s = 4, unit normal (-1, 0) (a wall ahead along +x), first segment direction (1, 0).
+        const float n[2] = {-1, 0}, seg[2] = {1, 0};
+        float d1[3] = {8, 0, 1};
+        const float left[2] = {-50, 0}; // d.y*P.x (0) <= d.x*P.y (0): side 0x10, delta (-s*n.y, s*n.x)
+        CHECK(sidestepDelta(d1, left, n, seg, 4.0f, 0) == 0x10 && near(d1[0], 0.0f) && near(d1[1], -4.0f) && d1[2] == 1.0f);
+        float d2[3] = {8, 0, 0};
+        const float right[2] = {0, 5}; // 5 > 0: side 8, delta (s*n.y, -s*n.x)
+        CHECK(sidestepDelta(d2, right, n, seg, 4.0f, 0) == 8 && near(d2[0], 0.0f) && near(d2[1], 4.0f));
+        float d3[3] = {8, 0, 0}; // stepped the other way last time: 0.33 of the side vector is added
+        CHECK(sidestepDelta(d3, left, n, seg, 4.0f, 8) == 0x10 && near(d3[0], 8.0f) && near(d3[1], -1.32f));
+        float d4[3] = {8, 0, 0};
+        CHECK(sidestepDelta(d4, right, n, seg, 4.0f, 0x10) == 8 && near(d4[0], 8.0f) && near(d4[1], 1.32f));
+    }
+    {
+        // 0x5011d7: side bits replaced; a flip only when an old side differs from a new non-zero one
+        int f = 0x100;
+        CHECK(!sidestepFlip(f, 8) && f == 0x108);
+        CHECK(!sidestepFlip(f, 8) && f == 0x108);
+        CHECK(sidestepFlip(f, 0x10) && f == 0x110);
+        CHECK(!sidestepFlip(f, 0) && f == 0x100);
+        // 0x501248: progress along the delta below a quarter of its length
+        const float eo[3] = {0, 0, 0}, delta[3] = {8, 0, 0};
+        const float a[3] = {1.9f, 5, 0}, b[3] = {2.1f, 0, 0};
+        CHECK(sidestepShort(a, eo, delta) && !sidestepShort(b, eo, delta));
+        // 0x5442a0
+        CHECK(pathSidestepOk(4, 4, 0, 3, 2, 0, 100.0f, false));
+        CHECK(!pathSidestepOk(4, 4, 0, 3, 2, 0, 100.0f, true)); // still exactly on the planned start
+        CHECK(pathSidestepOk(5, 4, 0, 3, 2, 0, 100.0f, true));  // re-extended path
+        CHECK(!pathSidestepOk(4, 4, 3, 3, 2, 0, 100.0f, false)); // first segment is a traversal
+        CHECK(!pathSidestepOk(4, 4, 0, -1, 2, 0, 100.0f, false));
+        CHECK(!pathSidestepOk(4, 4, 0, 3, 2, 0x20, 100.0f, false));
+        CHECK(!pathSidestepOk(4, 4, 0, 3, 2, 0, 0.001f, false));
+    }
+    {
+        // sidestepAttempts against a wall (entity 5) at x = 10 on a floor: the first move stops at the wall; with the
+        // sidestep allowed the delta turns to -y (side 0x10, s = 0.75 * 20); the second move hits nothing, and since
+        // 0x500d80 also passes for the empty slot 0x7ff the third move runs with s * 0.75 from the stale hit record.
+        auto run = [&](bool avoid, ActorSlide& pm) {
+            pm.dt = 0.05f;
+            pm.timeMs = 50;
+            pm.mode = 1;
+            pm.mask = 1;
+            pm.groundEnt = 0x7fe;
+            pm.moveDelta[0] = 20;
+            SidestepInput in;
+            in.start[0] = -100;
+            in.segDir[0] = 1;
+            in.pathOk = true;
+            in.avoid = [avoid](int) { return avoid; };
+            const float eo[3] = {0, 0, 0};
+            return sidestepAttempts(pm, eo, in, [&](const float* s, const float* e) { return planeTrace(s, e, 10, 5); });
+        };
+        ActorSlide a;
+        const SidestepResult ra = run(false, a);
+        CHECK(ra.outcome == SidestepOutcome::Tail && ra.side == 0 && ra.firstHit == 5);
+        CHECK(near(a.origin[0], 10.0f, 0.2f) && near(a.origin[1], 0.0f));
+        ActorSlide b;
+        const SidestepResult rb = run(true, b);
+        CHECK(rb.outcome == SidestepOutcome::Tail && rb.side == 0x10 && rb.firstHit == 5);
+        CHECK(near(b.moveDelta[1], -11.25f) && near(b.origin[1], -11.25f, 0.01f) && near(b.origin[0], 0.0f, 0.01f));
+        CHECK(b.hitEnt == 0x7ff);
     }
     if (failures == 0) std::cout << "actorslide: all passed\n";
     return failures == 0 ? 0 : 1;

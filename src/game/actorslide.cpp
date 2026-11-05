@@ -33,7 +33,7 @@ void recordHit(ActorSlide& pm, uint16_t ent, float nx, float ny) {
     pm.hitPos[1] = pm.origin[1];
     pm.hitNormal[0] = nx;
     pm.hitNormal[1] = ny;
-    pm.hitIsAllSolid = false;
+    pm.hitIsStartSolid = false;
 }
 } // namespace
 
@@ -110,14 +110,14 @@ int slideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
         if (tr.fraction > 0.0f) {
             for (int a = 0; a < 3; ++a) pm.origin[a] = (end[a] - pm.origin[a]) * tr.fraction + pm.origin[a];
             if (tr.fraction == 1.0f) return finish();
-        } else if (tr.allSolid) {
+        } else if (tr.startSolid) {
             vel[2] = 0.0f;
             if (bump == 0 && pm.flag87) return 2;
             if (pm.hitEnt == 0x7ff) {
                 pm.hitEnt = tr.entity;
                 pm.hitPos[0] = pm.origin[0];
                 pm.hitPos[1] = pm.origin[1];
-                pm.hitIsAllSolid = true;
+                pm.hitIsStartSolid = true;
             }
             return 1;
         }
@@ -193,7 +193,7 @@ int slideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
                 pm.hitPos[1] = pm.origin[1];
                 pm.hitNormal[0] = clipVel[0] - vel[0];
                 pm.hitNormal[1] = clipVel[1] - vel[1];
-                pm.hitIsAllSolid = false;
+                pm.hitIsStartSolid = false;
             }
             for (int a = 0; a < 3; ++a) {
                 vel[a] = clipVel[a];
@@ -220,7 +220,7 @@ int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
     }
     const float up[3] = {o0[0], o0[1], o0[2] + s};
     const SlideTrace u = trace(o0, up);
-    if (u.startSolid) return u.fraction == 0.0f ? 0 : 1;
+    if (u.allSolid) return u.fraction == 0.0f ? 0 : 1;
     const ActorSlide saved = pm;
     pm.hitEnt = 0x7ff;
     pm.groundPlane = false;
@@ -235,7 +235,7 @@ int stepSlideMove(ActorSlide& pm, bool gravity, const SlideTraceFn& trace) {
     }
     const float e2[3] = {pm.origin[0], pm.origin[1], (o0[2] - upZ) + pm.origin[2]};
     const SlideTrace d2 = trace(pm.origin, e2);
-    if (!d2.allSolid)
+    if (!d2.startSolid)
         for (int a = 0; a < 3; ++a) pm.origin[a] = (e2[a] - pm.origin[a]) * d2.fraction + pm.origin[a];
     if (!(d2.fraction < 1.0f)) return 1;
     if (d2.normal[2] >= 0.3f) {
@@ -259,22 +259,22 @@ void groundProbe(ActorSlide& pm, const SlideTraceFn& trace) {
         pm.groundTrace[3] = t.normal[2];
         pm.groundSurfFlags = t.surfFlags;
         for (int a = 0; a < 3; ++a) pm.groundNormal[a] = t.normal[a]; // 0x1cbac68 is the same memory
-        pm.flag87 = t.allSolid;
+        pm.flag87 = t.startSolid;
     };
     SlideTrace r = trace(start, end);
     store(r);
-    if (r.allSolid) {
+    if (r.startSolid) {
         if (r.surface & 0x2000000u) {
             addTouch(pm, r.entity);
             pm.mask &= ~0x2000000u;
             r = trace(start, end);
             store(r);
         }
-        if (r.allSolid) {
+        if (r.startSolid) {
             const float o[3] = {pm.origin[0], pm.origin[1], pm.origin[2]};
             r = trace(o, end);
             store(r);
-            if (r.allSolid) {
+            if (r.startSolid) {
                 pm.groundEnt = r.entity;
                 pm.groundPlane = false;
                 pm.groundEntValid = true;
@@ -307,7 +307,7 @@ void groundProbe(ActorSlide& pm, const SlideTraceFn& trace) {
             pm.hitPos[1] = pm.origin[1];
             pm.hitNormal[0] = r.normal[0];
             pm.hitNormal[1] = r.normal[0]; // the exe stores normal.x for both (0x548521 / 0x54852c)
-            pm.hitIsAllSolid = false;
+            pm.hitIsStartSolid = false;
         }
         return;
     }
@@ -391,6 +391,105 @@ bool pathSteepUnlifted(float lookSlope, float deltaZ, float blockZ, float entity
 
 // 0x501ef3..0x501f13: budget (+0x6e0) below 64 becomes 64.
 float pathDirectBudget(float budget) { return budget < 64.0f ? 64.0f : budget; }
+
+// 0x500de0 (docs/spec/ai.md "The path mover with its sidestep").
+int sidestepDelta(float moveDelta[3], const float d[2], const float n[2], const float segDir[2], float s, int sideBits) {
+    const float a = s * n[1], b = s * n[0];
+    if (!(d[1] * segDir[0] > d[0] * segDir[1])) { // 0x500f37: not above -> side 0x10
+        if (!(sideBits & 8)) {
+            moveDelta[0] = -a;
+            moveDelta[1] = b;
+        } else {
+            moveDelta[0] -= a * 0.33f; // 0x56f6b8
+            moveDelta[1] += b * 0.33f;
+        }
+        return 0x10;
+    }
+    if (!(sideBits & 0x10)) {
+        moveDelta[0] = a;
+        moveDelta[1] = -b;
+    } else {
+        moveDelta[0] += a * 0.33f;
+        moveDelta[1] -= b * 0.33f;
+    }
+    return 8;
+}
+
+SidestepResult sidestepAttempts(ActorSlide& pm, const float entityOrigin[3], const SidestepInput& in, const SlideTraceFn& trace) {
+    float vel[3];
+    for (int a = 0; a < 3; ++a) vel[a] = pm.velocity[a];
+    const uint16_t ground = pm.groundEnt;
+    const bool contact = pm.contact;
+    const float contactNz = pm.contactNormalZ;
+    auto attempt = [&]() {
+        for (int a = 0; a < 3; ++a) {
+            pm.velocity[a] = vel[a];
+            pm.origin[a] = entityOrigin[a];
+        }
+        pm.groundEnt = ground;
+        pm.contact = contact;
+        pm.contactNormalZ = contactNz;
+        return moveBlock(pm, trace) != 0;
+    };
+    SidestepResult r;
+    if (!attempt()) {
+        r.outcome = SidestepOutcome::Failed;
+        return r;
+    }
+    if (pm.hitEnt == 0x7ff) return r;
+    r.outcome = SidestepOutcome::Tail;
+    r.firstHit = pm.hitEnt;
+    if (pm.hitIsStartSolid || !in.avoid || !in.avoid(pm.hitEnt) || !in.pathOk) return r;
+    auto turn = [&](float s) {
+        const float d[2] = {in.start[0] - pm.hitPos[0], in.start[1] - pm.hitPos[1]};
+        const float len = std::sqrt(pm.hitNormal[0] * pm.hitNormal[0] + pm.hitNormal[1] * pm.hitNormal[1]); // 0x421160, in place
+        if (len != 0.0f) {
+            pm.hitNormal[0] /= len;
+            pm.hitNormal[1] /= len;
+        }
+        r.side = sidestepDelta(pm.moveDelta, d, pm.hitNormal, in.segDir, s, in.sideBits);
+    };
+    const float s = std::sqrt(pm.moveDelta[0] * pm.moveDelta[0] + pm.moveDelta[1] * pm.moveDelta[1]) * 0.75f; // 0x591e38
+    turn(s);
+    if (!attempt()) {
+        r.outcome = SidestepOutcome::Failed;
+        return r;
+    }
+    if (pm.hitIsStartSolid || !in.avoid(pm.hitEnt)) return r;
+    turn(s * 0.75f);
+    if (!attempt()) r.outcome = SidestepOutcome::Failed;
+    return r;
+}
+
+bool sidestepFlip(int& flags, int side) {
+    const int b = flags & 0x18;
+    bool flipped = false;
+    if (b != 0) {
+        flipped = side != 0 && side != b;
+        flags &= ~0x18;
+    }
+    flags |= side;
+    return flipped;
+}
+
+bool sidestepShort(const float blockOrigin[3], const float entityOrigin[3], const float moveDelta[3]) {
+    const float len = std::sqrt(moveDelta[0] * moveDelta[0] + moveDelta[1] * moveDelta[1]); // 0x421300
+    float n[2] = {0, 0};
+    if (len != 0.0f) {
+        n[0] = moveDelta[0] / len;
+        n[1] = moveDelta[1] / len;
+    }
+    const float dot = (blockOrigin[0] - entityOrigin[0]) * n[0] + (blockOrigin[1] - entityOrigin[1]) * n[1];
+    return len * 0.25f > dot; // 0x591fe0
+}
+
+bool pathSidestepOk(int count, int planned, int traversal, int nodeLast, int nodePrev, uint32_t flags, float budget, bool startAtLast) {
+    if (!(count - 1 > traversal)) return false;
+    if (nodeLast < 0 || nodePrev < 0) return false;
+    if (flags & 0x20) return false;
+    if (!(budget > 0.001f)) return false; // 0x543bc0 (0x591e30)
+    return count != planned || !startAtLast;
+}
 
 bool nearestReplaces(float bestD2, float candidateD2) { return bestD2 >= candidateD2; }
 

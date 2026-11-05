@@ -268,15 +268,68 @@ void World::standOrFollow(Entity& e, const std::string& script) {
 
 // 0x500d80 (this = actor, arg = the bumped entity number +0x318): the lookahead shrink flag of the followed branch. A bumped
 // gentity with a sentient (+0x104: an actor or the player): level time < +0x724. Otherwise 0 when its contents hold 0x400 (an
-// obstacle, as gethitenttype), else actor +0x6ec > gentity +0x1ec as signed integers. TODO(spec): neither field has a writer
-// that was found (+0x6ec is only read, +0x1ec is the pain point of an actor struct and zero for other gentities), so the last
-// branch is taken as false.
+// obstacle, as gethitenttype), else actor +0x6ec (the path plan time, path +0x3bc) > gentity +0x1ec (the time of its last
+// disconnectpaths, 0x519883; 0 when it never ran) as signed integers. The world (0x7fe), the empty slot 0x7ff and any entity
+// without a script object are zeroed gentities: only the plan time test applies.
 bool World::followShrink(Entity& e, int bumped) {
-    if (bumped < 0 || bumped >= 0x7fe) return false;
-    Entity* o = entityByNumber(bumped);
-    if (!o) return false;
-    if (o->isActor || o->isPlayer) return timeMs_ < e.ai.detourMs;
-    return false;
+    Entity* o = bumped >= 0 && bumped < 0x7fe ? entityByNumber(bumped) : nullptr;
+    if (o && (o->isActor || o->isPlayer)) return timeMs_ < e.ai.detourMs;
+    if (o && o->pathsConnected) return false;
+    return e.path.planMs > (o ? o->disconnectMs : 0);
+}
+
+// 0x500de0, the path mover (docs/spec/ai.md "The path mover with its sidestep"): the move block with up to two sidesteps
+// (sidestepAttempts), then the tail 0x5011d7: side bits, the avoided sentient and the re-plan. pm.hitEnt leaves as the +0x318
+// value. Returns false when the caller takes the raw delta move.
+bool World::pathMover(Entity& e, ActorSlide& pm, const SlideTraceFn& fn, const Vec3& before) {
+    ActorPath& p = e.path;
+    SidestepInput in;
+    in.start[0] = p.start[0];
+    in.start[1] = p.start[1];
+    if (p.count >= 2) {
+        const PathPoint& seg = p.pts[size_t(p.count - 2)];
+        in.segDir[0] = seg.dir[0];
+        in.segDir[1] = seg.dir[1];
+    }
+    in.sideBits = e.ai.sideBits & 0x18;
+    if (p.count >= 2) {
+        const PathPoint& last = p.pts[size_t(p.count - 1)];
+        in.pathOk = pathSidestepOk(p.count, p.planned, p.traversal, last.node, p.pts[size_t(p.count - 2)].node, p.flags, p.budget,
+                                   p.start[0] == last.pos[0] && p.start[1] == last.pos[1] && p.start[2] == last.pos[2]);
+    }
+    in.avoid = [&](int ent) { return followShrink(e, ent); };
+    const float eo[3] = {before[0], before[1], before[2]};
+    const SidestepResult r = sidestepAttempts(pm, eo, in, fn);
+    if (r.outcome != SidestepOutcome::Tail) {
+        e.ai.sideBits &= ~0x18;
+        return r.outcome == SidestepOutcome::Clear;
+    }
+    bool flipped = sidestepFlip(e.ai.sideBits, r.side);
+    const int hit = pm.hitEnt;
+    if (hit == 0x7ff) {
+        pm.hitEnt = uint16_t(r.firstHit);
+        return true;
+    }
+    if (!flipped) flipped = !(p.budget > 0.001f) || sidestepShort(pm.origin, eo, pm.moveDelta); // 0x543bc0, 0x501248
+    auto sentient = [&](int n) {
+        Entity* o = n >= 0 && n < 0x7fe ? entityByNumber(n) : nullptr;
+        return o && isSentient(*o);
+    };
+    const bool firstSentient = sentient(r.firstHit);
+    if (firstSentient || sentient(hit)) {
+        if (p.detour == 0) p.detour = -1;
+        p.avoidEnt = firstSentient ? r.firstHit : hit;
+        if (!flipped) pm.hitEnt = 0x7ff;
+        else if (firstSentient) pm.hitEnt = uint16_t(r.firstHit);
+        return true;
+    }
+    if (flipped) {
+        const int count = p.count;
+        replanFromSentient(e);
+        if (p.count == count) return false;
+    }
+    pm.hitEnt = uint16_t(r.firstHit);
+    return true;
 }
 
 // Bookkeeping after the actor move 0x5487c0: +0x318 is the block's hit entity (+0xf4). The followed link itself is written by
@@ -940,3 +993,4 @@ int World::stepActorPath(Entity& e, bool wide, bool run) {
 }
 
 } // namespace iw2::game
+
