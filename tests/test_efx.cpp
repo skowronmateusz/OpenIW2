@@ -309,6 +309,32 @@ int main() {
         ks2.sprites(200);
         CHECK(loads.empty() && ks2.count() == 0);
     }
+    // A level change drops the effects bolted to the old world: clear() empties every particle and queue, and the bolt
+    // (which points into the old world) is never called again.
+    {
+        iw2::game::FxSystem sc;
+        bool worldAlive = true;
+        int calls = 0;
+        auto cb = std::make_shared<iw2::game::FxBolt>([&](iw2::game::FxTag& o) {
+            ++calls;
+            if (!worldAlive) { std::cerr << "bolt called after the world was freed\n"; ++failures; return false; }
+            o.origin = {1, 2, 3};
+            return true;
+        });
+        sc.playBolted(boltedFx, cb, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 0);
+        sc.sprites(50);
+        CHECK(sc.count() == 2 && calls > 0);
+        sc.clear();
+        worldAlive = false; // the old world is gone
+        CHECK(sc.count() == 0);
+        sc.sprites(100);
+        sc.sprites(200);
+        CHECK(sc.count() == 0 && sc.sightBlockers().empty());
+        valid = true;
+        worldAlive = true; // the cleared system works again with a bolt of the new world
+        sc.playBolted(boltedFx, cb, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 300);
+        CHECK(sc.count() == 2);
+    }
     if (failures) return 1;
     std::cout << "efx tests passed\n";
     return 0;

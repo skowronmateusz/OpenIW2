@@ -219,6 +219,9 @@ public:
     // Cloud elements alive at the last sprites() call.
     const std::vector<FxCloud>& clouds() const { return clouds_; }
     size_t count() const { return particles_.size(); }
+    // Drops every live and queued effect, tracer and decal (a level change or restart: the effects, and the bolts that
+    // point into the old world, must not outlive it).
+    void clear();
     // The sight blockers at the time of the last sprites() call (rebuilt there, like 0x48b000 after the update).
     const std::vector<FxSightBlocker>& sightBlockers() const { return sightBlockers_; }
 

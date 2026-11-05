@@ -3595,6 +3595,15 @@ int main(int argc, char** argv) {
         std::map<std::pair<int, std::string>, DrawnTag> drawnTags;
         std::map<int, std::set<std::string>> boltTags; // tags of bolted world effects per entity (filled when played)
         int64_t renderStamp = 0;
+        // World generation: bumped whenever the world is destroyed. A bolt callback of an older generation never touches
+        // the (freed) world; endWorldFx also drops every effect and cached tag of the old level.
+        uint64_t worldGen = 0;
+        auto endWorldFx = [&]() {
+            ++worldGen;
+            fxSystem.clear();
+            drawnTags.clear();
+            boltTags.clear();
+        };
         auto recordDrawnTags = [&](int number, const BoneMap& bones, const Vec3& ov, const Vec3& av) {
             // tag_flash / tag_brass always (a flash event of this frame is drained after the entity loop, before its bolt is
             // known), plus any other tag a bolted world effect of this entity uses.
@@ -3632,7 +3641,8 @@ int main(int argc, char** argv) {
                     game::World* wp = world.get();
                     // 0x48abb0: the tag orientation (origin + axes), refreshed once per frame stamp (cached per world time here).
                     boltTags[ev.entity].insert(ev.tag);
-                    auto bolt = std::make_shared<game::FxBolt>([wp, &drawnTags, &renderStamp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
+                    auto bolt = std::make_shared<game::FxBolt>([wp, &worldGen, gen = worldGen, &drawnTags, &renderStamp, n = ev.entity, tag = ev.tag, lastT = int64_t(-1), last = game::FxTag{}, ok = false](game::FxTag& out) mutable {
+                        if (gen != worldGen) return false; // the world this bolt was made for is gone
                         if (const auto dt = drawnTags.find({n, tag}); dt != drawnTags.end() && dt->second.stamp == renderStamp) {
                             out = dt->second.tag; // the drawn pose of this rendered frame
                             return true;
@@ -7969,6 +7979,7 @@ int main(int argc, char** argv) {
                 pendingLevel.reset();
                 pendingPersistent = false;
                 loadScreenPhase = 0;
+                endWorldFx();
                 world.reset();
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);
@@ -8019,6 +8030,7 @@ int main(int argc, char** argv) {
                 if (world && pendingPersistent && !loadedSave) heldPlayer = world->carriedPlayerState();
                 heldSave = std::move(loadedSave);
                 loadedSave.reset();
+                endWorldFx();
                 world.reset();
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);

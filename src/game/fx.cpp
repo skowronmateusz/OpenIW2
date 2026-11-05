@@ -217,6 +217,21 @@ void FxSystem::play(const std::shared_ptr<const assets::EfxEffect>& fx, const FV
     playAxes(fx, origin, FxAxes{f, r, up}, nowMs);
 }
 
+void FxSystem::clear() {
+    particles_.clear();
+    decals_.clear();
+    pending_.clear();
+    impactQueue_.clear();
+    tracers_.clear();
+    deferred_.clear();
+    curBolt_.reset();
+    gate_ = nullptr;
+    sightBlockers_.clear();
+    models_.clear();
+    lights_.clear();
+    clouds_.clear();
+}
+
 void FxSystem::playBolted(const std::shared_ptr<const assets::EfxEffect>& fx, std::shared_ptr<FxBolt> bolt, const FxAxes& axes, int64_t nowMs) {
     FxTag at;
     if (!bolt || !(*bolt)(at)) return; // 0x4853f0: an invalid attachment plays nothing
