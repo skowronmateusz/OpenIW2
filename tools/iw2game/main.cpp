@@ -15,6 +15,7 @@
 #include "game/clientinput.h"
 #include "game/playerweapon.h"
 #include "game/savestate.h"
+#include "game/softlock.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -2264,6 +2265,10 @@ int main(int argc, char** argv) {
                                                   (targets.empty() ? std::string() : ", reached " + std::to_string(reached) + " of " + std::to_string(targets.size()) + " stages"));
                             std::cout << autoplayLog.back() << "\n";
                             for (const auto& [k, n] : sites) autoplayLog.push_back("    x" + std::to_string(n) + " " + k);
+                            { // soft-lock analysis at the stall: the AI-group waits and the flood spawners that stopped short
+                                const auto sl = iw2::game::analyzeSoftlocks(world);
+                                for (const auto& l : iw2::game::formatSoftlockReport(sl, false)) autoplayLog.push_back("    " + l);
+                            }
                             lastActionT = t; actionsSinceProgress = 0;
                         }
                     }
@@ -2456,6 +2461,13 @@ int main(int argc, char** argv) {
             r << "saves " << savesSeen << "\n";
             r << "stalls " << stallCount << "\n";
             r << "forced " << forcedEvents.size() << "\n";
+            const auto softlock = iw2::game::analyzeSoftlocks(world);
+            r << "softlock_groups " << softlock.softlockGroups() << "\n";
+            r << "softlock_groups_unwaited " << softlock.unwaitedSoftlockGroups() << "\n";
+            r << "short_spawners " << softlock.shortSpawners.size() << "\n";
+            r << "dead_spawn_waits " << softlock.deadSpawnWaitCount() << "\n";
+            r << "short_spawners_antispawn " << softlock.shortAntispawn << "\n";
+            r << "short_spawners_live " << softlock.shortLive << "\n";
             {
                 size_t reached = 0;
                 for (const auto& n : targets) reached += seenNotifies.count(n);
@@ -2486,6 +2498,9 @@ int main(int argc, char** argv) {
             for (const auto& d : world.vm().describeThreads())
                 if (d.rfind("maps/", 0) == 0) ++sites[d];
             for (const auto& [k, n] : sites) r << n << " " << k << "\n";
+            r << "[softlock]\n"; // docs/debug-flags.md: AI-group waits, spawner statistics, level waits that no thread names
+            r << "untouched_spawners " << softlock.untouchedSpawners << "\n";
+            for (const auto& l : iw2::game::formatSoftlockReport(softlock, true)) r << l << "\n";
         }
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";

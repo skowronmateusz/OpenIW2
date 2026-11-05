@@ -1094,6 +1094,36 @@ std::vector<VM::Waiter> VM::waiters() const {
     return out;
 }
 
+std::vector<VM::ThreadInfo> VM::threadInfos() const {
+    std::vector<ThreadInfo> out;
+    for (const auto& th : threads_) {
+        if (th->state == ThreadState::Done || th->frames.empty()) continue;
+        ThreadInfo ti;
+        ti.id = th->id;
+        ti.state = th->state;
+        if (th->state == ThreadState::WaitingNotify) { ti.waitObject = th->waitObject; ti.waitEvent = th->waitEvent; }
+        for (const Frame& fr : th->frames) {
+            if (fr.function < 0) continue;
+            const CompiledFunction& f = functions_[size_t(fr.function)];
+            FrameInfo fi;
+            fi.file = f.file;
+            fi.function = f.name;
+            fi.line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
+            fi.self = fr.self;
+            for (const Value& l : fr.locals)
+                if (l.isString()) fi.localStrings.push_back(l.asString());
+            fi.literals = f.strings;
+            for (const Instr& in : f.code) {
+                if (in.op == Op::CallScript && in.a >= 0 && size_t(in.a) < functions_.size()) fi.callees.push_back(functions_[size_t(in.a)].name);
+                else if (in.op == Op::CallBuiltin && in.a >= 0 && size_t(in.a) < builtinNames_.size()) fi.callees.push_back(builtinNames_[size_t(in.a)]);
+            }
+            ti.frames.push_back(std::move(fi));
+        }
+        out.push_back(std::move(ti));
+    }
+    return out;
+}
+
 void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args) {
     if (notifyHook) notifyHook(object, event); // debug
     if (static const char* log = std::getenv("IW2_NOTIFY_LOG"); log && (object->kind == "level" || std::string(log) == "all")) // debug

@@ -414,6 +414,15 @@ void World::dropSpawners() {
 
 // Spawns an AI from an actor spawner: copies the spawner's key/values, runs aitype/<class>.gsc::main() on the new
 // actor, notifies the spawner "spawned", and starts animscripts/init.gsc::main() (docs/spec/ai.md).
+void World::recordSpawnRefusal(const Entity& spawner, const Value& count, const std::string& reason) {
+    if (mapStartSpawn_) return;
+    SpawnerStats& st = spawnerStats_[spawner.number];
+    if (st.initialCount < 0 && count.isInt()) st.initialCount = count.asInt();
+    ++st.refusals[reason];
+    st.lastRefusal = reason;
+    st.lastRefusalMs = timeMs_;
+}
+
 Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) {
     // 0x532200..0x532229: the bool dvar ai_disableSpawn (registered at 0x4d89d7, default 0; 0x1c14880) refuses every
     // dospawn / stalingradspawn. The map-start actors do not go through this core (0x4fc640 directly).
@@ -421,6 +430,7 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
         const auto it = cvars.find("ai_disableSpawn");
         if (it != cvars.end() && std::atoi(it->second.c_str()) != 0) {
             print("Attempted spawn prevented by ai_disableSpawn.");
+            recordSpawnRefusal(spawner, spawner.obj->get("count"), "ai_disableSpawn");
             return nullptr;
         }
     }
@@ -437,12 +447,14 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
     if (!force) {
         if (spawnWouldTelefrag(spawner)) {
             print("^3couldn't spawn from " + spawnerName + " because spawnpoint would telefrag");
+            recordSpawnRefusal(spawner, count, "spawnpoint would telefrag");
             return nullptr;
         }
         if (!levelInitializing_ && player_) {
             const Value so = spawner.obj->get("origin");
             if (so.isVector() && sightToActorBox(eyePosition(*player_), so.asVector(), player_->number, spawner.number)) {
                 print("^3couldn't spawn from " + spawnerName + " because player can see spawnpoint");
+                recordSpawnRefusal(spawner, count, "player can see spawnpoint");
                 return nullptr;
             }
         }
@@ -470,10 +482,17 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
         if (full) {
             // a map-start placed actor is freed silently (0x4fc6a9); the message is dospawn's (0x532398)
             if (!mapStartSpawn_) print("^3couldn't spawn from " + spawnerName + " because there are no free actors");
+            recordSpawnRefusal(spawner, count, "no free actors");
             return nullptr;
         }
     }
     if (count.isInt()) spawner.obj->set("count", Value(int32_t(count.asInt() - 1)));
+    if (!mapStartSpawn_) {
+        SpawnerStats& st = spawnerStats_[spawner.number];
+        if (st.initialCount < 0 && count.isInt()) st.initialCount = count.asInt();
+        ++st.spawned;
+        st.lastSpawnMs = timeMs_;
+    }
 
     const std::string cls = spawner.classname;
     Entity& a = spawnEntity(cls);

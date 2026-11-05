@@ -154,13 +154,13 @@ write_summary() {
     {
         echo "# Script sweep $(date '+%Y-%m-%d %H:%M'), $seconds s, seeds: $seeds, $wall s wall"
         echo
-        echo "| map | seed | mode | errors | loop kills | missing built-ins | objectives done | stages | notifies | stalls | forced | level change | exit |"
-        echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        echo "| map | seed | mode | errors | loop kills | missing built-ins | objectives done | stages | notifies | stalls | softlock | short | dead waits | forced | level change | exit |"
+        echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         for r in "$out"/*-s*-*.txt; do
             b=$(basename "$r" .txt)
             m=${b%-s*}; rest=${b#*-s}; seed=${rest%%-*}; tag=${rest#*-}
             stages="$(field "$r" targets_reached)/$(field "$r" targets_total)"
-            echo "| $m | $seed | $tag | $(field "$r" runtime_errors) | $(field "$r" loop_guard_kills) | $(field "$r" unimplemented_builtins) | $(count_done_objectives "$r") | $stages | $(field "$r" notifies) | $(field "$r" stalls) | $(field "$r" forced) | $(field "$r" level_change) | $(field "$r" exit) |"
+            echo "| $m | $seed | $tag | $(field "$r" runtime_errors) | $(field "$r" loop_guard_kills) | $(field "$r" unimplemented_builtins) | $(count_done_objectives "$r") | $stages | $(field "$r" notifies) | $(field "$r" stalls) | $(field "$r" softlock_groups) | $(field "$r" short_spawners) | $(field "$r" dead_spawn_waits) | $(field "$r" forced) | $(field "$r" level_change) | $(field "$r" exit) |"
         done
         echo
         echo "## Missed stages per autoplay run"
@@ -176,6 +176,11 @@ write_summary() {
         echo "## Unimplemented built-ins: count, run, name"
         for r in "$out"/*-s*-*.txt; do
             awk -v b="$(basename "$r" .txt)" '/^\[builtins\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s { print "- " b ": " $0 }' "$r"
+        done
+        echo
+        echo "## Soft-locks: AI groups with spawners nothing can start, and flood spawners that stopped short"
+        for r in "$out"/*-s*-*.txt; do
+            awk -v b="$(basename "$r" .txt)" '/^\[softlock\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s && /^(SOFTLOCK|SHORT-SPAWNER|DEAD-SPAWN-WAIT)/ { print "- " b ": " $0; g = ($1 == "SOFTLOCK") } s && g && /^    / { print "  " $0 } s && /^(group|spawner|levelwait|untouched)/ { g = 0 }' "$r"
         done
         echo
         echo "## Stalls: autoplay runs that ran out of triggers and kill gates"

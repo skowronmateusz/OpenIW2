@@ -374,6 +374,18 @@ public:
     const std::vector<std::unique_ptr<Entity>>& entities() const { return entities_; }
     const std::vector<PathNode>& nodes() const { return nodes_; }
 
+    // Debug bookkeeping of the actor spawn core (iw2game --report, src/game/softlock.cpp): per spawner entity number, how many AI the
+    // script spawns made, the count at the first attempt, and the refusals by reason ("player can see spawnpoint", "spawnpoint would
+    // telefrag", "no free actors", "ai_disableSpawn") with the time of the last one. Map-start placed actors are not recorded.
+    struct SpawnerStats {
+        int spawned = 0;
+        int initialCount = -1;             // the spawner's count at the first attempt (-1: no attempt yet)
+        std::map<std::string, int> refusals;
+        std::string lastRefusal;
+        int64_t lastRefusalMs = -1, lastSpawnMs = -1;
+    };
+    const std::map<int, SpawnerStats>& spawnerStats() const { return spawnerStats_; }
+
     // Debug: spawns one AI from each actor spawner (exercises the aitype/animscripts path).
     // Sets actorPoolUnlimited_ for the rest of the run: spawning every spawner at once would otherwise exhaust the
     // 32-slot actor pool, so later script spawns (turret gunners) would all fail.
@@ -901,6 +913,8 @@ private:
     void dropPathNodes(); // 0x515f80 / 0x515d70: path nodes put on the ground at level start
     void dropSpawners();  // 0x5325f0: spawners put on the ground at level start
     bool actorPoolUnlimited_ = false; // debug (--spawn-all): the 32-slot actor pool limit of spawnActor is not applied
+    std::map<int, SpawnerStats> spawnerStats_;
+    void recordSpawnRefusal(const Entity& spawner, const Value& count, const std::string& reason);
     bool mapStartSpawn_ = false; // spawnActor runs for the map-start placed actors (their drop sees the earlier entities only)
     void setLevelStartDropClips();
     void registerBuiltins();

@@ -163,6 +163,23 @@ public:
     // timed wait (its innermost self, event ""), with the innermost wait site ("file:line function"). Read-only.
     struct Waiter { ObjectPtr object; std::string event; std::string site; };
     std::vector<Waiter> waiters() const;
+    // Debug (iw2game --report soft-lock analysis, src/game/softlock.cpp): every live thread with its call frames, outermost
+    // first. Per frame: file, function, current line, self, the string values of its locals, the string literals of the
+    // function and the names of the script functions and built-ins it calls. Read-only.
+    struct FrameInfo {
+        std::string file, function;
+        int line = 0;
+        Value self;
+        std::vector<std::string> localStrings, literals, callees;
+    };
+    struct ThreadInfo {
+        uint64_t id = 0;
+        ThreadState state = ThreadState::Done;
+        ObjectPtr waitObject;     // waittill: the object waited on
+        std::string waitEvent;
+        std::vector<FrameInfo> frames;
+    };
+    std::vector<ThreadInfo> threadInfos() const;
     // Debug hook: called at the start of every notify (object, event), before endons and waiters run. Empty by default.
     std::function<void(const ObjectPtr&, const std::string&)> notifyHook;
     // Debug: with n > 0 the "potential infinite loop" guard kills a script after n backward jumps without suspending instead
