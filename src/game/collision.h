@@ -100,6 +100,7 @@ public:
     // Static models of the map (FUN_004152b0); point traces of the world (and sight traces) test their collision surfaces.
     void setStaticModels(std::vector<StaticModel> models);
     size_t staticModelCount() const;
+    const StaticModel& staticModel(size_t i) const;
 
     size_t brushCount() const;
     size_t triangleCount() const;

@@ -1702,6 +1702,7 @@ void CollisionWorld::setStaticModels(std::vector<StaticModel> models) {
     if (d_) d_->staticModels = std::move(models);
 }
 size_t CollisionWorld::staticModelCount() const { return d_ ? d_->staticModels.size() : 0; }
+const StaticModel& CollisionWorld::staticModel(size_t i) const { return d_->staticModels.at(i); }
 
 TraceResult CollisionWorld::traceWorld(const Vec& start, const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {
     TraceResult tr;

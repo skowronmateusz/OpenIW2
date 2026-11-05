@@ -291,6 +291,16 @@ G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero prio
   surface's contents and surface flags, names the world entity (0x7fe) and the normal is turned back out of model space (0x414de0).
   The sight walk (0x41a330, test 0x414f70) is blocked when any such hit exists over the whole segment. Box traces (movement) use another
   walk and never see static models.
+- Movement never sees them (VAs in the patch 1.3 SP executable): the map load links only models whose xmodel contents word (+0x5c)
+  is not 0 into the sector tree (0x419e60), on a chain of their own (node +0xa) next to the entity chain (node +8). The box area
+  query 0x419ea0 used by the entity clipping walks only the entity chain. G_Trace (0x44bf00) runs the static-model point walk
+  (0x41a290 -> 0x41a060) after the world trace only when its seventh argument is set; the player trace wrapper 0x4db7f0 (pmove,
+  docs/spec/pmove.md) pushes 0 for it. So a player or an actor walks through a misc_model unless the map has clip brushes around it.
+- trainyard pipe stage (`trigger_inpipe`, maps/trainyard.gsc:586): the rings inside the pipe are `railpipe_connector` misc_models
+  (-610 -3995 384, -610 -3275 384, -610 -2684 384, and -610 -5094 64 at the bunker end). Their collision surface sits about 2 units
+  inside the 32-unit pipe wall (radius 30 over 18 units of length), so bullets hit them, the player's box does not. The towers that
+  carry the pipe (`prop_pipetower_*`, no collision surfaces) are wrapped in `clip` brushes (contents 0x28030200, e.g. the brushes
+  covering x -650..-570 at y -4031..-4024 and -3311..-3304), which do stop the player. tests/test_pipecollision.cpp checks both.
 - So a bullet (mask 0x280e831) hits e.g. the hill400 / military hedgehogs (surface contents 1, surface flags 0xd00000: surface type 13,
   metal) and the dragon's teeth (0x500000), and the impact event of Bullet_Fire carries that surface type; the older note that static
   models have no bullet collision was wrong for these models. The clip brushes baked around them (`clip`, contents 0x28030200) are
