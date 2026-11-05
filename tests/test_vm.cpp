@@ -334,6 +334,49 @@ fast(name)
         CHECK(h.joined() == "slow|fast|");
     }
 
+    // Freeing an object (entity delete): a thread in a waittill on it ends; a thread with an endon on it goes on when it is in a
+    // timed wait (flood spawner after its trigger is deleted) and is ended when it is parked in a waittill (docs/spec/gsc-vm.md).
+    {
+        Harness h;
+        h.files["test/free.gsc"] = R"(
+main()
+{
+    level.trig = spawnstruct();
+    thread sleeper(level.trig);
+    thread parked(level.trig);
+    thread waiter(level.trig);
+}
+sleeper(trig)
+{
+    trig endon("antispawn");
+    for (;;)
+    {
+        wait 0.5;
+        println("sleeper");
+    }
+}
+parked(trig)
+{
+    trig endon("antispawn");
+    level waittill("never");
+    println("parked woke");
+}
+waiter(trig)
+{
+    trig waittill("something");
+    println("waiter woke");
+}
+)";
+        h.vm.start("test/free.gsc", "main");
+        h.vm.freeObject(h.vm.level()->get("trig").asObject());
+        for (int t = 50; t <= 1500; t += 50) h.vm.runFrame(t);
+        CHECK(h.joined() == "sleeper|sleeper|sleeper|");
+        h.vm.notify(h.vm.level(), "never");
+        h.vm.drainReady();
+        CHECK(h.joined() == "sleeper|sleeper|sleeper|"); // the parked thread was ended, the waiter too
+        if (h.joined() != "sleeper|sleeper|sleeper|") std::cerr << h.joined() << "\n";
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;

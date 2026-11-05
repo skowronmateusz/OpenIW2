@@ -97,3 +97,23 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   the script frame (stage 5, 0x467150).
 - Spawn (`dospawn` 0x4edff0 arg3=0, `stalingradspawn` 0x4ee120 arg3=1, core 0x532200): see docs/spec/ai.md "Spawn checks"
   (telefrag, player sight, one spawn per spawner per level time, optional targetname, 32 actor slots, forcespawn eviction).
+
+## Freeing a script object (entity delete)
+VAs in the patch 1.3 SP executable. `delete()` on an entity notifies "death" (0x46d0f0), frees the entity (0x4d7c30), which frees its
+script object (0x4670b0) onto a queue (head 0x9bef38); the queue is drained when script execution returns to the engine
+(0x467150), and each object goes through 0x46d1f0, which walks the object's notify list (key 0x1fffe):
+- An entry of type 0xa is a thread paused in a `waittill` on the object: the paused stack is released (0x46c2e0 with 0), the thread
+  ends.
+- Any other entry is an `endon` registration on the object. Its entry is turned into the dead type 0x17. The registering thread
+  itself is acted on (0x46c2e0 with 1: stack released) only when its thread variable has a 0x1ffff entry (checked at 0x46d33d).
+  0x46c2e0 files that entry (at 0x46c488) when it parks a stack for a waittill, and the thread state becomes 0x10; a thread in a
+  timed `wait` (state 0x11, handled apart in 0x46ca60 / 0x46c570) has no such entry. So a thread parked in a `waittill` (on
+  anything) with an `endon` on the freed object ends; a thread in a timed `wait`, a running or a ready one goes on, only without
+  that endon (the object can never be notified again).
+- Behavioural evidence, shipped `maps/_spawner.gsc` `flood_think`: with no antispawn trigger `flood_trigger` deletes its
+  `flood_spawner` trigger in the same frame in which it started the `flood_think` threads (`kill_trigger`), and every one of them
+  holds `trigger endon("antispawn")`. A spawner whose first `dospawn` is refused ("player can see spawnpoint", telefrag) sleeps in
+  `wait(2)` and must retry, otherwise its AI group never clears (trainyard `waittill_aigroupcleared("station")`, the station HQ
+  objective). Threads parked in `waittill("finished spawning")` / `waittill("death")` of a successful spawn do end.
+- TODO(spec): what 0x46c2e0 with 1 leaves of the lower call frames of a parked thread whose endon frame is not the first (the port
+  unwinds to the registering call and resumes the caller).

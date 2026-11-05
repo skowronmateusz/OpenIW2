@@ -1140,8 +1140,12 @@ void VM::freeObject(const ObjectPtr& object) {
 }
 
 // 0x467150 walks the freed list; 0x46d1f0 cancels the object's notify list (key 0x1fffe): an entry of type 0xa (the paused
-// stack of a waittill) is freed (0x46c2e0 with 0), i.e. that thread ends; any other entry is an endon thread, which is ended
-// the way a notify's endon ends it (0x46c2e0 with 1, the entry becomes type 0x17).
+// stack of a waittill) is freed (0x46c2e0 with 0), i.e. that thread ends. Any other entry is an endon registration (the entry
+// becomes type 0x17, dead). The endon thread itself is only touched (0x46c2e0 with 1) when it holds a 0x1ffff entry, which is
+// what a thread parked in a waittill has (0x46c2e0 files the paused stack under that key, thread state 0x10); a thread in a
+// timed wait (state 0x11, 0x46c570), a running or a ready one has none and goes on, merely without that endon. That is what
+// keeps a flood spawner alive after its `flood_spawner` trigger is deleted: _spawner.gsc flood_think sleeps in wait(2) after
+// a refused dospawn (docs/spec/gsc-vm.md "Freeing a script object").
 void VM::processFreedObjects() {
     while (!freed_.empty()) {
         std::vector<ObjectPtr> list;
@@ -1159,10 +1163,13 @@ void VM::processFreedObjects() {
                 for (const auto& e : th.endons)
                     if (e.frame < frame && e.object.lock() == object) frame = e.frame;
                 if (frame == SIZE_MAX) continue;
+                if (th.state != ThreadState::WaitingNotify || th.running) {
+                    // No 0x1ffff entry: the thread is not touched; only the endon registration on the freed object goes.
+                    std::erase_if(th.endons, [&](const Thread::EndOn& e) { return e.object.lock() == object; });
+                    continue;
+                }
                 if (frame == 0 || frame >= th.frames.size()) {
                     th.state = ThreadState::Done;
-                } else if (th.running) {
-                    if (th.pendingUnwind < 0 || int(frame) < th.pendingUnwind) th.pendingUnwind = int(frame);
                 } else {
                     unwind(th, frame);
                     resumed.push_back(&th);
