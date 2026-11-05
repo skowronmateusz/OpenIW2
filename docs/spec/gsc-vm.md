@@ -99,21 +99,37 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   (telefrag, player sight, one spawn per spawner per level time, optional targetname, 32 actor slots, forcespawn eviction).
 
 ## Freeing a script object (entity delete)
-VAs in the patch 1.3 SP executable. `delete()` on an entity notifies "death" (0x46d0f0), frees the entity (0x4d7c30), which frees its
-script object (0x4670b0) onto a queue (head 0x9bef38); the queue is drained when script execution returns to the engine
-(0x467150), and each object goes through 0x46d1f0, which walks the object's notify list (key 0x1fffe):
-- An entry of type 0xa is a thread paused in a `waittill` on the object: the paused stack is released (0x46c2e0 with 0), the thread
-  ends.
-- Any other entry is an `endon` registration on the object. Its entry is turned into the dead type 0x17. The registering thread
-  itself is acted on (0x46c2e0 with 1: stack released) only when its thread variable has a 0x1ffff entry (checked at 0x46d33d).
-  0x46c2e0 files that entry (at 0x46c488) when it parks a stack for a waittill, and the thread state becomes 0x10; a thread in a
-  timed `wait` (state 0x11, handled apart in 0x46ca60 / 0x46c570) has no such entry. So a thread parked in a `waittill` (on
-  anything) with an `endon` on the freed object ends; a thread in a timed `wait`, a running or a ready one goes on, only without
-  that endon (the object can never be notified again).
-- Behavioural evidence, shipped `maps/_spawner.gsc` `flood_think`: with no antispawn trigger `flood_trigger` deletes its
+VAs in the patch 1.3 SP executable. `delete()` on an entity notifies "death" (0x46d0f0) and frees the entity (0x4d7c30), which
+hands its script object to 0x4670b0. The object is not released there: it is marked (type 0x14), referenced once more and pushed on
+a list (head 0x9bef38). The list is drained when script execution returns to the engine (0x467150), so threads started in the same
+frame still see the object. Each queued object goes through 0x46d1f0, which takes entries off the object's notify list (key
+0x1fffe; entry name = the registering call's local id + 0x10000) until it is empty:
+- An endon registration on the object (any type but 0xa): it is removed from the call's endon table (0x46c640; global table
+  0x9bef28, key local id + 0x10000, dropped when empty) and the entry becomes the dead type 0x17 (0x46d384). The thread that owns
+  the call (found by climbing the type 0x12 parent links, 0x46d2ec..0x46d32c) is only acted on when it has a 0x1ffff entry
+  (lookup on the thread at 0x46d335..0x46d35a). The only writer of 0x1ffff entries is 0x46c2e0 called with 0 (0x46c488, see
+  below); an ordinary `waittill` keeps its paused stack in the notify list of the object it waits on (0x46c6f0 takes it from there
+  when the wait-object field of the thread is non-zero). So a thread in a `waittill` on another object, in a timed `wait` (state
+  0x11), running or ready goes on unchanged, only without that endon (the object can never be notified again).
+- A `waittill` paused on the freed object itself (entry type 0xa, value = the paused stack): the registration is removed (0x46c640)
+  and 0x46c2e0 is called with 0. 0x46c2e0 walks the paused stack from the top, releasing its values. At each code position (the
+  return point into the calling function) it asks whether the call above it still holds any endon (lookup of local id + 0x10000
+  in 0x9bef28, 0x46c38b..0x46c3bd):
+  - no: that call is ended (0x464990, 0x464ea0) and the walk goes on with its caller;
+  - yes: the walk stops and the stack is cut there (0x46c431..0x46c442). With 0 the thread is parked again with state 0x10 and a
+    wait-object field of 0 (0x46c464) and the remaining stack filed under 0x1ffff on the thread (0x46c488). Nothing can notify
+    it any more; only one of the endons still held ends it (0x46c6f0 with field 0 -> 0x46c130: unwind to the registering call,
+    the caller goes on);
+  - the stack runs out: the thread ends (its variable and stack are released, 0x46c3f1..0x46c428).
+  The first call of a thread has no code position below it, so it is never asked.
+- A thread parked by such an earlier free (with its 0x1ffff entry) whose endon on the freed object was just removed is walked the
+  same way with 1 (0x46d369): calls that no longer hold an endon are ended; if none is left, the 0x1ffff entry is removed
+  (0x46c3fd) and the thread ends; otherwise it stays parked.
+- The order of the entries does not change the result: an endon of the freed object is gone before any walk could stop at it.
+- Behavioural consequence, shipped `maps/_spawner.gsc` `flood_think`: with no antispawn trigger `flood_trigger` deletes its
   `flood_spawner` trigger in the same frame in which it started the `flood_think` threads (`kill_trigger`), and every one of them
-  holds `trigger endon("antispawn")`. A spawner whose first `dospawn` is refused ("player can see spawnpoint", telefrag) sleeps in
-  `wait(2)` and must retry, otherwise its AI group never clears (trainyard `waittill_aigroupcleared("station")`, the station HQ
-  objective). Threads parked in `waittill("finished spawning")` / `waittill("death")` of a successful spawn do end.
-- TODO(spec): what 0x46c2e0 with 1 leaves of the lower call frames of a parked thread whose endon frame is not the first (the port
-  unwinds to the registering call and resumes the caller).
+  holds `trigger endon("antispawn")`. Those threads keep running: a refused `dospawn` sleeps in `wait(2)` and retries (trainyard
+  `waittill_aigroupcleared("station")`), and a successful spawn waits for the AI's `death` and spawns the next one.
+- TODO(spec): whether a paused stack starts with a code position (then the first call would be asked too; the port ends the
+  thread when only its first call holds an endon).
+

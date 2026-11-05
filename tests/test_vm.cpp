@@ -373,8 +373,52 @@ waiter(trig)
         CHECK(h.joined() == "sleeper|sleeper|sleeper|");
         h.vm.notify(h.vm.level(), "never");
         h.vm.drainReady();
-        CHECK(h.joined() == "sleeper|sleeper|sleeper|"); // the parked thread was ended, the waiter too
-        if (h.joined() != "sleeper|sleeper|sleeper|") std::cerr << h.joined() << "\n";
+        // A waittill on another object keeps waiting (0x46d1f0 only drops the endon); the waiter on the freed object ended.
+        CHECK(h.joined() == "sleeper|sleeper|sleeper|parked woke|");
+        if (h.joined() != "sleeper|sleeper|sleeper|parked woke|") std::cerr << h.joined() << "\n";
+    }
+
+    { // waittill on the freed object (0x46c2e0 with 0): calls without an endon end; one still holding an endon stays parked
+        Harness h;
+        h.files["test/free2.gsc"] = R"(
+main()
+{
+    level.trig = spawnstruct();
+    level.other = spawnstruct();
+    thread outer();
+    thread plain();
+}
+outer()
+{
+    guarded();
+    println("outer back");
+}
+guarded()
+{
+    level.other endon("stop");
+    inner();
+    println("guarded back");
+}
+inner()
+{
+    level.trig waittill("never");
+    println("inner woke");
+}
+plain()
+{
+    level.trig endon("antispawn");
+    level.trig waittill("never");
+    println("plain woke");
+}
+)";
+        h.vm.start("test/free2.gsc", "main");
+        h.vm.freeObject(h.vm.level()->get("trig").asObject());
+        for (int t = 50; t <= 500; t += 50) h.vm.runFrame(t);
+        CHECK(h.joined() == ""); // guarded() stays parked, plain() ended (its only endon was on the freed object)
+        h.vm.notify(h.vm.level()->get("other").asObject(), "stop");
+        h.vm.drainReady();
+        CHECK(h.joined() == "outer back|"); // the endon ends guarded(), outer() goes on (0x46c6f0 -> 0x46c130)
+        if (h.joined() != "outer back|") std::cerr << h.joined() << "\n";
     }
 
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }

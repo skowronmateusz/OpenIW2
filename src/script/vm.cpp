@@ -1169,43 +1169,51 @@ void VM::freeObject(const ObjectPtr& object) {
     freed_.push_back(object);
 }
 
-// 0x467150 walks the freed list; 0x46d1f0 cancels the object's notify list (key 0x1fffe): an entry of type 0xa (the paused
-// stack of a waittill) is freed (0x46c2e0 with 0), i.e. that thread ends. Any other entry is an endon registration (the entry
-// becomes type 0x17, dead). The endon thread itself is only touched (0x46c2e0 with 1) when it holds a 0x1ffff entry, which is
-// what a thread parked in a waittill has (0x46c2e0 files the paused stack under that key, thread state 0x10); a thread in a
-// timed wait (state 0x11, 0x46c570), a running or a ready one has none and goes on, merely without that endon. That is what
-// keeps a flood spawner alive after its `flood_spawner` trigger is deleted: _spawner.gsc flood_think sleeps in wait(2) after
-// a refused dospawn (docs/spec/gsc-vm.md "Freeing a script object").
+// 0x467150 walks the freed list (head 0x9bef38, filled by 0x4670b0) and 0x46d1f0 cancels each object's notify list (key 0x1fffe)
+// (docs/spec/gsc-vm.md "Freeing a script object"):
+// - An endon registration on the object is dropped (0x46c640, entry -> type 0x17). The registering thread is only acted on
+//   (0x46c2e0 with 1) when it has a 0x1ffff entry, and only 0x46c2e0 with 0 files one: an ordinary waittill keeps its paused
+//   stack in the waited object's notify list (0x46c6f0). So a thread in a waittill on another object, in a timed wait, running
+//   or ready simply goes on without that endon (_spawner.gsc flood_think keeps waiting for its AI's death after the
+//   flood_spawner trigger is deleted).
+// - A thread paused in a waittill on the object itself (entry type 0xa) gets 0x46c2e0 with 0: its calls are ended from the top
+//   until one that still holds an endon (table 0x9bef28, key call + 0x10000); that call stays parked with no waited object
+//   (state 0x10, its stack under 0x1ffff) and only one of its endons can end it. With no such call the thread ends.
+// - A thread parked that way, whose endon on the object was dropped, is unwound again the same way (0x46c2e0 with 1).
 void VM::processFreedObjects() {
     while (!freed_.empty()) {
         std::vector<ObjectPtr> list;
         list.swap(freed_);
         for (const ObjectPtr& object : list) {
-            std::vector<Thread*> resumed;
             for (size_t i = 0; i < threads_.size(); ++i) {
                 Thread& th = *threads_[i];
                 if (th.state == ThreadState::Done) continue;
-                if (th.state == ThreadState::WaitingNotify && th.waitObject == object) {
-                    th.state = ThreadState::Done;
-                    continue;
-                }
-                size_t frame = SIZE_MAX;
+                const size_t before = th.endons.size();
+                std::erase_if(th.endons, [&](const Thread::EndOn& e) { return e.object.lock() == object; });
+                const bool lostEndon = th.endons.size() != before;
+                if (th.state != ThreadState::WaitingNotify || th.running) continue;
+                const bool waitsOnObject = th.waitObject == object;
+                const bool orphan = !th.waitObject; // parked by an earlier free (0x1ffff entry)
+                if (!waitsOnObject && !(orphan && lostEndon)) continue;
+                // The topmost call that still holds an endon keeps the thread parked. The first call of the thread has no code
+                // position below it in the saved stack, so 0x46c2e0 never checks it (TODO(spec): whether a saved stack starts
+                // with one).
+                size_t keep = 0;
                 for (const auto& e : th.endons)
-                    if (e.frame < frame && e.object.lock() == object) frame = e.frame;
-                if (frame == SIZE_MAX) continue;
-                if (th.state != ThreadState::WaitingNotify || th.running) {
-                    // No 0x1ffff entry: the thread is not touched; only the endon registration on the freed object goes.
-                    std::erase_if(th.endons, [&](const Thread::EndOn& e) { return e.object.lock() == object; });
+                    if (e.frame >= 1 && e.frame < th.frames.size() && e.frame > keep) keep = e.frame;
+                if (keep == 0) {
+                    th.state = ThreadState::Done;
                     continue;
                 }
-                if (frame == 0 || frame >= th.frames.size()) {
-                    th.state = ThreadState::Done;
-                } else {
-                    unwind(th, frame);
-                    resumed.push_back(&th);
+                if (keep + 1 < th.frames.size()) {
+                    th.stack.resize(th.frames[keep + 1].stackBase);
+                    th.refs.resize(th.frames[keep + 1].refBase);
+                    th.frames.resize(keep + 1);
                 }
+                th.waitObject.reset();
+                th.waitMatch.reset();
+                th.waitEvent.clear();
             }
-            for (Thread* th : resumed) run(*th);
         }
     }
 }
