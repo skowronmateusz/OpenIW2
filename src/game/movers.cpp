@@ -161,6 +161,19 @@ void startVibrate(MoverChannel& ch, const MVec& angles, const MVec& dir, float a
     ch.tr.delta = {dotv(ax[0]), 0.0f, dotv(ax[1])};
 }
 
+// 0x4d6720, for an entity with a link: the position and angle trajectories become stationary at the current placement (type, time,
+// duration and delta 0, 0x4d6896..0x4d6932), so a running move ends here. The mover think skips type 0 (0x532970): no movedone or
+// rotatedone follows. A client's view goes through 0x4e8940 with its own angles; the view angles are the front end's here, nothing moves.
+void World::unlinkEntity(Entity& e) {
+    if (!links_.erase(e.number)) return;
+    const auto it = movers_.find(e.number);
+    if (it == movers_.end()) return;
+    for (MoverChannel* ch : {&it->second.pos, &it->second.apos}) {
+        ch->active = false;
+        ch->tr.type = 0;
+    }
+}
+
 void World::runMover(Entity& ent) {
     auto it = movers_.find(ent.number);
     if (it == movers_.end() || ent.obj->removed) return;
@@ -399,7 +412,7 @@ void World::registerMoverBuiltins() {
     vm_.registerBuiltin("unlink", [this](CallContext& c) {
         // 0x4ede30: a player also drops its link view fraction and mode.
         if (Entity* e = entityOf(c.self)) {
-            links_.erase(e->number);
+            unlinkEntity(*e);
             if (e->isPlayer) playerLink_.reset();
         }
         return Value();

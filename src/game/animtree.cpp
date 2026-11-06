@@ -275,7 +275,7 @@ void AnimState::updateWeight(int n, float inheritedTime, int inheritedCycle, flo
     bool childPlaying = false;
     const bool syncTop = !node.children.empty() && (node.syncFlags & 4);
     if (node.children.empty()) {
-        childPlaying = animFreq(lib_.anim(node.name)) != 0;
+        childPlaying = animFreq(nodeAnim(n)) != 0;
     } else {
         const float t = syncTop ? s.time : inheritedTime;
         const int c = syncTop ? s.cycle : inheritedCycle;
@@ -305,11 +305,20 @@ void AnimState::updateWeight(int n, float inheritedTime, int inheritedCycle, flo
     alive = true;
 }
 
+const assets::XAnim* AnimState::nodeAnim(int n) const {
+    const AnimNode& node = tree_.nodes()[size_t(n)];
+    if (node.xanimLib != &lib_) {
+        node.xanim = lib_.anim(node.name);
+        node.xanimLib = &lib_;
+    }
+    return node.xanim;
+}
+
 // 0x475bb0: a leaf's frequency, or the average over the weighted children (with nonzero frequency) of frequency ×
 // rate, weighted by the child weights.
 float AnimState::syncFreq(int n) const {
     const auto& node = tree_.nodes()[size_t(n)];
-    if (node.children.empty()) return animFreq(lib_.anim(node.name));
+    if (node.children.empty()) return animFreq(nodeAnim(n));
     float sum = 0, acc = 0;
     for (int c : node.children) {
         const AnimNodeState& s = nodes_[size_t(c)];
@@ -325,7 +334,7 @@ float AnimState::syncFreq(int n) const {
 // Moves a leaf from its time to `to` (cycle `toCycle`) and calls `onNote` for the notetracks crossed (0x476f10).
 void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote) {
     AnimNodeState& s = nodes_[size_t(n)];
-    const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
+    const assets::XAnim* a = nodeAnim(n);
     const float before = s.time;
     const bool wrapped = toCycle > s.cycle;
     if (probe_ && notes && a && !s.notify.empty() && !a->notes.empty()) {
@@ -380,7 +389,7 @@ void AnimState::updateTime(int n, float dt, bool notes, const NoteFn& onNote) {
     float step;
     bool wrap;
     if (node.children.empty()) {
-        const assets::XAnim* a = lib_.anim(node.name);
+        const assets::XAnim* a = nodeAnim(n);
         step = animFreq(a) * s.rate * dt;
         wrap = a && a->looping;
     } else if (!(node.syncFlags & 3)) {
@@ -442,6 +451,8 @@ void AnimState::update(float dt, const NoteFn& onNote, bool notes) {
 }
 
 float AnimState::noteFraction(float dt) {
+    // Only a leaf with a notify name can set the fraction (advanceLeaf), so without one the dry run has nothing to find.
+    if (std::all_of(nodes_.begin(), nodes_.end(), [](const AnimNodeState& s) { return s.notify.empty(); })) return 1.0f;
     const Snapshot saved = nodes_;
     float f = 1.0f;
     probe_ = &f;
@@ -489,7 +500,7 @@ void AnimState::clearChildren(int n, float blendTime) {
 
 bool AnimState::looping(int n) const {
     if (n < 0 || size_t(n) >= nodes_.size() || !tree_.nodes()[size_t(n)].children.empty()) return false;
-    const assets::XAnim* a = lib_.anim(tree_.nodes()[size_t(n)].name);
+    const assets::XAnim* a = nodeAnim(n);
     return a && a->looping;
 }
 
@@ -503,7 +514,7 @@ void AnimState::deltaNode(int n, float weight, bool first, bool nested, bool goa
     const auto& node = tree_.nodes()[size_t(n)];
     if (first) out = AnimDelta{};
     if (node.children.empty()) {
-        const assets::XAnim* a = lib_.anim(node.name);
+        const assets::XAnim* a = nodeAnim(n);
         if (!a || !a->delta) return;
         const AnimNodeState& s = nodes_[size_t(n)];
         const int keys = a->keyCount();
@@ -625,7 +636,7 @@ AnimDelta AnimState::delta(bool goalWeights) const {
 void AnimState::calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const {
     const auto& node = tree_.nodes()[size_t(n)];
     if (node.children.empty()) {
-        if (const assets::XAnim* a = lib_.anim(node.name))
+        if (const assets::XAnim* a = nodeAnim(n))
             assets::accumulateAnim(parts, *a, nodes_[size_t(n)].time * float(a->keyCount() - 1), weight, acc);
         return;
     }

@@ -578,21 +578,42 @@ void World::deleteEntityScripted(Entity& e) {
     if (e.usingTurret) turretStateFinish(e);
     // The actor free (0x4fc960, called at 0x4d7d87 for an entity with an actor): the animscript is killed (0x4fc99f -> 0x53ac40,
     // notify "killanimscript") while the VM runs, so the script thread of a deleted or evicted actor ends with its endon("killanimscript")
-    // instead of running on a freed entity. TODO(spec): the references other actors keep to the freed one (0x4fc9e0..0x4fca43).
-    if (e.isActor) killActorAnimScript(e);
+    // instead of running on a freed entity.
+    if (e.isActor) {
+        killActorAnimScript(e);
+        releaseSentient(e);      // 0x4fc9d2
+        clearActorReferences(e); // 0x4fc9e0..0x4fca43
+    }
     // G_FreeEntity (0x4d7c30) resets the entity (call 0x419700 at 0x4d7ce3; TODO(spec): confirm it is the memset), whose state holds the loop sound index (ent+6, set by playloopsound
     // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
     if (const Value h = e.obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
     e.obj->set("$loopsound", Value());
     e.obj->set("$loopalias", Value());
+    releaseEntityLinks(e);
     vm_.freeObject(e.obj);
 }
 
 // G_FreeEntity (0x4d7c30) hands the entity's script object to 0x4670b0 (call at 0x4d7ea7) with no condition on the entity kind, so
 // every engine free (exploded grenade or rocket, picked-up item, fired trigger_once, trigger_damage with its remove flag) cancels
 // the waits and endons on the object the same way as a scripted delete (docs/spec/gsc-vm.md "Freeing a script object").
+// G_FreeEntity's bookkeeping for any entity: its own link goes (0x4d7c71 -> 0x4d6720), then every entity linked to it (head +0x1cc,
+// loop 0x4d7c80..0x4d7cb6: the child's link record +0x1d0 and 0x4d6720). 0x4d6720 leaves the child where it is: the trajectories are
+// rebased on the current placement with no motion, so the child simply stops following. A corpse clears its slot (0x4d7e31).
+void World::releaseEntityLinks(Entity& e) {
+    unlinkEntity(e);
+    std::vector<int> children;
+    for (const auto& [number, link] : links_)
+        if (link.parent == e.number) children.push_back(number);
+    for (int number : children)
+        if (Entity* child = entityByNumber(number)) unlinkEntity(*child);
+        else links_.erase(number);
+    if (playerLink_ && playerLink_->parent == e.number) playerLink_.reset();
+    if (e.isActor && e.ai.corpse) corpses_.release(e.number);
+}
+
 void World::freeEntity(Entity& e) {
     if (e.obj->removed) return; // already freed
+    releaseEntityLinks(e);
     vm_.freeObject(e.obj);
 }
 
@@ -610,6 +631,9 @@ void World::prepareStart() {
     // player_deathInvulnerableTime 1000 ms. The default is the exe's 1: with 0 (Easy) the scripts' low-health cutoff is 0.01
     // and the red screen overlay practically never shows. The front end's difficulty menu sets the cvar before a start.
     if (cvars.find("g_gameskill") == cvars.end()) cvars["g_gameskill"] = "1";
+    // ai_corpseCount (0x4d8889, range 0..64, flags 0x1003). DELIBERATE DEVIATION: the exe's default is 5, openiw2's is 20 (corpses.h).
+    if (cvars.find("ai_corpseCount") == cvars.end()) cvars["ai_corpseCount"] = std::to_string(kCorpseCountDefault);
+    corpses_.setCount(corpseCountDvar()); // G_InitGame 0x4d9a9b
     cvars["player_healthEasy"] = "500";
     cvars["player_healthMedium"] = "275";
     cvars["player_healthHard"] = "165";
@@ -766,6 +790,7 @@ void World::frame(bool advanceTime) {
     runEntityPass(); // stage 8
     debugActorCounts();
     updatePlayerLink(); // ClientEndFrame (0x4e7f90, 0x4db144) after the entity pass
+    trimCorpses();      // 0x4db159
     runDeathScreen();
     processSaves(); // 0x44a230 at the server frame end (0x44a91f), after G_RunFrame and before the snapshot
 }

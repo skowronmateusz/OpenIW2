@@ -1,6 +1,7 @@
 // Game world: map entities, path nodes, the player, and the script VM that drives them.
 #pragma once
 
+#include "game/corpses.h"
 #include "game/bulletdamage.h"
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
@@ -350,6 +351,18 @@ public:
     void runLevelMain();
     // Savegame state (src/game/savestate.cpp, docs/spec/savegame.md section 5). saveState only between frames.
     void saveState(script::StateWriter& w);
+    // The corpse table (src/game/corpses.h) and a direct corpse conversion (0x4fdba0) for tests.
+    const CorpseSlots& corpseSlots() const { return corpses_; }
+    void debugMakeCorpse(Entity& e) { actorBecomeCorpse(e); }
+    void debugFree(Entity& e) { freeEntity(e); }
+    MoverChannel& debugMoverPos(Entity& e) { return movers_[e.number].pos; }
+    const CollisionWorld& debugCollision() const { return *collision_; }
+    void debugReleaseCorpseObject(Entity& e) { releaseCorpseObject(e); }
+    void debugRestoreCorpsesOldSave() { restoreCorpses(nullptr); }
+    Entity& debugSpawn(const std::string& classname) { return spawnEntity(classname); }
+    Entity* debugEntity(int number) { return entityByNumber(number); }
+    void debugLink(Entity& child, Entity& parent) { Link l; l.parent = parent.number; links_[child.number] = l; }
+    bool debugLinked(const Entity& e) const { return links_.count(e.number) != 0; }
     void loadState(script::StateReader& r);
     // Debug / test: a text digest of the saved state (entities, threads, level fields, time), equal after save -> load.
     std::string stateDigest() const;
@@ -913,6 +926,11 @@ private:
     void deleteEntityScripted(Entity& e);
     // G_FreeEntity's script part (0x4d7c30 -> 0x4670b0 at 0x4d7ea7): every entity free queues its script object for the VM.
     void freeEntity(Entity& e);
+    void releaseEntityLinks(Entity& e);
+    void unlinkEntity(Entity& e);      // 0x4d6720
+    void releaseSentient(Entity& e);   // 0x514d50
+    void clearActorReferences(Entity& e);
+    void releaseCorpseObject(Entity& e); // 0x4670b0 from 0x4fdd31
     // 0x1c61048: set by G_InitGame (0x4d99cb: 1, or 2 for a savegame load) and cleared by 0x4da540 once the level is
     // loaded (0x448aab, after the entity spawn, the level script's start and the first G_RunFrame). Here: until the end
     // of runLevelMain() or loadState().
@@ -1105,6 +1123,11 @@ private:
     void blockFacingNodes(Entity& e);
     void actorDie(Entity& e, Entity* attacker);
     void actorBecomeCorpse(Entity& e);
+    int corpseCountDvar() const;       // ai_corpseCount, clamped to its range 0..64 (0x4d8889)
+    int takeCorpseSlot();              // 0x4fd0d0: picks the slot and frees the corpse in it
+    void trimCorpses();                // 0x4d9710
+    void restoreCorpses(const std::array<int, kCorpseSlots>* saved); // the table after a load (0x4e524b)
+    CorpseSlots corpses_;
     void setActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode);
     static void actorFaceDefault(ActorAi& ai); // 0x5063f0
     void killActorAnimScript(Entity& e);

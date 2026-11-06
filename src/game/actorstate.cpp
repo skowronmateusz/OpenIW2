@@ -3,6 +3,7 @@
 #include "game/world.h"
 #include "game/pmove.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -493,13 +494,122 @@ void World::actorDie(Entity& e, Entity* attacker) {
 }
 
 // 0x4fdba0: the actor becomes a corpse (entity type 0xb, contents 0x4000000) and is notified "death".
-// TODO(spec): corpse contents are not modelled. The prone block goes to the corpse slot (proneCorpseStart).
+// Contents: World::syncEntityClips. The prone block goes to the corpse slot (proneCorpseStart).
 void World::actorBecomeCorpse(Entity& e) {
     turretStateFinish(e); // 0x4fdc69 (0x4fc960): the turret the dying actor owns is released and the reference cleared
+    releaseSentient(e);      // 0x4fc9d2
+    clearActorReferences(e);
     proneCorpseStart(e, true); // 0x4fdc0c..0x4fdd94: the prone block goes to the corpse slot
+    const int slot = takeCorpseSlot(); // 0x4fdceb, before the "death" notify 0x4fdd23
     e.ai.corpse = true;
+    corpses_.put(slot, e.number);
     clearActorPath(e);
-    vm_.notify(e.obj, "death");
+    vm_.notify(e.obj, "death"); // 0x4fdd23
+    releaseCorpseObject(e);     // 0x4fdd31
+}
+
+// The sentient release (0x514d50, also from the death think 0x548a10): its own enemy goes, then for every other sentient (loop 0x514db2,
+// 0x515230 / 0x515270) an actor's record of it stops being visible (0x4fe170: record word +0 only) and an enemy reference to it is
+// cleared with no notify. TODO(spec): the rest of 0x4fe170 and team 4 (+0x4 at 0x514dab) are not modelled; isAlive stands in for it.
+void World::releaseSentient(Entity& e) {
+    setEnemy(e, nullptr, false);
+    removeDangerPlanesFrom(e.number);
+    for (const auto& ap : entities_) {
+        Entity& o = *ap;
+        if (&o == &e || o.obj->removed) continue;
+        if (const auto it = o.sentientInfo.find(e.obj.get()); it != o.sentientInfo.end()) it->second.visible = false;
+        if (entityOf(o.obj->get("enemy")) == &e) setEnemy(o, nullptr, false);
+    }
+}
+
+// The actor free (0x4fc960), loop 0x4fc9e0..0x4fca43 over the actors in use: the references others keep to this one are cleared.
+void World::clearActorReferences(Entity& e) {
+    for (const auto& ap : entities_) {
+        ActorAi& a = ap->ai;
+        if (!ap->isActor) continue;
+        if (a.bumpedEnt == e.number) a.bumpedEnt = 0x7ff; // +0x318
+        if (a.followed == &e) a.followed = nullptr;       // +0x2148
+        if (a.blocker == &e) a.blocker = a.blockerEnt = nullptr; // +0x728, +0x72c with it
+    }
+}
+
+// 0x4670b0 at the conversion: the actor's script object is released, so every script reference to it now reads as freed, while the
+// corpse entity lives on. The exe gives an entity a new object when one is next asked for; here the engine keeps its fields on a fresh
+// object (origin, angles and so on live in the object in openiw2) that no script holds.
+void World::releaseCorpseObject(Entity& e) {
+    const ObjectPtr old = e.obj;
+    if (old->removed) return; // a thread the "death" notify resumed has already deleted the corpse
+    // The records are keyed by this object, and its address can return for a new actor. The exe indexes them by sentient slot (actor +0x1774,
+    // stride 0x44) and clears only word +0, so a reused slot there sees the old rest; a reused address is not the same thing, so the record goes.
+    for (const auto& a : entities_) a->sentientInfo.erase(old.get());
+    e.obj = vm_.newObject(old->kind);
+    e.obj->fields = old->fields;
+    byObject_.erase(old.get());
+    byObject_[e.obj.get()] = &e;
+    vm_.freeObject(old);
+}
+
+int World::corpseCountDvar() const {
+    const auto it = cvars.find("ai_corpseCount");
+    const int v = it == cvars.end() ? kCorpseCountDefault : std::atoi(it->second.c_str());
+    return std::clamp(v, 0, kCorpseSlots);
+}
+
+// 0x4fd0d0. The view is the player's eye (0x4e8b70) and view angles (ps +0xc4 / +0xc8). The exe frees the entity of slot 0 unchecked
+// when the count is 0 and the slot is empty (number -1); here an empty slot frees nothing.
+int World::takeCorpseSlot() {
+    Vec3 eye{0, 0, 0}, forward{1, 0, 0};
+    if (player_ && player_->obj->get("origin").isVector()) {
+        eye = playerEye();
+        const float pitch = playerCmd_.viewAngles[0] * 0.017453292f, yaw = playerCmd_.viewAngles[1] * 0.017453292f; // 0x591f50
+        forward = {std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), -std::sin(pitch)};
+    }
+    const int slot = corpses_.pick(eye, forward, [this](int number) {
+        const Entity* c = entityByNumber(number);
+        return c ? c->obj->get("origin").asVector() : Vec3{0, 0, 0};
+    });
+    if (corpses_.at(slot) >= 0)
+        if (Entity* victim = entityByNumber(corpses_.at(slot))) freeEntity(*victim);
+    corpses_.put(slot, -1); // 0x4fd350
+    return slot;
+}
+
+void World::trimCorpses() {
+    for (int number : corpses_.trim(corpseCountDvar()))
+        if (Entity* e = entityByNumber(number)) {
+            freeEntity(*e);
+        }
+}
+
+// Load (0x4e517e..0x4e524b): the saved table comes back and the cached count is 64, so the next frame end trims down to the dvar.
+// The corpse state of the entities lives in the table. A save without a table (format below 7): every actor dead in the death state
+// takes a slot through the picker, so such a save is bounded as well (openiw2 only; the corpse flag was not saved then).
+void World::restoreCorpses(const std::array<int, kCorpseSlots>* saved) {
+    corpses_.clear();
+    corpses_.setCount(kCorpseSlots);
+    auto mark = [this](Entity& e) {
+        e.ai.corpse = true;
+        e.ai.alive = false;
+        proneCorpseStart(e, true); // the prone block is not saved: the corpse fits itself to the ground again
+    };
+    if (saved) {
+        for (int i = 0; i < kCorpseSlots; ++i) {
+            Entity* e = (*saved)[size_t(i)] >= 0 ? entityByNumber((*saved)[size_t(i)]) : nullptr;
+            if (!e || e->obj->removed) continue;
+            corpses_.put(i, e->number);
+            mark(*e);
+        }
+        return;
+    }
+    for (size_t i = 0; i < entities_.size(); ++i) {
+        Entity& e = *entities_[i];
+        if (!e.isActor || e.isSpawner || e.obj->removed || isAlive(e) || e.ai.stack[size_t(e.ai.depth)] != AiDeath ||
+            !actorAnimScriptDone(e)) continue; // still dying: its death think converts it, with the "death" notify
+        const int slot = takeCorpseSlot();
+        corpses_.put(slot, e.number);
+        mark(e);
+        releaseCorpseObject(e);
+    }
 }
 
 // Pain think (0x54d340): once the pain animscript has finished (after the start frame) the state is popped.
@@ -535,7 +645,7 @@ int World::deathThink(Entity& e) {
         aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
         clearActorPath(e);
         releaseNode(e); // the sentient release (0x514d50) frees the claimed node (0x5191a0)
-        removeDangerPlanesFrom(e.number); // and the danger planes it added elsewhere (0x4fe170 → 0x54b5a0)
+        releaseSentient(e); // and the rest of the sentient release: danger planes (0x4fe170 → 0x54b5a0), records, enemy references
         ai.substate = kSubDeathDone;
     }
     if (e.animScript == "death" && actorAnimScriptDone(e)) {
@@ -549,7 +659,7 @@ int World::deathThink(Entity& e) {
     // (+0xc0) are 0x4002000 and it is relinked. Of the trace masks only bit 0x2000 is hit: bullets / melee / bullettrace
     // (0x280e831), grenades and rockets (0x280e891), the use trace (0x280e801); not the actor move (0x2820011), the player
     // (0x281c011) or sight (0x280d803) masks, which do hit the living contents 0x4000 it had until then (syncEntityClips).
-    // The corpse (0x4fdba0, 0x4fdc75) gets 0x4000000, which no mask in the exe holds, so a corpse has no clip here.
+    // The corpse (0x4fdba0, 0x4fdc75) gets 0x4000000, which no trace mask in the exe holds (syncEntityClips).
     if (timeMs_ >= ai.baseStateMs + 500) ai.dyingContents = 0x4002000u;
     if (e.ai.prone.corpseBlend) corpseProneFit(e, true); // 0x548b96: smoothed ground fit while the blend runs
     return 0;

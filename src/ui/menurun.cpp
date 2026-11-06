@@ -55,6 +55,7 @@ std::string registeredDefault(const std::string& n) {
     // Dvars the exe registers at startup with a default (register calls 0x431f60 bool / 0x432020 float; arguments name, default,
     // [min, max], flags): the client block at 0x40e270..0x40e620, snd_volume at 0x4449d6, monkeytoy at 0x4037ba.
     static const std::pair<const char*, const char*> defaults[] = {
+        {"ai_corpseCount", "20"},   // deliberate deviation, the exe registers 5 (0x4d8889); src/game/corpses.h
         {"cg_drawCrosshair", "1"},  // 0x40e400
         {"cg_subtitles", "1"},      // 0x40e418
         {"cg_subtitleMinTime", "3"},          // 0x4a1ea6 (float 0..FLT_MAX)

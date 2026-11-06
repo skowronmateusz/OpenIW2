@@ -149,6 +149,7 @@ void World::saveState(StateWriter& w) {
     w.i64(timeMs_);
     w.i64(realMs_);
     w.i32(nextEntityNumber_);
+    for (int i = 0; i < kCorpseSlots; ++i) w.i32(corpses_.at(i)); // version 7: the corpse table (saved by 0x4e3c17)
     w.i32(nextFx_);
     w.u32(meleeSeed_);
     {
@@ -497,6 +498,9 @@ void World::loadState(StateReader& r) {
     timeMs_ = r.i64();
     realMs_ = r.i64();
     nextEntityNumber_ = r.i32();
+    std::array<int, kCorpseSlots> savedCorpses{};
+    if (r.version >= 7)
+        for (int& n : savedCorpses) n = r.i32();
     nextFx_ = r.i32();
     meleeSeed_ = r.u32();
     {
@@ -569,7 +573,9 @@ void World::loadState(StateReader& r) {
             std::string l = k;
             for (auto& ch : l) ch = char(std::tolower(static_cast<unsigned char>(ch)));
             // sv_cheats belongs to the running session (command line / devmap), not to the save. TODO(spec): its dvar flags.
-            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile" || l == "sv_cheats";
+            // ai_corpseCount (flags 0x1003) and ui_autoContinue: outside the 0x400 set.
+            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile" || l == "sv_cheats" || l == "ai_corpsecount" ||
+                   l == "ui_autocontinue"; // flags 0x1000 (0x4c32c4)
         };
         std::map<std::string, std::string, CvarNameLess> live;
         for (const auto& [k, v] : cvars)
@@ -926,6 +932,7 @@ void World::loadState(StateReader& r) {
     }
     for (uint32_t i = 0; i < nNodes; ++i) nodes_[i].owner = entityByNumber(nodeOwners[i]);
     player_ = entityByNumber(playerNum);
+    restoreCorpses(r.version >= 7 ? &savedCorpses : nullptr);
     // path disconnects: the fresh world disconnected its DYNAMICPATH brush models; bring the set in line with the save
     std::vector<int> current;
     for (const auto& [n, recs] : pathRecs_) current.push_back(n);
@@ -1032,7 +1039,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 

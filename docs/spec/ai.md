@@ -996,6 +996,71 @@ time (0xf708dc), here the server time is used. Not visually checked in iw2view y
 Consumers (decoded): 0x4fe8d0 (the end of the exposed / pain / death / grenade / flee thinks: 0x504450, 0x4fe740 = `updateClaimedNodeCore`) and 0x548b60.. then give up the claimed node (0x4fe670) when the FOLLOWED entity stands at it (0x502660: dz^2 <= 6400, 2D distance^2 <= 900; 0x4fe6ca / 0x4fe8eb) - `updateClaimedNode` does this after the core. 0x4fe6c0 is the same check with no caller found. 0x50081d is only the debug text of the actor debug draw ("close: %d" for +0x2148, with "blockee: %d, blocker: %d" and "dontavoidplayer" next to it): no gameplay. 0x501e06 is the physics dispatch already modelled (anim mode 1, movemode set, path count > 0, not followed -> the path mover 0x501e48; followed with anim mode 1 or 7 -> 0x501620). TODO(spec): 0x504450 (placing the entity from the linked parent +0x1c8) before the node update; a path-less / movemode-0 actor goes through the block move at 0x501f22 (clears contents bits 0x18 first), not modelled.
 Resolved: the facing blend (see "Facing blend"). Open (from before): the ring advance 0x504f60 and facing blend 0x505630/0x504e70/0x504de0.
 
+### Corpse limit (observed; src/game/corpses.h, corpses.cpp, actorstate.cpp, tests/test_corpses.cpp)
+
+**Deliberate deviation.** The dvar `ai_corpseCount` is registered at 0x4d8889 with default 5 (0x4d8868), range 0..64 (0x4d886d /
+0x4d886f) and flags 0x1003 (archive, not in the save set 0x400). openiw2's default is 20, chosen by the project owner; the 1.3 executable's
+default is 5. The range and every rule below are the original's. Shipped configs set it to 10..64 (`safemode.cfg:16`, `mark.cfg:99`),
+and the graphics menu (`ui/options_graphics.menu:964`) offers 3, 5, 10, 20 and 64, so the default is the Large entry.
+
+The table has 64 slots (entity number at 0x1c7e5b0, stride 0x20, -1 free, set at level start 0x4d95da) and a cached count
+0x1c60544, set from the dvar by G_InitGame (0x4d9a9b).
+
+- Slot picker 0x4fd0d0, called by the corpse conversion 0x4fdba0 at 0x4fdceb, before the "death" notify. The view is the player's
+  eye (0x4e8b70: origin + view height + lean, or tag_eye of the linked entity) and the forward vector of the view angles
+  (ps +0xc4 pitch, +0xc8 yaw). Slots 0..count-1 are scanned in order and the first free one is returned at once. Each occupied slot
+  gives d2 = |corpse origin (+0xdc) - eye|^2 and dot = forward . (corpse - eye), not normalised. Three running maxima of d2 start
+  at -1 and are replaced only by a strictly larger d2, so a tie keeps the lower slot:
+  1. behind: dot < 0 (compare with 0x591e00);
+  2. off view: 0.5 * d2 >= dot^2 (0x591e10), that is at least 45 degrees from the view axis, on either side;
+  3. any corpse.
+
+  The victim is the first group that is not empty (0x4fd304, 0x4fd31c): the farthest corpse behind the player, else the farthest
+  outside the 45 degree cone, else the farthest. It is freed (G_FreeEntity 0x4d7c30) and its slot cleared. With count 0 the loop is
+  skipped and slot 0 is used, so one corpse stays until the next conversion. The exe then frees slot 0 without testing it, which reads
+  entity -1 if the slot is empty; openiw2 frees nothing in that case.
+- G_FreeEntity on an entity of type 0xb clears the slot holding its number (0x4d7e31). World::freeEntity and the script delete do
+  the same.
+- Frame end 0x4d9710 (called at 0x4db159, after ClientEndFrame): when the dvar differs from the cached count and is lower, the
+  corpses of slots dvar..cached-1 are freed, by slot index and with no view test. The dvar then becomes the cached count, so
+  raising it only widens the scan.
+- Save and load: all 64 slots are written (0x4e3c17) and read (0x4e517e), then the cached count is set to 64 (0x4e524b), so the first
+  frame end after a load trims down to the dvar.
+
+openiw2 notes. Save format 7 stores the table, and on load an entity in the table is a corpse again (its corpse blend fit runs anew;
+the prone block is not in the save). Format 6 has no table and no corpse flag: every actor dead in the death state takes a slot through
+the picker at load, so old saves are bounded as well. With no player (tests) the view is the origin looking along +x.
+
+Script references. The conversion releases the entity's script object (0x4670b0 from 0x4fdd31, right after the "death" notify 0x4fdd23),
+so no script can hold a corpse and an eviction is never seen by script. Threads woken by that notify still run, with a freed `self`.
+openiw2 moves the fields to a fresh object at that moment (World::releaseCorpseObject), because the placement lives in the object.
+
+Contents. The conversion writes contents 0x4000000 (0x4fdc75), clip mask 0x820011 (0x4fdc82) and relinks (0x4fdd9d) with the box unchanged.
+A scan of the immediates finds that bit in no trace mask: bullets 0x280e831, grenades 0x280e891, sight 0x280d803, moves 0x2820011 and
+0x281c011 all lack it, so nothing in the server hits a corpse. The bit appears only in a generic contents-to-flags step (0x48010f) and in
+one client-side selection (0x4b95d7, not decoded). World::syncEntityClips gives a corpse that clip.
+
+Script object on demand. An entity gets a script object when script is handed it (getters 0x466fa0 / 0x466f40). After the conversion that
+can only come from a lookup such as getent / getentarray. openiw2 creates the object at once, and the identity difference cannot be seen,
+since no script holds it before the lookup. One difference remains: the fresh object here keeps the actor's script-set fields, where the
+exe's would have only native ones. TODO(spec): no list of native fields separates them, so this is not proven unobservable.
+
+Sentient release 0x514d50 (from the death think 0x548a10, the actor free 0x4fc9d2 and the entity free): clears its enemy (attacker count down),
+frees the claimed node, clears node owners (0x5193b0), sets team 4 (0x514dab), then visits every other sentient (0x515230 / 0x515270). There
+an actor runs 0x4fe170: word +0 of its record of this sentient (actor +0x1774, stride 0x44) is zeroed and its danger planes go (0x54b5a0).
+An enemy reference to this sentient is cleared with no notify (0x514dda). World::releaseSentient. The rest of the record stays in the exe
+until its slot is used again. openiw2 keys records by script object, so they are erased when the object is released, because an address
+can be reused where a slot's meaning cannot. TODO(spec): the tail of 0x4fe170 and team 4.
+
+Other actors. The actor free 0x4fc960 also runs at the conversion (0x4fdc69): its loop 0x4fc9e0..0x4fca43 clears what the actors in use keep
+of this one (+0x6ba, +0x318, +0x2148, +0x728 with +0x72c; +0x6ba is not modelled), World::clearActorReferences. The sentient release
+0x514d50 ends the records about it; openiw2 keys those by script object, so they are erased when the object is released.
+
+Links. G_FreeEntity, for every entity kind, removes the entity's own link (0x4d7c71 -> 0x4d6720) and then the link of each entity
+linked to it (list head +0x1cc, loop 0x4d7c80..0x4d7cb6). 0x4d6720 rebases the trajectories on the current placement with no motion
+(0x4d6896..0x4d6932), sets the view of a client (0x4e8940) and unhooks the child, so a child stays where it was. A running move ends: the
+mover think skips type 0 (0x532970), so no movedone or rotatedone follows. The script unlink does the same. World::unlinkEntity.
+
 ## Facing blend (ported; src/game/actorfacing.cpp, World::actorFacing)
 
 - Look blocks: base at actor +0x104 (mode, +0x108 pitch, +0x10c yaw, +0x110 turn target), override at +0x114 (orientmode;

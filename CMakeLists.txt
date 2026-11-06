@@ -80,6 +80,7 @@ target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
 
 add_library(iw2_game
   src/game/world.cpp
+  src/game/corpses.cpp
   src/game/collision.cpp
   src/game/pmove.cpp
   src/game/animtree.cpp
@@ -358,6 +359,8 @@ target_link_libraries(test_mgshake PRIVATE iw2_game)
 add_executable(test_turretads tests/test_turretads.cpp)
 target_link_libraries(test_turretads PRIVATE iw2_game)
 
+add_executable(test_corpses tests/test_corpses.cpp)
+target_link_libraries(test_corpses PRIVATE iw2_game)
 add_executable(test_itemdrop tests/test_itemdrop.cpp)
 target_link_libraries(test_itemdrop PRIVATE iw2_game)
 add_executable(test_soundpool tests/test_soundpool.cpp)
@@ -409,6 +412,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(turretads_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME soundpool_world COMMAND test_soundpool)
   set_tests_properties(soundpool_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME corpses_world COMMAND test_corpses)
+  set_tests_properties(corpses_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME itemdrop_world COMMAND test_itemdrop)
   set_tests_properties(itemdrop_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   # Mission-script smoke: a few maps headless (plain + one --autoplay run + a determinism check).

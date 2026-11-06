@@ -24,6 +24,9 @@ struct AnimNode {
     // Runtime sync flags (0x479260 / 0x479120): 1 loop synced, 2 nonloop synced (a blend node with the modifier and
     // every blend node below it), 4 the synced node that carries the modifier (the top of the synced subtree).
     int syncFlags = 0;
+    // The leaf's xanim, resolved once by AnimState::nodeAnim (the library's result for a name never changes).
+    mutable const assets::XAnim* xanim = nullptr;
+    mutable const void* xanimLib = nullptr; // the AnimLibrary that resolved it
 };
 
 class AnimTree {
@@ -165,6 +168,7 @@ private:
     const AnimTree& tree_;
     AnimLibrary& lib_;
     std::vector<AnimNodeState> nodes_;
+    const assets::XAnim* nodeAnim(int n) const;
     float* probe_ = nullptr; // noteFraction: receives the smallest fraction of a crossed notetrack
 };
 

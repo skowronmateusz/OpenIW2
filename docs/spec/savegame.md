@@ -176,9 +176,10 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   body does not start with it after inflating, and the loader refuses such a file with "not an openiw2 save". Size limits: the
   compressed size keeps G_LoadGame's 0x280000; the uncompressed openiw2 stream is allowed up to 64 MB (our stream is more verbose than
   the original's raw images, e.g. toujane after 5 s is about 3 MB raw / 0.2 MB compressed).
+- Format 7 adds the corpse table (64 entity numbers, docs/spec/ai.md "Corpse limit"); formats 1 and 3 to 6 still load.
 - Contents (src/game/savestate.cpp): the script VM (objects, arrays, threads with frames, locals, stacks, references, wait/endon state,
   the woken-thread queue, time and id counters; functions by file + name) and the World state listed there. Cvars: openiw2 keeps
-  no dvar flags, so it restores every saved cvar except `mis_*`, `sv_lastSaveGame` and `com_playerProfile` (outside the 0x400 set,
+  no dvar flags, so it restores every saved cvar except `mis_*`, `sv_lastSaveGame`, `com_playerProfile` and `ai_corpseCount` (outside the 0x400 set,
   they keep their live values); TODO(spec): the complete 0x400 set. Per-entity runtime that is
   rebuilt rather than restored (animation playback, AI state machine, paths, vehicles, turrets, missiles, perception) is listed as
   TODO(spec) in the header of savestate.cpp.
