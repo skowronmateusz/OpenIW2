@@ -47,10 +47,35 @@ void World::setActorGrenade(Entity& e, Entity* g) {
 
 // grenade_ping (event 8, every 500 ms within 512 units of a grenade, 0x535770 → 0x5200e0): an actor with
 // grenadeawareness that has no grenade (or one without a predicted landing) notices this one with that probability.
-// A grenade of the enemy team makes it the enemy's (0x4f9f30 / 0x4fa070). The landing is predicted (0x51f7c0); the
-// grenade is forgotten again when the actor's path leads away from it (0x51fe90) or its position is safe (0x51f8b0).
-// TODO(spec): 0x4f9f30 / 0x4fa070 (an AI notification on enemy grenades) are not read; 0x51fe90's last test
-// (0x420d90 > 16) is not read, so the path test never forgets the grenade.
+// A grenade thrown by a sentient of the enemy team notifies the actor "grenade danger" with the grenade as argument (0x5201c3..0x5201d1).
+// The landing is predicted (0x51f7c0); the grenade is forgotten again when the actor's path leads away from it (0x51fe90) or
+// its position is safe (0x51f8b0).
+// 0x4e7010 compared with the thrower's team: axis against allies only.
+static bool onEnemyTeam(const Entity& e, const Entity& other) {
+    const Value a = e.obj->get("team"), b = other.obj->get("team");
+    if (!a.isString() || !b.isString()) return false;
+    return (a.asString() == "axis" && b.asString() == "allies") || (a.asString() == "allies" && b.asString() == "axis");
+}
+
+// 0x51fe90: the actor is on a path, outside its script goal, and the path does not head for the grenade: the 2D direction to the
+// landing point against the lookahead direction (+0x6c8) is negative; or, unless the thrower is a sentient outside the enemy
+// team, it is above 0.7 with the landing point more than 4 units away (3D, squared distance over 16).
+bool World::grenadePathLeadsAway(Entity& e, Entity& ge) {
+    if (!actorHasPath(e)) return false;
+    const Vec3 o = originOf(e.obj);
+    if (inScriptGoal(e, o)) return false;
+    const GrenadeState& g = *ge.grenade;
+    float dx = g.landing[0] - o[0], dy = g.landing[1] - o[1];
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len > 0.0f) { dx /= len; dy /= len; }
+    const float dot = dx * e.path.lookDir[0] + dy * e.path.lookDir[1];
+    if (dot < 0.0f) return true;
+    if (g.parent && isSentient(*g.parent) && !onEnemyTeam(e, *g.parent)) return false;
+    if (!(dot > 0.7f)) return false;
+    const float dz = g.landing[2] - o[2];
+    return len * len + dz * dz > 16.0f; // 0x420d90 is the squared distance
+}
+
 void World::grenadePing(Entity& g) {
     const Vec3 at = originOf(g.obj);
     for (const auto& ep : entities_) {
@@ -67,8 +92,10 @@ void World::grenadePing(Entity& g) {
         if (cur && curLanded) continue;
         if (float(rng_() % 32768) > awareness * 32767.0f) continue;
         setActorGrenade(e, &g);
+        if (Entity* thrower = g.grenade->parent; thrower && isSentient(*thrower) && onEnemyTeam(e, *thrower))
+            vm_.notify(e.obj, "grenade danger", {Value(g.obj)});
         predictGrenadeLanding(g);
-        if (safeFromGrenade(e, g, o)) setActorGrenade(e, nullptr);
+        if (grenadePathLeadsAway(e, g) || safeFromGrenade(e, g, o)) setActorGrenade(e, nullptr);
     }
 }
 
@@ -139,18 +166,32 @@ void World::grenadeReact(Entity& e, bool keepPath) {
     ++(ai.substate == kFlee ? stats.grenadeFlee : stats.grenadeCower);
 }
 
-// 0x5437f0 (simplified to the remaining path): a segment of it comes within √r2 of `p` (2D).
-// TODO(spec): the lookahead point (+0x398 / +0x3ac) and the extra segment (+0x3b4) it also tests.
+// 0x5437f0, spec ai.md "Path near a point": the lookahead stretch, the lookahead segment and the segments before it, each
+// measured from its base along its own direction.
 bool World::pathNearPoint(Entity& e, const Vec3& p, float r2) {
-    Vec3 a = originOf(e.obj);
-    for (int i = e.path.count - 2; i >= 0; --i) {
-        const Vec3& b = e.path.pts[size_t(i)].pos;
-        const float ex = b[0] - a[0], ey = b[1] - a[1], l2 = ex * ex + ey * ey;
-        float t = l2 > 0.0f ? ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / l2 : 0.0f;
-        t = std::clamp(t, 0.0f, 1.0f);
-        const float qx = a[0] + ex * t - p[0], qy = a[1] + ey * t - p[1];
-        if (qx * qx + qy * qy < r2) return true;
-        a = b;
+    const ActorPath& path = e.path;
+    auto near = [&](float bx, float by, float dx, float dy, float len) {
+        float vx = p[0] - bx, vy = p[1] - by;
+        const float perp = vy * dx - vx * dy;
+        if (!(perp * perp < r2)) return false;
+        const float t = vy * dy + vx * dx;
+        if (t >= 0.0f) {
+            if (t <= len) return true;
+            vx += len * dx;
+            vy += len * dy;
+        }
+        return vx * vx + vy * vy < r2;
+    };
+    const Vec3 o = originOf(e.obj);
+    const float look = path.lookDist, lx = path.lookDir[0], ly = path.lookDir[1];
+    if (near(o[0] + look * lx, o[1] + look * ly, lx, ly, look)) return true;
+    if (path.lookSegLen != 0.0f) {
+        const PathPoint& q = path.pts[size_t(path.lookIndex)];
+        if (near(q.pos[0], q.pos[1], q.dir[0], q.dir[1], path.lookSegLen)) return true;
+    }
+    for (int i = path.lookIndex - 1; i >= 0; --i) {
+        const PathPoint& q = path.pts[size_t(i)];
+        if (near(q.pos[0], q.pos[1], q.dir[0], q.dir[1], q.len)) return true;
     }
     return false;
 }
@@ -373,7 +414,7 @@ int World::grenadeThrowBackThink(Entity& e) {
     return 1;
 }
 
-// Cower (0x5206c0): facing 1, grenade_cower (anim mode 1). TODO(spec): 0x504630 / the followed actor (0x53ade0).
+// Cower (0x5206c0): facing 1, grenade_cower (anim mode 1), through standOrFollow (0x504630, 0x53ade0).
 void World::grenadeCower(Entity& e) {
     e.ai.facing = 1;
     standOrFollow(e, "grenade_cower"); // 0x5206c0..0x520708

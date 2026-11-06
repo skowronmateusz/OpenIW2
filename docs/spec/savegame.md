@@ -18,8 +18,9 @@ a string dvar (type 7) the string argument, other types raise "valid name, but i
 
 Dvar names compare case-insensitively (lookup 0x431260 -> compare 0x43f6d0); `_endmission.gsc` reads `g_gameSkill` for `g_gameskill`.
 
-Level-end flow (`maps/_endmission.gsc` `nextmission`, run by the level script at the end): `levelEndSave` (TODO(spec): the autosave
-at the level end), `setLevelCompleted` (mis_difficulty), `updateMissionDvar` (mis_NN), `unlockMissions` (a mission with all prerequisite
+Level-end flow (`maps/_endmission.gsc` `nextmission`, run by the level script at the end): `levelEndSave` (maps/_utility.gsc:140: returns when the mission failed, a save is already running or the player is dead; otherwise it
+writes the autosave named `levelend` with the AUTOSAVE_AUTOSAVE description and the `autosave_<script>start` level shot, i.e. the file
+`autosave/<map>-levelend` by the name rule of section 3), `setLevelCompleted` (mis_difficulty), `updateMissionDvar` (mis_NN), `unlockMissions` (a mission with all prerequisite
 missions completed gets `mis_NN = 1`), then `missionsuccess` / `cinematic` -> level change. The mission-select menu shows a mission when
 `mis_NN` is non-zero (`MISSION_NN_SHOW_DVAR`) and a level slot via `dvarTest mis_NN showDvar { ... }`.
 
@@ -31,7 +32,11 @@ moscow `nextmission` at skill 1 gives `mis_01=2`, `mis_difficulty[0]='2'`; demol
 ## 2. Savegame files
 
 - `sv_lastSaveGame` is registered with flags 0x1001 (archived, 0x449d78), so it survives a restart in the profile's config.cfg;
-  `sv_saveOnStartMap` (0x449da6, default 0, flags 0x1404). TODO(spec): the consumer of sv_saveOnStartMap.
+  `sv_saveOnStartMap` (0x449da6, default 0, flags 0x1404, global 0x825534). Its two readers (0x449300 and the level start 0x4499ee, which also
+  needs byte 0x1b15ac0 clear) queue an autosave request of type 1 with flags 6 and the description `Start Level Save` under the name held in
+  ebx (0x44a140, then the queue is processed at once with 0x44a230). The level setup `maps/_load.gsc:45` sets it with `setsavedcvar` to true on every map except `credits`, so
+  in the original every started map gets this start save. openiw2 does not honour the dvar; its level-start autosave comes from the scripts'
+  `levelStartSave` (maps/_utility.gsc:109, which saves as `levelstart`), so the engine start save is not reproduced. Byte 0x1b15ac0 is the flag `issaverecentlyloaded` (0x4f3da0) returns: a load sets it (0x4e5518, 0x4e6fe7), a new game clears it (0x4d4b39), so a level started from a save does not take the start save. The description pushed at 0x449a13 is `Start Level Save` and the image name (0x56cd07) is empty. TODO(spec): which name ebx holds (a stack buffer of the caller).
 - Path: `save/<name>.svg` (reader format 0x5812ec; writer `save\%s.svg` 0x5837c8, built by 0x4e02b0 with the name rule below), screenshot
   `save/<name>.jpg` (0x5812c4). The dvar `sv_lastSaveGame` (0x5799d4, global 0x8254a4) names the last committed save; `loadgame_continue`
   loads it. Autosaves use the `autosave` prefix (0x5810fc), `ui_savegameListAutosave` toggles their listing.
@@ -70,7 +75,7 @@ moscow `nextmission` at skill 1 gives `mis_01=2`, `mis_difficulty[0]='2'`; demol
 |---|---|---|---|
 | +0x000 | dword | version 0x99 | 0x4d4fa3; loader 0x4d5270; list 0x4c44a0 accepts 0x75..0x99 |
 | +0x004 | dword | bsp checksum (G_WriteGame argument) | 0x4d504b; loader "bsp file has changed" |
-| +0x008 | dword | checksum of the uncompressed body, 0x43bc30(buffer, size). TODO(spec): the algorithm of 0x43bc30 | 0x4d504e |
+| +0x008 | dword | checksum of the uncompressed body, 0x43bc30(buffer, size): the MD4 digest of the buffer (state init 67452301 efcdab89 98badcfe 10325476, update 0x43b3f0, finish 0x43b490; three rounds with the constants 0x5a827999 and 0x6ed9eba1, no sine table), folded to one dword by XOR of its four words. openiw2 writes its own body format and checks it with a CRC-32 instead | 0x4d504e |
 | +0x00c | dword | save id (pending-save +0x180, section 4) | 0x4d4fe5 |
 | +0x010 | byte | runtime only: set to 1 by the loader | 0x4d5270 local_4c8 |
 | +0x011 | byte | runtime only: script files differ (see above) | 0x4d5270 |
@@ -98,9 +103,9 @@ G_WriteGame (0x4e3ef0, "G_WriteGame '%s' '%s'") resets the memory file and write
 
 1. 0x462440: two bytes, the script debug flags [0x9bef12], [0x9bef13].
 2. 0x4e3070: dword count [0x1cbad9c], then for i = 1..count a byte length and the characters of the name that is the first field of entry i of
-   the pointer table 0x1c64548 (the client model table indexed by cgame 0x4a76b0..0x4a99b0; TODO(spec): confirm it is the model table). Then
-   0x4e2c60: a dword count (patched afterwards) and one 0x4e0ac0 string record for each non-zero slot 1..0x84 of 0x1c90988; the loader's
-   0x4e4380 reads a count and names and resolves them as weapons ("Weapon index mismatch for '%s'") - shape-matched pairing, TODO(spec).
+   the pointer table 0x1c64548: the weapon definitions. Cgame 0x4a76b0 indexes it with the current weapon after a range check against that count and a test of the owned-weapon bits, and reads a weapon field at +0x1c8; the count is cleared with the weapons at 0x448778 / 0x4a3f54. So this block is the weapon names. Then
+   0x4e2c60: a dword count (patched afterwards) and one 0x4e0ac0 string record for each non-zero slot 1..0x84 of 0x1c90988; the table is written by G_RegisterWeapon (0x522bb7), so these are the registered item-weapon entries. The loader
+   0x4e4380 reads the count and names and resolves them as weapons ("Weapon index mismatch for '%s'").
    Then 0x4e2b50: nine configstrings (0x4e2740, which names `SV_GetConfigstring`).
 3. 0x4e31c0 (game state):
    - dword 0x12345678 placeholder, patched to the size of the level block; dword 0x12345678; level dwords [0x1c60534], [0x1c60530],
@@ -126,7 +131,7 @@ G_WriteGame (0x4e3ef0, "G_WriteGame '%s' '%s'") resets the memory file and write
      entity +0x1f4 of every used entity; 0x4b4050 (`CG_SaveViewModelAnimTrees`); patch of the last size.
 4. The header (0x4d4f70) is filled after the body, so +0x008 / +0x4d0 describe the finished body.
 
-TODO(spec): the field tables behind 0x4e1540 (entities, clients, actors, ...), the VM writers 0x461810 / 0x461b50 and the cgame blocks.
+Not decoded, and not needed: the field tables behind 0x4e1540 (entities, clients, actors, ...), the VM writers 0x461810 / 0x461b50 and the cgame blocks.
 They are raw images of the original's memory structures, which openiw2 does not have; a byte-compatible body is therefore out of reach.
 
 ## 3. Save requests, autosaves and the snd/vid restart (PROVEN)
@@ -180,7 +185,10 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
 - Contents (src/game/savestate.cpp): the script VM (objects, arrays, threads with frames, locals, stacks, references, wait/endon state,
   the woken-thread queue, time and id counters; functions by file + name) and the World state listed there. Cvars: openiw2 keeps
   no dvar flags, so it restores every saved cvar except `mis_*`, `sv_lastSaveGame`, `com_playerProfile` and `ai_corpseCount` (outside the 0x400 set,
-  they keep their live values); TODO(spec): the complete 0x400 set. Per-entity runtime that is
+  they keep their live values). The 0x400 set is complete for literal flag words: a scan of every register call in the 0x431xxx..0x432xxx band finds
+  `sv_saveOnStartMap`, `cg_fov`, `cg_viewVehicleInfluence`, `cg_drawHUD`, `cg_hudCompassMaxRange`, `ui_campaign`, `ui_nextMission`, `g_speed`, `g_friendlyNameDist`,
+  `g_friendlyfireDist`, `g_friendlyfireUseDist`, `g_friendlyfireUseTime`, and no flag word loaded into a register. Script dvars (setcvar, created with flags 0) are outside
+  it; openiw2 restores them on purpose, see savestate.cpp. TODO(spec): what refills them after a load in a fresh process. Per-entity runtime that is
   rebuilt rather than restored (animation playback, AI state machine, paths, vehicles, turrets, missiles, perception) is listed as
   TODO(spec) in the header of savestate.cpp.
 

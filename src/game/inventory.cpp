@@ -39,15 +39,17 @@ std::string World::weaponField(const std::string& weaponName, const char* key) {
 
 int World::weaponInt(const std::string& weaponName, const char* key) { return std::atoi(weaponField(weaponName, key).c_str()); }
 
-// 0x4b7090: another owned weapon of the same weaponSlot (+0x80) that is slotStackable (+0x88) and has clip + stock
-// rounds is selected (0x4b8360); otherwise one of the two stored slots with ammo is cycled to (0x4b7410).
-// TODO(spec): the exact scan order over the owned weapons (the bitmask at 0xf70e00) and which slot is tried first.
+// 0x4b7090: when the current weapon is slotStackable (+0x88), the owned weapon with the lowest index of the same weaponSlot
+// (+0x80) that is slotStackable and has clip + stock rounds is selected (0x4b8360; no SP weapon file sets the key). Then,
+// when the current weapon sits in a stored slot (0x4dca70), slot 1 and then slot 2 are tried for clip + stock rounds.
+// TODO(spec): [stays: 0x4b7410 not read] the fallback cycle 0x4b7410 (ammo required) for a current weapon outside both slots.
 std::string World::outOfAmmoSwitch(const Inventory& inv, const std::string& current) {
     auto rounds = [&](const std::string& w) {
         auto a = inv.ammo.find(weaponField(w, "ammoName")), c = inv.clip.find(weaponField(w, "clipName"));
         return (a == inv.ammo.end() ? 0 : a->second) + (c == inv.clip.end() ? 0 : c->second);
     };
-    for (const auto& w : inv.owned)
+    if (weaponInt(current, "slotStackable") != 0)
+      for (const auto& w : inv.owned)
         if (w != current && weaponField(w, "weaponSlot") == weaponField(current, "weaponSlot") && weaponInt(w, "slotStackable") != 0 &&
             rounds(w) > 0)
             return w;
@@ -71,15 +73,16 @@ void World::fillClip(Inventory& inv, const std::string& w) {
     inv.clip[c] += take;
 }
 
-// Adds stock ammo (0x520e40): clip-only weapons are given as well; the clip is filled when asked or when the
-// weapon was given here; stock is clamped to maxAmmo and the clip to clipSize.
+// Adds stock ammo (0x520e40): clip-only weapons are given as well and always fill the clip, and on a non-actor (the player:
+// gentity +0x100 is 0, 0x520ed8) their stock is then zeroed; otherwise the clip is filled when asked and the stock clamped to
+// maxAmmo. The clip is clamped to clipSize.
 void World::addAmmo(Inventory& inv, const std::string& w, int amount, bool fillClipToo) {
     const std::string a = weaponField(w, "ammoName"), c = weaponField(w, "clipName");
     inv.ammo[a] += amount;
-    bool given = false;
-    if (weaponInt(w, "clipOnly")) given = giveWeapon(inv, w);
-    if (fillClipToo || given) fillClip(inv, w);
-    inv.ammo[a] = std::min(inv.ammo[a], weaponInt(w, "maxAmmo"));
+    const bool clipOnly = weaponInt(w, "clipOnly") != 0;
+    if (clipOnly) giveWeapon(inv, w);
+    if (fillClipToo || clipOnly) fillClip(inv, w);
+    inv.ammo[a] = clipOnly ? 0 : std::min(inv.ammo[a], weaponInt(w, "maxAmmo"));
     inv.clip[c] = std::min(inv.clip[c], weaponInt(w, "clipSize"));
 }
 
@@ -142,7 +145,7 @@ void World::registerInventoryBuiltins() {
         playerTeleport_ = o;
         return Value();
     });
-    // setplayerangles (0x538560 → SetClientViewAngle 0x4e8940). TODO(spec): the prone pitch limits of 0x4e8940.
+    // setplayerangles (0x538560 → SetClientViewAngle 0x4e8940). TODO(spec): [stays: 0x4e8940 turns a prone player's delta through limits that are not fully read] the prone pitch limits of 0x4e8940.
     vm_.registerBuiltin("setplayerangles", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");

@@ -56,6 +56,11 @@ std::mt19937& turretRng() {
     static std::mt19937 rng(0x269ec3);
     return rng;
 }
+// The gunner has arrived: flag 0x20 and the slide offsets at 0 (0x51c644.., 0x51cc9e..).
+bool gunnerArrived(const TurretState& ts) {
+    return (ts.flags & 0x20u) && ts.gunnerOriginOffset[0] == 0.0f && ts.gunnerOriginOffset[1] == 0.0f && ts.gunnerOriginOffset[2] == 0.0f;
+}
+
 float rand11() { return std::uniform_real_distribution<float>(-1.0f, 1.0f)(turretRng()); }
 
 } // namespace
@@ -118,9 +123,8 @@ bool World::turretTargetValid(Entity& t, Entity& target, float* distSq) {
     if (!turretAimSentient(t, target, point, angles)) return false;
     Vec3 pivot;
     if (!turretTag(t, "tag_flash", pivot)) return false;
-    // TODO: the 0x48b090 visibility value (≥ 0.2) is not checked.
-    const TraceResult tr = collision_->trace(pivot, point, {0, 0, 0}, {0, 0, 0}, 0x801);
-    if (tr.fraction < 1.0f) return false;
+    if (collision_->sightBlocked(pivot, point, {0, 0, 0}, {0, 0, 0}, 0x801803, t.number, target.number) ||
+        fxVisibility(pivot, point) < 0.2f) return false; // 0x51c260
     if (distSq) *distSq = dsq;
     return true;
 }
@@ -154,7 +158,7 @@ void World::turretUpdateState(Entity& t, bool aiming, const Vec3& point, const V
 }
 
 // Engage a point or non-sentient entity (0x51c1e0 / 0x51be80).
-bool World::turretEngagePoint(Entity& t, Entity* target, const Vec3& point) {
+bool World::turretEngagePoint(Entity& t, Entity* target, const Vec3& point, bool fire) {
     TurretState& ts = *t.turret;
     if (target && ts.engaged != target->obj) {
         ts.engaged = target->obj;
@@ -166,13 +170,14 @@ bool World::turretEngagePoint(Entity& t, Entity* target, const Vec3& point) {
         ts.flags &= ~0x40u;
         return false;
     }
-    turretUpdateState(t, true, point, angles);
+    turretUpdateState(t, fire, point, angles);
     return true;
 }
 
 // Engage a sentient with the convergence miss (0x51bef0): until the convergence time has passed, aim beside the
 // target (63 units off the line of fire, on the side the target faces), closing in linearly, then at it.
-bool World::turretEngageSentient(Entity& t, Entity& target) {
+// convergenceMs is the time base of the closing fraction, -1 for the turret's own; the gate reads the turret's.
+bool World::turretEngageSentient(Entity& t, Entity& target, bool fire, int convergenceMs) {
     TurretState& ts = *t.turret;
     if (ts.engaged != target.obj) {
         ts.engaged = target.obj;
@@ -182,6 +187,7 @@ bool World::turretEngageSentient(Entity& t, Entity& target) {
     Vec3 point, angles;
     if (!turretAimSentient(t, target, point, angles)) return false;
     const int conv = int(ts.yawConvergenceTime * 1000.0f);
+    const int base = convergenceMs < 0 ? conv : convergenceMs;
     if (0 < conv - timeMs_ + ts.engageStartMs) {
         Vec3 pivot;
         if (!turretTag(t, "tag_flash", pivot)) return false;
@@ -196,20 +202,20 @@ bool World::turretEngageSentient(Entity& t, Entity& target) {
             Vec3 off = dot(facing, side) < 0.0f ? scale(side, -1.0f) : side;
             for (float z : {o[2], point[2]}) {
                 const Vec3 p{point[0] + off[0], point[1] + off[1], z};
-                if (turretEngagePoint(t, nullptr, p)) {
+                if (turretEngagePoint(t, nullptr, p, fire)) {
                     ts.aimOffset = normalized(sub(p, point));
                     if (z == point[2]) ts.aimOffset[2] = 0;
                     return true;
                 }
             }
             ts.aimOffset = {0, 0, 0};
-        } else {
-            const float f = (float(ts.engageStartMs - timeMs_ + conv) / float(conv)) * 30.0f;
+        } else if (base > 0) {
+            const float f = (float(ts.engageStartMs - timeMs_ + base) / float(base)) * 30.0f;
             const Vec3 p = add(point, add(scale(ts.aimOffset, 33.0f), scale(ts.aimOffset, f)));
-            if (turretEngagePoint(t, nullptr, p)) return true;
+            if (turretEngagePoint(t, nullptr, p, fire)) return true;
         }
     }
-    turretUpdateState(t, true, point, angles);
+    turretUpdateState(t, fire, point, angles);
     return true;
 }
 
@@ -224,7 +230,7 @@ void World::turretIdle(Entity& t) {
 // Turning towards the wanted angles (0x51b610 / 0x51b4e0): with a target, at the rate that reaches them by the end of
 // the convergence time (pitch: pitch convergence, yaw: yaw convergence), clamped to the weapon's min/max
 // vert/hor turn speeds; without one at 200°/s.
-void World::turretTurn(Entity& t, bool tracking) {
+bool World::turretTurn(Entity& t, bool tracking) {
     TurretState& ts = *t.turret;
     const float dPitch = angleDelta(ts.wantAngles[0], ts.pitch), dYaw = angleDelta(ts.wantAngles[1], ts.yaw);
     float rate[2] = {200.0f, 200.0f};
@@ -244,8 +250,10 @@ void World::turretTurn(Entity& t, bool tracking) {
     if ((ts.flags & 0x200u) && (ts.flags & 0x100u)) rate[0] = 360.0f;
     const float d[2] = {dPitch, dYaw};
     float* cur[2] = {&ts.pitch, &ts.yaw};
+    bool reached = true; // 0x51b763
     for (int i = 0; i < 2; ++i) {
         const float step = rate[i] * 0.05f;
+        if (std::fabs(d[i]) > step) reached = false;
         *cur[i] += std::clamp(d[i], -step, step);
     }
     // 0x51b779..0x51b7c5: the AI gunner's pitch bound (+0xa8, set by the pose step 0x549ba0). Beyond it (above with 0x400,
@@ -257,6 +265,7 @@ void World::turretTurn(Entity& t, bool tracking) {
         else ts.flags &= ~0x100u;
     }
     t.obj->set("$turretangles", Value(Vec3{ts.pitch, ts.yaw, 0}));
+    return reached;
 }
 
 int World::debugFireTurrets() {
@@ -400,6 +409,192 @@ void World::restoreDefaultDropPitch(Entity& t) {
     }
 }
 
+// The gun at the drop pitch, yaw 0, plain rate, state 0 (0x51b8a0 with 0, 0x51cc24, 0x51ce2b).
+void World::turretHoldDrop(Entity& t) {
+    TurretState& ts = *t.turret;
+    turretSetState(t, 0);
+    ts.wantAngles = {ts.dropPitch, 0, 0};
+    turretTurn(t, false);
+}
+
+// The gun to (0, 0) at the tracking rates, state 0 (0x51b8a0 with 1); true when it got there in this step.
+bool World::turretLevel(Entity& t) {
+    turretSetState(t, 0);
+    t.turret->wantAngles = {0, 0, 0};
+    return turretTurn(t, true);
+}
+
+// 0x51c1a0: aim at a sentient and turn.
+bool World::turretAimAndTurn(Entity& t, Entity& target, bool fire, int convergenceMs) {
+    if (!turretEngageSentient(t, target, fire, convergenceMs)) return false;
+    turretTurn(t, true);
+    return true;
+}
+
+// 0x51c1e0: aim at a non-sentient entity's origin and turn.
+bool World::turretAimEntityAndTurn(Entity& t, Entity& target, bool fire) {
+    if (!turretEngagePoint(t, &target, target.obj->get("origin").asVector(), fire)) return false;
+    turretTurn(t, true);
+    return true;
+}
+
+// 0x54e3f0: enemy selection may take every sentient of the gunner's enemy team again.
+void World::gunnerForgetIgnores(Entity& gunner) {
+    const std::string own = gunner.obj->get("team").toString();
+    const std::string other = own == "axis" ? "allies" : own == "allies" ? "axis" : "";
+    if (other.empty()) return;
+    for (const auto& ep : entities_) {
+        if (!isSentient(*ep) || ep->obj->get("team").toString() != other) continue;
+        auto it = gunner.sentientInfo.find(ep->obj.get());
+        if (it != gunner.sentientInfo.end()) it->second.ignoreUntilMs = 0;
+    }
+}
+
+// Target choice of an automatic gunner (docs/spec/turrets.md "Gunner target choice"); false: he gives the turret up.
+bool World::turretGunnerThink(Entity& t, Entity& gunner) {
+    TurretState& ts = *t.turret;
+    if (!gunnerArrived(ts)) {
+        turretHoldDrop(t);
+        return true;
+    }
+    const Vec3 turretOrigin = t.obj->get("origin").asVector();
+    const int convergenceMs = int(ts.yawConvergenceTime * 1000.0f);
+    const int64_t suppressionMs = int64_t(ts.suppressionTime * 1000.0f);
+    auto record = [&](Entity& x) -> SentientInfo& { return gunner.sentientInfo[x.obj.get()]; };
+    auto ignored = [](Entity& x) { return x.obj->get("ignoreme").truthy(); };
+    auto fresh = [&](Entity& x) {
+        const SentientInfo& i = record(x);
+        if (timeMs_ - i.lastKnownMs >= suppressionMs) return false;
+        const Vec3 d = sub(x.obj->get("origin").asVector(), i.lastKnownPos);
+        return d[0] * d[0] + d[1] * d[1] < 4096.0f;
+    };
+    auto clear = [&](Entity& x) { // 0x51c260
+        const Vec3 from = sightEye(gunner, nullptr), to = sightEye(x, nullptr);
+        return !collision_->sightBlocked(from, to, {0, 0, 0}, {0, 0, 0}, 0x801803, gunner.number, x.number) && !(fxVisibility(from, to) < 0.2f);
+    };
+
+    Entity* threat = ts.hitBy ? entityOf(Value(ts.hitBy)) : nullptr;
+    if (!threat) ts.hitBy.reset();
+    Entity* enemy = entityOf(gunner.obj->get("enemy"));
+    if (enemy && !isSentient(*enemy)) enemy = nullptr;
+    if ((ts.flags & 0x10u) && threat) enemy = threat;
+    Entity* script = ts.target ? entityOf(Value(ts.target)) : nullptr;
+    SentientInfo* info = nullptr;
+
+    if (!enemy) {
+        if (threat && record(*threat).ignoreUntilMs <= timeMs_) ts.hitBy.reset();
+        gunnerForgetIgnores(gunner);
+    } else {
+        info = &record(*enemy);
+        info->ignoreUntilMs = timeMs_ + 2000;
+        const Vec3 toEnemy = sub(enemy->obj->get("origin").asVector(), turretOrigin);
+        const float distSq = dot(toEnemy, toEnemy);
+        if (ignored(*enemy) || !(distSq < ts.maxRangeSq)) {
+            info = nullptr;
+        } else {
+            if (info->visible && turretAimAndTurn(t, *enemy, true, convergenceMs)) {
+                ts.flags &= ~0x10u;
+                info->ignoreUntilMs = 0;
+                return true;
+            }
+            if (timeMs_ - gunner.ai.baseStateMs >= 1000) {
+                const bool inFront = !(dot(forwardOf(t.obj->get("angles").asVector()), toEnemy) < 0.0f);
+                const bool near = distSq < 65536.0f;
+                const bool keepThreat = threat && ts.hitBy && (threat == enemy || record(*threat).ignoreUntilMs > timeMs_);
+                if (!keepThreat && (info->visible || !inFront) && fresh(*enemy) && clear(*enemy)) {
+                    ts.hitBy = enemy->obj;
+                    if (near) info->ignoreUntilMs = 0;
+                } else if (ts.hitBy) {
+                    if (!fresh(*threat) || !clear(*threat)) {
+                        ts.hitBy.reset();
+                    } else if (threat == enemy) {
+                        if (!(ts.flags & 0x10u) && inFront && !turretLevel(t)) { // 0x51ca98
+                            if (near) info->ignoreUntilMs = 0;
+                            return true;
+                        }
+                        info->ignoreUntilMs = 0;
+                        return false;
+                    }
+                }
+            }
+        }
+        if (script == enemy) script = nullptr;
+    }
+
+    // Suppression: the last known position of the sentient being engaged.
+    Entity* engaged = ts.engaged ? entityOf(Value(ts.engaged)) : nullptr;
+    if (engaged && isSentient(*engaged)) {
+        info = &record(*engaged);
+        if (!ignored(*engaged) && timeMs_ - info->lastKnownMs < suppressionMs) {
+            const Vec3 known = info->lastKnownPos;
+            const Vec3 point{known[0], known[1], (ts.flags & 0x40u) ? ts.aimPoint[2] : known[2] + 32.0f};
+            if (turretEngagePoint(t, nullptr, point, true)) {
+                turretTurn(t, true);
+                info->ignoreUntilMs = 0;
+                if (ts.hitBy == engaged->obj) ts.hitBy.reset();
+                return true;
+            }
+        } else {
+            info->lastKnownMs = 0;
+        }
+    } else if (info) {
+        info->lastKnownMs = 0;
+    }
+
+    if (script) {
+        const Vec3 d = sub(script->obj->get("origin").asVector(), turretOrigin);
+        if (dot(d, d) < ts.maxRangeSq) {
+            if (!isSentient(*script)) {
+                if (turretAimEntityAndTurn(t, *script, true)) return true;
+            } else if (record(*script).visible && turretAimAndTurn(t, *script, true, convergenceMs)) {
+                return true;
+            }
+        }
+    }
+    if (!info || !info->visible) turretIdle(t);
+    turretLevel(t);
+    return true;
+}
+
+// Manual turret, with or without a gunner (0x51cc80); false: he gives the turret up.
+bool World::turretManualThink(Entity& t, Entity* gunner) {
+    TurretState& ts = *t.turret;
+    if (gunner) {
+        if (!gunnerArrived(ts)) {
+            turretHoldDrop(t);
+            return true;
+        }
+        if (ts.hitBy && !entityOf(Value(ts.hitBy))) ts.hitBy.reset();
+        Entity* enemy = entityOf(gunner->obj->get("enemy"));
+        if (enemy && !isSentient(*enemy)) enemy = nullptr;
+        bool close = false;
+        if (enemy) {
+            const Vec3 o = enemy->obj->get("origin").asVector();
+            const Vec3 toTurret = sub(o, t.obj->get("origin").asVector()), toGunner = sub(o, gunner->obj->get("origin").asVector());
+            close = dot(toTurret, toTurret) < ts.maxRangeSq && dot(toGunner, toGunner) < 65536.0f; // 0x51cd03, 0x51cd20
+        }
+        if (ts.hitBy || close) return turretGunnerThink(t, *gunner);
+        ts.flags &= ~0x10u;
+        if (enemy) gunner->sentientInfo[enemy->obj.get()].ignoreUntilMs = timeMs_ + 2000;
+        else gunnerForgetIgnores(*gunner);
+    }
+    const bool fire = ts.flags & 4u;
+    Entity* script = ts.target ? entityOf(Value(ts.target)) : nullptr;
+    if (script) {
+        const Vec3 d = sub(script->obj->get("origin").asVector(), t.obj->get("origin").asVector());
+        if (dot(d, d) < ts.maxRangeSq) {
+            if (!isSentient(*script)) {
+                turretAimEntityAndTurn(t, *script, fire);
+                return true;
+            }
+            if (turretAimAndTurn(t, *script, fire, 0)) return true;
+        }
+    }
+    if (gunner && script) turretLevel(t);
+    else turretIdle(t);
+    return true;
+}
+
 // Turret think for one turret (0x51d250).
 void World::thinkTurret(Entity& t) {
     TurretState& ts = *t.turret;
@@ -456,49 +651,17 @@ void World::thinkTurret(Entity& t) {
         if (pick && turretEngageSentient(t, *pick)) tracking = true;
         else if (engageScript()) tracking = true;
         else turretIdle(t);
-    } else if (owner && owner->isActor) {
-        // Gunner (0x51c630 automatic / 0x51cc80 manual). Until the gunner has arrived (flag 0x20 and the slide offsets 0) the
-        // gun holds the drop pitch at yaw 0 and 200°/s, state 0 (0x51cc24 / 0x51ce2b). Then, simplified: the gunner's enemy
-        // while it is known to the gunner within the suppression time and in range, else the script target. TODO(spec): the
-        // full 0x51c630 rules. With nothing to engage the gun levels out: automatic goes idle and turns to (0, 0) at the
-        // tracking rates (0x51cc09, 0x51cc15 -> 0x51b8a0 with 1); manual does so when it has a script target it cannot
-        // engage (0x51ce9f); without one it goes idle and does not turn at all (0x51ceb0).
-        const bool arrived = (ts.flags & 0x20u) && ts.gunnerOriginOffset[0] == 0.0f && ts.gunnerOriginOffset[1] == 0.0f &&
-                             ts.gunnerOriginOffset[2] == 0.0f;
-        if (!arrived) {
-            turretSetState(t, 0);
-            ts.wantAngles = {ts.dropPitch, 0, 0};
-        } else {
-            Entity* enemy = entityOf(owner->obj->get("enemy"));
-            bool engaged = false;
-            if (enemy && isSentient(*enemy) && inRange(*enemy)) {
-                auto it = owner->sentientInfo.find(enemy->obj.get());
-                const bool known = it != owner->sentientInfo.end() &&
-                                   (it->second.visible || timeMs_ - it->second.lastKnownMs < int64_t(ts.suppressionTime * 1000.0f));
-                if (known) engaged = turretEngageSentient(t, *enemy);
-            }
-            if (!engaged) engaged = engageScript();
-            tracking = true;
-            if (!engaged) {
-                if (automatic || scriptTarget) {
-                    if (automatic) turretIdle(t);
-                    else turretSetState(t, 0);
-                    ts.wantAngles = {0, 0, 0};
-                } else {
-                    turretIdle(t);
-                    return;
-                }
-            }
-        }
-    } else if (ai) {
-        // 0x51d2e2 → 0x51b8a0 with ebx = 0: the unmanned turret turns to (drop pitch, yaw 0).
-        turretSetState(t, 0);
-        ts.wantAngles = {ts.dropPitch, 0, 0};
-    } else {
-        if (engageScript()) tracking = true; // 0x51cc80 without a gunner
-        else turretIdle(t);
+        turretTurn(t, tracking);
+        return;
     }
-    turretTurn(t, tracking);
+    // 0x51d2ca: a gunner only while the bottom state of his stack is the turret state (actor +0x8).
+    Entity* gunner = owner && owner->isActor && owner->ai.stack[0] == AiTurret ? owner : nullptr;
+    if (!gunner && ai) { // 0x51d2e2 -> 0x51b8a0 with ebx = 0: the unmanned turret turns to (drop pitch, yaw 0).
+        turretHoldDrop(t);
+        return;
+    }
+    const bool keep = gunner && automatic ? turretGunnerThink(t, *gunner) : turretManualThink(t, gunner);
+    if (!keep && gunner) turretStateFinish(*gunner); // 0x54b020
 }
 
 

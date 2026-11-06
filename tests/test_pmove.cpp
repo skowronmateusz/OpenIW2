@@ -98,6 +98,29 @@ int main() {
             CHECK(drop3 < 2.0f);
         }
 
+        // pm_flags 0x8000 (freezecontrols): PmoveSingle zeroes the velocity first and the command's moves, and the stance logic is skipped
+        // (0x509e59), so a crouched player stays crouched with no stance key and a pushed player does not slide.
+        {
+            PlayerInput fz;
+            fz.controlsFrozen = true;
+            fz.forward = 1;
+            PlayerState f1 = ps;
+            f1.velocity = {300, 0, 0};
+            playerMove(cw, f1, fz, 0.05f);
+            CHECK(std::hypot(f1.origin[0] - ps.origin[0], f1.origin[1] - ps.origin[1]) < 0.5f);
+            CHECK(std::fabs(f1.velocity[0]) < 1.0f && std::fabs(f1.velocity[1]) < 1.0f);
+            PlayerState f2 = ps;
+            PlayerInput crouch;
+            crouch.stance = iw2::game::Stance::Crouch;
+            for (int i = 0; i < 20; ++i) playerMove(cw, f2, crouch, 0.05f);
+            CHECK(f2.stance == iw2::game::Stance::Crouch);
+            for (int i = 0; i < 20; ++i) playerMove(cw, f2, fz, 0.05f); // no stance key: a free player would stand up
+            CHECK(f2.stance == iw2::game::Stance::Crouch);
+            fz.controlsFrozen = false;
+            for (int i = 0; i < 20; ++i) playerMove(cw, f2, fz, 0.05f);
+            CHECK(f2.stance == iw2::game::Stance::Stand);
+        }
+
         // Two seconds forward at g_speed 190 (friction and acceleration settle within the first frames).
         PlayerInput in;
         in.forward = 1;

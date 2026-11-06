@@ -11,12 +11,17 @@
 
 namespace iw2::ui {
 
+// The bars of a window border (0x4c74a6..0x4c75cf): 1 = all four sides (0x4c36d0), 2 = top and bottom (0x4c35f0), 3 = left and right
+// (0x4c3510), each `size` thick, inside the rect. Other values draw nothing.
+struct BorderBar { float x, y, w, h; };
+std::vector<BorderBar> borderBars(int border, float x, float y, float w, float h, float size);
+
 class MenuStack {
 public:
     // `env` is the caller's environment; MenuStack installs its own open/close/focus/show hooks into it.
     MenuStack(MenuLibrary& lib, MenuEnv& env);
 
-    // Opens a menu on top of the stack (runs onOpen, applies initial focus). TODO(spec): the limit behind "Too many menus opened".
+    // Opens a menu on top of the stack (runs onOpen, applies initial focus). The limit is 16 ("Too many menus opened", frontend.cpp).
     bool open(const std::string& name);
     void close(const std::string& name); // closes that menu (runs onClose)
     void closeAll();
@@ -89,6 +94,7 @@ public:
     // Colours of an item after setitemcolor and fades.
     Color foreColor(const Item& it) const;
     Color backColor(const Item& it) const;
+    Color borderColor(const Item& it) const;
     // One paint-time fade step (Window_Paint 0x4c7270 for FILLED items with a background: the back colour's alpha; item text paint
     // 0x4ce990 / 0x4cc450: the fore colour's alpha). Once the menu's fadeCycle has passed since the last step (real ms, tick()), the
     // alpha drops by fadeAmount (fading out; at <= 0 the item stops fading and is hidden) or rises by fadeInAmount (fading in; clamped
@@ -170,7 +176,8 @@ private:
     struct ItemRuntime {
         bool fadingIn = false, fadingOut = false;
         int nextTime = 0; // window +0x1c8
-        bool hasFore = false, hasBack = false;
+        bool hasFore = false, hasBack = false, hasBorder = false;
+        Color border{};
         Color fore{}, back{};
     };
     std::map<const Item*, ItemRuntime> runtime_;

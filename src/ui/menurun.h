@@ -27,7 +27,7 @@ struct MenuEnv {
     std::function<void(const std::string& item, bool out)> fadeItem;     // "fadein" / "fadeout" (0x4c8150 / 0x4c81a0 -> 0x4c7d80)
     // "setitemcolor <item> <forecolor|backcolor|bordercolor> r g b a" (0x4c7ba0).
     std::function<void(const std::string& item, const std::string& which, const Color& c)> setItemColor;
-    std::function<bool()> savegameExists;  // "savegameshow/savegamehide": TODO(spec) exact exe semantics; unset = no save
+    std::function<bool()> savegameExists;  // "savegameshow/savegamehide": shown iff the file of sv_lastSaveGame is a loadable save (0x4c8f20); unset = no save
     std::function<bool()> restartAvailable; // "restarthide": unset = available
     std::function<void(const std::string& cmd)> exec;                   // console text of "exec" / "execnow" other than toggle
     std::function<void(const std::string& name, const Command& args)> uiScript; // "uiScript" other than update

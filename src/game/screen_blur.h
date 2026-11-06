@@ -8,10 +8,12 @@
 namespace iw2::game {
 
 // F of the alpha ramp alpha = min(R / F, 1): gfx dll 0x10030b50 calls import 0x101d4c4c(3.0f) = exe 0x440cd0 (ri slot 157 filled at
-// 0x40d9bd..), which returns 3.0 * [0x793950]; 0x793950 = scale * (1 / 640) stored at 0x440c2a in the viewport setup 0x440b70
-// (called with the window size 0x617e1c / 0x617e20 at 0x4a333f), i.e. the horizontal 640-virtual-pixel scale.
-// TODO(spec): the exact argument of 0x440c20 (assumed the window width, scale = width / 640).
-inline float blurFullRadius(float widthPx) { return 3.0f * widthPx / 640.0f; }
+// 0x40d9bd..), which returns 3.0 * [0x793950]. The viewport setup 0x440b70 (called with the window size 0x617e1c / 0x617e20 at 0x4a333f)
+// stores there 640 / (height * 4/3 / pixelAspect), the inverse of the 640-virtual-pixel scale of the 4:3 area: F is 3 real pixels in
+// virtual units, so it shrinks as the window grows. pixelAspect (0x617e30, gfx 0x101d4cbc) is 1 here: pixels are square.
+inline float blurFullRadius(float heightPx) { return 3.0f * 480.0f / heightPx; }
+// 0x10030b50: below F the image is still built with radius F, only the alpha ramps.
+inline float blurImageRadius(float radius, float heightPx) { return std::max(radius, blurFullRadius(heightPx)); }
 
 struct ScreenBlur {
     int64_t start = 0, end = 0; // 0x4beb80: start = now, end = now + ms (start == 0: no lerp running)
@@ -45,13 +47,14 @@ struct ScreenBlur {
             priority = 0;
         }
     }
-    // 0x4af3d0: sqrt(cur^2 + [0xf48b88]^2 + x^2). TODO(spec): the other two terms (meaning unknown) are taken as 0.
+    // 0x4af3d0: sqrt(cur^2 + [0xf48b88]^2 + x^2). TODO(spec): the other two terms are taken as 0. No instruction stores to either address
+    // directly, so they are fields written through a base pointer; x is only used while the UI key catcher is up (0x617f04 bit 8).
     float composed() const { return cur; }
 };
 
 // Renderer side: R = sqrt(r_blur^2 + radius^2) with r_blur = 0; the blurred copy is blended with alpha min(R / F, 1).
-inline float blurAlpha(float radius, float widthPx) {
-    return radius <= 0 ? 0.0f : std::min(radius / blurFullRadius(widthPx), 1.0f);
+inline float blurAlpha(float radius, float heightPx) {
+    return radius <= 0 ? 0.0f : std::min(radius / blurFullRadius(heightPx), 1.0f);
 }
 
 } // namespace iw2::game

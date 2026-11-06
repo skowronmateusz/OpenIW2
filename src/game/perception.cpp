@@ -73,7 +73,7 @@ Vec3 World::sightEye(Entity& e, Vec3* forward) {
                 if (strcasecmp(parts->bones[b].name.c_str(), "tag_eye") == 0) { eyeBone = int(b); break; }
         if (eyeBone >= 0) {
             const assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
-            const assets::Quat er{0, 0, std::sin(yaw * 0.5f), std::cos(yaw * 0.5f)};
+            const assets::Quat er = anglesQuat(ang.isVector() ? ang.asVector() : Vec3{0, 0, 0}); // as entityBones
             const Vec3 p = assets::rotate(er, pose.position[size_t(eyeBone)]);
             e.eyePos = {o[0] + p[0], o[1] + p[1], o[2] + p[2]};
             Vec3 f = assets::rotate(assets::multiply(er, pose.rotation[size_t(eyeBone)]), {1, 0, 0});
@@ -82,7 +82,7 @@ Vec3 World::sightEye(Entity& e, Vec3* forward) {
         } else if (e.isActor && parts) {
             // 0x500910 looks tag_eye (scr const 0x1c7f156, string 0x589f94) up in the whole DObj (0x4d74b0), so a tag_eye
             // of an attached model (the head) counts; only without one it warns (0x589b84) and uses origin + 64 (0x56f6e0).
-            const assets::Quat er{0, 0, std::sin(yaw * 0.5f), std::cos(yaw * 0.5f)};
+            const assets::Quat er = anglesQuat(ang.isVector() ? ang.asVector() : Vec3{0, 0, 0}); // as entityBones
             for (const HitBoxModel& m : entityModels(e)) {
                 for (size_t b = 0; b < m.parts->bones.size(); ++b) {
                     if (strcasecmp(m.parts->bones[b].name.c_str(), "tag_eye") != 0) continue;
@@ -238,13 +238,22 @@ int World::threatOf(Entity& actor, Entity& target) {
 // Enemy change (0x515150): attacker counts follow, and the actor is notified "enemy".
 void World::setEnemy(Entity& actor, Entity* enemy, bool notify) {
     Entity* old = entityOf(actor.obj->get("enemy"));
+    // Sentient +0x20: 1000 ms after an enemy is set the sentient tells its own team about it (event 4, 0x535740). The
+    // event goes out from a notifying call of the enemy setter, when it is due, or early, when the enemy changes.
+    auto tellTeam = [&] {
+        aiEventPoint(actor, 4, actor.obj->get("origin").asVector(), 0, true, AiHear::Own);
+        actor.enemyEventMs = 0;
+    };
+    if (notify && old && actor.enemyEventMs != 0 && timeMs_ >= actor.enemyEventMs) tellTeam();
     if (old == enemy) return;
+    if (notify && old && actor.enemyEventMs != 0) tellTeam();
     if (old) --old->attackers;
     if (enemy) ++enemy->attackers;
+    actor.enemyEventMs = enemy ? timeMs_ + 1000 : 0;
     actor.obj->set("enemy", enemy ? Value(enemy->obj) : Value());
     if (notify) vm_.notify(actor.obj, "enemy");
-    // 0x5151ff..0x515217: an actor forgets its last enemy sight position (+0x2048 = 0; also +0x1738 and +0x1764,
-    // TODO(spec): not modelled) and takes the new enemy's eye at once when it is seen this frame.
+    // 0x5151ff..0x515217: an actor forgets its last enemy sight position (+0x2048 = 0; +0x1738 and +0x1764 are not
+    // fields here) and takes the new enemy's eye at once when it is seen this frame.
     if (actor.isActor) {
         actor.obj->set("lastenemysightpos", Value());
         updateLastEnemySightPos(actor);

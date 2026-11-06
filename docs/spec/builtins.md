@@ -495,6 +495,11 @@ Implemented from the exe: `attackbuttonpressed` (0x538820, buttons & 1), `usebut
 (0x538600), `getnormalizedmovement` (0x5386a0, signed bytes x 1/127), `getammocount` (0x4f4540, stock + clip), `setspawnerteam`
 (0x4f8750; all 100 shipped aitype `spawner()` calls name the team of their class name, so `getspawnerteamarray` already agreed),
 `playlooprumble` (0x4f8c00, a single `ret`).
+The three button queries (and `meleebuttonpressed`, & 4) read the pair client +0x8634 | +0x8640: ClientThink (0x4e7e4c..0x4e7e7d) moves the
+old +0x8634 to +0x8638, stores the command's buttons (usercmd +4) in +0x8634, the newly down bits (now & ~old) in +0x863c and ORs them into
++0x8640; ClientEndFrame (0x4e7f90) writes 0 to +0x8640 (0x4e811c, 0x4e812e, 0x4e8141). So a button counts while it is held at the latest
+command, or when it went down in any command since the last server frame end (a tap between two frames is not lost); a button released in
+the latest command does not linger. `World::setPlayerCommand` latches the edges, `World::frame` clears them (tests/test_builtinaudit.cpp).
 
 Still stubbed and called by SP scripts (most used first). Engine syntax/VM ops (`waittill`, `endon`, `notify`, `waittillmatch`) are
 handled by the VM, not as built-ins; `line` / `print3d` (99 / 77 calls, developer-only drawing) are intentionally no-ops.
@@ -569,8 +574,9 @@ S = the node's state record (0xa0a200 + index * 40 + 0xc) the leaf takes S[+0x10
 steps newT = S[+4] + xanim[+8] * S[+0x18] * dt (the base time of the step plus rate-scaled dt; a looping anim wraps newT below 1.0 and counts
 loops up, a non-looping one clamps at 1.0), and passes 0x475ea0 a block R = {+0 newT, +4 S[+0] (the time reached by the previous step),
 +8 new loop count, +0xa S[+8] (old loop count)} and S itself as T (time at +4, loop at +0xa); 0x475de0's `a` / `b` are then newT / the previous
-time. TODO(spec): the meaning of the three comparisons (which crossing of the note time x counts, the +1 loop in the wrapped case) was not
-proven, so `AnimState::noteFraction` is unchanged: it takes the linear position of the first note crossed by the leaves that report notes
+time. Decoded: a step crosses a note x when b <= x < a, or also x == a when a is 1.0; a wrapped step (a < b) crosses it when x >= b or x < a (the +1 loop). b == 1.0 crosses
+nothing. The result is (loops + x - T.time) / d. The firing side 0x476f10 agrees (first note not before the previous time, 0x475ca0; fires while the new time is past the note), so a note at
+time 0 fires on the first step. TODO(spec): not implemented; a trial made a scripted animation start on a dead AI in moscow. `AnimState::noteFraction` still takes the linear position of the first note crossed in (previous, new]
 ("end" counts at time 1 for non-looping anims). TODO(spec): the exe's per-actor scratch snapshot (an
 endprediction on another actor than the begin); the move block fields the port keeps outside `ActorAi` (nothing found).
 ### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
@@ -591,5 +597,6 @@ The exe keeps a 256-entry key table of 12-byte entries at 0x5d2728: +0 the down 
 - `getcommandfromkey(name)` (0x4ece00): the binding text of the key, or the empty string (0x56cd07) when the name gives -1 or
   the key is unbound. `moscow_str` asks for `BUTTON_RSTICK` / `BUTTON_LSTICK` (console names), so on the PC it gives "".
 - Port: `World::clientInput` points at the client's `ClientInput`; `ClientInput::key()` keeps the down set and
-  `keyDown()` / `commandFromKey()` answer by name. TODO(spec): the exe takes a one-character name literally (`w` is key 119, `W` 87)
-  and the key event decides which of the two a pressed letter is; the port stores one-character keys upper-cased.
+  `keyDown()` / `commandFromKey()` answer by name. The exe takes a one-character name literally (`w` is key 119, `W` 87)
+  and the key event decides which of the two a pressed letter is; the port stores one-character keys upper-cased. Not reachable with the shipped
+  scripts: their only key-name arguments are the console names `BUTTON_A`, `BUTTON_LSTICK` and `BUTTON_RSTICK`.

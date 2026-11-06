@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <string>
 
 namespace iw2::game {
 
@@ -20,6 +22,13 @@ inline float hudHealthFraction(int health, int maxHealth) {
     if (health <= 0 || maxHealth <= 0) return 0.0f;
     const float f = float(health) / float(maxHealth);
     return f > 1.0f ? 1.0f : f;
+}
+
+// Which weapon the weapon-info ownerdraws (ammo, name, firemode icon: 0x4a79b0, 0x4a7da0, 0x4a8040) describe: the selected weapon
+// (cg.weaponSelect, 0xf796e0) when it names a weapon the player owns (index in range and its bit set in 0xf70e00), else the player
+// state's current weapon (0xf70998). Names are compared lower-case by the caller.
+inline const std::string& hudShownWeapon(const std::string& selected, const std::string& current, const std::function<bool(const std::string&)>& owned) {
+    return !selected.empty() && owned(selected) ? selected : current;
 }
 
 } // namespace iw2::game

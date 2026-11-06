@@ -7,8 +7,8 @@
 
 namespace iw2::ui {
 
-// True for the cvars the menus persist (TODO(spec): the exe archives every CVAR_ARCHIVE cvar; only the ones the
-// menus and levels here use are written).
+// True for the cvars the menus persist. The exe writes every cvar registered with the archive flag; the port has no cvar registry
+// with flags, so the list is the archived cvars that its menus and levels use (flags cited in profile.cpp).
 bool isArchivedCvar(const std::string& name);
 
 // Parses `seta`/`set` lines of a config file into name -> value (names kept as written).

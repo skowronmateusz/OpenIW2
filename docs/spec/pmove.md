@@ -39,7 +39,7 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   - to crouch from stand: 0→60, 1→59.5, 4→58.5, 30→56, 80→44, 90→41.5, 95→40.5, 100→40
   - to crouch from prone: 0→11, 5→10, 30→21, 50→25, 67→31, 83→34, 100→40
   - to stand: 0→40, 5→40.5, 10→41.5, 20→44, 70→56, 96→58.5, 99→59.5, 100→60
-- Standing up traces the taller box first. TODO(spec): the prone surface check (0x4fc000), the
+- Standing up traces the taller box first. TODO(spec): [stays: 0x4fc000 not read] the prone surface check (0x4fc000), the
   crouch/prone button logic (cmd bits 0x100/0x200). Mantling: see "Mantle" below.
 
 ## Movement
@@ -119,7 +119,8 @@ PmoveSingle for a normal player: ground trace, stance, pm_time countdown (at 0 i
   degrees, offset = 20·g·(cos(roll)·right − sin(roll)·up); the view angles are not rolled.
 - View weapon: position + (0, −cos r, −sin r)·(1 − adsFrac)·g·1.6 with r = −2g degrees while not fully aimed
   (0x4b61d0), roll −2g (0x4b6420).
-- TODO(spec): the ps flags that forbid leaning (0x8000, 0x2000000 / 0x4000000, 0x20300 in ps+0x7c).
+- Leaning is refused with ps+0xc & 0x8000, pm_type 4 and above, no ground (except pm_type 1) and ps+0x7c & 0x20300
+  (vehicle, turret); the allowleanleft / allowleanright flags 0x2000000 / 0x4000000 cancel the input (0x50adf1..0x50ae2c).
 
 ## Aiming (0x4dd020, 0x50bd00, 0x50c5c7)
 
@@ -164,5 +165,7 @@ of player_mantle_up_* (+ player_mantle_over_*) rotated by the mantle yaw.
 - Weapon (0x4de880, branch 0x4de91b..0x4de947): while pm_flags 0x20 is set the weapon change goes to weapon 0
   (the weapon is put away), the same path as mantling and vehicles; it is raised again when the flag is gone.
   The busy weapon states that skip the whole change check (0x4de883..0x4de8ea) apply as for mantling.
-- TODO(spec): the landing-time adjustment of the jump speed inside 0x5414d0 (0x541490, pm_flags 0x80000 and
-  pm_time <= 1800) and the pm_flags 0x1000 / 0x4 jump gates are not modelled by the port's jump check.
+- Jump speed after a recent landing (0x5414d0): with pm_flags 0x80000 and pm_time <= 1800 the squared speed is divided by
+  0x541490: 1 + pm_time · 0.000882 (2.5 from 1700 ms), or 1 with jump_slowdownEnable off, its default. So it stays 1.
+- pm_flags 4 (mantling) blocks the jump, and so does a target view height (ps+0xd0) of 40 or 11 (0x507c60). TODO(spec): [stays: the button meaning at 0x50c62c is not read] pm_flags 0x1000, set at spawn (0x4e9202) and cleared by the first
+  live command without the buttons 0x4001 (0x50c62c), also blocks it; not modelled.

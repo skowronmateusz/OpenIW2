@@ -33,6 +33,7 @@
 #include "game/screenmessages.h"
 #include "game/shellshock.h"
 #include "game/gammaramp.h"
+#include "game/glow_filter.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
 #include "game/viewflash.h"
@@ -42,6 +43,9 @@
 #include "game/viewcull.h"
 #include "game/marks.h"
 #include "game/outdoor.h"
+#include "ui/focuspulse.h"
+#include "game/viewprojection.h"
+#include "game/weaponcycle.h"
 #include "game/pmove.h"
 #include "game/pmoverecord.h"
 #include "game/turrets.h"
@@ -134,21 +138,21 @@ struct Camera {
     }
     Vec3 right() const { return normalize(cross(forward(), {0, 0, 1})); }
 
-    Mat4 viewProj(float aspect, float zNear = 4.0f) const {
+    Mat4 viewProj(float aspect, float zNear = 4.0f, bool depthHack = false) const {
         const Vec3 f = forward(), r0 = right(), u0 = cross(r0, f);
         const float cr = std::cos(roll * float(M_PI) / 180), sr = std::sin(roll * float(M_PI) / 180);
         const Vec3 r = r0 * cr + u0 * -sr, u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
-        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f), n = zNear, fa = 40000.0f;
+        const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f);
         const float t = 1.0f / std::tan(fovY / 2);
-        const Mat4 proj = {t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, fa / (n - fa), -1, 0, 0, n * fa / (n - fa), 0};
+        const Mat4 proj = depthHack ? game::depthHackProjection(t / aspect, t, zNear) : game::sceneProjection(t / aspect, t, zNear);
         return mul(proj, view);
     }
 };
 
 // The renderer far plane (farPlaneDistance: linear fog far or setculldist, whichever is larger; r_zfar is taken as 0, its default is
-// not decoded) as a depth-along-view test for the effect culls. The projection far clip stays at 40000.
+// not decoded) as a depth-along-view test for the effect culls. The projection itself has no far plane.
 static void setFxFar(game::FxSystem& fx, const Camera& cam, const game::FogParams& fog, float cullDist) {
     const Vec3 f = cam.forward();
     fx.viewForward = {f.x, f.y, f.z};
@@ -441,7 +445,7 @@ Pass classify(const std::string& techset) {
     // Technique set "distortion" (iw_07.iwd materials/techniques/distortion.tech, shaders/lib/distortion.hlsl): the colorMap is a
     // du/dv map that only offsets a lookup of the resolved scene (sampler.resolvedPostSun); the output is the scene sample times
     // the vertex colour, alpha = vertex alpha · map alpha. Its texels are never shown as colours (drawn as a sprite they gave the
-    // green / red halo around fires, gfx_distortion_heat). TODO(spec): the scene-copy refraction pass; skipped until then.
+    // green / red halo around fires, gfx_distortion_heat). The scene-copy refraction pass is implemented for effect sprites (below).
     // What the shipped files fix: distortion.techset maps the emissive variants to distortion.tech (stateMap nofog: the
     // material's blend) and the feathered ones to distortion_floatz.tech; the vertex shader offsets the projected position by
     // du·T' + dv·B' with T' = distortionScale.x · (1,-1,1,1) · clipSpaceLookupScale · clip(tangent), B' likewise with
@@ -960,8 +964,8 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
 // starts from 1), texcoords (0,0) (0,1) (1,0) (1,1), indices 0 1 2, 2 1 3. Vertex shader: the point goes through the world
 // matrix (0x1005a7a0: rows axis · size, translation origin) into view space, then gets offset in the view plane by
 // (u − 0.5) · m.xy + (v − 0.5) · m.zw, m = particleCloudMatrix (0x10041230 / 0x10041180, see below), colour =
-// texture · particleCloudColor. Done on the CPU here: view x / y are the view right / up. TODO(spec): the outdoor map test
-// of particle_cloud_outdoor (pixel alpha 0 where the point is under cover, worldOutdoorLookupMatrix, the "$outdoor" image).
+// texture · particleCloudColor. Done on the CPU here: view x / y are the view right / up. The outdoor map test of
+// particle_cloud_outdoor (alpha 0 for a covered point) drops whole flakes below, as all four vertices share the point.
 const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::vector<game::FxCloud>& clouds,
                            const Vec3& right, const Vec3& upv) {
     if (clouds.empty()) return nullptr;
@@ -1077,7 +1081,8 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
 }
 // Impact marks (game/marks.h) into a per-frame model: one batch per (material, lightmap), drawn in the blend pass
 // with the lightmap of the surface each fragment came from (mark +0x20, the surface's lightmap, FUN_10002a00).
-// TODO(spec): the renderer's mark drawing (refexport slot 0x68, 0x10024320) and its depth offset are not read.
+// The renderer's mark entry (refexport slot 0x68, 0x10024320) only copies the vertices into a type-1 draw record under the mark's
+// material, so depth offset and culling are the material's own state, as for any batch.
 const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs) {
     const auto& marks = scene.marks.marks();
     if (marks.empty()) return nullptr;
@@ -1147,7 +1152,7 @@ std::string lowerName(std::string s) {
 
 // Sun colour from the worldspawn keys (gfx DLL derive step 0x10004e00, 0x10004ef6..0x10004f2b): (sunlight − ambient) · (1 −
 // diffuseFraction) · suncolor with suncolor normalised so its largest component is 1 (0x1005e300). Absent keys: ambient 0,
-// diffuseFraction 0.5 (r_lightTweakDiffuseFraction), sunlight 1. TODO(spec): that this RGB is exactly the shader's lightColor0.
+// diffuseFraction 0.5 (r_lightTweakDiffuseFraction), sunlight 1. TODO(spec): [constant upload not traced] that this RGB is exactly the shader's lightColor0.
 static Vec3 worldSunColor(const Vec3& suncolor, float sunlight, float ambient, float diffuseFraction) {
     const float mx = std::max({suncolor.x, suncolor.y, suncolor.z});
     const float k = mx > 0 ? 1.0f / mx : 1.0f;
@@ -1358,7 +1363,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     // stored relative to its entity origin. With a running level, the submodels of script_brushmodel entities are not
     // baked into the world but drawn per entity (hide() sets bit 0x80 of ent+0x128, 0x4efd10; show() clears it,
     // 0x4efcb0), so hidden exploder / collapse pieces and moving brush models show their scripted state.
-    // TODO(spec): the client-side draw path (entity → brush model → R_Add*) was not traced; drawing at the entity's
+    // TODO(spec): [draw path not traced] the client-side draw path (entity → brush model → R_Add*) was not traced; drawing at the entity's
     // lerped origin/angles mirrors the collision model trace (0x417c20).
     std::vector<int> soupOwner(bsp.soups().size(), 0);
     if (!staticScriptModels) {
@@ -1382,8 +1387,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         if (mi.pass == Pass::Skip) continue;
         // Brush-model water soups go into the entity's batches (drawn by the water pass at its transform); a scan of every
         // brush submodel of the 27 shipped SP maps found water only in duhoc_assault *26 / duhoc_defend *128 (water_section,
-        // material water_duhoc) and no sky soup, so sky soups of brush models are still dropped. TODO(spec): the brush-model
-        // sky path of the renderer, should a map use one.
+        // material water_duhoc) and no sky soup, so sky soups of brush models are dropped: no shipped map reaches that path.
         if (soupOwner[si] > 0 && mi.pass == Pass::Sky) continue;
         const int lm = s.lightmap < scene.lightmaps.size() ? int(s.lightmap) : -1;
         // Specular only on lightmapped soups with both maps present (lmap_s); IW2_NO_SPEC disables it.
@@ -1627,7 +1631,7 @@ static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::F
     for (const auto& l : in) {
         if (!(l.radius > 0.0f)) continue; // AddLightToScene drops radius <= 0 (0x1019bd04)
         // The per-light flag array 0x10657098 is written by 0x1000a880: 1 when n.origin - d < -radius for any view plane (sphere fully
-        // outside the frustum); 0x10015210 only considers lights whose flag is 0. TODO(spec): the plane set (the effect gate's four sides here).
+        // outside the frustum); 0x10015210 only considers lights whose flag is 0. TODO(spec): [DLL plane builder not read] the plane set (the effect gate's four sides here).
         bool outside = false;
         for (const auto& pl : planes)
             if (pl[0] * l.origin[0] + pl[1] * l.origin[1] + pl[2] * l.origin[2] - pl[3] < -l.radius) outside = true;
@@ -1644,7 +1648,7 @@ static std::vector<std::array<float, 7>> selectDlights(const std::vector<game::F
 }
 
 // r_gamma (float 0.5..3, default 1, archived; gfx 0x1000ab8a). r_ignorehwgamma (bool, default 0) switches the hardware ramp off (gfx 0x10033f65);
-// TODO(spec): its software path (gamma baked into texture bytes at load, 0x100120a0) is not implemented, the ramp is simply skipped.
+// TODO(spec): [off by default, needs a texture reload path] its software path (gamma baked into texture bytes at load, 0x100120a0) is not implemented, the ramp is simply skipped.
 static float gammaFrom(const std::map<std::string, std::string>& cvars) {
     const auto ig = cvars.find("r_ignorehwgamma");
     if (ig != cvars.end() && std::atoi(ig->second.c_str()) != 0) return game::kGammaDefault;
@@ -1690,7 +1694,7 @@ struct DrawItem {
     // class = group flags & 0x18, table at 0x1002fcd8), so the view weapon never goes through walls.
     float depthMax = 1.0f;
     // Near plane of the depth-hack projection: the dvar r_znear_depthhack (default 0.1, registered at 0x1000ad62 / 0x10192e24)
-    // replaces r_znear (default 4) for these groups. TODO(spec): how the DLL builds that projection (0x1005bfe0, 0x10025a95).
+    // replaces r_znear (default 4) for these groups (game/viewprojection.h).
     float zNear = 4.0f;
     // Effect sprites / clouds (the fx sprite model). The DLL sorts type-2 (sprite) draw records after every other record of the
     // emissive list (docs/spec/effects.md "Draw order of effect sprites"), so the blended / additive / multiplied parts of these
@@ -1749,11 +1753,11 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
-    SDL_GPUSampler* pointClampSampler = nullptr; // $floatz reads (TODO(spec): floatZSampler's filter state)
+    SDL_GPUSampler* pointClampSampler = nullptr; // $floatz reads (TODO(spec): [sampler state not traced] floatZSampler's filter state)
     // Post-sun scene copy (resolvedPostSun, render command 0x100310a0) and $floatz (R32F clip z, build pass 0x10024ee0).
     SDL_GPUTexture* postSunTex = nullptr;
     SDL_GPUTexture* floatzTex = nullptr;
-    SDL_GPUGraphicsPipeline* floatzPipes[3] = {}; // "build floatz" technique (build_floatz(_atest).tech), cull none / back / front
+    SDL_GPUGraphicsPipeline* floatzPipes[3][3] = {}; // "build floatz" technique (build_floatz(_atest).tech), [polygon offset][cull none / back / front]
     SDL_GPUTexture* outdoorTex = nullptr;          // "$outdoor" (L8 512 x 512) for zfeather_outdoor
     const game::OutdoorMap* outdoorFor = nullptr;
     SDL_GPUGraphicsPipeline* distortionPipe = nullptr;
@@ -1791,13 +1795,11 @@ struct Renderer {
     bool ghostValid = false;   // a previous composed frame has been captured
     bool ghostActive = false;  // set by the caller each frame: shell shock blend running
     float ghostBlendMs = 0.0f, ghostElapsedMs = 0.0f; // blend window and time since the capture
-    SDL_GPUTexture* halfTex = nullptr;
     SDL_GPUTexture* quarterTex = nullptr;
     SDL_GPUBuffer* blurVerts = nullptr;
     // Glow / bloom post chain (materials/shaders/glow_*.hlsl, filter_symmetric_N): quarter-resolution $glow_0 / $glow_1.
-    SDL_GPUTexture* glowSetupTex = nullptr;
-    SDL_GPUTexture* glowTmpTex = nullptr;
-    SDL_GPUTexture* glowTex[2] = {nullptr, nullptr};
+    SDL_GPUTexture* pingpongTex[2] = {nullptr, nullptr}; // $pingpong_0 / _1
+    SDL_GPUTexture* glowTex = nullptr; // $glow_0; $glow_1 is created by the DLL but never written
     SDL_GPUGraphicsPipeline* copyPipe = nullptr;
     SDL_GPUGraphicsPipeline* gammaPipe = nullptr; // final r_gamma pass (fs_gamma)
     SDL_GPUTexture* gammaTex = nullptr;           // the whole frame (scene, menus, HUD) when r_gamma != 1
@@ -1806,6 +1808,8 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* glowSetupPipe = nullptr;
     SDL_GPUGraphicsPipeline* glowBlurPipe = nullptr;
     SDL_GPUGraphicsPipeline* glowApplyPipe = nullptr;
+    SDL_GPUGraphicsPipeline* glowBloomPipe = nullptr;
+    SDL_GPUGraphicsPipeline* feedbackBlendPipe = nullptr;
     uint32_t blurW = 0, blurH = 0;
     float lmScale = 1.0f;
     // Weights for a flat normal map from the $lightmapweights rule (docs/spec/material.md): all weight on
@@ -1816,6 +1820,11 @@ struct Renderer {
     void applyFog(FragmentUniforms& fu) const {
         fu.fogParams[0] = fog.active ? 1.0f : 0.0f, fu.fogParams[1] = fog.scale, fu.fogParams[2] = fog.shift, fu.fogParams[3] = fog.exponential ? fog.exponent : 0.0f;
         std::memcpy(fu.fogColor, fog.color, sizeof fog.color);
+    }
+    // Pass-aware fog: a destination blend of One (Pass::Additive) takes the black fixed-function fog colour (game::fogColorIsBlack, gfx 0x10035050).
+    void applyFog(FragmentUniforms& fu, Pass p) const {
+        applyFog(fu);
+        if (p == Pass::Additive) fu.fogColor[0] = fu.fogColor[1] = fu.fogColor[2] = 0.0f;
     }
 
     void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_) {
@@ -2042,7 +2051,7 @@ struct Renderer {
             gv.entrypoint = "vs_fs";
             gv.num_uniform_buffers = 0;
             SDL_GPUShader* gvs = SDL_CreateGPUShader(dev, &gv);
-            auto mk = [&](const char* entry, uint32_t samplers, uint32_t ubs, bool blend, bool depthTarget) {
+            auto mk = [&](const char* entry, uint32_t samplers, uint32_t ubs, bool blend, bool depthTarget, bool additive = false) {
                 SDL_GPUShaderCreateInfo gf = fs;
                 gf.entrypoint = entry;
                 gf.num_samplers = samplers;
@@ -2056,7 +2065,7 @@ struct Renderer {
                     ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
                     ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
                     ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-                    ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                    ct.blend_state.dst_color_blendfactor = additive ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
                     ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
                     ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
                 }
@@ -2079,9 +2088,11 @@ struct Renderer {
                 return gp;
             };
             copyPipe = mk("fs_copy", 1, 0, false, true);
-            glowSetupPipe = mk("fs_glow_setup", 1, 1, false, false);
+            glowSetupPipe = mk("fs_glow_setup", 2, 1, false, false);
             glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false);
             glowApplyPipe = mk("fs_glow_apply", 2, 1, true, true);
+            glowBloomPipe = mk("fs_glow_bloom", 1, 1, true, true, true);
+            feedbackBlendPipe = mk("fs_feedback_blend", 1, 1, true, true);
             gammaPipe = mk("fs_gamma", 1, 1, false, false);
             SDL_ReleaseGPUShader(dev, gvs);
         }
@@ -2132,7 +2143,7 @@ struct Renderer {
             distortionPipe = mkFx("vs_distort", "fs_distort", 3, 0);
             {
                 // build_floatz.sm: no blend, depth write on, colour write on, alpha test Always (the atest shader clips), cull and
-                // polygon offset passthrough (TODO(spec): polygon offset not applied in this pass).
+                // polygon offset passthrough.
                 SDL_GPUShaderCreateInfo ev = vs;
                 ev.entrypoint = "vs_floatz";
                 SDL_GPUShaderCreateInfo ef = fs;
@@ -2160,11 +2171,14 @@ struct Renderer {
                 pi.target_info.num_color_targets = 1;
                 pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
                 pi.target_info.has_depth_stencil_target = true;
-                for (int c = 0; c < 3; ++c) {
-                    pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
-                    floatzPipes[c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
-                    if (!floatzPipes[c]) sdlFail("floatz pipeline");
-                }
+                for (int lvl = 0; lvl < 3; ++lvl)
+                    for (int c = 0; c < 3; ++c) {
+                        pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                        pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                        pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                        floatzPipes[lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                        if (!floatzPipes[lvl][c]) sdlFail("floatz pipeline");
+                    }
                 SDL_ReleaseGPUShader(dev, evs);
                 SDL_ReleaseGPUShader(dev, efs);
             }
@@ -2244,7 +2258,7 @@ struct Renderer {
 
     void ensureBlurTargets(uint32_t w, uint32_t h) {
         if (sceneTex && blurW == w && blurH == h) return;
-        for (SDL_GPUTexture** t : {&sceneTex, &halfTex, &quarterTex, &glowSetupTex, &glowTmpTex, &glowTex[0], &glowTex[1], &ghostTex[0], &ghostTex[1],
+        for (SDL_GPUTexture** t : {&sceneTex, &quarterTex, &pingpongTex[0], &pingpongTex[1], &glowTex, &ghostTex[0], &ghostTex[1],
                                    &postSunTex, &floatzTex})
             if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         auto make = [&](uint32_t tw, uint32_t th) {
@@ -2261,11 +2275,9 @@ struct Renderer {
             return t;
         };
         sceneTex = make(w, h);
-        halfTex = make(w / 2, h / 2);
-        glowSetupTex = make(w / 4, h / 4);
-        glowTmpTex = make(w / 4, h / 4);
-        glowTex[0] = make(w / 4, h / 4); // TODO(spec): $glow_0 / $glow_1 resolution (quarter assumed)
-        glowTex[1] = make(w / 4, h / 4);
+        pingpongTex[0] = make(w / 4, h / 4); // all screen filter targets: (width >> 2, height >> 2), gfx 0x100235aa onwards
+        pingpongTex[1] = make(w / 4, h / 4);
+        glowTex = make(w / 4, h / 4);
         ghostTex[0] = make(w, h);
         ghostTex[1] = make(w, h);
         ghostValid = false;
@@ -2352,7 +2364,7 @@ struct Renderer {
         ensureDepth(w, h);
         // Blur post effect: only when the composed radius is > 0 (gate in gfx 0x10030ed0); the scene goes to an offscreen
         // texture, then composite pass: scene, blurred quarter copy with alpha min(R / F, 1), then the HUD (not blurred).
-        const float blurA = game::blurAlpha(blur, float(w));
+        const float blurA = game::blurAlpha(blur, float(h));
         // r_glow (default 1, gfx 0x1000b7b8); IW2_NO_GLOW=1 disables the chain.
         static const bool noGlow = std::getenv("IW2_NO_GLOW") != nullptr;
         const bool glowOn = !noGlow;
@@ -2371,7 +2383,7 @@ struct Renderer {
                     g.pos[1] = ys[k];
                     g.normal[2] = 1;
                     std::memset(g.color, 255, 3);
-                    g.color[3] = q == 0 ? 255 : q == 2 ? uint8_t(std::lround(ghostA * 255.0f)) : uint8_t(std::lround(game::blurAlpha(blur, float(w)) * 255.0f));
+                    g.color[3] = q == 0 ? 255 : q == 2 ? uint8_t(std::lround(ghostA * 255.0f)) : uint8_t(std::lround(game::blurAlpha(blur, float(h)) * 255.0f));
                     g.uv[0] = us[k];
                     g.uv[1] = vs[k];
                 }
@@ -2479,9 +2491,10 @@ struct Renderer {
             SDL_GPUDepthStencilTargetInfo fds = ds;
             fds.store_op = SDL_GPU_STOREOP_DONT_CARE;
             SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, &fds);
-            auto drawFz = [&](const Batch& b, const VU& u) {
+            auto drawFz = [&](const Batch& b, VU u) {
                 if (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) return;
-                SDL_BindGPUGraphicsPipeline(fp, floatzPipes[std::clamp(b.cull, 0, 2)]);
+                SDL_BindGPUGraphicsPipeline(fp, floatzPipes[std::clamp(int(b.polygonOffset), 0, 2)][std::clamp(b.cull, 0, 2)]);
+                u.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                 SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
                 SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
                 SDL_BindGPUFragmentSamplers(fp, 0, &tb, 1);
@@ -2501,13 +2514,17 @@ struct Renderer {
                 for (const Batch& b : *it.worldBatches) drawFz(b, u);
             }
             for (const DrawItem& it : items) {
-                if (!it.model || it.depthMax < 1.0f) continue; // TODO(spec): the view model (depth-hack range) in the floatz list
+                if (!it.model) continue;
+                // TODO(spec): [inference, command 0x17 dispatch to walker 0x1002f830 not traced] the view model goes in with its depth class.
+                const SDL_GPUViewport fzRange{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                SDL_SetGPUViewport(fp, &fzRange);
                 SDL_GPUBufferBinding mvb{it.model->vertices, 0};
                 SDL_BindGPUVertexBuffers(fp, 0, &mvb, 1);
                 SDL_GPUBufferBinding mib{it.model->indices, 0};
                 SDL_BindGPUIndexBuffer(fp, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 VU u = vu;
                 u.model = it.transform;
+                if (it.depthMax < 1.0f) u.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                 for (const Batch& b : it.model->batches) drawFz(b, u);
             }
             SDL_EndGPURenderPass(fp);
@@ -2569,7 +2586,7 @@ struct Renderer {
             }
             if (p == Pass::Blend && !fxStep && !dlights.empty()) {
                 // l_point passes: every lit opaque / alpha-tested world batch once per light (the DLL collects the touched surfaces per
-                // light, 0x10014fe0; here the shader's radius falloff is the cull, TODO(spec): per-surface bounds).
+                // light, 0x10014fe0; here the shader's radius falloff is the cull, TODO(spec): [optimisation only] per-surface bounds).
                 static const float ramp[16] = {255, 255, 244, 223, 202, 181, 159, 138, 117, 96, 74, 53, 32, 11, 0, 0}; // images/falloff_linear.iwi
                 SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -2613,7 +2630,7 @@ struct Renderer {
                             SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
                             VU mu = vu;
                             mu.model = it.transform;
-                            if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                            if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                             mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                             SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                             SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
@@ -2638,7 +2655,7 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
-            if (p == Pass::Blend && !fxStep && postSunWanted) {
+            if (p == Pass::Blend && !fxStep && (postSunWanted || glowOn)) { // glow_setup reads the copy too
                 // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
                 // the back buffer into resolvedPostSun), then the effect lists. ($floatz was built at the start of the frame.)
                 SDL_EndGPURenderPass(pass);
@@ -2709,8 +2726,8 @@ struct Renderer {
                     {0, 0, 0, 0}};
                 detailUniforms(fu, b.detail);
                 // Additive world surfaces: their fogged techniques (lmap_add_lfog, effect_add_lfog) fog through the fixed-function fog
-                // stage, whose colour register for these passes is not traced. TODO(spec): additive fog.
-                if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu);
+                // stage, whose colour is black for a destination blend of One (gfx 0x10035050; docs/spec/render-hints.md "Additive fog").
+                if (p != Pass::Multiply) applyFog(fu, p);
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                 if (p == Pass::Multiply && fog.active) {
@@ -2822,7 +2839,7 @@ struct Renderer {
                         SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         continue;
                     }
@@ -2833,7 +2850,7 @@ struct Renderer {
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         bound = true;
                     }
@@ -2850,19 +2867,19 @@ struct Renderer {
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
                     std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
                     detailUniforms(fu, b.detail);
-                    if (p != Pass::Multiply && p != Pass::Additive) applyFog(fu); // TODO(spec): multiply_fog / additive fog variants
+                    if (p != Pass::Multiply) applyFog(fu, p); // additive: black fog colour (render-hints.md); the multiply fix-up pass is world-only
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                         bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                         bindOffset(p, 0, 0, mu);
                     }
                 }
@@ -2883,7 +2900,7 @@ struct Renderer {
         // draw from t = scene time (0x1070c3bc, seconds) - the refEntity's material time (+0x5c, 0x1002fa49): gameTime =
         // (sin 2 pi f, cos 2 pi f, f, t) with f = t - floor(t). The cgame writes a material time only for vehicles (0x4ac839;
         // zero for other entities after the memset at 0x4ac7b0), so here gameTime.z = frac(game seconds) (the shader's sin has
-        // period 1, so the fraction is the same pulse). TODO(spec): this pass's place in the sort order (drawn last here).
+        // period 1, so the fraction is the same pulse). TODO(spec): [walker position of this pass not traced] this pass's place in the sort order (drawn last here).
         {
             const Vec3 fwd = cam.forward();
             const struct { float forward[4]; } ou{{fwd.x, fwd.y, fwd.z, gameTimeSeconds}};
@@ -2918,7 +2935,7 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 VU mu = vu;
                 mu.model = it.transform;
-                if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear);
+                if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
                 for (const Batch& b : it.model->batches) drawObjective(b, mu);
                 if (it.depthMax < 1.0f) {
                     const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
@@ -2932,52 +2949,59 @@ struct Renderer {
         if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
         SDL_EndGPURenderPass(pass);
         if (post) {
-            // Bilinear downsample chain w -> w/2 -> w/4. TODO(spec): the filter kernel of $blurred_screen is unknown.
-            auto blit = [&](SDL_GPUTexture* src, uint32_t sw, uint32_t sh, SDL_GPUTexture* dst, uint32_t dw, uint32_t dh) {
-                SDL_GPUBlitInfo bi{};
-                bi.source.texture = src;
-                bi.source.w = sw;
-                bi.source.h = sh;
-                bi.destination.texture = dst;
-                bi.destination.w = std::max(dw, 1u);
-                bi.destination.h = std::max(dh, 1u);
-                bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                bi.filter = SDL_GPU_FILTER_LINEAR;
-                SDL_BlitGPUTexture(cmd, &bi);
-            };
-            if (blurA > 0.0f) {
-                blit(sceneTex, w, h, halfTex, w / 2, h / 2);
-                blit(halfTex, std::max(w / 2, 1u), std::max(h / 2, 1u), quarterTex, w / 4, h / 4);
-            }
-            // Glow chain. Dvar defaults from gfx 0x1000b7b8..0x1000b8c3 (name, default, min, max): radius0 5, radius1 12, skyBleed0 0.5,
-            // skyBleed1 0, bloomIntensity0 1, bloomIntensity1 1, cutoff 0.9, desaturation 0.75. Two layers (0x10030a10): layer i is
-            // used when its bloom intensity > 0 (or sky bleed > 0 with the glow flag); radii are sorted ascending.
-            // TODO(spec): pass order, filter kernel, $glow_N resolution, glowSetup CUTOFF_RESCALE (1 / (1 - cutoff) assumed).
-            const float glowRadius[2] = {5.0f, 12.0f}, glowBloom[2] = {1.0f, 1.0f}, glowSky[2] = {0.5f, 0.0f};
-            const float glowCutoff = 0.9f, glowDesat = 0.75f;
+            // Screen filter chain, docs/spec/effects.md "Glow and the blurred screen". Passes alternate between the pingpong images, the
+            // last one writes dst. A one-pass chain reading dst stays in the pingpong image (the result is returned).
             const uint32_t gw = std::max(w / 4, 1u), gh = std::max(h / 4, 1u);
-            if (glowOn) {
-                auto fullscreen = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, SDL_GPUTexture* src, const float (&gu)[16]) {
-                    SDL_GPUColorTargetInfo gc{};
-                    gc.texture = dst;
-                    gc.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                    gc.store_op = SDL_GPU_STOREOP_STORE;
-                    SDL_GPURenderPass* gp = SDL_BeginGPURenderPass(cmd, &gc, 1, nullptr);
-                    SDL_BindGPUGraphicsPipeline(gp, pipe);
-                    SDL_GPUTextureSamplerBinding gb{src, clampSampler};
-                    SDL_BindGPUFragmentSamplers(gp, 0, &gb, 1);
-                    SDL_PushGPUFragmentUniformData(cmd, 0, gu, sizeof(gu));
-                    SDL_DrawGPUPrimitives(gp, 3, 1, 0, 0);
-                    SDL_EndGPURenderPass(gp);
-                };
-                const float setupU[16] = {1.0f / float(gw), 1.0f / float(gh), 0, 0, glowCutoff, 1.0f / (1.0f - glowCutoff), glowDesat, 0};
-                fullscreen(glowSetupPipe, glowSetupTex, sceneTex, setupU);
-                for (int l = 0; l < 2; ++l) {
-                    const float hU[16] = {1.0f / float(gw), 0, glowRadius[l], 0};
-                    const float vU[16] = {0, 1.0f / float(gh), glowRadius[l], 0};
-                    fullscreen(glowBlurPipe, glowTmpTex, glowSetupTex, hU);
-                    fullscreen(glowBlurPipe, glowTex[l], glowTmpTex, vU);
+            auto fullscreen = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, const SDL_GPUTextureSamplerBinding* src, uint32_t nsrc, const void* gu, uint32_t size) {
+                SDL_GPUColorTargetInfo gc{};
+                gc.texture = dst;
+                gc.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                gc.store_op = SDL_GPU_STOREOP_STORE;
+                SDL_GPURenderPass* gp = SDL_BeginGPURenderPass(cmd, &gc, 1, nullptr);
+                SDL_BindGPUGraphicsPipeline(gp, pipe);
+                SDL_BindGPUFragmentSamplers(gp, 0, src, nsrc);
+                SDL_PushGPUFragmentUniformData(cmd, 0, gu, size);
+                SDL_DrawGPUPrimitives(gp, 3, 1, 0, 0);
+                SDL_EndGPURenderPass(gp);
+            };
+            auto filterChain = [&](SDL_GPUTexture* src, SDL_GPUTexture* dst, const std::vector<game::FilterPass>& plan, size_t done) {
+                for (size_t i = 0; i < plan.size(); ++i) {
+                    const size_t k = i + done;
+                    SDL_GPUTexture* out = i + 1 == plan.size() && src != dst ? dst : pingpongTex[k & 1];
+                    if (out == src) out = pingpongTex[(k + 1) & 1];
+                    struct { float tap[8][4]; float count[4]; } fu{};
+                    for (int t = 0; t < plan[i].count; ++t) {
+                        const game::FilterTap& ft = plan[i].taps[size_t(t)];
+                        fu.tap[t][0] = ft.x;
+                        fu.tap[t][1] = ft.y;
+                        fu.tap[t][3] = ft.w;
+                    }
+                    fu.count[0] = float(plan[i].count);
+                    SDL_GPUTextureSamplerBinding fb{src, clampSampler};
+                    fullscreen(glowBlurPipe, out, &fb, 1, &fu, sizeof(fu));
+                    src = out;
                 }
+                return src;
+            };
+            SDL_GPUTexture* blurredTex = quarterTex;
+            if (blurA > 0.0f) { // sigma in scene pixels; pixels are square
+                const float sigma = float(h) * game::blurImageRadius(blur, float(h)) / 480.0f;
+                blurredTex = filterChain(sceneTex, quarterTex, game::filterPlan(sigma, sigma, int(w), int(h), int(gw), int(gh)), 0);
+            }
+            const game::GlowDvars glowDvars;
+            const bool worldSky = scene.sky != nullptr;
+            const game::GlowChain glow = glowOn ? game::glowChain(glowDvars, worldSky, float(gw) / float(w)) : game::GlowChain{};
+            SDL_GPUTexture* glowResult = nullptr;
+            if (glow.images > 0) {
+                const float setupU[16] = {1.0f / float(gw), 1.0f / float(gh), 0, 0, glowDvars.cutoff, 1.0f / (1.0f - glowDvars.cutoff), glowDvars.desaturation, 0};
+                const float px = float(h) / 480.0f;
+                auto plan = game::filterPlan(glow.stage[0] * px, glow.stage[0] * px, int(gw), int(gh), int(gw), int(gh));
+                SDL_GPUTextureSamplerBinding sb[2] = {{sceneTex, clampSampler}, {postSunReady ? postSunTex : sceneTex, clampSampler}};
+                SDL_GPUTexture* setupDst = plan.empty() ? glowTex : pingpongTex[0];
+                fullscreen(glowSetupPipe, setupDst, sb, 2, setupU, sizeof(setupU));
+                glowResult = plan.empty() ? glowTex : filterChain(setupDst, glowTex, plan, 1);
+                if (glow.images > 1)
+                    glowResult = filterChain(glowResult, glowTex, game::filterPlan(glow.stage[1] * px, glow.stage[1] * px, int(gw), int(gh), int(gw), int(gh)), 0);
             }
             SDL_GPUColorTargetInfo c2{};
             // Shock blend: compose into the persistent ghost texture, which then becomes next frame's blend source.
@@ -2993,22 +3017,32 @@ struct Renderer {
                 SDL_BindGPUFragmentSamplers(p2, 0, &cb, 1);
                 SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
             }
-            // Code sampler "sky" (0x10, 1.3 DLL switch 0x10038dd0 case 0x10038f4f) is the world's sky image (world +0x20); without one
-            // the DLL reports "Tried to use 'sampler.sky' when it isn't valid", so glow_apply_sky_bleed never runs without a sky.
-            // TODO(spec): whether the DLL then skips only sky bleed or the whole glow chain (here: no glow).
-            if (glowOn && scene.sky) {
-                SDL_BindGPUGraphicsPipeline(p2, glowApplyPipe);
+            // Each image is applied once, alternating layers. The code sampler "sky" (0x10, 1.3 DLL switch 0x10038dd0 case 0x10038f4f) is
+            // the world's sky image (world +0x20): without one the sky bleed is 0 and the bloom-only material draws (gfx 0x10030910).
+            if (glowResult) {
                 // glow_apply_sky_bleed.hlsl: skyCoords = nearPlaneOrg + (u - 0.5) * nearPlaneDx + (v - 0.5) * nearPlaneDy.
                 const Vec3 f = cam.forward(), r = cam.right(), up = cross(r, f);
                 const float ty = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f, tx = ty * float(w) / float(h);
                 const Vec3 dx = r * (2.0f * tx), dy = up * (-2.0f * ty);
-                for (int l = 0; l < 2; ++l) {
-                    const float gu[16] = {glowBloom[l], glowSky[l], 0, 0, f.x, f.y, f.z, 0, dx.x, dx.y, dx.z, 0, dy.x, dy.y, dy.z, 0};
-                    SDL_GPUTextureSamplerBinding ab[2] = {{glowTex[l], clampSampler}, {scene.sky, clampSampler}};
-                    SDL_BindGPUFragmentSamplers(p2, 0, ab, 2);
+                for (int n = 0, l = glow.first; n < glow.images; ++n, l = 1 - l) {
+                    const float sky = game::glowSkyBleed(glowDvars, l, worldSky);
+                    const float gu[16] = {glowDvars.bloom[l], sky, 0, 0, f.x, f.y, f.z, 0, dx.x, dx.y, dx.z, 0, dy.x, dy.y, dy.z, 0};
+                    SDL_BindGPUGraphicsPipeline(p2, sky != 0.0f ? glowApplyPipe : glowBloomPipe);
+                    SDL_GPUTextureSamplerBinding ab[2] = {{glowResult, clampSampler}, {scene.sky, clampSampler}};
+                    SDL_BindGPUFragmentSamplers(p2, 0, ab, sky != 0.0f ? 2 : 1);
                     SDL_PushGPUFragmentUniformData(cmd, 0, gu, sizeof(gu));
                     SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
                 }
+            }
+            // Material feedbackblend (passthru_vertalpha, SrcAlpha / InvSrcAlpha): colour from the image, alpha from the vertex only, so
+            // the sky's zero scene alpha does not let the sharp scene through.
+            if (blurA > 0.0f) {
+                const float fa[4] = {std::round(blurA * 255.0f) / 255.0f, 0, 0, 0};
+                SDL_BindGPUGraphicsPipeline(p2, feedbackBlendPipe);
+                SDL_GPUTextureSamplerBinding fb{blurredTex, clampSampler};
+                SDL_BindGPUFragmentSamplers(p2, 0, &fb, 1);
+                SDL_PushGPUFragmentUniformData(cmd, 0, fa, sizeof(fa));
+                SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
             }
             auto bindBlend = [&]() {
                 SDL_BindGPUGraphicsPipeline(p2, pipelines[int(Pass::Blend)]);
@@ -3025,15 +3059,6 @@ struct Renderer {
             bindBlend();
             // Order from the exe: the scene command (gfx 0x10030fc0) runs glow + blur (0x10030ed0) itself, the exe queues the shock
             // blend (cmd 0x1d) and the capture (cmd 0xa) after it (0x4bfccd), so the blurred scene is what gets blended and captured.
-            SDL_GPUTexture* srcs[2] = {sceneTex, quarterTex};
-            for (int q = 1; q < (blurA > 0.0f ? 2 : 1); ++q) { // q = 0 (the scene) was copied above
-                SDL_GPUTextureSamplerBinding tex[4] = {{srcs[q], clampSampler},
-                                                       {scene.dummyLightmap.coeffs, clampSampler},
-                                                       {scene.dummyLightmap.sun, clampSampler},
-                                                       {scene.textures[0], repeatSampler}};
-                SDL_BindGPUFragmentSamplers(p2, 0, tex, 4);
-                SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, q * 4, 0);
-            }
             if (ghostActive) {
                 if (ghostValid && ghostElapsedMs >= 0.0f && ghostElapsedMs < ghostBlendMs) {
                     SDL_GPUTextureSamplerBinding tex[4] = {{ghostTex[1 - ghostCur], clampSampler},
@@ -3447,7 +3472,7 @@ int main(int argc, char** argv) {
         game::CompassSpring pointerSpring; // springy pointer yaw (0x4b0ce0, cg_hudCompassSpringyPointers)
         struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; int64_t hintStart = 0; bool hintHeldValid = false; struct { int hint = 0; std::string weapon, text; } hintHeld; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
-        // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): the real base path
+        // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): [app folder is a deliberate choice, exe default not traced] the real base path
         // and the profile name when none is chosen, here "default").
         // The app start keeps profiles and saves in its preference folder, so the game folder may stay read-only.
         const std::filesystem::path playersDir = app ? app->pref / "players" : std::filesystem::path(args[0]).parent_path() / "players";
@@ -3503,10 +3528,10 @@ int main(int argc, char** argv) {
             };
             w->stopSound = [&mixer](int h) { mixer.stop(h); };
             w->soundExists = [&aliases](const std::string& n) { return aliases.exists(n); };
-            w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o) {
-                return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]});
+            w->playBlendSound = [&mixer](const std::string& lo, const std::string& hi, float f, const game::Vec3& o, int owner) {
+                return mixer.playBlend(lo, hi, f, audio::Vec3{o[0], o[1], o[2]}, owner);
             };
-            w->setBlendSound = [&mixer](int h, float f, const game::Vec3& o) { mixer.setBlend(h, f, audio::Vec3{o[0], o[1], o[2]}); };
+            w->setBlendSound = [&mixer](int h, float f, const game::Vec3& o) { return mixer.setBlend(h, f, audio::Vec3{o[0], o[1], o[2]}); };
             if (carriedGame)
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             if (carriedPlayer) w->setCarriedPlayer(std::move(*carriedPlayer));
@@ -3699,7 +3724,9 @@ int main(int argc, char** argv) {
                     fxSystem.playBolted(efx(ev.path), bolt, game::FxAxes{f, r, up}, fxTime() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0)); // IW2_FX_MS: debug age
                     continue;
                 }
+                fxSystem.noImmediateMarks = ev.noMarks;
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, fxTime());
+                fxSystem.noImmediateMarks = false;
             }
             for (const auto& te : world->takeTracerEvents())
                 fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, fxTime(), 0);
@@ -3756,7 +3783,7 @@ int main(int argc, char** argv) {
                     it.worldBatches = &bm->second;
                     it.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                     // Renderer near / far plane box cull (docs/spec/render-hints.md; the dll culls brush-model entities by a world box,
-                    // 0x10009210). TODO(spec): the side planes and the dll's own box builder 0x10008900; IW2_NO_CULL disables this.
+                    // 0x10009210). TODO(spec): [0x10008900 not read] the side planes and the dll's own box builder 0x10008900; IW2_NO_CULL disables this.
                     if (!noCull) {
                         const auto bb = scene.brushBounds.find(bm->first);
                         if (bb != scene.brushBounds.end()) {
@@ -3778,7 +3805,7 @@ int main(int argc, char** argv) {
                 auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
                 // CG_CalcEntityLerpPositions (0x4acca0): entities the server moves every frame (TR_INTERPOLATE) are
                 // drawn between the previous and the latest server frame at cg.frameInterpolation (0xf708d0):
-                // origin lerped (0x4acb90), angles by LerpAngle (0x4acc10 → 0x423ee0). TODO(spec): entities with
+                // origin lerped (0x4acb90), angles by LerpAngle (0x4acc10 → 0x423ee0). TODO(spec): [anim pose rate unproven] entities with
                 // other trajectory types (evaluated at cg.time) and the anim poses, which still step at 20 Hz.
                 if (auto pv = lerpPrev.find(e->number); pv != lerpPrev.end()) {
                     for (int k = 0; k < 3; ++k) {
@@ -3816,7 +3843,7 @@ int main(int argc, char** argv) {
                 }
                 if (e->vehicle && e->vehicle->info) {
                     // Vehicle turret (cgame 0x4ac2b0 bone controls on tag_turret / tag_barrel; es+0x70 pitch, es+0x74 yaw, lerped).
-                    // TODO(spec): which control gets the pitch and which the yaw is a hypothesis (yaw on tag_turret, pitch on tag_barrel).
+                    // TODO(spec): [bone control order unproven] which control gets the pitch and which the yaw is a hypothesis (yaw on tag_turret, pitch on tag_barrel).
                     const Scene::CpuModel* vm = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!vm) continue;
                     float tp = e->vehicle->turretPitch, ty = e->vehicle->turretYaw;
@@ -3956,7 +3983,7 @@ int main(int argc, char** argv) {
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
                 items.push_back(it);
-                scene.marks.markDrawn(world->timeMs()); // TODO(spec): the per-mark view cull (0x486e30)
+                scene.marks.markDrawn(world->timeMs()); // TODO(spec): [view cull not read] the per-mark view cull (0x486e30)
             }
             // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
             // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
@@ -4144,7 +4171,7 @@ int main(int argc, char** argv) {
                 }
             }
             DrawItem base;
-            if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
+            if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): [flag writer not found] the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
             auto rt = vmMotion.rot();
@@ -4364,7 +4391,7 @@ int main(int argc, char** argv) {
         // level resumes at once. The exe opens the load screen only once a load has lasted 100 ms of real time (the progress
         // callback 0x4a2fcf / 0x4b91d0 first stores the start time and then calls 0x4022b0 at most every 100 ms) and opens
         // pregame at the end only when a menu is open (0x449a2c tests the menu count 0x10fed5c), so a quick reload shows neither.
-        // TODO(spec): the exe's real load time is not modelled; openiw2 loads synchronously, so the screen is never shown here.
+        // openiw2 loads synchronously, so the 100 ms condition is never met and the screen is not shown here.
         bool quickReload = false;
         // loadgame_continue (death / mission failure): when the named save cannot be loaded (missing file, old format, damaged) the level
         // restarts instead of staying in the dead world with the death screen up (docs/spec/campaign.md "Death screen").
@@ -4372,7 +4399,7 @@ int main(int argc, char** argv) {
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
         menuEnv.getCvar = [&](const std::string& n) {
-            if (n == "sv_running") return std::string(world ? "1" : "0"); // TODO(spec): server state cvar
+            if (n == "sv_running") return std::string(world ? "1" : "0"); // dvar registered at 0x42df10 (default 0, flags 0x1040); the writers are not traced
             if (world) {
                 const auto it = world->cvars.find(n);
                 if (it != world->cvars.end()) return it->second;
@@ -4411,7 +4438,7 @@ int main(int argc, char** argv) {
                 while (!a2.empty() && std::isspace(static_cast<unsigned char>(a2.back()))) a2.pop_back();
                 if (c == "vstr") execText(menuEnv.getCvar(a1));
                 // "setfromdvar dst src" (console command, ui/options_graphics.cfg) copies the value of src (registered default if unset).
-                // TODO(spec): exe address of the command and its behaviour for an unknown src.
+                // TODO(spec): [command not located] exe address of the command and its behaviour for an unknown src.
                 else if (c == "setfromdvar") menuEnv.setCvar(a1, menuEnv.getCvar(a2));
                 // "exec <file>" runs a shipped cfg (menu onOpen of options_graphics: ui/options_graphics.cfg), one command per line.
                 else if (c == "exec" && !a1.empty()) {
@@ -4457,7 +4484,7 @@ int main(int argc, char** argv) {
                 else if (c == "quit") std::exit(0);
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
-                // TODO(spec): fast_restart (reloads the current map here).
+                // TODO(spec): [handler not read] fast_restart (reloads the current map here).
                 else if (c == "fast_restart" && !currentMap.empty()) pendingLevel = std::make_pair(currentMap, false);
                 // vid_restart (0x40cd10) / snd_restart (0x40ce30) while a level runs: queue the save internal/<cmd> (type 0, flags 4);
                 // once written, "disconnect;<cmd>;loadgame internal/<cmd>" runs (0x44a050). Without a level: the restart itself, which
@@ -4488,7 +4515,7 @@ int main(int argc, char** argv) {
         menuEnv.stopLoop = [&] { if (menuLoopHandle) mixer.stop(menuLoopHandle); menuLoopHandle = 0; };
         menuEnv.exec = execText;
         // uiScript dispatcher (0x4c5b9b..): "Quit" (string 0x580e60) runs the console command "quit" (0x41b0a0 with 0x571858).
-        // TODO(spec): the other uiScripts (loadControls, openMenuOnDvar, loadMissionDifficultyOffset, Loadgame, profiles ...).
+        // TODO(spec): [remaining names not walked in 0x4c5b9b] the other uiScripts (loadControls, openMenuOnDvar, loadMissionDifficultyOffset, Loadgame, profiles ...).
         ui::MenuStack* frontPtr = nullptr; // set once frontStack exists (the scripts select list rows through it)
         auto saveProfileCfg = [&] {
             if (!profileDirty) return;
@@ -4579,14 +4606,14 @@ int main(int argc, char** argv) {
             }
         };
         // Savegame list (FEEDER_SAVEGAMES 0x10): save/*.svg whose header is listable, newest first (0x4c44a0).
-        // TODO(spec): the level name / time / health / difficulty columns come from header fields that are not decoded yet.
+        // TODO(spec): [header fields not decoded] the level name / time / health / difficulty columns come from header fields that are not decoded yet.
         auto refreshSaves = [&] {
             if (saveRowsAt && SDL_GetTicksNS() - saveRowsAt < 1000000000ull) return;
             saveRowsAt = SDL_GetTicksNS() | 1;
             saveRows.clear();
             std::error_code ec;
             // save/*.svg and, with ui_savegameListAutosave set, save/autosave/*.svg listed as "autosave/<name>" (entry +0 is "%s/%s"
-            // of directory and name for a sub directory, 0x4c44a0). TODO(spec): the exe's directory walk and the toggle's exact test.
+            // of directory and name for a sub directory, 0x4c44a0). TODO(spec): [walk not read] the exe's directory walk and the toggle's exact test.
             std::vector<std::pair<std::filesystem::path, std::string>> files;
             for (const auto& de : std::filesystem::directory_iterator(saveDir, ec)) files.emplace_back(de.path(), "");
             if (menuEnv.getCvar("ui_savegameListAutosave") != "" && menuEnv.getCvar("ui_savegameListAutosave") != "0")
@@ -4633,7 +4660,7 @@ int main(int argc, char** argv) {
             }
         };
         // savegameshow / savegamehide: the save named by sv_lastSaveGame is loadable (0x4e06e0: a whole 0x4d8-byte header with
-        // version 0x99). TODO(spec): that menurun's show/hide rule matches the exe's caller of 0x4e06e0 exactly.
+        // version 0x99). TODO(spec): [caller not read] that menurun's show/hide rule matches the exe's caller of 0x4e06e0 exactly.
         menuEnv.savegameExists = [&] {
             const std::string last = menuEnv.getCvar("sv_lastSaveGame");
             if (last.empty()) return false;
@@ -4642,7 +4669,7 @@ int main(int argc, char** argv) {
             f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
             return size_t(f.gcount()) == hdr.size() && ui::saveHeaderLoadable(hdr);
         };
-        menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): the restart point (0x4c4xxx); front end has none
+        menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): [0x4c4xxx caller not located] the restart point (0x4c4xxx); front end has none
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
         frontPtr = &frontStack;
@@ -4687,7 +4714,8 @@ int main(int argc, char** argv) {
         };
         endLoad();
         // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
-        // TODO(spec): the "1" (openmenunomouse) variant keeps the cursor hidden; here the cursor is always shown.
+        // The "1" (openmenunomouse) variant would keep the cursor hidden; here the cursor is always shown. No shipped script calls
+        // openmenunomouse (every .gsc of the game files was searched), so that path is unreachable and left as is.
         auto menuCommand = [&](const std::string& name, const std::string& arg) {
             if (name == "popupclose") {
                 if (const ui::Menu* t = frontStack.top()) frontStack.close(t->name);
@@ -4707,7 +4735,7 @@ int main(int argc, char** argv) {
         std::array<DamageIcon, 8> damageIcons{};
         int lastDamageEvent = 0;
         // Menu "weaponinfo" (hud.menu:184): the ammo counter backdrop `ammocounterback` (ownerdraw CG_PLAYER_AMMO_BACKDROP 6), rect
-        // -100 -50 100 50 from the bottom right of the 4:3 area. TODO(spec): the ownerdraw 6 handler's fade/hidden conditions.
+        // -100 -50 100 50 from the bottom right of the 4:3 area. Ownerdraw 6 (0x4a7810): hidden in a vehicle or without a weapon, alpha the ammo fade, red at low stock.
         const ui::Item* ammoBackItem = nullptr;
         const ui::Item* fireModeItem = nullptr; // item "weaponfiremode" (ownerdraw 83), rect -115 -35 20 20
         const ui::Item* weapNameItem = nullptr; // item "weapname" (ownerdraw 81), rect -385 -15 290 40
@@ -4754,7 +4782,7 @@ int main(int argc, char** argv) {
             const float lineH = float(f.pixelHeight) * scale;
             float ty = y - alignY * lineH * float(lines.size());
             // Colour codes (renderer 0x100329a0, table 0x10197f9c): "^" + digit 0..9 is not drawn and takes no width; 0..6 select black, red, green,
-            // yellow, blue, cyan, magenta (the base alpha is kept), 7 restores the item colour. TODO(spec): 8 and 9 read two dwords set at run time
+            // yellow, blue, cyan, magenta (the base alpha is kept), 7 restores the item colour. TODO(spec): [run-time values unknown] 8 and 9 read two dwords set at run time
             // (0x1070c4c4 / 0x1070c4c0, zero in the file); here they keep the current colour.
             static const uint8_t kCodes[7][3] = {{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {0, 0, 255}, {0, 255, 255}, {255, 0, 255}};
             auto isCode = [](const std::string& l, size_t i) { return l[i] == '^' && i + 1 < l.size() && l[i + 1] >= '0' && l[i + 1] <= '9'; };
@@ -4797,7 +4825,7 @@ int main(int argc, char** argv) {
                 ty += lineH;
             }
         };
-        // Menu item text: localized string and font/scale (TODO(spec): the original's font choice by textscale, here the HUD's rule).
+        // Menu item text: localized string; the font and scale follow menuFont below (exe 0x4c38e0).
         auto menuLocalized = [&](const std::string& raw) {
             std::string key = raw;
             if (!key.empty() && key[0] == '@') key.erase(0, 1);
@@ -4827,9 +4855,8 @@ int main(int argc, char** argv) {
             }
         };
         // The renderer's enum dvars (r_mode, r_displayRefresh: the D3D adapter's mode lists) have no equivalent here: empty domain.
-        // TODO(spec): the macOS display modes as r_mode entries.
-        // dvarEnumList domains (exe 0x4cd720: the domain string of the named enum dvar; the D3D adapter modes behind r_mode and
-        // r_displayRefresh are registered by the renderer DLL). TODO(spec): here the primary display's SDL fullscreen modes are listed:
+                // dvarEnumList domains (exe 0x4cd720: the domain string of the named enum dvar; the D3D adapter modes behind r_mode and
+        // r_displayRefresh are registered by the renderer DLL). No D3D adapter here, so by design the primary display's SDL fullscreen modes are listed:
         // r_mode = distinct "WxH" sizes, r_displayRefresh = distinct "N Hz" rates.
         menuEnv.enumValues = [](const std::string& dvar) {
             std::vector<std::string> out;
@@ -4936,7 +4963,7 @@ int main(int argc, char** argv) {
                             const int a16 = (dur != 0.0f ? int(r * 360.0f / dur * 182.04444885f) : int(r * 1.0922666f)) & 0xffff;
                             Quad2D n = q;
                             n.texture = materialTexture(shader + "needle");
-                            n.rotDeg = float(a16) * 0.0054931640625f; // TODO(spec): rotation sign / pivot of 0x4b0310 as called by 0x4c2d7a
+                            n.rotDeg = float(a16) * 0.0054931640625f; // TODO(spec): [call site not read] rotation sign / pivot of 0x4b0310 as called by 0x4c2d7a
                             dst.push_back(n);
                         }
                         continue;
@@ -5020,9 +5047,9 @@ int main(int argc, char** argv) {
                 // with x 6, y 100, character height 12, horizontal code 1 (LEFT edge of the window, 0x440ff4[1]) and vertical
                 // code 1 (TOP of the window, 0x441014[1]), style 3: the rows of the window go bottom-up, the newest row's top
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
-                // TODO(spec): the exact message text for
+                // TODO(spec): [arguments of 0x404830 not read] the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
-                // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                // Rows (oldest first) of the window of one message type.
                 struct WindowRow { std::string text; uint64_t startNs, endNs; };
                 auto windowRows = [&](bool bold, size_t width, size_t lines) {
                     std::vector<WindowRow> rows;
@@ -5149,7 +5176,7 @@ int main(int argc, char** argv) {
             // 320 or taller than 240 (adsOverlayWidth / Height, virtual units): one quad of that size centred on the
             // view; else four quads of that size around the centre, mirrored (u and/or v flipped) towards the right and
             // bottom. Outside it (0x4bc980) the rest of the screen is filled with the same material: left and right
-            // strips with u = 0 (t 0..1), top and bottom with v = 0 (s 0..1). TODO(spec): the centre follows the gun
+            // strips with u = 0 (t 0..1), top and bottom with v = 0 (s 0..1). TODO(spec): [0x4bc6e0 not implemented, needs weapon angles] the centre follows the gun
             // sway (0x4bc6e0 projects the weapon angles); adsOverlayReticle drawing.
             // On a turret 0x4bd760 draws only the turret reticle, so the overlay is not drawn (the aim state is kept).
             if (const float sa = world ? game::scopeOverlayDrawAlpha(scopeAlpha(), world->playerOnTurret()) : 0.0f; sa > 0) {
@@ -5231,7 +5258,7 @@ int main(int argc, char** argv) {
                     const uint8_t white[4] = {255, 255, 255, uint8_t(hintFade * 255.0f)};
                     float ix = rx - iw * 0.5f, iy = ry;
                     if (!text.empty()) {
-                        text = game::hintStringText(text, [&](const std::string& k) { return loc.find(k); }); // 0x14 / 0x15 pieces (0x4eb9b0)
+                        text = game::localizeTextMessage(text, [&](const std::string& k) { return loc.find(k); }); // 0x14 / 0x15 pieces (0x4eb9b0)
                         auto keys = input.keysFor("+activate");
                         std::string key = keys.empty() ? std::string() : keys.front();
                         if (key.empty()) { const std::string* k = loc.find("KEY_USE"); key = k ? *k : "KEY_USE"; }
@@ -5292,7 +5319,7 @@ int main(int argc, char** argv) {
             // the menu's "0 130 40 40" with HORIZONTAL_ALIGN_CENTER / VERTICAL_ALIGN_CENTER: (320, 370) virtual, 40×40.
             // Text at x = rect.x − (text width + rect.w)/2 with its baseline at rect.y + text height/2; the icon at
             // (that x + text width, rect.y − rect.h/2). The item's textstyle goes to the text draw (see hudText).
-            // TODO(spec): the dvars it also tests.
+            // TODO(spec): [hint gate not fully read] the dvars it also tests.
             if (world && mantleHint && mantleHintItem && !input.objectivesHeld() && menuEnv.getCvar("cg_drawpaused") != "0" /* 0x4a9fb1 */) { // 0xf791fc (+scores held, 0x4a4d40) hides it (0x4a9fc2)
                 const float ts = mantleHintItem->textScale;
                 const float fs = ts * float(h) / 480.0f;
@@ -5359,7 +5386,7 @@ int main(int argc, char** argv) {
             // WEAPON_NO_FRAG_GRENADE, 3 WEAPON_NO_SMOKE_GRENADE, 4 GAME_STAND_BLOCKED, 5 GAME_CROUCH_BLOCKED (localized). Alpha =
             // (elapsed mod b) / b with b = cg_invalidCmdHintBlinkInterval (0xf5bcdc, default 600 ms, min 1): a sawtooth, written into
             // the item colour's alpha. Text x = rect.x - round(int(width) / 2), baseline y = rect.y. Set by player events 0xc9 / 0xca
-            // (no offhand of the class, 0x4baf57 / 0x4baf7f). TODO(spec): state 1 (event 0x92 handler 0x4baeb6, raised by PM_Weapon
+            // (no offhand of the class, 0x4baf57 / 0x4baf7f). TODO(spec): [needs PM_Weapon and stance-trace events] state 1 (event 0x92 handler 0x4baeb6, raised by PM_Weapon
             // 0x4de4c0 / 0x4deb70 on an empty weapon, not modelled in PlayerWeapon) and 4 / 5 (events 0x8d / 0x8e with parm 1 / 2,
             // 0x4bac40 / 0x4bac60; the server stance trace 0x4fc000 is not modelled).
             if (world && invalidCmdItem && invalidCmdState != 0) {
@@ -5391,7 +5418,7 @@ int main(int argc, char** argv) {
             // is held (cgame 0xf791fc, set by 0x4a4d40, cleared by 0x4a4d20; both stamp the touch time 0xf79200 = cg.time); after
             // the release the alpha is (300 - elapsed) / 300 (0x4b0900 with 300 ms), nothing once elapsed >= 300 or without a touch.
             // Both menu items are LEFT / TOP aligned (0x440e60 code 1: x * sx, y * sy). Both ownerdraws test the bool dvar
-            // cg_drawpaused (0x1040c4c, default 1) and draw nothing when it is 0. TODO(spec): the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
+            // cg_drawpaused (0x1040c4c, default 1) and draw nothing when it is 0. TODO(spec): [path not read] the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
             if (world && objListItem && objHeaderItem && menuEnv.getCvar("cg_drawpaused") != "0") {
                 float objAlpha = 0.0f;
                 if (hudFade.objectivesHeld) objAlpha = 1.0f;
@@ -5511,7 +5538,7 @@ int main(int argc, char** argv) {
             // it at spaces to the item width, centres each line on rect x + textalignx, line step text height + 5;
             // the glyph scale is textscale × 48 / font pixel height (gfx refexport +0x128, 0x1000bfa0). The item's
             // textstyle reaches the text draw (menu 0x4cec99 → 0x4c4070 → 0x4aa690 → 0x4aa2a0 → 0x4cc6a0 → 0x4c3790),
-            // so ITEM_TEXTSTYLE_SHADOWED gets the renderer's shadow (see hudText). TODO(spec): which ownerdraw
+            // so ITEM_TEXTSTYLE_SHADOWED gets the renderer's shadow (see hudText). TODO(spec): [argument mapping not read] which ownerdraw
             // arguments carry textalignx/textaligny (from the menu's "point to center around" comments).
             if (world && deadQuoteItem && deadScreenMs && deadScreenMs < world->timeMs()) {
                 const auto qv = world->cvars.find("ui_deadquote");
@@ -5667,7 +5694,7 @@ int main(int argc, char** argv) {
             // Grenade indicator (cgame 0x4be210, after the crosshair, only with pm_type < 4): for each grenade at rest (|trDelta|^2
             // <= 1) within range (src/game/grenadeindicator.h) a hud_grenadepointer box and a hud_grenadeicon box around the screen centre,
             // colour white with the pulsing alpha. Not under a scope overlay unless cg_hudGrenadeIconInScope (0).
-            // TODO(spec): the exe reads the entity state's pos.trBase / pos.trDelta (a flying grenade keeps its launch / last
+            // TODO(spec): [needs trajectory state in the port] the exe reads the entity state's pos.trBase / pos.trDelta (a flying grenade keeps its launch / last
             // bounce base) and the 0x793940 / 0x793944 scales are taken as the uniform virtual-unit scale used elsewhere here.
             if (world && world->player() && (!(scopeAlpha() > 0) || std::atof(menuEnv.getCvar("cg_hudGrenadeIconInScope").c_str()) != 0.0) &&
                 !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
@@ -5714,8 +5741,9 @@ int main(int argc, char** argv) {
             // Crosshair target names (cgame 0x4bf8b0, drawn when cl_paused is 0): the server's configstrings 0xb / 0xc (0x534aa0:
             // the target actor's name and weapon display name) as localized text at CENTER/CENTER alignment (0x440e60 mode 2):
             // line 1 at (+25, -2) in green (0 1 0 1), line 2 at (+25, +18) in white alpha 0.7, textscale 1/3, style 3
-            // (shadowed), baseline at y, left aligned. The font follows the scale as for menu items. TODO(spec): the font
-            // selection thresholds (dvars 0x1107418 / 0x10fec20 / 0x10fec18, here the menu rule), \x15 localization fallback.
+            // (shadowed), baseline at y, left aligned. The font is the generic branch of 0x4c38e0, inlined at 0x4bf913..0x4bf99b (scale = screen
+            // height / 480 * textscale against ui_smallFont, ui_extraBigFont, ui_bigFont: the same thresholds as menuFont). TODO(spec): [fallback not read] the
+            // \x15 localization fallback.
             if (world && !world->crosshairNameLine().empty()) {
                 const float ts = 1.0f / 3.0f, fs = ts * float(h) / 480.0f;
                 if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
@@ -5737,8 +5765,9 @@ int main(int argc, char** argv) {
             // left at rect.x, stock "%3i" right-aligned at rect.x + rect.w, "|" centred in the rect minus 5 (0x591ef0);
             // baseline at rect.y (4c3790 gets the item rect y unchanged). Low-ammo red, the fade alpha and the firemode icon are
             // below. 0x4a76b0 reads maxAmmo from the def registered for the weapon's ammo index (0x1c64750[def +0x1c8] +0x1d4);
-            // here the current weapon's own maxAmmo is used. TODO(spec): which def owns a shared ammo index (registration order),
-            // the preselected weapon (0xf796e0, see the weapon name).
+            // here the current weapon's own maxAmmo is used. The owner of a shared ammo index is the first registered weapon with that
+            // ammoName (0x4dbdc0) and the exe prints a message (0x4dbed7) when sharers differ in maxAmmo; no shipped SP weapon file differs (test_ammoshare),
+            // so the two readings give the same number.
             // Fade (0x4a7600 / 0x4b0900): dvar seconds 0 -> 1; else touch == 0 or elapsed >= ticks -> 0, else min(1, (ticks - elapsed) / 700).
             // Ammo backdrop / text use hud_fade_ammodisplay (default 2 s, 0x10438d8) from the ammo touch time; the firemode icon the same dvar
             // but a fixed 0x708 = 1800 ms window from the weapon change time (0xf796e4); the compass hud_fade_compass (default 8 s).
@@ -5758,20 +5787,50 @@ int main(int argc, char** argv) {
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
             // def +0x1d4 / +0x1d8 are maxAmmo / clipSize: weapon field table 0x5a7e80 (docs/spec/inventory.md; the table is in the
             // packed .data, read at run time), and givemaxammo (0x538020) reads +0x1d4 at 0x538109 for the stock limit.
-            const float maxAmmo = std::min(pweapon.hudNumber("maxAmmo"), 999.0f), clipSize = std::min(pweapon.hudNumber("clipSize"), 999.0f);
+            // The weapon the weapon-info ownerdraws read (ammo 0x4a79b0 / 0x4a7760 / 0x4a76b0, name 0x4a7da0, firemode icon 0x4a8040): the selected weapon
+            // cg.weaponSelect (0xf796e0) when the player owns it (bitset 0xf70e00, bounds-checked against the weapon count), else the player state's
+            // weapon (0xf70998). So the display follows the key press at once instead of the end of the drop. While an offhand grenade is out the
+            // offhand definition is shown as before.
+            const std::map<std::string, std::string>* selDef = nullptr;
+            std::string selKey;
+            if (world && world->player() && !pweapon.offhandActive()) {
+                auto lower = [](std::string v) {
+                    for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                    return v;
+                };
+                const std::string cur = lower(pweapon.name()), sel = lower(weaponSelect);
+                const game::Inventory& inv = world->inventory(*world->player());
+                selKey = game::hudShownWeapon(sel, cur, [&](const std::string& n) { return inv.owned.count(n) != 0; });
+                if (selKey != cur) selDef = world->weapon(selKey);
+            }
+            auto hudStr = [&](const char* key) -> std::string {
+                if (!selDef) return pweapon.hudField(key);
+                std::string kk(key);
+                for (char& ch : kk) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                const auto it = selDef->find(kk);
+                return it == selDef->end() ? std::string() : it->second;
+            };
+            auto hudNum = [&](const char* key) { return selDef ? float(std::atof(hudStr(key).c_str())) : pweapon.hudNumber(key); };
+            int hudClip = pweapon.clip(), hudStockRaw = pweapon.stock();
+            if (selDef) {
+                game::Inventory& inv = world->inventory(*world->player());
+                hudClip = inv.clip[hudStr("clipName")];
+                hudStockRaw = inv.ammo[hudStr("ammoName")];
+            }
+            const float maxAmmo = std::min(hudNum("maxAmmo"), 999.0f), clipSize = std::min(hudNum("clipSize"), 999.0f);
             // clipOnly weapons (def +0x340): the clip is "invalid" for the ownerdraw (0x4a7a13) and the displayed stock is the
             // clip count itself (0x4dcd60 without a shared-ammo group returns ps.ammoclip[clipIndex] for them, ps.ammo[ammoIndex]
             // otherwise); the shared-group sum (def +0x1e4 >= 0) is World::hudStock.
-            const bool clipOnly = pweapon.hudNumber("clipOnly") != 0.0f;
-            int dispStock = clipOnly ? pweapon.clip() : pweapon.stock();
+            const bool clipOnly = hudNum("clipOnly") != 0.0f;
+            int dispStock = clipOnly ? hudClip : hudStockRaw;
             // Shared cap group (def +0x1e4 >= 0, field sharedAmmoCapName): the stock shown is the group sum (0x4dcd60, World::hudStock).
-            if (world && !pweapon.name().empty()) {
-                std::string k = pweapon.name();
+            if (world && !(selDef ? selKey : pweapon.name()).empty()) {
+                std::string k = selDef ? selKey : pweapon.name();
                 for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                 if (const int g = world->hudGroupStock(k); g >= 0) dispStock = g;
             }
             const bool stockLow = maxAmmo >= 0 && float(std::min(dispStock, 999)) <= maxAmmo * 0.2f;
-            const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(pweapon.clip(), 999)) <= clipSize * 0.33f;
+            const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(hudClip, 999)) <= clipSize * 0.33f;
             if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
                 const float rightEdge = float(w), bottomEdge = float(h); // RIGHT / BOTTOM alignment, safe area 0
                 if (ammoBackItem && !ammoBackItem->background.empty()) {
@@ -5801,7 +5860,7 @@ int main(int argc, char** argv) {
                             return tw;
                         };
                         const float x0 = rightEdge + r.x * sc, y0 = bottomEdge + r.y * sc, w0 = r.w * sc;
-                        const std::string clip = fmt("%2i", pweapon.clip()), stock = fmt("%3i", dispStock);
+                        const std::string clip = fmt("%2i", hudClip), stock = fmt("%3i", dispStock);
                         const int st = ammoTextItem->textStyle;
                         // Colours (0x4a7930): alpha = the fade; the clip keeps the item colour, "|" and the stock turn red when the
                         // stock is low; a low clip is overdrawn in red with a sawtooth alpha (800 ms, 1 -> 0, restarting),
@@ -5832,15 +5891,15 @@ int main(int argc, char** argv) {
             // 1800 ms from the weapon change time 0xf796e4, 0x4a7600). Text = localized displayName (client weapon info +0xb4), plus
             // " / " + localized modeName (+0xb8, def +0x70) when the weapon has a modeName ("%s / %s" 0x57fb54, else "%s" 0x56ca4c).
             // Drawn at x = rect.x + rect.w - textWidth - 28 (0x592084), y = rect.y, item colour with the fade alpha, item text style,
-            // font by the HUD rule. TODO(spec): the weapon preselected while switching (0xf796e0) is not tracked; the current weapon is used.
+            // font by the HUD rule.
             if (weapNameItem && pweapon.equipped() && !inVeh) {
                 const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
                 const float ts = weapNameItem->textScale, fs = ts * float(h) / 480.0f;
                 if (a > 0.0f)
                     if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
                         auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                        std::string text = name(pweapon.hudField("displayName"));
-                        const std::string mode = pweapon.hudField("modeName");
+                        std::string text = name(hudStr("displayName"));
+                        const std::string mode = hudStr("modeName");
                         if (!mode.empty()) text += " / " + name(mode);
                         const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
                         float tw = 0;
@@ -5858,7 +5917,7 @@ int main(int argc, char** argv) {
             // (0xf79a48) and when the player owns no weapon of the class; alpha = hud_fade_offhand (3 s, 0x10438cc). Icon = hudIcon of the
             // first owned weapon of the class with rounds (0x4dc6d0), item colour. Ammo = "%i" of the rounds of the class' weapons
             // (0x4b8690), red (0.89 0.18 0.01) at 0, else the item colour. Name = localized WEAPON_FRAGGRENADE / WEAPON_SMOKEGRENADE (table
-            // 0x5a4d58). TODO(spec): the [0xf708ec] < 4 test, 0x4dc740 (class owned without rounds is assumed), 0x4b8490, flash helper 0x4b8620.
+            // 0x5a4d58). TODO(spec): [helpers not read] the [0xf708ec] < 4 test, 0x4dc740 (class owned without rounds is assumed), 0x4b8490, flash helper 0x4b8620.
             if (world && world->player() && !(world->playerPmFlags() & 0x20000 && !(world->playerPmFlags() & 0x80000))) {
                 const float oa = fadeAlpha(hudFade.offhand, 3.0f, 3000);
                 if (oa > 0.0f)
@@ -5916,7 +5975,7 @@ int main(int argc, char** argv) {
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
             // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
             if (fireModeItem && pweapon.equipped() && !inVeh) {
-                const std::string icon = pweapon.field("modeIcon");
+                const std::string icon = selDef ? hudStr("modeIcon") : pweapon.field("modeIcon");
                 const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
                 if (!icon.empty() && a > 0.0f) {
                     const auto& r = fireModeItem->rect;
@@ -6013,7 +6072,7 @@ int main(int argc, char** argv) {
             // (0xf796c4). Icon: bit 0 stance_prone, else bit 1 stance_crouch, else stance_stand; then, for 1000 ms after the change,
             // the stance_flash overlay with the cg_hudStanceFlash colour (default white) and alpha (changeTime + 1000 - now) * 0.001 * 0.8
             // (0x591e30, 0x591f94) capped by the fade alpha. Rect: menu 90 -70 LEFT / BOTTOM + item 60x60.
-            // TODO(spec): the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
+            // TODO(spec): [scale constants not read] the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
             // the bool dvar 0x1040c4c checked in the fade.
             if (const ui::Menu* sm = hudMenus.find("stance"); sm && world) {
                 const int64_t now = world->timeMs();
@@ -6278,10 +6337,10 @@ int main(int argc, char** argv) {
                 // Menus on the stack (front end and script menus), items laid out relative to the menu rect in the 640x480 virtual
                 // screen. Window style 1 (FILLED) draws backColor, 3 (SHADER) the background material, 6 (DVAR_SHADER) the material
                 // named by the item's dvar; text items draw their (localized) text, the focused item in the menu's focusColor.
-                // TODO(spec): the original's font choice by textscale (here the HUD's rule), item/menu alignment, draw order.
+                // TODO(spec): [generic Item_Paint order not walked] item/menu alignment, draw order (the font is menuFont, exe 0x4c38e0).
                 auto col8 = [](const ui::Color& c) { return std::array<uint8_t, 4>{uint8_t(std::clamp(c[0], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[1], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[2], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[3], 0.0f, 1.0f) * 255)}; };
                 std::vector<const ui::Menu*> order;
-                if (const ui::Menu* bg = scriptMenus.find("bg")) order.push_back(bg); // TODO(spec): how the background menu is shown
+                if (const ui::Menu* bg = scriptMenus.find("bg")) order.push_back(bg); // TODO(spec): [opener not located] how the background menu is shown
                 for (const ui::Menu* m : frontStack.menus()) order.push_back(m);
                 for (const ui::Menu* mp : order) {
                     const ui::Menu& menu = *mp;
@@ -6316,8 +6375,10 @@ int main(int argc, char** argv) {
                         else if (it.style == 3 || it.style == 6) {
                             std::string mat = it.background;
                             if (it.style == 6 || (mat.empty() && !it.dvar.empty())) mat = menuEnv.getCvar(it.dvar);
-                            if (!mat.empty()) itemQuad(ix, iy, it.rect.w, it.rect.h, col8(it.foreColor), mat);
+                            if (!mat.empty()) itemQuad(ix, iy, it.rect.w, it.rect.h, col8(frontStack.foreColor(it)), mat);
                         }
+                        for (const ui::BorderBar& b : ui::borderBars(it.border, ix, iy, it.rect.w, it.rect.h, it.borderSize))
+                            itemQuad(b.x, b.y, b.w, b.h, col8(frontStack.borderColor(it)), "");
                         if (it.type == 6) { // LISTBOX paint, exe 0x4ce280 (vertical, text columns)
                             const assets::Font* lf = menuFont(it.textScale, it.textFont);
                             const auto white = std::array<uint8_t, 4>{255, 255, 255, 255};
@@ -6350,7 +6411,7 @@ int main(int argc, char** argv) {
                         }
                         // UI_SAVEGAME_SHOT (258, 0x4c3c00): the material named by the selected entry's image (+8 = header +0x320,
                         // script default "$default"); no selection, an empty name or a material that does not load -> "unknownsave".
-                        // Drawn over the item rect (0x4d4790). TODO(spec): the colour argument of the ownerdraw call (item fore colour here).
+                        // Drawn over the item rect (0x4d4790). TODO(spec): [call site not read] the colour argument of the ownerdraw call (item fore colour here).
                         if (it.ownerDraw == 258) {
                             std::string mat = "unknownsave";
                             if (saveSel >= 0 && size_t(saveSel) < saveRows.size() && !saveRows[size_t(saveSel)].info.image.empty() &&
@@ -6360,7 +6421,7 @@ int main(int argc, char** argv) {
                             continue;
                         }
                         // UI_SAVEGAMENAME (262) shows UI state +0x31e, a textsavegame item UI state +0x41e (0x4c6050 fills both).
-                        // TODO(spec): the ownerdraw / textsavegame draw handlers are not decoded; drawn with the item's text settings.
+                        // TODO(spec): [handlers not read] the ownerdraw / textsavegame draw handlers are not decoded; drawn with the item's text settings.
                         const bool saveText = it.ownerDraw == 262 || it.textSaveGame;
                         if (saveText && (it.ownerDraw == 262 ? saveSelName : saveDetail).empty()) continue;
                         // Item_Text_Paint (0x4ccf60): an item without text shows its dvar's value (0x2c0 -> 0x4314b0), localized when it
@@ -6379,19 +6440,13 @@ int main(int argc, char** argv) {
                         const float gs = ts * 48.0f / float(f->pixelHeight);
                         auto c = col8(&it == frontStack.focus() ? menu.focusColor : frontStack.foreColor(it));
                         if (it.type == 14 && &it == frontStack.focus()) {
-                            // BIND (exe 0x4cdee0): capturing = (0.8, 0, 0, 0.8); focused = focus colour pulsing with
-                            // (sin(ms / 75) + 1) * 0.5 against focus * 0.8 (0x4c6e50). TODO(spec): argument order of the blend.
-                            if (&it == frontStack.captureItem()) c = col8(std::array<float, 4>{0.8f, 0.0f, 0.0f, 0.8f});
-                            else {
-                                const float t = (std::sin(float(SDL_GetTicks() / 75)) + 1.0f) * 0.5f;
-                                for (int i = 0; i < 3; ++i) c[size_t(i)] = uint8_t(float(c[size_t(i)]) * (1.0f - 0.2f * t));
-                            }
+                            c = col8(ui::focusPulseColor(menu.focusColor, &it == frontStack.captureItem(), SDL_GetTicks()));
                         }
                         const float ax = it.textAlign == 1 || it.textAlign == 3 ? 0.5f : it.textAlign == 2 ? 1.0f : 0.0f;
                         if (it.autoWrapped) {
                             // exe 0x4cc950 (item flag 0x800000, keyword "autowrapped"): the text is broken at spaces, tabs and LF so that
                             // each line fits the item rect width; each line is drawn by textalign one line height + 5 lower than the
-                            // previous. TODO(spec): the exact break rule and line step of 0x4cc950 (taken from the dead quote's 0x4cc6a0).
+                            // previous. TODO(spec): [0x4c3790 result is in screen units, conversion unread] the exact break rule and line step of 0x4cc950 (taken from the dead quote's 0x4cc6a0).
                             auto width = [&](const std::string& str) {
                                 float wd = 0;
                                 for (unsigned char ch : str)
@@ -6419,7 +6474,7 @@ int main(int argc, char** argv) {
                             }
                         } else if (it.wrapped) {
                             // exe 0x4ccc70 (item flag 0x400000, keyword "wrapped"): split only at CR (0xd), each line drawn by textalign; the
-                            // next line starts one line height + 5 lower. TODO(spec): exact line step (the exe adds 5 to the result of 0x4c3790).
+                            // next line starts one line height + 5 lower. TODO(spec): [0x4c3790 result is in screen units, conversion unread] exact line step (the exe adds 5 to the result of 0x4c3790).
                             float ly = iy + it.textAlignY;
                             size_t pos = 0;
                             while (true) {
@@ -6431,7 +6486,7 @@ int main(int argc, char** argv) {
                             }
                         } else
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
-                        if (it.type == 4 || it.type == 16) { // edit field value (exe 0x4cd0e0); colour codes: hudText; TODO(spec): paint window
+                        if (it.type == 4 || it.type == 16) { // edit field value (exe 0x4cd0e0, the item window is painted above); colour codes: hudText
                             const std::string val = menuEnv.getCvar(it.dvar);
                             const int off = frontStack.editItem() == &it ? frontStack.editOffset() : 0;
                             std::string shown = off < int(val.size()) ? val.substr(size_t(off)) : std::string();
@@ -6445,7 +6500,8 @@ int main(int argc, char** argv) {
                                 }
                                 return wd;
                             };
-                            hudText(front, shown, x0 + vx * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
+                            const auto vc = &it == frontStack.focus() ? col8(ui::focusPulseColor(menu.focusColor, false, SDL_GetTicks())) : c;
+                            hudText(front, shown, x0 + vx * xs, (iy + it.textAlignY) * sc, gs * sc, *f, vc.data(), 0.0f, 1.0f, it.textStyle);
                             if (frontStack.editItem() == &it) { // cursor glyph: '_' overstrike, '|' insert (drawn over the character)
                                 const int rel = std::clamp(frontStack.editCursor() - off, 0, int(shown.size()));
                                 hudText(front, frontStack.editOverstrike() ? "_" : "|", x0 + (vx + widthOf(shown.substr(0, size_t(rel)))) * xs,
@@ -6976,9 +7032,11 @@ int main(int argc, char** argv) {
         bool running = true;
         bool walk = true;
         uint32_t prevButtons = 0;
+        int64_t lastWeaponCycleMs = -1000000; // 0xf796e4
+        std::string cgOffhand; // 0xf79700: the offhand as of the last frame, which a pickup event still sees
         float gameClock = 0;
         // The camera of a player placed by a link or a vehicle is drawn interpolated like the entities (they lag one server frame): the
-        // player origin before the last server frame and whether the camera follows the link this frame. TODO(spec): the original's rule.
+        // player origin before the last server frame and whether the camera follows the link this frame. TODO(spec): [no original rule found yet] the original's rule.
         script::Vec3 prevPlayerO{0, 0, 0};
         bool camLinkLerp = false;
         float camLinkHeight = 60.0f;
@@ -7132,14 +7190,14 @@ int main(int argc, char** argv) {
             return running;
         };
         int shockLoop = 0, shockSeenStart = -1;
-        bool shockEndPlayed = true;
+        game::ShockEndSound shockEnd; // shellshock_end / shellshock_end_abort (0x4b1f90, 0x4b1e90)
         // Hold-breath sounds (0x4b6840) and the hold_breath channel volumes (cgame registration 0x4a3140 loads
         // shock/hold_breath.shock into record 16, 0xf5741c; its volumes drive sound volume slot 2 via 0x4b6700).
         game::BreathSounds breathSnd;
         int heartbeatLoop = 0;
         game::ShockRecord holdBreathRec;
         // Sound volume slot 1 (setchannelvol, docs/spec/campaign.md "Victory screen"): the channel volumes of shock/victoryscreen.shock,
-        // reached linearly over `ms` from full volume. TODO(spec): the slot fade of 0x4431f0 is not decoded (linear assumed).
+        // reached linearly over `ms` (slot fade 0x4431f0: a per-channel step of (target - current output) / max(ms, 1), advanced by the elapsed ms and clamped at the target; the start is the current output of the highest slot, which is full volume here).
         audio::ChannelVolumeSlots volSlots; // slot 1 doubles as the victory-screen volume (cleared on level load, 0x444730)
         struct { game::ShockRecord rec; uint64_t startNs = 0; int ms = 1; } victoryVol;
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
@@ -7157,7 +7215,8 @@ int main(int argc, char** argv) {
         }
         // Start-up movie chain of the front end (Com_Init 0x42dee0, 0x42e7d5): `unskippablecinematic legal`, then, while com_introPlayed is
         // 0, `cinematic atvi; set nextmap "cinematic IW_logo; set nextmap cinematic cod_intro"`. A movie that is missing or ends runs
-        // nextmap; a skip stops the current movie only. TODO(spec): nothing in the exe sets com_introPlayed, it is only read.
+        // nextmap; a skip stops the current movie only. The dvar pointer has three references in the exe (registration, its store, this read) and its name occurs once, so
+        // nothing in the exe sets com_introPlayed; only developer .cfg files of the game files mention it, none is auto-executed.
         if (menuMode && running && !std::getenv("IW2_SKIP_INTRO") && !skipIntro) {
             playCinematic("legal", false, false, false);
             for (const char* m : {"atvi", "IW_logo", "cod_intro"})
@@ -7263,8 +7322,9 @@ int main(int argc, char** argv) {
                     input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", true), input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", false);
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                     // CG_CalcFov 0x4ae8c0: look sensitivity is scaled by zoomSens = fovX / cg_fov (80), linear in degrees (0xf791c8, applied in
-                    // CL_MouseMove 0x409720). The base 0.15 deg per count is kept (exe default sensitivity 5 · m_yaw 0.022 = 0.11, TODO(spec):
-                    // SDL xrel units).
+                    // CL_MouseMove 0x409720). The base 0.15 deg per SDL count is kept on purpose: the exe turns raw counts into degrees as
+                    // count · sensitivity · m_yaw (default 5 · 0.022 = 0.11), but SDL's xrel is in window points, not raw device counts, so the
+                    // constant is a feel calibration for the macOS port rather than a spec value.
                     const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
                     // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
                     // the base 0.15 stands for the default.
@@ -7273,7 +7333,7 @@ int main(int argc, char** argv) {
                     float pitchScale = 1.0f;
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
-                    if (!(world && world->controlsFrozen())) { // freezecontrols: TODO(spec) pm_flags 0x8000 effect on the view
+                    if (!(world && world->playerControlsFrozen())) { // pm_flags 0x8000 (freezecontrols or an absolute playerlinkto): the client mouse function returns before applying the delta (0x409871)
                         float dyaw = ev.motion.xrel * 0.15f * lookSens * zoomSens, dpitch = ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale;
                         // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
                         if (world)
@@ -7484,6 +7544,7 @@ int main(int argc, char** argv) {
                     remaining -= step;
                 }
                 if (world) {
+                    for (const game::KnockbackHit& hit : world->takePlayerKnockbacks()) game::applyKnockback(ps, hit);
                     world->setPlayerPmFlag(0x4000, ps.holdingBreath); // hold breath, read by the HUD hint
                     // Stance bits the HUD stance icon reads (pm_flags & 3, 0x4a80f0): 1 prone, 2 ducked.
                     world->setPlayerPmFlag(1, ps.stance == game::Stance::Prone);
@@ -7522,7 +7583,7 @@ int main(int argc, char** argv) {
                 cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 // Dead view (cgame 0x4ae2f5: pm_type ≥ 4): pitch −15, roll 40, yaw the player state's dead yaw
-                // (ps+0x10c). TODO(spec): that yaw (set at death towards the killer); the current yaw is kept.
+                // (ps+0x10c). TODO(spec): [writer of ps+0x10c not found] that yaw (set at death towards the killer); the current yaw is kept.
                 // The command's view angles are not applied while dead (0x50b12b), so the yaw stays where it was.
                 if (playerDead) {
                     if (!wasDead) deadYaw = world->playerDeadYaw() ? *world->playerDeadYaw() : cam.yaw; // ps+0x10c (0x4ae314)
@@ -7536,7 +7597,7 @@ int main(int argc, char** argv) {
                 // Camera bob (0x4ae290): up by the bob wave, sideways along the right vector (pitch/yaw/roll of the view).
                 // Landing dip (0xf790a0, viewImp.land), step offset and the minimum eye height (origin z + 8, 0x592010; applied below)
                 // are implemented; the damage kick is applied to the view angles further down (0x4ae371).
-                // TODO(spec): whether the 0x4ae775 minimum also applies while dead (it is skipped here).
+                // TODO(spec): [branch not read] whether the 0x4ae775 minimum also applies while dead (it is skipped here).
                 if (!playerDead) {
                     const float xy = std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]);
                     const auto vb = game::viewBob(ps.bobCycle, xy, ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsViewBobMult"));
@@ -7589,12 +7650,17 @@ int main(int argc, char** argv) {
                 syncWeapon();
                 pweapon.grenadeCook = world->cvarFloat("iw2_grenadeCook", 1.0f) != 0; // openiw2 option (docs/debug-flags.md)
                 game::PlayerWeapon::Input wi;
-                // weapnext / weapprev (cgame 0x4b7410): the weapon in the other of the two slots (primary, primaryb).
-                if (const int cycle = input.takeWeaponCycle(); cycle && world->player()) {
+                // weapnext / weapprev (cgame 0x4b6fd0 / 0x4b7030 -> 0x4b7410): the weapon in the other of the two slots. Rounds do not
+                // count (both commands pass 0). The walk over weapons outside the slots (0x4b72f0) finds nothing: only item, turret and
+                // non-player classes have no slot, and no shipped SP script gives the player a turret or non-player weapon.
+                if (const int cycle = input.takeWeaponCycle(); cycle && world->player() &&
+                    game::weaponCycleAllowed(menuEnv.getCvar("cl_paused") == "1", world->playerControlsFrozen() ? 0x8000u : 0u, world->playerPmFlags(), world->timeMs(), lastWeaponCycleMs,
+                                             int(world->cvarFloat("cg_weaponCycleDelay", 0.0f)))) {
+                    lastWeaponCycleMs = world->timeMs();
                     const game::Inventory& inv = world->inventory(*world->player());
                     const int cur = inv.slot[2] == weaponSelect ? 2 : 1;
                     const std::string& other = inv.slot[cur == 1 ? 2 : 1];
-                    if (!other.empty()) weaponSelect = other; // TODO(spec): weapons outside the slots (0x4b72f0)
+                    if (!other.empty()) weaponSelect = other;
                 }
                 wi.fire = (buttons & game::Button::Attack) != 0;
                 // The aim fraction follows pm_flags 0x40 (0x4dd0d0), which pmove sets from the aim command (0x4dd020).
@@ -7607,6 +7673,9 @@ int main(int argc, char** argv) {
                 if (weaponSelect != prevSelect) {
                     if (!prevSelect.empty() && !(pweapon.name() == prevSelect && pweapon.field("altWeapon") == weaponSelect))
                         input.clearAds();
+                    // Selecting a weapon (0x4b8360) stamps the weapon-change time 0xf796e4 and touches the weapon-info fade (0xf79a40, via 0x4a6130 case 4)
+                    // at that moment, so the ammo and name displays (which follow the selection) show for their fade window from the key press.
+                    if (!weaponSelect.empty()) hudFade.ammo = hudFade.weaponChange = world->timeMs();
                     prevSelect = weaponSelect;
                 }
                 wi.weapon = weaponSelect;
@@ -7642,7 +7711,7 @@ int main(int argc, char** argv) {
                     //  - 0x4be440: a change of the buttons 0x2300 touches stance and the compass, held ones touch stance only;
                     //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
                     //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
-                    // TODO(spec): the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
+                    // TODO(spec): [snapshot bit unidentified] the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
                     const int64_t nowMs = world ? world->timeMs() : 0;
                     if (pweapon.name() != hudFade.weapon) {
                         if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
@@ -7650,7 +7719,7 @@ int main(int argc, char** argv) {
                     }
                     // 0x4a6220 (called from 0x4bfa50 / 0x4bfbb7 while cl_paused && cg_drawpaused) re-touches the HUD fade timestamps every
                     // frame so the HUD stays visible in the pause menu. Wired: compass 0xf79a38, weaponinfo 0xf79a40, stance 0xf79a44,
-                    // offhandinfo 0xf79a48. TODO(spec): 0xf79a3c and the remaining stamps it writes (health bar owner unidentified).
+                    // offhandinfo 0xf79a48. TODO(spec): [owner of the stamp unidentified] 0xf79a3c and the remaining stamps it writes (health bar owner unidentified).
                     if (menuEnv.getCvar("cl_paused") == "1" && menuEnv.getCvar("cg_drawpaused") != "0")
                         hudFade.compass = hudFade.ammo = hudFade.stance = hudFade.offhand = nowMs;
                     const bool turretBits = world && world->playerOnTurret(); // 0xf70964 & 0x300
@@ -7672,9 +7741,9 @@ int main(int argc, char** argv) {
                 }
                 for (const auto& pe : world->takePickupEvents()) { // events 0x90 / 0x91 for the local client (0x4bad52 -> 0x4ba680)
                     const int64_t nowMs = world->timeMs();
-                    // TODO(spec): the offhand-selected state 0xf79700 (stored by 0x4b8ba0, reset elsewhere) is taken as "the weapon became the
-                    // player's offhand"; the primary state 0xf796e0 is weaponSelect.
-                    switch (game::pickupHudAction(pe.itemClass, pe.offhand, !weaponSelect.empty(), !pe.isCurrentOffhand)) {
+                    // The selected offhand 0xf79700 is only ever written with a weapon (0x4b8ba0), so "none" is the first pickup of a level;
+                    // the primary state 0xf796e0 is weaponSelect.
+                    switch (game::pickupHudAction(pe.itemClass, pe.offhand, !weaponSelect.empty(), !cgOffhand.empty())) {
                     case game::PickupHudAction::SelectPrimary: // 0x4b8360
                         weaponSelect = pe.weapon;
                         hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
@@ -7683,6 +7752,7 @@ int main(int argc, char** argv) {
                     case game::PickupHudAction::None: break;
                     }
                 }
+                if (world->player()) cgOffhand = world->inventory(*world->player()).offhand;
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) { input.clearAds(); if (e.weapon.empty()) ps.ads = false; } // event 0x95 (0x4bafbc); 0x4dd090 (the empty-named ones) also clears pm_flags 0x40
@@ -7722,7 +7792,11 @@ int main(int argc, char** argv) {
                     if (!rec || int(ss.startMs) != shockSeenStart) {
                         if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
                         shockSeenStart = rec ? int(ss.startMs) : -1;
-                        shockEndPlayed = !rec;
+                    }
+                    switch (shockEnd.update(rec && rec->sound, int(world->timeMs()), int(ss.startMs), rec ? game::shockEndSoundMs(*rec, ss.durationMs) : 0)) {
+                    case game::ShockEndSound::Action::PlayEnd: mixer.play("shellshock_end", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // TODO(spec): [mixer has no start offset] the start offset (shockEnd.offsetMs())
+                    case game::ShockEndSound::Action::PlayAbort: mixer.play("shellshock_end_abort", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // null.wav, replaces the end sound (same owner + channel)
+                    case game::ShockEndSound::Action::None: break;
                     }
                     {
                         // Channel volumes: the sound system keeps 5 volume slots (0x793a34, 0x88 bytes each) and uses the highest
@@ -7755,10 +7829,6 @@ int main(int argc, char** argv) {
                         if (b >= 0 && !shockLoop) shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
                         else if (b >= 0) mixer.setBlend(shockLoop, b, at);
                         else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
-                        if (!shockEndPlayed && el >= game::shockEndSoundMs(*rec, ss.durationMs)) {
-                            mixer.play("shellshock_end"); // TODO(spec): when the exe plays shellshock_end_abort instead
-                            shockEndPlayed = true;
-                        }
                     }
                 } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
                 if (!onTurret && (pweapon.equipped() || pweapon.binocularsUp()) && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
@@ -7811,7 +7881,7 @@ int main(int argc, char** argv) {
                     hs.fireAdd = pweapon.number("hipSpreadFireAdd");
                     for (int i = 0; i < shots; ++i) game::addFireSpread(ps, hs, pweapon.adsFrac()); // 0x4dece0
                 }
-                for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), false);
+                for (int i = 0; i < shots; ++i) recoil.fire([&](const char* k) { return pweapon.number(k); }, pweapon.adsFrac(), pweapon.reducedKick());
                 if (shots) viewShot(); // EV_FIRE_WEAPON -> fire flag (0x4b7800)
                 for (int i = 0; i < shots; ++i) {
                     float spreadDeg = 0;
@@ -7869,7 +7939,7 @@ int main(int argc, char** argv) {
                 // Damage feedback (cgame 0x4ba2a0 on a new damageEvent): the aim spread scale grows by the count; unless
                 // the damage came from the world (pitch and yaw 255), the oldest of 8 icon slots gets the time,
                 // cg_hudDamageIconTime and yaw = yaw byte / 255 · 360 + (rand / 32768 − 0.5) · 20, through a short
-                // angle. TODO(spec): the view kick (0xf7979c / 0xf797a0) and the "Health" menu flag.
+                // angle. The view kick (0xf7979c / 0xf797a0) is viewImp.damage. TODO(spec): [flag not read] the "Health" menu flag.
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
                     if (hudFade.health < world->timeMs()) hudFade.health = world->timeMs(); // 0x4ba537: damage touches the health bar
@@ -7955,12 +8025,6 @@ int main(int argc, char** argv) {
                             ambientAlias = alias;
                             if (ambientHandle) mixer.fadeIn(ambientHandle, ms);
                         }
-                    } else if (cmd.name == "ambient_stop") { // ambient_stop <fade ms>
-                        int ms = 0;
-                        a >> ms;
-                        if (ambientHandle) mixer.fadeOut(ambientHandle, ms);
-                        ambientHandle = 0;
-                        ambientAlias.clear();
                     } else if (cmd.name == "mu_stop") { // mu_stop <ms> (0x4a6e60 -> 0x442fb0): stop at once or fade out over ms
                         int ms = 0;
                         a >> ms;
@@ -8002,7 +8066,7 @@ int main(int argc, char** argv) {
                         float radius = 0;
                         a >> ms >> radius >> rt >> prio;
                         const int64_t now = rt ? int64_t(SDL_GetTicks()) : world->timeMs();
-                        // TODO(spec): the original's real-time base is "ms since first use" (0x1cbaec4); SDL ticks differ only by an offset.
+                        // The original's real-time base is "ms since first use" (0x1cbaec4); only differences are used, so SDL ticks are equivalent.
                         screenBlur.command(ms, radius, rt != 0, prio, std::max<int64_t>(now, 1), screenBlur.composed());
                     }
                 }
@@ -8038,7 +8102,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
-                // TODO(spec): the exe's exact disconnect path; only the visible outcome is reproduced.
+                // Only the visible outcome of the exe's disconnect is needed: there is no server to tell.
                 pendingDisconnect = false;
                 pendingLevel.reset();
                 pendingPersistent = false;
@@ -8151,7 +8215,7 @@ int main(int argc, char** argv) {
                     ps = game::PlayerState{};
                     ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
                     if (loadedSave && world->player()) { // a loaded save puts the player where the save has him
-                        // TODO(spec): the front end's pmove state (velocity, stance, view) is not part of the openiw2 save
+                        // TODO(spec): [save format choice, needs a version bump] the front end's pmove state (velocity, stance, view) is not part of the openiw2 save
                         const auto o = world->player()->obj->get("origin"), an = world->player()->obj->get("angles");
                         if (o.isVector()) ps.origin = o.asVector();
                         if (an.isVector()) cam.yaw = an.asVector()[1];

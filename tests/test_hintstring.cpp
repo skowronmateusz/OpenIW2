@@ -1,5 +1,6 @@
 // sethintstring buffer builder and the 32-slot table (0x4eb9b0, 0x4f0da0).
 #include "game/hintstring.h"
+#include "game/textmessage.h"
 
 #include <cstdio>
 
@@ -33,7 +34,7 @@ int main() {
     CHECK(t.intern("new") == -1 && t.intern("S5") == 5);
 
     auto lk = [](const std::string& k) -> const std::string* { static const std::string v = "Press"; return k == "KEY" ? &v : nullptr; };
-    CHECK(hintStringText(std::string("KEY\x14X\x15" "12"), lk) == "PressX12");
+    CHECK(localizeTextMessage(std::string("KEY\x14X\x15" "12"), lk) == "PressX12");
 
     if (failures == 0) std::printf("hintstring OK\n");
     return failures ? 1 : 0;

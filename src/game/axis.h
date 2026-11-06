@@ -1,8 +1,10 @@
 // Rotation frames as the executable keeps them: three rows forward, left, up (docs/spec/animscripted.md "Frames").
 #pragma once
 
+#include "assets/xmodel.h"
 #include "script/value.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -81,6 +83,32 @@ inline script::Vec3 axisLocal(const script::Vec3& origin, const Axis& m, const s
 }
 
 // 0x424b20: the frame of a yaw in degrees.
+// The rotation of anglesAxis as a quaternion: yaw, then pitch, then roll.
+inline assets::Quat anglesQuat(const script::Vec3& a) {
+    const auto half = [](float deg) { return deg * 0.008726646f; };
+    const assets::Quat yaw{0, 0, std::sin(half(a[1])), std::cos(half(a[1]))};
+    const assets::Quat pitch{0, std::sin(half(a[0])), 0, std::cos(half(a[0]))};
+    const assets::Quat roll{std::sin(half(a[2])), 0, 0, std::cos(half(a[2]))};
+    return assets::multiply(assets::multiply(yaw, pitch), roll);
+}
+
+// SV_LinkEntity (0x44b2d0) for a brush model: no rotation keeps the bounds; a yaw alone uses the xy radius (0x4242e0) with z unchanged;
+// pitch or roll the 3D radius (0x4241c0) on every axis.
+inline void brushLinkBounds(const script::Vec3& angles, script::Vec3& mins, script::Vec3& maxs) {
+    if (angles[0] == 0 && angles[1] == 0 && angles[2] == 0) return;
+    float sum = 0;
+    const int axes = angles[0] == 0 && angles[2] == 0 ? 2 : 3;
+    for (int i = 0; i < axes; ++i) {
+        const float m = std::max(std::fabs(mins[size_t(i)]), std::fabs(maxs[size_t(i)]));
+        sum += m * m;
+    }
+    const float r = std::sqrt(sum);
+    for (int i = 0; i < axes; ++i) {
+        mins[size_t(i)] = -r;
+        maxs[size_t(i)] = r;
+    }
+}
+
 inline Axis yawAxis(float yaw) { return anglesAxis({0.0f, yaw, 0.0f}); }
 
 } // namespace iw2::game

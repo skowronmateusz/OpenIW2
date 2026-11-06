@@ -62,8 +62,7 @@ FVec normalized(const FVec& v) {
     const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     return l != 0.0f ? mul(v, 1.0f / l) : v; // 0x4210d0: a zero vector is left unchanged
 }
-// Rotation of v about the unit axis by `deg` degrees (0x421550). TODO(spec): the rotation sense; the angles drawn here
-// are uniform over a full turn, so only the exact value for a given draw could differ.
+// Rotation of v about the unit axis by `deg` degrees, right-handed (0x421550, see marks.cpp).
 FVec rotateAbout(const FVec& axis, const FVec& v, float deg) {
     const float a = deg * 0.017453292f, c = std::cos(a), s = std::sin(a);
     const float d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
@@ -266,7 +265,9 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
         const bool known = e.type == "Decal" || e.type == "FxRunner" || e.type == "Particle" || e.type == "OrientedParticle" || e.type == "Emitter" ||
                            e.type == "Tail" || e.type == "Light" || e.type == "Line" || e.type == "Cloud" || e.type == "Cylinder" ||
                            e.type == "CameraShake";
-        if (!known) { // TODO(spec): other element types
+        if (!known) { // The type dispatch of 0x485d10 has 12 slots; the shipped fx/*.efx files use only the ten types handled
+            // here (survey of the shipped effect data; Cylinder is implemented too and unused by them), so the skip below is
+            // unreachable with shipped effects. IW2_FX_HIST surveys anything a custom effect file adds.
             static std::map<std::string, size_t> skipped; // IW2_FX_HIST survey of elements that were skipped
             if (std::getenv("IW2_FX_HIST") && ++skipped[e.type + " " + e.name] == 1)
                 std::fprintf(stderr, "fx skip element type %s name %s\n", e.type.c_str(), e.name.c_str());
@@ -276,8 +277,10 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
         const int count = int(range(e.numbers("count"), 1) + 0.5f);
         for (int i = 0; i < count; ++i) {
             // Every instance works on its own copy of the effect axes (0x485e20); randrotaroundfwd 0x100 (0x485c60) first
-            // turns row1 about row0 by 0..360° and rebuilds row2 = row0 × row1. TODO(spec): the original draws these at
-            // the delayed spawn time; we draw them at play time.
+            // turns row1 about row0 by 0..360° and rebuilds row2 = row0 × row1. The exe queues a delay of 1 ms or more
+            // (0x4853f0) and draws these at the delayed spawn time; drawing them at play time only permutes the shared-seed
+            // sequence, which is unreproducible anyway (the exe's CRT rand is time-seeded and shared with 25 other callers),
+            // so the distributions are identical.
             FxAxes ax = axes;
             if (e.spawnFlagBits() & 0x100) {
                 ax[1] = rotateAbout(ax[0], ax[1], range({0.0f, 360.0f}, 0));
@@ -285,7 +288,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
             }
             const int64_t startMs = nowMs + int64_t(elementDelay(e, i, count));
             if (e.type == "Decal") {
-                spawnDecals(e, flags, origin, ax, startMs);
+                if (!(noImmediateMarks && startMs == nowMs)) spawnDecals(e, flags, origin, ax, startMs);
                 continue;
             }
             if (e.type == "CameraShake") {
@@ -468,7 +471,8 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
     }
     // Material and sequence (0x48cd20): the material at random ((seed >> 17)·count >> 15); with a frame
     // count n > 1 the start frame by sequenceStartFrameMode (+0x288; 0 fixed: sequenceFixedFrameValue − 1,
-    // 1 random: (seed >> 17)·n >> 15, 2: the caller's value, TODO(spec)) and the rate by
+    // 1 random: (seed >> 17)·n >> 15, 2: the spawn-context value handed to 0x48cd20 as its second argument — which
+    // value the play context passes there is not decoded, so it is treated as 0, TODO(spec)) and the rate by
     // sequencePlayRateMode (+0x290; 0: sequenceFixedFpsValue / 1000 frames per ms, 1: n / life), loop mode
     // and times copied (+0x298 / +0x29c). All of these default to 0 (the element is zeroed, 0x4878c0).
     const auto shaders = e.list("shaders");
@@ -525,12 +529,13 @@ void FxSystem::spawnParticle(const assets::EfxElement& e, uint32_t flags, const 
         float a[3], r[3];
         for (int k = 2; k >= 0; --k) a[k] = range(axisRange(angleKey, k), 0);
         for (int k = 2; k >= 0; --k) r[k] = range(axisRange(deltaKey, k), 0);
-        // Angles of the axes (0x421b30; the roll sign convention is inferred). TODO(spec).
+        // Angles of the axes (0x421b30): pitch = atan2(−f.z, |f.xy|) in degrees (270° / 90° for straight up / down),
+        // yaw = atan2(f.y, f.x) in degrees (both normalised to 0..360°, indistinguishable to the trig that consumes
+        // them), and the roll output is always 0 — the roll draw of `angle` is the only roll an emitter gets.
         const FVec& f = ax[0];
         const float pitch = std::asin(std::clamp(-f[2], -1.0f, 1.0f)) * 57.2957795f;
         const float yaw = std::abs(f[2]) < 0.9999f ? std::atan2(f[1], f[0]) * 57.2957795f : 0.0f;
-        const float roll = std::atan2(-ax[1][2], ax[2][2]) * 57.2957795f;
-        p.ang = {pitch + a[0], yaw + a[1], roll + a[2]};
+        p.ang = {pitch + a[0], yaw + a[1], a[2]};
         p.angRate = {r[0], r[1], r[2]};
         const auto models = e.list("models");
         if ((flags & 0x10) && !models.empty()) {
@@ -769,9 +774,9 @@ void FxSystem::emitFx(FxParticle& p, int64_t frameMs, const FxTag* orient, const
 // (element +0x220); colour (0x4857d0) = rgb · a random scale from its range, lerped towards rgbRand by a random
 // with useRandomColors 0x2000; alpha (0x4858c0) the same with useRandomAlpha 0x4000, clamped to 0..1; size
 // (0x485a30) with useRandomSize 0x8000; the material picked at random from `shaders` ((seed >> 17)·count >> 15).
-// The direction is the effect's forward axis (0x485bd9 passes the effect to 0x4ad430). TODO(spec): the spawn
-// position (0x48c290; the particles' origin box is used), count / delay / spawnRange handling, the frustumCull
-// spawn flag (spawnFrustumCullRadius), the exact order of the random draws.
+// The direction is the effect's forward axis (0x485bd9 passes the effect to 0x4ad430). The spawn position, count,
+// delay, spawn range gate and the frustumCull spawn flag are the shared element handling of playAxes (spawnPoint
+// 0x48c290, the count / delay loop 0x4853f0, the gates 0x485300 / 0x486e90), in the draw order above.
 void FxSystem::spawnDecals(const assets::EfxElement& e, uint32_t flags, const FVec& origin, FxAxes& ax, int64_t startMs) {
     const auto shaders = e.list("shaders");
     if (std::getenv("IW2_MARK_DEBUG")) std::fprintf(stderr, "decal element %s: %zu shaders\n", e.name.c_str(), shaders.size());
@@ -938,8 +943,9 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // bytes (0x4819b0 / 0x481a40), angle += frame ms · rotationDelta · 0.01 (0x481b90, useRandomRotationDelta 0x40000).
             // Then axis rows = rotation about +0x24c by the angle (0x423a50 quaternion, 0x423680 matrix), refEntity scale
             // (+0x98) = size, width (+0x88) = size2 result, height (+0x8c) = length with useLength else the size2 result; A (+0x7c)
-            // = the position (through the bolt with relative, 0x4404f0). TODO(spec): `wind` (+0xf8) and affectedByWind 0x800000
-            // have no reader in the exe's effect code.
+            // = the position (through the bolt with relative, 0x4404f0). `wind` (drawn into +0xf8 by the spawn 0x48ce70) and
+            // affectedByWind 0x800000 have no reader: no instruction of the effect code tests the flag bit, and no shipped
+            // effect sets the flag, so wind never moves a cloud.
             const FVec before = p.pos;
             if (!stepEmitter(p, nowMs)) {
                 p.dead = true;
@@ -1023,7 +1029,10 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (!p.tail) continue;
         }
         // Particle (0x480330) and OrientedParticle (0x482630) move by the physics step 0x480bd0 every update (false: the element
-        // dies). The analytic position (0x4816c0) is only used by the exe for the late part of a spawn (0x48caa0, TODO(spec)).
+        // dies). The exe uses the analytic position (0x4816c0: velocity at u = min(ms / life, 1), gravity = ms · gravity · 0.001
+        // added on z) only for the lateness catch-up of a spawn (0x48caa0: pos += velocity(u) · ms · 0.001, which every type
+        // spawn calls with the spawn's overdue ms from 0x485e20); stepping from the nominal start time here is the same
+        // integral cut into ≤200 ms steps.
         const bool moving = e.type == "Particle" || e.type == "OrientedParticle";
         if (moving && !stepEmitter(p, nowMs)) {
             p.dead = true;

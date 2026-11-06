@@ -342,7 +342,7 @@ int moveBlock(ActorSlide& pm, const SlideTraceFn& trace) {
         for (int a = 0; a < 3; ++a) pm.origin[a] += pm.moveDelta[a];
         return 1;
     }
-    const float inv = pm.dt > 0.0f ? 1.0f / pm.dt : 0.0f; // TODO(spec): the exe divides by dt unguarded
+    const float inv = pm.dt > 0.0f ? 1.0f / pm.dt : 0.0f; // the guard is the port's; the exe divides by dt unguarded
     if (pm.mode == 4) {
         for (int a = 0; a < 3; ++a) pm.velocity[a] = pm.moveDelta[a] * inv;
         slideMove(pm, false, trace);

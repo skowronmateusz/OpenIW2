@@ -280,6 +280,12 @@ int main() {
         CHECK(!log.empty() && log.back() == "exec openmenu pop");
         const iw2::ui::Item& box = *vm->items[2];
         CHECK(st.itemVisible(box) && std::fabs(st.backColor(box)[3] - 1.0f) < 1e-6f);
+        CHECK(iw2::ui::borderBars(0, 0, 0, 10, 10, 1).empty());
+        CHECK(iw2::ui::borderBars(1, 0, 0, 10, 10, 1).size() == 4);
+        const auto rows = iw2::ui::borderBars(2, 5, 6, 10, 20, 2);
+        CHECK(rows.size() == 2 && rows[1].y == 24.0f && rows[1].h == 2.0f && rows[1].w == 10.0f);
+        const auto sides = iw2::ui::borderBars(3, 5, 6, 10, 20, 2);
+        CHECK(sides.size() == 2 && sides[1].x == 13.0f && sides[1].w == 2.0f && sides[1].h == 20.0f);
         for (int t = 1; t <= 12; ++t) {
             st.tick(t * 10);
             st.paintFade(*vm, box, true);

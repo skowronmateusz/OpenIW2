@@ -38,6 +38,7 @@ struct TraceResult {
     uint32_t surfaceFlags = 0; // surface flags of the material that was hit (lump 0)
     int material = -1;         // index of that material in lump 0, -1 if nothing was hit
     int entity = -1;           // id of the entity clip that was hit (setEntityClips), -1 for the world
+    bool partHit = false;      // trace +0x1e (partName) != 0: a locational trace hit a bone box or an xmodel collision surface
 };
 
 // A solid entity the traces clip against (SV_ClipMoveToEntities 0x41a590 / 0x44b840): a brush submodel, or for

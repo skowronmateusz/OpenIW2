@@ -100,7 +100,9 @@ public:
     void clear(int n, float blendTime);
     // 0x4789a0: clear (0x478940) every child of the node.
     void clearChildren(int n, float blendTime);
-    // The looping flag of a leaf's animation (xanim +2). TODO(spec): a blend node's flag (entry +0x10 bit 1).
+    // The looping flag of a leaf's animation (xanim +2). TODO(spec): a blend node's flag is bit 0 of its entry word +0x10 (read at 0x53b7d6;
+    // the word is written by the blend node constructor 0x475090 from a 16-bit field of the builder's parse record, call at 0x4531b4;
+    // where the .atr file sets it is not traced).
     bool looping(int n) const;
     void restart(int n);
 

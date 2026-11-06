@@ -160,10 +160,13 @@ normal), +3 = DirToByte(dir) (0x420c30), +1 = surface type, +0xa = the missile's
 "Bullet impacts"): bullet_small_water and the impact table's bullet_small normal / reflect effects for water. Port:
 `missileTrace` (grenades and rockets); test: tests/test_itemdrop.cpp (rhine).
 
-TODO(spec): the qsort tie order of 0x51f320, 0x51fe90's last test, 0x4f9f30 / 0x4fa070, the 1.5-unit grenade ground settle,
+Ground settle (0x526e94..0x526f84, grenades only): after a move with no hit, or a hit whose normal z is above 0.7, a trace
+goes 1.5 units down from the end point. When it hits the world, that hit becomes the impact and the grenade ends 1.5 units
+above it, with the trajectory base z raised by the same step. So a grenade lies 1.5 units above the ground.
+
+TODO(spec): [stays: ties only] the qsort tie order of 0x51f320, 0x4f9f30 / 0x4fa070,
 the bounce sounds, the targets of 0x5285b0's five traces (Q3 CanDamage pattern assumed: the point and four ±15 offsets), the
-danger planes (+0x2050), the end-point z adjustments 0x526e94..0x526f84 and the hit-entity call 0x5268b0 (handler type 3,
-hit entity +0x128 & 0x8000), the direction-byte quantisation of event 0xb8.
+danger planes (+0x2050), the hit-entity call 0x5268b0 (handler type 3, hit entity +0x128 & 0x8000), the direction-byte quantisation of event 0xb8.
 
 ## Cooked fuse and bounce angular re-base (decoded)
 Cooking itself only happens for weapons with `cookOffHold` (see controls.md); the shipped grenades all have it at 0, so the
@@ -201,7 +204,7 @@ Per frame, on the entity (gentity stride 0x1fc, base pointer 0x1c60504; byte +0 
    currentOrigin = end (trajectory unchanged).
 6. Link (0x44b2d0), G_RunThink (0x4da090); a freed entity (in-use byte +0xa4) returns.
 7. Settle only when the (possibly overwritten) trace fraction < 0.01: normal z <= 0 (0x591e00) → G_FreeEntity (0x4d7c30);
-   no-drop contents (0x44c840 at currentOrigin, 0x80000000) → freed; else eType 0xb → 0x4fd9e0(ent, 0) (TODO(spec), not an item),
+   no-drop contents (0x44c840 at currentOrigin, 0x80000000) → freed; else eType 0xb → 0x4fd9e0(ent, 0) (not an item),
    other → 0x522ea0 (lay on the surface); G_SetOrigin(endpos) (0x4d8380: trType 0, time / duration / delta 0); groundEntityNum =
    trace entity; link.
 Why settling works with the 0.125 trace epsilon: a hit leaves the item 0.125 above the surface with trType 3 and no ground; the next
@@ -241,4 +244,3 @@ active; passEnt is the item itself (owner unset); only weapon items run.
   is not 0, *0x617b1c(lerp origin, radius, info +0x150, +0x154, +0x158). CG_RegisterWeapon zeroes the whole 0x1b8-byte info
   (0x4b2cd7) and writes only +0x14c; no register-relative access to weapon +0x460..+0x468 (projectileRed / Green / Blue; panzerfaust /
   panzerschreck 0.75, 0.3, 1) or stores to info +0x150..+0x158, so the light's colour is (0, 0, 0) and it adds nothing. Not ported.
-  TODO(spec): only a store through a computed pointer could contradict this.

@@ -105,7 +105,7 @@ Entity& World::spawnGrenade(Entity& thrower, const std::string& weaponName, cons
     e.obj->set("origin", Value(start));
     // Angular trajectory (0x5275f0): base angles = vectoangles(velocity) with the pitch replaced by AngleMod(pitch − 120); linear
     // spin per second: pitch r1/32768·90 + 675, yaw 0, roll r2/32768·90 + 315 (r = the game's rand() draws, 0x5a56f4, pitch
-    // first). TODO(spec): the AngleMod/vectoangles details beyond the current evidence.
+    // first). TODO(spec): [stays: rounding only] the AngleMod/vectoangles details beyond the current evidence.
     {
         const float hyp = std::sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
         const float yaw = std::atan2(velocity[1], velocity[0]) * 57.29578f;
@@ -179,8 +179,7 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
 // Radius damage (0x5289d0): every entity that takes damage (ent+0x111) but `ignore` within `radius` of `origin` (distance to its origin;
 // brush models: to their bounds) that the explosion can reach (0x5285b0) takes inner + (outer − inner)·d/r, pushed
 // along (target − origin + (0, 0, 24)). Entities with a client (the player) are spared while the script radiusdamage
-// runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). TODO(spec): the bounds of brush models and the
-// knockback.
+// runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). Knockback: World::damage. TODO(spec): [stays: not read] the bounds of brush models.
 void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                          const std::string& mod) {
     if (radius < 1.0f) radius = 1.0f;
@@ -204,7 +203,7 @@ void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, floa
 
 // 0x5285b0: within `radius` of `from`, and a trace from `from` reaches the entity's eye (sentients) or origin, or one
 // of the four points offset ±15 horizontally from it (five tries). The offsets follow the five-try loop; the tested
-// points themselves are inferred (TODO(spec): 0x4db890's targets and mask).
+// points themselves are inferred (TODO(spec): [stays: 0x4db890 not read] 0x4db890's targets and mask).
 bool World::canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at) {
     const Vec3 o = at ? *at : originOf(t.obj);
     if (dot(sub(o, from), sub(o, from)) > radius * radius) return false;
@@ -248,7 +247,7 @@ void World::explodeGrenade(Entity& e) {
     // (0x4ba8d0 case 0xbf) plays grenade_explode_<surface> (sounds 0xf5b7a4, built by 0x4a27b0 as "%s_%s") and the
     // impact table's grenade_explode effect for the surface along the direction, then the weapon's own
     // projExplosionEffect and projExplosionSound. A trace that hits nothing has a zero normal, which the dir byte
-    // (0x420c30) turns into bytedirs[0] (0x59ab10). TODO(spec): rocket / custom explosion events (0xc0–0xc3).
+    // (0x420c30) turns into bytedirs[0] (0x59ab10). The fuse path has no NOMARKS variants (0x526779..0x526796).
     {
         const TraceResult tr = collision_->trace(at, {at[0], at[1], at[2] - 16.0f}, {0, 0, 0}, {0, 0, 0}, 0x811, e.number);
         const bool water = collision_->trace(at, at, {0, 0, 0}, {0, 0, 0}, 0x20).startSolid;
@@ -292,7 +291,7 @@ void World::forgetGrenade(Entity& g) {
 // G_RunMissile (0x526c30) for grenades: the grenade_ping event every 500 ms (0x526bd0), a resting grenade that lost
 // its ground starts falling, a flying one moves along its trajectory with a point trace (clipmask 0x280e891, the
 // thrower passes) and bounces off what it hits, or is removed when it hits the sky (surface flag 0x10). Then the fuse.
-// Water entry: missileTrace (0x526b40). TODO(spec): the 1.5-unit ground settle and the in-flight rotation. 0x5297b0 is not a whizby
+// Water entry: missileTrace (0x526b40). 0x5297b0 is not a whizby
 // but the trigger_damage segment test (below).
 void World::runGrenade(Entity& e) {
     GrenadeState& g = *e.grenade;
@@ -316,14 +315,27 @@ void World::runGrenade(Entity& e) {
         }
         if (g.trType == 5) {
             const Vec3 to = grenadePosition(g, timeMs_);
-            const TraceResult tr = missileTrace(o, to, kGrenadeClip, pass, g.trDelta);
-            e.obj->set("origin", Value(tr.endPos));
+            TraceResult tr = missileTrace(o, to, kGrenadeClip, pass, g.trDelta);
+            // 0x526e94..0x526f84, grenades only (ent +0x10 bit 0x1000000): after a clear move or a hit with normal z above 0.7 a
+            // trace 1.5 units down from the end point that hits the world replaces the impact, and the grenade ends 1.5 above that
+            // hit, its trajectory base raised by the same step.
+            Vec3 at{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
+            if (grenadeTriesGroundSettle(tr.fraction, tr.normal[2])) {
+                const TraceResult down = collision_->trace(at, {at[0], at[1], at[2] - 1.5f}, {0, 0, 0}, {0, 0, 0}, kGrenadeClip, pass);
+                if (down.fraction != 1.0f && down.entity < 0) {
+                    const float z = down.endPos[2] + 1.5f;
+                    g.trBase[2] += z - at[2];
+                    at = {down.endPos[0], down.endPos[1], z};
+                    tr = down;
+                }
+            }
+            e.obj->set("origin", Value(at));
             // 0x526f90..0x526fbb: missiles of handler type 3 (grenades, table 0x5a5754) pass the segment from the origin before
             // the move to the new origin to 0x5297b0, the missile twin of 0x5295f0: every trigger_damage on it gets "damage"
             // (explosionInnerDamage +0x37c, attacker = the grenade itself) and the action with MOD_GRENADE (3), before the
-            // impact is handled. TODO(spec): the z adjustments of 0x526e94..0x526f84 to the end point and the +0x128 & 0x8000
-            // hit-entity call 0x5268b0 (0x526e01..0x526e23).
-            triggerDamageSegment(&e, o, {tr.endPos[0], tr.endPos[1], tr.endPos[2]}, weaponInt(g.weapon, "explosionInnerDamage"), 3, true);
+            // impact is handled. TODO(spec): [stays: 0x5268b0 not read] the +0x128 & 0x8000 hit-entity call 0x5268b0 (0x526e01..0x526e23), a retrace with
+            // that entity's contents cleared.
+            triggerDamageSegment(&e, o, at, weaponInt(g.weapon, "explosionInnerDamage"), 3, true);
             if (e.obj->removed) return;
             if (tr.fraction < 1.0f) {
                 if (tr.surfaceFlags & 0x10) {
@@ -813,13 +825,13 @@ const std::string& World::impactEffect(int type, int surface) {
 namespace iw2::game {
 
 // LaunchItem (0x521f70): from the dropper's origin raised by half its height, velocity (cos yaw · 150, sin yaw · 150,
-// (2·rand − 1) · 50 + 200) with the dropper yaw (ent +0xec); height = r.maxs.z − r.mins.z (0x5220a0..0x5220c2); TR_GRAVITY (0x521e00). TODO(spec): the
+// (2·rand − 1) · 50 + 200) with the dropper yaw (ent +0xec); height = r.maxs.z − r.mins.z (0x5220a0..0x5220c2); TR_GRAVITY (0x521e00). TODO(spec): [stays: not read] the
 // callers that pass no velocity (ecx ≠ 0) and the yaw offset argument.
 void World::launchItem(Entity& item, const Entity& dropper) {
     const Vec3 o = dropper.obj->get("origin").asVector();
     const Value av = dropper.obj->get("angles");
     const float yaw = (av.isVector() ? av.asVector()[1] : 0.0f) * float(M_PI) / 180.0f;
-    const float height = dropper.isPlayer ? 70.0f : dropper.isActor ? 72.0f : 0.0f; // TODO(spec): the entity's maxs.z − mins.z
+    const float height = dropper.isPlayer ? playerBoxHeight() : dropper.isActor ? 72.0f : 0.0f; // maxs.z − mins.z; TODO(spec): [stays: the pose box is not read] the actor box by pose
     const float r = float(std::rand() % 32768) / 32768.0f;
     item.obj->set("origin", Value(Vec3{o[0], o[1], o[2] + height * 0.5f}));
     item.obj->set("$trbase", item.obj->get("origin"));
@@ -846,7 +858,7 @@ void World::launchItem(Entity& item, const Entity& dropper) {
 //  6. Link, G_RunThink (0x4da090); a freed item stops here (+0xa4 in-use byte, 0x523315).
 //  7. Settle (0x523323..0x5233a9) only when this frame's (possibly slide) trace has fraction < 0.01 (0x591ea0): normal z <= 0
 //     frees the item (0x4d7c30), so do no-drop contents 0x80000000 at the origin (0x44c840); else 0x522ea0 lays it on the surface
-//     (not for eType 0xb: 0x4fd9e0, TODO(spec), no weapon item has it), G_SetOrigin(endpos) (0x4d8380: trType 0, delta 0) and
+//     (not for eType 0xb: 0x4fd9e0, no weapon item has it), G_SetOrigin(endpos) (0x4d8380: trType 0, delta 0) and
 //     groundEntityNum = the trace's entity (0x523397).
 // After the first floor hit the item sits 0.125 (the trace epsilon) above the floor with trType 3; the next frame's re-base
 // probes 1 unit down from there, which ends at once (fraction 0): it settles one frame after the hit. A wall hit (fraction
@@ -859,7 +871,7 @@ void World::launchItem(Entity& item, const Entity& dropper) {
 // starts stationary at its origin; unless suspended its ground is 0x7ff and a weapon item's roll gets +90 (0x5920bc)
 // (0x522dbf..0x522e8f), so the next G_RunItem re-bases it to gravity and it falls (scriptSpawnItem).
 void World::runItem(Entity& e) {
-    const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1}; // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): other item types use z 0..2
+    const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1}; // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): [stays: the port launches only weapon items] other item types use z 0..2
     {
         if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) return;
         const Value sf = e.obj->get("spawnflags");
@@ -918,7 +930,7 @@ void World::runItem(Entity& e) {
             const float dx = next[0] - cur[0], dy = next[1] - cur[1], dz = next[2] - cur[2];
             if (dx * dx + dy * dy + dz * dz < 0.1f) next[2] -= 1.0f;
         }
-        // 4. The trace. TODO(spec): passEnt is the owner (+0xf4); LaunchItem does not set it, the port passes the item itself.
+        // 4. The trace. TODO(spec): [stays: LaunchItem does not set the owner; what the trace then passes is not read] passEnt is the owner (+0xf4); LaunchItem does not set it, the port passes the item itself.
         TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
         Vec3 endpos = next;
         if (tr.fraction < 1.0f) {
@@ -1002,7 +1014,7 @@ Entity& World::debugDropItem(const std::string& weaponName, const Vec3& origin, 
 // normalised trDelta whose z is negated when negative (0x591e48 = -1), both as direction bytes (0x420c30), +1 the surface type,
 // +0xa the missile's number. The client handles 0xb8 as a small bullet impact (jump table 0x4bb74c, case 0x4bb260 ->
 // 0x4b81d0, the same case as Bullet_Fire's event 0xb8): bullet_small_water and the impact table's bullet_small normal (type 0)
-// along +4 and reflect (type 1) along +3. TODO(spec): the direction-byte quantisation.
+// along +4 and reflect (type 1) along +3. TODO(spec): [stays: needs the exe's normal table, affects only an effect's direction] the direction-byte quantisation.
 TraceResult World::missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta) {
     uint32_t mask = clip;
     if (std::fabs(trDelta[2]) > 30.0f && !collision_->trace(from, from, {0, 0, 0}, {0, 0, 0}, 0x20).startSolid) mask |= 0x20;

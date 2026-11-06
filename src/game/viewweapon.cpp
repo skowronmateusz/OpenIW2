@@ -339,8 +339,8 @@ void ViewWeaponMotion::sway(const Field& w, int ms, float viewPitch, float viewY
     // swayMaxAngle, drives side/up offsets (swayHoriz/VertScale) and pitch/yaw (swayPitch/YawScale) tracked at
     // swayLerpSpeed; aiming weapons lerp to the ads* values, none while a reticle weapon aims. 0x4b61d0 subtracts the
     // side from the right offset and adds the up; 0x4b6420 subtracts pitch and yaw. The four scales are multiplied by
-    // (swayShellShockScale - 1) * shock + 1 (0x4b4e95, 0x4b4fc8-0x4b5004). TODO(spec): shell shock itself (the shellshock
-    // script builtin, ps+0x5bc/0x5c0/0x5c4) is not implemented, so iw2view passes 0.
+    // (swayShellShockScale - 1) * shock + 1 (0x4b4e95, 0x4b4fc8-0x4b5004). `shock` is shellShockRatio of the running
+    // shell shock (iw2view passes it).
     if (ms > 0 && !(adsFrac > 0 && reticle && adsWeapon)) {
         auto lerpF = [&](const char* hip, const char* ads) { return adsWeapon ? w(hip) + (w(ads) - w(hip)) * adsFrac : w(hip); };
         const float maxAng = lerpF("swayMaxAngle", "adsSwayMaxAngle"), rate = lerpF("swayLerpSpeed", "adsSwayLerpSpeed");

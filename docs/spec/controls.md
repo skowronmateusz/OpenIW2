@@ -23,8 +23,10 @@ and G `+frag`, 4 `+smoke`, B `+binoculars`, F `+activate`, R `+reload`, SPACE `+
   one stance (prone → crouch → stand) and jumps only when standing.
 - `toggleads` flips a flag, `leaveads` clears it; the flag is cleared at map load (0x40e821).
 - `weapnext` / `weapprev` (cgame 0x4b6fd0 / 0x4b7030 → 0x4b7410): select the weapon in the other of the two weapon
-  slots (primary, primaryb) when it has one. TODO(spec): the fallback over weapons outside the slots (0x4b72f0),
-  `cg_weaponCycleDelay`.
+  slots (primary, primaryb) when it has one; rounds do not count (both commands pass 0). Ignored while `cl_paused` is set, with
+  pm_flags 0x8000, in a vehicle (0x20000), and sooner than `cg_weaponCycleDelay` ms (int, default 0, archived) after the last
+  accepted cycle (stamp 0xf796e4). The walk over other owned weapons (0x4b72f0) skips slotted, offhand and item-class weapons,
+  which leaves turret and non-player classes; no shipped SP script gives the player one, so it is not implemented.
 
 ## Blocked stance changes
 A rise with no room (pmove 0x509d10) adds, unless usercmd bit 0x2000 is set, event 0x8d parm 1 from crouch, or 0x8e from prone
@@ -41,6 +43,21 @@ Held or pressed since the last command: attack 0x1, melee 0x4, activate 0x8, rel
 (pm_type 2/3, or pm_flags 0x20000 without 0x80000) the `+gostand` button also counts as jump. Stance: `+prone` held
 → 0x100 | 0x2000, else `+movedown` held → 0x200 | 0x2000, else client stance 1 → 0x200 (crouch), 2 → 0x100
 (prone). Aim 0x1000 = `+speed` held XOR the `toggleads` flag, or always while the weapon state is 0x13 / 0x14.
+
+## freezecontrols (pm_flags 0x8000)
+
+`freezecontrols(on)` (0x5392e0) stores the flag in the client record (+0x8630); an absolute `playerlinkto` sets another byte (+0x8698).
+ClientThink (0x4e7bc0) sets ps pm_flags 0x8000 while either is set and clears it otherwise. Consumers of the flag (VAs in the patch 1.3 SP executable):
+- the client mouse function (test at 0x409871) applies no mouse delta, so the view cannot be turned;
+- Pmove (0x50cc10) clears the command's forward and right bytes and keeps only the buttons 0x300 (prone, crouch); PmoveSingle (0x50c4a0,
+  test at the top) clears them again, keeps 0x2300 of the buttons and sets the velocity (ps+0x20..0x28) to zero before anything else in the step.
+  Gravity then adds one step's worth, so the player stands still and falls slowly; no fire, reload, aim, jump, lean or melee button reaches PM_Weapon;
+- the stance logic (0x509d10) is skipped outside a turret (0x509e59 jumps to 0x50a37e), so the stance does not change at all, with or
+  without a stance button (a crouched player stays crouched);
+- lean input is cancelled (0x50adf1), a driven vehicle takes no command (0x510da5) and the turret fire is not started (0x51096b).
+Scripts still see the held buttons (`attackbuttonpressed` etc. read the raw record), so a briefing can wait for a key.
+`PlayerInput::controlsFrozen` carries the flag (freezecontrols or absolute link) into `moveStep` and the mouse gate; the front end strips the weapon buttons
+only for freezecontrols (`controlsFrozen()`), not for an absolute link (TODO(spec): no shipped script fires during an absolute link, so this is untested).
 
 ## Weapon states (PM_Weapon 0x4dfc30)
 

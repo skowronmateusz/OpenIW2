@@ -4,6 +4,7 @@
 #include "game/world.h"
 #include "game/axis.h"
 #include "game/bulletdamage.h"
+#include "game/damagerules.h"
 #include "game/itempickup.h"
 #include "game/vehicles.h"
 #include "game/triggerdamage.h"
@@ -30,11 +31,6 @@ Vec3 sub(const Vec3& a, const Vec3& b) { return {a[0] - b[0], a[1] - b[1], a[2] 
 Vec3 scale(const Vec3& a, float s) { return {a[0] * s, a[1] * s, a[2] * s}; }
 float dot(const Vec3& a, const Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 float len(const Vec3& a) { return std::sqrt(dot(a, a)); }
-
-assets::Quat yawQuat(float yawDeg) {
-    const float h = yawDeg * float(M_PI) / 360.0f;
-    return {0, 0, std::sin(h), std::cos(h)};
-}
 
 } // namespace
 
@@ -186,8 +182,7 @@ std::unordered_map<std::string, World::BoneXform> World::entityBones(Entity& e) 
     const Value o = e.obj->get("origin"), a = e.obj->get("angles");
     if (!o.isVector()) return bones;
     const Vec3 origin = o.asVector();
-    const float yaw = a.isVector() ? a.asVector()[1] : 0.0f;
-    const assets::Quat er = yawQuat(yaw);
+    const assets::Quat er = anglesQuat(a.isVector() ? a.asVector() : Vec3{0, 0, 0}); // the full angles +0xe8 (0x4d6aec -> 0x421da0)
     for (const HitBoxModel& m : entityModels(e))
         for (size_t i = 0; i < m.parts->bones.size(); ++i)
             bones.emplace(lowerStr(m.parts->bones[i].name),
@@ -228,7 +223,7 @@ bool World::takesDamage(const Entity& e) const {
 // Applies damage; notifies "damage" (amount, attacker, direction, point, type) and handles death.
 // G_Damage (0x5280b8, 0x5280c9) replaces a null inflictor / attacker by the world entity 0x1c13b08 (g_entities[2046]);
 // the script callbacks receive that entity (radiusdamage and dodamage pass none), so reading attacker.origin works.
-// TODO(spec): the world entity's other fields (zero here, origin 0,0,0).
+// TODO(spec): [stays: its spawn was not read; shipped scripts read fields such as classname and team on an attacker] the world entity's other fields (zero here, origin 0,0,0).
 Value World::attackerValue(Entity* attacker) {
     if (attacker) return Value(attacker->obj);
     if (!worldEntityObj_) {
@@ -243,7 +238,7 @@ Value World::attackerValue(Entity* attacker) {
 // locNone, locHelmet, ... of the weapon file) applies when the weapon is a bullet weapon (weaponType +0x78 == 0);
 // otherwise, and with no weapon, the default table loaded from info/ai_lochit_dmgtable (0x527b30..0x527ba1:
 // "LOCDMGTABLE\name\value\..." for the 19 locations, initialised to 1.0 at 0x527a08). A key a weapon file leaves out
-// is taken as 1.0 (TODO(spec): the descriptor default).
+// is taken as 1.0 (TODO(spec): [stays: the parser's default is not found; the 12 turret files omit the keys] the descriptor default).
 float World::hitLocationMultiplier(const Entity* attacker, const std::string& location) {
     static const char* const kLocKeys[19] = {"none", "helmet", "head", "neck", "torso_upper", "torso_lower", "right_arm_upper",
                                              "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand", "left_hand",
@@ -294,14 +289,37 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // 0x528050: an entity with vehicle info (ent+0x108) first asks the vehicle filter (0x5122f0) and leaves when it ignores
     // the means of death. The info is attached when a script_vehicle is initialised (0x50da80).
     if (target.vehicle && target.vehicle->info && vehicleIgnoresDamage(*target.vehicle->info, modNumber(mod), dflags)) return;
+    // 0x5280a5 -> 0x512390: a client riding a vehicle other than artillery takes no damage. The word it tests is the type: vehicle
+    // +0x170 indexes the 0x270-byte infos at 0x1c7fa80 (0x50d820), so 0x1c7fac0 is info +0x40; names at 0x5a91a8.
+    if (target.isPlayer) {
+        const Entity* ridden = target.usingVehicle >= 0 ? entityByNumber(target.usingVehicle) : nullptr;
+        const bool riding = ridden && ridden->vehicle;
+        if (riderIgnoresDamage(pmFlags_, riding, riding && ridden->vehicle->info ? ridden->vehicle->info->type : 0)) return;
+    }
+    // 0x528100..0x528143: for an actor (ent+0x100; a client has none) the damage is scaled by the hit-location multiplier
+    // (attacker weapon table +0x5b0, else the default table 0x1c91328) and truncated; a result <= 0 leaves G_Damage (0x52857f)
+    // before any state changes, so no "damage" notify and no pain (a radius-damage edge of 0 gave animscripts/pain.gsc:101 a
+    // divide by zero in health / damageTaken). The multiplier tables: hitLocationMultiplier; the product is truncated (_ftol).
+    if (target.isActor) {
+        amount = int(float(amount) * hitLocationMultiplier(attacker, location));
+        if (amount <= 0) return;
+    }
+    // 0x52814d / 0x52815b: a client in noclip (+0x8628) or ufo (+0x862c) leaves here, before the knockback.
+    if (target.isPlayer && (noclip_ || ufo_)) return;
+    // Knockback (0x528187..0x5282ac, docs/spec/weapons.md "Damage knockback"): it runs before the god check, so a god player is
+    // still pushed. The player state belongs to the host, which applies the queued hit before its next move (applyKnockback).
+    if (target.isPlayer && isAlive(target) && !playerOnTurret() && (dir[0] != 0 || dir[1] != 0 || dir[2] != 0))
+        playerKnockbacks_.push_back({amount, dir, attacker == &target && selfBlastMod(modNumber(mod))});
+    // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage (0x5282b3), on any entity.
+    if (target.obj->get("$godmode").truthy()) return;
+    amount = damageFloor(amount); // 0x5282c9
     // Entities without a client or actor (0x528050 with ent+0xfc and ent+0x100 zero): "damage" (0x1c7f058: amount,
-    // attacker, direction, point, means of death; 0x527fd0) whenever the amount is not 0, health (ent+0x13c) minus the
+    // attacker, direction, point, means of death; 0x527fd0), health (ent+0x13c) minus the
     // amount, kept above −1000 (0x528466); below 1 "death" (0x1c7f05c) with the attacker and the means-of-death name
     // (0x5a95ac). Script models (handler 0xd) and brush models (0xc) have no pain or die callback (0x5a5744 /
     // 0x5a5748), so they stay damageable. Spawn health: "health" is an int spawn key stored at ent+0x13c (field tables 0x16f518 / 0x170868), the
-    // entity memory is zeroed otherwise, so the key or 0 is exact. TODO(spec): the team kill counter (0x82552c) for actor deaths.
+    // entity memory is zeroed otherwise, so the key or 0 is exact. The kill counter 0x82552c (0x5284b8) has no reader, so it is not modelled.
     if (!target.isActor && !target.isPlayer) {
-        if (amount == 0) return;
         const Value hv = target.obj->get("health");
         int health = (hv.isNumber() ? hv.asInt() : 0) - amount;
         if (health < -999) health = -999;
@@ -311,15 +329,22 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         if (target.classname == "trigger_damage") triggerDamageHit(target, attacker, amount, mod); // entity type 8 pain / die
         return;
     }
-    // 0x528100..0x528143: for a sentient (ent+0x100) the damage is scaled by the hit-location multiplier (attacker weapon
-    // table +0x5b0, else the default table 0x1c91328) and truncated; a result <= 0 leaves G_Damage (0x52857f) before any
-    // state changes, so no "damage" notify and no pain (a radius-damage edge of 0 gave animscripts/pain.gsc:101 a
-    // divide by zero in health / damageTaken). The multiplier tables: hitLocationMultiplier; the product is truncated (_ftol).
-    amount = int(float(amount) * hitLocationMultiplier(attacker, location));
-    if (amount <= 0) return;
-    // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage
-    // (0x5282b3). TODO(spec): the knockback computed before that check still applies in the exe.
-    if (target.obj->get("$godmode").truthy()) return;
+    // 0x5282e7 -> 0x4ff360: an actor held by the animscripted or negotiation state survives a lethal hit at 1 health. The
+    // part not taken goes out as "damage_armor" (0x1c7f05a, same arguments as "damage"); +0xb4 asks the think for the
+    // delayed death (0x4ff215, actorDelayedDeath). An actor already at 1 health takes nothing and leaves at 0x5283cc.
+    if (target.isActor) {
+        const auto held = [&](int st) {
+            return std::find(target.ai.stack.begin(), target.ai.stack.begin() + target.ai.depth + 1, st) != target.ai.stack.begin() + target.ai.depth + 1;
+        };
+        const Value allow = target.obj->get("allowdeath");
+        const int armor = actorDamageReduction(amount, target.obj->get("health").asInt(), allow.truthy(), held(AiScripted) || held(AiNegotiation));
+        if (armor > 0) {
+            target.ai.deathPending = true;
+            amount -= armor;
+            vm_.notify(target.obj, "damage_armor", {Value(int32_t(armor)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
+            if (amount == 0) return;
+        }
+    }
     // Debug: IW2_DMG_DEBUG=1 prints every damage credited to the player (friendly-fire mission fails).
     if (attacker && attacker->isPlayer && std::getenv("IW2_DMG_DEBUG"))
         print("DBG player damage " + std::to_string(amount) + " to " + target.classname + " (" + mod + ") at " + std::to_string(timeMs_));
@@ -388,8 +413,9 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         // player_die (0x527d80): TossClientItems (0x527bd0, unless the origin is in contents 0x80000000): the current
         // weapon (the next one while dropping, ps+0x85cc) is dropped as its weapon_ item (0x521f70) when owned, not
         // "none", with stock ammo of its ammoName (ps+0x118) and not on a turret. The entity's weapon becomes 0
-        // (ent+2), so the client draws no view weapon. LookAtKiller (0x527cd0): the dead yaw ps+0x10c faces the
-        // inflictor, else the attacker. TODO(spec): the toss velocity built from the view angles, the no-killer yaw.
+        // (ent+2), so the client draws no view weapon. LookAtKiller (0x527cd0): the dead yaw ps+0x10c, truncated, faces the
+        // attacker, else the inflictor; G_Damage has replaced a missing one by the world entity at (0, 0, 0). A self kill keeps the entity yaw.
+        // The sines and cosines of the view angles at the head of 0x527bd0 are computed and never read.
         Inventory& inv = inventory(target);
         const std::string w = lowerStr(target.obj->get("$weapon").toString());
         const Vec3 po = target.obj->get("origin").asVector();
@@ -403,10 +429,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
             launchItem(item, target); // 0x527bd0 → 0x521f70
         }
         playerDeadWeaponless_ = true;
-        if (attacker && attacker != &target) {
-            const Vec3 d = sub(attacker->obj->get("origin").asVector(), target.obj->get("origin").asVector());
-            playerDeadYaw_ = std::atan2(d[1], d[0]) * 180.0f / float(M_PI);
-        }
+        playerDeadYaw_ = lookAtKillerYaw(target.obj->get("origin").asVector(), attacker ? attacker->obj->get("origin").asVector() : Vec3{0, 0, 0},
+                                         attacker == &target, target.obj->get("angles").asVector()[1]);
     }
 }
 
@@ -425,7 +449,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
     // (0x44b840 → FUN_00474440); the hit names the entity with its contents (ent+0xc0) and the surface's surface
     // flags. FUN_004746b0 (0x44b903 / 0x44bd41) returns whether any model of the DObj has (xmodel +0x5c & mask), where +0x5c is the
     // OR of its surfaces' contents (loader 0x47d0cb): traceCollSurfs' per-surface test implies it, so it needs no separate step.
-    // TODO(spec): the DObj bounds pre-test (FUN_00473800; OpenIW2 culls with a
+    // TODO(spec): [stays: a cull before the bone test] the DObj bounds pre-test (FUN_00473800; OpenIW2 culls with a
     // sphere around the xmodel bounds), and the box (r.mins / r.maxs) used by traces that are not locational.
     for (const auto& ep : entities_) {
         Entity& e = *ep;
@@ -470,6 +494,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
         tr.contents = entContents;
         tr.entity = e.number;
         tr.startSolid = tr.allSolid = false;
+        tr.partHit = true;
         location = 0;
     }
     if (!priority) {
@@ -499,7 +524,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
         }
         if (miss) continue;
         const Value a = e->obj->get("angles");
-        const assets::Quat er = yawQuat(a.isVector() ? a.asVector()[1] : 0.0f);
+        const assets::Quat er = anglesQuat(a.isVector() ? a.asVector() : Vec3{0, 0, 0});
         const assets::Quat inv = {-er.x, -er.y, -er.z, er.w};
         const Vec3 ls = assets::rotate(inv, sub(start, c.origin)), le = assets::rotate(inv, sub(end, c.origin));
         const HitBoxResult h = traceHitBoxes(entityModels(*e), ls, le, priority, tr.fraction);
@@ -511,6 +536,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
         tr.contents = c.contents;
         tr.entity = c.id;
         tr.startSolid = tr.allSolid = false;
+        tr.partHit = true;
         location = h.location;
     }
     for (size_t i = 0; i < 3; ++i) tr.endPos[i] = start[i] + (end[i] - start[i]) * tr.fraction;
@@ -520,7 +546,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
 // `damageAmount` is the fallback when the weapon (weaponName, else the shooter's own) has no definition.
 Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
-                          const std::string& weaponName, int depth) {
+                          const std::string& weaponName, int depth, float damageScale, const Entity* passEntity) {
     // More than 12 passes: the exe prints an error and fires nothing (0x531343 / 0x531356).
     if (depth > 12) return nullptr;
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
@@ -532,14 +558,13 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         rifle = it != def->end() && std::atoi(it->second.c_str()) != 0;
     }
     // An AI's bullet that hits a sentient of its own team (an actor or the player: hit entity +0x104 sentient,
-    // team at sentient +4) goes on from the hit point ignoring it, up to 12 times ("Ignoring AI shooting teammate"). TODO(spec): penetration (surface flag 0x10), vehicles, the
-    // half-damage refire of rifleBullet hits on sentients.
+    // team at sentient +4) goes on from the hit point ignoring it, up to 12 times ("Ignoring AI shooting teammate").
     int location = 0;
     TraceResult tr;
     Entity* hit = nullptr;
     Vec3 from = start;
-    const Entity* pass = &shooter;
-    for (int depth = 0; depth <= 12; ++depth) {
+    const Entity* pass = passEntity ? passEntity : &shooter;
+    for (int teammates = 0; teammates <= 12; ++teammates) {
         tr = locationalTrace(from, end, Contents::BulletMask, pass, rifle ? kHitPriorityRifle : kHitPriorityDefault, location);
         hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
         if (hit && shooter.isActor && isSentient(*hit) && hit->obj->get("team").toString() == shooter.obj->get("team").toString()) {
@@ -560,6 +585,10 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     // 0x5314ac: the trigger_damage brushes the shot crosses (start -> impact) are hit with the weapon's damage.
     triggerDamageSegment(attacker ? attacker : &shooter, start, tr.endPos, damageAmount, rifle ? 2 : 1);
     bulletImpact(shooter, def, start, end, tr, hit);
+    if (depth == 0) {
+        ++stats.shots;
+        if (def) playWeaponFireSound(shooter, *def, start, playerLastShot_);
+    }
     // Penetration (0x531665): a hit on contents 0x10 goes on from just behind the hit point towards the same end with the
     // next depth and applies no damage here: start = hit + dir · t, t = 0.25 / cosθ (cosθ = −dir·normal) when cosθ >= 0.125,
     // else 0 (0x5316be…0x531729). The impact event above is still sent.
@@ -572,18 +601,27 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
             const float t = cosT >= 0.125f ? 0.25f / cosT : 0.0f;
             ++stats.bulletPenetrations;
             return fireBullet(shooter, add(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}, scale(d, t)), end, damageAmount, attacker,
-                              weaponName, depth + 1);
+                              weaponName, depth + 1, damageScale, pass);
         }
     }
-    if (hit && !takesDamage(*hit)) hit = nullptr;
-    ++stats.shots;
-    if (def) playWeaponFireSound(shooter, *def, start, playerLastShot_);
+    if (hit && (!takesDamage(*hit) || hit == &shooter)) hit = nullptr; // 0x53173e, 0x53174c
     if (hit) {
-        ++stats.hits;
+        const Vec3 hitPoint{tr.endPos[0], tr.endPos[1], tr.endPos[2]};
         const Vec3 dir = scale(sub(end, start), 1.0f / std::max(1.0f, len(sub(end, start))));
+        // 0x5317b1: an actor's bullet does not stop at the entity the actor is linked to (tag info +0x1c8, first field the
+        // parent; "AI Shooting through vehicle"): it goes on from the hit point, ignoring that entity.
+        const auto link = links_.find(shooter.number);
+        if (shooter.isActor && link != links_.end() && link->second.parent == hit->number)
+            return fireBullet(shooter, hitPoint, end, damageAmount, attacker, weaponName, depth + 1, damageScale, hit);
+        // 0x53186f: a hit on the player counts only within 8 units of the player's vertical axis, measured across the
+        // shot in the horizontal plane; farther out the bullet goes on from the hit point ignoring the player.
+        if (hit->isPlayer && bulletMissesPlayerAxis(dir, sub(hitPoint, hit->obj->get("origin").asVector())))
+            return fireBullet(shooter, hitPoint, end, damageAmount, attacker, weaponName, depth + 1, damageScale, hit);
+        ++stats.hits;
         // Damage by weapon, target and distance start → impact (0x531090, called at 0x531787).
         const auto* dmgDef = weaponName.empty() ? def : weapon(weaponName);
         if (dmgDef) damageAmount = bulletDamageAtDistance(*dmgDef, hit->isPlayer, len(sub(tr.endPos, start)));
+        const int scaled = int(float(damageAmount) * damageScale); // the pass's scale, truncated (0x531797)
         // Bullet_Fire_Extended (0x531379..0x5313a3): rifleBullet (weapon +0x31c) gives MOD_RIFLE_BULLET and dflags 0x40, else
         // MOD_PISTOL_BULLET and 0; armorPiercing (+0x320) adds dflags 2.
         bool ap = false;
@@ -591,8 +629,11 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
             auto apIt = def->find("armorpiercing");
             ap = apIt != def->end() && std::atoi(apIt->second.c_str()) != 0;
         }
-        damage(*hit, attacker, damageAmount, dir, tr.endPos, rifle ? "MOD_RIFLE_BULLET" : "MOD_PISTOL_BULLET", hitLocationName(location),
+        damage(*hit, attacker, scaled, dir, tr.endPos, rifle ? "MOD_RIFLE_BULLET" : "MOD_PISTOL_BULLET", hitLocationName(location),
                (rifle ? 0x40 : 0) | (ap ? 2 : 0));
+        // 0x531938: a rifleBullet hit on an entity that still has a sentient (a dying actor keeps it) goes on from the hit
+        // point ignoring that entity with half the damage scale.
+        if (rifle && isSentient(*hit)) fireBullet(shooter, hitPoint, end, damageAmount, attacker, weaponName, depth + 1, damageScale * 0.5f, hit);
     }
     return hit;
 }
@@ -608,7 +649,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
 // and <type>_reflect along the reflection (bullet_small 0/1, bullet_large 2/3, bullet_ap 6/7; FUN_00485220). On flesh
 // with cg_blood (0x1040c58, default 1) the table effects play at most once every 330 ms (0x14a, 0xf7e8c0), the
 // other hits play fx/impacts/flesh_hit_noblood.efx (0xf5bcc4) along the normal and no reflect effect.
-// TODO(spec): the dir-byte quantization (0x420c30), the tracer (0x4b8140, cg_tracerChance), bullet penetration
+// TODO(spec): [stays: needs the exe's normal table, affects only an effect's direction] the dir-byte quantization (0x420c30).
 // (surface flag 0x10, 0x531665), the hit entity of the event (0x531646).
 void World::bulletImpact(Entity& shooter, const std::map<std::string, std::string>* def, const Vec3& start,
                          const Vec3& end, const TraceResult& tr, Entity* hit) {
@@ -631,7 +672,7 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
         // 0x4b8140 / 0x4b8040: the start is the weapon's tag_flash (0x4abb20), else the entity origin raised by 60 (stand; 40
         // crouched and 11 prone by eFlags 0x4 / 0x8, not tracked here). The player's own shots start at the view origin
         // (the whiz below then always rejects them: closest approach < 64).
-        // TODO(spec): the stance heights.
+        // TODO(spec): [stays: the fallback applies only to a model without tag_flash] the actor's eFlags, which no field here tracks.
         Vec3 from{};
         if (!entityTagPosition(shooter.number, "tag_flash", from)) {
             from = shooter.obj->get("origin").isVector() ? shooter.obj->get("origin").asVector() : Vec3{0, 0, 0};
@@ -643,7 +684,8 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
         // 0x4b79f0 (always called from 0x4b8140, also for eType 1 / 0xc): the "whizby" alias (0xf5bc64) plays, with entity
         // number 0x7fe, 16 units back along the path from the closest point to the view origin when that point is at
         // least 64 units from both the start and the end of the path and within 140 units of the view.
-        // TODO(spec): the cg_tracerchance > 0 gate (cvar not modelled; default 0.4) and the 0x4b8040 range check.
+        // The cg_tracerchance > 0 gate of 0x4b8140 always passes (default 0.4, nothing shipped changes it). 0x4b8040 is the start
+        // point above; it fails only for an entity without a client model.
         if (player_) {
             const Vec3 view = eyePosition(*player_);
             const Vec3 dv = sub(at, from);
@@ -735,7 +777,6 @@ void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std
     playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds, shooter.number);
     // EV_FIRE_WEAPON (0x4b7800): for an actor (entity type 9, 0x4b79ac) whose fire alias resolved (0x4b792a), 0x4c0e20 pings
     // the compass with the length of the started sound (0x4a35c0 -> 0x4423d0, ms) at the sound position (0x4b79b7).
-    // TODO(spec): actor projectile weapons send the same event; no actor projectile fire path exists here yet.
     if (!shooter.isPlayer && shooter.obj->kind == "actor") compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
 }
 
@@ -746,7 +787,7 @@ Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, floa
     // FireWeapon (0x531c40) dispatches on weaponType (+0x78): 0 bullet (0x5312b0), 1 grenade (0x531990), 2 projectile
     // (0x531a40 -> G_FireRocket 0x527810). The muzzle point is the eye (0x4e8b70) plus the usercmd gun offset (0x531bff,
     // client +0x864c..0x8654), the axes come from AnglesToAxis of the gun angles (0x531b90): forward, left, up.
-    // TODO(spec): the gun angles and offset equal the view angles and zero except while an aimDownSight weapon is between
+    // TODO(spec): [stays: needs the view model state on the game side] the gun angles and offset equal the view angles and zero except while an aimDownSight weapon is between
     // hip and full aim (0x4b6030 / 0x4b60e0 take the view model's sway, bob and kick state, 0x4b4dc0 / 0x4b5d10 etc.).
     const Vec3 origin = add(eye, gunOffset);
     const float pitch = -std::asin(std::clamp(forward[2], -1.0f, 1.0f)) * 180.0f / float(M_PI);
@@ -799,13 +840,15 @@ void World::registerCombatBuiltins() {
     vm_.registerBuiltin("geteye", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("geteye on a non-entity");
-        // 0x4eee60: an actor's eye is its tag_eye (0x500910, actor +0x174; sightEye), the player's 0x4e8b70. TODO(spec):
-        // a non-sentient entity is a script error there (string 0x5871b0); here it gets the pose-height eye.
+        // 0x4eee60: an actor's eye is its tag_eye (0x500910, actor +0x174; sightEye), the player's 0x4e8b70. Any other entity (no
+        // sentient, ent+0x104 zero) is a script error naming its classname (string 0x5871b0).
+        if (!e->isActor && !e->isPlayer)
+            throw std::runtime_error("getEye must be called on an AI or player, not on a '" + e->classname + "'");
         if (e->isActor) return Value(sightEye(*e, nullptr));
         return Value(eyePosition(*e));
     });
     // cansee(entity [, seconds]) (0x53d930) on an actor: for a sentient target the cached sight of 0x54ce10 no older
-    // than the seconds × 1000 (0x591e50, truncated by _ftol2 0x565994), else 250 ms (0x53da00). TODO(spec): a non-sentient
+    // than the seconds × 1000 (0x591e50, truncated by _ftol2 0x565994), else 250 ms (0x53da00). TODO(spec): [stays: the shipped calls pass sentients] a non-sentient
     // target goes straight to 0x54ca60 (0x53da1f; it aims at the centre of the entity's absolute bounds, 0x54cc87),
     // here still the eye-to-eye trace.
     vm_.registerBuiltin("cansee", [this](CallContext& c) {
@@ -888,18 +931,29 @@ void World::registerCombatBuiltins() {
         }
         const Vec3 dir = sub(target, start);
         const Value wpn = a->obj->get("weapon");
-        fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
+        // 0x550bfd: the shot follows the weaponType (+0x78). 0 bullet (0x5312b0); 2 projectile (0x550c36 -> 0x531a40 with
+        // spread 0 -> G_FireRocket 0x527810 along the aim, no recoil without a client, 0x531b0d); any other type fires nothing and sends no event (0x550c32).
+        const std::string wtype = wpn.isString() ? lowerStr(weaponField(wpn.asString(), "weaponType")) : std::string();
+        if (wtype == "projectile") {
+            const float dl = len(dir);
+            spawnRocket(*a, wpn.asString(), start, dl > 0 ? scale(dir, 1.0f / dl) : dir);
+            if (const auto* wd = weapon(wpn.asString())) playWeaponFireSound(*a, *wd, start, false);
+        } else if (wtype.empty() || wtype == "bullet") {
+            fireBullet(*a, start, add(start, scale(dir, 8192.0f / std::max(1.0f, len(dir)))), weaponDamage(wpn.isString() ? wpn.asString() : ""), a);
+        } else {
+            vm_.notify(a->obj, "weapon_fired");
+            return Value();
+        }
         // The shot adds EV_FIRE_WEAPON (0x9e, 0xa0 without a bullet: 0x550c46 / 0x550c1b) to the actor; the client handler
         // 0x4b7800 plays, for an entity that is not the local client, the weapon's worldFlashEffect (0xf48e48) via
-        // 0x4b6660 at the entity's tag_flash (0x4b78de). TODO(spec): the effect is bolted to the tag (follows it); the
-        // effect axes come from the tag, here the shot direction.
+        // 0x4b6660 at the entity's tag_flash (0x4b78de). The effect is bolted to the tag, which also gives its axes.
         if (wpn.isString()) {
             const std::string flash = weaponField(wpn.asString(), "worldFlashEffect");
             if (!flash.empty() && bones.count("tag_flash")) fxEvents_.push_back({flash, start, dir, a->number, "tag_flash"});
             // The same handler ejects the brass (CG_EjectWeaponBrass 0x4b7730, cg_brass 0xf48cfc default 1): the weapon's
             // shellEjectEffect (+0x160; lastShotEjectEffect +0x164 for event 0xa0) played bolted (0x4853f0) on the
-            // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). TODO(spec): which of 0x9e / 0xa0
-            // this shot is, so lastShotEjectEffect is never chosen here.
+            // weapon model's tag_brass, nothing when the tag is missing (0x47eec0 < 0). The script shoot passes 1 to 0x550a70 at both
+            // calls (0x53c645, 0x53c66b), so the event is always 0x9e and lastShotEjectEffect is never chosen.
             const std::string brass = weaponField(wpn.asString(), "shellEjectEffect");
             // 0x4b79d1: no brass when the weapon def has boltAction (+0x328 of the table at 0x5a86c0) set.
             if (!brass.empty() && brass != "none" && std::atoi(weaponField(wpn.asString(), "boltAction").c_str()) == 0 && bones.count("tag_brass")) fxEvents_.push_back({brass, start, dir, a->number, "tag_brass"});
@@ -945,7 +999,7 @@ void World::registerCombatBuiltins() {
         setW("$aim_down", down);
         // 0x53cf00 sets SIX nodes: the three aim nodes (0x4795e0) and the three shoot nodes (0x478f10 + 0x4794b0) with the same
         // three weights (a weight ≤ 0.001 becomes 0), all with blend time 0.1. Without the shoot weights a shooting actor has no
-        // weighted leaf under %stand_shoot and shows the bind pose (T-pose). TODO(spec): the pitch → weight scale (0x4210d0).
+        // weighted leaf under %stand_shoot and shows the bind pose (T-pose). TODO(spec): [stays: the scale in 0x53cf00 is not decoded] the pitch → weight scale (0x4210d0).
         auto thin = [](float w) { return w > 0.001f ? w : 0.0f; };
         setW("$shoot_up", thin(up));
         setW("$shoot_straight", thin(straight));
@@ -984,15 +1038,11 @@ void World::registerCombatBuiltins() {
         const auto p1 = assets::sampleTrans(a->deltaTrans, t1 * frames, a->keyCount());
         return Value(Vec3{p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]});
     });
+    // maymovetopoint(point) (0x53dce0): docs/spec/ai.md "maymovetopoint".
     vm_.registerBuiltin("maymovetopoint", [this](CallContext& c) {
-        if (!c.arg(0).isVector()) return Value(false);
-        const Vec3 from = c.self.asObject()->get("origin").asVector();
-        const Vec3 to = c.arg(0).asVector();
-        // Step height: 10 while the prone tilt byte +0x288 is set, else 18 (0x53defc). TODO(spec): the rest of 0x53dce0.
-        Entity* self = entityOf(c.self);
-        const float step = self && self->isActor && self->ai.prone.tilt ? 10.0f : 18.0f;
-        const TraceResult tr = collision_->trace(add(from, {0, 0, step}), add(to, {0, 0, step}), {-15, -15, 0}, {15, 15, 52}, Contents::PlayerSolid | Contents::AiClip);
-        return Value(tr.fraction >= 0.999f && !tr.startSolid);
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("not an actor");
+        return Value(mayMoveToPoint(*e, c.arg(0).asVector()));
     });
     // isingoal(point) (0x540c00 -> 0x5026d0): the point is within the working goal's height (|dz| <= height) and radius (2D).
     // The working goal volume (+0x75c: block +0x748 + 0x14, 0x447830 at 0x50273f) must contain the point too.
@@ -1018,7 +1068,7 @@ void World::registerCombatBuiltins() {
     };
     // allowstand/crouch/prone/leanleft/leanright (0x538c90 …): a zero argument sets the pm_flags bit that disables the
     // stance (0x400000 stand, 0x800000 crouch, 0x1000000 prone, 0x2000000 lean left, 0x4000000 lean right), non-zero
-    // clears it. The lean bits gate updateLean (0x50ae13); TODO(spec): the stance bits force a stance change
+    // clears it. The lean bits gate updateLean (0x50ae13); TODO(spec): [stays: belongs to the host's pmove] the stance bits force a stance change
     // (events 0x8c..0x8e, 0x509eea / 0x50a2f3) in the front end's pmove.
     const std::pair<const char*, uint32_t> allows[] = {{"allowstand", 0x400000u}, {"allowcrouch", 0x800000u}, {"allowprone", 0x1000000u},
                                                       {"allowleanleft", 0x2000000u}, {"allowleanright", 0x4000000u}};
@@ -1088,7 +1138,7 @@ void World::registerCombatBuiltins() {
         return Value();
     });
     // traversemode (0x53f360): actor +0x210 = 1 "gravity" (script string 0x1c7f080), 2 "nogravity" (0x1c7f0a4), 3 "noclip"
-    // (0x1c7f0a2); anything else errors (0x591464). TODO(spec): the mode's effect (negotiation is not implemented).
+    // (0x1c7f0a2); anything else errors (0x591464). TODO(spec): [stays: negotiation is not implemented] the mode's effect (negotiation is not implemented).
     vm_.registerBuiltin("traversemode", [actorSelf](CallContext& c) {
         Entity& a = actorSelf(c);
         const std::string m = c.arg(0).toString();
@@ -1116,7 +1166,7 @@ void World::registerCombatBuiltins() {
     });
     // setcontents (0x4efd70): entity +0xc0 = the argument (the old value is returned), then the entity is relinked.
     // The entity clips (syncEntityClips) and the vehicle touch scan read the stored value (World::entityContents); 0 unlinks the entity.
-    // TODO(spec): the contents of entity classes other than actors, the player and script movers are not modelled.
+    // TODO(spec): [stays: shipped setcontents calls target actors, drones and script models] the contents of entity classes other than actors, the player and script movers are not modelled.
     vm_.registerBuiltin("setcontents", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("setcontents: not an entity");
@@ -1134,14 +1184,18 @@ void World::registerCombatBuiltins() {
         sunlight_.reset();
         return Value();
     });
-    // setsoundblend (0x4f7d10): entity of type 6 (script_origin) with two sound aliases and a blend 0..1 (error when outside);
-    // stores aliases at +0x8c / +0x8e and the blend at +0x94, then relinks (errors "Lerp must be between 0.0f and 1.0f" and
-    // "Entity is not a sound_blend"). TODO(spec): the audio crossfade and the entity type check.
+    // setsoundblend (0x4f7d10): the entity must be a sound_blend (eType 6, else the error "Entity is not a sound_blend", checked first),
+    // two sound aliases (indexed in the sound configstrings, 0x4d5860) and a blend 0..1 (error "Lerp must be between 0.0f and 1.0f"
+    // otherwise); stores the aliases at +0x8c / +0x8e and the blend at +0x94, then relinks. The shipped rain loops (_fx.gsc) call it.
+    // The client side (cgame 0x4ac8a0 → 0x442900) is World::updateSoundBlend.
     vm_.registerBuiltin("setsoundblend", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("setsoundblend: not an entity");
+        if (e->classname != "sound_blend") throw std::runtime_error("Entity is not a sound_blend");
         const float b = c.arg(2).asFloat();
         if (!(b >= 0.0f && b <= 1.0f)) throw std::runtime_error("Lerp must be between 0.0f and 1.0f");
+        e->obj->set("$soundblend1", Value(c.arg(0).toString()));
+        e->obj->set("$soundblend2", Value(c.arg(1).toString()));
         e->obj->set("$soundblend", Value(b));
         return Value();
     });
@@ -1175,8 +1229,10 @@ void World::registerCombatBuiltins() {
     });
     // bulletspread (start, end, degrees) (0x4ee760 → 0x531210): the point 8192 units along end-start with a random
     // offset in the disc of radius tan(spread)*8192 (angle uniform, radius uniform = rand/32768; the exe's own LCG
-    // 0x5a56f4, seed TODO(spec)). The disc axes come from 0x4217f0 (any rotation about the direction is equivalent).
-    vm_.registerBuiltin("bulletspread", [](CallContext& c) {
+    // 0x5a56f4, the game's shared rand state: the same sequence as every other game-side draw; its start value is the argument of G_InitGame
+    // (0x4d99c1) or the value a save restores (0x4e553a), here the fixed default of the data section). The disc axes come from
+    // 0x4217f0 (any rotation about the direction is equivalent).
+    vm_.registerBuiltin("bulletspread", [this](CallContext& c) {
         const Vec3 s = c.arg(0).asVector(), t = c.arg(1).asVector();
         const float deg = c.arg(2).asFloat();
         Vec3 f = sub(t, s);
@@ -1186,9 +1242,8 @@ void World::registerCombatBuiltins() {
         if (len(right) < 1e-4f) right = {1, 0, 0};
         else right = scale(right, 1.0f / len(right));
         const Vec3 up{f[1] * right[2] - f[2] * right[1], f[2] * right[0] - f[0] * right[2], f[0] * right[1] - f[1] * right[0]};
-        static uint32_t seed = 0;
-        const uint32_t r1 = (seed = seed * 0x343fdu + 0x269ec3u) >> 17;
-        const uint32_t r2 = (seed = seed * 0x343fdu + 0x269ec3u) >> 17;
+        const uint32_t r1 = uint32_t(nextRand());
+        const uint32_t r2 = uint32_t(nextRand());
         const float ang = float(r1) * 0.010986328125f * 0.01745329238474369f, rad = float(r2) * 3.0517578125e-05f;
         const float k = std::tan(deg * 0.01745329238474369f) * 8192.0f * rad;
         Vec3 out = add(s, scale(f, 8192.0f));
@@ -1224,7 +1279,8 @@ void World::registerCombatBuiltins() {
         return Value();
     });
     // viewkick(damage percent, origin) (0x4f7a40): client +0x8658 = (percent * maxhealth + 50) / 100 (error "viewkick: damage %g < 0"),
-    // +0x865c = player origin - origin. TODO(spec): the consumer of these fields.
+    // +0x865c = player origin - origin. The consumer is P_DamageFeedback (0x4e7040, World::damageFeedback), which also feeds the damage
+    // into the aim spread (ps+0x5b0): the fields are the ones G_Damage fills (0x52835c), so a viewkick looks like a hit with no damage.
     vm_.registerBuiltin("viewkick", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("not a player");
@@ -1232,11 +1288,22 @@ void World::registerCombatBuiltins() {
         if (pct < 0) throw std::runtime_error("viewkick: damage " + std::to_string(pct) + " < 0");
         const Value mh = e->obj->get("maxhealth");
         const int maxHealth = mh.isNumber() ? mh.asInt() : 100;
-        viewKick_.count = (pct * maxHealth + 50) / 100;
-        viewKick_.dir = sub(e->obj->get("origin").asVector(), c.arg(1).asVector());
+        damageBlood_ = (pct * maxHealth + 50) / 100; // client +0x8658 is replaced, not added to (0x4f7a9f)
+        damageFrom_ = sub(e->obj->get("origin").asVector(), c.arg(1).asVector()); // +0x865c..0x8664 = player origin - origin; 0x8668 is left alone
         return Value();
     });
-    for (const char* noop : {"trackscriptstate", "setlookattext", "setdefaultdroppitch", "restoredefaultdroppitch"})
+    // setlookattext(name [, subtext]) (0x4f8370): the crosshair name (+0x1b4) and sub line (+0x1b6) of an entity without its own look-at
+    // strings (script_model drones); a localized reference keeps just its key; the second string only with a second argument (as
+    // setvehiclelookattext, 0x513d4e). Read by the crosshair scan (World::updateCrosshairTarget, 0x534c03).
+    vm_.registerBuiltin("setlookattext", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("setlookattext on a non-entity");
+        auto text = [](const Value& v) { return std::holds_alternative<LocalizedString>(v.v) ? std::get<LocalizedString>(v.v).key : v.toString(); };
+        if (c.argc() > 0) e->obj->set("$lookatname", Value(text(c.arg(0))));
+        if (c.argc() > 1) e->obj->set("$lookatsub", Value(text(c.arg(1))));
+        return Value();
+    });
+    for (const char* noop : {"trackscriptstate", "setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
     // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").
@@ -1303,7 +1370,7 @@ void World::registerCombatBuiltins() {
         item.obj->set("angles", e->obj->get("angles"));
         const auto* def = weapon(w);
         if (auto it = def->find("worldmodel"); it != def->end() && !it->second.empty()) item.obj->set("model", Value(it->second));
-        // 0x5220f0 → 0x521f70: the item is launched and falls (G_RunItem). TODO(spec): from the hand tag, as above.
+        // 0x5220f0 → 0x521f70: the item is launched and falls (G_RunItem).
         launchItem(item, *e);
         // A non-player dropper fixes the item's ammunition at drop time (0x5220f0, 0x522185..0x52231f: actorDropAmmo), so the
         // pickup does not resolve it again.
@@ -1315,7 +1382,7 @@ void World::registerCombatBuiltins() {
         // 0x53da50 / 0x5220f0: the item starts where a 0x491 trace from the body centre
         // (origin + half the box height) to the hand tag ends (the dropper passes), and flies with dir × throwSpeed, dir =
         // normalize(tag − centre) with 2.0 added to z; throwSpeed 0 gives a zero velocity (it just falls).
-        // TODO(spec): the box height is the 72/70 of launchItem; the slide/ease rules on a hit (0x5231b2-0x52327b).
+        // TODO(spec): [stays: 0x5231b2 not read] the box height is the 72/70 of launchItem; the slide/ease rules on a hit (0x5231b2-0x52327b).
         if (hand == "left" || hand == "right") {
             const float height = e->isPlayer ? 70.0f : e->isActor ? 72.0f : 0.0f;
             const Vec3 o = e->obj->get("origin").asVector();

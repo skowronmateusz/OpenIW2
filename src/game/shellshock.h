@@ -73,6 +73,23 @@ float shockLoopBlend(const ShockRecord& r, int elapsedMs, int durationMs);
 // The time (ms after the start) at which the shellshock_end sound starts: duration + loopEndDelay.
 int shockEndSoundMs(const ShockRecord& r, int durationMs);
 
+// The shellshock_end / shellshock_end_abort sounds (0x4b1f90, stop path 0x4b1e90). The exe keeps the absolute time at which the end sound
+// was started (0xf7e894, 0 = none). Each frame, while the shock is live (a start time and cg_shock_sound set): once the clock reaches
+// start + shockEndSoundMs the end sound starts (late by the overshoot, which the exe passes as the start offset into the sample) and the
+// stamp is stored; a changed stamp (a new shock whose end is already due) starts it again without an abort. If the clock is before the
+// end again (a new shock replaced this one) while a stamp is stored, or the shock stops being live (stopshellshock, a record without
+// sound), the stamp is cleared and shellshock_end_abort is played.
+class ShockEndSound {
+public:
+    enum class Action { None, PlayEnd, PlayAbort };
+    Action update(bool live, int nowMs, int startMs, int endMs);
+    int offsetMs() const { return offsetMs_; } // after PlayEnd: how far past the end time the clock is
+    bool started() const { return stamp_ != 0; }
+
+private:
+    int stamp_ = 0, offsetMs_ = 0;
+};
+
 // Screen blend (0x4b16b0): the blend time in ms handed to the renderer, 0 when the shock is over. `remainingMs` is
 // start + duration - now.
 int shockBlendMs(const ShockRecord& r, int remainingMs);

@@ -314,6 +314,10 @@ vertex GlowVOut vs_fs(uint vid [[vertex_id]]) {
 fragment float4 fs_copy(GlowVOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
     return float4(src.sample(s, in.uv).rgb, 1.0);
 }
+// The blurred screen over the scene: u.x = quad alpha, premultiplied for the One / InvSrcAlpha pipeline; the image's alpha is not used.
+fragment float4 fs_feedback_blend(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+    return float4(src.sample(s, in.uv).rgb * u.x, u.x);
+}
 // Final brightness pass (docs/spec/ui.md "Brightness"): the r_gamma ramp of the original (gfx 0x10011fd0) applied to the finished 8-bit frame.
 // u.x = r_gamma, u.y = 1 / r_gamma; entry i = round(65535 * pow(i / 255, 1 / r_gamma)) / 65535 (identity at r_gamma 1).
 fragment float4 fs_gamma(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
@@ -322,37 +326,35 @@ fragment float4 fs_gamma(GlowVOut in [[stage_in]], constant float4& u [[buffer(0
     const float3 o = u.x == 1.0 ? v : round(65535.0 * pow(v, float3(u.y))) / 65535.0;
     return float4(o, 1.0);
 }
-float4 glowSample(texture2d<float> scene, sampler s, float2 uv, constant GlowU& u) {
+float4 glowSample(texture2d<float> scene, texture2d<float> postSun, sampler s, float2 uv, constant GlowU& u) {
     const float4 px = scene.sample(s, uv);
     const float intensity = dot(px.rgb, float3(0.299, 0.587, 0.114));
     float3 rgb = intensity >= u.b.x ? 1.0 + (px.rgb - 1.0) * u.b.y : float3(0.0);
-    const float nonSky = saturate(4.0 * px.a); // TODO(spec): max with the post-sun copy's alpha (colorMapPostSunSampler)
+    const float nonSky = saturate(4.0 * max(px.a, postSun.sample(s, uv).a));
     return float4(rgb * nonSky, 1.0 - nonSky);
 }
-fragment float4 fs_glow_setup(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> scene [[texture(0)]], sampler s [[sampler(0)]]) {
+fragment float4 fs_glow_setup(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> scene [[texture(0)]], texture2d<float> postSun [[texture(1)]],
+                              sampler s [[sampler(0)]]) {
     const float2 h = 0.5 * u.a.xy;
-    float4 c = glowSample(scene, s, in.uv + float2(-h.x, -h.y), u) + glowSample(scene, s, in.uv + float2(-h.x, h.y), u) +
-               glowSample(scene, s, in.uv + float2(h.x, h.y), u) + glowSample(scene, s, in.uv + float2(h.x, -h.y), u);
+    float4 c = glowSample(scene, postSun, s, in.uv + float2(-h.x, -h.y), u) + glowSample(scene, postSun, s, in.uv + float2(-h.x, h.y), u) +
+               glowSample(scene, postSun, s, in.uv + float2(h.x, h.y), u) + glowSample(scene, postSun, s, in.uv + float2(h.x, -h.y), u);
     c *= 0.25;
     const float intensity = dot(c.rgb, float3(0.299, 0.587, 0.114));
     c.rgb = mix(c.rgb, float3(intensity), u.b.z);
     return c;
 }
-// TODO(spec): the kernel weights (filterTap constants) are computed by the DLL; a normalised Gaussian with sigma = radius / 2 is used here.
-fragment float4 fs_glow_blur(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
-    const float radius = max(u.a.z, 0.5);
-    const float sigma = max(radius * 0.5, 0.5);
+// One pass of the screen filter chain: each tap (xy = uv offset, w = weight) samples both sides. src/game/glow_filter.h builds the taps.
+struct FilterU {
+    float4 tap[8];
+    float4 count;
+};
+fragment float4 fs_glow_blur(GlowVOut in [[stage_in]], constant FilterU& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
     float4 sum = float4(0.0);
-    float wsum = 0.0;
-    for (int i = -16; i <= 16; ++i) {
-        if (abs(float(i)) > radius) continue;
-        const float w = exp(-float(i * i) / (2.0 * sigma * sigma));
-        sum += w * src.sample(s, in.uv + u.a.xy * float(i));
-        wsum += w;
-    }
-    return sum / wsum;
+    const int n = int(u.count.x);
+    for (int i = 0; i < n; ++i) sum += u.tap[i].w * (src.sample(s, in.uv + u.tap[i].xy) + src.sample(s, in.uv - u.tap[i].xy));
+    return sum;
 }
-// out.a = bleed * skyBleedIntensity, out.rgb = sky * out.a + blurred.rgb * bloomIntensity; blended ONE, ONE_MINUS_SRC_ALPHA (TODO(spec): blend state).
+// out.a = bleed * skyBleedIntensity, out.rgb = sky * out.a + blurred.rgb * bloomIntensity; blended One, InvSrcAlpha (material state word 0).
 fragment float4 fs_glow_apply(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> glow [[texture(0)]], texturecube<float> sky [[texture(1)]],
                               sampler s [[sampler(0)]], sampler cs [[sampler(1)]]) {
     const float4 blurred = glow.sample(s, in.uv);
@@ -361,10 +363,17 @@ fragment float4 fs_glow_apply(GlowVOut in [[stage_in]], constant GlowU& u [[buff
     const float a = saturate(blurred.a * 2.0) * u.a.y;
     return float4(skyRgb * a + blurred.rgb * u.a.x, a);
 }
+// Bloom only: the blurred image times the bloom intensity, blended One, One.
+fragment float4 fs_glow_bloom(GlowVOut in [[stage_in]], constant GlowU& u [[buffer(0)]], texture2d<float> glow [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float4 blurred = glow.sample(s, in.uv);
+    return float4(blurred.rgb * u.a.x, blurred.a);
+}
 
 // Dynamic point light, technique l_point (lib/light_point.hlsl): the distance to the light, divided by its radius, indexes the linear falloff ramp;
-// colour = diffuse * light colour * N.L * falloff, added to the lit scene.
-// TODO(spec): Phong specular and normal maps of the l_point technique, the exact N.L form of Phong_Lighting.
+// colour = diffuse * light colour * max(0, N.L) * falloff, added to the lit scene (lib/phong.hlsl Phong_Lighting with L = normalize of the
+// light delta, lib/light_point.hlsl). Every l_point shader variant defines USE_SPECULAR 0, so the Phong specular term of the technique is
+// zero and absent here. TODO(spec): the normal map of the technique (N from Normal_GetWorldSpace; the flat default map gives the
+// interpolated normal used here, but world batches carry no tangent stream outside the lmap_s path); the PRE_ALPHA_BLEND (l_point_blend) variant.
 struct DLightU {
     float4 light;  // xyz position, w radius
     float4 color;  // rgb
@@ -412,10 +421,10 @@ struct FloatzOut {
 };
 vertex FloatzOut vs_floatz(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
     FloatzOut o;
-    o.position = u.viewProj * (u.model * float4(in.position, 1.0));
+    o.position = world_clip(u.viewProj, u.model, in.position, u.eye.w);
     o.color = in.color;
     o.uv = in.uv;
-    o.dist = o.position.z;
+    o.dist = o.position.z - u.eye.w * o.position.w; // the depth bias moves the depth test only
     return o;
 }
 struct FloatzFU { float4 p; }; // x: alpha test

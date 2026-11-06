@@ -380,11 +380,18 @@ int PlayerWeapon::update(float dt, const Input& in) {
         else eff.frag = eff.smoke = false;
     }
     if (in.offhandBlocked) eff.frag = eff.smoke = false; // 0x4df473
+    if (restrictKickMs_ > 0) restrictKickMs_ = std::max(0, restrictKickMs_ - int(std::lround(dt * 1000.0f))); // 0x4de72a
     const std::string before = name_;
     const int shots = updateImpl(dt, eff);
     if (!before.empty() && before == name_ && writeAmmo) writeAmmo(name_, clip_, stock_);
     else if (!name_.empty() && writeAmmo) writeAmmo(name_, clip_, stock_);
     return shots;
+}
+
+void PlayerWeapon::startRestrictKick() {
+    // 0x4deaf1: only when the weapon state is not yet 3 (firing); the aim fraction compares against 1.0 (0x4deafa).
+    const int bullets = int(time(adsFrac_ < 1.0f ? "hipGunKickReducedKickBullets" : "adsGunKickReducedKickBullets", 0));
+    restrictKickMs_ = bullets * int(std::lround(time("fireTime", 0.0f) * 1000.0f)) + int(std::lround(time("fireDelay", 0.0f) * 1000.0f));
 }
 
 int PlayerWeapon::updateImpl(float dt, const Input& in) {
@@ -728,6 +735,7 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
             const float d = adsFireDelay();
             if (d > 0) { // the press only starts the state (0x4dea00); the shot follows when the delay is over
                 triggerReleased_ = false;
+                if (state_ != State::Firing) startRestrictKick();
                 state_ = State::Firing;
                 timer_ = time("fireTime", 0.1f);
                 delay_ = d;
@@ -735,6 +743,7 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
                 return 0;
             }
         }
+        if (state_ != State::Firing) startRestrictKick();
         --clip_;
         ++shots;
         triggerReleased_ = false;

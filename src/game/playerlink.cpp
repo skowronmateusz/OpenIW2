@@ -70,7 +70,12 @@ void World::registerPlayerLinkBuiltins() {
         if (c.args.size() > 1 && c.arg(1).isString()) l.tag = c.arg(1).asString();
         l.absolute = absolute;
         l.fraction = absolute ? 1.0f : (c.args.size() > 2 && c.arg(2).isNumber() ? c.arg(2).asFloat() : 0.0f);
-        // TODO(spec): where client +0x8680 (reference rotation taken) is cleared is not read; a new link starts fresh.
+        // Client +0x8680 (reference rotation taken) is cleared only by a client frame without a link (0x4e8023), so a link
+        // replacing a live one keeps the reference.
+        if (playerLink_ && playerLink_->haveRef) {
+            l.haveRef = true;
+            l.ref = playerLink_->ref;
+        }
         playerLink_ = l;
         links_.erase(e->number);
     };
@@ -87,8 +92,8 @@ void World::registerPlayerLinkBuiltins() {
 // 0x4d6ec0 from ClientEndFrame while linked: the frame of the parent's tag (0x4d6ad0). In delta mode the view
 // turns by the fraction of the frame's rotation since the last frame (the first frame only takes the reference);
 // absolute mode puts the view on the tag's angles. The eye is at the tag origin + up · view height, the origin that
-// minus the view height in z, with no velocity. TODO(spec): the original writes ps viewangles directly; here the
-// result goes through the setplayerangles channel to the front end.
+// minus the view height in z, with no velocity. The original writes ps viewangles directly; here the
+// result goes through the setplayerangles channel to the front end, which owns the view angles.
 void World::updatePlayerLink() {
     if (!playerLink_ || !player_) return;
     PlayerLink& pl = *playerLink_;

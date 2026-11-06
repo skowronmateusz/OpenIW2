@@ -1,6 +1,7 @@
 // Scripted animations: animscripted, startscriptedanim, stopanimscripted and the actor's animscripted state
 // (docs/spec/animscripted.md). The rules mirror 0x4f5d50 (the shared built-in), 0x53b190 (start), 0x53baf0 (the
 // per-frame pose) and the state functions 0x54b060 / 0x54b070 / 0x54b0a0.
+#include "game/animscripted.h"
 #include "game/world.h"
 #include "game/poseslide.h"
 
@@ -34,8 +35,7 @@ Vec3 vecOf(const Value& v) { return v.isVector() ? v.asVector() : Vec3{0, 0, 0};
 
 } // namespace
 
-// 0x4d6ad0: the parent's tag frame, or its angles at its origin without a tag. TODO(spec): entityBones turns the
-// skeleton by the parent's yaw only (pitch and roll of the parent are not in the tag frame).
+// 0x4d6ad0: the parent's tag frame, or its angles at its origin without a tag.
 bool World::linkParentFrame(const Link& l, Vec3& origin, Axis& axis) {
     Entity* p = entityByNumber(l.parent);
     if (!p || p->obj->removed) return false;
@@ -63,15 +63,14 @@ void World::startScriptedAnim(Entity& e, const Vec3& origin, const Vec3& angles,
     s.started = false;
     s.anim = anim;
     s.deathplant = deathplant;
+    s.plantLift = 0; // 0x53b389
     s.origin = origin;
     Vec3 frameAngles = angles;
     if (deathplant) {
-        // The origin is dropped to the ground between 36 above and 18 below it (trace 0x44bf00, box 0x56f704 /
-        // 0x56f710, mask 0x820011) and the frame keeps only yaw and roll. TODO(spec): the trace box, the slope at the
-        // animation's end (+0x50…+0x5c, 0x4fd890) and the per-frame planting (0x53bb84, 0x47f390) are not modelled.
-        const Vec3 start{origin[0], origin[1], origin[2] + 36.0f}, end{origin[0], origin[1], origin[2] - 18.0f};
-        const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0}, 0x820011u);
-        if (!tr.startSolid && tr.fraction < 1.0f) s.origin[2] = (end[2] - start[2]) * tr.fraction + start[2];
+        // The origin is dropped to the ground by the box trace of deathPlantOrigin (animscripted.h). TODO(spec): the tilt to the slope at the
+        // animation's end (+0x54 / +0x58, blended by +0x5c at 0x53bc57..0x53bcb4; set after 0x53b460 from 0x478740 at time 1 and
+        // 0x4fd890) changes only the pitch and roll of dead drones (_drones.gsc, _vehicledroneai.gsc, duhoc_assault_drones.gsc).
+        s.origin = deathPlantOrigin(*collision_, origin, e.number);
         frameAngles = {0.0f, angles[1], angles[2]};
     }
     s.axis = anglesAxis(frameAngles);
@@ -99,6 +98,7 @@ void World::updateScriptedPose(Entity& e, bool slide) {
     e.anim->nodeDelta(s.anim, qz, qw, t);
     Vec3 pos = axisApply(s.origin, s.axis, {t[0], t[1], t[2]});
     Vec3 ang = axisAngles(axisMul(yawAxis(deltaYaw(qz, qw)), s.axis));
+    if (s.deathplant) deathPlantFrame(*collision_, pos, s.plantLift, e.number);
     if (!slide) {
         const Vec3 o = vecOf(e.obj->get("origin")), ea = vecOf(e.obj->get("angles"));
         for (int i = 0; i < 3; ++i) {

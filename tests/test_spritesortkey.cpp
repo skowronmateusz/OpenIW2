@@ -31,6 +31,10 @@ int main() {
     CHECK(lastSurface < 0x80000000u);
     for (uint32_t e : {0u, 1u, 0x400u, 0x7ffu, kMaxSceneEntity})
         CHECK(drawSortKey(0, 0, e, 2, true) > lastSurface && drawSortKey(0x3ff, 31, e, 2, true) > lastSurface);
+    // The allocator hands out strictly increasing slots, so two sprites never share an entity: the slot alone orders them, whatever
+    // their material rank or layer (the matIndex only orders records of one entity).
+    for (uint32_t e = 0; e < kMaxSceneEntity; e += 97)
+        CHECK(drawSortKey(0x3ff, 31, e, 2, true) < drawSortKey(0, 0, e + 1, 2, true));
     // Round trip through the walker's decoding.
     const auto a = drawKeyFields(drawSortKey(321, 17, 1234, 2, false));
     CHECK(a.material == 321 && a.layer == 17 && a.entity == 1234);

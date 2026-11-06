@@ -297,7 +297,7 @@ bool World::fleePathToNode(Entity& e, int node, bool withPlanes) {
 // Badplace state think (0x524060): while the flag (+0x2128) holds: perception, then along a flee path (facing 4,
 // running; plan time cleared), or, without one, standing (the stop choice) as long as the actor is inside a bad place
 // and a flee target exists; otherwise the flag clears and the state is replaced by exposed.
-// TODO(spec): the followed / blocking actor (+0x2148 / +0x728) that clears the path while fleeing.
+// A followed or blocked actor (+0x2148 / +0x728) drops the flee path after the step (0x5240dc).
 int World::badPlaceThink(Entity& e) {
     if (e.ai.badPlace) {
         actorPerceive(e);
@@ -305,6 +305,7 @@ int World::badPlaceThink(Entity& e) {
             e.ai.facing = 4;
             e.ai.planTimeMs = 0;
             followActorPath(e, true);
+            if (e.ai.followed || e.ai.blocker) clearActorPath(e);
             updateClaimedNode(e);
             return 0;
         }

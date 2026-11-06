@@ -3,8 +3,11 @@
 
 #include "fs/vfs.h"
 #include "game/animtree.h"
+#include "game/axis.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -24,6 +27,22 @@ int failures = 0;
 } // namespace
 
 int main() {
+    { // anglesQuat turns like anglesAxis; brush boxes follow the link rule.
+        const iw2::script::Vec3 ang{20, 75, -30};
+        const iw2::game::Axis ax = iw2::game::anglesAxis(ang);
+        const auto q = iw2::game::anglesQuat(ang);
+        const std::array<float, 3> units[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        for (int i = 0; i < 3; ++i) {
+            const auto r = iw2::assets::rotate(q, units[i]);
+            for (int k = 0; k < 3; ++k) CHECK(std::fabs(r[size_t(k)] - ax[size_t(i)][size_t(k)]) < 1e-4f);
+        }
+        iw2::script::Vec3 mins{-3, -4, -1}, maxs{3, 4, 2};
+        iw2::game::brushLinkBounds({0, 90, 0}, mins, maxs);
+        CHECK(mins[0] == -5 && maxs[1] == 5 && mins[2] == -1 && maxs[2] == 2);
+        iw2::script::Vec3 a{0, 0, -12}, b{3, 4, 0};
+        iw2::game::brushLinkBounds({10, 0, 0}, a, b);
+        CHECK(a[2] == -13 && b[0] == 13);
+    }
     const iw2::game::AnimTree t("test", R"(
 body
 {

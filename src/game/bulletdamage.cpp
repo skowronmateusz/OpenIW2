@@ -59,6 +59,12 @@ float aiHitChance(const AccuracyGraph& g, float distance, float actorAccuracy, f
     return std::clamp(acc, 0.0f, 1.0f);
 }
 
+bool bulletMissesPlayerAxis(const std::array<float, 3>& dir, const std::array<float, 3>& offset) {
+    const float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+    if (l <= 0.0f) return false; // a vertical shot: the perpendicular is zero, the product is 0
+    return std::fabs((dir[1] * offset[0] - dir[0] * offset[1]) / l) > 8.0f;
+}
+
 namespace {
 Vec3f madd(Vec3f p, Vec3f d, float s) { return {p.x + d.x * s, p.y + d.y * s, p.z + d.z * s}; }
 } // namespace

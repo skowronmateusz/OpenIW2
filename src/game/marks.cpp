@@ -32,8 +32,8 @@ MVec perpendicular(const MVec& src) {
     return normalized(p);
 }
 
-// 0x421550: `point` turned by `degrees` around the unit vector `dir`. TODO(spec): the turning direction is not
-// checked against the matrix product in 0x421550 (the decal rotation is a random value from a symmetric range).
+// 0x421550: `point` turned by `degrees` around the unit vector `dir`, right-handed. The exe's basis (perpendicular, perpendicular x dir,
+// dir) is left-handed, and with its plane rotation (cos, sin; -sin, cos) the product comes out as this form.
 MVec rotateAround(const MVec& dir, const MVec& point, float degrees) {
     const float a = degrees * float(M_PI) / 180.0f, c = std::cos(a), s = std::sin(a);
     return add(add(mul(point, c), mul(cross(dir, point), s)), mul(dir, dot(dir, point) * (1.0f - c)));
@@ -142,8 +142,10 @@ void MarkSystem::markDrawn(int64_t nowMs) {
 // fit the remaining points is dropped; the gathering stops when the fragments are full or fewer than 3 points
 // remain. Texture coordinates: s = (p − o)·a2·(0.5/r) + 0.5, t = (p − o)·a1·(0.5/r) + 0.5. Each fragment becomes one
 // pool mark with the colour bytes (0x4ad1b0: round(c·255) clamped to 0..255) on every vertex.
-// TODO(spec): DAT_00f79778 (marks are skipped while it is set), the surface order of the BSP walk (FUN_10015990;
-// matters only when the limits are reached), the tangent / binormal the renderer also writes.
+// DAT_00f79778 (marks are skipped while it is set, 0x4ad455) is set only around the effect plays of the NOMARKS explosion events
+// (0x4ba8d0): FxSystem::noImmediateMarks, not a state of this class.
+// TODO(spec): the surface order of the BSP walk (FUN_10015990; matters only when the limits are reached), the
+// tangent / binormal the renderer also writes.
 void MarkSystem::impactMark(const std::string& material, const MVec& origin, const MVec& dir, float rotationDeg,
                             const std::array<float, 4>& rgba, float radius, int64_t nowMs) {
     if (!enabled || surfaces_.empty() || limit <= 0 || !(radius > 0)) return;

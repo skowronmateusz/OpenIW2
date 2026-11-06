@@ -50,7 +50,8 @@ private:
 class RecoilKick {
 public:
     using Field = ViewWeaponMotion::Field;
-    // adsFrac: the player's aim fraction. reducedKick: ps+0x40 > 0 (TODO(spec): meaning).
+    // adsFrac: the player's aim fraction. reducedKick: ps+0x40 > 0, the reduced-kick window
+    // that PlayerWeapon::reducedKick reports (hip / ads ReducedKickBullets * fireTime + fireDelay ms from the start of a shot, counting down).
     void fire(const Field& w, float adsFrac, bool reducedKick);
     // hasWeapon: the current weapon index is non-zero (otherwise the centring speed is the constant 2400).
     void update(const Field& w, int ms, bool hasWeapon, float adsFrac);
@@ -221,7 +222,7 @@ private:
 // goal-weight rules as AnimState::setWeight / clearNode.
 class AimBlend {
 public:
-    void reset() { *this = AimBlend(); } // a new weapon's tree starts at weight 0 (TODO(spec): 0x4b2c90 reset timing)
+    void reset() { *this = AimBlend(); } // a new weapon's tree starts at weight 0 (TODO(spec): 0x4b2c90 is CG_RegisterWeapon, guarded by the info's +0xac so it builds a weapon's info once; whether the view tree's weights are rebuilt on every switch is not read)
     void update(bool aiming, float dt);
     float up() const { return up_.w; }
     float down() const { return down_.w; }

@@ -28,5 +28,5 @@ Everything here is read from CoD2SP_s.exe and the shipped files; guesses are mar
 
 ## Skipping a level-change briefing (slideshow_* / movie_* maps)
 - The cinematic itself is skipped by a key or mouse button in the client (above). The slide-show maps reached through `missionsuccess("slideshow_*")` (e.g. after demolition) are briefing levels, not RoQ movies: `_briefing.gsc` skips on the script side by polling `attackbuttonpressed()` every 50 ms, after calling `freezecontrols(true)`.
-- freezecontrols (0x5392e0) only sets client +0x8630; ClientThink (0x4e7bc0) turns it into pm_flags 0x8000 and still copies the command's buttons to +0x8634 / +0x8640, so the fire button stays visible to `attackbuttonpressed` (0x538820) while the controls are frozen.
+- freezecontrols (0x5392e0) only sets client +0x8630; ClientThink (0x4e7bc0) turns it into pm_flags 0x8000 but leaves the button state alone: +0x8640 holds the buttons currently held and +0x8634 the buttons pressed since the last frame end, so the fire button stays visible to `attackbuttonpressed` (0x538820, reads the OR of both) while the controls are frozen.
 - openiw2 (fixed): the front end passes the held buttons as `PlayerCommand::rawButtons` while frozen (menus closed); the movement / weapon code keeps the zeroed `buttons`. `World::scriptButtons()` ORs both for the button queries.

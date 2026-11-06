@@ -198,7 +198,9 @@ all explode events then play the weapon's `projExplosionEffect` and `projExplosi
 The shot sends EV_FIRE_WEAPON (0x9e) or, for quad barrels, EV_FIRE_QUADBARREL_1 / _2 (0xb0 / 0xb1 by the barrel
 pair). The client (0x4b7800, per flash tag) plays the weapon's `fireSound` and, for an entity that is not the local
 client, its `worldFlashEffect` at the flash tag (0x4b6660). Open: projImpactExplode 0 (bounce), whizby, water, the
-0xc1 / 0xc3 flag 0xf79778, the shell eject 0x4b7730, the recoil jolt 0x50dcf0.
+0xc1 / 0xc3 flag 0xf79778. The recoil jolt 0x50dcf0 is implemented (`World::vehicleJolt`). The shell eject 0x4b7730 plays the weapon's
+shellEjectEffect, which none of the shipped vehicle turret weapons (buffalo, armoredcar, flak88, flakveirling, tiger, t34, panzer2,
+crusader, sherman) defines, so there is nothing to play.
 
 ## Entity think (0x512b80)
 
@@ -295,9 +297,9 @@ command's delta angles are adjusted so the input keeps that view.
   client's view pitch and yaw (roll 0), +0x174 bit 0 and pm_flags 0xe0000 are cleared, and both links are cleared.
 - `getvehicleowner()` returns the linked player.
 
-## Not implemented (TODO)
+## Body jolt, touch scan and read-only notes (jolt and touch are implemented; see the end of this section)
 
-- `joltbody(point, intensity [, speedFraction 0…1, deceleration mph])` (0x5136e0; errors "Speed fraction must be
+- `joltbody(point, intensity [, speedFraction 0…1, deceleration mph])` (implemented, `World::vehicleJolt`; 0x5136e0; errors "Speed fraction must be
   between…", "Deceleration can't be negative"; deceleration × 17.6) → 0x50dcf0(dir = origin − point normalized):
   intensity clamped to [0, 1]; +0x1d4 / +0x1d8 = the direction against two of the body axes (0x421da0; which rows
   is not settled from the decompile), 2D-normalized (0x421160), × intensity × maxBodyPitch (info +0x78) /
@@ -305,7 +307,7 @@ command's delta angles are adjusted so the input keeps that view.
   Every think 0x510770: while +0x1dc > 0, es +0x64 / +0x6c = sin(+0x1e0°) · +0x1dc · +0x1d4 / +0x1d8, +0x1dc −=
   0.05, +0x1e0 += 36. Free physics (0x50de40) uses +0x1e4 / +0x1e8 instead of maxSpeed / accel while +0x1dc >
   0 (double 0x591e70 = 0). Open: the axis rows, and how the client draws es +0x64 / +0x6c (vehicle draw 0x4ac760, case 0xc
-  of 0x4acf30). The fireturret recoil calls 0x50dcf0(−flash forward, 1, 0, 0). `isturretready`, touch (read, not implemented): 0x50ff00 (every think, for a solid vehicle +0xa1) takes the
+  of 0x4acf30). The fireturret recoil calls 0x50dcf0(−flash forward, 1, 0, 0). `isturretready`; touch scan (implemented, `World::vehicleTouch`): 0x50ff00 (every think, for a solid vehicle +0xa1) takes the
   entities with contents 0x2006081 in the vehicle's absbox widened by its move and turn this frame (+0xb8 − +0xc4,
   AngleSubtract of +0xd0… − +0xdc…), skips itself and its owner, keeps players (eType 1), actors (9) and script
   movers (5) in exact contact (0x447830; a trigger-shaped entity via 0x4481c0), notifies "touch" both ways
@@ -318,9 +320,9 @@ command's delta angles are adjusted so the input keeps that view.
   0x4e90ec; 0x811 without one; a missile passes its owner, others themselves). Search when maxs.x / 2 (double
   0x5922e0 = 2) exceeds 4 (0x5922d8): z = 0, ±4 …, then x, y = ±4, ±8 … (step 4, 0x591e64) below that. Implemented in
   `World::vehicleTouch` / `tryPushEntity` (contact = a zero-length box trace against 0x800000 starting in the
-  vehicle; the pushed player goes to the front end through the setorigin / setplayerangles channel). Open: script
-  movers and the touch callbacks, the entity list box, the ground entity reset, actor look yaws (0x504910). the
-  ps+0xc 0x8000 state bit, the vehicle collmap absbox, other usable entities in the use scan.
+  vehicle; the pushed player goes to the front end through the setorigin / setplayerangles channel). Script
+  movers and the touch callbacks are implemented (see "Touch scan 0x50ff00"). Open: the entity list box, the ground entity reset,
+  actor look yaws (0x504910), the vehicle collmap absbox, other usable entities in the use scan.
 - The recoil jolt and turret bone rotation in tag positions.
 - Engine sounds (read, not implemented): the vehicle file's six sound names become alias indices at info +0x260…
   +0x26a after loading (0x5118b0, G_SoundAliasIndex 0x4d5860). Spawn (0x50dbb7): +0x1ec = 1 (engine on; script
@@ -366,7 +368,7 @@ command's delta angles are adjusted so the input keeps that view.
   freed, +0x116 = 0xb, take-damage (+0x111) and +0x112 cleared, trajectories (+0x10 / +0x14 / +0x38) zeroed, vehicle data detached (+0x108 = 0); it writes neither the contents (+0xc0) nor the brush model (+0xe), see "Collision after destruction". Riders on death are script behaviour only
   (_tankai.gsc endon("death") on the tank). Running level (libya, IW2_KILL_VEHICLES): 13 of 14 vehicles become script_vehicle_corpse.
 - Vehicle weapons end to end (libya, IW2_FIRE_VEHICLES): "turret_fire" makes _tank.gsc shoot() call fireturret: 14 rockets, 0 errors.
-- Touch callbacks and script movers (eType 5) in 0x50ff00 remain TODO(spec).
+- Touch callbacks and script movers (eType 5) in 0x50ff00: implemented, see "Touch scan 0x50ff00" below.
 
 ## Vehicle touch callback 0x512d40 (implemented: `World::vehicleTouchDamage`)
 Handler table 0x5a573c (stride 0x2c, index ent+0x116): touch at +0, handlers 9 / 10 (vehicles) 0x512d40, 1 / 2 (actors) 0x4ff2f0, 5 0x529140, 7 0x5291d0, 4 0x528e50; the corpse (11) has none.
@@ -393,6 +395,7 @@ the actor callback 0x4ff2f0 does nothing for a vehicle toucher (decoded below).
   and the sound entities' pitch (see the TODO(spec) markers above).
 
 ## Touch scan 0x50ff00 and actor touch (partly decoded)
+- Entity boxes: SV_LinkEntity (0x44b2d0) sets the absolute box +0xc4 / +0xd0 from the origin +0xdc and r.mins +0xa8 / r.maxs +0xb4. A brush model with no rotation adds them (0x44b4f5); with a yaw alone it uses the xy radius (0x4242e0) on x and y and keeps z; with pitch or roll the 3D radius (0x4241c0) on all axes. A script_model has zero r.mins / r.maxs: its spawn (0x533480) runs G_SetModel 0x4d6110 and 0x5332b0, and neither writes them.
 - 0x50ff00 queries the entity box (0x419ea0, up to 0x800 entries, contents mask 0x2006081) around the rotated vehicle box and takes entities of eType 1, 9 or 5 (eType 5 is the script_model type, see makefakeai 0x4f82a0), skipping the vehicle itself; for a linked pair (+0xc equal) a separate path runs. Each candidate's box (a corpse-style +0x114 box through 0x4481c0, else +0xc4 / +0xd0 mins / maxs plus origin) is tested against the vehicle (0x447830); a hit sends "touch" both ways and runs both touch callbacks (other's with (other, vehicle, 1), then the vehicle's). eType 5 is the common script mover init 0x5332b0 (`movb $5, (ent)`, flags |= 0x800): script_brushmodel (0x533440: contents 1), script_model (0x533480: contents 0x2080, handler 0xd) and script_origin (0x5334d0: contents 0). `solid` / `notsolid` (0x533f70 / 0x534050) set 0x2080 / 1 or 0. The touch table (0x5a573c) has no touch callback for handlers 0 / 0xc / 0xd, so a mover only gets the "touch" notify from the scan and the vehicle's callback 0x512d40: with take-damage (+0x111, setcandamage), no link (+0x1c8), collisionDamage > 0 and a vehicle speed of 0.001 or more it takes 999999 (MOD 9) at once, before the direction test (0x512dd1). The push 0x50fe40 only runs for eType 1 (or an entity with a client pointer at +0x100), so movers are not pushed. Implemented (`World::vehicleTouch`, `entityContents`, setcontents): mover candidates are the script_model / script_brushmodel / script_origin whose contents (spawn value or what setcontents stored: it returns the old contents word, and 0 unlinks the entity, 0x44b2d0 `jne` at 0x44b5ce, so entity clips skip it) have a bit of 0x2006081; box = a brush model's bounds, a script_model a point. Staged: `IW2_TOUCH_TEST=5 IW2_TEST_MOVER=1` libya, the first script_model (health 100) is crushed. TODO(spec): the bounds a script_model gets from its xmodel (absmin / absmax +0xc4 / +0xd0 via 0x4d6110), rotated brush bounds, contents of other entity classes. Note the gentity +0x128 word is flags, not contents (see docs/spec/ai.md).
 - Actor touch 0x4ff2f0 (decoded; handlers 1 / 2 of the table 0x5a573c are the same for the vehicle scan's `(other, vehicle, 1)` call): the actor is gentity +0x100, its state stack top is `[+0x1c]` / `[+0x8 + 4 * depth]` and the state's touch slot is `[0x56f734 + 0x1c * state]`. States 1 and 2 call 0x549870 / 0x54af10: if the toucher has a sentient (gentity +0x104) 0x500c50 stores a 0x44-byte record in the actor's array at +0x1774 (index = the toucher sentient's index, (sentient - 0x1c60518) / 0x88): level time at record +0x10, the toucher's origin at +0x18, sentient +0x38 at +0x24, the actor's own origin at +0x28 (the same writer is called from the perception loop 0x4fe8ac and 0x505f5e, 0x51f97e, 0x51fdc0, 0x520c96, 0x524095, 0x5323c6, 0x535700, 0x535b90, 0x535c6f, so it is the actor's "last contact / sighting" memory, whose readers 0x4ff505, 0x4ff7bf, 0x503048, 0x505fa4, 0x51c6ec... are AI-domain). States 3..9 call 0x549900: only when the toucher's gentity number equals the actor's bumped entity (+0x318) and that entity has a client (+0xfc, i.e. the player) the path is cleared (0x541780 with the actor's origin, path counts +0x6b0 / +0x6b2 zeroed) and the detour time +0x724 is reset. A vehicle gentity has neither a sentient (+0x104) nor a client (+0xfc) (the vehicle spawn writes neither), so for the vehicle scan the actor touch callback has no effect: nothing to implement here (resolved). TODO(spec): the other callers of the touch slot (player and actor contacts outside the vehicle scan) and the 0x1774 readers.
 
@@ -409,15 +412,15 @@ Maps run with `iw2game <main> <map> 45..120` and `IW2_FIRE_VEHICLES=15 IW2_KILL_
 
 ## Handler 6 / 7 is trigger_hurt (checked)
 
-Use function 0x529280 (handler table 0x5a573c +4, entries 6 and 7) toggles ent+0x116 between 6 (off, no touch) and 7 (on, touch 0x5291d0). Spawn 0x5292a0: contents 0x405c0008, dmg (+0x144) 0 becomes 5, handler 6 when spawnflags bit 1, else 7. Touch 0x5291d0: needs takedamage (+0x111); spawnflags 2 skips actors; waits until ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms); records the touch (0x528cb0); G_Damage(other, self, self, no dir, no point, dmg, (spawnflags & 8) << 2, MOD_TRIGGER_HURT = 13); spawnflags 0x20 then switches it off. Implemented for the player (runTriggers, `useby` toggle). TODO(spec): damage flag 0x20 inside G_Damage, actors touching triggers, use function 0x529450 (handler 8).
+Use function 0x529280 (handler table 0x5a573c +4, entries 6 and 7) toggles ent+0x116 between 6 (off, no touch) and 7 (on, touch 0x5291d0). Spawn 0x5292a0: contents 0x405c0008, dmg (+0x144) 0 becomes 5, handler 6 when spawnflags bit 1, else 7. Touch 0x5291d0: needs takedamage (+0x111); spawnflags 2 skips actors; waits until ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms); records the touch (0x528cb0); G_Damage(other, self, self, no dir, no point, dmg, (spawnflags & 8) << 2, MOD_TRIGGER_HURT = 13); spawnflags 0x20 then switches it off. Implemented for the player (runTriggers, `useby` toggle), for actors (`World::actorTouchTriggers`, spawnflags 2 skips them) and for vehicles. Use function 0x529450 (handler 8, trigger_damage) is `World::triggerDamageUse`. TODO(spec): damage flag 0x20 inside G_Damage.
 
 ## Player link angles (checked)
 
-VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0x214 (the barrel tag) is valid, a second transform is read and used for the orientation. Approximated with the barrel tag's turned forward (the 0x424b70 conversion is not decoded).
+VEH_LinkPlayer 0x511610 reads the tag_player transform (info+0x200); when info+0x214 (the barrel tag) is valid, a second transform is read and used for the orientation. Approximated with the barrel tag's turned forward. 0x424b70 is frame to angles (yaw and pitch of the forward row, then the roll); the status ownerdraw 0x4aa360 uses it on the whole tag frame of 0x4ab9e0 (`playerVehicleHudYaws`).
 
 ## Think calls, frozen controls, wheels (checked)
 
-- ps+0xc 0x8000 is the freezecontrols flag (client +0x8630). The driven vehicle's command and the fire button are blocked by it (implemented); the second source +0x8698 is TODO(spec).
+- ps+0xc 0x8000 is the freezecontrols flag (client +0x8630). The driven vehicle's command and the fire button are blocked by it (implemented); the second source (0x4e7be6) is client +0x8698, the absolute playerlinkto flag (cleared by 0x4edc06 / 0x4ede95, set by 0x4eddcf), and `playerControlsFrozen()` covers it (implemented).
 - 0x5107e0 sets ent+0x94 = clamp(AngleSubtract(yaw, previous yaw) * 10, -45, 45), 0 when the vehicle info has no steerWheels. 0x510770 (jolt step) and 0x510870 (tread scroll) were already implemented.
 - Turret spin and stop sounds, engine pitch: updateVehicleEngineSound (0x510be0). The sound state +0x18c (turret think 0x5102e0, 0x510620..0x51068c) becomes 2 when an axis has 2 degrees or more to go and AngleSubtract(turned, clamped) (0x423fd0 at 0x510617, in place on stack slots 0x20 / 0x24) is exactly 0, i.e. the span clamp did not cut the rate-limited step. Before, the turned angle itself was compared with 0, so no vehicle turret (flak88, tanks) played its spin sound. Implemented as `vehicleTurretTurning`; the flak88 vehicle file names the tank turret spin / stop aliases.
 - Wheels (cgame 0x4ac2b0, checked): bone control entries (0x4746e0) are {quat, translation, 0}; the translation (default zero vector 0x56ce9c) is added to the bone's local offset. The interpolated fields 0x16c..0x180 = es+0x64 (body pitch), +0x74 (turret yaw), +0x6c (roll), +0x70 (barrel pitch), +0x94 (steer), +0x60 * 0.001 (suspension travel; the server think 0x512cd8 stores (int)(info+0x88 * 1000)). Per wheel tag (front_left, front_right, back_left, back_right, middle_left, middle_right; P = tag bind position): axes from AngleVectors(angles) = forward, left (= -right), up; w = forward*Px + left*Py + up*Pz + origin; point trace (mask 0x211, entity skipped) from w + up*40 (0x591f78) to w - up*travel; d = max((travel + 40) * fraction, 40 - travel); hit = start - up*d; control translation = M * (hit - origin) - P (0x423480, rows forward / left / up), i.e. up*(40 - d): -travel without a hit, at most +travel. The first two wheels also get rotation angles (0, steer, 0) when steer is not 0; the others keep identity. travel 0 means no motion. Implemented as `vehicleWheelControls` (viewer draw path) with `assets::BoneControl`; steerAngle is stored by the think (needs the info key steerWheels). TODO(spec): the previous-yaw source of 0x5107e0 is the frame start yaw here; the wheel offsets use the server-frame pose (no cgame interpolation of the trace).

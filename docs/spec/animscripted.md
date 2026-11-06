@@ -35,14 +35,17 @@ The scripted block (+0x1d0, 0x60 bytes from the pool 0x82e980) is created if mis
 (+0x4c) = 0, animation (+0x48), deathplant (+0x4d).
 
 - normal: origin as given, frame = AnglesToAxis(angles).
-- deathplant: the origin is dropped by a trace from 36 above to 18 below (0x44bf00, box 0x56f704 / 0x56f710, mask
-  0x820011; no start-solid and a hit: the hit height), the frame keeps yaw and roll (pitch 0). Open: the trace box
-  values, the slope at the animation's end (+0x50…+0x5c, 0x478740 at time 1, 0x4fd890) and the per-frame planting
-  (0x53bb84, 0x47f390, 0x477fe0).
+- deathplant: the origin is dropped by a trace from 36 above to 18 below (0x44bf00, mask 0x820011, passing the entity itself, box
+  (-15,-15,0)..(15,15,72) read from 0x56f704 / 0x56f710; no start-solid and a hit: the hit height), the frame keeps yaw and roll
+  (pitch 0). Implemented as `deathPlantOrigin` (animscripted.h, tests/test_deathplant.cpp). Only the drone death animations of
+  _drones.gsc, _vehicledroneai.gsc and duhoc_assault_drones.gsc use the mode. Each frame (0x53bb84..0x53bc53) the same box goes from 18 above to 18 below the animated height plus the lift +0x50 (zero at the start, 0x53b389); a hit
+  moves the position to the hit height and stores the difference in +0x50. `deathPlantFrame`. Open: the tilt, pitch += w * +0x54 and roll += w * +0x58 (0x53bc57..0x53bcb4), w = the animation's progress (0x477fe0) while +0x5c is negative, else +0x5c rising by 0.05 per frame to 1; its setup after 0x53b460 from 0x478740 at time 1 and 0x4fd890 is not read.
 
 The root's children are cleared over 0.2 s (0x4789a0 = clear 0x478940 on every child). Open: for an actor with
-+0x1b8 ≠ 0 and +0x1c4 ≠ 0 the nodes at actor +0x1d0 / +0x1d2 / +0x1d4 are first set to their current weights
-(0x478d10, 0x4795e0) and the root's children cleared only with a root. Then the animation is set (0x4795e0, notify in
++0x1b8 ≠ 0 and +0x1c4 ≠ 0 (the flag at 0x53b1ff..0x53b226; neither field is identified) the weights of the nodes at actor
++0x1d0 / +0x1d2 / +0x1d4 are first frozen: 0x478d10 on the +0x1d2 or +0x1d4 node when its weight is above 0 (0.2 s, rate 1), then
+0x4795e0 on the +0x1d0 node with its own weight (0.2 s), and the root's children are cleared (0x4789a0, 0.2 s) only with a root
+argument. Then the animation is set (0x4795e0, notify in
 ecx) at weight 1, 0.2 s, rate 1, restarted unless it loops (leaf: xanim +2; blend node: entry +0x10 bit 1, open).
 0x478220 (a 0.05 s time update up to the next notetrack, flag 1) is called right after the set by the setanim built-ins (0x4f5d45..0x4f74fd; skipped with the no-physics flag `+0x128 & 0x1000`) and here at 0x53b86d: `World::postSetAnimUpdate` -> `AnimState::updateTruncated(0.05, true)`. It steps from each node's old time and fires the notetracks of the first 50 ms at once; the frame's weight stage (stage 2, `updateWeights`) and time stage (stage 4, `updateTruncated`) are split as in the exe so the animation runs one 50 ms step ahead after a set (the post-set step moves the time, the next weight stage sets the old time to it) and no notetrack is sent twice (tests/test_animtree.cpp). 0x53b86d tests the flag like the setanim family (0x53b836..0x53b853: `+0x128 & 0x1000` set skips the call, then the model anim table entry 0x74a980 -> 0x74c200 must exist), so `postSetAnimUpdate` is right for both.
 
@@ -106,7 +109,7 @@ predicted top; otherwise 0x53baf0 runs, and without a block afterwards the same 
 An empty tag name is no tag. With at most two arguments: G_EntLinkTo (0x4d6540) then 0x4d6ca0 (the child's current
 placement expressed in the parent frame); with offsets 0x4d66a0. The parent frame (0x4d6ad0) is the tag's world
 frame, or the parent's angles at its origin without a tag. The linked child = offset frame · parent frame. Open: the
-"failed to link" errors, and the parent's pitch / roll in tag frames (entityBones turns by yaw only).
+"failed to link" errors. The tag frame uses the parent's full angles +0xe8 (0x4d6aec -> AnglesToAxis 0x421da0).
 
 ## Player links
 
@@ -122,4 +125,5 @@ moved towards identity by the fraction (xyz · f, (w − 1) · f + 1); the view 
 applied to them (0x423680, 0x424b70). With 0x10000000: view angles = AxisToAngles(F). Eye = F.origin + F.up · view
 height (ps +0xd4), origin = eye − view height in z, trajectory stationary, linked (0x44b2d0). Open: here the new
 view angles go to the front end like setplayerangles (the original writes ps viewangles; its delta_angles handling
-is not read), and where +0x8680 is cleared.
+is not read). +0x8680 is cleared by a client frame without a link (0x4e7fd6 -> 0x4e8023), so a link replacing a live one keeps
+the reference.

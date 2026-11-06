@@ -42,6 +42,12 @@ int main() {
         g.command(500, 10000, 0.7f, 0.5f, 0.3f, 0, 0);
         g.commandExp(0.001f, 0.1f, 0.1f, 0.1f, 5000, 100);
         chk(g.consts(100).exponential && g.consts(100).exponent == -0.001f, __LINE__);
+        g.command(10, 20, 0.1f, 0.1f, 0.1f, 5000, 200); // and back: also at once
+        chk(!g.consts(200).exponential && g.current(200).farDist == 20.0f, __LINE__);
+        FogState k; // colour bytes are truncated while blending: 0 -> 255 at t = 0.999
+        k.command(0, 100, 0, 0, 0, 0, 0);
+        k.command(0, 100, 1, 1, 1, 1000, 0);
+        chk(k.current(999).color[0] == 254, __LINE__);
         FogState h; // a 1 s linear transition from an active fog: near / far / colour halfway at 500 ms
         h.command(0, 1000, 0, 0, 0, 0, 0);
         h.command(1000, 3000, 1, 1, 1, 1000, 10);

@@ -56,8 +56,8 @@ the piecewise-linear curve), used for velocities.
   Tail (0x483010): +0x7c = bolt(position); B = bolt(position + normalize(prev − position) · length) (0x483202); with no
   movement +0x9c keeps its last (world) value (0x483233).
 - OpenIW2: `FxTag` (origin, axes, hasAxes) from `World::entityTagOrientation` (bone rotation; vehicle tags give the position
-  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder, Emitter, Tail. TODO(spec):
-  the view-weapon flash / brass bolts pass the position only.
+  only, then the axes are the identity). Implemented for Particle, Line, Cloud, Cylinder, Emitter, Tail. The view-weapon flash and brass bolts pass the tag origin and axes
+  too (iw2view `viewFlash`, tag_flash / tag_brass bone rotation), and so do world events bolted to an entity tag (`boltTags`).
 
 ## Emitter physics (0x480bd0) and emitFx (0x483810)
 
@@ -81,6 +81,10 @@ the piecewise-linear curve), used for velocities.
   spin rates +0x284 by 0.7 (0x591f30); angles += frame ms · 0.01 (0x591ea0) · rate and axes +0x48 = forward, −right, up of
   0x421da0 (a · 0.017453292, 0x591f50) (0x483e50); size (0x4818b0); useModel: +0x7c = position, refEntity scale +0x98 = size
   +0x88; then emitFx.
+- Emitter spawn angles (0x48d7d0, before the model draw): start angles +0x278 = the effect axes through 0x421b30 — pitch =
+  atan2(−f.z, |f.xy|) in degrees (270° / 90° for straight up / down), yaw = atan2(f.y, f.x) in degrees, both normalised to
+  0..360°, and the roll output is always 0 — plus a draw in `angle` (z, y, x order); spin rates +0x284 = a draw in
+  `angleDelta` (z, y, x). Both keys hold 3 numbers (min = max) or 6 (min xyz, max xyz).
 - Spawn 0x48d7d0 also: +0x290 = one `emitfx` entry (def +0x80 / +0x84), +0x294 = `density` (def +0x260, 0x488a60 "%f %f"),
   +0x298 = `variance` (def +0x268, 0x488ab0), +0x24c = the spawn position, +0x258 = the start velocity, +0x264 = the attachment
   origin (0x47faa0 / 0x48a870) or 0, +0x270 = now, +0x274 = (2 · rand() / 32768 − 1) · variance + density (CRT rand 0x553d5d,
@@ -131,8 +135,11 @@ the piecewise-linear curve), used for velocities.
   3 1 2), uv from the atlas rectangle 0x1003fa60, colour bytes. So `size` is the half width and `size2` the half height.
 - Motion: Particle (0x480330) and OrientedParticle (0x482630) positions come from the physics step 0x480bd0 every update
   (see "Emitter physics"), so usePhysics / useBBox / impactKills / impactFx apply to them as to Emitters (95 / 150 / 76 / 9
-  shipped Particle elements). The analytic position 0x4816c0 is used only by 0x48caa0 for the late part of a spawn
-  (pos += 0x4816c0(ms) · ms · 0.001 for ms > 0; TODO(spec): not applied, OpenIW2 steps from the scheduled spawn time).
+  shipped Particle elements). The analytic position 0x4816c0 (velocity at u = min(ms / life, 1), gravity = ms · gravity ·
+  0.001 added on z) is used only by 0x48caa0 for the lateness catch-up of a spawn: every type spawn calls it with the
+  spawn's overdue ms (a delay of 1 ms or more is queued by 0x4853f0 and the spawn runs 0x485e20 when its time comes, at most
+  a frame late), pos += velocity(u) · ms · 0.001 for ms > 0. OpenIW2 steps from the scheduled spawn time instead, the same
+  integral in ≤200 ms steps (the only divergence is the gravity term, t² vs its integral, over at most a frame).
   Light (update 0x4841e0: +0x7c = the spawn point +0x4, through the bolt for relative) and Line / Cylinder elements do not
   move.
 - Draw slot 0x4802f0: a Particle is submitted only while size (+0x88) ≠ 0 and size2 (+0x8c) ≠ 0 (it still enters the sight
@@ -221,8 +228,8 @@ mid(r) = (max − min) · 0.5 + min:
   (u − 0.5)·m.xy + (v − 0.5)·m.zw; colour = colorMap · particleCloudColor; the _outdoor variant zeroes alpha where the
   point is below the outdoor map (worldOutdoorLookupMatrix, sampler.outdoor).
 - OpenIW2: `FxSystem::clouds()` and iw2view `cloudModel` (CPU expansion of the same geometry, view x / y = right / up).
-  The outdoor test: see "Outdoor map". TODO(spec): `wind` and
-  affectedByWind (no reader in the exe's effect code).
+  The outdoor test: see "Outdoor map". `wind` (drawn into the instance +0xf8 by 0x48ce70) and affectedByWind 0x800000 have
+  no reader: nothing in the effect code tests the flag bit, and no shipped effect sets it, so wind never moves a cloud.
 - View cull (slot 3, 0x4827e0 → 0x486e30): the cloud is not drawn when n·A − d < −r for any plane of the view's plane set
   (view +0x20, stride 0x10, count +0x80, at most 5 with disableFarPlaneCulling; the sixth plane is the far plane, docs/spec/render-hints.md), r = max(width, height) + size. The radius is
   smaller than the cube's half diagonal, so clouds near the screen edge disappear. OpenIW2 tests the four side planes
@@ -343,13 +350,13 @@ their spawn delay are left out (the original lists every element in its two elem
   reflection (FUN_00485220). Flesh with `cg_blood` (0x1040c58, bool, default 1): the table effects at most once per
   330 ms (0x14a, last time 0xf7e8c0), otherwise `fx/impacts/flesh_hit_noblood.efx` (0xf5bcc4) along the normal only.
 - Then the tracer (0x4b8140, `cg_tracerChance`). The impact effects carry the bullet marks as Decal elements.
-- OpenIW2: `World::bulletImpact` (fx events + sounds); TODO(spec): dir-byte quantization, tracers, penetration
-  (surface flag 0x10).
+- OpenIW2: `World::bulletImpact` (fx events + sounds), penetration (surface flag 0x10, `combat.cpp`) and the tracers
+  (`FxSystem::addTracer`); TODO(spec): dir-byte quantization, the hit entity of the event.
 
 ## Marks (Decal elements)
 
 - Element type names (0x48683e): `decal` = type 6. Spawn of one decal (0x48da90 → 0x485b60): position from 0x48c290
-  (not read), rotation random in the `rotation` range (+0x220, parser 0x488020), colour (0x4857d0: rgb at graph time 0
+  (the shared spawn point), rotation random in the `rotation` range (+0x220, parser 0x488020), colour (0x4857d0: rgb at graph time 0
   times a random scale, lerped to rgbRand with useRandomColors), alpha (0x4858c0, useRandomAlpha, clamped 0..1), size
   (0x485a30, useRandomSize), material random from `shaders` ((seed >> 17)·count >> 15), then CG_ImpactMark (0x4ad430)
   with the effect's axis as direction (EDX = the effect, 0x485bd9).
@@ -374,7 +381,7 @@ their spawn delay are left out (the original lists every element in its two elem
   them to the renderer (refexport +0x68). Marks never fade.
 - OpenIW2: `src/game/marks.{h,cpp}`, `FxSystem::spawnDecals`, iw2view draws marks in the blend pass with the
   surface lightmap (`iw2view … --shot x.png --shoot N`, `IW2_MARK_DEBUG=1`). TODO(spec): 0x48c290 spawn position,
-  frustumCull spawn flag, the per-mark cull, the renderer's mark draw (0x10024320, depth offset), 0xf79778, BSP walk
+  the per-mark cull (the element-level frustumCull spawn flag 0x400 is implemented, `FxSystem::playAxes`), the renderer's mark draw (0x10024320, depth offset), BSP walk
   order (only matters at the limits).
 
 ## Atlas sequences
@@ -422,7 +429,7 @@ vertices: normal = -view axis row 0, **binormal = B, tangent = -A**.
   degrees * 0x1019be0c to radians; c = cos, s = sin): A = width * (c * row1 - s * row2), B = height * (c * row2 + s * row1).
   Entity flag 0x1000 (+4) adds the height param to the origin z; entity +0x70 is a screen-size clamp (0x1003ff20 / 0x1003fdf0).
 - Oriented (type 7, 0x1003ffe0): axis V = entity +0x14; P = perpendicular of V (0x10059bd0: (V.z, -V.x, V.y), projected off V,
-  normalized); unrotated A = width * P, B = height * (P x V); with r != 0 the pair is rotated by sin / cos of r (fsincos at 0x1004008d), TODO(spec): the exact mixing is not implemented.
+  normalized); unrotated A = width * P, B = height * (P x V); with r != 0 the pair is rotated by sin / cos of r (fsincos at 0x1004008d): R = width * (c * P - s * Q), V = height * (c * Q + s * P) with Q = P x V (implemented in iw2view `spriteModel`).
 - Tail / line (type 8, 0x10041470): tangent / binormal written from the quad axes (B-A and c).
 So for a distortion sprite T' / B' of distortion.hlsl are the clip-space images of the sprite's half-width and half-height
 screen vectors (tangent points to the viewer's right), scaled by distortionScale.
@@ -481,9 +488,8 @@ no fog, ... 0x15 emissive no fog, 0x18 emissive feathered no fog.
   turns it all off. Check (feather): `IW2_NO_HUD=1 IW2_FX_TEST=file:<efx: one Particle, life 10000, size curve 1 scale 150,
   shader gfx_dark_smoke_atlas> IW2_FX_TEST_DIST=110 IW2_FX_MS=500 iw2view <main> moscow --pitch 35 --shot x.png`: the smoke
   fades into the ground and the wall; with `IW2_NO_POSTSUN=1` it is cut along straight lines.
-- Sprite order inside the effect list (decoded, `src/game/spritesortkey.h`, test_spritesortkey): the DLL writes an 8-byte {key, record*} entry per draw record with 0x100247d0 and sorts the list by the key as an unsigned number, ascending (0x10024900). Key = ((((matIndex << 5) + layer) << 12) + entity) * 16 + recordType, i.e. material << 21 | layer << 16 | entity << 4 | type (layer default 0x1f); matIndex is the word at material +0xa, the rank of the material after the material table is sorted by 0x10016ae0 (ascending material byte +0xd, ties by the address of the techset at +0x38 in steps of 140 bytes, i.e. load order; undefined for equal keys). With the dvar fx_sort (0x101ce634, default 1) and a type 2 record (sprites) the key is entity-major: (((((entity - 0x1000) << 10) + matIndex) << 5) + layer) * 16 + 2, so a sprite sorts by entity, then material (see "Draw order of effect sprites": the entity is always below 0x1000, so the sort key wraps and every sprite sorts after every other record). The walker 0x1002f830 decodes the same fields back. Blockers for wiring (exact): (1) the key is entity-major with fx_sort and `FxSprite` has no effect entity number (the client allocates effect entities; not reproducible), (2) matIndex ties need the techset first-load order (`materialSortLess` in spritesortkey.h is the tested comparator, but its rank input is unavailable). TODO(spec): iw2view still uses the entity-item order and the shader-name order inside the effect model; the sort byte is now decoded (file byte 0x0d, `Material::sortByte`, see docs/spec/material.md) but the matIndex ranking is still not reproduced: ties are decided by the techset first-load order (hunk allocation order of 0x1001c280) which depends on the engine's whole material load sequence, and FxSprite carries no effect entity number (the key is entity-major with fx_sort); polygon offset
-  in the build-floatz pass; the view model (depth-hack range) in the floatz list; the floatZ / outdoor sampler states (point,
-  clamp here).
+- Sprite order inside the effect list (decoded, `src/game/spritesortkey.h`, test_spritesortkey): the DLL writes an 8-byte {key, record*} entry per draw record with 0x100247d0 and sorts the list by the key as an unsigned number, ascending (0x10024900). Key = ((((matIndex << 5) + layer) << 12) + entity) * 16 + recordType, i.e. material << 21 | layer << 16 | entity << 4 | type (layer default 0x1f); matIndex is the word at material +0xa, the rank of the material after the material table is sorted by 0x10016ae0 (ascending material byte +0xd, ties by the address of the techset at +0x38 in steps of 140 bytes, i.e. load order; undefined for equal keys). With the dvar fx_sort (0x101ce634, default 1) and a type 2 record (sprites) the key is entity-major: (((((entity - 0x1000) << 10) + matIndex) << 5) + layer) * 16 + 2, so a sprite sorts by entity, then material (see "Draw order of effect sprites": the entity is always below 0x1000, so the sort key wraps and every sprite sorts after every other record). The walker 0x1002f830 decodes the same fields back. The submitter 0x10023bd0 writes one record per refEntity (types >= 4 go through the writer with the slot as the entity), and the allocator 0x10023f40 hands out strictly increasing slots (a per-frame counter, incremented on every call, refused from 0x7fe on), so with fx_sort the entity field is unique per sprite and alone fixes the order: sprites are drawn in the order the cgame submitted their refEntities, and the matIndex rank (material sort byte, techset load order) never decides between two sprites; it matters for the non-sprite records only. Blocker for wiring (exact): the submission order of the cgame's effect refEntities relative to `FxSystem::sprites()` is not decoded (and the passes would have to be interleaved by that order instead of grouped blend / add / multiply, `FxSprite` carries no slot number). TODO(spec): iw2view still uses the entity-item order and the shader-name order inside the effect model; the sort byte is now decoded (file byte 0x0d, `Material::sortByte`, see docs/spec/material.md) but the matIndex ranking is not needed for sprites (see above; it only orders the world / model records, where ties are decided by the techset first-load order, hunk allocation order of 0x1001c280);
+  the floatZ / outdoor sampler states (point, clamp here).
 ### Draw order of effect sprites (smoke occlusion)
 - Scene builder 0x10025490 draws, after the post-sun copy, one list: technique type 0x18 (`emissive feathered no fog`; 0x15 without
   `$floatz`). Every surface whose technique set has no lit technique goes there: effect sprites and clouds, but also world and model
@@ -497,8 +503,45 @@ no fog, ... 0x15 emissive no fog, 0x18 emissive feathered no fog.
 - Consequence: a smoke cloud covers the multiply decals of the walls behind it; drawn before it they multiplied the smoke and showed the
   building through it (blocks of wall grime, road marks), which was the iw2view bug "geometry shows through the smoke grenade".
 - OpenIW2: the Blend, Additive and Multiply passes run for the world and for models first and then once more for the effect items
-  only (`DrawItem::effects`, `Renderer::draw` pass steps). TODO(spec): within the effect items the order is still blend, add, multiply by
-  shader name instead of entity / material (see the TODO above).
+  only (`DrawItem::effects`, `Renderer::draw` pass steps). TODO(spec): [cgame submission order not decoded, and needs interleaved passes] within the effect items the
+  order is still blend, add, multiply by shader name instead of entity / material.
 - TODO(spec): the matrix that makes clip z comparable to featherParms (material constant featherParms is not yet traced);
   mode 2 (dvar 0x101ce710 == 2) vertex format 0x1003f850; why the post-sun copy needs the full-window flag besides the
   r_distortion / glow gate in 0x100310a0.
+
+## Glow and the blurred screen
+
+VAs: gfx dll 0x1xxxxxxx. Implemented in `src/game/glow_filter.h` (test_glow_filter), `src/game/screen_blur.h`, iw2view post pass.
+
+Targets. `$blurred_screen`, `$glow_0`, `$glow_1`, `$pingpong_0`, `$pingpong_1` are render target slots 8 to 12, all (width >> 2, height >> 2),
+clamped to at least 1 (0x100235aa onwards; name table 0x101a59d8). Slot 10 (`$glow_1`) is never written by the glow chain, see below.
+
+Filter chain (0x10035640, arguments sigma x, sigma y, source size, destination size). Sigmas are texels. If the sizes differ, one pass first
+blurs by m = min(sigma x, sigma y, 1.38956) in source texels while changing size, and the rest sqrt(sigma^2 - m^2), scaled to destination
+texels, remains. Then, at most 16 passes in all: stop when both sigmas are under 0.3295; when they differ by less than that and their mean
+is at most 1.38956, finish with one both-axes pass of the mean; otherwise take the larger axis with one pass of up to sigma 6.49775, leaving
+sqrt(sigma^2 - 6.49775^2) (or 0). A pass reads the previous pass's target; targets alternate between the two pingpong images and the last
+pass writes the destination (0x10035930).
+
+Taps (0x10035140): weights exp(-x^2 / (2 sigma^2)), so the argument really is the standard deviation. Texels are taken in pairs merged into
+one bilinear tap at their weighted centre, starting at 0, or at 0.5 when the rounded size ratio is even; starting at 0 the centre texel counts
+half. Normalised to 0.5 per side, trailing weights under 0.01 dropped with no renormalisation; a total of at most 0.001 becomes one tap of 0.5.
+Each tap samples both +offset and -offset (lib/filter_symmetric_small.hlsl, lib/filter_symmetric_large.hlsl). A one-axis pass has up to 8 taps
+(material filter_symmetric_N, N = tap count); a both-axes pass (0x10035480) is the product of two pairs per axis, 8 taps.
+
+Blurred screen (0x10030ed0, 0x10030b50, 0x10035a00). With R = sqrt(r_blur^2 + radius^2) > 0 and F = the screen_blur.h full radius: the alpha
+of the full-screen quad is R / F below F and 1 above, and the image is built with max(R, F). The quad's material feedbackblend (techset
+passthru_vertalpha, pixel shader vertcol_notexalpha, SrcAlpha / InvSrcAlpha) takes alpha from the vertex only, never from the image. Sigma y = viewHeight * radius / 480 screen
+pixels, sigma x the same times the pixel aspect, source the resolved scene, destination slot 8. TODO(spec): viewHeight is the int at +0x3c of the
+backend's view record (0x1070c3c8), taken as the scene height.
+
+Glow (0x10030af0, 0x10030910, 0x100309c0). glowSetup constants: cutoff, 1 / (1 - cutoff), 0, desaturation. Layer i has radius r_glowRadius_i
+when its bloom intensity is above 0, or the world has a sky and its sky bleed is above 0, else 0 (0x10030a10); the radii are put in ascending
+order with a zero second (the swap changes which layer is applied first). No radius: no glow. The radii are scaled by target width over scene
+width (0x10035bd0, a quarter) and go through the chain with the same viewHeight / 480 factor. Stage one reads the scene through glow_setup (one
+pass at the target size, no separate size change) and ends in slot 9. Stage two, with sqrt(r1^2 - r0^2), reads slot 9 and also ends in slot 9
+(both call sites load 9): the first image is overwritten, so both applications draw the same fully blurred image. Then the images are applied
+to the back buffer, alternating layers from the first. For each the sky bleed is that of the layer, or 0 without a world sky, and
+at sky bleed 0 the material is glow_apply_bloom, else glow_apply_sky_bleed (table 0x1018ea10). So a map with no sky still gets its bloom.
+Blend from the shipped materials' state word 0: glow_apply_bloom One, One; glow_apply_sky_bleed One, InvSrcAlpha. Order: all glow, then the blur.
+OpenIW2 falls back to the scene's own alpha for the setup's post-sun alpha on a frame without the post-sun copy.

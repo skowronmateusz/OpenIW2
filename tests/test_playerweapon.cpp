@@ -678,7 +678,29 @@ void deadPlayer() {
     CHECK(w.clip() == clip);
 }
 
+// ps+0x40 (0x4deb0d..0x4deb38, 0x4de72a): a shot started from a non-firing state sets the reduced-kick window to
+// ReducedKickBullets * fireTime + fireDelay ms (hip block below full aim, ads block at 1.0), it runs down with the frame time.
+void reducedKickWindow() {
+    PlayerWeapon w;
+    w.equip("rifle", {{"semiauto", "1"}, {"firetime", "0.1"}, {"firedelay", "0.05"}, {"clipsize", "30"}, {"startammo", "90"},
+                      {"raisetime", "0.1"}, {"hipgunkickreducedkickbullets", "3"}, {"adsgunkickreducedkickbullets", "0"}});
+    CHECK(run(w, 0.3f, false) == 0);
+    CHECK(!w.reducedKick());
+    CHECK(run(w, 0.01f, true) == 1);
+    CHECK(w.reducedKick()); // 3 * 100 + 50 ms
+    run(w, 0.30f, false);
+    CHECK(w.reducedKick()); // 350 ms window, about 310 ms gone
+    run(w, 0.10f, false);
+    CHECK(!w.reducedKick());
+    PlayerWeapon none; // no ReducedKickBullets and no fireDelay: the window is 0
+    none.equip("rifle", {{"semiauto", "1"}, {"firetime", "0.1"}, {"clipsize", "30"}, {"startammo", "90"}, {"raisetime", "0.1"}});
+    run(none, 0.3f, false);
+    CHECK(run(none, 0.01f, true) == 1);
+    CHECK(!none.reducedKick());
+}
+
 int main() {
+    reducedKickWindow();
     deadPlayer();
     scopeExitOnDamage();
     adsFire();

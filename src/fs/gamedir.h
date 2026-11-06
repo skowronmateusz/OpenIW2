@@ -17,7 +17,7 @@ struct GameDirCheck {
 
 // Checks a `main` folder: iw_00.iwd .. iw_15.iwd and at least one complete localized_<language>_iw00.iwd .. iw10.iwd set.
 // Names are compared case-insensitively (files copied from Windows may differ in case).
-// TODO(spec): no cheap, proven marker of patch 1.3 is known, so the patch level is not checked.
+// The file set is the only check: iw_15.iwd is part of it, the contents of the iwds are not compared with the patch level.
 GameDirCheck checkGameDir(const std::filesystem::path& dir);
 
 // settings.cfg in the app's preference folder: one `mainPath=<folder>` line (other lines are kept for later keys).

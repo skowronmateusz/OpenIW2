@@ -187,6 +187,19 @@ float shockLoopBlend(const ShockRecord& r, int elapsedMs, int durationMs) {
 
 int shockEndSoundMs(const ShockRecord& r, int durationMs) { return durationMs + r.loopEndDelayMs; }
 
+ShockEndSound::Action ShockEndSound::update(bool live, int nowMs, int startMs, int endMs) {
+    const int endAt = startMs + endMs;
+    if (!live || nowMs < endAt) {
+        if (stamp_ == 0) return Action::None;
+        stamp_ = 0;
+        return Action::PlayAbort;
+    }
+    if (stamp_ == endAt) return Action::None;
+    stamp_ = endAt;
+    offsetMs_ = nowMs - endAt;
+    return Action::PlayEnd;
+}
+
 int shockBlendMs(const ShockRecord& r, int remainingMs) {
     if (remainingMs <= 0) return 0;
     if (remainingMs >= r.blendFadeMs) return r.blendMs;

@@ -1257,7 +1257,7 @@ void VM::runFrame(int64_t nowMs) {
     std::sort(due.begin(), due.end(), [](const Thread* a, const Thread* b) { return a->waitSeq > b->waitSeq; });
     for (Thread* th : due)
         if (th->state == ThreadState::Waiting) run(*th);
-    drainReady(); // the notify-woken threads follow the timed ones in the current frame's list (0x46d560)
+    drainReady(); // TODO(spec): the exe's list is one stack by filing (docs/spec/gsc-vm.md); not implemented, woken threads follow the timed ones here
     // waittillframeend threads run after everything else this frame.
     for (int pass = 0; pass < 8; ++pass) {
         std::vector<Thread*> fe;
@@ -1265,7 +1265,7 @@ void VM::runFrame(int64_t nowMs) {
             if (th->state == ThreadState::WaitingFrameEnd) fe.push_back(th.get());
         if (fe.empty()) break;
         for (Thread* th : fe) run(*th);
-        drainReady(); // TODO(spec): where 0x467150 runs what the frame-end threads notify
+        drainReady(); // TODO(spec): the exe files frame-end threads at the tail of the frame list (docs/spec/gsc-vm.md); not implemented
     }
     processFreedObjects(); // 0x467150 after the frame's script run (0x4daf56)
     // Drop finished threads.

@@ -81,6 +81,8 @@ public:
 
     // Advances by dt seconds; returns the number of shots fired during this step.
     int update(float dt, const Input& in);
+    // ps+0x40 > 0: the reduced-kick window of the shot just fired (see updateImpl); the recoil impulse uses the ReducedKickPercent while it runs.
+    bool reducedKick() const { return restrictKickMs_ > 0; }
     // The player is on a turret (PM_Weapon returns early, 0x4dfc59) or in a vehicle (offhand step returns, 0x4df473). With the
     // option grenadeCook (an openiw2 deviation) frag / smoke held at that moment is ignored until released, so getting off
     // with the key still down does not prime a grenade. Without the option the shipped behaviour applies (no latch).
@@ -145,6 +147,7 @@ public:
         return offhandActive_ ? float(std::atof(defValue(offDef_, key).c_str())) : time(key, 0.0f);
     }
     std::string hudField(const char* key) const { return offhandActive_ ? defValue(offDef_, key) : fieldValue(key); }
+    bool offhandActive() const { return offhandActive_; }
     // pm_flags 0x20000: set when the binoculars come up (0x4df7f0 / 0x4df640), cleared when they go down (0x4df680, 0x4df6c0,
     // states 0x15 / 0x12 exit).
     bool binocularsUp() const { return binocActive_; }
@@ -197,6 +200,11 @@ private:
     State state_ = State::Ready;
     float timer_ = 0;  // ps weaponTime (+0x34)
     float delay_ = 0;  // ps weaponDelay (+0x38)
+    // ps+0x40, in ms: set when a shot starts from a state other than firing to (aim fraction < 1 ? hipGunKickReducedKickBullets :
+    // adsGunKickReducedKickBullets) * fireTime + fireDelay (0x4deb0d..0x4deb38, in the fire start 0x4dea00) and reduced by the frame time
+    // (to 0, 0x4de72a..0x4de754) at the start of PM_Weapon.
+    int restrictKickMs_ = 0;
+    void startRestrictKick();
     std::string anim_;
     float animTime_ = 0;
     bool pendingIdle_ = false; // cgame 0x4b299d: idle waits until the running action anim has finished

@@ -307,5 +307,6 @@ G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero prio
   player / AI clip only; fallen trees with only a `clip_nosight` brush stay sight and movement cover (tests/test_rhinecover.cpp) unless
   their xmodel has collision surfaces.
 - OpenIW2: `World::loadStaticModels` -> `CollisionWorld::setStaticModels`; `traceWorld` (point) and `sightBlocked` test them
-  (tests/test_staticmodelhit.cpp). TODO(spec): the exact normal normalisation of 0x414de0 under non-uniform scale, impact marks (decals)
+  (tests/test_staticmodelhit.cpp). The normal under non-uniform scale (0x414de0) stays unchecked and no single-player map reaches it: of all `modelscale_vec` misc_models with
+  unequal components only mp_brecourt and mp_dawnville trees have collision surfaces (beltot's `caen_spikeybush_01`, scale 1.2 1.2 1.5, has none, so it is hit by nothing). TODO(spec): impact marks (decals)
   on static models, and whether `angle` (single yaw key) is read (the loader only reads `angles`).

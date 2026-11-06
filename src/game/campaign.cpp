@@ -1,4 +1,5 @@
 // Objective and level-change built-ins following CoD2SP_s.exe 1.3 (docs/spec/campaign.md).
+#include "game/hintstring.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -69,16 +70,21 @@ void World::registerCampaignBuiltins() {
         objectiveMessage(o.state, "GAME_OBJECTIVESUPDATED");
         return Value();
     });
-    // TODO(spec): objective_string's message (FUN_004f18c0) is not decompiled; the text is stored only.
-    auto setString = [this, index](CallContext& c) {
+    // objective_string / objective_string_nomessage (0x4f1b50 / 0x4f1b60 -> 0x4f18c0 with 1 / 0): the text is stored (the objective's
+    // configstring, index + 13). With the message flag set the objective's current state picks the message id: active and current
+    // send the state message (0x4f10b0) with the new text, failed sends the failed message, done (the id of the complete message,
+    // 0x4f1af2 loads that id and 0x4f1b18 skips an id equal to it) and the other states send nothing.
+    auto setString = [this, index](CallContext& c, bool message) {
         // The further arguments (the "&&N" values, formatted by 0x4eb9b0 like iprintln's) follow after \x1f.
         std::string text = textOf(c.arg(1));
         for (size_t i = 2; i < c.args.size(); ++i) text += "\x1f" + c.arg(i).toString();
-        objectives_[size_t(index(c.arg(0)))].text = text;
+        Objective& o = objectives_[size_t(index(c.arg(0)))];
+        o.text = text;
+        if (message && o.state != 3) objectiveMessage(o.state, text);
         return Value();
     };
-    vm_.registerBuiltin("objective_string", setString);
-    vm_.registerBuiltin("objective_string_nomessage", setString);
+    vm_.registerBuiltin("objective_string", [setString](CallContext& c) { return setString(c, true); });
+    vm_.registerBuiltin("objective_string_nomessage", [setString](CallContext& c) { return setString(c, false); });
     vm_.registerBuiltin("objective_icon", [this, index](CallContext& c) {
         objectives_[size_t(index(c.arg(0)))].icon = c.arg(1).toString();
         return Value();
@@ -132,13 +138,20 @@ void World::registerCampaignBuiltins() {
     });
     // iprintln / iprintlnbold (0x4ebc50 / 0x4ebc60 → 0x4ebc00): the arguments are formatted (0x4eb9b0) and sent to the
     // client as the command `gm "<text>"` / `gmb "<text>"` (format 0x587bd8 = `%s "%s"`); the client shows them in the game
-    // message window (type 1) or the bold message window (type 2) (0x4a6bff / 0x4a6c3f). The text here is the first
-    // argument (a localized reference stays a key), the further arguments follow after \x1f for the "&&N" substitution.
-    // TODO(spec): the exact formatting of 0x4eb9b0 (number and localized-string arguments).
+    // message window (type 1) or the bold message window (type 2) (0x4a6bff / 0x4a6c3f). The
+    // arguments go through buildHintString (src/game/hintstring.h, what = "Game Message", 0x587be0).
     auto printMessage = [this](const char* command) {
         return [this, command](CallContext& c) {
-            std::string text = c.args.empty() ? std::string() : textOf(c.arg(0));
-            for (size_t i = 1; i < c.args.size(); ++i) text += "\x1f" + c.arg(i).toString();
+            std::vector<HintArg> args;
+            for (size_t i = 0; i < c.args.size(); ++i) {
+                const Value& v = c.arg(i);
+                if (std::holds_alternative<script::LocalizedString>(v.v)) args.push_back({true, std::get<script::LocalizedString>(v.v).key});
+                else args.push_back({false, v.toString()});
+            }
+            std::string warn;
+            const std::string text = buildHintString(args, "Game Message", cvarFloat("loc_warnings", 0.0f) != 0.0f,
+                                                     cvarFloat("loc_warningsAsErrors", 0.0f) != 0.0f, &warn);
+            if (!warn.empty()) std::fprintf(stderr, "%s", warn.c_str());
             clientCommands_.push_back({command, text});
             if (std::string(command) == "gm") c.vm.print(c.args.empty() ? std::string() : c.arg(0).toString());
             return Value();
@@ -161,7 +174,7 @@ void World::registerCampaignBuiltins() {
     };
     // changelevel(map [, persistent [, exitTime]]): only with a live player; exitTime in seconds >= 0.
     auto change = [this, scheduleChange](CallContext& c, bool fromMissionSuccess) {
-        if (!player_ || !isAlive(*player_)) return Value();
+        if (!player_ || !isAlive(*player_) || reloading_) return Value(); // g_reloading (0x1c148c4) drops the request (0x4f3f2a)
         if (fromMissionSuccess && c.args.size() > 2) throw std::runtime_error("missionsuccess: too many parameters");
         if (!fromMissionSuccess && c.args.size() > 2) {
             const float exitTime = c.arg(2).asFloat();
@@ -175,8 +188,10 @@ void World::registerCampaignBuiltins() {
     };
     // cinematic(name [, exit time seconds]) (0x4f4220): stores the name (63 characters) and the exit time (the screen fade before the
     // movie, see above; a negative value is a script error, 0x586138). The movie plays when the change falls due, before the next level
-    // loads. TODO(spec): the dvar at 0x1c148c4 that disables the request when non-zero.
+    // loads. A set g_reloading (the dvar at 0x1c148c4, flags 0x1040; the death screen sets it) drops the request before the arguments are
+    // read (0x4f4229..0x4f4233).
     vm_.registerBuiltin("cinematic", [this, scheduleChange](CallContext& c) {
+        if (reloading_) return Value();
         if (c.args.size() > 1) {
             const float exitTime = c.arg(1).asFloat();
             if (exitTime < 0) throw std::runtime_error("cinematic: negative timeout");

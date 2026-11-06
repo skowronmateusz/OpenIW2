@@ -83,7 +83,7 @@ Sources: `CoD2SP_s.exe` (1.3) analyzed with REA: `FUN_00524570` (per-class scrip
   getclosestenemysqdist). Implemented for the animscript kill; TODO(spec): the corpse entity and the other actors' references.
 - A real spawner (spawnflags 1) is never freed by a spawn (only the positive count is decremented, 0x5325ca..0x5325d8); a
   map-start placed actor is the entity itself, which the port replaces by a new entity.
-- TODO(spec): the eviction iterates actor slots; the port iterates entities (differs only for equal distances).
+- TODO(spec) [stays: order only matters for equal distances, so no map result depends on it in a way a run could show]: the eviction iterates actor slots; the port iterates entities.
 
 ## Server frame order (observed; G_RunFrame 0x4da970, src/game/world.cpp World::frame)
 
@@ -101,7 +101,7 @@ start 0x44a6a0 adds 50 ms to level.time and resets the stage. Stages:
    queued touch records (0x1c610b4, count 0x1c628b4, filled by 0x528cb0) are taken over (0x1c61cb4 / 0x1c628b8).
 3. 0x4dab00: each record with valid spawn ids sends "trigger" (const 0x1c7f0e4) with the other entity; a trigger already
    notified in this pass keeps its record for the next pass; after each pass the woken threads run (0x46d560).
-   0x528cb0 notifies at once when the queue is full (256; TODO(spec): not modelled). The queue is part of the save: count and 12-byte records
+   0x528cb0 notifies at once when the queue is full (256, read at 0x528cc0; TODO(spec) [stays: the port's vector does not fill; differs only past 256 records in one frame]: not modelled). The queue is part of the save: count and 12-byte records
    (two entity numbers, two spawn ids) at 0x4e3d11..0x4e3d7e, read back at 0x4e528c..0x4e52fc. The save runs at the frame end (0x44a230), so stage 8's
    records are in it; the taken-over copy 0x1c61cb4 is not saved. openiw2 stores the entity number pairs (format 8), a freed pair is left out.
 4. 0x4dac9c: the animation step of every entity from 1, running the notetrack-woken threads after each entity.
@@ -246,18 +246,24 @@ place (+0x2128) → 4; a recorded turret (+0x2114) that is free → replace 2 (i
 combat without a path (+0x6b0 <= 0) or with +0x728/+0x2148 set, else when the enemy was seen within 250 ms (0x54ce70) and
 0x54d010 passes (0x54cf40: a point trace, mask 0x200c861, from the actor's muzzle (0x500b40, tag_flash; no tag fails) to the
 enemy's eye - 16 (G_Trace 0x44bf00 start EBX, end EDI), clear or ending on a sentient of another team; beyond the fog
-limit 0x1c61038 it fails). The +0x728/+0x2148 shortcut is not modelled.
+limit 0x1c61038 it fails).
 - Script sight builtins: `canshoot(target [, offset])` (0x53d800) is 0x54cf40 from tag_flash + offset (script error
   "Couldn't find tag_flash in entity %d" without the tag); `cansee(ent [, seconds])` (0x53d930) on a sentient is the cached
   sight 0x54ce10 no older than seconds × 1000 (truncated; default 250 ms), refreshed by 0x54ca60 (TODO(spec): non-sentient
   targets, 0x54cc87); `geteye()` (0x4eee60) of an actor is tag_eye (0x500910, scr const 0x1c7f156) looked up in the whole
   DObj, so the head model's tag_eye counts; without one, origin + 64 (warning 0x589b84).
-- Combat 100: path update 0x503490; with a path and the enemy seen: clear the path when inside the goal (always with
-  +0x728/+0x2148). No path → 0x548c70 (0x53b050; inside the goal, with the enemy not seen for 5 s, at a claimed
-  cover node: facing 6, else 3); else facing 4 and path follow (run).
-- Noncombat 0x65 (0x549520): path update; no path → facing 3 and, with a known enemy, 0x53b050, else
-  the stop choice (cover node with spawnflag 0x8000 at the goal: facing 6); with a path → follow, run when the
-  distance to the path goal exceeds `walkdist`, facing 2 (4 inside the goal; 6 near flagged nodes).
+- Combat 100: path update 0x503490; with a path and the enemy seen (0x54ce70): clear the path when +0x728 or +0x2148 is set, or when
+  the position holds (0x502850). No path → 0x548c70: 0x53b050, then, holding the position, 0x548be0 and (enemy not seen for 5 s,
+  claimed node flagged 0x8000 whose cover check fails or names a script) facing 6; otherwise facing 3. With a path: facing 4 and path follow (run).
+- 0x548be0 (goal edge stop, `stopNearGoalEdge`): nothing while pathing to the enemy (+0x788), at anim mode 1, within 1000 ms of +0x744 or
+  with a kept claimed node (0x4fe6f0). With r = working radius - 30: when r <= 0 or the 2D distance to the working goal is at least r,
+  movemode (+0x214) becomes stop and anim mode (+0x218) 1, stored directly, so no "movemode" notify. +0x744 is written only by
+  maymovetopoint (0x53df8d): level time when the move passed and its end lies in the working goal.
+- Noncombat 0x65 (0x549520): path update. No path: holding the position (0x502850) at a claimed node flagged 0x8000 → stop choice
+  (0x53aed0, 0x53ae40), facing 6, also with an enemy. Otherwise facing 3; holding the position runs 0x548be0 first; then 0x53b050 with an
+  enemy, else the stop choice. With a path: follow, run when the distance to the path goal exceeds `walkdist`. After the step: holding
+  the position without a flagged node → facing 4; else with a path planned under 2000 ms ago, at most 192 units left (0x543ae0) and a
+  flagged claimed node → 6; else 2. The dvar at 0x1c148a8 (ai_moveOrientMode, an enum dvar over the list at 0x5a5714, registered at 0x4d904d with default argument 0) replaces that 6 / 2 when nonzero; not registered in this engine.
 - Reacquire 0x66 (0x5494a0): facing 5, path follow (run).
 
 **Damage.** G_Damage notifies "death" (attacker) when health ≤ 0 and calls the die callback, else the pain callback.
@@ -321,7 +327,7 @@ in solid" (0x58d790, type name from 0x5a9368); fraction 1: "... is floating" (0x
 Otherwise the hit point (z = start + fraction·(−257)) is tested with the actor box 0x56f704 / 0x56f710 (start = end); solid gives
 the "in solid" case, else the hit point becomes the origin (+0x14..+0x1c). Implemented in `World::dropPathNodes` (before the
 path graph and the chains are built); the entity clips there are the non-DYNAMICPATH script_brushmodels (vehicle collmaps are
-linked later, 0x50dc40 at 0x4d9c6f). TODO(spec): the other entity classes linked at 0x4d9c3e. The 39-map sweep flags 29 nodes
+linked later, 0x50dc40 at 0x4d9c6f). TODO(spec) [stays: 0x4d9c3e is the call of 0x515f80 between the entity spawn 0x4fa550 and the spawner drop 0x5325f0; 0x515f80 itself was not read]: the other entity classes linked at 0x4d9c3e. The 39-map sweep flags 29 nodes
 "in solid" and 2 "floating"; all become BAD NODEs (type 0) as in the exe. The rejections are real overlaps under the exe's
 own brush test (0x416480: axial sides pushed out by the trace extents (15, 15, 15), the other sides by |offsetZ·n.z| + radius,
 d ≤ 0 inside, epsilon 0x591f80 = 0.125; the port's `traceThroughBrush` does the same): for breakout's negotiation End node
@@ -330,7 +336,7 @@ inside its slanted side, 13.5 units from the brush's vertical edge at (199, 8872
 from a clip wall. An earlier note here assumed the exe could not reject such nodes because breakout's friendly chains would
 then be emptied; that was never checked against the exe, and a bad chain node clears the chain fields (0x52d8b0 →
 0x52d5d0: +0x34/+0x36 = 0, +0x38 = −1; it also writes +0x30/+0x32 = −1 and +0x3a/+0x54 = 0, of which the path data load
-0x52e3c0 rewrites +0x3a (0x52e473); TODO(spec): +0x30/+0x32/+0x54 there, not modelled); the chain node count is kept, so trigger_friendlychain (0x518bf0)
+0x52e3c0 rewrites +0x3a (0x52e473); TODO(spec) [stays: the loop from 0x52e460 was read only as far as +0x3a and the link records]: +0x30/+0x32/+0x54 there, not modelled); the chain node count is kept, so trigger_friendlychain (0x518bf0)
 still finds its node by name. breakout and
 silotown_assault therefore print "Error: bad node [%d] in friendly chain" and "Bad node in friendly chain" (0x42c7f0 channel
 1, not fatal), as the exe does. Debug opt-out: `IW2_NODE_DROP_STRICT=0` keeps a rejected node's type.
@@ -483,6 +489,35 @@ variant; the grenade take-cover path passes planes, 0x51fa49). The producers are
 16). The flee fallback (the second plain search 0x5429e0 gated by 0x54b610, 0x51faa0…0x51fb05, and 0x542a60's farthest-node
 path) is ported ("Path planner" above).
 
+## maymovetopoint (0x53dce0)
+
+An actor linked to anything (entity +0x1c8) gets 0. Then every other sentient of its own team that has an enemy is tested: the move from
+the actor's origin to the point must not cross, in 2D, the line from that sentient to its enemy (0x53dc50: each segment's ends strictly on
+opposite sides of the other). A point trace from 128 above the point to 128 below it (mask +0x28c | 0x6000, actor passed) must not end all
+solid (trace +0x22). The move check 0x543d30 runs from the origin with mask +0x28c | 0x4004 and step 10 at prone tilt, else 18. The end must
+lie in the working goal (0x5026d0); when it does not, 0x503100 may start pathing to the enemy and the goal test runs once more against the
+goal this produces. Only a point that passes all of this returns 1 and stamps +0x744.
+
+0x503100 needs an enemy, +0x788 clear, the enemy nearer (2D) than pathenemyfightdist, its position known within 5 s (0x503080 with argument
+1, which skips the node test) and either the claimed node seeing the enemy's node or the enemy seen within 5 s (record +0x8). It sets +0x788
+and recomputes the working goal (0x505f70).
+
+## Enemy event (sentient +0x20)
+
+The enemy setter 0x515150 stores level time + 1000 at +0x20 when it sets a new enemy, and 0 when it clears one. A notifying call sends the
+event 0x535740 (type 4, at the sentient's origin, default radius 1024, receivers its own team, mask 1 << team) when +0x20 is due, or at once
+when the enemy changes before it was due. The chooser 0x54e3df calls the setter with notify on every update, so the event goes out about a
+second after the enemy was picked. Type 4 passes the sender's knowledge of its enemy to team mates that know it less recently. A silent call
+sends nothing.
+
+## Path near a point (0x5437f0)
+
+Used by the grenade reaction (0x51f9f1, point = the landing point, r² = danger radius²). One test is applied to three kinds of stretch, each
+with a base B, unit direction d and length l: v = p − B must be nearer than r to the line (perp² < r²); with t = v·d, t < 0 passes when
+|v|² < r², 0 <= t <= l passes, t > l passes when |v + l·d|² < r². The stretches: B = origin + lookDist · lookDir with lookDir and lookDist;
+when lookSegLen (+0x3b4) is not 0, the point at lookIndex with its direction and lookSegLen; then each point below lookIndex down to 0 with its
+direction and length. The signs are as observed: they do not read as a plain distance to the segment.
+
 ## AI events (observed; call sites in the spec below)
 
 0x535770 broadcasts a point event of `type` at `pos` to every live actor within the type's radius² (table 0x57031c,
@@ -495,11 +530,11 @@ passes on its own knowledge of its enemy (copied per-sentient when the target's 
 (0x54d340) — the attacker (sentient +0x28, set by G_Damage 0x5284dd) is revealed and then forgotten; 6 death
 (0x548a10) — the killer is learned; 10 bullet fired (0x531443, 2048²); the suppression line 0x531489 type 16
 (0x535860 → 0x535f20) marks the attacker (+0x1780 = now), teaches the source's position and adds a danger plane
-(0x54b3b0). Types 7/12/13 print "not yet handled" in the exe, 11 does nothing, 8/9 (grenade ping) go through
+(0x54b3b0); the missile impact (0x526200 → 0x526272, rockets and other non-grenade missiles with a parent) sends the same line event as type 0x11 (512² default, flags 0, no danger plane: the handler 0x535f20 tests only 0x10 for the plane). Types 7/12/13 print "not yet handled" in the exe, 11 does nothing, 8/9 (grenade ping) go through
 `grenadePing` instead of this dispatch. Knowledge is kept per sentient (0x500c50 learns position + own position then,
 0x54ddc0 "known within ms"). Implemented in `src/game/actorevents.cpp`; producers wired in `combat.cpp` (G_Damage,
 Bullet_Fire_Extended, the AI fire builtin), `actorstate.cpp` (pain reveal, death).
-The +0x48 accumulator is not a pain accumulator: it is the movement-noise accumulator 0x5485a0 (`actorMoveNoise`). TODO(spec): the turret entity +0x10c field of the pain/death handler. The player's events 2/3 are the footstep and
+The +0x48 accumulator is not a pain accumulator: it is the movement-noise accumulator 0x5485a0 (`actorMoveNoise`). TODO(spec) [stays: +0x10c has many references in 0x4f0044..0x4f871b and 0x50dec8..0x50df42, none yet tied to the turret entity]: the turret entity +0x10c field of the pain/death handler. The player's events 2/3 are the footstep and
 landing events of G_ClientEvents 0x4e75f0 (`World::playerPmEvents`).
 
 ## Bad places (observed 0x524060 0x5199f0)
@@ -609,7 +644,7 @@ start)·fraction on every axis, which is the end point when nothing is hit (ther
 drops every in-use eType 0xa entity (the spawners) with 0x4fc550, with the node drop's DYNAMICPATH rule (contents of
 entities with flags 0x100 saved, zeroed and restored, 0x532620..0x532660 / 0x532705..0x53272e); an allsolid spawner prints
 "^3Spawner at (%g %g %g) is in solid" (0x58f7ec, its origin before the drop) and gets bit 0 of +0xa2 cleared (0x5326d9;
-TODO(spec): the reader of that bit, not modelled). The actor physics does not lower a stationary actor: the move block
+TODO(spec) [stays: tested at 0x4fc9b6 before 0x4d7c30 on a linked entity; no spawner path to it was traced]: the reader of that bit, not modelled). The actor physics does not lower a stationary actor: the move block
 starts with ground entity 0x7fe (0x500d27) and 0x5487c0 returns at once while the ground entity is 0x7fe and the move delta
 is zero (0x5487c3..0x548823), so before this drop was modelled actors without a delta kept their spawner height (cityhall
 spawner (4386 −4304 64) over terrain at 35.4). Map-start placed actors are dropped by the exe inside the entity spawn (0x4fa550 → G_CallSpawn 0x4f9770 → 0x4fc640) in
@@ -628,7 +663,7 @@ for values 0–3: "stop", "stop soon", "walk", "run" (constants set in 0x5064a0)
 `movemode` "stop". The engine's movement code updates it; OpenIW2 sets "run" while moving to a goal and "stop" on
 arrival (inferred placeholder).
 
-TODO(spec): `anim_pose` (+0x146) is a string index, 0 after allocation; what the getter returns for 0 is not read.
+`anim_pose` (+0x146) is a string index, 0 after allocation; animscripts/init.gsc:220 sets it before anything reads it.
 OpenIW2 uses "stand"; `animscripts/init.gsc` sets `anim_pose = "stand"` itself.
 
 ## Path data (lump 38, observed)
@@ -722,7 +757,7 @@ Not a death or mission-fail view and not a terrain bug. At sim 16..30 s the play
 hatch (hatch overlay) of the player tank, vehicle 13 `xmodel/vehicle_crusader2_viewmodel` at -53265,5736,-198 (turret
 -4.4/-0.6). The pale plane with the straight far edge is that viewmodel's own hull/turret top seen from the hatch eye point
 (the same pale camo seen from outside in a follow shot). It is unchanged with IW2_NO_SPEC, IW2_NO_DETAIL and IW2_NO_PROBE.
-TODO(spec): the near-field look of that surface (texture detail) has not been compared with the original.
+TODO(spec) [stays: needs a side-by-side with the original game, which this analysis does not run]: the near-field look of that surface (texture detail) has not been compared with the original.
 
 ### Decode attempt: 0x5487c0, 0x5037e0, 0x5442a0 (stalled; findings)
 
@@ -824,16 +859,14 @@ events before, 296 after).
 
 - Trace box: the actor r.mins/r.maxs (gentity +0xa8/+0xb4) are written once at spawn (0x4fc709..0x4fc731: -15,-15,0 .. 15,15,72) and by no other code in the actor range 0x4f0000..0x560000 (the only other writer, 0x4f8318, is the same box 72 high for makefakeai). The slide move wiring now uses the 72-high box (the old ground snap used 70).
 - Writer of +0x2148 from the bump: 0x501c6f..0x501c8b (second move step, after the call 0x5487c0 at 0x501bda and the scan 0x501380 that returns early when another actor is close ahead): +0x318 = the hit gentity number; when that gentity has an actor struct (gentity +0x100) whose +0x2148 is still 0, the BUMPED actor's +0x2148 is set to the bumping actor's gentity (the bumped one follows the one that pushed it). The first writer (0x501330) does not touch +0x2148.
-- Other writers of +0x2148: 0x504714 (0x504630: when unset, scan the 32 actors for one within range via 0x5025f0), 0x501480 (the 0x501380 scan), 0x4fee3f/0x4fef0d/0x4fedc0 region; clears/consumers at 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x5013b0, 0x504630. Setting the repo's `ActorAi::followed` from the bump alone would freeze the actor (stepActorPath returns early while followed) because the lifecycle (0x504630 scan, the reset sites, 0x53ade0 consumer) is not ported. TODO(spec): decode that lifecycle, then add the 0x501c8b link.
-- 0x500d80 (arg: bumped entity number, this = actor): if the bumped gentity has +0x104 set the result is (level time < actor +0x724); else 0 when its contents (+0x128) have bit 0x400; else (actor +0x6ec > gentity +0x1ec). It is called only from 0x504228 in the branch of 0x504160 that does NOT run the path walk (0x505230, which World::moveActor models), as the third argument of 0x544ca0 before 0x505520. +0x6ec and +0x1ec have no writer in the actor range, so the last branch is undecoded. TODO(spec); World::moveActor's own lookahead call is not affected.
+- Other writers of +0x2148: 0x504714 (0x504630: when unset, scan the 32 actors for one within range via 0x5025f0), 0x501480 (the 0x501380 scan), 0x4fee3f/0x4fef0d/0x4fedc0 region; clears/consumers at 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x5013b0, 0x504630. Setting the repo's `ActorAi::followed` from the bump alone would freeze the actor (stepActorPath returns early while followed) because the lifecycle (0x504630 scan, the reset sites, 0x53ade0 consumer) is not ported. The lifecycle is decoded in the sections below.
+- 0x500d80 (arg: bumped entity number, this = actor): if the bumped gentity has +0x104 set the result is (level time < actor +0x724); else 0 when its contents (+0x128) have bit 0x400; else (actor +0x6ec > gentity +0x1ec). It is called only from 0x504228 in the branch of 0x504160 that does NOT run the path walk (0x505230, which World::moveActor models), as the third argument of 0x544ca0 before 0x505520. +0x6ec has four references, all reads (0x500dc3, 0x505a22, 0x5494f0, 0x5495c6), so the last branch is undecoded. TODO(spec) [stays: no direct store exists to give the field a meaning]; World::moveActor's own lookahead call is not affected.
 
 ## Follow lifecycle (+0x2148): decoded part (0x4fedc0, link at 0x501c6f)
 
 Ported (src/game/actorfollow.cpp `updateFollowed`, `linkBumpedActor`):
 - 0x4fedc0, called at the start of each think (0x4fef20): no-op without a followed gentity; the followed entity is dropped when removed. With d2 the squared XY distance: d2 >= 1406.25 (0x591fd0) clears this actor's link and the followed actor's back-link; closer, the link is cleared when the followed actor's blocker (+0x72c) is this actor. If still set and d2 >= 900 (0x591fd4), a moving actor (anim mode 1, path count > 0, not blocked by the followed one) clears it when (me - followed) . lookDir > 0.
 - 0x501c6f..0x501c8b: this is NOT a link from the hit entity. It is the last fallback of the yield step 0x501620 (below): +0x318 = the followed entity and an actor followed that follows nobody gets +0x2148 = this actor.
-
-TODO(spec): the retarget to the player (0x4fec50, 0x447830, 0x504610, 0x519050), the scans 0x501380 and 0x504630 (0x5025f0/0x502660), the follower trail (0x500d80 + 0x544ca0 + 0x505520/0x504f60, path walk skipped at 0x5041a3), the 0x504160 branch not running 0x505230 (0x504228), and the consumers 0x4fe6ca, 0x4fe8eb, 0x50081d, 0x5013b0, 0x53ade0, 0x501e06 are not decoded/ported.
 
 Status: stepActorPath returns early for a followed actor (as the exe skips the path walk, 0x5041a3); the follower is moved by the yield step 0x501620 from the physics step 0x501d00 (next section), so it does not freeze.
 
@@ -918,7 +951,7 @@ Actor fields (offsets from the actor struct, `ActorProne` in src/game/world.h): 
 straight / up (0 = unset), +0x148 = 1 / down angle, +0x14c = 1 / up angle, +0x150 bend of the last leg-weight update,
 +0x154 last fit result (script field `proneok`), +0x158 corpse-blend byte, +0x159 prone, +0x15c transition start (level
 ms), +0x160 transition length in ms (negative while leaving, 0 once settled), +0x164 / +0x168 / +0x16c the fit outputs a6 /
-a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; reader not found: TODO(spec)).
+a7 / a8, +0x288 a tilt byte (set on entry, cleared by the think when not prone; read at 0x502b42, 0x53defc and 0x5491bf, where set it gives 10 instead of 18 as a probe size, and 0x543ca4, which picks a constant for an actor target; those probes do not use it here: TODO(spec) [stays: the port's probes have no size argument yet].
 
 - Bookkeeping shared by 0x514970 / 0x514b30 / 0x514c40 / 0x53d430: length < 0 and start - length < now: prone = 0 (the
   leave finished); length > 0 and start + length < now: length = 0.
@@ -1062,7 +1095,7 @@ When this sentient is the actor's enemy, 0x4fe1b2..0x4fe243 repeat the tail of t
 cleared when it names this sentient (0x4fe24c). The silent clear at 0x514dda therefore acts only on a sentient without an actor, the player.
 "enemy" has listeners: _patrol.gsc:10, :56, beltot.gsc:2163, corner_axis.gsc:605 and others. World::releaseSentient. The rest of the record stays in the
 exe until its slot is used again. openiw2 keys records by script object, so they are erased when the object is released, because an address
-can be reused where a slot's meaning cannot. TODO(spec): the +0x20 event (due 1000 ms after an enemy is set, 0x5151c0) is not modelled anywhere, so the flush is not either.
+can be reused where a slot's meaning cannot. The +0x20 event is `Entity::enemyEventMs` (see "Enemy event" below).
 
 Team 4. The team getter 0x5410b0 names it "dead" (names axis, allies, neutral, dead at 0x5a9914), so `team` reads "dead" from the release to the
 conversion, and undefined after. No script compares with it. Every sentient scan goes through a mask of 1 << team (0x515230): the enemy
@@ -1147,8 +1180,7 @@ mover think skips type 0 (0x532970), so no movedone or rotatedone follows. The s
 - 0x504450 is now one frame (`World::actorMoveFrame`, from thinkActors after the state think, for every state but the
   turret and animscripted, whose thinks do not reach it): mode 8 nothing; modes 2..7 the delta / yaw above, then the
   facing tail, then `moveActorKind` with the rotated delta. The mode-1 path walk stays in the state code (moveActor); a frame
-  that already walked is treated as mode 1 so an animmode override does not move the actor twice (TODO(spec): whether
-  0x552350 stores mode 1 directly or through 0x53ac90, which applies +0x21c). Pain and death animations now move the actor by
+  that already walked is treated as mode 1 so an animmode override does not move the actor twice (TODO(spec) [stays: 0x552374 confirmed; needs the walk moved out of the step]: 0x552350 stores mode 1 directly, 0x552374, but the move script then applies +0x21c through 0x53ac90, so with an override the exe does not path-walk that frame). Pain and death animations now move the actor by
   their deltas (mode 4), as animcustom and the negotiation (whose ad hoc copy is removed) did. The linked branch (parent tag
   frame) and 0x4e7150 stay TODO(spec).
 - orientmode (0x53f510) sets the override block through the same helpers: "face angle" 0x5048b0(0, angle) and +0x120;
@@ -1165,7 +1197,7 @@ mover think skips type 0 (0x532970), so no movedone or rotatedone follows. The s
   Implemented as `World::actorFaceDefault`; an identical script (same name) keeps its override (0x53ac99 compare).
 - getmotionangle (0x53f770): block velocity (+0x230) of more than 1 (2D squared) -> its yaw (0x421890) - entity yaw; else
   with a path the lookahead direction's yaw - entity yaw; else 0. Replaces the inferred `$motionyaw` reader.
-- TODO(spec): +0x130 has no reader found; the turret user's angles from the turret (0x54a7e6, then 0x54a829) are not set.
+- +0x130 has no reader (0x505bee is its only reference in the code). TODO(spec) [stays: 0x54a7e6 calls the angle step 0x53ba60 into entity +0xe8, then 0x504950 and 0x5049a0 set the facing; the arguments of 0x53ba60 were not traced]: the turret user's angles from the turret are not set.
 - Elalamein check (after the facing blend): the player dies by 40 s where the build before it (1b1b4a0) survived. The
   bisect (ring feed, modes 2/4/5, prone turn rate, the removed moveActor yaw write) shows the death only goes away with
   both the selector and the old yaw write restored; it is not tied to one piece. The damage (`IW2_PLAYER_DMG_LOG`) comes
@@ -1309,3 +1341,11 @@ the player.
   script error "tag '%s' does not exist in model '%s' (or any attached submodels)" through 0x468ed0, which aborts the calling thread
   (longjmp to the script error handler). No value is returned. An entity without a model gets its own error, and a non-entity
   likewise. The lookup caches the last (entity, level time, tag) result, so a repeat call in one frame skips the search.
+
+## Grenade awareness details (0x5200e0, 0x51fe90, 0x548a10)
+
+- 0x5200e0, per actor that takes the grenade: when the thrower (+0x134) is a sentient of the team the actor fights (0x4e7010), the actor is notified "grenade danger" (scr const 0x1c7f084, name registered at 0x50674a) with the grenade as argument.
+- 0x51fe90 forgets the grenade: path present, actor outside the script goal (+0x764), and the 2D unit direction to the landing point (+0x154) dotted with the lookahead direction (+0x6c8) is negative; or, unless the thrower is a sentient outside that enemy team, the dot is above 0.7 (0x591f30) and the squared 3D distance (0x420d90) to the landing point exceeds 16.
+- 0x548a10 (death): after the type 6 event, a grenade with +0x150 == this actor is released from the hand when held (+0xa2 & 1, 0x520470) and +0x150 cleared; then the sentient release and the path clear.
+- Bad place flee (0x524060): after the path step, a followed or blocked actor (+0x2148, +0x728) drops the path (0x5240dc).
+- Actor clip mask +0x28c: 0x2820011 at spawn (0x500d13); pushplayer changes bit 0x2000000 (0x5407ef). The path mover's readers (0x5512ce, 0x551e45, 0x5491f0) use that value.

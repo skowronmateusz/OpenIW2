@@ -86,4 +86,4 @@ mtlCullFace = bits 14–15 of state word 0 (file 0x2c, mask 0xc000; values None 
 0xc000, table 0x1018fa10); D3DRS_CULLMODE from {0, D3DCULL_NONE, D3DCULL_CCW, D3DCULL_CW} (0x10190704), i.e. Back
 culls counter-clockwise (back) faces with D3D's clockwise front faces. 371 of the shipped materials sampled use Back.
 iw2view: pipelines per pass × polygon offset × cull, front face clockwise (the opposite winding renders the toujane
-houses inside out). TODO(spec): the mark draw path (0x10024320) keeps no culling.
+houses inside out). The mark entry 0x10024320 only copies vertices into a type-1 draw record under the mark's material, so culling and polygon offset are the material's state.

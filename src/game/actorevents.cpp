@@ -123,7 +123,7 @@ void World::aiEventDispatch(Entity& source, Entity& target, int type) {
 // The AI part of G_ClientEvents (0x4e7620–0x4e7890): events since the last call, at most the newest 4 (the loop starts
 // at max(old, sequence − 4)). The crouched player (pm_flags 2) makes no noise; the event goes to the actors of the
 // enemy team (0x4e780a: team table {0,2,1,0,0}, EAX of 0x535770) at the player's origin with the type's radius.
-// TODO(spec): the client flag test `+0x85c8 & 0x1000` (0x4e77b7) skips the event too; its meaning is not identified.
+// TODO(spec): [stays: the only direct stores to +0x85c8 are the save load 0x4e197e and 0x4013f6, which is another structure; bit 0x1000 has no direct setter] the client flag test `+0x85c8 & 0x1000` (0x4e77b7) skips the event too.
 // The jump events 0x46..0x5c are processed like the run steps but nothing in pmove adds them yet.
 void World::playerPmEvents(int eventSeq, const int (&events)[4], bool crouched) {
     int from = playerEventSeq_;

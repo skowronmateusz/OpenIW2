@@ -11,6 +11,9 @@ namespace iw2::game {
 using GrenadeVec3 = std::array<float, 3>;
 
 // 0x424010 / 0x424040 style 16-bit angle quantisation: truncate to 1/65536 of a turn, wrap into [0, 360).
+// 0x526e94..0x526ecb: the move result that asks for the 1.5-unit ground trace: no hit, or a hit with normal z above 0.7.
+inline bool grenadeTriesGroundSettle(float fraction, float normalZ) { return fraction == 1.0f || (fraction < 1.0f && normalZ > 0.7f); }
+
 inline float grenadeAngleMod16(float a) { return float(int(a * 182.04444885253906f) & 0xffff) * 0.0054931640625f; }
 // 0x424040: the same wrapped into (-180, 180].
 inline float grenadeAngleNorm180(float a) {

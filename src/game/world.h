@@ -23,6 +23,7 @@
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
+#include "game/pmove.h"
 #include "game/turrets.h"
 #include "game/vehicles.h"
 #include "script/vm.h"
@@ -68,7 +69,7 @@ struct ActorPath {
     int count = 0;                   // +0x380 (actor +0x6b0)
     int planned = 0;                 // +0x382: points when planned (or re-extended)
     int detour = 0;                  // +0x384: points added by the last detour (−1: blocked at the path end)
-    int traversal = 0;               // +0x386: lowest point the follower may use (negotiation pairs, TODO(spec))
+    int traversal = 0;               // +0x386: lowest point the follower may use (negotiation pairs)
     int lookIndex = 0;               // +0x388
     int avoidEnt = 0x7ff;            // +0x38a: entity number of the sentient being avoided, 0x7ff none
     Vec3 goal{};                     // +0x38c
@@ -117,6 +118,7 @@ struct ActorProne {
 struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
     int depth = 0;
+    bool deathPending = false;                // +0xb4: a lethal hit was held back by 0x4ff360; the think kills once the state is gone (0x4ff215)
     int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); slide move only (default on)
     float hitNormal[2] = {0, 0};              // +0x324 / +0x328 (block +0x100 / +0x104): wall normal x / y recorded by the slide move; persists between moves (only +0x318 / +0x32d are reset per move)
     bool deflected = false;                   // +0x32d (block byte +0x109): the last slide move was stopped short by a trace (gethityaw / isdeflected)
@@ -136,7 +138,7 @@ struct ActorAi {
     Vec3 blockVel{};                          // +0x230 block velocity of the previous physics step (read by 0x505b80 / 0x505cb0)
     // The slide block's own velocity (block +0xc = actor +0x230; the block lives in the actor at +0x224, 0x501f38 passes
     // actor + 0x224 to 0x5487c0, which updates it in place): it carries over to the next physics step as the move block's
-    // velocity (the airborne branch moves on it with gravity). TODO(spec): blockVel above is the frame displacement, which
+    // velocity (the airborne branch moves on it with gravity). TODO(spec): [stays: not read] blockVel above is the frame displacement, which
     // the readers 0x505b80 / 0x505cb0 still take; the exe has only this one field.
     float slideVel[3] = {0, 0, 0};
     bool slideContact = false;       // block +0x20 (actor +0x244): ground contact with normal z >= 0.3
@@ -150,14 +152,15 @@ struct ActorAi {
     // (its target is orientTarget). All 16-bit quantised degrees. The base target starts at the spawn yaw (0x4fc7dd).
     float basePitch = 0, baseYaw = 0, baseTarget = 0;
     float overridePitch = 0, overrideYaw = 0;
-    int64_t faceEnemyUntilMs = 0;             // +0x130: now + 500 when mode 4 sees its enemy while moving (0x505bee). TODO(spec): reader
+    int64_t faceEnemyUntilMs = 0;             // +0x130: now + 500 when mode 4 sees its enemy while moving (0x505bee); no reader in the code (0x505bee is the only reference)
     int animMode = 0, animModeOverride = 0;   // +0x218 / +0x21c
     int movemode = 0;                         // +0x214: 0 stop, 1 stop_soon, 2 walk, 3 run
-    bool animDeltaGoalWeights = false;        // +0x220 anim deltas weigh by goal weights (TODO(spec): the states that set it)
+    bool animDeltaGoalWeights = false;        // +0x220 anim deltas weigh by goal weights (writers: docs/spec/ai.md)
     script::Value customScript;               // +0x208 animcustom function
     std::string negotiationScript;            // +0x208 for state 9: the begin node's animscript key (animscripts/traverse/<key>, 0x543760)
     bool alive = true;                        // +0x25c
     int64_t stopSoonMs = 0;                   // +0x704
+    int64_t mayMoveMs = -1000;                // +0x744 last maymovetopoint that passed and ends inside the goal
     int64_t planTimeMs = 0;                   // +0x720 earliest time of the next path plan without a path
     int64_t nodeBlockMs = 0;
     int trimCount = 0;     // +0x70c: set to path count + 1 by findreacquire*path (0x5492f9); consumed by trimpathtoattack
@@ -173,6 +176,7 @@ struct ActorAi {
     int64_t yieldMs = -1;                     // level time of the last yield step (one physics step per think)
     int64_t thoughtMs = -1;                   // last think (its next think, gentity +0x138, is 50 ms later)
     float goalSide = 0;                       // +0x73c sideways goal offset (0x502960); only ever 0 in the exe (4fc7ab)
+    int resumedFrom = 0;                      // the state left while a resume runs (AiNone otherwise)
     bool pathToEnemy = false;                 // +0x788 pathing towards the enemy (set by 0x503200, World::stopForEnemy)
     std::vector<int> coverNodes;              // +0x798 findcovernode result, count +0x1738 (best last)
     std::vector<int> reacquireNodes;          // +0x173c findreacquirenode result, count +0x1764 (best last)
@@ -184,10 +188,10 @@ struct ActorAi {
     bool throwFromTag = false;                // +0x20d4: re-solve the throw from tag_weapon_right when thrown
     std::string throwMethod;                  // +0x20cc
     Vec3 throwStart{}, throwTarget{}, throwVel{}; // +0x20dc / +0x20e8 / +0x20f4
-    bool noPush = true;                       // +0x28c bit 0x2000000: pushplayer(0) sets it (TODO(spec): its consumer)
-    bool potentialThreat = false;             // +0x20b4: setpotentialthreat; +0x20b8 cos, +0x20bc sin of the angle (TODO(spec): consumer)
+    bool noPush = true;                       // +0x28c bit 0x2000000: pushplayer(0) sets it; the actor's clip mask holds player contents
+    bool potentialThreat = false;             // +0x20b4: setpotentialthreat; +0x20b8 cos, +0x20bc sin of the angle (read by 0x54bdd9; TODO(spec): [stays: 0x54e4ee not read] the second reader 0x54e4ee in the enemy choice)
     float potentialThreatDir[2] = {0, 0};
-    int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (TODO(spec): consumer)
+    int traverseMode = 0;                     // +0x210: traversemode gravity 1, nogravity 2, noclip 3 (read by the negotiation state)
     bool noPhysicsFlag = false;               // gentity flag 0x1000 (+0x128): animmode("nophysics") sets it, every other mode clears it
     ActorProne prone;                         // +0x140 .. +0x16c, +0x288 (src/game/proneworld.cpp)
 };
@@ -234,6 +238,7 @@ struct ScriptedAnim {
     int root = 0;             // +0x4a
     bool started = false;     // +0x4c: set after the first update
     bool deathplant = false;  // +0x4d
+    float plantLift = 0;      // +0x50: height the plant added to the animated position
 };
 
 // One danger plane slot (actor +0x2050, 4 × 0x18 bytes): fire of an enemy near the actor marks the half plane beyond
@@ -303,6 +308,7 @@ struct Entity {
     // this sentient as their enemy (sentient +0x24).
     std::unordered_map<const script::Object*, SentientInfo> sentientInfo;
     int attackers = 0;
+    int64_t enemyEventMs = 0;                 // sentient +0x20: when the team is told about the enemy (event 4), 0 none
     int64_t eyeFrameMs = -1;               // per-frame cache of the eye (0x500910 caches by frame time)
     Vec3 eyePos{}, eyeForward{};
 };
@@ -449,7 +455,11 @@ public:
         float adsFrac = 0.0f;  // the aim fraction (client +0xb8), read by playerads
     };
     void setPlayerCommand(const PlayerCommand& c) {
-        prevButtons_ = playerCmd_.buttons | playerCmd_.rawButtons;
+        // ClientThink (0x4e7e4c..0x4e7e7d): +0x8638 = the old +0x8634, +0x8634 = the command's buttons, +0x863c = the bits newly down
+        // (now & ~old) and +0x8640 |= those; the server frame end (ClientEndFrame 0x4e7f90, stores at 0x4e811c..0x4e8141) clears +0x8640.
+        const uint32_t now = c.buttons | c.rawButtons;
+        edgeButtons_ |= now & ~heldButtons_;
+        heldButtons_ = now;
         playerCmd_ = c;
     }
     // pm_flags bits of the vehicle code: 0x20000 in a vehicle, 0x40000 the view yaw turns with the vehicle.
@@ -460,6 +470,25 @@ public:
     // Debug (iw2view IW2_FIRE_TURRETS): one shot from every turret entity (number of turrets fired).
     int debugFireTurrets();
     void debugSetEnemy(Entity& a, Entity* b) { setEnemy(a, b, true); } // IW2_COMBAT_SCENE
+    bool debugMayMoveToPoint(Entity& a, const Vec3& p) { return mayMoveToPoint(a, p); }
+    bool debugLinked(Entity& a) { return links_.count(a.number) != 0; }
+    bool debugPathNearPoint(Entity& a, const Vec3& p, float r2) { return pathNearPoint(a, p, r2); }
+    void debugClaimNode(Entity& a, int node, bool takeOver) { claimNode(a, node, takeOver); }
+    void debugStopNearGoalEdge(Entity& e) { stopNearGoalEdge(e); }
+    void debugExposedSubstate(Entity& e) { exposedSubstate(e); }
+    void debugExposedCombat(Entity& e) { exposedCombat(e); }
+    int debugBadPlaceThink(Entity& e) { return badPlaceThink(e); }
+    int debugDeathThink(Entity& e) { return deathThink(e); }
+    bool debugPathToPoint(Entity& e, const Vec3& p) { return pathToPoint(e, p, false) && actorHasPath(e); }
+    // Test hook: exposedNoncombat with node 0 claimed and flagged (0x8000), or no claimed node; returns the facing.
+    int debugNoncombatFacing(Entity& e, bool flagged) {
+        if (flagged) nodes_[0].spawnflags |= 0x8000; else nodes_[0].spawnflags &= ~0x8000;
+        e.claimedNode = flagged ? 0 : -1;
+        exposedNoncombat(e);
+        return e.ai.facing;
+    }
+    bool debugGrenadePathLeadsAway(Entity& e, Entity& g) { return grenadePathLeadsAway(e, g); }
+    int64_t debugTimeMs() const { return timeMs_; }
     // IW2_COMBAT_SCENE: puts b 120 units in front of a (a's yaw), same height.
     void debugPlaceBefore(Entity& b, Entity& a) {
         Vec3 p = a.obj->get("origin").asVector();
@@ -587,12 +616,10 @@ public:
     const ShellShockState& shellShock() const { return shellShock_; }
     const ShockRecord* shellShockRecord() const;
     // earthquake (0x4f4330) sends event 0xc7 (scale in event param, duration ms, origin, radius) to the clients: kept as a log for the
-    // front end (TODO(spec): the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
+    // front end (TODO(spec): [stays: cgame handler not read] the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
     struct Earthquake { float scale; int durationMs; Vec3 origin; float radius; int64_t startMs; };
     const std::vector<Earthquake>& earthquakes() const { return earthquakes_; }
     const std::optional<Vec3>& sunlightOverride() const { return sunlight_; }
-    struct ViewKick { int count = 0; Vec3 dir{}; };
-    const ViewKick& playerViewKick() const { return viewKick_; }
     // pm_flags 0x100000 (friendly under the crosshair, within g_friendlyfireDist) and 0x200000 (enemy within the
     // weapon's enemyCrosshairRange), set by the client think (0x535070).
     uint32_t playerCrosshairFlags() const { return crosshairFlags_; }
@@ -648,7 +675,7 @@ public:
     // GAME_GODMODE_ON/OFF, GAME_DEMI_GODMODE_ON/OFF, GAME_NOTARGETON/OFF. Effects: god is read by combat ($godmode on the player);
     // Consumers: god and demigod in G_Damage (0x5282b3 / 0x5283d2: the entity objects carry `$godmode` / `$demigod`), notarget in the enemy search
     // 0x54e230 (0x54e326), the cover script check 0x54bb30 (0x54bbc9) and getclosestenemysqdist 0x53c290 (0x53c37b): `$notarget` next to `ignoreme`.
-    // TODO(spec): the entity event at 0x4e776b (damage 100000, means of death 0xc) that god / demigod (flags & 3) skip is not ported.
+    // EV_GRENADE_SUICIDE (0xc8, 0x4e776b: health 0 and player_die unless god / demigod): World::playerGrenadeInHand.
     bool cheatGod();
     bool cheatDemigod();
     bool godOn() const { return god_; }
@@ -660,7 +687,7 @@ public:
     bool playerNoclip() const { return noclip_; }
     bool playerUfo() const { return ufo_; }
     // ClientThink's pm_type for the player (0x4e7c05..0x4e7c5a): noclip 2, ufo 3, else by health and the link
-    // (pmClientType, pmove.h). `linked` is the playerlinkto link (TODO(spec): other entity links, ent+0x1c8).
+    // (pmClientType, pmove.h). `linked` is the playerlinkto link (TODO(spec): [stays: not read] other entity links, ent+0x1c8).
     int playerPmType() const;
     // The key table of the client (buttonpressed / getcommandfromkey); null in a headless run, where no key is bound or down.
     const ClientInput* clientInput = nullptr;
@@ -686,6 +713,7 @@ public:
     static std::string corpseCollmap(const Entity& e); // the collmap brush ("*N") a freed vehicle keeps, else empty
     bool tryPushEntity(Entity& ent, Entity& pusher, const Vec3& move, const Vec3& turn);
     void updateVehicleEngineSound(Entity& e);
+    void updateSoundBlend(Entity& e); // client side of a sound_blend entity (ET_SOUND_BLEND, cgame 0x4ac8a0)
     void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
     void vehicleTouchTriggers(Entity& v); // G_TouchTriggers (0x4e7320) for a vehicle (src/game/vehicletriggers.cpp)
@@ -705,9 +733,11 @@ public:
     std::function<bool(const std::string&)> soundExists = [](const std::string&) { return true; }; // soundexists (0x4ef380 -> 0x428320)
     std::function<void(int)> stopSound = [](int) {};
     // Vehicle engine loop: a low/high alias pair blended by a fraction (Mixer::playBlend / setBlend).
-    std::function<int(const std::string&, const std::string&, float, const Vec3&)> playBlendSound =
-        [](const std::string&, const std::string&, float, const Vec3&) { return 0; };
-    std::function<void(int, float, const Vec3&)> setBlendSound = [](int, float, const Vec3&) {};
+    // playBlendSound(low, high, fraction, origin, owner) -> handle; setBlendSound(handle, fraction, origin) -> false when the voice is gone (culled
+    // beyond the blended dist_max, stolen or stopped), see Mixer::setBlend.
+    std::function<int(const std::string&, const std::string&, float, const Vec3&, int)> playBlendSound =
+        [](const std::string&, const std::string&, float, const Vec3&, int) { return 0; };
+    std::function<bool(int, float, const Vec3&)> setBlendSound = [](int, float, const Vec3&) { return false; };
 
     // Live script HUD elements (kind "hudelem"); fields as set by scripts, "$…" fields by built-ins.
     const std::vector<ObjectPtr>& hudElems() const { return hudElems_; }
@@ -751,6 +781,7 @@ public:
     Entity& debugSpawnRocketFrom(Entity& parent, const std::string& weapon, const Vec3& start, const Vec3& dir) { return spawnRocket(parent, weapon, start, dir); }
     // Test hook: Bullet_Fire from the player along start -> end; the entity the bullet hit, else null.
     void debugResetPrediction() { predictionDepth_ = 0; predictionSaves_.clear(); } // test hook: a script error leaves the counter set
+    void debugAddAmmo(Entity& player, const std::string& w, int amount) { addAmmo(inventory(player), w, amount, false); }
     Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }
     // Test hook: Bullet_Fire from any entity (its `weapon` field names the weapon, as for actors).
     Entity* debugFireBulletFrom(Entity& shooter, const Vec3& start, const Vec3& end) { return fireBullet(shooter, start, end, 10, &shooter); }
@@ -774,6 +805,13 @@ public:
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
     }
     void debugDamage(Entity& e, int amount);
+    void debugDamageAt(Entity& e, Entity* attacker, int amount, const Vec3& dir, const std::string& location) {
+        damage(e, attacker, amount, dir, e.obj->get("origin").asVector(), "MOD_UNKNOWN", location);
+    }
+    float debugHitLocationMultiplier(const std::string& location) { return hitLocationMultiplier(nullptr, location); }
+    void debugSetNoclip(bool noclip, bool ufo) { noclip_ = noclip; ufo_ = ufo; }
+    size_t debugKnockbackCount() const { return playerKnockbacks_.size(); }
+    void debugActorDelayedDeath(Entity& e) { actorDelayedDeath(e); }
     void debugSetActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode); // tests: the animscript switch 0x53ac90
     // Debug (iw2game --autoplay): a point where the player's standing box touches the trigger entity (triggerContact with the
     // player box of runTriggers), sampled over the trigger's bounds (brush submodel or radius); false when none is found.
@@ -815,7 +853,7 @@ public:
     // are not part of the save).
     // Persistent level change (writer 0x4e6c20, reader 0x4e6de0): the player entity's +0x13c health and +0x140 maxhealth (range table
     // 0x56eeb0), the client's stats words ps+0x108..+0x117 (range table 0x56eec8: +0x108 health copy, +0x10c dead yaw, +0x110 max
-    // health, +0x114 a byte flag) and the weapons. TODO(spec): the +0x114 byte flag (no port counterpart).
+    // health, +0x114 a byte flag) and the weapons. TODO(spec): [stays: no port counterpart] the +0x114 byte flag (no port counterpart).
     struct CarriedPlayer {
         Inventory inventory;
         std::string weapon;
@@ -834,24 +872,28 @@ public:
     void setRealTimeMs(int64_t ms) { realMs_ = ms; }
 
     // Effects started by scripts since the last call: path, origin, forward.
-    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag{}; }; // entity/tag: bolted (0x4853f0)
+    // entity/tag: bolted (0x4853f0). noMarks: played under 0xf79778 (EV_ROCKET_EXPLODE_NOMARKS / EV_CUSTOM_EXPLODE_NOMARKS).
+    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag{}; bool noMarks = false; };
     // World position of an entity tag (lower case), false when the entity or tag is gone.
     bool entityTagPosition(int number, const std::string& tag, Vec3& out);
     // The tag's world position and axis rows (forward, left, up = the bone rotation applied to x, y, z); hasAxes is false for
     // vehicle tags, whose rotation the bone-control path does not provide.
     bool entityTagOrientation(int number, const std::string& tag, Vec3& origin, std::array<Vec3, 3>& axes, bool& hasAxes);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
+    // Hits that push the player since the last call; the host applies them to its PlayerState (applyKnockback, pmove.h).
+    std::vector<KnockbackHit> takePlayerKnockbacks() { return std::exchange(playerKnockbacks_, {}); }
     // Screen-shake events for the front end (ViewShake, cgame 0x4bf5e0): MG42 fire (event 0xaf: 0.05, 100 ms, radius 100) and earthquake (0xc7).
     struct ShakeEvent { Vec3 origin; float scale; int durationMs; float radius; int64_t startMs; };
     std::vector<ShakeEvent> takeShakeEvents() { return std::exchange(shakeEvents_, {}); }
     std::vector<ShakeEvent> shakeEvents_;
     // The local player's pickup events 0x90 (new weapon) / 0x91 (ammunition only) for the front end's HUD part (0x4ba680): the weapon, its
     // class "item" / offhand flags (def weaponClass, offhandClass) and whether the weapon is now the player's offhand.
-    struct PickupEvent { std::string weapon; bool ammoOnly = false, itemClass = false, offhand = false, isCurrentOffhand = false; };
+    struct PickupEvent { std::string weapon; bool ammoOnly = false, itemClass = false, offhand = false; };
     std::vector<PickupEvent> takePickupEvents() { return std::exchange(pickupEvents_, {}); }
     std::vector<PickupEvent> pickupEvents_;
     void raisePickupEvent(const std::string& weapon, bool ammoOnly);
     std::vector<FxEvent> fxEvents_;
+    std::vector<KnockbackHit> playerKnockbacks_;
     // Bullet tracers requested by impact events (0x4b8140): muzzle point and impact point; the host applies the
     // cg_tracerchance roll and draws them (FxSystem::addTracer).
     struct TracerEvent { Vec3 from, to; };
@@ -996,7 +1038,8 @@ private:
     bool playerLastShot_ = false;
     void playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot);
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
-                      const std::string& weaponName = std::string(), int depth = 0);
+                      const std::string& weaponName = std::string(), int depth = 0, float damageScale = 1.0f,
+                      const Entity* passEntity = nullptr);
     int weaponDamage(const std::string& weaponName);
     // Accuracy graph of a weapon for the target kind (weapon fields aiVsPlayerAccuracyGraph / aiVsAiAccuracyGraph); null without one.
     const AccuracyGraph* accuracyGraph(const std::string& weaponName, bool targetClient);
@@ -1115,6 +1158,7 @@ private:
     void aiRequest(Entity& e, int type, int state);
     void aiSetState(Entity& e, int state);
     bool aiPushState(Entity& e, int state);
+    void actorDelayedDeath(Entity& e);
     void aiPopState(Entity& e);
     void aiKillState(Entity& e, int state);
     void aiApplyRequests(Entity& e);
@@ -1145,6 +1189,7 @@ private:
     int exposedThink(Entity& e);
     void exposedSubstate(Entity& e);
     void exposedCombat(Entity& e);
+    void stopNearGoalEdge(Entity& e);
     void exposedNoncombat(Entity& e);
     void actorFacing(Entity& e); // 0x505d80 + 0x504ca0 (goal facing)
     void setFacing(Entity& e, bool override, float pitch, float yaw);  // 0x504950
@@ -1218,6 +1263,8 @@ private:
     void touchFriendlyChain(Entity& trigger, Entity& other);
     void followFriendlyChain(Entity& e);
     void updateWorkingGoal(Entity& e);                                  // 0x505f70
+    bool startPathToEnemy(Entity& e);                                   // 0x503100
+    bool mayMoveToPoint(Entity& e, const Vec3& point);                  // 0x53dce0
     bool actorGoal(Entity& e, Vec3& pos, float& radius, float& height); // the goal the movement code reads
     bool coverScriptAt(Entity& e, int node, bool checkEnemy, std::string& script);
     bool nodeFacesEnemy(Entity& e, int node);
@@ -1314,7 +1361,7 @@ private:
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
     Entity& spawnRocket(Entity& parent, const std::string& weaponName, const Vec3& start, const Vec3& dir);
-    void missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface);
+    void missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface, bool noMarks = false);
     void rocketImpact(Entity& e, const TraceResult& tr);
     void runRocket(Entity& e);
     void pruneMissiles(); // drops removed grenades / rockets from their lists after the entity pass
@@ -1346,6 +1393,7 @@ private:
     void grenadeStateFinish(Entity& e);
     void grenadeReact(Entity& e, bool keepPath);
     bool pathNearPoint(Entity& e, const Vec3& p, float r2);
+    bool grenadePathLeadsAway(Entity& e, Entity& ge);
     int grenadeCoverNode(Entity& e, float r);
     bool pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes = false);
     bool grenadeAcquire(Entity& e);
@@ -1392,11 +1440,18 @@ private:
     bool turretAnglesTo(Entity& t, const Vec3& point, Vec3& angles);
     bool turretAimSentient(Entity& t, Entity& target, Vec3& point, Vec3& angles);
     bool turretTargetValid(Entity& t, Entity& target, float* distSq);
-    bool turretEngageSentient(Entity& t, Entity& target);
-    bool turretEngagePoint(Entity& t, Entity* target, const Vec3& point);
+    bool turretEngageSentient(Entity& t, Entity& target, bool fire = true, int convergenceMs = -1);
+    bool turretEngagePoint(Entity& t, Entity* target, const Vec3& point, bool fire = true);
+    void turretHoldDrop(Entity& t);
+    bool turretLevel(Entity& t);
+    bool turretAimAndTurn(Entity& t, Entity& target, bool fire, int convergenceMs);
+    bool turretAimEntityAndTurn(Entity& t, Entity& target, bool fire);
+    void gunnerForgetIgnores(Entity& gunner);
+    bool turretGunnerThink(Entity& t, Entity& gunner);
+    bool turretManualThink(Entity& t, Entity* gunner);
     void turretUpdateState(Entity& t, bool aiming, const Vec3& point, const Vec3& angles);
     void turretIdle(Entity& t);
-    void turretTurn(Entity& t, bool tracking);
+    bool turretTurn(Entity& t, bool tracking);
     void turretSetState(Entity& t, int state);
     void linkVehicleNodes();
     void thinkVehicle(Entity& e);
@@ -1440,7 +1495,6 @@ private:
     int64_t hitMarkerMs_ = -1;
     std::vector<Earthquake> earthquakes_;
     std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight
-    ViewKick viewKick_;
     uint32_t crosshairFlags_ = 0;
     std::string crosshairName_, crosshairWeaponLine_;
     void updateCrosshairTarget();
@@ -1463,10 +1517,12 @@ private:
     };
     std::optional<PlayerLink> playerLink_;
     PlayerCommand playerCmd_;
-    uint32_t prevButtons_ = 0; // the buttons (incl. rawButtons) of the previous command (meleebuttonpressed)
+    uint32_t heldButtons_ = 0; // client +0x8634: the buttons (incl. rawButtons) of the latest command
+    uint32_t edgeButtons_ = 0; // client +0x8640: bits that went down in a command since the last frame end
 public:
-    // Script-visible button state: current | previous usercmd buttons (client +0x8640 | +0x8634), also while the controls are frozen.
-    uint32_t scriptButtons() const { return playerCmd_.buttons | playerCmd_.rawButtons | prevButtons_; }
+    // Script-visible button state: the latest command's buttons | the bits that went down since the last frame end (client +0x8634 |
+    // +0x8640), also while the controls are frozen.
+    uint32_t scriptButtons() const { return heldButtons_ | edgeButtons_; }
 private:
     uint32_t playerOldButtons_ = 0;
     uint32_t pmFlags_ = 0;

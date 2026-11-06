@@ -4,9 +4,10 @@
 // clears it (a literal). The first segment starts the result; every later one replaces the placeholder "&&N" of the result
 // (N counting from 1, 0x4970bf) or, when the result has no such placeholder, is appended. Example: the item pickup sends
 // `GAME_PICKUP_AMMO\x14<weapon displayName>` (0x58e080), giving the localized "Picked up &&1 ammo" with the localized weapon name.
-// The port's own iprintln encoding (campaign.cpp) separates literal arguments with 0x1f; it is treated like 0x15.
-// TODO(spec): the 0x16 marker's '%' handling (0x497021 / 0x4971b4) is only treated as a separator; the 1024-byte overflow
-// error (0x496f82) and the "could not translate" error (0x4971d0) keep the raw reference instead.
+// Hint strings and iprintln use the same reader. The port's objective text separates its arguments with 0x1f; it is treated like 0x15.
+// 0x497021 / 0x4971b4: while a marker flag is clear the first "&&<digit>" of a piece has its '&' parked as 0x16, shown as '%' at the end. Only
+// a string holding such a placeholder where no argument follows reaches this; the 0x16 byte itself is never built by the engine (buildHintString rejects it).
+// TODO(spec): the 1024-byte overflow error (0x496f82) and the "could not translate" error (0x4971d0) keep the raw reference instead.
 #pragma once
 
 #include <functional>

@@ -126,9 +126,9 @@ public:
     // A looping low/high alias pair blended by fraction f (vehicle engine, cgame 0x4ac8a0 -> 0x4423d0): volume =
     // lerp(low.volMin, high.volMin, f), pitch lerped only at the start; plays the high alias' file (identical to the
     // low one for the shipped vehicle pairs). Returns a handle (0 = nothing).
-    int playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin);
+    int playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin, int owner = -1);
     // Updates a live blend voice (0x441f80 / SetVolume 0x442114) and its position.
-    void setBlend(int handle, float f, const Vec3& origin);
+    bool setBlend(int handle, float f, const Vec3& origin);
     void setListener(const Vec3& origin, const Vec3& forward, const Vec3& right);
     void mix(float* out, int frames);
 
@@ -164,7 +164,7 @@ public:
     bool loading() const { return loading_; }
     void fadeStep(float ms);
     // Environment effects (reverb) state, see audio/reverb.h. `enableReverb` is the dvar snd_enableReverb (default 1).
-    // TODO(spec): the reverb DSP is Miles' (mss32.dll), so only the state is modelled.
+    // The reverb DSP is Miles' (mss32.dll, third-party), so only the state is modelled.
     void reverbCommand(int prio, const std::string& room, float dry, float wet, float fadeSeconds);
     void deactivateReverbCommand(int prio, float fadeSeconds);
     // Reverb send of a voice (0 without the handle's wet level): the exe passes this to AIL_set_sample_reverb_levels.
@@ -201,11 +201,13 @@ private:
         double delayFrames = 0;   // alias startdelay, in output frames // paused by setPaused (the exe's per-voice paused byte)
         int chan = -1; // index into kChannels (the alias `channel` column), -1 = unknown
         float volLow = 0, volHigh = 0;
+        float dmaxLow = 0, dmaxHigh = 0; // blend voices: dist_max of the two aliases
         std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
     };
     std::shared_ptr<const Wav> load(const std::string& file);
     void gains(const Voice& v, float& left, float& right) const;
     static float falloff(const Voice& v, float dist);
+    bool blendCulled(const Voice& v, float f, const Vec3& origin) const;
 
     const fs::Vfs& vfs_;
     const SoundAliases& aliases_;

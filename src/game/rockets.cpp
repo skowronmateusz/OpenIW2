@@ -68,8 +68,7 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
     // a light at the missile's lerp origin through *0x617b1c(origin, radius, info +0x150, +0x154, +0x158). CG_RegisterWeapon
     // (0x4b2cb8..) zeroes the 0x1b8-byte info (rep stosl 0x6e dwords, 0x4b2cd7) and of these fields writes only +0x14c = (float)
     // projectileDLight (+0x45c, 0x4b3cab); weapon +0x460..+0x468 (projectileRed / Green / Blue) have no register-relative reader in the executable
-    // and no store to info +0x150..+0x158 (or to the absolute 0xf48ed0..) exists, so the light is black: nothing is ported.
-    // TODO(spec): only a store through a computed pointer could contradict this.
+    // and no store to info +0x150..+0x158 exists in the cgame code range (0x4a0000..0x4d0000), so the light is black: nothing is ported.
     const std::string trail = weaponField(weaponName, "projTrailEffect");
     if (!trail.empty() && !model.empty()) fxEvents_.push_back({trail, start, dir, e.number, "tag_origin"});
     return e;
@@ -79,8 +78,9 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
 // grenade type 0xbf: grenade_explode_<surface> and impact effect type 9; rocket 0xc0 / 0xc1 (a sentient was hit):
 // rocket_explode_<surface> (sounds 0xf5b800 from "rocket_explode", 0x4a28f5) and impact type 10 (+0x398); other
 // types 0xc2 / 0xc3: no surface sound or impact. Then the weapon's projExplosionEffect (0xf48ee8) along the
-// direction and projExplosionSound (0xf48eec). TODO(spec): the flag 0xf79778 the 0xc1 / 0xc3 events set.
-void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface) {
+// direction and projExplosionSound (0xf48eec). The 0xc1 / 0xc3 events set the cgame flag 0xf79778 for their duration, which makes
+// CG_ImpactMark return (docs/spec/weapons.md): noMarks, carried by the effects of this event.
+void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at, const Vec3& dir, int surface, bool noMarks) {
     static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
                                                 "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
                                                 "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
@@ -88,10 +88,10 @@ void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at,
     if (type < 2 && surface >= 0 && surface < 23) {
         startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at, nullptr, {}, kWorldSoundOwner);
         const std::string& impact = impactEffect(type == 0 ? 9 : 10, surface);
-        if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
+        if (!impact.empty()) fxEvents_.push_back({impact, at, dir, -1, {}, noMarks});
     }
     const std::string fx = weaponField(weaponName, "projExplosionEffect");
-    if (!fx.empty()) fxEvents_.push_back({fx, at, dir});
+    if (!fx.empty()) fxEvents_.push_back({fx, at, dir, -1, {}, noMarks});
     const std::string snd = weaponField(weaponName, "projExplosionSound");
     if (!snd.empty()) startSound(snd, &at);
 }
@@ -100,10 +100,17 @@ void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at,
 // direction of flight, (0, 0, 1) when it has none); with projImpactExplode the explosion event goes out with the
 // surface and the hit normal, the missile stops there and the radius damage (explosionInnerDamage /
 // OuterDamage / Radius from the parent, the hit entity skipped, MOD_PROJECTILE_SPLASH) follows.
-// TODO(spec): projImpactExplode 0 (the missile bounces, 0x525f30; every shipped projectile weapon has 1), the AI event 0x535860 (type 0x11) for the
-// parent, and that the exploded missile stays as an ET_GENERAL entity until freed.
+// Before any of that (0x52624c..0x526272) a missile that is not a grenade and has a parent tells the AI: a line event of
+// type 0x11 (512² default) from the parent's origin (+0x20) to the impact point, not forced (the parent must be a sentient of a
+// team with an enemy; the receivers are that enemy team).
+// TODO(spec): [stays: no shipped projectile weapon reaches the bounce] projImpactExplode 0 (the missile bounces, 0x525f30; no shipped projectile weapon sets 0, so no map or script reaches it),
+// and that the exploded missile stays as an ET_GENERAL entity until freed.
 void World::rocketImpact(Entity& e, const TraceResult& tr) {
     RocketState& r = *e.rocket;
+    if (r.parent) {
+        const Value po = r.parent->obj->get("origin");
+        if (po.isVector()) aiEventLine(*r.parent, 17, po.asVector(), tr.endPos, 0.0f, false);
+    }
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
     const int damage = std::atoi(weaponField(r.weapon, "damage").c_str());
     if (hit && damage != 0) {
@@ -126,7 +133,9 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     if (std::getenv("IW2_ROCKET_DEBUG"))
         print("rocket " + r.weapon + " hits " + (hit ? hit->classname : std::string("world")) + " at " + std::to_string(at[0]) + "," +
               std::to_string(at[1]) + "," + std::to_string(at[2]));
-    missileExplosionEvent(r.weapon, at, {tr.normal[0], tr.normal[1], tr.normal[2]}, int((tr.surfaceFlags >> 20) & 0x1f));
+    // 0x526494: the NOMARKS event when the trace hit a model part. The other reason (0x531b50: both the hit and the parent have a
+    // client) needs two clients, so single player never takes it.
+    missileExplosionEvent(r.weapon, at, {tr.normal[0], tr.normal[1], tr.normal[2]}, int((tr.surfaceFlags >> 20) & 0x1f), tr.partHit);
     const float inner = weaponFloat(r.weapon, "explosionInnerDamage");
     if (inner != 0.0f)
         radiusDamage(at, r.parent, inner, weaponFloat(r.weapon, "explosionOuterDamage"), weaponFloat(r.weapon, "explosionRadius"),
@@ -138,7 +147,7 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
 // (clip 0x280e891, the parent passes); the sky (surface flag 0x10) frees it, anything else is the impact. The think
 // at 30 s explodes it in the air. Without a hit, a moving projectile-type weapon's missile may destabilize (0x527017..0x527061,
 // destabilizeRocket). Rockets (handler 0xf, type 5 at 0x5a59e8) do not run the trigger_damage segment test 0x5297b0, which is
-// for handler type 3 (grenades) only. Water entry: missileTrace (0x526b40). TODO(spec): the 30 s think's event.
+// for handler type 3 (grenades) only. Water entry: missileTrace (0x526b40). TODO(spec): [stays: the event of that think is not read] the 30 s think's event.
 void World::runRocket(Entity& e) {
     {
         {

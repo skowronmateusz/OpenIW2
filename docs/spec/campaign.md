@@ -21,7 +21,11 @@ appear as bare addresses, resolved with `read_bytes`.
 - State message (FUN_004f10b0): active/current → client command `obj_update "<text>"`; done →
   `obj_complete "GAME_OBJECTIVECOMPLETED"`; failed → `obj_update "GAME_OBJECTIVEFAILED"`; others nothing. A
   `current` message within 100 ms of the previous message is dropped.
-- `objective_string` / `objective_string_nomessage` → FUN_004f18c0(1 / 0) (not decompiled yet).
+- `objective_string` / `objective_string_nomessage` → FUN_004f18c0(1 / 0): validates the formatted text (at most 1023 characters, no `"`, `;` or `\`, no
+  control characters other than 0x14 / 0x15; each violation is a script error), stores it in the objective's configstring (index + 13) and, with the flag 1,
+  sends the state message by the objective's current state: active and current → `obj_update "<text>"`, failed →
+  `obj_update "GAME_OBJECTIVEFAILED"`, done / not-shown / others nothing (the done id is the one `FUN_004f10b0` answers with the complete
+  message, but 0x4f1b18 skips the send because it equals the reference id).
 - `objective_icon(index, icon)`: icon name max 63 chars, 0x20–0x7e.
 - `objective_position(index, pos)` sets `org0`; `objective_additionalposition(index, n, pos)`,
   n 0–7, sets `org<n>`.
@@ -173,7 +177,7 @@ openiw2 (iw2view): the world is built before the scene loads and the audio threa
   from the speed per PmoveSingle step, independent of the step length (one per usercmd up to 66 ms). That call precedes the ladder
   check, which leaves a dead player in the air move; the port ran the drop after it, where the ground state was already gone, so it
   never fired. It now runs at 0x50ca6c's position, once per 66 ms chunk (the viewer's 1/60 s sub-steps share one drop).
-  TODO(spec): the minimum of 1 ms per Com_Frame (0x42eb70) is not applied to iw2view's float frame time.
+  The minimum of 1 ms per Com_Frame (0x42eb70) is the lower clamp of `comFrameSeconds` (src/game/framescale.h), which iw2view applies to its float frame time.
 - The quote is ownerdraw `CG_DEADQUOTE` (0x4aa2a0) of hud.menu's `deadscreen` menu (item `quote`, textscale 0.4, rect
   80 200 480 20, centred): after `opendeadscreen`, alpha = elapsed cg time / `hud_deathQuoteFadeTime` (int, default
   1000, 0..100000), text = `ui_deadquote` without a leading `@`, localized. 0x4cc6a0 wraps at spaces to the rect
@@ -197,7 +201,7 @@ openiw2 (iw2view): the world is built before the scene loads and the audio threa
 `src/game/campaign.cpp`: objective built-ins and state messages as above; `changelevel`, `missionsuccess` and
 `missionfailed` set a pending level change; `World::takeDueLevelChange` applies 0x4d9f90 (victory screen or load).
 `iw2view` shows the victory screen, loads the stored map on `nextlevel`, shows `briefing` for a frame before the
-synchronous load and `pregame` after it, and copies `game[]` and the player's weapons only for a persistent change. Inferred and marked TODO: `objective_string`'s message, how long
+synchronous load and `pregame` after it, and copies `game[]` and the player's weapons only for a persistent change. Inferred and marked TODO: how long
 objective messages stay on screen (4 s). Death screen as above, except: no save games (`loadgame_continue` restarts
 the level), no blur pass (`scr_blur` ignored), no text shadow, the volume step per frame is inferred.
 
@@ -214,14 +218,14 @@ commented out in the shipped menu, and the `hud_healthOverlay_*` pulse dvars bel
 draws nothing in SP). The red screen effect is a full-screen script hud element with the `overlay_low_health` material that the
 skill script fades and pulses while health / maxhealth is at or below `level.healthOverlayCutoff` (Regular 0.28, Hardened and Veteran
 0.35, Recruit 0.01). The engine's default `g_gameskill` is 1 (0x446b33); the former default of 0 (Recruit) made the cutoff 0.01 so the
-overlay hardly ever appeared. Implemented: the default is 1; the difficulty menu still sets it. TODO(spec): the damage-direction icon is
-unchanged (see player HUD notes); no further native blood overlay was found.
+overlay hardly ever appeared. Implemented: the default is 1; the difficulty menu still sets it. The damage-direction icons (0x4bdcb0)
+are a separate path (see the player HUD notes); no further native blood overlay was found.
 
 Overlay draw order. The 2D pass (0x4bfa70) draws: damage icons (0x4bdcb0), the crosshair step (0x4bd760), which draws the scope /
 binocular overlay (0x4bcdd0) and returns the crosshair fade, then the hud elements of layer 0 (0x4c3030 with 0), the HUD menus, the
 hud elements of layer 1, and later the subtitles and fades. The overlay therefore lies below every script hud element and subtitle.
-Implemented: iw2view splices the overlay quads in below the hud-element quads (game/hudlayers.h). TODO(spec): that the hudelem layer
-word (+0x7c) is the script `foreground` flag is inferred.
+Implemented: iw2view splices the overlay quads in below the hud-element quads (game/hudlayers.h). The hudelem layer
+word (+0x7c, compared with the layer argument at 0x4c305a) is the script `foreground` flag: the hud-element field table pairs the name `foreground` with offset 0x7c (entry at 0x5700fc).
 
 ## loadgame_continue in openiw2 (implementation notes)
 
@@ -231,6 +235,8 @@ word (+0x7c) is the script `foreground` flag is inferred.
   save container (docs/spec/savegame.md section 5).
 - openiw2 addition: when the named save cannot be used (file missing, old openiw2 format, damaged), the front end restarts the level
   (the failed-mission restart) instead of staying in the old world with the death screen up. The original has no such case (its save
-  always loads or the error is printed); TODO(spec): the original's behaviour after "Unable to find save.".
+  always loads or the error is printed). After "Unable to find save." (0x447190: neither 0x4d55e0 nor 0x4e06e0 accepts the name, or the
+  server is not running and 0x446e00 gives 0) the original raises an error of kind 1 through 0x42c7f0 (formatted by 0x4e07f0, the drop
+  kind: it stores 1 in 0x74806c and unwinds the frame), so the running game is abandoned; it does not fall back to the map.
 - `ui/menus.txt` lists `ui/rec_restart.menu`, which no archive contains; the original's menu loader meets the same missing file (the
   menu is not on the death or mission-failure path, which uses the `deadscreen` HUD menu and the `opendeadscreen` command).

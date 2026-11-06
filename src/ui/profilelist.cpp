@@ -91,7 +91,7 @@ bool ProfileList::remove(const std::string& selected, int& row) {
     fs::remove_all(dir_ / selected, ec);
     if (ec || fs::exists(dir_ / selected, ec)) return false;
     int idx = rowOf(selected);
-    if (idx < 0) return true; // TODO(spec): 0x4c4a70 returns -1 for a name that is not in the list and the exe indexes index[-1]
+    if (idx < 0) return true; // 0x4c4a70 returns -1 for a name that is not in the list and the exe then reads index[-1] (undefined); not reproduced
     const int slot = index_[idx];
     names_[slot] = names_.back(); // the last name takes the freed slot (0x4c4ece..0x4c4edb)
     names_.pop_back();

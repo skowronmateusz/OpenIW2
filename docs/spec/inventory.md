@@ -29,6 +29,7 @@ stance `stand duck prone`; offhandClass `None, Frag Grenade, Smoke Grenade`.
   weapon is not an item, has no offhand class, goes in a primary slot, and both slots are full. Gives the
   weapon, then adds `startAmmo − stock` rounds (when positive) through *add ammo*, filling the clip if the weapon
   was not owned before.
+- A `clipOnly` weapon always fills its clip when ammo is added, and the player's stock of it is then set to 0 (0x520ed8).
 - **add ammo (0x520e40)**: stock += amount; a `clipOnly` weapon is given as well; the clip is filled (0x520de0:
   move min(clipSize − clip, stock) from stock to clip) when asked or when the weapon was just given; stock is
   clamped to the ammo's `maxAmmo` and the clip to `clipSize`.

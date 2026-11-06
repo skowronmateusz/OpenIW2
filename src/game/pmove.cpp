@@ -100,8 +100,8 @@ void addPlayerEvent(PlayerState& ps, int event, int parm) {
 namespace {
 
 // Applies PM_CrashLand: the landing report the cgame turns into the view dip, the speed loss and the event.
-// The pml fields are the origin/velocity copy at 0x50c67f..0x50c6c4 (before any movement), as the port does. TODO(spec): the pm_time of a damaging landing only
-// matters through the walk accel (x0.25) and friction (x0.3) of pm_flags 0x200.
+// The pml fields are the origin/velocity copy at 0x50c67f..0x50c6c4 (before any movement), as the port does. The pm_time of a damaging landing
+// works through the walk accel (x0.25) and friction (x0.3) of pm_flags 0x200.
 void crashLand(PlayerState& ps, const Pml& pml) {
     const float g = pml.gravity;
     const float d = pml.prevVelZ * pml.prevVelZ + 2.0f * g * (pml.prevOriginZ - ps.origin[2]);
@@ -458,6 +458,9 @@ float maxsZ(Stance s, const MoveParams& mp) { return s == Stance::Prone ? 30.0f 
 // Stance change (0x509d10): standing up needs room for the taller box; going prone needs ground
 // (0x4fc000 always returns 1: it is not a gate). A change starts a view-height transition (0x509840).
 void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, const MoveParams& mp) {
+    // pm_flags 0x8000 (freezecontrols / an absolute playerlinkto): outside a turret the whole stance logic is skipped (0x509e59 -> 0x50a37e),
+    // so neither the crouch / prone keys nor the lack of them change the stance.
+    if (in.controlsFrozen) return;
     Stance want = in.stance;
     if (want == ps.stance) return;
     // Moves go one step at a time between stand, crouch and prone.
@@ -608,12 +611,13 @@ void ladderJumpPush(PlayerState& ps, const PlayerInput& in, const MoveParams& mp
     ps.onLadder = false;
 }
 
-// Jump (0x5416b0, 0x5414d0): standing on the ground, newly pressed, 500 ms after the previous jump; vertical speed
-// sqrt(2 · jump_height · gravity). Leaves the ground and remembers the jump's origin z (ps+0x74).
+// Jump (0x5416b0, 0x5414d0): standing on the ground, newly pressed, 500 ms after the previous jump, not mantling (pm_flags 4);
+// vertical speed sqrt(2 · jump_height · gravity); the divisor of 0x541490 is 1 unless jump_slowdownEnable is set (default false).
+// Leaves the ground and remembers the jump's origin z (ps+0x74).
 bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParams& mp) {
     const bool jumpPressed = in.jump && !ps.jumpHeld;
     ps.jumpHeld = in.jump;
-    if (!jumpPressed || ps.stance != Stance::Stand || ps.viewHeightTarget != 60 || ps.timeMs - ps.lastJumpMs <= 499) return false;
+    if (!jumpPressed || ps.mantling || ps.stance != Stance::Stand || ps.viewHeightTarget != 60 || ps.timeMs - ps.lastJumpMs <= 499) return false;
     pml.groundPlane = pml.walking = false;
     ps.onGround = false;
     ps.lastJumpMs = ps.timeMs;
@@ -1243,6 +1247,10 @@ void freeFlyMove(PlayerState& ps, const Pml& pml, const PlayerInput& in, float f
 }
 
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
+    // pm_flags 0x8000 (freezecontrols, or an absolute playerlinkto): PmoveSingle (0x50c4a0) zeroes the velocity (ps+0x20..0x28) first of all,
+    // before the step state is set up, and clears the command's forward / right moves (Pmove 0x50cc10 and 0x50c4bf also drop every button but
+    // the stance ones). Gravity still acts, but only one step's worth, so the player stands still and falls slowly.
+    if (in.controlsFrozen) ps.velocity = {0, 0, 0};
     Pml pml;
     pml.frametime = float(ms) * 0.001f;
     pml.mask = mp.traceMask;
@@ -1255,12 +1263,14 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     pml.dead = in.dead;
     // Aiming while prone (pm_flags 0x40 from the previous step, view height target 11) clears the command's forward
     // and right moves (0x50c5c7).
-    float fwdMove = std::clamp(in.forward, -1.0f, 1.0f), rightMove = std::clamp(in.right, -1.0f, 1.0f);
+    // The frozen command is cleared at 0x50c4c8, before every other use of it (the previous-command compare 0x50c4f6 included).
+    const float cmdFwd = in.controlsFrozen ? 0.0f : std::clamp(in.forward, -1.0f, 1.0f), cmdRight = in.controlsFrozen ? 0.0f : std::clamp(in.right, -1.0f, 1.0f);
+    float fwdMove = cmdFwd, rightMove = cmdRight;
     if (in.dead) fwdMove = rightMove = 0; // 0x50c733: pm_type ≥ 4 clears the command's moves
-    proneAimCancel(ps, std::clamp(in.forward, -1.0f, 1.0f), std::clamp(in.right, -1.0f, 1.0f), in.weaponState); // 0x50c4f6
+    proneAimCancel(ps, cmdFwd, cmdRight, in.weaponState); // 0x50c4f6
     if ((ps.ads || ps.proneAimLatch) && ps.viewHeightTarget == 11) fwdMove = rightMove = 0; // 0x50c5d4, 0x50c750
-    ps.prevCmdFwd = std::clamp(in.forward, -1.0f, 1.0f); // the next step's previous command (raw, before the zeroing above)
-    ps.prevCmdRight = std::clamp(in.right, -1.0f, 1.0f);
+    ps.prevCmdFwd = cmdFwd; // the next step's previous command (raw, before the zeroing above)
+    ps.prevCmdRight = cmdRight;
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
     if (ps.pmType == 2 || ps.pmType == 3) {
         // noclip / ufo (0x50c77b / 0x50c800): lean, the pm_flags 0x80 update, the ladder flag cleared to "just left", the aim flags,
@@ -1432,6 +1442,32 @@ void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in,
         moveStep(w, ps, in, step, mp);
         ms -= step;
     }
+}
+
+// G_Damage's knockback (0x528187..0x5282ac).
+void applyKnockback(PlayerState& ps, const KnockbackHit& hit, float gKnockback) {
+    const float l = std::sqrt(hit.dir[0] * hit.dir[0] + hit.dir[1] * hit.dir[1] + hit.dir[2] * hit.dir[2]);
+    if (l == 0.0f) return;
+    const float scale = ps.stance == Stance::Prone ? 0.01f : ps.stance == Stance::Crouch ? 0.025f : 0.05f;
+    const int knockback = std::min(int(float(hit.amount) * scale), 60);
+    if (knockback == 0) return;
+    const float push = float(knockback) * gKnockback * 0.004f / l;
+    for (int i = 0; i < 3; ++i) ps.velocity[size_t(i)] += hit.dir[size_t(i)] * push;
+    if (hit.selfBlast) ps.velocity[2] *= 0.25f;
+    if (ps.pmTimeMs == 0) {
+        ps.pmTimeMs = std::clamp(knockback * 2, 50, 200);
+        ps.spawnSlide = true; // pm_flags 0x400
+    }
+}
+
+// LookAtKiller (0x527cd0): vectoyaw (0x421890, 0..360) to the killer, or the entity yaw, truncated into ps+0x10c.
+float lookAtKillerYaw(const Vec& self, const Vec& killer, bool selfKill, float entityYaw) {
+    if (selfKill) return float(int(entityYaw));
+    const float dx = killer[0] - self[0], dy = killer[1] - self[1];
+    if (dx == 0 && dy == 0) return 0.0f;
+    float yaw = std::atan2(dy, dx) * 180.0f / 3.14159265f;
+    if (yaw < 0) yaw += 360.0f;
+    return float(int(yaw));
 }
 
 } // namespace iw2::game

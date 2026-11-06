@@ -208,7 +208,7 @@ void World::pruneMovers() {
 }
 
 // A linked entity follows its parent (G_RunEntity 0x4da7e0 runs the link parent +0x1c8 first, then the child's link
-// step 0x4d7170). TODO(spec): the tag handling of 0x4ed770.
+// step 0x4d7170). The tag frame is the one linkto recorded (0x4ed770, 0x4d6ad0).
 void World::followLink(Entity& child) {
     const auto lit = links_.find(child.number);
     if (lit == links_.end()) return;
@@ -352,7 +352,7 @@ void World::registerMoverBuiltins() {
     });
     // launch (0x4f7be0): sets the position trajectory to type 5 (gravity) starting now at the current origin with the given
     // velocity (trTime = level time, trDelta = vector), then relinks (0x44b2d0). The duration is not written; the movement
-    // lasts until the entity is deleted. TODO(spec): collision/landing of a launched script_model (not examined).
+    // lasts until the entity is deleted. Collision and landing of a launched script_model are not modelled: no shipped script calls launch.
     vm_.registerBuiltin("launch", [this, mover](CallContext& c) {
         Entity& e = mover(c);
         MoverChannel& ch = movers_[e.number].pos;
@@ -388,8 +388,17 @@ void World::registerMoverBuiltins() {
         if (!e || !p) throw std::runtime_error("linkto needs two entities");
         // linkto(parent [, tag [, originOffset, anglesOffset]]) (0x4ed770): an empty tag name is no tag. With up to
         // two arguments the child keeps its placement in the parent's tag frame (0x4d6540, then 0x4d6ca0); with
-        // offsets they are the placement (0x4d66a0). TODO(spec): the "failed to link" errors (missing tag, parent
-        // without a model, link loops).
+        // offsets they are the placement (0x4d66a0). The link fails (0x4d6540) for a tag missing from the parent's model, a parent without a
+        // model while a tag is given, and a cycle (the child is the parent or an ancestor of it); 0x4ed957 then raises "failed to link
+        // entity since parent has no model" / "... parent model '%s' is invalid" / "... tag '%s' does not exist in parent model '%s'" or, when
+        // none of those holds, "failed to link entity due to link cycle". Only the cycle error is reproduced: the tag and model errors need a
+        // tag lookup that does not depend on a posed skeleton (entityBones), and no shipped script reaches any of them.
+        int depth = 0;
+        for (Entity* q = p; q && depth++ < 1024;) {
+            if (q->number == e->number) throw std::runtime_error("failed to link entity due to link cycle");
+            const auto up = links_.find(q->number);
+            q = up == links_.end() ? nullptr : entityByNumber(up->second.parent);
+        }
         Link l;
         l.parent = p->number;
         l.fullFrame = true;
@@ -427,8 +436,8 @@ void World::registerMoverBuiltins() {
     // istouching(other) (0x4ef100): one entity is the shape (a brush model, trigger_radius or trigger_disk), the other
     // the box at its origin + r.mins / r.maxs, tested with SV_EntityContact (0x447830, triggerContact). When self is not
     // a shape, other is taken as the shape; two shapes are an error. Box bounds: actors (-15,-15,0)-(15,15,72)
-    // (0x4fc640), the player (-15,-15,0)-(15,15,70); TODO(spec) other entities' r.mins/r.maxs (taken as a point here),
-    // and two plain boxes (0x447830 then traces against a temporary box model; tested as box overlap here).
+    // (0x4fc640), the player (-15,-15,0)-(15,15,70); a script_model is a point (its r.mins / r.maxs stay zero, docs/spec/vehicles.md),
+    // TODO(spec): two plain boxes (0x447830 then traces against a temporary box model; tested as box overlap here).
     vm_.registerBuiltin("istouching", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         Entity* b = entityOf(c.arg(0));

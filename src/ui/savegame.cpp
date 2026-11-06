@@ -76,7 +76,7 @@ std::string saveDateText(const SaveInfo& i, const SaveLocalize& loc) {
         return buf;
     }
     static const char* const months[12] = {"JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUN", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"};
-    const int mon = i.tm[4]; // TODO(spec): the exe indexes the table 0x5a4d64 without a range check
+    const int mon = i.tm[4]; // the exe indexes the table 0x5a4d64 without a range check (undefined for a corrupt value; an empty name here)
     const std::string m = mon >= 0 && mon < 12 ? loc(std::string("EXE_MONTH_ABV_") + months[mon]) : std::string();
     std::snprintf(buf, sizeof buf, "%s %i, %i   %02i:%02i", m.c_str(), i.tm[3], i.tm[5] + 1900, i.tm[2], i.tm[1]);
     return buf;

@@ -116,8 +116,56 @@ whatever is behind it. Taking the gun over does not by itself change that:
   any target: idle only, the gun stays where it is (0x51ceb0).
 A gun left at the drop pitch swings tag_weapon down by up to its 30 units behind tag_aim, so the height probe below leaves the
 animated range and the gunner stands with the stock at his waist; that is why the levelling matters to the pose.
-The firing-state write of 0x51b8a0 is the state 0 of `turretSetState`. TODO(spec): the rest of the 0x51c630 rules, among them the
-other (0, 0) turn at 0x51ca98.
+The firing-state write of 0x51b8a0 is the state 0 of `turretSetState`.
+
+### Gunner target choice (0x51c630, `World::turretGunnerThink`; manual 0x51cc80, `World::turretManualThink`)
+
+Dispatch in the turret think (0x51d2ca..0x51d328): the owner counts as a gunner only while the bottom entry of its state stack
+(actor +0x8) is the turret state; otherwise the turret behaves as unmanned. AI turret without gunner: drop pitch. Automatic with
+gunner: 0x51c630. Everything else: 0x51cc80 (gunner or none). A result of 0 from either makes the gunner give the turret up
+(0x54b020); the gunner's own think then notices (0x54afd0) and becomes exposed.
+
+Terms: E = the gunner's enemy (sentient +0x1c), replaced by H when flag 0x10 is set and H exists. H = turret +0x60, a threat the
+gun has to answer: set by the first hit (0x54af30) and by rule 4 below. S = turret +0x10, the script target. I(x) = the gunner's
+record of x (`SentientInfo`). "Clear" (0x51c260): gunner eye to x's eye (0x514f70), no hit with mask 0x801803 ignoring both, and
+smoke visibility (0x48b090) at least 0.2. Near = 3D squared distance from the turret origin below 65536 (256 units). "Fresh" =
+the last known time is younger than the suppression time and the last known position is within 64 units of x in the plane
+(0x420f00 against 4096). Levelling = 0x51b8a0 with 1: state 0, wanted (0, 0), tracking rates; its result is the result of the
+turn (0x51b610): 1 when both axes reached the wanted angle in this step (|delta| <= rate * 0.05 s), else 0.
+
+1. Not arrived: the drop-pitch turn above, result 1.
+2. No E: H is forgotten when I(H).ignoreUntil is not in the future; then every sentient of the enemy team (table {0, 2, 1, 0, 0}
+   over the gunner's team, none for 0) gets ignoreUntil 0 (0x54e3f0). Go to step 6.
+3. E exists: I(E).ignoreUntil = now + 2000: enemy selection leaves him out while the gun handles him, which keeps a gunner from
+   losing the turret to a closer choice. When E has ignoreme or is out of maxRange (squared, turret origin), go to step 5 with no
+   current record. When I(E) is visible and the sentient aim of 0x51c1a0 works (convergence as usual, firing): flag 0x10 cleared,
+   ignoreUntil 0, result 1.
+4. Only when the gunner's bottom state is at least 1 s old, otherwise go to step 5. F = the turret's forward (entity angles, without the gun's own
+   rotation) has a non-negative dot product with the vector to E. E becomes the new H when all of these hold: H is empty, or H is
+   not E and I(H).ignoreUntil is not in the future; I(E) is visible or E is not in front (F false); E is fresh; E is clear. Then
+   a near E also gets ignoreUntil 0. If E did not become H and an H exists: H is dropped unless fresh and clear. If H is kept and
+   is E (the gun cannot aim at him, the gunner can see him):
+   - flag 0x10 clear and F true: level the gun (0x51ca98). Not there yet: a near E gets ignoreUntil 0, result 1.
+   - otherwise, or once levelled: ignoreUntil 0, result 0: the gunner leaves the gun to fight. No turn happens in this frame on the
+     flag 0x10 or not-in-front branch.
+5. S is forgotten for this think when it is E's entity.
+6. Suppression. When the engaged target (+0x14) is a sentient X: with X not ignored and I(X) younger than the suppression time, aim
+   (0x51be80, firing) at I(X)'s last known x, y and z = the previous aim point height when flag 0x40 is set, else last known z + 32.
+   That works: tracking turn, ignoreUntil 0, H cleared when it is X, result 1. It failed (outside the arcs): go on with step 7, record = I(X).
+   X ignored or stale: I(X).lastKnown = 0 and go on. Not a sentient or nothing engaged: the record of step 3, if any, gets lastKnown 0.
+7. S within maxRange of the turret: non-sentient: 0x51c1e0, result 1 when aimed. Sentient with a visible I(S): 0x51c1a0, result 1
+   when aimed.
+8. Idle (0x51b850) unless the current record is visible; level the gun; result 1.
+
+Manual (0x51cc80). With a gunner: not arrived as in step 1. When H exists, or E is within maxRange of the turret and within 256 units of
+the gunner himself (squared values, 0x51cd03..0x51cd38), the whole of 0x51c630 runs and its result counts. Otherwise flag 0x10 is
+cleared and I(E).ignoreUntil = now + 2000, or without E 0x54e3f0. Then, with or without a gunner, S within maxRange: non-sentient 0x51c1e0, result 1 whatever
+it returned; sentient 0x51c1a0 with convergence argument 0. Both pass flag 4 (`startfiring`) as "firing": without it they aim but
+0x51bd40 holds state 0. Not aimed: with gunner and S level the gun, else idle. Result 1.
+
+The convergence argument is only the fraction's time base in 0x51bef0 (the gate before it reads +0x54). With 0 the closing offset of
+later frames divides by zero, gives no usable point, and the plain aim follows; the first offset shot still happens. The port takes
+the plain aim directly. That last step is inferred from the x87 result, not from a run.
 
 ### Gunner pose step (0x549ba0, from 0x54ae93; `World::turretPoseStep`)
 
@@ -160,9 +208,12 @@ Without it the setturretanim blend node has no weighted leaf and the gunner show
 - Start (0x549960): refuses any turret in use (+0x112), keeping the recorded turret; clears keepclaimednode /
   keepclaimednodeingoal and releases a claimed node (0x5191a0).
 - Savegame version 4 stores +0x2118 / +0x211a and the turret's +0x90 / +0x9c / +0xa8 / e+0x78.
-- TODO(spec): 0x4e7150(+0x294, +0x298); the bumped-sentient team branch 0x54aafa..0x54ab45 (0x4e7010, 0x4f9f30, 0x4fa070); the
-  actor-turret link itself (the port computes the link height from the current origins); 0x54e3f0 / 0x503e10 and the start
-  argument that keeps flag 0x10 / +0x60 at 6; the debug string at actor +0x21a0.
+- A bumped player who is not of the gunner's enemy team: after giving the turret up the gunner notifies "trigger" with the player
+  (0x54aafa..0x54ab45). Start also makes the enemy team selectable again (0x54e3f0), drops the path (0x503e10), and clears flag 0x10 and +0x60
+  unless its argument, the state being left, is pain (6). The think takes over the gunner's own node when usable (0x54ae32..0x54ae51).
+- TODO(spec): 0x4e7150(+0x294, +0x298); the
+  actor-turret link itself (the port computes the link height from the current origins); the pathToEnemy reset of 0x54ac80 with an
+  enemy (0x502fc0 reads the node relation 0x517ed0, not loaded). The string at actor +0x21a0 is a debug label.
 
 ## Fire view shake (player on a turret)
 
@@ -210,14 +261,13 @@ impulse of the player weapon is zero for them.
 - The text goes into one of 32 configstrings (0x4cd + slot, 0x4f0da0): the first empty slot, or the slot already holding the
   same text; when all 32 differ the error "Too many different hintstring values. Max allowed is 32 different strings" is raised and
   the index stays -1. The table is shared with the weapons' useHintString / dropHintString that G_RegisterWeapon (0x522ba0)
-  registers (def +0x574 / +0x578). TODO(spec): OpenIW2 does not register weapons, so those slots are not counted.
+  registers (def +0x574 / +0x578). OpenIW2 does not register weapons, so those slots are not counted; the original fits the shipped scripts' strings next to them, so the port, which holds fewer strings, never overflows where the original does not.
 - Client reader 0x496e80 ("Hint String", from 0x4a9ac0): scans pieces delimited by 0x14 (localized follows) / 0x15 (plain follows)
   / 0x16, localizes the flagged ones (0x496dd0), enforces 1024 bytes and rewrites "&&<digit>" into 0x16 markers (a `&&0` is
   an error). `World::hintStringText` joins the pieces; TODO(spec): the &&N parameter substitution of 0x496e80 past 0x49704d
   and where plain pieces are localized are not decoded ("&&1" is replaced by the use key in the HUD as before).
 - HINT_INHERIT (-1, only settable on trigger_use(_touch)): the cgame draw indexes the icon array at -1, which is the tracer
-  material (0xf5b4a4), and shows the hint string when its index is >= 0. TODO(spec): scripts never use it (only HINT_NONE is
-  used by shipped scripts), so it is not drawn here.
+  material (0xf5b4a4), and shows the hint string when its index is >= 0. The shipped scripts never use it (the only `setcursorhint` call in the SP scripts is HINT_NONE; no SP script file mentions HINT_INHERIT), so it is not drawn here.
 - Every hint name in the shipped scripts is accepted by the setcursorhint rule (case-insensitive HINT_NONE, HINT_ACTIVATE,
   HINT_HEALTH, HINT_FRIENDLY): only HINT_NONE occurs.
 - A player on a vehicle: the crosshair (0x4bd000) reads the weapon byte of the entity at ps+0x568 (cg 0xf70e50; VEH_LinkPlayer stores

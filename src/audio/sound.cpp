@@ -375,7 +375,12 @@ void Mixer::sweepLoops(int soundTimeMs) {
     stampNow_ = soundTimeMs;
 }
 
-int Mixer::playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin) {
+namespace {
+// Effective dist_max of an alias: an unset value is replaced by 5 * dist_min at parse time (0x429701).
+float effDistMax(const SoundAlias& a) { return a.distMax > a.distMin ? a.distMax : a.distMin * 5.0f; }
+} // namespace
+
+int Mixer::playBlend(const std::string& low, const std::string& high, float f, const Vec3& origin, int owner) {
     const SoundAlias* lo = aliases_.pick(low, rng_);
     const SoundAlias* hi = aliases_.pick(high, rng_);
     if (!lo || !hi) return 0;
@@ -391,31 +396,52 @@ int Mixer::playBlend(const std::string& low, const std::string& high, float f, c
     v.step = double(wav->rate) * pitch / double(rate_);
     v.origin = origin;
     v.distMin = lo->distMin + (hi->distMin - lo->distMin) * f;
-    const float dmax = hi->distMax > hi->distMin ? hi->distMax : hi->distMin * 5.0f; // 0x429701
-    v.distMax = dmax;
+    v.dmaxLow = effDistMax(*lo);
+    v.dmaxHigh = effDistMax(*hi);
+    v.distMax = v.dmaxHigh;
     v.curve = lo->curve; // 0x4a0e85: the curve of the alias weighted by (1 - f)
     v.loop = true;
     v.chan = channelIndex(lo->channel);
+    // Pool bookkeeping as in the generic play (0x4423d0 -> 0x441ce0 / 0x441e10): the channel of the first alias picks the pool and the steal priority.
+    v.owner = owner;
+    v.prio = exeChannel(lo->channel);
+    v.pool = lo->streamed ? 2 : is3DChannel(v.prio) ? 1 : 0;
+    v.name = lo->name;
+    v.name2 = hi->name;
     std::lock_guard lock(mutex_);
-    {
-        // Culled when the listener is farther than lerp(distMax) (0x44247b); a running loop is not culled again.
-        const float dx = origin[0] - listener_[0], dy = origin[1] - listener_[1], dz = origin[2] - listener_[2];
-        const float dm = lo->distMax + ((hi->distMax > 0 ? hi->distMax : v.distMax) - lo->distMax) * f;
-        if (dm > 0 && dx * dx + dy * dy + dz * dz > dm * dm) return 0;
-    }
+    // Culled when the listener is farther than lerp(dist_max) (0x44247b..0x4424e6, 3D channels).
+    if (blendCulled(v, f, origin)) return 0;
+    v.stamp = stampNow_;
+    if (!allocSlot(v)) return 0;
     v.handle = nextHandle_++;
     const int h = v.handle;
     voices_.push_back(std::move(v));
     return h;
 }
 
-void Mixer::setBlend(int handle, float f, const Vec3& origin) {
+bool Mixer::blendCulled(const Voice& v, float f, const Vec3& origin) const {
+    if (!is3DChannel(v.prio)) return false;
+    const float dx = origin[0] - listener_[0], dy = origin[1] - listener_[1], dz = origin[2] - listener_[2];
+    const float dm = v.dmaxLow + (v.dmaxHigh - v.dmaxLow) * f;
+    return dm > 0 && dx * dx + dy * dy + dz * dz > dm * dm;
+}
+
+// The per-frame call of a running blend (0x441f80 refresh -> SetVolume 0x442114): false when the voice is gone (culled beyond the lerped dist_max,
+// as the generic play does every frame before it refreshes the loop, or stolen / stopped), so the caller starts it again later.
+bool Mixer::setBlend(int handle, float f, const Vec3& origin) {
     std::lock_guard lock(mutex_);
-    for (Voice& v : voices_)
-        if (v.handle == handle && v.blend) {
-            v.volume = v.volLow + (v.volHigh - v.volLow) * f;
-            v.origin = origin;
+    for (size_t i = 0; i < voices_.size(); ++i) {
+        Voice& v = voices_[i];
+        if (v.handle != handle || !v.blend) continue;
+        if (blendCulled(v, f, origin)) {
+            voices_.erase(voices_.begin() + long(i));
+            return false;
         }
+        v.volume = v.volLow + (v.volHigh - v.volLow) * f;
+        v.origin = origin;
+        return true;
+    }
+    return false;
 }
 
 void Mixer::stop(int handle) {

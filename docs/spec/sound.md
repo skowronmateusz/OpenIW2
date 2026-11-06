@@ -52,10 +52,13 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
 - `musicstop([fade])` (0x4f3470): fade seconds * 1000 rounded (+0.5), negative is an error; sends `mu_stop <ms>`
   (0x4a6e60 -> 0x442fb0): ms 0 stops the music slot at once, otherwise its volume falls linearly to zero over ms.
 - `ambientplay(alias [, fade])` (0x4f3800) / `ambientstop([fade])` (0x4f3930): argument validation as in the exe; the state goes
-  out as configstring 3 (`n\<alias>\t\<levelTime + fade ms>` / `t\<levelTime + fade ms>`). TODO(spec): the client-side
-  consumer of configstring 3 (ambient fade-in/out) is not decoded; the engine starts/stops the loop at once.
+  out as configstring 3 (`n\<alias>\t\<levelTime + fade ms>` / `t\<levelTime + fade ms>`). The client consumer is 0x4a3380, run on a change of
+  configstring 3 (0x4a5aee) and at cgame start (0x4a5ccf): it looks up key `n`, reads key `t`, and calls 0x443080 with the fade `t - server time` clamped at 0. An alias of the
+  same name keeps playing. An alias with the same file, loop flag, min/max volume and bits 0x780 replaces the slot's alias in place and ramps its volume over the fade (0x4430d1..0x44314e);
+  any other alias fades the old slot out (0x442fb0) and starts in the other one of the two ambient slots (0x443164..0x44318f). With no `n` key the lookup gives null and 0x443080 returns at once (0x44308e), so
+  `ambientstop` does not stop the sound on the client; no shipped script calls it. Ours follows this, except that a same-file alias crossfades (TODO(spec): needs the alias table in the command handler).
 - `snd_fade <vol> <ms>` is emitted by 0x4f3520 (soundfade-like builtin, format "snd_fade %f %i\n").
-- `setsoundblend` and `setreverb` are not called by any shipped script (survey of all .gsc), so their client side stays TODO(spec).
+- `setreverb` / `deactivatereverb` are called by the SP scripts `maps/_ambient.gsc` (line 50 / 53, the per-area ambient reverb table) and `maps/moscow.gsc` (the stone corridor, lines 377-387); the client side is the reverb state machine below, and the Miles DSP behind it stays TODO(spec). `setsoundblend` (0x4f7d10) is called by the rain loops of the shared effects script on `sound_blend` entities: the entity type check comes first (eType 6, else "Entity is not a sound_blend"), then the two aliases and the blend 0..1 are stored (+0x8c / +0x8e / +0x94); the client side is described under "Sound blend entities" below.
 - Alias loadspec (0x428f40): a row whose loadspec equals the mode tag `all_sp` loads in every single-player level
   (the fallback compare of the whole spec with the tag); "menu" and "!list" cases follow the same function.
   Effect: bullet_small_flesh (and every other `all_sp` row) was previously dropped.
@@ -65,7 +68,7 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
 - Slot layout of the client sound code (0x442df0 play-into-slot, 0x442fb0 stop/fade-out, table 0x793ce0 current/rate per slot):
   music is slot 0 (`mu_play` / `mu_stop`); ambient uses slots 1/2 alternately (0x443080, `3 - current`). A new ambient alias
   fades the old slot out and itself in over the fade time (rate = volume / ms); the same alias keeps playing. The engine models
-  configstring 3 as the client commands `ambient_play <alias> <fade ms>` / `ambient_stop <fade ms>`.
+  configstring 3 as the client commands `ambient_play <alias> <fade ms>``.
 - `soundfade(volume [, seconds])` (0x4f3520) sends `snd_fade <volume> <ms>` (ms = int(seconds * 1000), 0 without the argument).
 - Ambient / music aliases must be `streamed` and must not use a 3D channel type (load-time errors at 0x442e47 / 0x442e72).
 - Master volume = `snd_volume` (float, default 1.0, range 0..1, archived, 0x4449d6) x `snd_fade` volume x 0.75 (0x443ac4).
@@ -138,17 +141,16 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   flag 0x10 (`reverb` csv column contains `nowetlevel`, parser 0x429130; `fulldrylevel` sets flag 0x8). The dry level of a slot is tracked but
   every consumer reads only the wet level (and Miles' dry arg is the constant 1.0).
 - Implemented: `audio/reverb.h` (state machine, tested in tests/test_sound.cpp), `Mixer::reverbCommand/deactivateReverbCommand/voiceWetLevel`,
-  alias `noWetLevel`/`fullDryLevel`, iw2view `reverb`/`deactivatereverb` client commands. TODO(spec): the reverb DSP itself is inside mss32.dll
-  (EAX/software presets), so the mixer does not render a reverb tail; `fulldrylevel` (flag 0x8) has no consumer found; no shipped script calls
-  `setreverb`, so nothing is audible either way.
+  alias `noWetLevel`/`fullDryLevel`, iw2view `reverb`/`deactivatereverb` client commands. The reverb DSP itself is inside mss32.dll
+  (EAX/software presets), a third-party library that is not analysed, so the mixer does not render a reverb tail (the shipped corridor / ambient
+  reverbs of the entry above are therefore inaudible in this port); `fulldrylevel` (flag 0x8) has no consumer found.
 
 ## Round 6: audit (exe evidence)
 
 - `snd_fade` per-frame step: 0x4437a0 receives the elapsed ms as an int (`fildl 4(%esp)`) and the master fade does `vol += dt * rate` (0x443a21), clamps
   at the target (0x443a47..0x443a76, rate cleared); same dt as the ambient slots and reverb ramps. Implemented: `Mixer::mix` calls `fadeStep`
   (it was never stepped before, so `soundfade` / the mission-end `snd_fade 0` never changed the volume).
-- Still TODO(spec): looping-alias lifetime (stamp refresh 0x441f80 / sweep 0x443550), `speakermap`, `lfe percentage`,
-  per-channel voice priority and the sample slot limits (0x4423d0), the Miles reverb DSP.
+- The looping-alias lifetime, `speakermap`, `lfe percentage`, voice priority and slot limits are decoded in Round 7 below. Still TODO(spec): the Miles reverb DSP.
 
 ## Round 7: slots, priority, loops, columns (exe evidence)
 
@@ -202,9 +204,32 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
 - Not decoded (TODO(spec)): the other callers' owners; brass-delay gating (the bolt-action brass is in weapons.md) and the usercmd
   byte +0xd compared with +0x3d in the binocular cancel (0x4dfa8a).
 
+## Sound blend entities (rain loops)
+
+Client side of `sound_blend` (eType 6; cgame 0x4ac8a0, run per entity every client frame by the dispatcher 0x4acf30). Nothing plays while either
+of the two alias indices (entity words +0x12c / +0x12e, from setsoundblend) is zero. Both aliases are looked up and picked (0x428320 /
+0x428a20); if either is missing the call ends. The fraction is the entity's blend value lerped between the previous snapshot's value (+0x94)
+and the current one (+0x134) by the frame interpolation fraction (0xf708d0). The play goes through 0x442900, which checks the pair is
+compatible (0x442650: same file format, flags, channel) and calls the generic play 0x4423d0 with both aliases, the fraction, the owner word
++0xa8, the entity origin (+0x148) and loop-refresh mode. The generic play then:
+- culls on the squared distance to the listener against the lerp of the two aliases' dist_max (0x44247b..0x4424e6);
+- runs the loop refresh (0x441f80): a running voice of the same aliases and owner is only updated (volume and position), otherwise a voice is
+  started in the pool of the first alias' channel (3D channels use the 3D pool, steal rules of 0x441910);
+- draws volume and pitch (0x442310) from the lerp of the two aliases' min and max values (volMin/volMax at alias +0x14/+0x18, pitch at +0x1c/+0x20).
+A voice that is not refreshed in a frame is removed by the loop sweep, so an entity out of range stops sounding and restarts from the sample
+start when it comes back in range.
+The shipped rain emitters pair `<alias>_null` (same file, volume 0) with `<alias>`, so a fraction of 0 is silent and 1 is the loud rain.
+Implementation: `World::updateSoundBlend` (per server frame; a persistent mixer handle stands for the refresh loop, `Mixer::setBlend`
+reports a culled voice so the caller starts it again; freeing the entity stops the voice). TODO(spec): the snapshot interpolation of the
+fraction is not applied (the latest value is used; the scripts step it by 1/(20*seconds) per server frame).
+
 ## Channel volume slots and level changes
 
 The sound system keeps five channel-volume slots (set 0x4431f0, clear 0x443390); the highest active slot applies. The stop-all routine 0x444730 clears slots 1..4 (unless its flag 0x10 is set) and runs on level load and disconnect, so the level-end `setchannelvol` (slot 1, victoryscreen.shock) never reaches the next level. The port keeps these in `audio::ChannelVolumeSlots`. VAs in the patch 1.3 SP executable.
+
+Slot fades. Setting a slot (0x4431f0) stores, per channel, the target, the current output of the highest active slot as the start and a step of (target - start) / max(ms, 1); clearing the current slot (0x443390) starts the same kind of fade from its value to the next lower active slot. The per-frame advance (0x443750 / 0x4437a0) adds elapsed ms times the step and clamps at the target, so a fade is linear in time and ends exactly on the target. The victory-screen fade in iw2view runs over the same curve from full volume.
+
+Shell shock end sounds (0x4b1f90, stop path 0x4b1e90). The exe keeps the absolute time at which `shellshock_end` was started (0xf7e894, 0 = none). While the shock is live (a start time and the record's `cg_shock_sound` set) and the client time has reached start + duration + loopEndDelay, `shellshock_end` starts once, late by the overshoot, which is passed as the sample start offset. A new shock whose end is also already due starts it again. If the clock is before the end again (a new shock replaced the old one) or the shock stops being live (stopshellshock, a record without sound) while the stamp is set, the stamp is cleared and `shellshock_end_abort` is played (the shipped alias is a null sample at volume 0 on the same channel, `announcer`, as the end sound and both are started for entity 0x7ff, so it replaces a running end sound). The port implements this as `game::ShockEndSound` (tests: test_shellshock); the sample start offset is not applied.
 
 ## Weapon pickup sounds
 

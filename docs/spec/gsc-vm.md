@@ -57,35 +57,35 @@ function.
 threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> compile`).
 
 ## Notify queueing, `wait 0`, frame lists (exe evidence)
-- `notify` does not run the waiters. VM_Notify (0x46ca60, from Scr_NotifyNum 0x46d0f0) files each woken thread in the list of the
-  current frame counter (0x9bef20, via 0x46c570 -> 0x46c130). CORRECTION (2026-10-27): the filing is a head insertion, not an
-  append. 0x46c130 files each woken thread (it counts down over a packed stack, 0x46c151..0x46c1a4; see the 2026-10-30 correction below) through the script-variable child insertion 0x4643a0, which sets the parent's +0xe (the first element) to the new
-  entry and links the old first behind it; the runner (0x46d560, 0x46d5b4) and the iterator idiom (0x46def0..0x46dfb0) start at
-  the parent's +0xe. So the list behaves as a stack and the threads woken by a LATER notify run BEFORE those of an earlier one.
-  Evidence by behaviour: moscow.gsc:1396-1399, where dialogue() must run before friendly_letlev_block's resume_idle restart (else
-  the block loop animscripted cancels lookcompass and the chain dies; with the old FIFO the lines moscow_rs1_lookcompass /
-  storeroom never played; with the stack they do).
-  CORRECTION (2026-10-30): the order of the waiters OF ONE notify is newest-registered first, not registration order. 0x46c130
-  appears to walk the woken thread's own packed stack, not the waiter list, so the "double reversal" reading does not hold. The
-  waittill registration (0x46afb3..0x46afdb -> 0x465730 -> 0x4643a0) is a head insertion too, so a registration is the first
-  entry of the event's list. Evidence by behaviour: beltot.gsc:1762-1793. The map's vehicle nodes with a script_noteworthy are
-  all processed by the generic trigger thread of _vehicle.gsc (:215, started at load), which on "trigger" sends the node's
-  noteworthy as an argument-less notify to the vehicle (:527); truck_pause_node (registered later, when the truck is
-  activated) sends the same notify with script_wait for the truck_pause loop, whose assertex (0x4ebe90, unconditional, goes
-  through the script error path 0x468ed0) fails on a missing wait time. The truck's waittill takes the first of the two notifies,
-  so the later-registered waiter must run first; the old order failed that assert at the first pause node (autoplay run, node
-  #1705). TODO(spec): the walk of the waiter list in VM_Notify (0x46ca60) was not decoded to the end; the order rests on this
-  behaviour. Ours: `VM::notify` sorts the woken waiters by registration sequence (`Thread::waitSeq`) and queues them oldest
-  first at the head of the ready list, so the newest registration runs first.
-  `wait` filing (0x46a2e9) uses the same head insertion (0x4643a0) into the wake frame's list (counter + frames mod 0xfffd,
-  looked up with 0x463f20) and Scr_RunFrame runs that list through the same VM_RunList, so threads due in one frame run
-  newest-filed first (VM::runFrame sorts the due threads by filing sequence, descending). Only VM_RunList (0x46d560) calls the interpreter
-  (0x4690c0); it runs the list head and re-reads the head until the list is empty. Scr_RunFrame (0x46f5c0) = run the current list
-  (0x46de90), the frame-end threads (0x467150), then `incl 0x9bef20`. `thread f()` runs f at once. Ours: `VM::notify` queues,
-  `VM::drainReady` runs the queue as a stack (push at the head) after the timed threads of `runFrame`.
-- `wait s` (0x46a1fc..0x46a2e9): frames = (int)(s*20 + 0.5), a non-zero s that rounds to 0 becomes 1, the thread is filed under
-  counter + frames. `wait 0` therefore resumes in the SAME frame's list (after what is already queued). Ours: `wait 0` queues the
-  thread like a notify wake-up.
+- `notify` does not run the waiters. Script variable lists: 0x4643a0 links a new child at the head (parent +0xe) and 0x4643f0 at the
+  tail; the first entry's +2 leads to a sentinel whose +2 is the last entry, so the idiom "+0xe, +2, +2, +0" (0x46cb08..0x46cb26) gives
+  the entry before a variable, or the last child when applied to the parent.
+  VM_Notify (0x46ca60, from Scr_NotifyNum 0x46d0f0) uses that idiom: it starts at the event's list, so it takes the LAST entry, the
+  oldest registration (a waittill is linked at the head: 0x46afb3..0x46afdb -> 0x465730 -> 0x4643a0). After every handled entry it
+  restarts from the list; a waittillmatch whose arguments do not match stays and the walk moves on to the entry before it. Endon
+  entries (type 0) are handled in the same pass (0x46ccc4). A thread's endon is older than its waittill, so handling endons first
+  gives the same result.
+  Each woken thread is filed under the current frame counter 0x9bef20 by an inlined head insertion (0x46ce73..0x46ceba). Oldest
+  walked first and head filing give: the NEWEST registration of a notify runs first, and threads woken by a later notify run before
+  those of an earlier one. Behaviour agrees: beltot.gsc:1762-1793 (the later waiter truck_pause_node must beat the generic trigger
+  thread of _vehicle.gsc :527) and moscow.gsc:1396-1399.
+- The frame's list is one stack ordered by filing. `wait` files with the same head insertion (0x46a2e9 -> 0x4643a0) under counter +
+  frames (mod 0xfffd, found with 0x463f20), and VM_RunList (0x46d560), the only caller of the interpreter 0x4690c0, runs the head and
+  re-reads the head until the list is empty. So what a running thread wakes runs right after it yields, before older due threads,
+  and a notify between runs lands above every timed thread already in the list. `thread f()` runs f at once.
+- `waittillframeend` (0x46a495 -> 0x4643f0) links the thread at the TAIL of the current frame's list. Frame-end threads therefore run
+  last, oldest first, in the same list run; what one of them wakes goes to the head and runs before the next frame-end thread.
+- When the list runs: G_RunFrame stage 3 runs it after each trigger pass (0x4dac2a), also with no queued touches (0x4dab1b), then
+  removes it. So timed threads run before the animation time step of stage 4, not after. Stage 4 runs a list filed by notetracks
+  (0x4dadc3) and stage 5 what is left (0x4daf3d), then 0x467150, then counter + 1. Scr_RunFrame (0x46f5c0) has the same tail for the
+  callers outside G_RunFrame. 0x467150 is not a frame-end step: it empties the freed object list [0x9bef38] (see "Freeing a script
+  object").
+- `wait s` (0x46a1fc..0x46a2e9): frames = fistp(float(s * 20) + 2^-30) (constant 0x591f20), which rounds to nearest with ties up, not
+  a truncation; a non-zero s that rounds to 0 becomes 1. An integer argument gives value * 20. `wait 0` files under the current
+  counter, at the head of the list being run.
+- TODO(spec): the three points above are decoded but NOT implemented; a trial changed mission runs and is held back. Ours still: `VM::notify` queues
+  the woken threads newest registration first, `VM::runFrame` runs in stage 5 with the due timed threads first (newest filed first), then the queue, then the
+  frame-end threads in thread order, each pass followed by a queue drain. `VM::drainReady` runs only the queue. A `wait` wakes at the first frame at or after s seconds, so it can differ from the exe's rounding by a frame.
 - Consequence for init: threads woken or left in `wait 0` by main() run in the first frame list; `wait 0.05` threads are in the
   next one. World::start drains the queue and runs one game frame (matmata: the start trigger_multiple fires and spawns
   the jeep before ridein's `wait 0.05` calls getent("jeep")). Evidenced: the server spawn (0x4488b0) runs the frame start

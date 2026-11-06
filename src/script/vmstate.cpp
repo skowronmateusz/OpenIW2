@@ -1,5 +1,5 @@
 // Savegame state of the script VM (docs/spec/savegame.md section 5). openiw2's own format: the original writes its VM with
-// 0x461810 / 0x461b50 as raw images of its variable and thread tables (TODO(spec): not decoded), which have no counterpart here.
+// 0x461810 / 0x461b50 as raw memory images of its variable and thread tables (pointers inside), which have no counterpart here; saves of the two are not interchangeable.
 #include "script/vm.h"
 
 #include <stdexcept>

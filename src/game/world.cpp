@@ -42,7 +42,7 @@ const std::set<std::string> kEntityClasses = {
 // Map key/values become typed script fields. Keys named in radiant/*.txt ("<type> <key>", types float, int, string,
 // vector; parsed at 0x4686c0, looked up by 0x4682d0) take that type: atoi, atof, sscanf "%f %f %f", or the text
 // (entity 0x4f8ff0, node 0x515bf0). Native string fields stay text.
-// TODO(spec): the original drops keys that are neither native nor listed; here they stay, typed by their text
+// TODO(spec): [stays: not surveyed] the original drops keys that are neither native nor listed; here they stay, typed by their text
 // (numeric text becomes an int or float and three numbers a vector), because engine code reads spawn keys
 // (turret arcs, cursorhint, …) from the same object.
 Value parseFieldValue(const std::string& key, const std::string& v, const std::map<std::string, char>& keyTypes) {
@@ -268,7 +268,8 @@ void World::spawnMapEntities() {
             }
         } else if (startsWith(cls, "weapon_") && weapon(cls.substr(7))) {
             // weapon_<name> with a known weapon is an item entity (0x4f96d0 → item spawn 0x522c70).
-            // TODO(spec): item spawn details (model from the weapon, drop to floor, pickup).
+            // Item spawn details: docs/spec/grenades.md "Item run" (map items think FinishSpawningItem at +100 ms and settle, touch 0x521a90
+            // picks them up; World::runItem).
             Entity& e = spawnEntity(cls);
             fill(e.obj);
         }
@@ -310,7 +311,7 @@ void World::spawnMapEntities() {
 // The entity clips of the level-start drops (0x515f80, 0x5325f0): both save and zero the contents (+0xc0) of every entity
 // whose flags (+0x128) have DYNAMICPATH 0x100 and restore them afterwards. Vehicle collmaps are linked later (0x50dc40 at
 // 0x4d9c6f) and actors are not spawned yet, so the clips left are the other script_brushmodels.
-// TODO(spec): the other entity classes linked at 0x4d9c3e.
+// TODO(spec): [stays: not read] the other entity classes linked at 0x4d9c3e.
 void World::setLevelStartDropClips() {
     syncEntityClips();
     std::vector<EntityClip> clips;
@@ -392,7 +393,7 @@ bool World::dropActorToFloor(Entity& e) {
 // 0x5325f0 (G_InitGame 0x4d9c43, right after the node drop 0x4d9c3e): every spawner (eType 0xa, set by the spawner init
 // 0x532740 for an actor_* entity with spawnflags bit 1) is dropped to the floor with 0x4fc550, with the same DYNAMICPATH
 // clip rule as the node drop. An allsolid spawner prints "^3Spawner at (%g %g %g) is in solid" (0x58f7ec) with its origin
-// before the drop and gets bit 0 of +0xa2 cleared (0x5326d9; TODO(spec): what reads that bit, not modelled).
+// before the drop and gets bit 0 of +0xa2 cleared (0x5326d9; TODO(spec): [stays: no reader found] what reads that bit, not modelled).
 void World::dropSpawners() {
     setLevelStartDropClips();
     char buf[160];
@@ -540,7 +541,7 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
     // tests the volume against the spawn point (newvillers spawnedGuySetsGoalVolume).
     a.obj->set("$goalpos", a.obj->get("origin"));
     // movemode is a byte enum shown as "stop", "stop soon", "walk", "run" (getter 0x536960); the zeroed actor
-    // starts at "stop". TODO(spec): anim_pose's initial value (a string index, 0 after allocation) is inferred.
+    // starts at "stop". anim_pose (+0x146) starts as string 0; animscripts/init.gsc:220 sets it before anything reads it.
     a.obj->set("movemode", Value("stop"));
     a.obj->set("anim_pose", Value("stand"));
     const std::string aitype = "aitype/" + cls.substr(6) + ".gsc";
@@ -584,11 +585,14 @@ void World::deleteEntityScripted(Entity& e) {
         releaseSentient(e);      // 0x4fc9d2
         clearActorReferences(e); // 0x4fc9e0..0x4fca43
     }
-    // G_FreeEntity (0x4d7c30) resets the entity (call 0x419700 at 0x4d7ce3; TODO(spec): confirm it is the memset), whose state holds the loop sound index (ent+6, set by playloopsound
+    // G_FreeEntity (0x4d7c30) resets the entity (after the unlink 0x419700 at 0x4d7ce3), whose state holds the loop sound index (ent+6, set by playloopsound
     // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
     if (const Value h = e.obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
     e.obj->set("$loopsound", Value());
     e.obj->set("$loopalias", Value());
+    // A freed sound_blend entity is no longer sent to the client, which stops calling the blend play (0x4ac8a0): the loop ends.
+    if (const Value h = e.obj->get("$blendhandle"); h.isNumber()) stopSound(h.asInt());
+    e.obj->set("$blendhandle", Value());
     releaseEntityLinks(e);
     vm_.freeObject(e.obj);
 }
@@ -680,7 +684,7 @@ void World::prepareStart() {
 void World::runLevelMain() {
     // The server spawn runs the frame start 0x44a6a0 (level.time += 50, framenum + 1) at 0x448985 right before 0x4da470,
     // which starts the level's main thread (0x4da50e) and runs the first G_RunFrame (0x4da524): both at level time 50.
-    // TODO(spec): which part of prepareStart's entity spawning the exe does at time 0 (G_InitGame) and which at 50
+    // TODO(spec): [stays: not read] which part of prepareStart's entity spawning the exe does at time 0 (G_InitGame) and which at 50
     // (0x4da470 -> 0x4fa5c0); here all of it is at 0.
     timeMs_ += 50;
     vm_.setTime(timeMs_);
@@ -706,7 +710,7 @@ Entity* World::entityByNumber(int number) {
 
 void World::frame(bool advanceTime) {
     if (advanceTime) timeMs_ += 50;
-    if (player_) { // the player's velocity for the AI (TODO(spec): the original reads ps->velocity)
+    if (player_) { // the player's velocity for the AI (TODO(spec): [stays: the host owns the player state] the original reads ps->velocity)
         const Value po = player_->obj->get("origin");
         if (po.isVector()) {
             const Vec3 o = po.asVector();
@@ -718,6 +722,7 @@ void World::frame(bool advanceTime) {
     ++frameNumber_; // level.framenum (0x44a6a0)
     syncEntityClips();
     if (fxEvents_.size() > 4096) fxEvents_.erase(fxEvents_.begin(), fxEvents_.end() - 4096); // nobody draining
+    if (playerKnockbacks_.size() > 64) playerKnockbacks_.clear(); // a host without a player state (iw2game) never drains them
     for (auto& l : loopedFx_)
         if (timeMs_ >= l.nextMs) {
             fxEvents_.push_back({fxNames_[size_t(l.id)], l.origin, Vec3{0, 0, 1}});
@@ -753,7 +758,7 @@ void World::frame(bool advanceTime) {
     // and, after each step that ends at a notetrack, runs the threads that notify woke at once (0x46d560 at 0x4dadc3,
     // 0x4da692) before the next entity's animation moves. So a script that waits for one entity's "end" can start
     // waiting for another entity's "end" in the same frame (duhoc_assault: the drag camera and the dragging soldier end
-    // together). TODO(spec): the exe splits the step at every notetrack; here the threads run after the whole 50 ms step,
+    // together). TODO(spec): [stays: splitting the step is a larger change to the frame order] the exe splits the step at every notetrack; here the threads run after the whole 50 ms step,
     // and the weight update (stage 2, for all entities before any time step) runs inside each entity's update.
     // Stage 2 (0x447ec0 -> 0x476960): the weight update of every entity first, which also moves each node's old time up ...
     for (size_t ei = 0; ei < entities_.size(); ++ei) {
@@ -790,6 +795,7 @@ void World::frame(bool advanceTime) {
     runEntityPass(); // stage 8
     debugActorCounts();
     updatePlayerLink(); // ClientEndFrame (0x4e7f90, 0x4db144) after the entity pass
+    edgeButtons_ = 0;   // ... which clears the went-down button bits (client +0x8640)
     trimCorpses();      // 0x4db159
     runDeathScreen();
     processSaves(); // 0x44a230 at the server frame end (0x44a91f), after G_RunFrame and before the snapshot
@@ -799,7 +805,7 @@ void World::frame(bool advanceTime) {
 // first (stage 8 0x4db082..0x4db08e) and then follows it (0x4d7170); the dispatch 0x4da720 then runs the missile
 // (eType 3, G_RunMissile 0x526c30), the item (eType 2, G_RunItem 0x523040), the script model (eType 5, 0x52ccb0) or the
 // think (0x4da090: movers, vehicles, turrets, actors). Clients run nothing here. 0x1c61064 holds the running number.
-// TODO(spec): the port runs every part that applies to the entity, in this fixed order.
+// TODO(spec): [stays: a change of the frame structure, not attempted] the port runs every part that applies to the entity, in this fixed order.
 void World::runEntity(Entity& e) {
     if (e.obj->removed || e.isPlayer || e.isSpawner || e.number < 0) return;
     if (size_t(e.number) >= entityRunFrame_.size()) entityRunFrame_.resize(size_t(e.number) + 64, -1);
@@ -812,6 +818,7 @@ void World::runEntity(Entity& e) {
     followLink(e);
     runMover(e);
     if (e.classname == "script_vehicle") thinkVehicle(e);
+    if (e.classname == "sound_blend") updateSoundBlend(e);
     if (e.turret && !e.obj->removed) thinkTurret(e);
     if (e.grenade && !e.obj->removed) runGrenade(e);
     else if (e.rocket && !e.obj->removed) runRocket(e);
@@ -911,8 +918,19 @@ void World::thinkActor(Entity& e) {
         }
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
+        if (!e.ai.corpse) actorDelayedDeath(e); // 0x4ff215
         if (!e.ai.corpse) actorTouchTriggers(e); // 0x4ff260
     }
+}
+
+// 0x4ff215: the delayed death of an actor spared by 0x4ff360, once neither holding state is on its stack: health + 1
+// from nobody, hit location 2 (head), means of death 0, at the origin.
+void World::actorDelayedDeath(Entity& e) {
+    const auto end = e.ai.stack.begin() + e.ai.depth + 1;
+    if (!e.ai.deathPending || !isAlive(e) || std::find(e.ai.stack.begin(), end, int(AiScripted)) != end ||
+        std::find(e.ai.stack.begin(), end, int(AiNegotiation)) != end)
+        return;
+    damage(e, nullptr, e.obj->get("health").asInt() + 1, {0, 0, 0}, e.obj->get("origin").asVector(), "MOD_UNKNOWN", "head");
 }
 
 // Debug (IW2_AI_DEBUG): every 5 s a count of actors by state/substate, animscript (done: its thread ended) and path.
@@ -1459,7 +1477,7 @@ void World::runTriggers() {
             // Touch function 0x5291d0: the next hit is due at ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms);
             // G_Damage(other, self, self, no direction, no point, dmg, flags (spawnflags 8) << 2, MOD_TRIGGER_HURT); then
             // spawnflags 0x20 switches it off (handler 6). Spawnflags 2 skips actors (the player is not one).
-            // TODO(spec): the damage flag 0x20 (spawnflags 8) is not modelled by damage();
+            // The damage flag 0x20 has no reader: G_Damage and the vehicle filter 0x5122f0 test only bits 2 and 8, and the flags go no further.
             const int flags = sf.isNumber() ? sf.asInt() : 0;
             const Value nt = e->obj->get("$hurtNext");
             if (nt.isNumber() && nt.asInt() > timeMs_) continue;
@@ -1844,7 +1862,7 @@ void World::registerBuiltins() {
     });
     // makefakeai (0x4f82a0): the entity must be a script_model (eType 5, else "makeFakeAI must be applied to a script_model",
     // string 0x5853c4); it clears ent+0xa2 bits 1|2, sets the box mins (-15,-15,0) maxs (15,15,72) (0xa8..0xbc), ORs 0x8000
-    // into ent+0xc0 and relinks (0x44b2d0). Recorded as script fields; TODO(spec): what the exe's traces/damage do with the
+    // into ent+0xc0 and relinks (0x44b2d0). Recorded as script fields; TODO(spec): [stays: not read] what the exe's traces/damage do with the
     // 0x8000 contents of a fake AI (bullets only hit script models through their xmodel surfaces here).
     vm_.registerBuiltin("makefakeai", [](CallContext& c) {
         const ObjectPtr o = c.self.asObject();
@@ -1862,8 +1880,8 @@ void World::registerBuiltins() {
         if (!e || !e->isPlayer) throw std::runtime_error("GetStance is only defined for players.");
         return Value(std::string(playerCmd_.stance == 2 ? "prone" : playerCmd_.stance == 1 ? "crouch" : "stand"));
     });
-    // meleebuttonpressed (0x5388d0): player-only; (client+0x8640 | client+0x8634) & 4 -> int 1/0. 0x8640 is taken as the
-    // current usercmd buttons and 0x8634 as the previous frame's (TODO(spec): confirm the pair); the bit is the melee button (4).
+    // meleebuttonpressed (0x5388d0): player-only; (client+0x8640 | client+0x8634) & 4 -> int 1/0. 0x8634 holds the latest usercmd's
+    // buttons and 0x8640 the bits that went down since the last frame end (ClientThink 0x4e7e4c..0x4e7e7d); the bit is the melee button (4).
     vm_.registerBuiltin("meleebuttonpressed", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("meleebuttonpressed: entity is not a player");
@@ -1871,8 +1889,8 @@ void World::registerBuiltins() {
     });
     // Player input queries, all player-only ("entity %i is not a player", 0x590ab8) and all read from the client:
     // attackbuttonpressed (0x538820) = (client+0x8640 | client+0x8634) & 1, usebuttonpressed (0x538770) = (...) & 0x28
-    // (+activate 0x8 | +usereload 0x20, the same pair playerweapon.h calls "use"), both int 1/0 (same current|previous
-    // command pair as meleebuttonpressed above).
+    // (+activate 0x8 | +usereload 0x20, the same pair playerweapon.h calls "use"), both int 1/0 (same held | went-down
+    // pair as meleebuttonpressed above).
     auto playerOnly = [this](CallContext& c) -> Entity& {
         Entity* e = entityOf(c.self);
         if (!e || !e->isPlayer) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
@@ -1916,7 +1934,7 @@ void World::registerBuiltins() {
         return Value(Vec3{float(playerCmd_.forward) * kInv127, float(playerCmd_.right) * kInv127, 0.0f});
     });
     // enableaimassist / disableaimassist (0x4f81c0 / 0x4f8230): set / clear the entity flag 0x800 (entity+0x10). Stored as the
-    // script-invisible field $aimassist; nothing in the port reads it yet (TODO(spec): the console auto-aim consumer).
+    // script-invisible field $aimassist; nothing in the port reads it yet (TODO(spec): [stays: no consumer of the flag is implemented] the console auto-aim consumer).
     vm_.registerBuiltin("enableaimassist", [this](CallContext& c) {
         if (Entity* e = entityOf(c.self)) e->obj->set("$aimassist", Value(int32_t(1)));
         return Value();
@@ -1926,7 +1944,7 @@ void World::registerBuiltins() {
         return Value();
     });
     // pushplayer (0x5407a0): actor-only (the pointer at entity+0x100, error 0x591798); arg true clears, false sets the bit 0x2000000 of actor+0x28c (stored as $nopush;
-    // nothing consumes it yet, TODO(spec): the pmove effect of that bit).
+    // nothing consumes it yet, TODO(spec): [stays: not read] the pmove effect of that bit).
     vm_.registerBuiltin("pushplayer", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("pushplayer: entity is not an actor");
@@ -2010,7 +2028,7 @@ void World::registerBuiltins() {
         const int i = d.empty() ? 1 : std::clamp(std::atoi(d.c_str()), 0, 3);
         return Value(names[i]);
     });
-    // Effects (docs/spec/effects.md). TODO(spec): the argument order of playfx/playloopedfx is read from the
+    // Effects (docs/spec/effects.md). TODO(spec): [stays: taken from shipped calls, the engine parser is not read] the argument order of playfx/playloopedfx is read from the
     // shipped scripts' calls (id, origin[, forward]) and (id, repeat seconds, origin), not from the engine.
     vm_.registerBuiltin("loadfx", [this](CallContext& c) {
         fxNames_.push_back(c.arg(0).toString());

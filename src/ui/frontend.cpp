@@ -61,12 +61,13 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
     };
     // setitemcolor (0x4c7ba0): the named colour of every matching item: backcolor -> item +0x1dc, forecolor -> +0x1cc plus item flag
     // 0xe8 |= 0x10000 (0x4c7c94), bordercolor -> +0x1ec. The 0x10000 flag only decides whether the item background paint (0x4c7346,
-    // 0x4c7478) passes the forecolor on or null. TODO(spec): bordercolor and that flag have no consumer here (needs the item paint decode).
+    // 0x4c7478) passes the forecolor on or null (white).
     env_.setItemColor = [this](const std::string& n, const std::string& which, const Color& c) {
         for (const Item* it : matching(n)) {
             auto& r = runtime_[it];
             if (which == "forecolor") r.hasFore = true, r.fore = c;
             else if (which == "backcolor") r.hasBack = true, r.back = c;
+            else if (which == "bordercolor") r.hasBorder = true, r.border = c;
         }
     };
 }
@@ -97,6 +98,24 @@ std::vector<const Item*> MenuStack::matching(const std::string& n) const {
 Color MenuStack::foreColor(const Item& it) const {
     const auto r = runtime_.find(&it);
     return r != runtime_.end() && r->second.hasFore ? r->second.fore : it.foreColor;
+}
+
+Color MenuStack::borderColor(const Item& it) const {
+    const auto r = runtime_.find(&it);
+    return r != runtime_.end() && r->second.hasBorder ? r->second.border : it.borderColor;
+}
+
+std::vector<BorderBar> borderBars(int border, float x, float y, float w, float h, float size) {
+    std::vector<BorderBar> bars;
+    if (border == 1 || border == 2) {
+        bars.push_back({x, y, w, size});
+        bars.push_back({x, y + h - size, w, size});
+    }
+    if (border == 1 || border == 3) {
+        bars.push_back({x, y, size, h});
+        bars.push_back({x + w - size, y, size, h});
+    }
+    return bars;
 }
 
 Color MenuStack::backColor(const Item& it) const {
@@ -153,7 +172,7 @@ void MenuStack::close(const std::string& name) {
     stack_.erase(it);
     // The exe has no explicit stop on close: Menu_Paint (0x4cf92c, 0x4cfb40, 0x4cfd20) re-submits the loop through 0x40fff0 ->
     // 0x4423d0 for every open menu (flag 0xe8 bit 2) with a soundLoop (+0x254), so it ends when the last such menu is gone.
-    // TODO(spec): the fade tail of the sound system after the last submit (needs the 0x4423d0 sound-start decode).
+    // The next sweep (0x443510) then stops it, at most one frame later (docs/spec/sound.md); the loop stops at once here.
     if (!loopAlias_.empty() && lower(m->soundLoop) == loopAlias_) {
         bool still = false;
         for (const Menu* o : stack_) still = still || lower(o->soundLoop) == loopAlias_;
@@ -251,7 +270,7 @@ const Item* MenuStack::hover(float x, float y, const Menu** owner) const {
     return nullptr;
 }
 
-// 0x4d0170: the menu is visible, the pointer is in its rect and over a visible, non-decoration item. TODO(spec): the type-0 text-rect test.
+// 0x4d0170: the menu is visible, the pointer is in its rect and over a visible, non-decoration item. TODO(spec): an item whose dwords +0x270 and +0x294 are both 0 only hits inside the rect 0x4cbae0 computes (a text rect); what those two fields are is not identified, so every item counts by its full rect here.
 bool MenuStack::overActiveItem(const Menu& m, float x, float y) const {
     if (!inRect(m.rect, x, y)) return false;
     for (const auto& it : m.items) {
@@ -286,7 +305,7 @@ bool MenuStack::routeOutOfBounds(float x, float y, bool back) {
         routing_ = false;
         return r;
     }
-    if (!focusMenu_ && !stack_.empty()) { // TODO(spec): the original leaves no focused menu here
+    if (!focusMenu_ && !stack_.empty()) { // deliberate: the original leaves no focused menu here (docs/spec/ui.md, simplifications)
         focusMenu_ = stack_.back();
         if (!focus_) {
             const auto sel = selectable(*focusMenu_);
@@ -371,8 +390,8 @@ std::string MenuStack::valueLabel(const Item& it) const {
     if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
         // 0x4cd0e0 formats only a dvar whose type byte (+6) is 1 (float); any other dvar type, or a missing dvar, leaves the label empty
         // (0x4cd13e). The language id is the value of dvar loc_language (pointer 0xc4d2ec, registered at 0x4968a2..0x4968df, int 0..14),
-        // which env_.language mirrors. TODO(spec): the port's cvars carry no type; here a numeric dvar (or the unset default) is
-        // formatted and other strings are shown as they are.
+        // which env_.language mirrors. The port's cvars carry no type, so a numeric dvar (or the unset default) is formatted and other
+        // strings are shown as they are (a deliberate difference).
         const std::string raw = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
         char* end = nullptr;
         double v = std::strtod(raw.c_str(), &end);
@@ -553,8 +572,9 @@ void MenuStack::key(Key k) {
     if (k == Key::Escape) {
         // UI_KeyEvent (0x4c63c0) on ESC down: when no open visible menu is fullScreen (0x4cf6a0, menu +0x214) and the focused menu has
         // no onESC (+0x24c), every menu is closed (0x4c8080); otherwise the key goes to the menu handler (0x4cbf2a), which runs onESC if
-        // set (nothing for a fullScreen menu without one, e.g. main). TODO(spec): after closing the last menu the exe also clears the
-        // UI key catcher and, when the byte behind pointer 0x59b724 is 0, sets cl_paused to 0 (0x4c6455).
+        // set (nothing for a fullScreen menu without one, e.g. main). After closing the last menu the exe also clears the
+        // UI key catcher and, when the byte behind pointer 0x59b724 is 0, sets cl_paused to 0 (0x4c6455); the port has no key catcher
+        // and its caller owns cl_paused (uiScript ingameclose clears it, menurun.cpp).
         bool fullScreenVisible = false;
         for (const Menu* o : stack_) fullScreenVisible = fullScreenVisible || o->fullScreen;
         if (m->onEsc.empty() && !fullScreenVisible) closeAll();
@@ -850,7 +870,7 @@ void MenuStack::textInput(const std::string& text) {
     for (unsigned char c : text) {
         // The exe accepts any character code >= 0x20 (0x4ca993) and stores its low byte (0x4caa5a). Characters above 0x7f are kept out
         // here: the exe gets them as single code-page bytes from the Win32 char message and the port receives UTF-8 text, so
-        // copying the bytes would not reproduce it. TODO(spec): the code-page mapping of the input layer.
+        // copying the bytes would not reproduce it (the mapping of the Windows code page is not modelled).
         if (c < 0x20 || c > 0x7f) continue;
         if (it.type == 16 && !(std::isalnum(c) || c == '_' || c == '-')) continue;
         std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();

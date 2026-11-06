@@ -236,6 +236,19 @@ inline void markSpawned(PlayerState& ps) {
     ps.pmTimeMs = 100;
 }
 
+// One G_Damage hit that pushes the player (docs/spec/weapons.md "Damage knockback"). dir need not be normalized.
+struct KnockbackHit {
+    int amount = 0;          // after the hit-location multiplier
+    std::array<float, 3> dir{};
+    bool selfBlast = false;  // the player is his own attacker and the means of death is a grenade or projectile
+};
+// Means of death 3..6: MOD_GRENADE, MOD_GRENADE_SPLASH, MOD_PROJECTILE, MOD_PROJECTILE_SPLASH (0x528256..0x528268).
+inline bool selfBlastMod(int mod) { return mod >= 3 && mod <= 6; }
+// LookAtKiller (0x527cd0): the dead view yaw of ps+0x10c, truncated.
+float lookAtKillerYaw(const Vec& self, const Vec& killer, bool selfKill, float entityYaw);
+// g_knockback (0x1c13f60) defaults to 1000; nothing shipped sets it.
+void applyKnockback(PlayerState& ps, const KnockbackHit& hit, float gKnockback = 1000.0f);
+
 inline void addPmEvent(PlayerState& ps, int ev) {
     addPlayerEvent(ps, ev, 0);
 }

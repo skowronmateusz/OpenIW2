@@ -23,7 +23,7 @@ class CompassPings {
 public:
     struct Ping { int64_t endMs = 0; bool enemy = false; std::array<float, 2> pos{}; };
     // 0x4c0e20 (centity, durationMs, position): the caller has already excluded entity type 0xb. team is the actor's sentient team
-    // (0x1c6421c[slot], 1 axis, 2 allies, 3 neutral; 4 TODO(spec)); 3 and 4 leave the entry alone. Otherwise end = now + duration and
+    // (0x1c6421c[slot]; the exe's team-name table at 0x5a9910 is 0 invalid, 1 axis, 2 allies, 3 neutral, 4 dead); 3 and 4 leave the entry alone. Otherwise end = now + duration and
     // enemy = (team == 1); only an enemy ping stores the position (x, y), so an allied entry keeps its friendly position.
     // The exe keys the entry by the actor slot (0x1c630bc[entnum]); here by entity number. TODO(spec): slot reuse by a new actor.
     void ping(int entnum, int team, float x, float y, int64_t nowMs, int durationMs) {

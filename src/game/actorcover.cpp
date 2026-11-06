@@ -275,19 +275,29 @@ void World::blockNodeForTeam(int node, Entity& e) {
 }
 
 // Claim a node (0x5152f0): the previous one is released; a normal node (or a priority one whose hold expired) is
-// taken (0x518fa0); a held priority node is taken over (0x519050), evicting a claiming owner (0x515330: its path is
-// dropped when it ends at the node, then 0x519300).
+// taken (0x518fa0); a held priority node is taken over (0x519050), evicting the actors claiming it or its linked nodes
+// (0x515330: the path is dropped when it ends at their node, then 0x519300).
 void World::claimNode(Entity& e, int node, bool takeOver) {
     linkOverlappingNodes();
     if (e.claimedNode == node) return;
-    if (e.claimedNode >= 0) releaseNode(e);
+    if (e.claimedNode >= 0) {
+        if (takeOver) releaseNodeTimed(e); // 0x51905d, a direct call of 0x519050
+        else releaseNode(e);
+    }
     if (node < 0) return;
     PathNode& n = nodes_[size_t(node)];
-    if (((n.spawnflags & 0x40) || takeOver) && n.ownerUntilMs >= timeMs_ && n.owner && n.owner != &e && n.ownerUntilMs == kNodeClaimed) {
-        Entity* owner = n.owner;
-        if (owner->isActor && owner->claimedNode == node) {
-            if (actorHasPath(*owner) && samePoint(vecField(n.obj, "origin"), pathEnd(*owner))) clearActorPath(*owner);
-            blockNodeForTeam(node, *owner);
+    // 0x515330 on the actor holding a claim on `q`: a path to its node goes, the node is blocked for its team.
+    auto evict = [&](const PathNode& q) {
+        Entity* owner = q.owner;
+        if (!owner || owner == &e || !owner->isActor || q.ownerUntilMs != kNodeClaimed || owner->claimedNode < 0) return;
+        if (actorHasPath(*owner) && samePoint(vecField(nodes_[size_t(owner->claimedNode)].obj, "origin"), pathEnd(*owner))) clearActorPath(*owner);
+        blockNodeForTeam(owner->claimedNode, *owner);
+    };
+    if (n.owner != &e && (takeOver || ((n.spawnflags & 0x40) && n.ownerUntilMs >= timeMs_))) { // 0x519050
+        evict(n);
+        for (int l : n.link) { // 0x5190a3, 0x5190e1: the second link only when there is a first
+            if (l < 0) break;
+            evict(nodes_[size_t(l)]);
         }
     }
     n.owner = &e;
@@ -306,8 +316,8 @@ void World::claimNode(Entity& e, int node, bool takeOver) {
 // 0x515390 (every frame from 0x4ff1d9 / 0x4e8276, due every 4950 ms = 0x1356): with a claimed node flagged 0x8000 the
 // nodes within 80 x 80 (0x516950, mask 0x41ffc, at most 64) that are not claimed (+0x44 != 0x7fffffff), are flagged 0x8000
 // too, lie on the far side of it (dot(claimed - node, facing) <= -0.5 on the normalised xy offset) and look back at it
-// (dot(offset, own facing) > 0.5) are blocked for the actor's team (0x519300). TODO(spec): the facing is taken as
-// (cos, sin) of the node yaw (+0x20), the vector the exe reads at node +0x24 / +0x28.
+// (dot(offset, own facing) > 0.5) are blocked for the actor's team (0x519300). The facing is node +0x24 / +0x28, the (cos, sin) of the
+// node yaw +0x20 stored by the key parse (0x52d366..0x52d381).
 void World::blockFacingNodes(Entity& e) {
     if (timeMs_ - e.ai.nodeBlockMs < 0) return;
     e.ai.nodeBlockMs = timeMs_ + 4950;
@@ -816,9 +826,57 @@ bool World::stopForEnemy(Entity& e, bool fighting, int node, bool hadPath) {
     return true;
 }
 
+// 0x503100: not yet pathing to the enemy, the enemy nearer (2D) than pathenemyfightdist, its position known within 5 s
+// (0x503080 with argument 1), and the claimed node sees its node or it was seen within 5 s: start pathing to the enemy
+// and recompute the working goal.
+bool World::startPathToEnemy(Entity& e) {
+    Entity* enemy = entityOf(e.obj->get("enemy"));
+    ActorAi& ai = e.ai;
+    if (!enemy || ai.pathToEnemy) return false;
+    const Vec3 o = vecField(e.obj, "origin"), ep = vecField(enemy->obj, "origin");
+    const float fight = floatField(e.obj, "pathenemyfightdist", 0.0f), dx = o[0] - ep[0], dy = o[1] - ep[1];
+    if (!(fight * fight > dy * dy + dx * dx)) return false;
+    auto it = e.sentientInfo.find(enemy->obj.get());
+    const bool have = it != e.sentientInfo.end();
+    if (!have || it->second.lastKnownMs == 0 || timeMs_ - it->second.lastKnownMs >= 5000) return false;
+    if (!claimedNodeSeesEnemyNode(e, *enemy) && (it->second.lastSeenMs == 0 || timeMs_ - it->second.lastSeenMs >= 5000)) return false;
+    ai.pathToEnemy = true;
+    updateWorkingGoal(e);
+    return true;
+}
+
+namespace {
+// 0x53dc50: the 2D segments a-b and c-d cross, each with the other's ends strictly on opposite sides.
+bool segmentsCross(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d) {
+    auto side = [](const Vec3& p, const Vec3& q, const Vec3& r) { return (r[0] - p[0]) * (p[1] - q[1]) + (r[1] - p[1]) * (q[0] - p[0]); };
+    return side(a, b, c) * side(a, b, d) < 0.0f && side(c, d, a) * side(c, d, b) < 0.0f;
+}
+} // namespace
+
+// 0x53dce0: docs/spec/ai.md "maymovetopoint".
+bool World::mayMoveToPoint(Entity& e, const Vec3& point) {
+    if (links_.count(e.number)) return false;
+    const Vec3 o = vecField(e.obj, "origin");
+    const std::string team = e.obj->get("team").toString();
+    for (const auto& t : entities_) {
+        if (t.get() == &e || !isSentient(*t) || t->obj->get("team").toString() != team) continue;
+        Entity* foe = entityOf(t->obj->get("enemy"));
+        if (foe && segmentsCross(vecField(t->obj, "origin"), vecField(foe->obj, "origin"), o, point)) return false;
+    }
+    const uint32_t mask = e.ai.noPush ? 0x2820011u : 0x820011u;
+    const TraceResult tr = collision_->trace({point[0], point[1], point[2] + 128.0f}, {point[0], point[1], point[2] - 128.0f}, {0, 0, 0}, {0, 0, 0},
+                                             mask | 0x6000u, e.number);
+    if (tr.allSolid) return false;
+    Vec3 out{};
+    if (!aiReach(o, point, e.number, mask | 0x4004u, out, e.ai.prone.tilt ? 10.0f : 18.0f)) return false;
+    if (!inActorGoal(e, point) && !(startPathToEnemy(e) && inActorGoal(e, point))) return false;
+    e.ai.mayMoveMs = timeMs_; // 0x53df8d, read by 0x548be0
+    return true;
+}
+
 // Move check towards a point (0x543d30, src/game/actorfollow.cpp) from the actor's origin.
 bool World::aiMoveCheck(Entity& e, const Vec3& target, float step, Vec3& out) {
-    return aiReach(vecField(e.obj, "origin"), target, e.number, Contents::ActorClipMask | 4, out, step);
+    return aiReach(vecField(e.obj, "origin"), target, e.number, (e.ai.noPush ? 0x2820011u : 0x820011u) | 4, out, step); // +0x28c, 0x5491f0
 }
 
 void World::registerCoverBuiltins() {
@@ -913,7 +971,8 @@ void World::registerCoverBuiltins() {
         return Value();
     });
     // usereacquirenode(node) (0x548e60): a usable node from which the enemy's eye is visible and that has a path
-    // is claimed; substate reacquire. TODO(spec): the path comes from 0x503890 (node-to-node planner).
+    // is claimed; substate reacquire. The path comes from 0x503890 with its plane argument 1, which keeps a path that
+    // already ends at the node (or an actor already there, with no path at all, passes).
     vm_.registerBuiltin("usereacquirenode", [=, this](CallContext& c) {
         Entity& e = actor(c);
         if (e.obj->get("keepclaimednode").truthy()) throw std::runtime_error("cannot change node when keepclaimednode is set");
@@ -924,7 +983,10 @@ void World::registerCoverBuiltins() {
         // to the enemy's eye.
         const Vec3 no = vecField(nodes_[size_t(node)].obj, "origin");
         if (!actorSightClear(e, *enemy, {no[0], no[1], no[2] + 64.0f}, sightEye(*enemy, nullptr), 0.0f)) return Value(0);
-        if (!pathToNode(e, node) || !actorHasPath(e)) return Value(0);
+        const Vec3 pathGoal = no, at = vecField(e.obj, "origin");
+        const bool hadPath = actorHasPath(e), keep = !(e.path.flags & 4) || e.path.planned < e.path.count * 4;
+        const bool there = hadPath ? keep && samePoint(pathGoal, pathEnd(e)) : samePoint(pathGoal, at);
+        if (!there && !pathToNodeDirect(e, node, true)) return Value(0);
         claimNode(e, node);
         e.ai.reacquireNodes.clear();
         e.ai.substate = kSubReacquire;

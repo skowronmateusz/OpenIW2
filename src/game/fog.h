@@ -35,7 +35,7 @@ inline bool shadowHintBits(const std::string& s, uint32_t& bits) {
 
 // Far-plane distance of the renderer (gfx dll 0x1000aaa0, exe export slot 0x617af0; set from configstring 8 by 0x1000ab00): the r_zfar
 // dvar when nonzero, else the linear fog far distance while a linear fog is active, else 0; then the larger of that and the setculldist
-// value. 0 = no far plane. TODO(spec): the exponential-fog case (only linear fog is modelled as contributing).
+// value. 0 = no far plane. Only record type 1 (linear) counts: an exponential fog gives no distance. r_zfar defaults to 0 (0x1000ad7e).
 // The plane culls by depth along the view direction (see FxSystem::beyondFar), it is not the projection far clip.
 inline float farPlaneDistance(bool linearFogActive, float fogFar, float rZfar, float cullDist) {
     float d = rZfar != 0.0f ? rZfar : (linearFogActive ? fogFar : 0.0f);
@@ -48,6 +48,13 @@ inline float shadowCasterScore(uint32_t hintBits, float dist, float maxExtent) {
     const float s = dist / maxExtent;
     return hintBits == 0x6000 ? s * 0.25f : hintBits == 0x4000 ? s * 4.0f : s;
 }
+
+// Colour of the fixed-function fog stage (gfx dll 0x10035050, called from the state setters 0x10034db0, 0x10039d4b, 0x1003a0dc with
+// argument 0 or, for one pass kind, 2): black (alpha 0xff) when the argument is 2, or when the pass's blend state word 0 (material file
+// +0x2c, cached at 0x10744c00) has the destination blend field (mask 0xf0) equal to One (0x20); otherwise the scene fog colour
+// (0x1070c4c8). With a One destination the fog therefore only scales the source colour (lerp(black, c, f) = c * f) and an additive
+// surface fades out with distance instead of turning fog coloured. Returns false for "use the scene colour".
+inline bool fogColorIsBlack(uint32_t stateWord0, int arg = 0) { return arg == 2 || (arg == 0 && (stateWord0 & 0xf0u) == 0x20u); }
 
 struct FogParams {
     bool active = false;
@@ -70,27 +77,9 @@ struct FogConsts {
 class FogState {
 public:
     // "fog <near> <far> <1> <r> <g> <b> <ms>" handled at the client time nowMs (0x4a5770: R_SetFog + transition from nowMs for ms).
-    void command(float nearD, float farD, float r, float g, float b, int ms, int64_t nowMs) {
-        from_ = current(nowMs);
-        to_.active = true;
-        to_.exponential = false;
-        to_.nearDist = nearD;
-        to_.farDist = farD;
-        const float v[3] = {r, g, b};
-        for (int i = 0; i < 3; ++i) to_.color[i] = uint8_t(std::clamp(std::nearbyint(v[i] * 255.0f), 0.0f, 255.0f));
-        start_ = nowMs;
-        end_ = nowMs + ms;
-        // 0x100244fa: when the current state is not an active fog (type differs) the target is taken immediately.
-        if (!from_.active) end_ = start_;
-    }
-    // Exponential fog: "fog <near> <far> <density> ..." with density < 1 (setexpfog sends "fog 0 1 <density> r g b ms"). When the current fog is of
-    // another type the target is taken at once (0x100244fa). TODO(spec): density interpolation between two exponential fogs (assumed linear).
-    void commandExp(float density, float r, float g, float b, int ms, int64_t nowMs) {
-        command(0, 1, r, g, b, ms, nowMs);
-        to_.exponential = true;
-        to_.density = density;
-        if (!from_.exponential) end_ = start_;
-    }
+    void command(float nearD, float farD, float r, float g, float b, int ms, int64_t nowMs) { set(false, 0, nearD, farD, r, g, b, ms, nowMs); }
+    // Exponential fog: "fog <near> <far> <density> ..." with density < 1 (setexpfog sends "fog 0 1 <density> r g b ms").
+    void commandExp(float density, float r, float g, float b, int ms, int64_t nowMs) { set(true, density, 0, 1, r, g, b, ms, nowMs); }
     void clear() { *this = FogState{}; }
     // The selected fog record (the transition target). A savegame stores it (the original archives its fog records and the selected
     // index, not the running transition); restore() makes it the current fog at once. TODO(spec): a transition running at save time.
@@ -100,7 +89,7 @@ public:
         start_ = end_ = nowMs;
     }
 
-    // Blend of 0x100244d0: t = (now - start) / (end - start) clamped, near / far lerped as floats, colour bytes lerped.
+    // Blend of 0x100244d0: t = (now - start) / (end - start) clamped, near / far / density lerped as floats, colour bytes lerped.
     FogParams current(int64_t nowMs) const {
         if (!to_.active) return {};
         if (nowMs >= end_) return to_;
@@ -112,7 +101,7 @@ public:
         p.exponential = to_.exponential;
         p.density = (to_.density - from_.density) * t + from_.density;
         for (int i = 0; i < 3; ++i)
-            p.color[i] = uint8_t(std::nearbyint(float(int(to_.color[i]) - int(from_.color[i])) * t + float(from_.color[i])));
+            p.color[i] = uint8_t(float(int(to_.color[i]) - int(from_.color[i])) * t + float(from_.color[i])); // truncated (0x1010ac88)
         return p;
     }
     FogConsts consts(int64_t nowMs) const {
@@ -134,6 +123,20 @@ public:
     }
 
 private:
+    // 0x100244fa: a current state of another type (no fog included) takes the target at once.
+    void set(bool exponential, float density, float nearD, float farD, float r, float g, float b, int ms, int64_t nowMs) {
+        from_ = current(nowMs);
+        to_.active = true;
+        to_.exponential = exponential;
+        to_.density = density;
+        to_.nearDist = nearD;
+        to_.farDist = farD;
+        const float v[3] = {r, g, b};
+        for (int i = 0; i < 3; ++i) to_.color[i] = uint8_t(std::clamp(std::nearbyint(v[i] * 255.0f), 0.0f, 255.0f));
+        start_ = nowMs;
+        end_ = nowMs + ms;
+        if (!from_.active || from_.exponential != exponential) end_ = start_;
+    }
     FogParams from_, to_;
     int64_t start_ = 0, end_ = 0;
 };

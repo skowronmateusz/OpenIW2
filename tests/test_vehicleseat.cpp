@@ -41,6 +41,20 @@ int main() {
         std::cout << map << ": riding " << riding << "\n";
         CHECK(riding);
         if (!riding) continue;
+        float bodyYaw = 0.0f, barrelYaw = 0.0f;
+        bool hasBarrel = false;
+        if (w.playerVehicleHudYaws(bodyYaw, barrelYaw, hasBarrel) && hasBarrel) {
+            const Entity* tank = nullptr;
+            for (const auto& up : w.entities())
+                if (up->vehicle && up->vehicle->info && up->vehicle->info->type == 1 && w.player() && w.player()->usingVehicle == up->number) tank = up.get();
+            CHECK(tank);
+            if (tank) { // the barrel tag points along the turret: the HUD yaw is the hull yaw plus the turret yaw
+                float d = std::fmod(std::fabs(barrelYaw - bodyYaw - tank->vehicle->turretYaw), 360.0f);
+                if (d > 180.0f) d = 360.0f - d;
+                std::cout << map << ": hud barrel off turret by " << d << "\n";
+                CHECK(d < 1.0f);
+            }
+        }
         float maxTilt = 0.0f;
         for (int i = 0; i < 160; ++i) { // 8 s: the hull settles on the ground and the turret swings
             w.frame();

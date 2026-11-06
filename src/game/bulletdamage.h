@@ -1,6 +1,7 @@
 // Bullet damage by weapon, target and distance (exe 0x531090, called from Bullet_Fire_Extended at 0x531787).
 #pragma once
 
+#include <array>
 #include <map>
 #include <string>
 #include <utility>
@@ -12,11 +13,14 @@ namespace iw2::game {
 // minPlayerDamage (+0x594); otherwise damage (+0x1ec) and minDamage (+0x590). distance < maxDamageRange (+0x598):
 // the damage; distance >= minDamageRange (+0x59c): the minimum; between them (and with different ranges) the
 // linear blend damage·(1−t) + min·t, t = (distance − max)/(min − max), truncated (0x565994 is _ftol2).
-// The caller multiplies the result by a float factor (arg 5 of Bullet_Fire_Extended, 0x80(%esp) at 0x531797). Every
-// initial caller passes 1.0f (player 0x4eea17, vehicle 0x51481b, AI / turret through 0x5312b0 which pushes 0x3f800000)
-// and the recursive calls (same-team pass-through 0x5317f9, penetration 0x531733 / 0x53185f / 0x531980) only forward
-// their own argument, so the factor is always 1.0 and the multiplication is omitted.
+// The caller multiplies the result by a float factor (arg 5 of Bullet_Fire_Extended, 0x80(%esp) at 0x531797): 1.0 from
+// every initial caller (player 0x4eea17, vehicle 0x51481b, AI / turret through 0x5312b0), halved by the refire after a
+// rifleBullet hit on a sentient (0x53195f), forwarded unchanged by the other recursive calls.
 int bulletDamageAtDistance(const std::map<std::string, std::string>& weaponDef, bool targetIsClient, float distance);
+
+// 0x53187d..0x5318e9: true when a hit `offset` from the player's origin lies more than 8 units (0x592010) from the
+// player's vertical axis, measured along the horizontal perpendicular (dir.y, -dir.x, 0) of the shot direction `dir`.
+bool bulletMissesPlayerAxis(const std::array<float, 3>& dir, const std::array<float, 3>& offset);
 
 // AI weapon accuracy graph (accuracy/aivsai|aivsplayer/<name>.accu, "WEAPONACCUFILE", a point count, then x y pairs).
 struct AccuracyGraph {

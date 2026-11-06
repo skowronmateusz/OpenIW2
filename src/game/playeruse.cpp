@@ -97,7 +97,7 @@ bool World::playerTurretAnglesFor(const Vec3& view, float& pitch, float& yaw) {
 }
 
 // tag_player with the turret bone controls (0x4ab0d0) at the given pitch and yaw instead of the stored think angles.
-// TODO(spec): whether the original cgame poses the eye per client frame (0x4e8b70 is the server side; the cgame view
+// TODO(spec): [stays: the cgame view origin path is not read] whether the original cgame poses the eye per client frame (0x4e8b70 is the server side; the cgame view
 // origin path was not read).
 bool World::playerTurretEyeAt(float pitch, float yaw, Vec3& eye) {
     if (!playerTurret_ || playerTurret_->obj->removed || !playerTurret_->turret) return false;
@@ -122,7 +122,7 @@ bool World::playerTurretEye(Vec3& eye) {
 // distance + (1 − (dir · forward + 1) / 2) · 144, −144 more for a trigger_use. Sorted; then each one but a
 // trigger_use_touch gets +10000 and drops off the end when the eye → absbox centre line (a turret: its tag_player)
 // is blocked for the sight trace 0x44c1b0 (mask 0x11); sorted again.
-// Weapon items are candidates (pick: 0x534c80), and so are actors with useable (+0x211b). TODO(spec): other items; trigger absboxes
+// Weapon items are candidates (pick: 0x534c80), and so are actors with useable (+0x211b). TODO(spec): [stays: not read] other items; trigger absboxes
 // ignore the entity angles.
 std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3& forward) {
     const Vec3 po = player_->obj->get("origin").asVector();
@@ -250,7 +250,9 @@ bool World::turretUsableByPlayer(Entity& t) {
 // either way, a turret (0x51dac0) or a vehicle (0x512200) only when usable, anything else is skipped.
 // The pickup prompt for a weapon item (cgame 0x4a99b0): PICKUPNEWWEAPON when the weapon is of class
 // item, has an offhandClass, or a primary slot is free; otherwise SWAPWEAPONS unless the hinted weapon is the one in its slot.
-// TODO(spec): def+0x84 (assumed offhandClass), the slot table for slots above 2.
+// Checked against 0x4a99b0: def+0x84 is offhandClass (weapon field table row at 0x5a800c), def+0x7c weaponClass (9 = item), def+0x80
+// weaponSlot, whose enum has only none / primary / primaryb, so there are no slots above 2. The slot byte table (0xf70e10 + class) is
+// indexed by the slot class. A weapon with slot none that is neither item class nor offhand class occurs in the shipped weapon files only as turret / non-player weapons, which are never pickup items, so that branch is not reached (it yields the swap text here).
 std::string World::pickupHintText(const std::string& w) {
     const Inventory& inv = inventory(*player_);
     const std::string cls = lowerStr(weaponField(w, "weaponClass")), off = lowerStr(weaponField(w, "offhandClass"));
@@ -259,8 +261,8 @@ std::string World::pickupHintText(const std::string& w) {
     if ((slotName == "primary" || slotName == "primaryb") && (inv.slot[1].empty() || inv.slot[2].empty())) return "PLATFORM_PICKUPNEWWEAPON";
     const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
     if (!cur.empty() && lowerStr(weaponField(cur, "weaponSlot")) == slotName) return cur == w ? std::string() : "PLATFORM_SWAPWEAPONS";
-    const int idx = slotName == "primaryb" ? 2 : 1;
-    return inv.slot[idx] == w ? std::string() : "PLATFORM_SWAPWEAPONS";
+    const int idx = slotName == "primaryb" ? 2 : slotName == "primary" ? 1 : 0;
+    return !inv.slot[idx].empty() && inv.slot[idx] == w ? std::string() : "PLATFORM_SWAPWEAPONS";
 }
 
 World::PlayerUseHint World::vehicleUseHint(const std::string& turretWeapon) {
@@ -465,15 +467,15 @@ void World::thinkPlayerTurret() {
     turretFireSound(t, true);
 }
 
-// The client think's use part (0x4e7f90): the use key pressed this frame (+activate 8 or +usereload 0x20; 0x5343d0,
-// g_useholdtime 0 so the use happens at once, 0x534350) gets out of the vehicle, off the turret (+0x112 = 2, the
-// turret think releases), or uses what the last pick found; then the turret think and the pick for the next frame.
-// TODO(spec): the order of these inside 0x4e7f90 and relative to the script frame is not read; the global
-// 0x9bef24 that gates the press is treated as set.
+// The client think's use part. ClientThink_real (…0x4e7eda) handles the press first: buttons old / new, then 0x5343d0
+// (+activate 8 or +usereload 0x20; g_useholdtime 0 so the use happens at once, 0x534350) gets out of the vehicle, off the
+// turret (+0x112 = 2, the turret think releases), or uses what the last pick found. The end-of-frame function (0x4e7f90)
+// then runs the turret think (0x51b5c0), and, when client+0 is non-zero (not modelled) and the level time is past 500 ms, the crosshair
+// target (0x535070) and the pick for the next frame (0x534d40), and P_DamageFeedback (0x4e7040) last. The global 0x9bef24
+// that gates 0x5342b0 / 0x534350 is the script system's level object id (written 0x46e130, cleared 0x46e462): set whenever
+// a level runs.
 void World::runPlayerUse() {
     if (!player_) return;
-    damageFeedback(); // P_DamageFeedback (0x4e7040) in the client think
-    updateCrosshairTarget(); // 0x535070
     const uint32_t pressed = playerCmd_.buttons & ~playerOldButtons_;
     playerOldButtons_ = playerCmd_.buttons;
     const bool binoculars = playerCmd_.weaponState >= 0x11 && playerCmd_.weaponState <= 0x16;
@@ -488,7 +490,11 @@ void World::runPlayerUse() {
         }
     }
     thinkPlayerTurret();
-    findPlayerUseEntity();
+    if (timeMs_ > 500) {
+        updateCrosshairTarget(); // 0x535070
+        findPlayerUseEntity();
+    }
+    damageFeedback(); // P_DamageFeedback (0x4e7040) in the client think
 }
 
 } // namespace iw2::game
@@ -499,7 +505,7 @@ namespace iw2::game {
 // item with the player; a weapon the player does not own is taken: with no free primary slot the current weapon
 // is dropped as its item in the used item's place (0x5220f0, then 0x521551..0x52157c) and its slot gets the new one; the item's ammo is
 // given (item +0x148 stock / +0x154 clip) and the player switches to it (0x532060); the item goes away (0x4d7c30).
-// TODO(spec): the exact slot test (weaponSlot class +0x80 and the per-slot ammo loop of 0x521170), the item ammo
+// TODO(spec): [stays: these rules are not read] the exact slot test (weaponSlot class +0x80 and the per-slot ammo loop of 0x521170), the item ammo
 // rules for map-placed items (0x370/0x374 random ranges), "menu_show_notify" and the pickup events 0x90/0x91.
 void World::pickUpWeaponItem(Entity& item) {
     const std::string w = lowerStr(item.classname.substr(7));
@@ -513,7 +519,9 @@ void World::pickUpWeaponItem(Entity& item) {
     // the player has neither stock nor clip of the new weapon's ammo / clip type (0x5214ac..0x5214e9), the slot-1 weapon is dropped;
     // otherwise nothing is taken and the client gets gm "GAME_CANT_GET_PRIMARY_WEAP_MESSAGE" (0x58dff4).
     // 0x4dcb20 (slot pairing for slotStackable weapons, def +0x88) also lets a pickup through; no SP weapon file sets slotStackable, so it
-    // never applies. TODO(spec): the debug-weapon warning 0x58e020.
+    // never applies. TODO(spec): [stays: not reached with the shipped weapons] the console warning 0x58e020 (0x5213d0..0x521428): it is printed, and nothing is taken, when the held weapon is in
+    // neither slot (0x4dca70 gives 0), no stackable pairing (0x4dcb20) and no free slot (0x4dcae0); with the shipped weapons the held weapon is
+    // always a slot weapon, so it is not reached and not ported.
     auto slotClass = [&](const std::string& n) {
         const std::string sl = lowerStr(weaponField(n, "weaponSlot"));
         return sl == "primary" ? 1 : sl == "primaryb" ? 2 : 0;
@@ -585,12 +593,13 @@ void World::pickUpWeaponItem(Entity& item) {
         int& st = inv.ammo[weaponField(w, "ammoName")];
         int& cl = inv.clip[weaponField(w, "clipName")];
         // 0x520e40: stock += item stock; a clipOnly weapon (+0x340) first tops its clip up from the stock (0x520de0: n = min(clipSize -
-        // clip, stock)); then the stock is capped at the ammo's maxAmmo (0x520efd..0x520f1b) and the clip at clipSize (0x520f1d..0x520f3b).
-        // TODO(spec): the clipOnly branch that zeroes the stock when gentity +0x100 is 0 (0x520ed8). The shared-ammo trim follows.
+        // clip, stock)) and then zeroes the stock (0x520ed8, gentity +0x100 is 0 for the player); else the stock is capped at the ammo's
+        // maxAmmo (0x520efd..0x520f1b). The clip is capped at clipSize (0x520f1d..0x520f3b). The shared-ammo trim follows.
         st += stock;
         if (weaponInt(w, "clipOnly") != 0) {
             const int n = std::min(clipSize - cl, st);
             if (n > 0) st -= n, cl += n;
+            st = 0;
         }
         st = std::min(st, weaponInt(w, "maxAmmo"));
         cl = std::min(cl, clipSize);
@@ -751,8 +760,8 @@ std::vector<World::CompassMarker> World::compassVehicles() const {
 // g_friendlyfireDist (0x1c13f30, 0x4d8a50: default 128, range 0..15000), read live (dvar +8) at 0x5352e3 / 0x53531d / 0x535455.
 // ps+0x8678 is cleared at the start (0x53508c) and kept as crosshairTarget_ (entity number, -1 = none), read by the islookingat
 // builtin (0x5399b0). Writers ported: trigger_lookat (0x535210), vehicle (0x535455), actor enemy / friendly-name (0x5353b9 / 0x535317).
-// TODO(spec): the writer at 0x53554f, the dvar out-of-range handling, other non-actor hits (turrets, +0x1b4), the trace surface-flag
-// 0x10 exception.
+// The writer at 0x53554f and the non-actor named entities (+0x1b4) are the generic branch below. TODO(spec): [stays: not read] the dvar out-of-range handling,
+// other non-actor hits without a name (turrets), the trace surface-flag 0x10 exception (0x53525d, actors only).
 void World::updateCrosshairTarget() {
     crosshairFlags_ = 0;
     crosshairTarget_ = -1; // 0x53508c
@@ -767,7 +776,7 @@ void World::updateCrosshairTarget() {
     // {hit, player}; the frame flush 0x4daaa8..0x4dabe9 skips stale serials and entities already touched this frame, then
     // notifies the hit entity "trigger" (0x58a278) with the player as activator, 0x4dab7c..0x4daba6): every frame while
     // looked at, no one-shot, no spawnflags or distance test beyond the 15000-unit trace. The trace is then repeated with
-    // mask 0x280e801 (without 0x20000000) for the actor logic below. TODO(spec): the notify is deferred to the flush
+    // mask 0x280e801 (without 0x20000000) for the actor logic below. TODO(spec): [stays: not read] the notify is deferred to the flush
     // here immediate; ps+0x8678 (= the hit entity) is not kept.
     if (Entity* lk = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr; lk && lk->classname == "trigger_lookat") {
         crosshairTarget_ = lk->number; // 0x535210: ps+0x8678 = the trigger_lookat hit
@@ -803,6 +812,25 @@ void World::updateCrosshairTarget() {
                 const float range = weaponFloat(wn, "enemyCrosshairRange");
                 if (d2 < range * range && hit->vehicle->team == (pt == 1 ? 2 : 1)) crosshairFlags_ |= 0x200000u;
             }
+        }
+        return;
+    }
+    // Any other entity (0x5354d6): only when setlookattext gave it a name (+0x1b4), and only while nothing is the target yet. Inside
+    // g_friendlyNameDist it becomes the target (0x53554f) and its name / sub line the HUD lines (0x534c03); a script_model (entity type 5,
+    // as makefakeai requires) inside g_friendlyfireDist also sets the friendly flag 0x100000 (0x535555..0x535581).
+    if (hit && !hit->isActor && !hit->vehicle && crosshairTarget_ < 0) {
+        const Value ln = hit->obj->get("$lookatname"), org = hit->obj->get("origin");
+        if (ln.isString() && !ln.asString().empty() && org.isVector()) {
+            const Vec3 dv = sub(org.asVector(), eye);
+            const float d2 = dot(dv, dv); // 0x412cf0
+            const float nameDist = cvarFloat("g_friendlyNameDist", 15000.0f), fireDist = cvarFloat("g_friendlyfireDist", 128.0f);
+            if (nameDist * nameDist > d2) {
+                crosshairTarget_ = hit->number;
+                crosshairName_ = ln.asString();
+                const Value sub2 = hit->obj->get("$lookatsub");
+                if (sub2.isString()) crosshairWeaponLine_ = sub2.asString();
+            }
+            if (hit->classname == "script_model" && fireDist * fireDist > d2) crosshairFlags_ |= 0x100000u;
         }
         return;
     }

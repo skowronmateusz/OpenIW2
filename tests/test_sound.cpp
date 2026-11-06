@@ -71,7 +71,9 @@ void testMixer() {
               "lp,c.wav,1,1,100,200,weapon,,looping,,,,\n"
               "dly,c.wav,1,1,100,200,local,,,10,,,\n"
               "sec,c.wav,1,1,100,200,weapon,,,,secsub,,\n"
-              "secsub,c.wav,1,1,100,200,weapon,,,,,,\n");
+              "secsub,c.wav,1,1,100,200,weapon,,,,,,\n"
+              "bl0,c.wav,0,0,1,500,auto,,looping,,,,\n"
+              "bl1,c.wav,0.5,0.5,30,700,auto,,looping,,,,\n");
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(dir);
     iw2::audio::SoundAliases al;
@@ -182,6 +184,16 @@ void testMixer() {
         CHECK(l.active() == 1);
         l.sweepLoops(30);
         CHECK(l.active() == 0);
+        // low/high blend (0x4ac8a0 -> 0x4423d0): culled beyond the lerped dist_max (500..700), volume lerped, a culled running voice is gone
+        iw2::audio::Mixer bm(vfs, al, 48000);
+        bm.masterVolume = 1.0f;
+        bm.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        CHECK(bm.playBlend("bl0", "bl1", 0.5f, {650, 0, 0}) == 0 && bm.active() == 0); // lerp(500, 700) = 600
+        const int bh = bm.playBlend("bl0", "bl1", 0.5f, {550, 0, 0}, 12);
+        CHECK(bh != 0 && bm.active() == 1);
+        CHECK(bm.setBlend(bh, 0.9f, {650, 0, 0}) && bm.active() == 1); // lerp(500, 700, 0.9) = 680
+        CHECK(!bm.setBlend(bh, 0.1f, {650, 0, 0}) && bm.active() == 0); // 520 < 650: culled
+        CHECK(!bm.setBlend(bh, 0.1f, {10, 0, 0}));                      // gone stays gone
         // startdelay 10 ms: silent for 480 frames at 48 kHz, then plays
         iw2::audio::Mixer d(vfs, al, 48000);
         d.masterVolume = 1.0f;

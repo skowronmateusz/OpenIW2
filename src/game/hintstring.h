@@ -80,26 +80,4 @@ private:
     std::array<std::string, kHintStringSlots> slots_;
 };
 
-// The text a hint string shows (reader 0x496e80): the 0x14 / 0x15 delimited pieces joined, localized pieces looked up with
-// `lookup` (null result keeps the reference). TODO(spec): the "&&N" -> 0x16 parameter rewrite of the reader and the exact
-// localization of the 0x15 pieces are not decoded; "&&1" is left in the text for the caller.
-template <class Lookup>
-std::string hintStringText(const std::string& buf, Lookup lookup) {
-    std::string out, piece;
-    bool localized = true;
-    auto flush = [&] {
-        if (piece.empty()) return;
-        if (localized) { const std::string* t = lookup(piece); out += t ? *t : piece; }
-        else out += piece;
-        piece.clear();
-    };
-    for (char ch : buf) {
-        if (ch == '\x14') { flush(); localized = true; }
-        else if (ch == '\x15') { flush(); localized = false; }
-        else piece.push_back(ch);
-    }
-    flush();
-    return out;
-}
-
 } // namespace iw2::game

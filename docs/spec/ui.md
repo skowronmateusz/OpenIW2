@@ -103,7 +103,7 @@ shooting and opens `invert_axis2`). Evidence:
   `popupopen <index>` (`popupopen <index> 1` for no mouse). `closemenu` (0x539220) sends `popupclose`. The client handles both
   at 0x4a7094 and loads `ui/scriptmenus/<name>.menu` (0x4c3ad0).
 - `freezecontrols(on)` (0x5392e0) stores the argument in client +0x8630; ClientThink (0x4e7bc0) turns it into ps `pm_flags` 0x8000.
-  The front end stops movement, buttons and view changes meanwhile. TODO(spec): the exact pmove effect of 0x8000.
+  The effects of 0x8000 (view, velocity, stance, buttons) are listed in controls.md "freezecontrols".
 - The menu command `scriptMenuResponse "x"` (command table entry 0x4c8e20) sends `cmd mr <menu index> x`; the server command
   `mr` (0x4ea700) notifies the player `menuresponse` with (menu name, response): argc != 3 gives ("", "bad"), an index outside
   0..31 an empty name.
@@ -114,8 +114,13 @@ shooting and opens `invert_axis2`). Evidence:
   (its "Nie" toggles back and answers `try_invert`).
 
 Implementation: `World` (src/game/menus.cpp), `ui::runScript` (src/ui/menurun.cpp), iw2view menu draw and mouse cursor
-(`ui/assets/3_cursor3` registered at 0x44ccc6). TODO(spec): font choice by textscale, cursor draw details and focus sounds, the
-`openmenunomouse` cursor state, the console commands other than `toggle`, the error text for a menu that was not precached.
+(`ui/assets/3_cursor3` registered at 0x44ccc6). Font choice: `menuFont` (0x4c38e0, see above). TODO(spec): cursor draw details, the
+`openmenunomouse` cursor state (no shipped script calls it), the console commands other than `toggle`. The lookup of `openmenu` raises the script error "Menu '<name>' was not precached" (0x4f89f0, message 0x585210), `precachemenu` with a full table "Too many menus precached. Max allowed menus is 32" (0x4f89b5).
+Focus sounds: item focus (Item_SetFocus 0x4c9100) plays the item's own `focusSound` (item +0x2d4), else the default `$itemfocussound` alias
+(global 0x1107460, looked up at the end of the UI start 0x4c33c0, after the menu files are parsed). The menu key `itemFocusSound` (parser
+0x4d3388) only registers that alias when its argument names an existing sound alias; the one shipped value is a file path ("sound/misc/…") that
+is no alias name (the lookup 0x428320 only hashes and compares names, and no sound file of that name is in the shipped archives), so the lookup fails and no focus sound plays in single player. No shipped menu sets a per-item `focusSound`, `menuEnterSound`,
+`menuExitSound` or `menuBuzzSound`. The click and hover sounds come only from the menus' own `play` commands (0x40fff0: the alias played without a position).
 Headless check: `iw2game <main> <map> --answer-menus try_invert,accept_normal` answers the menus that open; `IW2_OVERLAY=<dir>`
 mounts loose test scripts over the game files.
 
@@ -151,9 +156,9 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
   selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Left (0x9a/0xb7/0xce) and Right (0x9b/0xbd/0xcd) share the code of Up and Down.
   `notselectable` (0x4d1eb0, def +0x108 = 1) makes the keys move startPos only: Up/Left/wheel up -1 (min 0), Down/wheel down +1 (max count-1),
   Right +1 (max maxScroll), PgUp/PgDn +-rows (0 / maxScroll), Home 0, End maxScroll. `horizontalscroll` (0x4d1fb0, item flag 0x200000) runs the same
-  code with rows = ftol(w / elementWidth); no shipped menu uses it, so its drawing stays TODO(spec).
-- TODO(spec): image columns (unused by shipped menus), drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
-  textsavegame, horizontal listbox drawing, 64-profile cap on the add loop, the restart of sound/video on profile load.
+  code with rows = ftol(w / elementWidth); no shipped menu uses it (the only two listboxes are text listboxes, none sets `horizontalscroll`), so its drawing is not implemented.
+- Not implemented, unused by shipped menus: image columns, horizontal listbox drawing. TODO(spec): drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
+  textsavegame (see savegame.md), the 64-profile cap on the add loop, the restart of sound/video on profile load.
 - No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
   out of scope.
 
@@ -198,7 +203,7 @@ No shipped single-player menu sets `outOfBoundsClick` (the one menu that mention
 (`*_popmenu`) and script menu carries `popup`, so the dialogs stay modal; the sub-menus under `options_menu` are plain menus (no popup, fullScreen 0).
 
 Implementation: `MenuStack` (src/ui/frontend.cpp) keeps the focused menu apart from the list order (`focusedMenu()`); hover and
-click use the rules above; `outOfBoundsClick` is parsed into `Menu::outOfBoundsClick`. Deliberate simplifications / TODO(spec):
+click use the rules above; `outOfBoundsClick` is parsed into `Menu::outOfBoundsClick`. Deliberate simplifications:
 a menu closed by `outOfBoundsClick` is removed from the list at once (the original keeps it listed, hidden, which only changes
 the 16-entry count and that a later `close` of it runs no `onClose`); when that leaves no menu with an active item under the
 pointer the focus falls back to the last list entry (the original leaves no focused menu, so the next key releases the key
@@ -233,3 +238,17 @@ The client handler of the pickup events 0x90 / 0x91 (0x4bad52) calls 0x4ba680 wi
   At 1 nothing changes. Otherwise the whole frame (scene, post effects, menus, HUD) is drawn into an offscreen texture and a final full-screen
   pass reads each 8-bit channel i and writes the ramp entry for i, i.e. the display's behaviour (`src/game/gammaramp.h`, `fs_gamma`).
   `r_gamma` and `r_ignorehwgamma` are archived: they are written to the profile config.
+
+## Focus pulse
+
+A focused bind (0x4cdee0) or edit field value (0x4cd0e0) pulses from the menu focus colour towards a low colour with
+t = (sin(integer real ms / 75) + 1) · 0.5; the blend 0x4c6e50 is focus + (low - focus) · t, clamped, on all four channels. The low
+colour is focus · 0.8, or (0.8, 0, 0, 0.8) on a bind waiting for its key, which pulses too. Ownerdraw 6 (`ammocounterback`, 0x4a7810)
+draws nothing in a vehicle or without a weapon; alpha is the ammo fade, red (0.89 0.18 0.01) at low stock, else the item colour.
+
+## Window borders (0x4c74a6..0x4c75cf)
+
+After the background the window paint draws the border by type (+0xd4) in the border colour (+0x1ec) and thickness (+0xe0): 1 all four sides, 2 top and bottom
+(0x4c35f0: the second bar at y + h - size), 3 left and right (0x4c3510: the second bar at x + w - size). The bars lie inside the rect and overlap at the corners. `setitemcolor ... bordercolor`
+changes the colour at run time; the mission select uses this to mark the hovered flag. Style 4 has a fixed-tint branch (0x4c74b5) that no shipped menu reaches. Shader backgrounds use the forecolor only
+with item flag 0x10000 and white otherwise (0x4c7346); the flag comes with `setitemcolor forecolor` (0x4c7c94). OpenIW2's default forecolor is white, so `MenuStack::foreColor` gives the same.

@@ -12,6 +12,8 @@
 
 namespace iw2::game {
 
+bool pathAheadLongerThan(const ActorPath& p, float dist); // 0x543ae0, src/game/actorcover.cpp
+
 using namespace script;
 
 namespace {
@@ -117,6 +119,7 @@ void World::aiKillState(Entity& e, int state) {
 // becomes exposed (0x4fe460).
 void World::aiResumeBelow(Entity& e) {
     ActorAi& ai = e.ai;
+    int left = ai.stack[size_t(ai.depth)]; // the start argument of a resume: the state above (0x4fe52f, 0x4fe4aa)
     for (;;) {
         if (ai.depth < 1) {
             if (ai.depth == 0) ai.baseStateMs = timeMs_;
@@ -125,7 +128,11 @@ void World::aiResumeBelow(Entity& e) {
             return;
         }
         --ai.depth;
-        if (aiResume(e, ai.stack[size_t(ai.depth)])) return;
+        ai.resumedFrom = left;
+        const bool resumed = aiResume(e, ai.stack[size_t(ai.depth)]);
+        ai.resumedFrom = AiNone;
+        if (resumed) return;
+        left = ai.stack[size_t(ai.depth)];
         aiFinish(e, ai.stack[size_t(ai.depth)]);
     }
 }
@@ -513,7 +520,7 @@ void World::actorBecomeCorpse(Entity& e) {
 // every other sentient (loop 0x514db2, 0x515230 / 0x515270). An actor runs 0x4fe170: its record stops being visible (word +0), its danger
 // planes go, an enemy reference is cleared the way the enemy setter does (its tail 0x5151a7..0x515217), WITH the "enemy" notify (0x4fe1c2..0x4fe243), and a favoriteenemy
 // (+0x2038) naming the sentient is cleared (0x4fe24c). Only a sentient without an actor, the player, takes the silent clear of 0x514dda.
-// TODO(spec): sentient +0x20 (the type 4 event due 1000 ms after an enemy is set, flushed by every enemy change) is not modelled.
+// Sentient +0x20 (the type 4 event due 1000 ms after an enemy is set, flushed by every enemy change): enemyEventMs in setEnemy.
 void World::releaseSentient(Entity& e) {
     setEnemy(e, nullptr, false);
     removeDangerPlanesFrom(e.number);
@@ -659,10 +666,14 @@ int World::painThink(Entity& e) {
 // override or 4).
 int World::deathThink(Entity& e) {
     ActorAi& ai = e.ai;
-    // TODO(spec): 0x548a10 also drops the grenade (0x548a53..0x548a5f and 0x548a8d not read).
     if (ai.substate == kSubDeath && timeMs_ - ai.baseStateMs > 799) {
         // 0x548a10: the death event (type 6) makes the actors around learn the killer (sentient +0x28).
         aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
+        // 0x548a34..0x548a6d: a grenade this actor was going for is let go, and leaves the hand if it held it (0x520470).
+        if (ai.grenade && ai.grenade->grenade && ai.grenade->grenade->holder == &e) {
+            if (ai.grenade->grenade->inHand) releaseHeldGrenade(e);
+            ai.grenade->grenade->holder = nullptr;
+        }
         clearActorPath(e);
         releaseNode(e); // the sentient release (0x514d50) frees the claimed node (0x5191a0)
         releaseSentient(e); // and the rest of the sentient release: danger planes (0x4fe170 → 0x54b5a0), records, enemy references
@@ -815,7 +826,9 @@ int World::exposedThink(Entity& e) {
         ai.facing = 5;
         followActorPath(e, true);
     }
-    updateClaimedNode(e); // 0x4fe8d0 → 0x4fe740, then the followed-at-node check. TODO(spec): 0x504450 before it.
+    // 0x4fe8d0 runs the move frame 0x504450 first, then this; the port's move frame (actorMoveFrame) runs from thinkActors after
+    // the think, and the mode 1 path walk already ran in followActorPath, so this sees the position of the previous frame's anim delta.
+    updateClaimedNode(e); // 0x4fe740, then the followed-at-node check.
     return 0;
 }
 
@@ -830,32 +843,52 @@ void World::exposedSubstate(Entity& e) {
     if (ai.substate == kSubNoncombat) {
         if (seesEnemyRecently(e, 250)) ai.substate = kSubCombat;
     } else if (ai.substate == kSubReacquire) {
-        // 0x548d50 state 0x66: no path (+0x6b0 <= 0) → combat; with a path, combat when the enemy was seen within
-        // 250 ms (0x54ce70) and 0x54d010 passes. TODO(spec): a blocking actor (+0x728) or followed actor (+0x2148)
-        // also gives combat directly (not modelled).
-        if (!actorHasPath(e) || (seesEnemyRecently(e, 250) && enemyEyeTraceOk(e))) ai.substate = kSubCombat;
+        // 0x548d50 state 0x66: no path (+0x6b0 <= 0), a blocking actor (+0x728) or a followed actor (+0x2148) → combat;
+        // otherwise combat when the enemy was seen within 250 ms (0x54ce70) and 0x54d010 passes.
+        if (!actorHasPath(e) || ai.blocker || ai.followed || (seesEnemyRecently(e, 250) && enemyEyeTraceOk(e))) ai.substate = kSubCombat;
     }
 }
 
-// Combat (substate 100): with a path and the enemy in sight, stop inside the goal; without a path fight in place
-// (0x548c70), else run along the path (0x5494c0).
+// 0x548be0: a script-moved actor (anim mode other than 1) too near the edge of the working goal goes back to anim mode 1 and
+// movemode stop (no notify), so its animation deltas cannot carry it out. Exempt: pathing to the enemy, a maymovetopoint that
+// passed within the last second (+0x744), a kept claimed node. "Near" is 30 units inside the radius (always, for a radius up to 30).
+void World::stopNearGoalEdge(Entity& e) {
+    ActorAi& ai = e.ai;
+    if (ai.pathToEnemy || ai.animMode == 1 || timeMs_ < ai.mayMoveMs + 1000 || keepClaimedNode(e)) return;
+    Vec3 gp{};
+    float r = 0, h = 0;
+    if (!actorGoal(e, gp, r, h)) return;
+    const float inner = r - 30.0f;
+    if (inner > 0.0f) {
+        const Vec3 o = e.obj->get("origin").asVector();
+        const float dx = o[0] - gp[0], dy = o[1] - gp[1]; // 0x420f00: 2D
+        if (inner * inner > dx * dx + dy * dy) return;
+    }
+    ai.movemode = 0;
+    e.obj->set("movemode", Value(kMovemodes[0]));
+    ai.animMode = 1;
+}
+
+// Combat (substate 100, 0x5497ec): with a path and the enemy in sight, stop when blocked, following, or holding the position
+// (0x502850); without a path fight in place (0x548c70), else run along the path (0x5494c0).
 void World::exposedCombat(Entity& e) {
     ActorAi& ai = e.ai;
     updateActorPath(e);
-    // TODO(spec): +0x728 / +0x2148 (blocking actor / followed actor) also clear the path here.
-    if (actorHasPath(e) && seesEnemyRecently(e, 250) && actorInGoal(e, 0.0f)) clearActorPath(e);
+    if (actorHasPath(e) && seesEnemyRecently(e, 250) && (ai.blocker || ai.followed || holdsPosition(e))) clearActorPath(e);
     if (!actorHasPath(e)) {
-        // 0x548c70: inside the goal, the enemy not seen for 5 s and a claimed node flagged 0x8000 that covers
-        // from it: facing 6, else 3. TODO(spec): 0x548be0 (moving back inside a shrunken goal) and the path end
-        // conditions of 0x502850.
+        // 0x548c70: holding the position (0x548be0 first), the enemy not seen for 5 s and a claimed node flagged 0x8000 that
+        // covers from it: facing 6, else 3.
         combatScript(e);
         ai.facing = 3;
-        if (actorInGoal(e, 0.0f) && e.claimedNode >= 0 && (nodes_[size_t(e.claimedNode)].spawnflags & 0x8000)) {
-            Entity* enemy = entityOf(e.obj->get("enemy"));
-            const auto it = enemy ? e.sentientInfo.find(enemy->obj.get()) : e.sentientInfo.end();
-            const bool seen = it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000;
-            std::string script;
-            if (!seen && (!coverScriptAt(e, e.claimedNode, true, script) || !script.empty())) ai.facing = 6;
+        if (holdsPosition(e)) {
+            stopNearGoalEdge(e);
+            if (e.claimedNode >= 0 && (nodes_[size_t(e.claimedNode)].spawnflags & 0x8000)) {
+                Entity* enemy = entityOf(e.obj->get("enemy"));
+                const auto it = enemy ? e.sentientInfo.find(enemy->obj.get()) : e.sentientInfo.end();
+                const bool seen = it != e.sentientInfo.end() && it->second.lastSeenMs != 0 && timeMs_ - it->second.lastSeenMs < 5000;
+                std::string script;
+                if (!seen && (!coverScriptAt(e, e.claimedNode, true, script) || !script.empty())) ai.facing = 6;
+            }
         }
         return;
     }
@@ -863,31 +896,38 @@ void World::exposedCombat(Entity& e) {
     followActorPath(e, true, true); // 0x5494c0 (cl = 1)
 }
 
-// Noncombat (substate 0x65, 0x549520): without a path stop (a known enemy → the combat script); with one move,
-// running when the path end is farther than walkdist.
+// Noncombat (substate 0x65, 0x549520). Without a path: holding the position at a claimed node flagged 0x8000 is the stop
+// choice, facing 6, even with an enemy; otherwise facing 3, 0x548be0 when holding, then the combat script with a known enemy or
+// the stop choice. With a path: move, running when the path end is farther than walkdist; afterwards facing 4 when holding the
+// position without such a node, else 6 when a fresh path (under 2 s) has at most 192 units left to such a node, else 2.
+// ai_moveOrientMode (0x1c148a8, default argument 0 at 0x4d903c) would replace the 6 / 2: not registered here.
 void World::exposedNoncombat(Entity& e) {
     ActorAi& ai = e.ai;
     updateActorPath(e);
+    const auto flaggedNode = [&] { return e.claimedNode >= 0 && (nodes_[size_t(e.claimedNode)].spawnflags & 0x8000); };
     if (!actorHasPath(e)) {
-        // 0x549520 (0x549643..0x5496d8): holding the position (0x502850) at a claimed node flagged 0x8000: facing 6, else 3.
-        // TODO(spec): 0x548be0 (keepclaimednode / stop timing) before the facing-3 stop choice is not read.
-        ai.facing = 3;
-        if (e.claimedNode >= 0 && (nodes_[size_t(e.claimedNode)].spawnflags & 0x8000) && holdsPosition(e)) ai.facing = 6;
-        if (entityOf(e.obj->get("enemy"))) {
-            combatScript(e);
+        const bool holds = holdsPosition(e);
+        if (holds && flaggedNode()) {
+            standOrFollow(e, stopScript(e));
+            ai.facing = 6;
             return;
         }
-        standOrFollow(e, stopScript(e)); // 0x53ae40
+        if (holds) stopNearGoalEdge(e);
+        if (entityOf(e.obj->get("enemy"))) combatScript(e);
+        else standOrFollow(e, stopScript(e)); // 0x53ae40
+        ai.facing = 3;
         return;
     }
     const Vec3 o = e.obj->get("origin").asVector();
     const float dx = o[0] - e.path.goal[0], dy = o[1] - e.path.goal[1], dz = o[2] - e.path.goal[2];
     const Value wd = e.obj->get("walkdist");
     const float walkdist = wd.isNumber() ? wd.asFloat() : 0.0f;
-    // TODO(spec): facing 6 near claimed nodes and the 0x1c148a8 override.
     ai.facing = 2;
     followActorPath(e, walkdist * walkdist < dx * dx + dy * dy + dz * dz);
-    if (actorInGoal(e, 0.0f)) ai.facing = 4;
+    const bool flagged = flaggedNode();
+    if (holdsPosition(e) && !flagged) ai.facing = 4;
+    else if (actorHasPath(e) && flagged && timeMs_ - e.path.planMs < 2000 && !pathAheadLongerThan(e.path, 192.0f)) ai.facing = 6;
+    else ai.facing = 2;
 }
 
 // 0x53b050: at the claimed node (0x502910) its cover script (0, anim mode 1); a node that no longer covers is given
@@ -937,7 +977,7 @@ void World::clearActorPath(Entity& e) {
 // src/game/actorfollow.cpp; `wide`: the interval radius) returns 1 to stand — the "stop" animscript with movemode
 // stop, anim mode 1 (0x53ac90(0, 1)) — 2 to walk (0x53af20), 0 to go on: run → 0x53afe0, else 0x53af20, i.e. "move"
 // (run: movemode run, else walk) until the stop-soon time (+0x704) is within 200 ms, when the stop script starts
-// with movemode stop_soon. TODO(spec): 0x504630 (crowding) and 0x53ade0 (a followed actor) when standing.
+// with movemode stop_soon. Standing goes through standOrFollow (0x504630, 0x53ade0).
 void World::followActorPath(Entity& e, bool run, bool wide) {
     ActorAi& ai = e.ai;
     const bool moving = ai.animMode == 1 && ai.movemode != 0;
@@ -1147,8 +1187,9 @@ void World::registerActorStateBuiltins() {
     // FLT_MAX by default); a smaller move fails while the actor is stopping (+0x6b0 > 0 and +0x704). Otherwise
     // origin and (with a second argument) angles are set, motion and path cleared, true returned.
     // The checks run once the level is loaded (0x53e033: 0x1c61048 == 0, cleared by 0x4da540; docs/spec/ai.md "Spawn
-    // checks"). TODO(spec): the teleport bit (eFlags 2, moves over 128 units), the mid-stopping check, the facing setters
-    // 0x504950 / 0x5049a0 (angles only), the pass entities of this 0x532100 call (the probe here is a plain trace).
+    // checks"). A move over 128 units also flips eFlags bit 2 (0x53e18b). The only client reader
+    // found (0x4a4985) tests the player's own entity, and those moves pass only out of the player's sight, so the bit has no
+    // visible effect here and no field. TODO(spec): the pass entities of this 0x532100 call (the probe here is a plain trace).
     vm_.registerBuiltin("teleport", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         if (!a || !a->isActor) throw std::runtime_error("not an actor");

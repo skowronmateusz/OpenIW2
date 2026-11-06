@@ -383,6 +383,8 @@ void World::saveState(StateWriter& w) {
         w.f32(e.workGoal.height);
         w.i32(e.workGoal.mode);
         w.i32(e.attackers);
+        w.i64(e.enemyEventMs); // version 9
+        w.b(e.ai.deathPending); // version 10
         w.b(e.grenade != nullptr);
         if (const GrenadeState* g = e.grenade.get()) {
             w.str(g->weapon);
@@ -593,7 +595,8 @@ void World::loadState(StateReader& r) {
         auto keepLive = [](const std::string& k) {
             std::string l = k;
             for (auto& ch : l) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-            // sv_cheats belongs to the running session (command line / devmap), not to the save. TODO(spec): its dvar flags.
+            // sv_cheats belongs to the running session (command line / devmap), not to the save: its register calls (0x433190, 0x4d8c04)
+            // carry flags 0x1018 / 0x1000, without bit 0x400.
             // ai_corpseCount (flags 0x1003) and ui_autoContinue: outside the 0x400 set.
             return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile" || l == "sv_cheats" || l == "ai_corpsecount" ||
                    l == "ui_autocontinue"; // flags 0x1000 (0x4c32c4)
@@ -805,6 +808,8 @@ void World::loadState(StateReader& r) {
         e->workGoal.height = r.f32();
         e->workGoal.mode = r.i32();
         e->attackers = r.i32();
+        e->enemyEventMs = r.version >= 9 ? r.i64() : 0;
+        e->ai.deathPending = r.version >= 10 ? r.b() : false;
         e->grenade.reset();
         if (r.b()) {
             auto g = std::make_unique<GrenadeState>();
@@ -1163,8 +1168,9 @@ void World::processSaves() {
             }
             saveFiles_.push_back(std::move(f));
             // The commit of a savegame() write (flag 2) runs with byte 0x1b15ac1 set (0x4e4029..0x4e402b, 0x4e40c0 before the commit
-            // 0x4d5660), so a later commitsave returns without doing anything. TODO(spec): the byte setter 0x4d5830 (a stub that sets it
-            // and jumps to the commit; no direct caller in the exe) and the post-commit step 0x4d56f0.
+            // 0x4d5660), so a later commitsave returns without doing anything. The byte setter 0x4d5830 (sets it and jumps to the commit) has no
+            // caller and no pointer to it anywhere in the exe, so it is dead code; the other post-commit step 0x4d56f0 only times and logs
+            // the write.
             if (p.flags & 2) commitRequested_ = true;
         }
         else uncommitted_ = std::make_pair(p.saveId, std::move(f)); // savegamenocommit: kept until commitsave

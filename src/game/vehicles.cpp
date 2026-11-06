@@ -934,8 +934,8 @@ void World::vehicleTouchDamage(Entity& e, Entity& t) {
 // with them); then, unless linked or the vehicle neither moved nor turned (≥ 0.001 squared), they are pushed and
 // one that cannot be pushed is crushed (999999, MOD_CRUSH = 9) — not an actor in the animscripted or negotiation
 // state (0x4ff310). Script movers (eType 5: script_model 0x2080, script_brushmodel 1, or what setcontents stored; mask 0x2006081)
-// are notified the same way and take 999999 from the touch callback; they are not pushed. TODO(spec): the bounds of a script_model
-// (taken as a point at its origin) and of a rotated brush model (the unrotated bounds), the entity list box. The touch callbacks of
+// are notified the same way and take 999999 from the touch callback; they are not pushed. A script_model's r.mins / r.maxs stay zero
+// (neither G_SetModel 0x4d6110 nor 0x5332b0 writes them), so it is a point at its origin; a brush model's box follows brushLinkBounds. The touch callbacks of
 // players and actors (0x4ff2f0) do nothing for a vehicle toucher (no sentient or client pointer).
 void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles) {
     if (vehicleCollmap(e).empty()) return;
@@ -957,7 +957,8 @@ void World::vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngl
         Vec3 mins{-15, -15, 0}, maxs{15, 15, t.isActor ? 72.0f : 70.0f};
         if (mover) { // the candidate box (+0xc4 / +0xd0): a brush model's bounds, a script_model a point
             mins = {0, 0, 0}; maxs = {0, 0, 0};
-            if (t.classname == "script_brushmodel") submodelBounds(t.obj->get("model").isString() ? t.obj->get("model").asString() : std::string(), mins, maxs);
+            if (t.classname == "script_brushmodel" && submodelBounds(t.obj->get("model").isString() ? t.obj->get("model").asString() : std::string(), mins, maxs))
+                brushLinkBounds(t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0}, mins, maxs);
         }
         const TraceResult tr = collision_->trace(to, to, mins, maxs, 0x800000u, t.number);
         if (!tr.startSolid || tr.entity != e.number) continue;
@@ -1001,6 +1002,26 @@ void World::vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speed
     v.joltDecel = decel;                                                                // +0x1e8
 }
 
+// ET_SOUND_BLEND (eType 6), client side (cgame 0x4ac8a0, run per entity every frame by the dispatcher 0x4acf30): nothing plays until both alias
+// indices are set (setsoundblend 0x4f7d10); then the two aliases are looked up and picked (0x428320 / 0x428a20), and a missing one ends the
+// call. The loop is started or refreshed through the generic play (0x442900 -> 0x4423d0) with the entity's origin and the blend fraction.
+// Rain emitters: the "_null" alias has the same file at volume 0, so the blend fades the rain in and out. TODO(spec): the exe lerps the fraction
+// between the previous and current snapshot value by the frame interpolation (0xf708d0); here the latest value is used.
+void World::updateSoundBlend(Entity& e) {
+    const Value a = e.obj->get("$soundblend1"), b = e.obj->get("$soundblend2");
+    int handle = e.obj->get("$blendhandle").isNumber() ? e.obj->get("$blendhandle").asInt() : 0;
+    const std::string lo = a.isString() ? a.toString() : std::string(), hi = b.isString() ? b.toString() : std::string();
+    if (lo.empty() || hi.empty()) {
+        if (handle) stopSound(handle);
+        e.obj->set("$blendhandle", Value());
+        return;
+    }
+    const float f = e.obj->get("$soundblend").isNumber() ? e.obj->get("$soundblend").asFloat() : 0.0f;
+    const Vec3 origin = e.obj->get("origin").asVector();
+    if (!handle || !setBlendSound(handle, f, origin)) handle = playBlendSound(lo, hi, f, origin, e.number);
+    e.obj->set("$blendhandle", handle ? Value(int32_t(handle)) : Value());
+}
+
 void World::updateVehicleEngineSound(Entity& e) {
     VehicleState& v = *e.vehicle;
     if (!v.info) return;
@@ -1016,8 +1037,7 @@ void World::updateVehicleEngineSound(Entity& e) {
         if (!want) {
             if (handle) stopSound(handle);
             handle = 0;
-        } else if (!handle) handle = playBlendSound(lo, hi, f, origin);
-        else setBlendSound(handle, f, origin);
+        } else if (!handle || !setBlendSound(handle, f, origin)) handle = playBlendSound(lo, hi, f, origin, -1);
     };
     // Turret sounds (0x510be0): state 2 loops turretSpinSnd (es+6), state 1 plays turretStopSnd once (event 0xb3).
     if (v.turretSnd == 2 && alive && !v.info->turretSpinSnd.empty()) {
@@ -1221,16 +1241,17 @@ bool World::playerVehicleSeat(Vec3& tagPos, Vec3& tagUp, Vec3& eye) {
 // Yaws for the tank status ownerdraws (cgame 0x4aa1b0 body: centity +0x158 = the vehicle's angles[1]; 0x4aa360 barrel: yaw of the
 // tag_barrel forward). Both ownerdraws also require the centity (eType 0xc) to have eFlags & 0x10000 (+0xb0, tests 0x4aa1f1 and
 // 0x4aa39f); the vehicle spawn sets that flag when the vehicle info's type word (+0x40) is 1 (0x50d8ac..0x50d8b2: "tank"); +0x40 is the "type" field of the vehicle field table (0x5a91e8, loader 0x50d0f6), confirmed.
-// TODO(spec): the barrel yaw uses the controlled forward (like linkPlayerToVehicle), not the full tag axis of 0x4ab9e0.
+// 0x4ab9e0 gives the tag's whole world frame (bone quaternion and offset with the controls through the entity frame); 0x424b70 takes
+// the frame to angles, whose yaw is that of the frame's forward row.
 bool World::playerVehicleHudYaws(float& bodyYaw, float& barrelYaw, bool& hasBarrel) {
     if (!player_ || player_->usingVehicle < 0 || !(pmFlags_ & 0x20000)) return false;
     Entity* e = entityByNumber(player_->usingVehicle);
     if (!e || e->obj->removed || !e->vehicle) return false;
     if (!e->vehicle->info || e->vehicle->info->type != 1) return false;
     bodyYaw = e->obj->get("angles").asVector()[1];
-    Vec3 fwd{};
-    vehicleTagPosition(*e, "tag_barrel", hasBarrel, &fwd);
-    barrelYaw = hasBarrel ? vectorToAngles(fwd)[1] : bodyYaw;
+    std::array<Vec3, 3> axis{};
+    vehicleTagPosition(*e, "tag_barrel", hasBarrel, nullptr, &axis);
+    barrelYaw = hasBarrel ? vectorToAngles(axis[0])[1] : bodyYaw;
     return true;
 }
 
@@ -1500,9 +1521,10 @@ void World::registerVehicleBuiltins() {
     // G_FireRocket 0x527810). Then the fire event: EV_FIRE_WEAPON (0x9e), quad barrels EV_FIRE_QUADBARREL_1 / _2
     // (0xb0 / 0xb1, by the barrel pair); the client (0x4b7800 per flash tag: tag_flash, tag_flash_11, tag_flash_2,
     // tag_flash_22 for the quad events) plays the weapon's fireSound and, for an entity that is not the local
-    // client, its worldFlashEffect bolted on the flash tag (0x4853f0 via 0x4b6660). TODO(spec): the shell eject
-    // (0x4b7730), the recoil jolt (0x50dcf0), the aim bend towards a driving player's aim point and the barrel
-    // pull-back (+0x19c / +0x198).
+    // client, its worldFlashEffect bolted on the flash tag (0x4853f0 via 0x4b6660). The shell eject (CG_EjectWeaponBrass 0x4b7730) plays
+    // the weapon's shellEjectEffect, and no shipped vehicle turret weapon (buffalo, armoredcar, flak88, flakveirling, tiger, t34,
+    // panzer2, crusader, sherman) defines one, so there is nothing to play. The recoil jolt 0x50dcf0, the aim bend and the barrel
+    // pull-back are below.
     vm_.registerBuiltin("fireturret", [this, requireTurret](CallContext& c) {
         VehicleState& v = requireTurret(c);
         Entity* e = entityOf(c.self);

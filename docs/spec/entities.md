@@ -50,7 +50,7 @@ baking static models into the level; that the entity is then dropped is *inferre
   by 0x4682d0): int → atoi, float → atof, vector → sscanf "%f %f %f", string → text (entity 0x4f8ff0, node
   0x515bf0). The original sets no field for a key that is neither native nor listed; here such keys stay, typed by
   their text, because engine code reads spawn keys from the same object (TODO).
-- `weapon_<name>` with a known weapon spawns an item entity (0x4f96d0 → 0x522c70); item details are TODO.
+- `weapon_<name>` with a known weapon spawns an item entity (0x4f96d0 → 0x522c70); the spawn, drop and pickup details are in grenades.md "Item run".
 
 
 ## Trigger touch

@@ -160,9 +160,7 @@ bool World::pathLookClear(const ActorPath& p, const Vec3& o, const Vec3& target)
 // when the followed actor is blocked by this one (its +0x72c). Between 30 and 37.5 units (900, 0x591fd4) a moving actor
 // (anim mode 1 with a path, not itself blocked +0x728) is let go once it heads away from the followed one (dot of the
 // offset to the followed with the lookahead direction +0x6c8 > 0).
-// TODO(spec): the retarget to the player (0x4fec50, via the box test 0x447830, 0x504610 and 0x519050), the movement trail
-// (0x505520 / 0x504f60: the follower is not path-walked in the exe, 0x5041a3) and the other consumers (0x4fe6ca, 0x4fe8eb,
-// 0x50081d, 0x53ade0) are not ported.
+// The retarget to the player is retargetFollowed.
 void World::updateFollowed(Entity& e) {
     ActorAi& ai = e.ai;
     Entity* f = ai.followed;
@@ -199,8 +197,7 @@ void World::updateFollowed(Entity& e) {
 // and whose box overlaps the player's box shifted by its velocity * 0.1 (0x59202c; 0x447830, an AABB test for an actor), follows
 // the player: +0x2148 = the player gentity. When it stands at its claimed node (0x504610: node set, 0x502660 close) it is skipped
 // while the client byte +0x86b6 (the player moved 0.1 units or more since the last frame, 0x4e81e5) is set; otherwise its claimed node
-// is taken over by the player (0x519050). TODO(spec): 0x519050 also evicts the owners of the linked nodes, which is not modelled;
-// the player's mins/maxs (+0x540/+0x54c; the standing box is used).
+// is taken over by the player (0x519050). TODO(spec): the player's mins/maxs (+0x540/+0x54c; the standing box is used).
 void World::retargetFollowed(Entity& e, Entity& player) {
     ActorAi& ai = e.ai;
     const Value dap = e.obj->get("dontavoidplayer");
@@ -713,8 +710,8 @@ int World::stepActorPath(Entity& e, bool wide, bool run) {
         const bool meMoving = e.velocity[1] * e.velocity[1] + e.velocity[0] * e.velocity[0] >= 1.0f;
         if (!other) {
             if (!(s.dist2 < c.best2)) return false;
-            // The actor's clip mask (+0x28c) must hold player contents; TODO(spec): taken as the actor clip mask.
-            if (!(Contents::ActorClipMask & Contents::PlayerBody)) return false;
+            // The actor's clip mask (+0x28c) must hold player contents (0x5512ce): pushplayer(1) takes the bit out.
+            if (!ai.noPush) return false;
             if (isEnemy(e, S)) return true;
             s.vel[0] = S.velocity[0];
             s.vel[1] = S.velocity[1];
@@ -724,7 +721,6 @@ int World::stepActorPath(Entity& e, bool wide, bool run) {
                 s.vel[0] = other->velocity[0];
                 s.vel[1] = other->velocity[1];
             }
-            // TODO(spec): following (+0x2148): the exe sets the bumped actor's +0x2148 at 0x501c8b; the lifecycle is not ported (docs/spec/ai.md "Actor trace box, followed actor").
         }
         const bool still = s.vel[1] * s.vel[1] + s.vel[0] * s.vel[0] < 1.0f;
         const bool selfBlocked = ai.blocker == &e;
@@ -910,8 +906,7 @@ int World::stepActorPath(Entity& e, bool wide, bool run) {
         const float px = c.dir[1] * 37.5f, py = c.dir[0] * -37.5f;
         Vec3 a{spos[0] - c.dir[0] * 37.5f + px, spos[1] - c.dir[1] * 37.5f + py, spos[2]};
         Vec3 b{c.dir[0] * 75.0f + a[0], c.dir[1] * 75.0f + a[1], spos[2]};
-        // TODO(spec): the actor's clip mask +0x28c (taken as the actor clip mask).
-        const uint32_t mask = Contents::ActorClipMask | (other ? 4u : 0x4004u);
+        const uint32_t mask = (ai.noPush ? 0x2820011u : 0x820011u) | (other ? 4u : 0x4004u); // +0x28c (0x551e45)
         Vec3 from = c.origin;
         if (c.best2 < 1406.25f) {
             float tx = spos[0] - from[0], ty = spos[1] - from[1];

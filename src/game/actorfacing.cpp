@@ -282,7 +282,8 @@ void World::actorMoveFrame(Entity& e) {
     int kind = 0;
     // The port's path following forces anim mode 1 for its walk (World::followActorPath) while setActorAnimScript may then store
     // an animmode override; a frame that already walked the path is treated as mode 1 so the actor does not move twice.
-    // TODO(spec): whether 0x552350 stores 1 directly or through 0x53ac90 (which applies the override +0x21c).
+    // TODO(spec): [stays: the store at 0x552374 is confirmed; matching it needs the walk moved out of the step] 0x552350 stores 1 directly (0x552374) and the move script then applies the override +0x21c (0x53ac90), so with an
+    // override the exe's walk 0x504160 does not run that frame, while the port walked already in the step.
     const bool walked = ai.walkedMs == timeMs_;
     if (!walked && mode >= 2 && mode <= 7 && e.anim) {
         const AnimDelta ad = e.anim->delta(ai.animDeltaGoalWeights);

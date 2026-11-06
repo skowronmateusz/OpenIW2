@@ -26,5 +26,12 @@ int main() {
     CHECK(hudHealthFraction(50, 0) == 0.0f);
     CHECK(hudHealthFraction(50, 100) == 0.5f);
     CHECK(hudHealthFraction(150, 100) == 1.0f);
+    {
+        const std::string cur = "mp40", sel = "kar98k", none;
+        auto owns = [](const std::string& w) { return w == "kar98k" || w == "mp40"; };
+        CHECK(hudShownWeapon(sel, cur, owns) == "kar98k");      // owned selected weapon: the display follows the key press
+        CHECK(hudShownWeapon(none, cur, owns) == "mp40");       // nothing selected
+        CHECK(hudShownWeapon("bar", cur, owns) == "mp40");      // not owned: the current weapon
+    }
     return failures ? 1 : 0;
 }

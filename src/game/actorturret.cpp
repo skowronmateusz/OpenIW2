@@ -72,12 +72,17 @@ bool World::turretStateStart(Entity& e) {
     ts.flags = (ts.flags & ~0xe8u) | 0x100u;
     ts.rightArc = ts.setupRightArc;
     ts.leftArc = ts.setupLeftArc;
-    ts.flags &= ~0x10u;
+    gunnerForgetIgnores(e); // 0x54e3f0
+    if (e.ai.resumedFrom != AiPain) { // 0x549a11: the start argument is the state left; back from pain the hit stays on record
+        ts.flags &= ~0x10u;
+        ts.hitBy.reset();
+    }
     // 0x549a28..0x549a3c: keepclaimednode / keepclaimednodeingoal (+0x740 / +0x741) cleared and a claimed node released
-    // (0x5191a0). TODO(spec): 0x54e3f0 and 0x503e10, and the start argument that keeps flag 0x10 / +0x60 when it is 6.
+    // (0x5191a0), then the path is dropped (0x503e10).
     e.obj->set("keepclaimednode", Value(int32_t(0)));
     e.obj->set("keepclaimednodeingoal", Value(int32_t(0)));
     if (e.claimedNode >= 0) releaseNode(e);
+    clearActorPath(e);
     return true;
 }
 
@@ -101,8 +106,11 @@ int World::turretStateThink(Entity& e) {
     };
     if (!t || !t->turret || t->obj->removed || !(t->turret->inUse && t->turret->owner == e.obj)) return leave();
     TurretState& ts = *t->turret;
-    // 0x54acc5..0x54ad0c: unless the claimed node is kept (0x4fe6f0), the friendly chain and the working goal are updated
-    // (0x505ed0, 0x505f70). TODO(spec): the pathToEnemy reset before it (0x502fc0, an enemy known within 5 s).
+    // 0x54acc5: no enemy, no pathing to him. TODO(spec): [stays: the bit table 0x517ed0 reads is not loaded] with an enemy the reset also happens when 0x502fc0 fails and he is not
+    // known within 5 s; 0x502fc0 reads a node relation (0x517ed0, a second bit table) that is not loaded here.
+    if (!entityOf(e.obj->get("enemy"))) e.ai.pathToEnemy = false;
+    // 0x54accc..0x54ad0c: unless the claimed node is kept (0x4fe6f0), the friendly chain and the working goal are updated
+    // (0x505ed0, 0x505f70).
     if (!keepClaimedNode(e)) {
         followFriendlyChain(e);
         updateWorkingGoal(e);
@@ -115,8 +123,10 @@ int World::turretStateThink(Entity& e) {
         print("turret weapon " + ts.weapon + " has no script");
         return leave();
     }
-    // 0x54ae56: movemode 0 (stop), anim mode 1. TODO(spec): 0x515040 / 0x518f20 / 0x519050 before it, and the debug state
-    // string at actor +0x21a0 (0x54adb2..0x54adf7, "auto_turret_idle" etc.).
+    // 0x54ae32..0x54ae51: the gunner takes over his own node when it is usable. The string at actor +0x21a0 written before it
+    // (0x54adb2..0x54adf7) is a debug label, nothing reads it for behaviour.
+    if (const int node = sentientNode(e); node >= 0 && nodeUsable(e, node)) claimNode(e, node, true);
+    // 0x54ae56: movemode 0 (stop), anim mode 1.
     setActorAnimScript(e, it->second, 0, 1);
     // 0x54ae63: still the owner (0x54afd0), else give the turret up (0x54b020) and become exposed.
     if (!(ts.inUse && ts.owner == e.obj)) return leave();
@@ -130,8 +140,8 @@ int World::turretStateThink(Entity& e) {
 // the world entity 0x7fe has none) narrows the arc on the side the gun points to by 1 degree (yaw < 0: rightArc + 1, else
 // leftArc - 1, with a "capping" warning); an arc that crosses 0 is set to 0 and the gunner detaches with the warning
 // "... detaching from turret due to obstruction". Bumping a sentient detaches at once. Detaching gives the turret up
-// (0x54b020) and replaces the state with exposed (0x4feb00, think again). TODO(spec): for a bumped sentient of another
-// team the exe also calls 0x4f9f30 and 0x4fa070 (0x54aafa..0x54ab45), not ported.
+// (0x54b020) and replaces the state with exposed (0x4feb00, think again). A bumped player who is not of the gunner's enemy
+// team also makes the gunner notify "trigger" with the player as argument (0x54aafa..0x54ab45).
 bool World::turretObstruction(Entity& e, Entity& t) {
     TurretState& ts = *t.turret;
     if (e.ai.bumpedEnt == 0x7ff || timeMs_ - e.ai.baseStateMs < 1000) return false;
@@ -144,7 +154,19 @@ bool World::turretObstruction(Entity& e, Entity& t) {
         aiSetState(e, AiExposed); // 0x4feb00 with 1
         return true;
     };
-    if (g && isSentient(*g)) return detach();
+    if (g && isSentient(*g)) {
+        if (g->isPlayer) {
+            const std::string own = e.obj->get("team").toString(), other = g->obj->get("team").toString();
+            const bool enemy = (own == "axis" && other == "allies") || (own == "allies" && other == "axis");
+            if (!enemy) {
+                turretStateFinish(e);
+                vm_.notify(e.obj, "trigger", {Value(g->obj)});
+                aiSetState(e, AiExposed);
+                return true;
+            }
+        }
+        return detach();
+    }
     const Value tov = t.obj->get("origin");
     const Vec3 to = tov.isVector() ? tov.asVector() : Vec3{0, 0, 0};
     char buf[256];
@@ -399,7 +421,7 @@ int World::turretPoseStep(Entity& e, Entity& t) {
     faceBlockToAngles(e, true); // 0x504950 + 0x5049a0
     if (links_.find(t.number) == links_.end()) {
         // +0x264 = 1, +0x250 = (dx, dy, 0), then the physics 0x501d00 (kind 1 is not turned by desiredangle).
-        // TODO(spec): 0x4e7150(+0x294, +0x298) and the link offset update 0x4d6ca0.
+        // TODO(spec): [stays: 0x4e7150 walks a list of entity numbers, skips duplicates and touches each; the port keeps no such list for the actor move] 0x4e7150(+0x294, +0x298) and the link offset update 0x4d6ca0.
         moveActorKind(e, 1, {pos[0] - eOrigin[0], pos[1] - eOrigin[1], 0.0f}, kPoseFrameTime);
         if (turretObstruction(e, t)) return 1;
     } else {

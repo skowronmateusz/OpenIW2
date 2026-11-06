@@ -38,7 +38,7 @@ void angleVectors(const Vec3& a, Vec3& f, Vec3& r, Vec3& u) {
 } // namespace
 
 // 0x4dc6d0: the first owned weapon of the offhand class with rounds in its clip or stock. The original walks the
-// weapon indices in load order; OpenIW2 walks the owned weapons by name (TODO(spec): the load order).
+// weapon indices in load order; OpenIW2 walks the owned weapons by name (TODO(spec): [stays: the exe's weapon index order is not modelled] the load order).
 std::string World::playerOffhandFor(const std::string& offhandClass) {
     if (!player_) return {};
     Inventory& inv = inventory(*player_);
@@ -76,8 +76,7 @@ void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, c
 // eye + forward·player_meleeRange (64) + right·player_meleeWidth (10)·a + up·player_meleeHeight (10)·b for
 // (a, b) = (0, 0), (1, 1), (1, −1), (−1, 1), (−1, −1) (table 0x58f7c4; only the centre when width or height ≤ 0);
 // the first trace that hits something other than sky damages the entity it hit: meleeDamage + rand() % 5,
-// MOD_MELEE, along the view. TODO(spec): the impact effect of the centre trace (0x5295f0) and the hit event
-// 0xad / 0xae.
+// MOD_MELEE, along the view.
 void World::playerMelee(const Vec3& eye, const Vec3& viewAngles) {
     if (!player_ || !isAlive(*player_)) return;
     Vec3 f, r, u;
@@ -87,7 +86,7 @@ void World::playerMelee(const Vec3& eye, const Vec3& viewAngles) {
 }
 
 // The same blow for an AI (builtin melee: 0x53c690 -> 0x550c60 -> 0x530f80, range 64): from the actor's eye towards its enemy.
-// TODO(spec): the actor aim origin and direction (0x54fee0, 0x500910; here the eye position and the line to the enemy's eye);
+// TODO(spec): [stays: 0x54fee0 not read] the actor aim origin and direction (0x54fee0, 0x500910; here the eye position and the line to the enemy's eye);
 // the per-frame guard (actor +0xcc = level time) is the caller's.
 void World::meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& w) {
     const int base = weaponInt(w, "meleeDamage");

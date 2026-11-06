@@ -24,6 +24,30 @@ int main() {
     CHECK(shockMs(2.5f) == 2500);
     CHECK(shockMs(-0.75f) == -750);
 
+    {
+        // End / abort sounds (0x4b1f90, 0x4b1e90).
+        using A = ShockEndSound::Action;
+        ShockEndSound e;
+        CHECK(e.update(true, 1000, 1000, 3000) == A::None);   // before the end time
+        CHECK(e.update(true, 3999, 1000, 3000) == A::None);
+        CHECK(e.update(true, 4010, 1000, 3000) == A::PlayEnd); // end time 4000 reached, 10 ms late
+        CHECK(e.offsetMs() == 10 && e.started());
+        CHECK(e.update(true, 5000, 1000, 3000) == A::None);   // plays once
+        ShockEndSound f;
+        CHECK(f.update(true, 4000, 1000, 3000) == A::PlayEnd);
+        CHECK(f.update(true, 4100, 1500, 3000) == A::PlayAbort); // a new shock started, its end lies ahead: abort
+        CHECK(!f.started());
+        CHECK(f.update(true, 4200, 1500, 3000) == A::None);
+        ShockEndSound g;
+        CHECK(g.update(true, 4000, 1000, 3000) == A::PlayEnd);
+        CHECK(g.update(false, 4100, 1000, 3000) == A::PlayAbort); // stopshellshock after the end sound
+        CHECK(g.update(false, 4200, 1000, 3000) == A::None);
+        ShockEndSound h;
+        CHECK(h.update(false, 100, 0, 3000) == A::None);          // never started: no abort
+        ShockEndSound k;
+        CHECK(k.update(true, 4000, 1000, 3000) == A::PlayEnd);
+        CHECK(k.update(true, 9000, 5000, 3000) == A::PlayEnd);    // a new shock already past its end: end again, no abort
+    }
     const ShockRecord r = parseShockFile(
         "cg_shock_screenBlendTime \"0.5\"\n"
         "cg_shock_screenBlendFadeTime \"2\"\n"

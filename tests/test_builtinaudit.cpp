@@ -92,20 +92,39 @@ int main() {
     CHECK(lv->get("bp_w").asInt() == 1 && lv->get("bp_f").asInt() == 1 && lv->get("bp_pad").asInt() == 0);
     CHECK(lv->get("cmd_w").toString() == "+forward" && lv->get("cmd_mouse").toString() == "+attack");
     CHECK(lv->get("cmd_pad").toString().empty());
-    // The previous command's buttons count as well (the exe ORs client+0x8640 with +0x8634).
+    // The bits that went down in a command count until the frame ends, even if a later command released them (the exe ORs
+    // client+0x8640, the latched presses, with +0x8634, the held buttons; the frame end clears the latch).
     cmd.buttons = 1;
     w.setPlayerCommand(cmd);
     w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
     w.vm().drainReady();
     CHECK(lv->get("attack").asInt() == 1);
     CHECK(lv->get("use").asInt() == 1);
+    w.frame(); // ClientEndFrame clears the latch; the held buttons (attack) stay
+    cmd.buttons = 0;
+    cmd.rawButtons = 0;
+    w.setPlayerCommand(cmd);
+    w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
+    w.vm().drainReady();
+    CHECK(lv->get("attack").asInt() == 0 && lv->get("use").asInt() == 0); // released: no previous-command carry-over
+    cmd.buttons = 1;
+    w.setPlayerCommand(cmd);
+    cmd.buttons = 0;
+    w.setPlayerCommand(cmd); // a tap inside one frame
+    w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
+    w.vm().drainReady();
+    CHECK(lv->get("attack").asInt() == 1);
+    w.frame();
+    w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
+    w.vm().drainReady();
+    CHECK(lv->get("attack").asInt() == 0);
     // freezecontrols zeroes the movement/firing buttons but the client still holds the held usercmd buttons: the briefing's "fire to skip"
     // (attackbuttonpressed under freezecontrols(true)) must see them (ClientThink 0x4e7bc0 copies +0x85c8 to +0x8634 / +0x8640 regardless).
     cmd.buttons = 0;
     cmd.rawButtons = 0;
     w.setPlayerCommand(cmd);
     cmd.buttons = 0;
-    w.setPlayerCommand(cmd); // two idle commands: the previous-command OR is clear
+    w.setPlayerCommand(cmd); // two idle commands
     w.vm().start("maps/zz_builtinaudit.gsc", "run", {}, iw2::script::Value(w.player()->obj));
     w.vm().drainReady();
     CHECK(lv->get("attack").asInt() == 0);

@@ -68,7 +68,9 @@ void World::registerSoundBuiltins() {
     // setexpfog(density, r, g, b, time) (0x4f5630 -> the shared 0x4f53f0): exactly 5 arguments, density in (0, 1) (error 0x585b8c), then the
     // shared colour / time checks; sends "fog 0 1 <density> <r> <g> <b> <time*1000>" (the client takes a third value < 1 as the exponential
     // density: FogState::commandExp, R_SetFog arg7). The shared sender (0x4f5512) skips the command and the
-    // AI sight update when the global 0x1c61048 is 2. TODO(spec): that global's meaning (not modelled; the command is always sent).
+    // AI sight update when the global 0x1c61048 is 2. That global is the level-start state (1 + whether a savegame stream is being
+    // read, set at 0x4d99cb, cleared at 0x4da5c6 when the spawn ends): 2 only while a level is restored from a save. A restore does not run
+    // main() again (the fog and the AI sight limit come from the save, savestate.cpp), so the skip is never reachable here.
     vm_.registerBuiltin("setexpfog", [this](CallContext& c) {
         if (c.args.size() != 5) throw std::runtime_error("Incorrect number of parameters\n");
         const float d = c.arg(0).asFloat(), r = c.arg(1).asFloat(), g = c.arg(2).asFloat(), b = c.arg(3).asFloat(), t = c.arg(4).asFloat();
@@ -113,7 +115,7 @@ void World::registerSoundBuiltins() {
     vm_.registerBuiltin("playlooprumble", [](CallContext&) { return Value(); }); // 0x4f8c00: a single `ret` as well
     vm_.registerBuiltin("giveachievement", [](CallContext&) { return Value(); });
     // setcullfog(near, far, r, g, b, time) (0x4f5580 -> 0x4f53f0): exactly 6 arguments, then the fogArgError checks; sends
-    // "fog <near> <far> 1 <r> <g> <b> <time*1000>" (format "%g %g %g %g %g %g %.0f" 0x585bd4). Same 0x1c61048 TODO(spec) as setexpfog.
+    // "fog <near> <far> 1 <r> <g> <b> <time*1000>" (format "%g %g %g %g %g %g %.0f" 0x585bd4). Same 0x1c61048 skip as setexpfog (never reachable here).
     vm_.registerBuiltin("setcullfog", [this](CallContext& c) {
         if (c.args.size() != 6) throw std::runtime_error("Incorrect number of parameters\n");
         const float nr = c.arg(0).asFloat(), fr = c.arg(1).asFloat(), r = c.arg(2).asFloat(), g = c.arg(3).asFloat(), b = c.arg(4).asFloat(),
@@ -181,7 +183,7 @@ void World::registerSoundBuiltins() {
     });
     // ambientplay(alias [, fade]) (0x4f3800): 1 or 2 arguments; errors for an empty alias, a negative fade and an unknown
     // alias. The original publishes configstring 3 "n\<alias>\t\<levelTime + fade ms>" and the client starts the ambient
-    // loop. The configstring is modelled as client commands ambient_play <alias> <fade ms> and ambient_stop <fade ms> (client 0x443080: a new alias fades the old track out and itself in, the same alias is kept).
+    // loop. The configstring is modelled as client commands ambient_play <alias> <fade ms> (client 0x443080: a new alias fades the old track out and itself in, the same alias is kept).
     vm_.registerBuiltin("ambientplay", [this, fadeMs](CallContext& c) {
         if (c.args.size() < 1 || c.args.size() > 2) throw std::runtime_error("Incorrect number of parameters\n");
         const std::string alias = c.arg(0).toString();
@@ -192,11 +194,10 @@ void World::registerSoundBuiltins() {
         clientCommands_.push_back({"ambient_play", alias + " " + std::to_string(fadeMs(c, 1))});
         return Value();
     });
-    // ambientstop([fade]) (0x4f3930): negative fade is an error; configstring 3 "t\<levelTime + fade ms>".
-    vm_.registerBuiltin("ambientstop", [this, fadeMs](CallContext& c) {
+    // ambientstop([fade]) (0x4f3930): negative fade is an error; configstring 3 "t\<levelTime + fade ms>", which the client ignores (0x44308e).
+    vm_.registerBuiltin("ambientstop", [](CallContext& c) {
         if (c.args.size() > 1) throw std::runtime_error("Incorrect number of parameters\n");
         if (c.args.size() == 1 && c.arg(0).asFloat() < 0) throw std::runtime_error("ambientStop: fade time must be >= 0\n");
-        clientCommands_.push_back({"ambient_stop", std::to_string(fadeMs(c, 0))});
         return Value();
     });
     // musicplay(alias) (0x4f3400): unknown alias is a script error; sends the client "mu_play <alias>".

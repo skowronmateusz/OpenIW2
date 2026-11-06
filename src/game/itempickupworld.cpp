@@ -25,7 +25,6 @@ void World::raisePickupEvent(const std::string& w, bool ammoOnly) {
     ev.itemClass = lower(weaponField(w, "weaponClass")) == "item";
     const std::string oc = lower(weaponField(w, "offhandClass"));
     ev.offhand = !oc.empty() && oc != "none";
-    ev.isCurrentOffhand = player_ && inventory(*player_).offhand == w;
     pickupEvents_.push_back(std::move(ev));
 }
 

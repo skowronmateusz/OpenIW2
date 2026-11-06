@@ -74,6 +74,21 @@ int main() {
         if (sp.size() == 1) CHECK(sp[0].beamTail && std::fabs(sp[0].beamB[0] - (10.0f + 4096.0f)) < 1e-2f && sp[0].beamA[0] == 10.0f);
     }
 
+    // 0xf79778 around a play: an undelayed Decal draws nothing, a delayed one spawns after the flag and still does.
+    {
+        const char* shaders = "\tshaders\n\t[\n\t\tgfx_x\n\t]\n}\n";
+        auto now = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(std::string("Decal\n{\n") + shaders));
+        auto later = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(std::string("Decal\n{\n\tdelay 50\n") + shaders));
+        iw2::game::FxSystem ds;
+        ds.noImmediateMarks = true;
+        ds.play(now, {0, 0, 0}, {1, 0, 0}, 1000);
+        ds.play(later, {0, 0, 0}, {1, 0, 0}, 1000);
+        ds.noImmediateMarks = false;
+        CHECK(ds.takeDecals(2000).size() == 1);
+        ds.play(now, {0, 0, 0}, {1, 0, 0}, 3000);
+        CHECK(ds.takeDecals(4000).size() == 1);
+    }
+
     // Colour bytes (0x4819b0 / 0x481a40): without useAlpha rgb is scaled by alpha and alpha is 255; with it alpha is kept.
     {
         const char* body = "\tlife 1000\n\trgb\n\t{\n\t\tcurve\n\t\t[\n\t\t\t0 1 0.5 1\n\t\t]\n\t}\n"
@@ -357,6 +372,26 @@ int main() {
         sc.playBolted(boltedFx, cb, iw2::game::FxAxes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, 300);
         CHECK(sc.count() == 2);
     }
+    // Emitter spawn angles (0x421b30): the roll output of the axes conversion is always 0, so the model roll is only the
+    // z draw of `angle`, even when the effect axes are rolled (a bolted play with a 45°-turned tag basis).
+    {
+        auto efx = std::make_shared<iw2::assets::EfxEffect>(iw2::assets::parseEfx(
+            "Emitter\n{\n\tflags useModel\n\tlife 1000\n\tangle 10 20 30 10 20 30\n\tmodels\n\t[\n\t\tdebris\n\t]\n}\n"));
+        iw2::game::FxSystem es;
+        const float s = std::sqrt(0.5f);
+        iw2::game::FxAxes ax{{{1, 0, 0}, {0, -s, s}, {0, -s, -s}}}; // row1 / row2 turned 45° about row0
+        iw2::game::FxBolt bolt = [ax](iw2::game::FxTag& t) { t.origin = {0, 0, 0}; t.axes = ax; t.hasAxes = true; return true; };
+        es.playBolted(efx, std::make_shared<iw2::game::FxBolt>(bolt), ax, 0);
+        es.sprites(500);
+        const auto& ms = es.models();
+        CHECK(ms.size() == 1);
+        if (ms.size() == 1) {
+            CHECK(std::fabs(ms[0].angles[0] - 10.0f) < 1e-3f);  // pitch 0 (forward = x) + the x draw
+            CHECK(std::fabs(ms[0].angles[1] - 20.0f) < 1e-3f);  // yaw 0 + the y draw
+            CHECK(std::fabs(ms[0].angles[2] - 30.0f) < 1e-3f);  // 30 from `angle` alone: no roll from the rolled basis
+        }
+    }
+
     if (failures) return 1;
     std::cout << "efx tests passed\n";
     return 0;

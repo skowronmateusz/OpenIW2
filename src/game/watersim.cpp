@@ -7,7 +7,10 @@
 namespace iw2::game {
 namespace {
 
-// MSVC CRT rand(). TODO(spec): the CRT seed state when the original calls the setup (0x1002cf60) is unknown; seed 1.
+// MSVC CRT rand(). The renderer DLL keeps its own static CRT (`_rand` 0x100f6607) and contains no srand at all, so the
+// exe's time-seeded srand never reaches it: the state is the CRT default seed 1 plus the draws of the only other caller,
+// the volume-noise texture build 0x10011ca0 (8·8·16 cells · 3 draws = 3072). TODO(spec): whether that build runs before
+// the water setup (0x1002cf60); until then seed 1.
 struct CrtRand {
     uint32_t s = 1;
     int next() {

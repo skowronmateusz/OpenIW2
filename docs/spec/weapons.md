@@ -74,7 +74,7 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
 - After getting off the kept aim fraction applies again: if the aim is still held the zoom and the overlay are back
   at once; otherwise the aim runs down at the normal rate. (implemented: `playerViewFov`, `scopeOverlayDrawAlpha`)
 - Other users of the overlay test 0x4bc8a0 (view flash 0x4b6131, damage indicators 0x4bdcb0 / 0x4be210) do not test
-  the turret bits and still see the kept aim. TODO(spec): not checked in a window whether that is visible.
+  the turret bits and still see the kept aim. TODO(spec): [stays: needs a run of the original] not checked in a window whether that is visible.
 - Grenade danger icons (VAs in the patch 1.3 SP executable): the loop 0x4be210 calls the overlay test first (0x4be227) and returns when it is true and the bool dvar `cg_hudGrenadeIconInScope` (registered at 0x4a1622, flags 0x1001, default 0) is off. So by default the icons are hidden under a scope overlay and shown under plain aim; with the dvar on they are drawn there too.
 
 Not done yet: bob (0x4b4a90), sway (0x4b4dc0), idle motion (0x4b51a0), gun kick (0x4b5d10), lean. While aiming,
@@ -130,7 +130,7 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
 - Event 0xa2 (jump table 0x4bb74c, case 0x4bb113) calls 0x4b7730: shellEjectEffect bolted on tag_brass.
 - Stock values: kar98k rechamberTime 1, rechamberBoltTime 0.65; enfield 1.0677 / 0.65 (fireTime 0.33): the casing comes out
   0.65 s into the bolt cycle. Only the pmove writes event 0xa2, so AI bolt-action rifles never eject brass (combat.cpp).
-- OpenIW2: `PlayerWeapon::Event::EjectBrass` with its own timer (`brassTimer_`); TODO(spec): the exe's ps weaponDelay also
+- OpenIW2: `PlayerWeapon::Event::EjectBrass` with its own timer (`brassTimer_`); TODO(spec): [stays: not read] the exe's ps weaponDelay also
   gates melee / other actions during that time, and the bit is kept per weapon across switches (implemented, brassBits_).
 
 ## Reload variant and projectile fire (panzerschreck, exe evidence)
@@ -149,11 +149,13 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
   radius); the projectile direction is normalize(forward + tan(spread) * (x * left + y * up)) (AnglesToAxis 0x421da0), the bullet
   end is origin + forward * 8192 + tan(spread) * 8192 * (x * left + y * up) (0x531210). Muzzle (0x531b90): the eye plus the
   usercmd gun offset (client +0x864c..), zero at aim 0 and 1. OpenIW2 `World::playerFire` implements the spread, the offset
-  parameter and returns the kick (forward * 64) that the caller subtracts from the velocity. TODO(spec): the gun offset and the
+  parameter and returns the kick (forward * 64) that the caller subtracts from the velocity. TODO(spec): [stays: needs the view model state] the gun offset and the
   gun angles between hip and full aim depend on the unported view-model sway, bob and kick (0x4b4a90, 0x4b4dc0, 0x4b51a0, 0x4b5d10).
 - CG_Missile (0x4ab3af): `projTrailEffect` (+0x458, weapon info +0x170) is played once per missile (cent +0x143) bolted on
   its `tag_origin` (scr const 0x1c7f144); `projectileDLight` (+0x45c, info +0x14c) with `projectileRed/Green/Blue` adds a
-  dynamic light (0x4ab404 → *0x617b1c). OpenIW2 queues the trail at the launch (rockets.cpp). TODO(spec): the dlight.
+  dynamic light (0x4ab404 → *0x617b1c). OpenIW2 queues the trail at the launch (rockets.cpp). The dlight colour fields (info +0x150..+0x158) have no writer in the cgame code range (0x4a0000..0x4d0000; CG_RegisterWeapon 0x4b2c90 zeroes the info and stores only the radius), so the light is black and nothing is drawn.
+- A missile impact (0x526200, the part before the damage) with a parent that is not a grenade handler sends the AI line event 0x11 from the parent's origin to the impact point (0x535860, flags 0, default radius² 512²): enemy-team actors near the line learn the parent and mark it as their attacker (handler 0x535f20, the same as type 0x10 without the danger plane). Implemented in `World::rocketImpact`. The explosion event number is 0xc0 + flag for rockets (weapon +0x390 == 1), 0xc2 + flag for other custom types, 0xbf for grenades; the flag is 1 when the trigger_damage segment test 0x5295f0 hit or the trace's hit id (+0x1e) is not 0. The client handler 0x4ba8d0 sets 0xf79778 for 0xc1 / 0xc3 around the surface sound, impact effect and explosion effect, and CG_ImpactMark (0x4ad430) returns at once while it is set, so those effects leave no marks. See "Explosions without marks" below.
+- Fire start (0x4dea00): a shot begun from a state other than firing (ps+0xb4 != 3) stores ps+0x40 = (aim fraction < 1 ? hipGunKickReducedKickBullets : adsGunKickReducedKickBullets) * fireTime + fireDelay (ms); PM_Weapon lowers it by the frame time down to 0 (0x4de72a). The cgame fire impulse (0x4dfea0) uses the ReducedKickPercent while ps+0x40 > 0. Implemented in `PlayerWeapon::reducedKick`.
 - The view flash (`viewFlashEffect` panzerschreck_flash.efx) already played on the view model's tag_flash; in first person
   that tag lies outside the default field of view, so the visible launch effect is mostly the rocket and its trail.
 
@@ -171,4 +173,49 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
   zero while the scope overlay (0x4bc8a0) reports itself active, yet still poses the gun. So a shot fired under a scope overlay
   produces no flash at all, now or later. OpenIW2 skipped the whole pass under the overlay, which left the flag set and played the
   flash on leaving the scope (`consumeViewFlash`). Brass (event time, 0x4b7730) is not gated by the overlay; the gun is posed so its
-  tag exists. TODO(spec): the exact overlay-active condition of 0x4bc8a0 is approximated by the overlay alpha > 0.01.
+  tag exists. TODO(spec): [stays: not read] the exact overlay-active condition of 0x4bc8a0 is approximated by the overlay alpha > 0.01.
+
+## Bullet passes (0x531340)
+One fired bullet can run several passes; each repeats the trace, the AI events, the trigger damage and the impact event, at
+most 12 deep. Damage is the distance damage of the pass (measured from that pass's start) times the pass's factor, truncated.
+- A hit on contents 0x10 goes on just behind the surface with no damage.
+- An actor's bullet does not stop at the entity the actor is linked to (a vehicle it rides): it goes on from the hit point, ignoring that entity.
+- An AI's bullet ignores sentients of its own team.
+- A hit on the player counts only within 8 units of the player's vertical axis, measured across the shot in the horizontal
+  plane. Farther out the bullet goes on from the hit point, ignoring the player.
+- After a rifleBullet hit on an entity that still has a sentient, including an actor that just died, the bullet goes on from
+  the hit point, ignoring that entity, with half the factor.
+
+### G_Damage order (0x528050)
+
+Each step can end the call. Takes-damage byte (ent+0x111); the vehicle means-of-death filter (0x5122f0, ent+0x108); for a client
+0x512390: riding (pm_flags 0x20000, not 0x80000, a vehicle at ent+0xf4) a vehicle whose type word is not 4 "artillery" means no damage.
+For an actor only (ent+0x100; a client has none, so hit locations never scale damage to the player) the hit-location multiplier, leaving
+on a result <= 0. A client in noclip (+0x8628) or ufo (+0x862c) leaves, so it gets no knockback. Knockback, then the god flag for any
+entity. An amount below 1 then becomes 1 (0x5282c9): only the player and entities without an actor can still hold one; the zero test at
+0x5282d3 cannot be true. For an actor 0x4ff360: when the amount reaches its health, allowdeath (+0xb0) is 0 and the state stack holds
+animscripted (7) or negotiation (9) (0x4ff310), amount - health + 1 is held back, +0xb4 is set, "damage_armor" (0x1c7f05a) is notified
+with the held part, and an amount of 0 left over ends the call (0x5283cc). The actor think (0x4ff215) kills such an actor when neither
+state is on the stack any more: health + 1, no attacker, hit location 2, means of death 0.
+
+Not modelled: the client window 0x527f00 (+0x86b5, keeps health at 1 for some means of death) and the skip of the "death" notify for a
+client (0x528470); the port notifies it.
+
+### Damage knockback (0x528187..0x5282ac)
+
+G_Damage (0x528050) pushes a target with a client, after the hit-location multiplier and before the god check, so a god player is pushed too.
+Without a direction the flag 8 is added, and flag 8 skips the push. The scale is 0.05, or 0.01 / 0.025 with pm_flags 1 (prone) / 2 (ducked); knockback is
+amount × scale truncated, capped at 60, and 0 when the entity flags +0x128 have 0x20 (set when a client dies, 0x528458). Nothing happens with knockback 0 or eFlags & 0x300 (on a turret).
+Velocity += normalized dir × knockback × `g_knockback` (0x1c13f60, default 1000) × 0.004. A target that is its own attacker with means of death 3..6
+then has the velocity z (the whole component) times 0.25. With pm_time 0: pm_time = 2 × knockback clamped to 50..200 and pm_flags |= 0x400 (the same flag ClientSpawn sets).
+OpenIW2: `World::damage` queues a `KnockbackHit`, the host applies it to its player state (`applyKnockback`, tests/test_knockback.cpp).
+
+The damage flags: 2 goes to the vehicle filter 0x5122f0, 8 is the no-push flag above. Flag 0x20, passed by trigger_hurt with spawnflags 8 (0x529248), has no reader: G_Damage tests no
+other bit and passes the flags to neither the notifies nor the pain / die callbacks.
+
+### Explosions without marks
+
+The missile impact (0x526494..0x526504) sends EV_ROCKET_EXPLODE_NOMARKS (0xc1) instead of 0xc0, and EV_CUSTOM_EXPLODE_NOMARKS (0xc3) instead of 0xc2, when the trace's partName (+0x1e) is set, which is any hit on a
+bone box or on an xmodel collision surface (actors, vehicles, script models), or when 0x531b50 holds (hit and parent both have clients, differ, and the hit is alive; impossible with one client). A grenade type always sends 0xbf.
+The fuse explosion (0x526779..0x526796) has no such variant. The client sets 0xf79778 only around the effect plays of those events (0x4bb45d, 0x4bb54c to 0x4bb5d8), so a Decal element spawned inside the play draws no mark;
+an element with a delay of 1 ms or more is queued (0x4853f0) and spawns later with the flag clear. OpenIW2: `TraceResult::partHit`, `FxEvent::noMarks`, `FxSystem::noImmediateMarks`.

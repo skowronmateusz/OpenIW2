@@ -164,7 +164,7 @@ bool World::nodeBeyondPlanes(int node, const std::vector<PathPlane>& planes) con
 // the extent by a two-ended partition (key < split to the left), the cut then moved towards the middle past the keys
 // equal to the split. The walk (0x516820) takes the left side unless the centre is more than the radius beyond the
 // split, then the right side unless it is more than the radius before it, and the leaf nodes in their permuted order.
-// TODO(spec): a map that ships a precomputed tree (0x52ee40) is assumed to carry the one this build gives.
+// TODO(spec): [stays: 0x52ee40 has one caller, 0x516c0d, and its branch condition was not read] a map that ships a precomputed tree (0x52ee40) is assumed to carry the one this build gives.
 int World::buildNodeTree(int first, int count) const {
     auto key = [&](int i, int axis) { return originOf(nodes_[size_t(nodeTreeOrder_[size_t(i)])].obj)[size_t(axis)]; };
     if (count >= 4) {
@@ -395,7 +395,7 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
 // position is the first point when it differs (2D) from the goal node. More than 32 points keep the 32 nearest the
 // start and mark the path truncated (+0x6e8 |= 4). Each point gets the unit 2D direction and length of the segment
 // from the next point to it; the start (+0x6f8) is the last point. The budget (from 0x541780) carries over, and the
-// lookahead is re-aimed (0x541a70; with flag 0x80 reset instead). TODO(spec): +0x3d4, cleared when the goal moves.
+// lookahead is re-aimed (0x541a70; with flag 0x80 reset instead). +0x3d4 is not modelled: the code only stores it (0x541eb5, 0x5434d7), nothing reads it.
 // The negotiation pair (0x541da0): walking from the goal end, a point of node type 17 (node_negotiation_end) whose
 // next point toward the start is type 16 (node_negotiation_begin) with target == the end node's targetname; the last
 // match (nearest the start) sets the traversal index +0x386 to the begin point (the follower stops there and the
@@ -407,7 +407,7 @@ bool World::searchNodes(int team, int start, int goal, const Vec3& goalPos, cons
 // 0x503650 passes its third argument as the traversal flag (0x502960 and 0x502d00: 1; reacquirestep 0x548f10 and the grenade
 // throw-back path 0x51fb20: 0); 0x503890 / 0x503a50 1; the capped planner 0x503be0 (0x542eb0 / 0x542fb0) goal point 0,
 // traversals 1; the flee search 0x503ca0 goal point 0, traversals 1; the replans 0x542410 (from 0x544ca0) and 0x5037e0 keep
-// the old path's flag 0x10. TODO(spec): the plan argument +0x3c0.
+// the old path's flag 0x10. TODO(spec): [stays: stored at 0x5421fd from the planner's argument, read only at 0x544d13 to pass to the replan 0x542410; the callers' values were not traced] the plan argument +0x3c0.
 bool World::buildActorPath(Entity& e, const std::vector<int>& chain, const Vec3& goalPos, bool useGoalPos, bool allowTraversal) {
     ActorPath& p = e.path;
     const Vec3 o = originOf(e.obj);

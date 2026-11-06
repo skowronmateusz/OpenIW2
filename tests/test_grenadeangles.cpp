@@ -19,6 +19,12 @@ bool near(float a, float b, float e = 0.02f) { return std::fabs(a - b) <= e; }
 } // namespace
 
 int main() {
+    if (!iw2::game::grenadeTriesGroundSettle(1.0f, 0.0f) || !iw2::game::grenadeTriesGroundSettle(0.5f, 0.8f) ||
+        iw2::game::grenadeTriesGroundSettle(0.5f, 0.7f)) {
+        std::cerr << "ground settle gate\n";
+        return 1;
+    }
+
     // Slope pitch: flat ground lies at pitch 0; a 45 degree slope rising toward the heading points up (315).
     const float s = std::sqrt(0.5f);
     CHECK(near(grenadeSlopePitch({0, 0, 1}, 0), 0.0f));

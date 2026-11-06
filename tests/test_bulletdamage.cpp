@@ -73,6 +73,11 @@ int main() {
         auto m1 = aiMissPoint(T, {1, 0, 0}, c, up, false, 0.0f, 0.5f, 0.5f);
         CHECK(std::fabs(m1.y - std::sqrt(1350.0f)) < 1e-3f && std::fabs(m1.z - 60.0f) < 1e-4f);
     }
+    // The player's 8-unit axis test: across the shot only, along it and in height do not count.
+    CHECK(!iw2::game::bulletMissesPlayerAxis({1, 0, 0}, {50, 8, 60}));
+    CHECK(iw2::game::bulletMissesPlayerAxis({1, 0, 0}, {0, -8.5f, 0}));
+    CHECK(iw2::game::bulletMissesPlayerAxis({0, 2, 0}, {9, 0, 0}));
+    CHECK(!iw2::game::bulletMissesPlayerAxis({0, 0, -1}, {30, 30, 0}));
     if (failures == 0) std::cout << "bulletdamage ok\n";
     return failures ? 1 : 0;
 }

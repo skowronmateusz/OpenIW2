@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <string>
 
 using namespace iw2::game;
@@ -86,12 +87,21 @@ void gunnerTest(iw2::fs::Vfs& vfs) {
     w.start();
     w.spawnAllActors();
     int checked = 0;
+    // A gunner that died is replaced at any time (over six script seeds, mounts up to 37 s on this scene), and a new gunner's origin
+    // offset took at most 3 frames to slide out; the frames below only check gunners on the gun for 8 frames or more.
+    std::map<int, int> mounted;
     for (int f = 0; f < 480; ++f) { // 24 s
         w.frame();
+        for (const auto& up : w.entities()) {
+            if (!up->isActor) continue;
+            if (up->ai.stack[size_t(up->ai.depth)] == AiTurret && up->usingTurret) mounted.try_emplace(up->number, f);
+            else mounted.erase(up->number);
+        }
         if (f < 440) continue;
         for (const auto& up : w.entities()) {
             Entity& e = *up;
             if (!e.isActor || e.ai.stack[size_t(e.ai.depth)] != AiTurret || !e.usingTurret || !e.anim) continue;
+            if (f - mounted[e.number] < 8) continue;
             Entity* t = nullptr;
             for (const auto& o : w.entities())
                 if (o->obj == e.usingTurret) t = o.get();
@@ -135,6 +145,8 @@ void gunnerTest(iw2::fs::Vfs& vfs) {
     if (!gun) return;
     TurretState& ts = *gun->turret;
     ts.target.reset();
+    ts.engaged.reset(); // an engaged sentient would be suppressed at its last known position first
+    ts.hitBy.reset();
     gunner->obj->set("ignoreall", iw2::script::Value(int32_t(1)));
     gunner->obj->set("enemy", iw2::script::Value());
     ts.dropPitch = -40.0f;

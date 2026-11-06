@@ -19,12 +19,14 @@ std::string lower(std::string s) {
 void World::registerMenuBuiltins() {
     // precachemenu(name) (0x4f8860): the name goes into the first free of 32 configstring slots 0x4ad..0x4cc after a
     // case-insensitive search for it; a menu that is already there only prints a message (0x585264), the index stays.
-    // TODO(spec): the original errors outside level load (0x5852a0); that check is not reproduced.
+    // The original errors when it is called after the level script has waited (0x4f886c, flag 0x1c60528; message 0x5852a0); not
+    // reproduced: every shipped script precaches in the load phase. The table-full error is "Too many menus precached. Max allowed
+    // menus is 32" (0x4f89b5).
     vm_.registerBuiltin("precachemenu", [this](CallContext& c) {
         const std::string name = c.arg(0).toString();
         for (const auto& m : menus_)
             if (lower(m) == lower(name)) return Value();
-        if (menus_.size() >= 32) throw std::runtime_error("precachemenu: no free menu slot for " + name);
+        if (menus_.size() >= 32) throw std::runtime_error("Too many menus precached. Max allowed menus is 32");
         menus_.push_back(name);
         return Value();
     });
@@ -42,8 +44,8 @@ void World::registerMenuBuiltins() {
         int index = -1;
         for (size_t i = 0; i < menus_.size(); ++i)
             if (lower(menus_[i]) == lower(name)) index = int(i);
-        // TODO(spec): the error text of the name lookup (0x4f89f0) for a menu that was not precached.
-        if (index < 0) throw std::runtime_error("openmenu: menu " + name + " was not precached");
+        // The name lookup 0x4f89f0 raises the script error "Menu '<name>' was not precached" (0x585210).
+        if (index < 0) throw std::runtime_error("Menu '" + name + "' was not precached");
         clientCommands_.push_back({"popupopen", std::to_string(index) + (mouse ? "" : " 1")});
         return Value();
     };
@@ -55,8 +57,9 @@ void World::registerMenuBuiltins() {
         return Value();
     });
     // freezecontrols(on) (0x5392e0) stores the argument in client +0x8630; ClientThink (0x4e7bc0) then sets ps pm_flags
-    // 0x8000.
-    // TODO(spec): the exact pmove effect of pm_flags 0x8000; the front end ignores movement and buttons meanwhile.
+    // 0x8000, whose effects are: the mouse function applies no delta (0x409871), Pmove / PmoveSingle (0x50cc10, 0x50c4a0) clear the move bytes,
+    // keep only the stance buttons and PmoveSingle zeroes the velocity, the stance logic is skipped (0x509e59), the lean (0x50adf1) and the
+    // vehicle drive / fire (0x510da5, 0x51096b) are cancelled. See docs/spec/controls.md "freezecontrols".
     vm_.registerBuiltin("freezecontrols", [this, playerOf](CallContext& c) {
         playerOf(c);
         controlsFrozen_ = c.arg(0).truthy();

@@ -135,7 +135,8 @@ inline bool vehicleJoltStep(float& amp, float& phase, float dirF, float dirR, fl
 // wanted angle before the step, and the difference (turned - clamped) per axis, i.e. how much the span clamp cut off after the
 // rate-limited step (0x423fd0 = AngleSubtract of the two angle sets). The sound state +0x18c becomes 2 when an axis still has
 // 2 degrees or more to go and the clamp did not cut it (difference exactly 0); the turret is turning freely, not stopped at
-// a span end. TODO(spec): the case where the clamp cuts the step never sets the state.
+// a span end. When the test fails the state decays 2 -> 1 -> 0 (0x510670..0x51068c; the early exits of the think, no target or
+// health below 1, decay the same way at 0x510734), so a clamped step is just "not turning" (the caller applies the decay).
 inline bool vehicleTurretTurning(float dPitch, float dYaw, float clampCutPitch, float clampCutYaw) {
     return (std::fabs(dPitch) >= 2.0f && clampCutPitch == 0.0f) || (std::fabs(dYaw) >= 2.0f && clampCutYaw == 0.0f);
 }

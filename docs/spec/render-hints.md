@@ -34,7 +34,7 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
   via `transformedBoxBounds`, then `boxCulledByDepthPlanes` with `farPlaneDistance`; `IW2_NO_CULL=1` disables). Blockers for the rest: the
   static world is one merged vertex buffer per material with no AABB-tree node ranges (lumps 10 / 11 not mapped to nodes), static models
   are merged, and xmodel entity `DrawItem`s carry no local bounds (xmodel bounds were not read). Needs a human visual check: a brush
-  model (door / elevator) beyond a setculldist or fog far must disappear, and none may pop out near the screen edge. TODO(spec): the r_zfar default (taken as 0), the exponential-fog contribution to FarDist, the four side planes, the loader that
+  model (door / elevator) beyond a setculldist or fog far must disappear, and none may pop out near the screen edge. r_zfar defaults to 0 and an exponential fog adds no distance (only record type 1 counts, 0x1000aacb). TODO(spec): the four side planes, the loader that
   turns lump 10 / 11 (cull groups, runtime copy at 0x101ae378) into the AABB-tree nodes used above (not decoded; the runtime layout
   copied by 0x10004340 is mins[3], maxs[3], count, first index).
 
@@ -71,8 +71,20 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
   (lib/fogcalc.hlsl, Fog_ExponentialFactor). So 50% fog lies at ln 2 / density: 0.00002 (hill400_defend start) 34657 units, 0.00035
   (moscow) 1980, 0.00075 (hill400 barrage) 924. A shipped value that small is nearly invisible by design; OpenIW2 measured the same
   blend factors (fog colour mix 1 - exp(-density * d)) in headless shots, and the state reaches the renderer on moscow, hill400_defend, beltot.
-- Sky is drawn with the no-fog technique. Multiply decals: see below. Additive world surfaces remain TODO(spec) (their fogged
-  techniques fog through the fixed-function fog stage; the fog colour register those passes use was not found).
+- Sky is drawn with the no-fog technique. Multiply decals: see below. Additive surfaces: see "Additive fog".
+
+## Additive fog
+
+- The fogged additive techniques (lmap_add_lfog / _efog, lprobe_add_*, effect_add_*) fog through the fixed-function fog stage (their
+  state maps leave the fog state to the material). The stage's colour is set by one small function of the 1.3 renderer (0x10035050,
+  called from 0x10034db0, 0x10039d4b and 0x1003a0dc): with argument 2 it is black, with argument 0 it looks at the blend state word 0
+  of the pass (the cached word at 0x10744c00, material file +0x2c) and is black when the destination-blend field (mask 0xf0) is One
+  (0x20), otherwise the scene fog colour (0x1070c4c8, alpha 0xff); it does nothing while no fog record is selected (0x101d620c is 0).
+- Consequence: lerp(black, c, f) = c * f, so an additive surface fades out with distance instead of turning fog coloured (a coloured
+  fog would add its own colour on top of the scene). Every other pass keeps the fog colour.
+- OpenIW2: `fogColorIsBlack` (src/game/fog.h, test_fog) and `Renderer::applyFog(fu, pass)`: world and model batches of Pass::Additive
+  fog towards black; effect sprites still draw with the no-fog technique. TODO(spec): the argument-2 caller 0x1003a0dc (it passes 2 when
+  a byte of its pass record at +8 is nonzero; which pass kind that is was not identified), so no pass here uses it.
 
 ## Multiply decals in fog
 
@@ -116,3 +128,15 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
   explicit fma steps. A shared source expression alone did not give equal depth: fast math rounded it differently per vertex
   function, so overlays on lmap_s surfaces passed LessEqual only on part of each triangle, and which part changed with the view
   (flickering chalk, and walls flickering under the muzzle flash light). `IW2_DEPTH_PROBE=1` shows such pixels.
+
+## Scene projection (1.3 DLL 0x1005bfe0, 0x1002fbbf)
+
+- 0x1005bfe0 builds the projection from the two fields of view and the near value, with k = 0.99950027: _11 and _22 are the
+  cotangents of the half angles times k, _33 = k, _34 = 1, _43 = -near · k. There is no far plane: a view distance d maps to
+  depth k - near / d, always below 1.
+- Depth classes (group flags & 0x18, table 0x1002fcd8): class 0 uses depth range 0..1, class 0x8 uses 0..0.2 and 0x1003e6a0 sets
+  _43 to -r_znear_depthhack, without the factor k; classes 0x10 and 0x18 use 0..0.5.
+- The build-floatz list is submitted through 0x10021cf0, the same draw-list command (0x17) as the other lists, with technique type 2,
+  and the class switch is in the walker 0x1002f830. TODO(spec): inference, not traced: that command 0x17 reaches this walker (the
+  dispatch was not read), hence that the view model enters the floatz list with its range and projection. OpenIW2 draws it so.
+- OpenIW2: `game/viewprojection.h`, test_viewprojection.
