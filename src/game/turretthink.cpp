@@ -457,19 +457,39 @@ void World::thinkTurret(Entity& t) {
         else if (engageScript()) tracking = true;
         else turretIdle(t);
     } else if (owner && owner->isActor) {
-        // Gunner (0x51c630 automatic / 0x51cc80 manual), simplified: the gunner's enemy while it is known to the
-        // gunner within the suppression time and in range, else the script target. TODO: the full 0x51c630 rules.
-        Entity* enemy = entityOf(owner->obj->get("enemy"));
-        bool engaged = false;
-        if (enemy && isSentient(*enemy) && inRange(*enemy)) {
-            auto it = owner->sentientInfo.find(enemy->obj.get());
-            const bool known = it != owner->sentientInfo.end() &&
-                               (it->second.visible || timeMs_ - it->second.lastKnownMs < int64_t(ts.suppressionTime * 1000.0f));
-            if (known) engaged = turretEngageSentient(t, *enemy);
+        // Gunner (0x51c630 automatic / 0x51cc80 manual). Until the gunner has arrived (flag 0x20 and the slide offsets 0) the
+        // gun holds the drop pitch at yaw 0 and 200°/s, state 0 (0x51cc24 / 0x51ce2b). Then, simplified: the gunner's enemy
+        // while it is known to the gunner within the suppression time and in range, else the script target. TODO(spec): the
+        // full 0x51c630 rules. With nothing to engage the gun levels out: automatic goes idle and turns to (0, 0) at the
+        // tracking rates (0x51cc09, 0x51cc15 -> 0x51b8a0 with 1); manual does so when it has a script target it cannot
+        // engage (0x51ce9f); without one it goes idle and does not turn at all (0x51ceb0).
+        const bool arrived = (ts.flags & 0x20u) && ts.gunnerOriginOffset[0] == 0.0f && ts.gunnerOriginOffset[1] == 0.0f &&
+                             ts.gunnerOriginOffset[2] == 0.0f;
+        if (!arrived) {
+            turretSetState(t, 0);
+            ts.wantAngles = {ts.dropPitch, 0, 0};
+        } else {
+            Entity* enemy = entityOf(owner->obj->get("enemy"));
+            bool engaged = false;
+            if (enemy && isSentient(*enemy) && inRange(*enemy)) {
+                auto it = owner->sentientInfo.find(enemy->obj.get());
+                const bool known = it != owner->sentientInfo.end() &&
+                                   (it->second.visible || timeMs_ - it->second.lastKnownMs < int64_t(ts.suppressionTime * 1000.0f));
+                if (known) engaged = turretEngageSentient(t, *enemy);
+            }
+            if (!engaged) engaged = engageScript();
+            tracking = true;
+            if (!engaged) {
+                if (automatic || scriptTarget) {
+                    if (automatic) turretIdle(t);
+                    else turretSetState(t, 0);
+                    ts.wantAngles = {0, 0, 0};
+                } else {
+                    turretIdle(t);
+                    return;
+                }
+            }
         }
-        if (!engaged) engaged = engageScript();
-        if (!engaged) turretIdle(t);
-        tracking = engaged;
     } else if (ai) {
         // 0x51d2e2 → 0x51b8a0 with ebx = 0: the unmanned turret turns to (drop pitch, yaw 0).
         turretSetState(t, 0);

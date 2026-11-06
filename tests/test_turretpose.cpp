@@ -120,6 +120,42 @@ void gunnerTest(iw2::fs::Vfs& vfs) {
     std::cout << "gunner frames checked " << checked << "\n";
     CHECK(checked > 0);
 
+    // 5. Gun aim with a gunner (0x51c630): an arrived gunner with nothing to engage levels a gun left at the drop pitch;
+    //    a gunner that has not arrived holds the drop pitch.
+    Entity* gunner = nullptr;
+    Entity* gun = nullptr;
+    for (const auto& up : w.entities()) {
+        Entity& e = *up;
+        if (!e.isActor || e.ai.stack[size_t(e.ai.depth)] != AiTurret || !e.usingTurret) continue;
+        for (const auto& o : w.entities())
+            if (o->obj == e.usingTurret && o->turret && (o->turret->flags & 2u)) { gunner = &e; gun = o.get(); }
+        if (gun) break;
+    }
+    CHECK(gun);
+    if (!gun) return;
+    TurretState& ts = *gun->turret;
+    ts.target.reset();
+    gunner->obj->set("ignoreall", iw2::script::Value(int32_t(1)));
+    gunner->obj->set("enemy", iw2::script::Value());
+    ts.dropPitch = -40.0f;
+    ts.pitch = -40.0f;
+    ts.wantAngles = {-40.0f, 0, 0};
+    bool idleFrame = false;
+    for (int f = 0; f < 60; ++f) { // 3 s
+        gunner->obj->set("enemy", iw2::script::Value());
+        w.frame();
+        if (!gun->turret->engaged) idleFrame = true;
+    }
+    CHECK(idleFrame);
+    std::cout << "idle gun pitch " << ts.pitch << " want " << ts.wantAngles[0] << "\n";
+    CHECK(ts.wantAngles[0] == 0.0f && ts.wantAngles[1] == 0.0f);
+    CHECK(std::fabs(ts.pitch) < 1.0f);
+    ts.flags &= ~0x20u; // the pose step sets it again; one turret think sees it clear when run before the gunner
+    ts.gunnerOriginOffset = {4.0f, 0.0f, 0.0f};
+    w.frame();
+    std::cout << "not arrived want " << ts.wantAngles[0] << "\n";
+    CHECK(ts.wantAngles[0] == -40.0f);
+
     // 4. Savegame (version 4): the setturretanim node / flag and the turret's pose fields survive a round trip.
     SaveRequest req;
     req.name = "turretpose";

@@ -104,6 +104,21 @@ still own the turret (0x54afd0; the mg42 animscripts call `stopuseturret` when t
 else it gives the turret up (0x54b020) and becomes exposed. Then +0x220 = 0 and the pose step runs. Implemented in
 `src/game/actorturret.cpp`.
 
+### Gun aim with an AI gunner (0x51c630 automatic, 0x51cc80 manual, from the turret think 0x51d250)
+
+VAs in the patch 1.3 SP executable. An unmanned AI turret rests at the drop pitch (0x51b8a0 with 0, 0x51d2e2): muzzle up, stock on
+whatever is behind it. Taking the gun over does not by itself change that:
+- Not arrived (flag 0x20 clear or an origin slide offset not 0; 0x51c647.., 0x51cc9e..): wanted angles (drop pitch, yaw 0), firing
+  state 0, turn with the plain 200°/s rate (0x51cc24 / 0x51ce2b). The gunner does not engage yet.
+- Arrived with something to engage: the aim at the target as before.
+- Arrived, automatic, nothing to engage: idle (0x51b850), then wanted angles (0, 0) with the tracking rates (0x51b8a0 with 1, 0x51cc15).
+- Arrived, manual, a script target that cannot be engaged (out of range, not valid): the same (0, 0) turn (0x51ce9f). Manual without
+  any target: idle only, the gun stays where it is (0x51ceb0).
+A gun left at the drop pitch swings tag_weapon down by up to its 30 units behind tag_aim, so the height probe below leaves the
+animated range and the gunner stands with the stock at his waist; that is why the levelling matters to the pose.
+The firing-state write of 0x51b8a0 is the state 0 of `turretSetState`. TODO(spec): the rest of the 0x51c630 rules, among them the
+other (0, 0) turn at 0x51ca98.
+
 ### Gunner pose step (0x549ba0, from 0x54ae93; `World::turretPoseStep`)
 
 Without it the setturretanim blend node has no weighted leaf and the gunner shows the reference pose (T-pose).

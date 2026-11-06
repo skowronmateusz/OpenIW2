@@ -413,7 +413,8 @@ int World::turretPoseStep(Entity& e, Entity& t) {
               " probe " + std::to_string(i) + "/" + std::to_string(count) + " h " + std::to_string(h) + " tagYaw " +
               std::to_string(tagYaw) + " at " + std::to_string(o[0]) + "," + std::to_string(o[1]) + "," + std::to_string(o[2]) +
               " pose " + std::to_string(pos[0]) + "," + std::to_string(pos[1]) + "," + std::to_string(pos[2]) + " yaw " +
-              std::to_string(ang[1]) + "\n" + an.debugString());
+              std::to_string(ang[1]) + " gun pitch " + std::to_string(ts.pitch) + " want " + std::to_string(ts.wantAngles[0]) + " dropPitch " +
+              std::to_string(ts.dropPitch) + " engaged " + (ts.engaged ? "1" : "0") + "\n" + an.debugString());
     }
     return 0;
 }
