@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 3.25)
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "Target architecture")
 endif()
+# The oldest macOS the binaries run on, as the README states; without it the compiler records the build machine's version.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS version")
+endif()
 project(openiw2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
