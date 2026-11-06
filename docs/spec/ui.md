@@ -157,6 +157,57 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
 - No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
   out of scope.
 
+## Menu focus and mouse routing (open-menu stack)
+
+VAs in the patch 1.3 SP executable. The ui state (0x10fec30) keeps an open-menu list (up to 16, newest last) and every menu has a window
+flag word (+0xe8): bit 0x4 visible, bit 0x2 "has focus". The menu's own keyword flags live in +0xe4: `popup` sets 0x1000000
+(0x4d16d0), `outOfBoundsClick` sets 0x2000000 (0x4d16f0); `fullScreen` is the integer at +0x214 (0x4d1240), `decoration` on an item
+sets 0x100000 (0x4d1e90).
+
+- The focused menu is not the last list entry. `Menu_GetFocused` (0x4cf4d0) returns the last list entry that has both bits visible
+  and focus. Opening a menu (0x4cb760) clears the focus bit of every listed menu, moves the menu to the end of the list, sets
+  visible + focus, runs `onOpen` and re-sends the pointer position (0x4d0060). Closing (0x4c7f90) runs `onClose` when the menu is
+  visible, removes it, and only if it held the focus gives the focus bit to the last remaining visible menu. The key handler
+  (UI_KeyEvent 0x4c63c0, ESC and every other key) hands the key to the focused menu only (0x4cbc70), not to the list end.
+- Pointer move (0x4d0060, called by 0x4c6470 after it clamps the cursor to 0..640 x 0..480): if the focused menu has the popup flag,
+  only that menu is offered the move (0x4cf6e0). Otherwise the list is walked from the end towards the start and the walk stops at
+  the first menu whose move handler returns 1. That handler (0x4cf6e0) returns 1 only when an item under the pointer accepted the
+  focus (`Item_SetFocus` 0x4c9100, which also returns 1 for an item that already has it). It runs the mouse-enter / mouse-exit
+  scripts (0x4c99f0) and visits the items from the last to the first.
+- Item focus rule across menus (0x4c9100, 0x4c915c..0x4c9198): an item of a menu that is not the focused one is refused when the
+  pointer is inside the focused menu's rect and also inside the item's own menu rect. Outside the focused menu's rect it takes
+  the focus. So the right-hand buttons of `options_menu` (rect far larger than the sub-menu on top) react as soon as the pointer
+  leaves the narrower options sub-menu, and not while it is over that sub-menu.
+- Pointer buttons (Menu_HandleKey 0x4cbc70, keys 0xc8..0xca = mouse 1..3, key down): when the focused menu is not a popup, its
+  fullScreen value is 0, the pointer is outside its rect (0x4c7720; the right and bottom edges count as inside) and the re-entry guard
+  (0x1cbaedc) is clear, the click is handled by `Menu_HandleOutOfBounds` (0x4cb8e0, entered at 0x4cbd48..0x4cbdaf):
+  1. if the focused menu has the `outOfBoundsClick` flag its `onClose` runs (0x4c7f50) and its visible and focus bits are cleared
+     (it stays in the list while hidden);
+  2. the list is searched from the end for the first menu where `0x4d0170` holds: visible, pointer inside the menu rect, and some
+     visible, non-decoration item whose rect contains the pointer (a type-0 item additionally needs its own text rect to contain it);
+  3. that menu takes the focus exactly like an open does (all focus bits cleared, then visible + focus set; the list order is
+     not changed and no `onOpen` runs), the pointer move is re-sent to it, and the same button event is delivered to it again
+     with the guard set, so the click lands on the item (its `action`, a slider, ...);
+  4. nothing found: nothing is clicked; if no menu in the whole menu table is visible any more, the key catcher is released
+     (0x617f04 bit 3) and the game unpaused (cl_paused 0 through the console variable at 0x57122c).
+  Because of the first condition a popup or a fullScreen menu never forwards clicks: they stay modal. A click outside the rect of a
+  normal menu on empty space (no other menu has an active item there) does nothing.
+- When the pointer is inside the focused menu's rect the click goes to that menu's focused item, if the pointer is inside it.
+
+No shipped single-player menu sets `outOfBoundsClick` (the one menu that mentions it has the keyword commented out), and every dialog
+(`*_popmenu`) and script menu carries `popup`, so the dialogs stay modal; the sub-menus under `options_menu` are plain menus (no popup, fullScreen 0).
+
+Implementation: `MenuStack` (src/ui/frontend.cpp) keeps the focused menu apart from the list order (`focusedMenu()`); hover and
+click use the rules above; `outOfBoundsClick` is parsed into `Menu::outOfBoundsClick`. Deliberate simplifications / TODO(spec):
+a menu closed by `outOfBoundsClick` is removed from the list at once (the original keeps it listed, hidden, which only changes
+the 16-entry count and that a later `close` of it runs no `onClose`); when that leaves no menu with an active item under the
+pointer the focus falls back to the last list entry (the original leaves no focused menu, so the next key releases the key
+catcher through 0x4c642f); the original also clears the item focus of a menu whose focused item is no longer under the pointer
+(0x4cf8c2..0x4cf8e2) and the focus bit of the item stays per menu, while `MenuStack` keeps one focused item for all menus and
+keeps it until another item takes it; items are hit-tested in file order (the original visits the last item first); the text-rect
+test of type-0 items in step 2 is not modelled (any visible, non-decoration item counts); the script context menu (the menu whose
+script runs) is the menu a `show`/`hide`/`setfocus` command acts on (inferred from the context block filled at 0x4c7f6d and 0x4c7fef).
+
 ## Pickup HUD part (cgame 0x4ba680)
 
 The client handler of the pickup events 0x90 / 0x91 (0x4bad52) calls 0x4ba680 with the item index only when the event's entity is the local client. It draws no pickup icon, text or flash of its own (the on-screen text is the separate `gm` message of Pickup_Weapon). It looks the index up in the item table (0x5a66f8): weapon items only. A weapon of class "item" does nothing. An offhand weapon (def +0x84 set) runs 0x4b8ba0 when no offhand is selected (0xf79700 is 0): it stores the weapon there and touches the `offhandinfo` HUD fade (0xf79a48 = level time, window flag +0xe8 |= 4, through the generic touch 0x4a6130). Any other weapon runs the weapon select 0x4b8360 when no weapon is selected (0xf796e0 is 0): the weapon becomes the selected one, the weapon-change time 0xf796e4 is stamped, `offhandinfo` (0x4a6130(4)) and the ammo display `weaponinfo` (0xf79a40) are touched, and a toggled aim ends unless the weapon is the old one's altWeapon. With a weapon already selected the pickup changes nothing on the HUD. Port: `pickupHudAction`, `World::takePickupEvents`, applied in iw2view next to the other HUD fade touches. TODO(spec): where 0xf79700 is reset (the port takes "the weapon became the player's offhand" as "none was selected").

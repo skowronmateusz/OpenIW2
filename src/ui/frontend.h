@@ -23,6 +23,9 @@ public:
     bool empty() const { return stack_.empty(); }
     const std::vector<Menu*>& menus() const { return stack_; }
     Menu* top() const { return stack_.empty() ? nullptr : stack_.back(); }
+    // The menu that gets keys and button clicks (0x4cf4d0): the last-opened menu unless a click outside it moved the focus to a menu
+    // below (out-of-bounds click, docs/spec/ui.md "Menu focus and mouse routing").
+    Menu* focusedMenu() const { return focusMenu_; }
 
     // Item visibility: the item's own "visible" flag combined with dvarTest/showDvar/hideDvar and show/hide commands.
     bool itemVisible(const Item& it) const;
@@ -95,7 +98,9 @@ public:
     void settleFades();
 
     const Item* focus() const { return focus_; }
-    const Item* hover(float x, float y) const; // hit test of the top menu (TODO(spec): item vs menu alignment)
+    // The item the pointer would focus (0x4d0060 / 0x4cf6e0 / 0x4c9100): the focused popup alone, otherwise the open menus from the
+    // top down (TODO(spec): item vs menu alignment). `owner` receives the menu that holds the item.
+    const Item* hover(float x, float y, const Menu** owner = nullptr) const;
     // Widget geometry (exe 0x4c9520/0x4cafb0): x of the slider track start in virtual pixels.
     float sliderTrackX(const Menu& m, const Item& it) const;
     // Slider fraction 0..1 of the item's dvar (the dvarfloat default when the dvar is unset).
@@ -110,6 +115,14 @@ public:
 
 private:
     void setFocusItem(const Item* it);
+    // Out-of-bounds mouse handling (0x4cb8e0): true when the click must be routed instead of tried on the focused menu.
+    bool outOfBounds(float x, float y) const;
+    bool routeOutOfBounds(float x, float y, bool back);
+    const Item* itemAt(const Menu& m, float x, float y) const;
+    const Menu* ownerOf(const Item& it) const;
+    bool overActiveItem(const Menu& m, float x, float y) const; // 0x4d0170
+    bool flagVisible(const Item& it) const;
+    Menu* scriptMenu() const { return ctx_ ? ctx_ : focusMenu_; }
     void runItem(const Menu& m, const Script& s);
     bool activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer);
     void dragTo(float x);
@@ -149,6 +162,9 @@ private:
     MenuEnv& env_;
     std::vector<Menu*> stack_;
     const Item* focus_ = nullptr;
+    Menu* focusMenu_ = nullptr; // window flag 0x2 of 0x4cf4d0
+    Menu* ctx_ = nullptr;       // menu whose script runs
+    bool routing_ = false;      // re-entry guard of the out-of-bounds redelivery (0x1cbaedc)
     std::string loopAlias_; // soundLoop currently playing
     std::vector<std::pair<const Item*, bool>> shownOverrides_; // "show"/"hide" commands
     struct ItemRuntime {

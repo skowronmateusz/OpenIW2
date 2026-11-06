@@ -362,6 +362,7 @@ private:
             const auto [args, blk] = split(a);
             if (k == "fullscreen") m.fullScreen = num(a, 0) != 0;
             else if (k == "popup") m.popup = true;
+            else if (k == "outofboundsclick") m.outOfBoundsClick = true;
             else if (k == "focuscolor") m.focusColor = color(a);
             else if (k == "soundloop" && !a.empty()) m.soundLoop = a[0];
             else if (k == "blurworld") m.blurWorld = num(a, 0);

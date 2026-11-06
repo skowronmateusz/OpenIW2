@@ -82,7 +82,8 @@ struct Item : Window {
 
 struct Menu : Window {
     bool fullScreen = false;
-    bool popup = false;
+    bool popup = false;            // `popup` (0x4d16d0: flags +0xe4 |= 0x1000000): stays modal, see docs/spec/ui.md "Menu focus and mouse routing"
+    bool outOfBoundsClick = false; // `outOfBoundsClick` (0x4d16f0: +0xe4 |= 0x2000000)
     Color focusColor{1, 1, 1, 1};
     std::string soundLoop;
     float blurWorld = 0;

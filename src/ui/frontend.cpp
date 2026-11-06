@@ -30,7 +30,7 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
         // setfocus (0x4c8880): the FIRST item of that name (0x4c7b40, case-insensitive compare 0x43f6d0; none -> "setFocus: could not
         // find widget named '%s'"); Item_SetFocus (0x4c9100) refuses an item that is not visible (window flag 0x04, dvar test) ->
         // "setFocus: error focusing widget '%s' (widget was found but could not accept focus)" and the focus stays.
-        if (Menu* m = top())
+        if (Menu* m = scriptMenu())
             for (const auto& it : m->items)
                 if (lower(it->name) == lower(n)) {
                     if (itemVisible(*it)) setFocusItem(it.get());
@@ -39,14 +39,14 @@ MenuStack::MenuStack(MenuLibrary& lib, MenuEnv& env) : lib_(lib), env_(env) {
     };
     env_.setFocusByDvar = [this](const std::string& dvar) {
         // Items with `dvarTest <dvar>` and `focusDvar {values}` get the focus when the dvar value is in the list.
-        Menu* m = top();
+        Menu* m = scriptMenu();
         if (!m) return;
         const std::string v = env_.getCvar ? env_.getCvar(dvar) : std::string();
         for (const auto& it : m->items)
             if (lower(it->dvarTest) == lower(dvar) && inList(it->focusDvar, v)) setFocusItem(it.get());
     };
     env_.showItem = [this](const std::string& n, bool show) {
-        if (Menu* m = top())
+        if (Menu* m = scriptMenu())
             for (const auto& it : m->items)
                 if (it->name == n || (!it->group.empty() && it->group == n)) shownOverrides_.emplace_back(it.get(), show);
     };
@@ -88,7 +88,7 @@ void MenuStack::settleFades() {
 
 std::vector<const Item*> MenuStack::matching(const std::string& n) const {
     std::vector<const Item*> out;
-    if (const Menu* m = top())
+    if (const Menu* m = scriptMenu())
         for (const auto& it : m->items)
             if (lower(it->name) == lower(n) || (!it->group.empty() && lower(it->group) == lower(n))) out.push_back(it.get());
     return out;
@@ -129,6 +129,7 @@ bool MenuStack::open(const std::string& name) {
     if (!m || stack_.size() >= kMaxOpenMenus) return false;
     std::erase(stack_, m);
     stack_.push_back(m);
+    focusMenu_ = m; // 0x4cb760: every other menu loses the focus bit, the opened one gets visible + focus
     focus_ = nullptr;
     if (!m->soundLoop.empty() && lower(m->soundLoop) != loopAlias_ && env_.startLoop) {
         loopAlias_ = lower(m->soundLoop);
@@ -147,7 +148,8 @@ void MenuStack::close(const std::string& name) {
     if (!m) return;
     const auto it = std::find(stack_.begin(), stack_.end(), m);
     if (it == stack_.end()) return;
-    const bool wasTop = stack_.back() == m;
+    const bool hadFocus = focusMenu_ == m; // 0x4c7f90: only the focused menu passes the focus on
+    const Item* before = focus_;
     stack_.erase(it);
     // The exe has no explicit stop on close: Menu_Paint (0x4cf92c, 0x4cfb40, 0x4cfd20) re-submits the loop through 0x40fff0 ->
     // 0x4423d0 for every open menu (flag 0xe8 bit 2) with a soundLoop (+0x254), so it ends when the last such menu is gone.
@@ -161,9 +163,15 @@ void MenuStack::close(const std::string& name) {
         }
     }
     runItem(*m, m->onClose);
-    if (wasTop) focus_ = nullptr;
-    if (!stack_.empty() && !focus_) {
-        const auto sel = selectable(*stack_.back());
+    if (hadFocus) {
+        // The last remaining menu takes the focus (0x4c8014..0x4c8041), unless the onClose script opened one that already has it.
+        if (focusMenu_ == m || std::find(stack_.begin(), stack_.end(), focusMenu_) == stack_.end()) focusMenu_ = stack_.empty() ? nullptr : stack_.back();
+        if (focus_ == before) focus_ = nullptr;
+    } else if (focus_ && ownerOf(*focus_) == m) {
+        focus_ = nullptr;
+    }
+    if (!stack_.empty() && !focus_ && focusMenu_) {
+        const auto sel = selectable(*focusMenu_);
         if (!sel.empty()) setFocusItem(sel.front());
     }
 }
@@ -172,13 +180,17 @@ void MenuStack::closeAll() {
     while (!stack_.empty()) close(stack_.back()->name);
 }
 
-bool MenuStack::itemVisible(const Item& it) const {
-    // show/hide commands set the item's visible flag; the dvarTest/showDvar/hideDvar gate still applies on top (the pause menu
-    // has "newgame" and "restart" at the same rect, separated only by sv_running).
+bool MenuStack::flagVisible(const Item& it) const {
     bool flag = it.visible;
     for (auto o = shownOverrides_.rbegin(); o != shownOverrides_.rend(); ++o)
         if (o->first == &it) { flag = o->second; break; }
-    if (!flag) return false;
+    return flag;
+}
+
+bool MenuStack::itemVisible(const Item& it) const {
+    // show/hide commands set the item's visible flag; the dvarTest/showDvar/hideDvar gate still applies on top (the pause menu
+    // has "newgame" and "restart" at the same rect, separated only by sv_running).
+    if (!flagVisible(it)) return false;
     if (!it.dvarTest.empty()) {
         const std::string v = env_.getCvar ? env_.getCvar(it.dvarTest) : std::string();
         // 0x4d4070(item, 4): showDvar (flag 0x4) and hideDvar (0x8) share one list (item +0x2cc, parsed by 0x4d2cb0 / 0x4d2ce0) and
@@ -198,14 +210,90 @@ std::vector<const Item*> MenuStack::selectable(const Menu& m) const {
     return out;
 }
 
-const Item* MenuStack::hover(float x, float y) const {
-    const Menu* m = top();
-    if (!m) return nullptr;
-    for (const Item* it : selectable(*m)) {
-        const float ix = m->rect.x + it->rect.x, iy = m->rect.y + it->rect.y;
+namespace {
+// Rect_ContainsPoint (0x4c7720): the left and top edges are inside, so are the right and bottom ones.
+bool inRect(const Rect& r, float x, float y) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+} // namespace
+
+const Menu* MenuStack::ownerOf(const Item& it) const {
+    for (const Menu* m : stack_)
+        for (const auto& mi : m->items)
+            if (mi.get() == &it) return m;
+    return nullptr;
+}
+
+const Item* MenuStack::itemAt(const Menu& m, float x, float y) const {
+    for (const Item* it : selectable(m)) {
+        const float ix = m.rect.x + it->rect.x, iy = m.rect.y + it->rect.y;
         if (x >= ix && x < ix + it->rect.w && y >= iy && y < iy + it->rect.h) return it;
     }
     return nullptr;
+}
+
+const Item* MenuStack::hover(float x, float y, const Menu** owner) const {
+    if (owner) *owner = nullptr;
+    // 0x4d0060: a focused popup alone gets the pointer; otherwise the open menus from the top down, the first with a hit wins.
+    const Menu* fm = focusMenu_;
+    if (fm && fm->popup) {
+        const Item* it = itemAt(*fm, x, y);
+        if (it && owner) *owner = fm;
+        return it;
+    }
+    for (auto m = stack_.rbegin(); m != stack_.rend(); ++m) {
+        const Item* it = itemAt(**m, x, y);
+        if (!it) continue;
+        // 0x4c915c..0x4c9198: an item of a menu that is not the focused one is refused while the pointer is inside the focused
+        // menu's rect (and inside its own).
+        if (fm && *m != fm && inRect(fm->rect, x, y) && inRect((*m)->rect, x, y)) continue;
+        if (owner) *owner = *m;
+        return it;
+    }
+    return nullptr;
+}
+
+// 0x4d0170: the menu is visible, the pointer is in its rect and over a visible, non-decoration item. TODO(spec): the type-0 text-rect test.
+bool MenuStack::overActiveItem(const Menu& m, float x, float y) const {
+    if (!inRect(m.rect, x, y)) return false;
+    for (const auto& it : m.items) {
+        if (it->decoration || !flagVisible(*it)) continue;
+        const float ix = m.rect.x + it->rect.x, iy = m.rect.y + it->rect.y;
+        if (x >= ix && x <= ix + it->rect.w && y >= iy && y <= iy + it->rect.h) return true;
+    }
+    return false;
+}
+
+// 0x4cbd48..0x4cbdaf: a mouse button press while the focused menu is neither a popup nor fullScreen and the pointer is outside its rect.
+bool MenuStack::outOfBounds(float x, float y) const {
+    const Menu* fm = focusMenu_;
+    return fm && !routing_ && !fm->popup && !fm->fullScreen && !inRect(fm->rect, x, y);
+}
+
+// Menu_HandleOutOfBounds (0x4cb8e0). Returns the result of delivering the button to the menu under the pointer.
+bool MenuStack::routeOutOfBounds(float x, float y, bool back) {
+    if (Menu* fm = focusMenu_; fm && fm->outOfBoundsClick) {
+        // 0x4c7f50 runs onClose and clears the visible and focus bits; the menu stays listed hidden in the exe (see docs/spec/ui.md).
+        std::erase(stack_, fm);
+        runItem(*fm, fm->onClose);
+        if (focus_ && ownerOf(*focus_) == nullptr) focus_ = nullptr;
+        if (focusMenu_ == fm) focusMenu_ = nullptr;
+    }
+    for (auto m = stack_.rbegin(); m != stack_.rend(); ++m) {
+        if (!overActiveItem(**m, x, y)) continue;
+        focusMenu_ = *m; // the list order stays; no onOpen
+        mouseMove(x, y);
+        routing_ = true;
+        const bool r = back ? clickBack(x, y) : click(x, y);
+        routing_ = false;
+        return r;
+    }
+    if (!focusMenu_ && !stack_.empty()) { // TODO(spec): the original leaves no focused menu here
+        focusMenu_ = stack_.back();
+        if (!focus_) {
+            const auto sel = selectable(*focusMenu_);
+            if (!sel.empty()) setFocusItem(sel.front());
+        }
+    }
+    return false;
 }
 
 void MenuStack::setFocusItem(const Item* it) {
@@ -214,7 +302,12 @@ void MenuStack::setFocusItem(const Item* it) {
     else editing_ = false;
 }
 
-void MenuStack::runItem(const Menu& m, const Script& s) { runScript(s, m.name, env_); }
+void MenuStack::runItem(const Menu& m, const Script& s) {
+    Menu* const prev = ctx_;
+    ctx_ = const_cast<Menu*>(&m); // the script's menu context (0x4c7f6d, 0x4c7fef)
+    runScript(s, m.name, env_);
+    ctx_ = prev;
+}
 
 void MenuStack::mouseMove(float x, float y) {
     if (dragItem_) {
@@ -230,12 +323,13 @@ void MenuStack::mouseMove(float x, float y) {
             lists_[&li].startPos = std::clamp(int((y - (listDrag_.menu->rect.y + li.rect.y + 17.0f) - 8.0f) * float(maxScroll) / range), 0, maxScroll);
         return;
     }
-    const Item* it = hover(x, y);
+    const Menu* owner = nullptr;
+    const Item* it = hover(x, y, &owner);
     if (it && it != focus_) {
         setFocusItem(it);
         if (env_.play) env_.play("mouse_over"); // alias name of the menu hover sound
     }
-    if (it && it->type == 6 && top()) listHover(*top(), *it, x, y);
+    if (it && it->type == 6 && owner) listHover(*owner, *it, x, y);
 }
 
 float MenuStack::cvarValue(const Item& it) const {
@@ -382,10 +476,12 @@ bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, 
 }
 
 bool MenuStack::click(float x, float y) {
-    const Item* it = hover(x, y);
+    if (outOfBounds(x, y)) return routeOutOfBounds(x, y, false);
+    // The press goes to the focused menu's item under the pointer (0x4cbf63..0x4cbfc9).
+    const Menu* m = focusMenu_;
+    const Item* it = m ? itemAt(*m, x, y) : nullptr;
     if (!it) return false;
     if (focus_ != it) setFocusItem(it);
-    const Menu* m = top();
     if (m && it->type == 6) { // list: scrollbar zones or a row (sounds come from the item's own scripts)
         const int zone = listZone(*m, *it, x, y);
         if (zone) {
@@ -422,11 +518,13 @@ bool MenuStack::click(float x, float y) {
 }
 
 bool MenuStack::clickBack(float x, float y) {
-    const Item* it = hover(x, y);
-    if (!it || it->type != 12 || !top()) return false;
+    if (outOfBounds(x, y)) return routeOutOfBounds(x, y, true);
+    const Menu* m = focusMenu_;
+    const Item* it = m ? itemAt(*m, x, y) : nullptr;
+    if (!it || it->type != 12) return false;
     setFocusItem(it);
     if (env_.play) env_.play("mouse_click");
-    activate(*top(), *it, -1, x, false);
+    activate(*m, *it, -1, x, false);
     return true;
 }
 
@@ -444,7 +542,7 @@ void MenuStack::captureKey(const std::string& name) {
 }
 
 void MenuStack::key(Key k) {
-    Menu* m = top();
+    Menu* m = focusMenu_;
     if (!m) return;
     if (capture_) return;
     if (editing_ && editItem_ && focus_ == editItem_ && editKey(*m, k)) return;
