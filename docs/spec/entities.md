@@ -62,3 +62,15 @@ baking static models into the level; that the entity is then dropped is *inferre
   (r, r, height), flags 0x11): the box must reach above the base and below the top, and its centre lie within
   r + half its x width of the axis; shape flag 0x20 (trigger_disk): touches when that distance ≥ r + half width (spawn 0x529070 stores r + 64 in r.maxs, 0x447950 subtracts the 64 again; no z test, z extent ±100000).
 - `istouching` (0x4ef100) runs the same test with the shape entity and the other entity's box.
+- Actors touch triggers too. The actor frame calls G_TouchTriggers at 0x4ff260 for every actor that is alive (+0x25c), whether it moved or
+  not, after its move and prone steps. The area mask depends on the toucher (0x4e732a..0x4e7384): vehicle 8, no sentient 0x400000, client
+  0x40000000, else the sentient's team: axis 0x40000, allies 0x80000, neutral 0x100000; another team touches nothing. So a trigger with
+  spawnflags 2 | 8 fires for allied actors only. The test uses the actor's box (−15, −15, 0)–(15, 15, 72).
+- The touch of trigger_multiple / once / radius / disk (handler 4, 0x528e50) records the pair (0x528cb0, table 0x1c610b4). trigger_friendlychain
+  (0x529140) sets the toucher's chain first and then records it. trigger_hurt (0x5291d0) matches every team through its fixed contents and
+  skips actors with spawnflags 2. The actor's own touch 0x4ff2f0 has no effect on triggers (its state handlers act on sentients or one entity number).
+- Records made in the actor frame (stage 8) become "trigger" notifies in the next frame's stage 3 (0x4dab00). Each record's two entities must
+  still be the same (+0x9c); a trigger gets one notify per pass (mark 0x1c628bc), a second record of it stays for the next pass, and the woken
+  threads run between passes. `downtown_assault` depends on this: its depot objective ends when an attacker enters `destroy_depot`
+  (downtown_assault.gsc:491), which no player can fire.
+- TODO(spec): whether the records survive a save; here they do not, and an actor that still stands in the trigger records again next frame.

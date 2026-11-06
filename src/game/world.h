@@ -667,6 +667,8 @@ public:
     void vehicleJolt(Entity& e, const Vec3& dir, float intensity, float speedFraction = 0.0f, float decel = 0.0f);
     void vehicleTouch(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
     void vehicleTouchTriggers(Entity& v); // G_TouchTriggers (0x4e7320) for a vehicle (src/game/vehicletriggers.cpp)
+    void actorTouchTriggers(Entity& a);   // G_TouchTriggers (0x4e7320) for an actor (src/game/actortriggers.cpp)
+    void deliverActorTouches();           // the recorded actor touches become "trigger" notifies (stage 3, 0x4dab00)
 
     // Built-ins the scripts called that are not implemented yet, with call counts.
     const std::map<std::string, int>& missingBuiltins() const { return missing_; }
@@ -1049,6 +1051,10 @@ private:
     static constexpr int kWorldSoundOwner = 0x7fe; // owner of the grenade / rocket bounce and explosion event sounds (0x4bb2ec, 0x4bb370, 0x4bb47c)
     struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
     std::vector<PendingNotify> pendingNotifies_;
+    struct ActorTouch { script::ObjectPtr trigger, toucher; };
+    std::vector<ActorTouch> actorTouches_;  // the touch records (0x1c610b4); not saved, a standing actor records again next frame
+    std::vector<Entity*> actorTriggers_;    // this frame's triggers an actor can touch
+    int64_t actorTriggersFrame_ = -1;
 
     int nearestNode(const std::array<float, 3>& p) const;
 

@@ -721,6 +721,7 @@ void World::frame(bool advanceTime) {
     runPlayerUse();
     updatePlayerMoved();
     playerNodeClaim(); // 0x4e826b, before the triggers
+    deliverActorTouches(); // stage 3: the actors touched during the previous frame's stage 8
     runTriggers(); // G_TouchTriggers' triggers; their "trigger" notifies are stage 3
     touchItems();  // G_TouchTriggers' items (Touch_Item 0x521a90)
     vm_.drainReady(); // 0x4dac2a: the threads the trigger notifies woke run before the animation step
@@ -885,6 +886,7 @@ void World::thinkActor(Entity& e) {
         }
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
+        if (!e.ai.corpse) actorTouchTriggers(e); // 0x4ff260
     }
 }
 
@@ -1432,7 +1434,7 @@ void World::runTriggers() {
             // Touch function 0x5291d0: the next hit is due at ent+0x15c (spawnflags 0x10: +1000 ms, else +50 ms);
             // G_Damage(other, self, self, no direction, no point, dmg, flags (spawnflags 8) << 2, MOD_TRIGGER_HURT); then
             // spawnflags 0x20 switches it off (handler 6). Spawnflags 2 skips actors (the player is not one).
-            // TODO(spec): the damage flag 0x20 (spawnflags 8) is not modelled by damage(); actors do not touch triggers here.
+            // TODO(spec): the damage flag 0x20 (spawnflags 8) is not modelled by damage();
             const int flags = sf.isNumber() ? sf.asInt() : 0;
             const Value nt = e->obj->get("$hurtNext");
             if (nt.isNumber() && nt.asInt() > timeMs_) continue;

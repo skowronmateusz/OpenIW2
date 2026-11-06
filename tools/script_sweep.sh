@@ -4,6 +4,7 @@
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --full  [--seeds "1 2 3"] [--seconds 600] [--jobs 4] [--out DIR] [--maps "a b"] [--force]
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --smoke [--bin build/iw2game]          (the ctest subset; exit 1 on any finding)
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --determinism [--maps "a b"] [--seconds 120]
+#   IW2_MAIN=<main dir> tools/script_sweep.sh --reload --maps "a b" [--seconds 600]  (reload every autosave, compare with the unbroken run)
 #
 # Every run is `iw2game <main> <map> <seconds> --god --answer-menus ok,... --report <file>`; the full sweep runs each map plain and
 # with --autoplay (a god-mode bot that enters the triggers the scripts wait for and kills the actors they wait the death of).
@@ -21,7 +22,7 @@ maps=""
 force=""
 while [ $# -gt 0 ]; do
     case "$1" in
-    --full | --smoke | --determinism | --summarize) mode="${1#--}" ;;
+    --full | --smoke | --determinism | --summarize | --reload) mode="${1#--}" ;;
     --make-targets) mode="make_targets" ;;
     --bin) bin="$2"; shift ;;
     --seeds) seeds="$2"; shift ;;
@@ -57,7 +58,7 @@ run() {
     shift 4
     # Long campaign maps: the autoplay bot needs more simulated time than the default to reach the last stages (hill400_assault ends
     # at about 1740 s of level time, moscow at about 2500 s); a shorter --seconds is raised for those maps' autoplay runs only.
-    if [ "$tag" = auto ]; then
+    if [ "$tag" = auto ] || [ "${tag#reload-}" != "$tag" ]; then
         case "$map" in
         hill400_assault) [ "$secs" -ge 1800 ] || secs=1800 ;;
         moscow) [ "$secs" -ge 2600 ] || secs=2600 ;;
@@ -189,5 +190,25 @@ write_summary() {
         done
     } > "$out/summary.md"
     echo "summary: $out/summary.md"
+}
+# One autoplay run with its autosaves kept, then one autoplay run from each autosave file. An autosave name the level reuses keeps its
+# last save. A level notify the unbroken run reached after the save's time and the reloaded run did not is a finding (exit 1); so is
+# a reload that fails. Spawner notifies are left out, they depend on the bot's timing. Bot timing still differs between the runs,
+# so a finding needs a look; the run proves nothing about stages the unbroken run did not reach either.
+late_notifies() { awk -v t="$2" '/^\[notifies\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s && $1 + 0 > t && !/ spawner/ { $1 = ""; print }' "$1" | sort -u; }
+do_reload() {
+    local bad=0 m sv name t missing
+    for m in $maps; do
+        run "$m" 1 "$seconds" auto --autoplay 25 --save-dir "$out/$m-saves" || bad=1
+        for sv in "$out/$m-saves"/autosave/*.svg; do
+            [ -f "$sv" ] || continue
+            name=$(basename "$sv" .svg)
+            if ! run "$m" 1 "$seconds" "reload-$name" --autoplay 25 --load "$sv"; then echo "$m $name: reload run failed"; bad=1; continue; fi
+            t=$(awk '/^loaded .*time [0-9]+ ms/ { for (i = 1; i < NF; ++i) if ($i == "time") print $(i + 1) / 1000; exit }' "$out/$m-s1-reload-$name.log")
+            missing=$(comm -23 <(late_notifies "$out/$m-s1-auto.txt" "$t") <(late_notifies "$out/$m-s1-reload-$name.txt" "$t") | tr '\n' ';')
+            if [ -n "$missing" ]; then echo "$m $name (time $t): not reached after the reload:$missing"; bad=1; else echo "$m $name (time $t): ok"; fi
+        done
+    done
+    return $bad
 }
 do_$mode

@@ -86,7 +86,7 @@ add_library(iw2_game
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
   src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/triggerdamage.cpp
-  src/game/vehicles.cpp src/game/vehicletriggers.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
+  src/game/vehicles.cpp src/game/vehicletriggers.cpp src/game/actortriggers.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
@@ -365,6 +365,8 @@ target_link_libraries(test_soundpool PRIVATE iw2_game iw2_audio)
 add_executable(test_savestate tests/test_savestate.cpp)
 target_link_libraries(test_savestate PRIVATE iw2_game)
 add_test(NAME savestate COMMAND test_savestate)
+add_executable(test_downtownreload tests/test_downtownreload.cpp)
+target_link_libraries(test_downtownreload PRIVATE iw2_game)
 add_executable(test_missionfail tests/test_missionfail.cpp)
 target_link_libraries(test_missionfail PRIVATE iw2_game)
 add_test(NAME missionfail COMMAND test_missionfail)
@@ -379,6 +381,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(savestate_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME missionfail_world COMMAND test_missionfail)
   set_tests_properties(missionfail_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME downtownreload_world COMMAND test_downtownreload)
+  set_tests_properties(downtownreload_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME builtinaudit_world COMMAND test_builtinaudit)
   set_tests_properties(builtinaudit_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME vehicletrigger_world COMMAND test_vehicletrigger)
