@@ -47,6 +47,7 @@
 #include "game/turrets.h"
 #include "game/world.h"
 #include "ui/menu.h"
+#include "ui/iw2options.h"
 #include "ui/menurun.h"
 #include "ui/frontend.h"
 #include "ui/profile.h"
@@ -4656,6 +4657,7 @@ int main(int argc, char** argv) {
             scriptMenus.loadList("ui/menus.txt");
             scriptMenus.loadList("ui/ingame.txt"); // pregame, victoryscreen (exe 0x581314 list)
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
+            ui::addOpenIw2Options(scriptMenus); // the openiw2 option rows (hit marker) in the game options menu
         }
         // A level started from the command line ends its load the same way (0x449a2c): "pregame" unless ui_autoContinue (not for --shot).
         if (world && shot.empty() && std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0) {
@@ -5678,6 +5680,24 @@ int main(int argc, char** argv) {
                         q.texture = materialTexture(part.mat);
                         out.push_back(q);
                     }
+                }
+            }
+            // Hit marker (openiw2 option iw2_hitMarker, src/game/hitmarker.h): the multiplayer damage feedback material at the screen centre,
+            // 24 x 24, fading over a second after each hit on an enemy actor. Drawn here, after the script elements and the scope overlay
+            // (which is spliced in below them), so it shows over a scope as the multiplayer script element does. No sound. Hidden with
+            // menus open, while paused and while the player is dead.
+            if (world && world->player() && frontStack.empty() && menuEnv.getCvar("cl_paused") != "1" &&
+                std::atof(menuEnv.getCvar("iw2_hitMarker").c_str()) != 0 &&
+                !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
+                const game::HitMarkerLook look;
+                if (const float ha = game::hitMarkerAlpha(world->timeMs(), world->playerHitMarkerMs(), look); ha > 0) {
+                    Quad2D q{left43 + (320.0f + look.offset) * sc, (240.0f + look.offset) * sc, 0, 0};
+                    q.x1 = q.x0 + look.size * sc;
+                    q.y1 = q.y0 + look.size * sc;
+                    std::memset(q.rgba, 255, 3);
+                    q.rgba[3] = uint8_t(std::clamp(ha, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    q.texture = materialTexture("damage_feedback");
+                    out.push_back(q);
                 }
             }
             // Crosshair target names (cgame 0x4bf8b0, drawn when cl_paused is 0): the server's configstrings 0xb / 0xc (0x534aa0:

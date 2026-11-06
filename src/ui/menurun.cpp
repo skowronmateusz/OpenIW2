@@ -66,6 +66,7 @@ std::string registeredDefault(const std::string& n) {
         {"con_subtitleScale", "1"}, // 0x403f43 (float 0..FLT_MAX)
         {"cg_blood", "1"},          // 0x40e5f9
         {"cg_drawHealth", "0"},     // 0x4a125d (bool, flags 0x1080; gates the health bar ownerdraws 0x4a8800 / 0x4a8ab0)
+        {"iw2_hitMarker", "0"},     // openiw2 option (src/game/hitmarker.h), off by default; not a dvar of the shipped game
         {"monkeytoy", "1"},         // 0x4037ba
         {"cl_freelook", "1"},       // 0x40e2e0
         {"cl_mouseAccel", "0"},     // 0x40e2c3 (float 0..100)

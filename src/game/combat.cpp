@@ -340,6 +340,10 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // G_Damage (0x5284d3): the target's sentient remembers its attacker (sentient +0x28); the AI events 5/6
     // reveal it to the actors around.
     if (attacker) target.lastAttacker = attacker;
+    // openiw2 hit marker (src/game/hitmarker.h): the player's damage to a living enemy actor.
+    if (hitMarkerTrigger(attacker && attacker->isPlayer, target.isActor, isAlive(target), attacker ? attacker->obj->get("team").toString() : std::string(),
+                         target.obj->get("team").toString(), amount))
+        hitMarkerMs_ = timeMs_;
     // FL_DEMI_GODMODE (flags & 2, toggled by the "demigod" cheat 0x4ea030): a hit that would take health to 0 or below is cut to health - 1
     // (0x5283d2..0x5283ec, after the blood accumulation; the "damage" notify carries the cut amount).
     if (target.obj->get("$demigod").truthy()) {

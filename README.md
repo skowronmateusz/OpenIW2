@@ -53,6 +53,10 @@ It starts in the game's main menu. Your profiles and saved games are kept in
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
 opens the pause menu. `F12` shows or hides a frame rate counter in the top right corner (always available, not a cheat).
 
+OpenIW2 adds one option that the original game does not have: **Options > Game Options > Hit marker** (off by default). When on, the
+multiplayer hit marker (a small X next to the crosshair, fading in about a second, no sound) shows whenever you damage an enemy
+soldier. It is saved in your profile.
+
 ### Cheats and developer keys
 
 Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:

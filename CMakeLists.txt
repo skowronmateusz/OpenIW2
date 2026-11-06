@@ -101,6 +101,7 @@ add_library(iw2_ui
   src/ui/menu.cpp
   src/ui/menurun.cpp
   src/ui/frontend.cpp
+  src/ui/iw2options.cpp
   src/ui/profile.cpp
   src/ui/profilelist.cpp
   src/ui/savegame.cpp)
@@ -306,6 +307,9 @@ add_test(NAME listbox COMMAND test_listbox)
 add_executable(test_profile tests/test_profile.cpp)
 target_link_libraries(test_profile PRIVATE iw2_ui)
 add_test(NAME profile COMMAND test_profile)
+add_executable(test_hitmarker tests/test_hitmarker.cpp)
+target_link_libraries(test_hitmarker PRIVATE iw2_game)
+add_test(NAME hitmarker COMMAND test_hitmarker)
 
 add_executable(test_savegame tests/test_savegame.cpp)
 target_link_libraries(test_savegame PRIVATE iw2_ui)
@@ -398,6 +402,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(pipecollision_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME rhinecover_world COMMAND test_rhinecover)
   set_tests_properties(rhinecover_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME hitmarker_world COMMAND test_hitmarker)
+  set_tests_properties(hitmarker_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME grenadecook_data COMMAND test_grenadecook)
   set_tests_properties(grenadecook_data PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME barrelclip_world COMMAND test_barrelclip)

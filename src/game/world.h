@@ -18,6 +18,7 @@
 #include "game/collision.h"
 #include "game/compassping.h"
 #include "game/friendlychain.h"
+#include "game/hitmarker.h"
 #include "game/grenadehint.h"
 #include "game/hitboxes.h"
 #include "game/pathnodes.h"
@@ -565,6 +566,9 @@ public:
     // max health). The aim spread scale also grows by count (ps+0x5b0).
     struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
+    // Game time (ms) of the last damage the player dealt to a living enemy actor (hitMarkerTrigger), -1 before the first. The front end
+    // draws the hit marker from it when the option iw2_hitMarker is on (src/game/hitmarker.h).
+    int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
     // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
     void applyPlayerEvent(int ev, int parm);
     // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
@@ -1427,6 +1431,7 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
+    int64_t hitMarkerMs_ = -1;
     std::vector<Earthquake> earthquakes_;
     std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight
     ViewKick viewKick_;
