@@ -5669,7 +5669,7 @@ int main(int argc, char** argv) {
             // colour white with the pulsing alpha. Not under a scope overlay unless cg_hudGrenadeIconInScope (0).
             // TODO(spec): the exe reads the entity state's pos.trBase / pos.trDelta (a flying grenade keeps its launch / last
             // bounce base) and the 0x793940 / 0x793944 scales are taken as the uniform virtual-unit scale used elsewhere here.
-            if (world && world->player() && !(scopeAlpha() > 0) &&
+            if (world && world->player() && (!(scopeAlpha() > 0) || std::atof(menuEnv.getCvar("cg_hudGrenadeIconInScope").c_str()) != 0.0) &&
                 !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
                 const game::GrenadeIndicatorCfg gcfg;
                 const std::array<float, 3> pOrigin{c.pos.x, c.pos.y, c.pos.z - hudViewHeight};

@@ -12,6 +12,7 @@ bool isArchivedCvar(const std::string& name) {
     if (n == "r_gamma" || n == "r_ignorehwgamma") return true; // renderer registrations with flags 0x2001 / 0x2021 (archive), gfx 0x1000ab8a / 0x1000abc0
     if (n == "ai_corpsecount") return true; // flags 0x1003 at 0x4d887f (archive)
     if (n == "iw2_hitmarker") return true; // openiw2 option (docs/debug-flags.md), archived like the shipped options
+    if (n == "cg_hudgrenadeiconinscope") return true; // flags 0x1001 at 0x4a1622 (archive)
     if (n == "sv_lastsavegame") return true; // registered with flags 0x1001 (archive) at 0x449d78
     return n.size() == 6 && n.compare(0, 4, "mis_") == 0 && std::isdigit(static_cast<unsigned char>(n[4])) && std::isdigit(static_cast<unsigned char>(n[5]));
 }

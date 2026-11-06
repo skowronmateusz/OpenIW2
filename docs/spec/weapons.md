@@ -75,6 +75,7 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
   at once; otherwise the aim runs down at the normal rate. (implemented: `playerViewFov`, `scopeOverlayDrawAlpha`)
 - Other users of the overlay test 0x4bc8a0 (view flash 0x4b6131, damage indicators 0x4bdcb0 / 0x4be210) do not test
   the turret bits and still see the kept aim. TODO(spec): not checked in a window whether that is visible.
+- Grenade danger icons (VAs in the patch 1.3 SP executable): the loop 0x4be210 calls the overlay test first (0x4be227) and returns when it is true and the bool dvar `cg_hudGrenadeIconInScope` (registered at 0x4a1622, flags 0x1001, default 0) is off. So by default the icons are hidden under a scope overlay and shown under plain aim; with the dvar on they are drawn there too.
 
 Not done yet: bob (0x4b4a90), sway (0x4b4dc0), idle motion (0x4b51a0), gun kick (0x4b5d10), lean. While aiming,
 OpenIW2 poses the view model with `adsUpAnim` at the aim fraction (inferred; the original's view-model anim
