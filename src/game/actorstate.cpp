@@ -508,17 +508,22 @@ void World::actorBecomeCorpse(Entity& e) {
     releaseCorpseObject(e);     // 0x4fdd31
 }
 
-// The sentient release (0x514d50, also from the death think 0x548a10): its own enemy goes, then for every other sentient (loop 0x514db2,
-// 0x515230 / 0x515270) an actor's record of it stops being visible (0x4fe170: record word +0 only) and an enemy reference to it is
-// cleared with no notify. TODO(spec): the rest of 0x4fe170 and team 4 (+0x4 at 0x514dab) are not modelled; isAlive stands in for it.
+// The sentient release (0x514d50, also from the death think 0x548a10): its own enemy goes with no notify, the team becomes "dead" (index 4,
+// 0x514dab; the getter 0x5410b0 names it, and no team mask of the scans holds that bit except the "all but enemies" and "all" ones). Then
+// every other sentient (loop 0x514db2, 0x515230 / 0x515270). An actor runs 0x4fe170: its record stops being visible (word +0), its danger
+// planes go, an enemy reference is cleared the way the enemy setter does (its tail 0x5151a7..0x515217), WITH the "enemy" notify (0x4fe1c2..0x4fe243), and a favoriteenemy
+// (+0x2038) naming the sentient is cleared (0x4fe24c). Only a sentient without an actor, the player, takes the silent clear of 0x514dda.
+// TODO(spec): sentient +0x20 (the type 4 event due 1000 ms after an enemy is set, flushed by every enemy change) is not modelled.
 void World::releaseSentient(Entity& e) {
     setEnemy(e, nullptr, false);
     removeDangerPlanesFrom(e.number);
-    for (const auto& ap : entities_) {
-        Entity& o = *ap;
+    e.obj->set("team", Value(std::string("dead")));
+    for (size_t i = 0; i < entities_.size(); ++i) {
+        Entity& o = *entities_[i];
         if (&o == &e || o.obj->removed) continue;
         if (const auto it = o.sentientInfo.find(e.obj.get()); it != o.sentientInfo.end()) it->second.visible = false;
-        if (entityOf(o.obj->get("enemy")) == &e) setEnemy(o, nullptr, false);
+        if (entityOf(o.obj->get("enemy")) == &e) setEnemy(o, nullptr, o.isActor);
+        if (o.isActor && entityOf(o.obj->get("favoriteenemy")) == &e) o.obj->set("favoriteenemy", Value());
     }
 }
 
@@ -533,9 +538,23 @@ void World::clearActorReferences(Entity& e) {
     }
 }
 
+// What a corpse shows to script. The field dispatch (0x4f9d00) reads an actor field through entity +0x100 and a sentient field through +0x104;
+// the actor free has nulled both (0x4fca45, 0x4fca60), so those read undefined. Script variables lived on the released object. What stays
+// is the entity table 0x56f4a8. Names with `$` are openiw2's own state on the object, which no script can spell.
+void World::stripCorpseFields(script::Object& o) {
+    static constexpr std::array<std::string_view, 14> kEntityFields = {
+        "classname", "origin", "model", "spawnflags", "target", "targetname", "count",
+        "health", "dmg", "angles", "script_linkname", "script_noteworthy", "maxhealth", "anglelerprate"};
+    for (auto it = o.fields.begin(); it != o.fields.end();) {
+        const std::string_view name = it->first;
+        const bool keep = name.starts_with('$') || std::find(kEntityFields.begin(), kEntityFields.end(), name) != kEntityFields.end();
+        it = keep ? std::next(it) : o.fields.erase(it);
+    }
+}
+
 // 0x4670b0 at the conversion: the actor's script object is released, so every script reference to it now reads as freed, while the
-// corpse entity lives on. The exe gives an entity a new object when one is next asked for; here the engine keeps its fields on a fresh
-// object (origin, angles and so on live in the object in openiw2) that no script holds.
+// corpse entity lives on. The exe gives an entity a new object when one is next asked for (0x467450, as getent does at 0x4fa264); here the
+// fresh object exists at once, with the fields of stripCorpseFields (origin, angles and so on live in the object in openiw2), and no script holds it.
 void World::releaseCorpseObject(Entity& e) {
     const ObjectPtr old = e.obj;
     if (old->removed) return; // a thread the "death" notify resumed has already deleted the corpse
@@ -544,6 +563,7 @@ void World::releaseCorpseObject(Entity& e) {
     for (const auto& a : entities_) a->sentientInfo.erase(old.get());
     e.obj = vm_.newObject(old->kind);
     e.obj->fields = old->fields;
+    stripCorpseFields(*e.obj);
     byObject_.erase(old.get());
     byObject_[e.obj.get()] = &e;
     vm_.freeObject(old);
@@ -597,6 +617,7 @@ void World::restoreCorpses(const std::array<int, kCorpseSlots>* saved) {
             Entity* e = (*saved)[size_t(i)] >= 0 ? entityByNumber((*saved)[size_t(i)]) : nullptr;
             if (!e || e->obj->removed) continue;
             corpses_.put(i, e->number);
+            stripCorpseFields(*e->obj); // a format 7 save still has them
             mark(*e);
         }
         return;
@@ -638,8 +659,7 @@ int World::painThink(Entity& e) {
 // override or 4).
 int World::deathThink(Entity& e) {
     ActorAi& ai = e.ai;
-    // TODO(spec): 0x548a10 also broadcasts the death event (0x535770), drops the grenade and releases the sentient
-    // (0x514d50); only the path is cleared here.
+    // TODO(spec): 0x548a10 also drops the grenade (0x548a53..0x548a5f and 0x548a8d not read).
     if (ai.substate == kSubDeath && timeMs_ - ai.baseStateMs > 799) {
         // 0x548a10: the death event (type 6) makes the actors around learn the killer (sentient +0x28).
         aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});

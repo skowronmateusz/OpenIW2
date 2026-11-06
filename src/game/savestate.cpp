@@ -150,6 +150,19 @@ void World::saveState(StateWriter& w) {
     w.i64(realMs_);
     w.i32(nextEntityNumber_);
     for (int i = 0; i < kCorpseSlots; ++i) w.i32(corpses_.at(i)); // version 7: the corpse table (saved by 0x4e3c17)
+    { // version 8: the touch records of the frame's stage 8, still queued at the frame end (0x4e3d11..0x4e3d7e)
+        std::vector<std::pair<int, int>> touches;
+        for (const ActorTouch& t : actorTouches_) {
+            const Entity* trigger = entityOf(Value(t.trigger));
+            const Entity* toucher = entityOf(Value(t.toucher));
+            if (trigger && toucher && !t.trigger->removed && !t.toucher->removed) touches.emplace_back(trigger->number, toucher->number);
+        }
+        w.i32(int32_t(touches.size()));
+        for (const auto& [trigger, toucher] : touches) {
+            w.i32(trigger);
+            w.i32(toucher);
+        }
+    }
     w.i32(nextFx_);
     w.u32(meleeSeed_);
     {
@@ -501,6 +514,14 @@ void World::loadState(StateReader& r) {
     std::array<int, kCorpseSlots> savedCorpses{};
     if (r.version >= 7)
         for (int& n : savedCorpses) n = r.i32();
+    std::vector<std::pair<int, int>> savedTouches;
+    if (r.version >= 8) {
+        savedTouches.resize(size_t(r.i32()));
+        for (auto& [trigger, toucher] : savedTouches) {
+            trigger = r.i32();
+            toucher = r.i32();
+        }
+    }
     nextFx_ = r.i32();
     meleeSeed_ = r.u32();
     {
@@ -933,6 +954,12 @@ void World::loadState(StateReader& r) {
     for (uint32_t i = 0; i < nNodes; ++i) nodes_[i].owner = entityByNumber(nodeOwners[i]);
     player_ = entityByNumber(playerNum);
     restoreCorpses(r.version >= 7 ? &savedCorpses : nullptr);
+    actorTouches_.clear();
+    for (const auto& [trigger, toucher] : savedTouches) { // 0x4e528c..0x4e52fc
+        const Entity* t = entityByNumber(trigger);
+        const Entity* a = entityByNumber(toucher);
+        if (t && a) actorTouches_.push_back({t->obj, a->obj});
+    }
     // path disconnects: the fresh world disconnected its DYNAMICPATH brush models; bring the set in line with the save
     std::vector<int> current;
     for (const auto& [n, recs] : pathRecs_) current.push_back(n);
@@ -1039,7 +1066,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 

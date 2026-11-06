@@ -223,6 +223,69 @@ static void world(iw2::fs::Vfs& vfs) {
     CHECK(corpseCount(l) == 4);
     l.frame();
     CHECK(l.corpseSlots().count() == 2 && corpseCount(l) == 2 && l.corpseSlots().used() == 2);
+
+    // The sentient release: the team reads "dead", an actor fighting it is notified "enemy", and favoriteenemy goes (0x4fe170, 0x514dab).
+    {
+        spawner->obj->set("count", Value(int32_t(5)));
+        Entity* victim = w.debugSpawnActor(*spawner, true);
+        Entity* foe = w.debugSpawnActor(*spawner, true);
+        CHECK(victim && foe);
+        if (!victim || !foe) return;
+        victim->obj->set("team", Value(std::string("axis")));
+        foe->obj->set("team", Value(std::string("allies")));
+        victim->obj->set("health", Value(int32_t(0)));
+        CHECK(w.debugIsSentient(*victim)); // dead by health, still a sentient until the release
+        w.debugSetEnemy(*foe, victim);
+        foe->obj->set("favoriteenemy", Value(victim->obj));
+        CHECK(victim->attackers == 1);
+        int notified = 0;
+        const auto foeObj = foe->obj;
+        w.vm().notifyHook = [&notified, foeObj](const iw2::script::ObjectPtr& o, const std::string& ev) { notified += o == foeObj && ev == "enemy"; };
+        w.debugReleaseSentient(*victim);
+        w.vm().notifyHook = nullptr;
+        CHECK(notified == 1);
+        CHECK(victim->obj->get("team").toString() == "dead");
+        CHECK(!foe->obj->get("enemy").isDefined() && !foe->obj->get("favoriteenemy").isDefined() && victim->attackers == 0);
+        CHECK(w.debugIsSentient(*victim));
+
+        // A script variable and the actor and sentient fields do not survive the conversion; the entity table does (0x56f4a8, 0x4f9d00).
+        victim->obj->set("mymark", Value(int32_t(1)));
+        victim->obj->set("targetname", Value(std::string("corpse_lookup")));
+        victim->obj->set("accuracy", Value(1.0f));
+        w.debugMakeCorpse(*victim);
+        CHECK(!w.debugIsSentient(*victim));
+        CHECK(!victim->obj->removed && !victim->obj->get("mymark").isDefined() && !victim->obj->get("team").isDefined() &&
+              !victim->obj->get("accuracy").isDefined());
+        CHECK(victim->obj->get("targetname").toString() == "corpse_lookup" && victim->obj->get("origin").isVector() &&
+              victim->obj->get("health").isDefined());
+        w.debugFree(*foe);
+        w.debugFree(*victim);
+    }
+
+    // A touch record queued at the frame end goes through the save (0x4e3d11 / 0x4e528c) and is delivered once; a freed toucher's is not saved.
+    {
+        spawner->obj->set("count", Value(int32_t(5)));
+        Entity* toucher = w.debugSpawnActor(*spawner, true);
+        Entity* gone = w.debugSpawnActor(*spawner, true);
+        CHECK(toucher && gone);
+        if (!toucher || !gone) return;
+        w.debugQueueTouch(*spawner, *toucher);
+        w.debugQueueTouch(*spawner, *gone);
+        w.debugFree(*gone);
+        SaveRequest treq;
+        treq.name = "touch";
+        treq.description = "touch";
+        LoadedSave tls;
+        CHECK(parseSaveFile(buildSaveFile(w, treq), tls).empty());
+        World tl(vfs, "cityhall");
+        tl.prepareStart();
+        restoreSave(tl, tls);
+        CHECK(tl.debugTouchCount() == 1);
+        tl.debugDeliverTouches();
+        CHECK(tl.debugTouchCount() == 0);
+        w.debugDeliverTouches();
+        w.debugFree(*toucher);
+    }
 }
 
 // An old save has no table: an actor still in its death animscript is left to convert normally, a finished one takes a slot.

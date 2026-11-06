@@ -32,8 +32,11 @@ constexpr uint32_t kSightMask = 0x280d803; // 0x54c760
 
 } // namespace
 
+// An entity with a sentient (+0x104). An actor keeps it while it dies, until the conversion to a corpse (0x4fca60), so the scans still find it
+// up to the release 800 ms after the death; team "dead" takes it out of their masks then. Health plays no part (0x54e2e1 and the others).
 bool World::isSentient(const Entity& e) const {
-    return (e.isPlayer || e.isActor) && isAlive(e);
+    if (e.isPlayer) return isAlive(e);
+    return e.isActor && !e.isSpawner && !e.obj->removed && !e.ai.corpse;
 }
 
 // Eye position and (horizontal, unit) look direction. Actors: tag_eye (0x500910; origin + 64 without the tag, with

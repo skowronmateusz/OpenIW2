@@ -355,6 +355,11 @@ public:
     // The corpse table (src/game/corpses.h) and a direct corpse conversion (0x4fdba0) for tests.
     const CorpseSlots& corpseSlots() const { return corpses_; }
     void debugMakeCorpse(Entity& e) { actorBecomeCorpse(e); }
+    void debugReleaseSentient(Entity& e) { releaseSentient(e); }
+    bool debugIsSentient(const Entity& e) const { return isSentient(e); }
+    void debugQueueTouch(Entity& trigger, Entity& toucher) { actorTouches_.push_back({trigger.obj, toucher.obj}); }
+    void debugDeliverTouches() { deliverActorTouches(); }
+    size_t debugTouchCount() const { return actorTouches_.size(); }
     void debugFree(Entity& e) { freeEntity(e); }
     MoverChannel& debugMoverPos(Entity& e) { return movers_[e.number].pos; }
     const CollisionWorld& debugCollision() const { return *collision_; }
@@ -935,6 +940,7 @@ private:
     void releaseSentient(Entity& e);   // 0x514d50
     void clearActorReferences(Entity& e);
     void releaseCorpseObject(Entity& e); // 0x4670b0 from 0x4fdd31
+    static void stripCorpseFields(script::Object& o);
     // 0x1c61048: set by G_InitGame (0x4d99cb: 1, or 2 for a savegame load) and cleared by 0x4da540 once the level is
     // loaded (0x448aab, after the entity spawn, the level script's start and the first G_RunFrame). Here: until the end
     // of runLevelMain() or loadState().
@@ -1074,7 +1080,7 @@ private:
     struct PendingNotify { int64_t atMs; ObjectPtr obj; std::string name; };
     std::vector<PendingNotify> pendingNotifies_;
     struct ActorTouch { script::ObjectPtr trigger, toucher; };
-    std::vector<ActorTouch> actorTouches_;  // the touch records (0x1c610b4); not saved, a standing actor records again next frame
+    std::vector<ActorTouch> actorTouches_;  // the touch records (0x1c610b4), saved by 0x4e3d11 and restored by 0x4e528c
     std::vector<Entity*> actorTriggers_;    // this frame's triggers an actor can touch
     int64_t actorTriggersFrame_ = -1;
 

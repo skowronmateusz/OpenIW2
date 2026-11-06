@@ -47,8 +47,8 @@ enemy's origin plus the enemy's velocity (0x514ed0: an actor's +0x230, a player'
 lead), stored in +0x20e8 together with +0x20d4 = 1 (re-solve from the hand at throwGrenade) and the method (+0x20cc).
 
 0x51f490 (also called by the throw back and by throwGrenade's re-solve): fails while g (g_gravity, 0x1b15ee8) ≤ 0,
-while the actor already handles a grenade (unless the last argument says to go on anyway), or with a sentient of its
-team within 1.1 × explosionRadius of the target (0x51f6e0); start = from + forward·x − right·y + up·z (0x51eb00, the
+while the actor already handles a grenade (unless the last argument says to go on anyway), or with a sentient not of
+its enemy team within 1.1 × explosionRadius of the target (0x51f6e0; the mask is every team but the enemy one, 0x51f731, so neutral and dead sentients count, and dying actors until the conversion); start = from + forward·x − right·y + up·z (0x51eb00, the
 actor's yaw). Then a line trace between start and target (0x526840: no box, mask 0x811, pass entity 0x7ff = none; only
 "fraction == 1" is read, so the direction does not matter for the decision) picks the aim point:
 - clear, or blocked with an empty hint table, or blocked with no hint picked: the bounce-adjusted target (0x51ebe0:

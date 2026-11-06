@@ -35,7 +35,7 @@ Vec3 originOf(const ObjectPtr& o) {
 int teamOf(const Entity& e) {
     const Value t = e.obj->get("team");
     const std::string s = t.isString() ? t.asString() : std::string();
-    return s == "axis" ? 1 : s == "allies" ? 2 : s == "neutral" ? 3 : 0;
+    return s == "axis" ? 1 : s == "allies" ? 2 : s == "neutral" ? 3 : s == "dead" ? 4 : 0;
 }
 
 // 0x4e7010: the enemy team of a team (table {0, 2, 1, 0, 0}).
@@ -536,7 +536,7 @@ bool World::grenadeHintFromLanding(Entity& actor, const Vec3& landing, Vec3& vel
 
 // 0x51f490 (inlined as well in checkGrenadeThrow 0x53e720 and checkGrenadeThrowPos 0x53ead0): a throw from `from` +
 // the arm offset (turned by the actor's yaw, 0x51eb00: forward·x − right·y + up·z) to the target: none while g ≤ 0,
-// while the actor already handles a grenade (unless `anyway`) or with friends of the thrower within 1.1 ×
+// while the actor already handles a grenade (unless `anyway`) or with any sentient not of the enemy team within 1.1 ×
 // explosionRadius of the target (0x51f6e0). A line trace start ↔ target (0x526840: mask 0x811, no pass entity) decides
 // the aim: clear, or blocked with no hint (0x51ece0), the bounce-adjusted target (0x51ebe0); blocked with a hint, the
 // hint moved by flrand(−15, 15) on x, y, z in that order. A zero aim distance fails; then the method's solver.
@@ -549,7 +549,7 @@ bool World::throwSolution(Entity& actor, const Vec3& from, const Vec3& armOffset
     const int team = teamOf(actor);
     for (const auto& ep : entities_) {
         Entity& f = *ep;
-        if (!(f.isActor || f.isPlayer) || !isAlive(f) || teamOf(f) != team) continue;
+        if (!isSentient(f) || teamOf(f) == enemyTeam(team)) continue; // mask: every team but the enemy's (0x51f731), the dead included
         if (dot(sub(target, originOf(f.obj)), sub(target, originOf(f.obj))) < r * r) return false;
     }
     const Value ang = actor.obj->get("angles");

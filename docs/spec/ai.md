@@ -101,7 +101,9 @@ start 0x44a6a0 adds 50 ms to level.time and resets the stage. Stages:
    queued touch records (0x1c610b4, count 0x1c628b4, filled by 0x528cb0) are taken over (0x1c61cb4 / 0x1c628b8).
 3. 0x4dab00: each record with valid spawn ids sends "trigger" (const 0x1c7f0e4) with the other entity; a trigger already
    notified in this pass keeps its record for the next pass; after each pass the woken threads run (0x46d560).
-   0x528cb0 notifies at once when the queue is full (256).
+   0x528cb0 notifies at once when the queue is full (256; TODO(spec): not modelled). The queue is part of the save: count and 12-byte records
+   (two entity numbers, two spawn ids) at 0x4e3d11..0x4e3d7e, read back at 0x4e528c..0x4e52fc. The save runs at the frame end (0x44a230), so stage 8's
+   records are in it; the taken-over copy 0x1c61cb4 is not saved. openiw2 stores the entity number pairs (format 8), a freed pair is left out.
 4. 0x4dac9c: the animation step of every entity from 1, running the notetrack-woken threads after each entity.
 5. 0x4daefc: woken threads, then the script frame 0x467150; frame counter 0x9bef20 + 1.
 6. 0x4daf94: bad places 0x523a60.
@@ -1033,24 +1035,43 @@ the picker at load, so old saves are bounded as well. With no player (tests) the
 
 Script references. The conversion releases the entity's script object (0x4670b0 from 0x4fdd31, right after the "death" notify 0x4fdd23),
 so no script can hold a corpse and an eviction is never seen by script. Threads woken by that notify still run, with a freed `self`.
-openiw2 moves the fields to a fresh object at that moment (World::releaseCorpseObject), because the placement lives in the object.
+openiw2 moves the entity-table fields (below) to a fresh object at that moment (World::releaseCorpseObject), because the placement lives in the object.
 
 Contents. The conversion writes contents 0x4000000 (0x4fdc75), clip mask 0x820011 (0x4fdc82) and relinks (0x4fdd9d) with the box unchanged.
 A scan of the immediates finds that bit in no trace mask: bullets 0x280e831, grenades 0x280e891, sight 0x280d803, moves 0x2820011 and
 0x281c011 all lack it, so nothing in the server hits a corpse. The bit appears only in a generic contents-to-flags step (0x48010f) and in
 one client-side selection (0x4b95d7, not decoded). World::syncEntityClips gives a corpse that clip.
 
-Script object on demand. An entity gets a script object when script is handed it (getters 0x466fa0 / 0x466f40). After the conversion that
-can only come from a lookup such as getent / getentarray. openiw2 creates the object at once, and the identity difference cannot be seen,
-since no script holds it before the lookup. One difference remains: the fresh object here keeps the actor's script-set fields, where the
-exe's would have only native ones. TODO(spec): no list of native fields separates them, so this is not proven unobservable.
+Script object on demand. An entity gets a script object when script is handed it (0x467450 then 0x46f000, as in getent at 0x4fa264, and in
+the touch overflow at 0x528ccf). After the conversion that can only come from a lookup: getent / getentarray walk the entities by the
+targetname, target, script_noteworthy, script_linkname or classname, and a corpse keeps those natives. Shipped scripts do such lookups some
+1700 times with literal keys, on map-start actors and on `dospawn(name)` copies too, so no proof of "never read" is possible; the rule itself is
+exact instead. The field dispatch (0x4f9d00) takes an actor field through entity +0x100 and a sentient field through +0x104, and reads
+nothing when the pointer is null; the actor free nulls both (0x4fca45, 0x4fca60). Script variables stayed on the released object. So a corpse
+shows only the 14 entries of the entity field table 0x56f4a8: classname, origin, model, spawnflags, target, targetname, count, health, dmg, angles,
+script_linkname, script_noteworthy, maxhealth, anglelerprate. World::stripCorpseFields leaves exactly those, plus openiw2's own `$` state,
+which no script can name, on the fresh object; a format 7 save is stripped at load. Spawn keys that are not natives are script variables and go too.
+openiw2 creates the object at once; the identity difference cannot be seen, since no script holds it before the lookup.
 
-Sentient release 0x514d50 (from the death think 0x548a10, the actor free 0x4fc9d2 and the entity free): clears its enemy (attacker count down),
-frees the claimed node, clears node owners (0x5193b0), sets team 4 (0x514dab), then visits every other sentient (0x515230 / 0x515270). There
-an actor runs 0x4fe170: word +0 of its record of this sentient (actor +0x1774, stride 0x44) is zeroed and its danger planes go (0x54b5a0).
-An enemy reference to this sentient is cleared with no notify (0x514dda). World::releaseSentient. The rest of the record stays in the exe
-until its slot is used again. openiw2 keys records by script object, so they are erased when the object is released, because an address
-can be reused where a slot's meaning cannot. TODO(spec): the tail of 0x4fe170 and team 4.
+Sentient release 0x514d50 (from the death think 0x548a10, the actor free 0x4fc9d2 and the entity free): clears its enemy (attacker count down,
+no notify), frees the claimed node, clears node owners (0x5193b0), sets team 4 (0x514dab), then visits every other sentient (0x515230 / 0x515270).
+There an actor runs 0x4fe170: word +0 of its record of this sentient (actor +0x1774, stride 0x44) is zeroed and its danger planes go (0x54b5a0).
+When this sentient is the actor's enemy, 0x4fe1b2..0x4fe243 repeat the tail of the enemy setter (0x5151a7..0x515217): the event due at sentient
++0x20 goes out (type 4, 0x535740), the attacker count falls, +0x1c and +0x20 are cleared, the actor is notified "enemy" (const 0x1c7f050, gated by
+0x9bef24), and the sight fields +0x1738, +0x1764, +0x2048 reset, then 0x4fe830. Last, favoriteenemy (+0x2038, the actor field table 0x5703f0) is
+cleared when it names this sentient (0x4fe24c). The silent clear at 0x514dda therefore acts only on a sentient without an actor, the player.
+"enemy" has listeners: _patrol.gsc:10, :56, beltot.gsc:2163, corner_axis.gsc:605 and others. World::releaseSentient. The rest of the record stays in the
+exe until its slot is used again. openiw2 keys records by script object, so they are erased when the object is released, because an address
+can be reused where a slot's meaning cannot. TODO(spec): the +0x20 event (due 1000 ms after an enemy is set, 0x5151c0) is not modelled anywhere, so the flush is not either.
+
+Team 4. The team getter 0x5410b0 names it "dead" (names axis, allies, neutral, dead at 0x5a9914), so `team` reads "dead" from the release to the
+conversion, and undefined after. No script compares with it. Every sentient scan goes through a mask of 1 << team (0x515230): the enemy
+masks of the table {0, 2, 1, 0, 0} and own-team masks never hold bit 4, so the release is what takes a dying actor out of the sight check
+0x54d0a0, the enemy choice 0x54e230, the threat facing 0x505790, the turret scan 0x51c400, getclosestenemysqdist 0x53c290, 0x53dd64 and 0x54e424. These
+read no health. Up to the release, 800 ms after the death, a dying actor is thus still a valid target; it also stays an enemy already held.
+The mask of the grenade check 0x51f6e0 is the complement of the enemy team (0x51f731), so it holds neutral and dead sentients as well (docs/spec/grenades.md),
+and the mask -1 of 0x514da4 / 0x5323ae holds all. openiw2 stores "dead" in the `team` field, and World::isSentient means "has a sentient": the
+player while alive (unchanged), an actor until its conversion. isAlive stays where the exe reads health or the alive flag (getaiarray, spawn blocking).
 
 Other actors. The actor free 0x4fc960 also runs at the conversion (0x4fdc69): its loop 0x4fc9e0..0x4fca43 clears what the actors in use keep
 of this one (+0x6ba, +0x318, +0x2148, +0x728 with +0x72c; +0x6ba is not modelled), World::clearActorReferences. The sentient release
