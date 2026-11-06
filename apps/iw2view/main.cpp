@@ -2558,6 +2558,15 @@ struct Renderer {
             const Pass p = step.p;
             const bool fxStep = step.fxStep; // only the effect items of this pass: after every world / model surface of the emissive passes
             const std::vector<WorldGroup>& groups = fxStep ? noGroups : worldGroups;
+            static const bool probeNoMultiply = std::getenv("IW2_DEPTH_PROBE") && std::atoi(std::getenv("IW2_DEPTH_PROBE")) == 2;
+            if (probeNoMultiply && p == Pass::Multiply) continue; // multiply decals would darken the painted surfaces
+            // IW2_DEPTH_PROBE=1 (debug): one light pass that paints every lit surface pure red; any surface pixel left unpainted failed
+            // LessEqual against its own first pass, i.e. the two vertex shaders produced different depth.
+            static const bool depthProbe = std::getenv("IW2_DEPTH_PROBE") != nullptr;
+            if (depthProbe && p == Pass::Blend && !fxStep) {
+                dlights.clear();
+                dlights.push_back({{cam.pos.x, cam.pos.y, cam.pos.z}, 1e9f, {1, 0, 0}});
+            }
             if (p == Pass::Blend && !fxStep && !dlights.empty()) {
                 // l_point passes: every lit opaque / alpha-tested world batch once per light (the DLL collects the touched surfaces per
                 // light, 0x10014fe0; here the shader's radius falloff is the cull, TODO(spec): per-surface bounds).
@@ -2581,6 +2590,7 @@ struct Renderer {
                             fu.light[3] = dl.radius;
                             std::memcpy(fu.color, dl.rgb, 12);
                             fu.params[0] = dp == Pass::AlphaTest ? 1.0f : 0.0f;
+                            fu.params[1] = depthProbe ? 1.0f : 0.0f;
                             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
                             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
                             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -2613,6 +2623,7 @@ struct Renderer {
                             fu.light[3] = dl.radius;
                             std::memcpy(fu.color, dl.rgb, 12);
                             fu.params[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                            fu.params[1] = depthProbe ? 1.0f : 0.0f;
                             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
                             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
                             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -7486,6 +7497,7 @@ int main(int argc, char** argv) {
                         if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], world->timeMs()); // CG_EntityEvent 0x4bac84
                         // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
                         const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
+                        input.stanceEvent(ev); // the wish follows the event, so a blocked rise is not asked for again
                         if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, world->timeMs());
                         if (ev == 0x95) input.clearAds(); // 0x4dd090 (the prone aim cancel): the cgame clears the toggled aim (0x4bafbc)
                     }

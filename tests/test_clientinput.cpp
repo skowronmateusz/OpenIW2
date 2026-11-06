@@ -97,6 +97,19 @@ void stance() {
     CHECK(in.buttons(false) & Button::Jump);
     in.key("SPACE", false);
     CHECK(!(in.buttons(false) & Button::Jump));
+    // Stance events (0x4bac21..0x4bac60) set the client stance, but not while +prone / +movedown is held.
+    ClientInput ev;
+    ev.stanceEvent(0x8d);
+    CHECK(ev.stance() == 1);
+    ev.stanceEvent(0x8e);
+    CHECK(ev.stance() == 2);
+    ev.stanceEvent(0x8c);
+    CHECK(ev.stance() == 0);
+    ev.stanceEvent(0x8f);
+    CHECK(ev.stance() == 0);
+    ev.command("+movedown", true, "X");
+    ev.stanceEvent(0x8d);
+    CHECK(ev.stance() == 0);
 }
 
 void adsAndWeapons() {

@@ -67,6 +67,7 @@ described in the code that reads them.
 | `IW2_SHOT_HEALTH=<hp>[,<trail>[,<phase ms>]]` | iw2view `--shot` | Sets the player health (a value <= 1 is a fraction of maxhealth), the health-bar trail fraction and how far into its pulse period the low-health background is. |
 | `IW2_SHOT_HINT=<n>` | iw2view `--shot` | Shows the invalid-command hint state `<n>` (1 no ammo, 2 no frag, 3 no smoke, 4 stand blocked, 5 crouch blocked) 300 ms into its blink cycle. |
 | `IW2_SHOT_OBJECTIVES=1` | iw2view `--shot` | Shows the objectives screen (menu objectiveinfo) as if +scores were held. |
+| `IW2_DEPTH_PROBE=1` | iw2view | Replaces the dynamic lights by one pass that paints every lit surface pure red through the l_point pipelines. A surface pixel left unpainted failed LessEqual against its own first pass: its vertex shaders disagree on depth. Use with `IW2_NO_HUD=1 IW2_NO_GLOW=1`. `=2` also leaves out the multiply surfaces, which otherwise darken the red. |
 | `IW2_BOLD_MESSAGE=<text>` | iw2view `--shot` | Shows a bold game message (iprintlnbold window). |
 
 ## Command-line options

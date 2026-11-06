@@ -26,6 +26,14 @@ and G `+frag`, 4 `+smoke`, B `+binoculars`, F `+activate`, R `+reload`, SPACE `+
   slots (primary, primaryb) when it has one. TODO(spec): the fallback over weapons outside the slots (0x4b72f0),
   `cg_weaponCycleDelay`.
 
+## Blocked stance changes
+A rise with no room (pmove 0x509d10) adds, unless usercmd bit 0x2000 is set, event 0x8d parm 1 from crouch, or 0x8e from prone
+with parm 2 (crouch blocked) or 1 (neither stand nor crouch fit). A stand request from prone that only fits crouched rises to
+crouch with no event. The cgame (0x4bac40 / 0x4bac60) sets the client stance to the event's stance, unless `+prone` or `+movedown`
+is held, then starts hint state 4 (parm 1) or 5 (parm 2) through 0x4ba880. So the wish becomes the blocked stance and the hint
+is raised once per stand attempt, for cg_invalidCmdHintDuration (1800 ms); it does not repeat while the player stays under cover.
+Releasing a held `+movedown` under cover is such an attempt, since the client stance is then still stand.
+
 ## usercmd buttons (CL_CmdButtons 0x409af0, stance 0x409500)
 
 Held or pressed since the last command: attack 0x1, melee 0x4, activate 0x8, reload 0x10, usereload 0x20, leanleft

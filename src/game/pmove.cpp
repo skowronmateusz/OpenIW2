@@ -472,7 +472,14 @@ void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& i
         const bool standRequest = in.stance == Stance::Stand;
         const Vec maxs{mp.maxs[0], mp.maxs[1], maxsZ(standRequest ? Stance::Stand : want, mp)};
         const TraceResult tr = w.trace(ps.origin, ps.origin, mp.mins, maxs, Contents::PlayerSolid);
-        if (tr.startSolid || tr.allSolid) {
+        bool blocked = tr.startSolid || tr.allSolid;
+        // A stand request from prone that has no room to stand still rises to crouch when the crouch box fits, without an event (0x50a1b3).
+        if (blocked && standRequest && ps.stance == Stance::Prone) {
+            const Vec crouchMaxs{mp.maxs[0], mp.maxs[1], maxsZ(Stance::Crouch, mp)};
+            const TraceResult ct = w.trace(ps.origin, ps.origin, mp.mins, crouchMaxs, Contents::PlayerSolid);
+            blocked = ct.startSolid || ct.allSolid;
+        }
+        if (blocked) {
             if (!in.stanceHeld) addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x8e : 0x8d, standRequest ? 1 : 2);
             return;
         }

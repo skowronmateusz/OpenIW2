@@ -4,6 +4,8 @@
 // The steel towers that carry the pipe block the player through the map's clip brushes.
 #include "fs/vfs.h"
 #include "game/collision.h"
+#include "game/clientinput.h"
+#include "game/pmove.h"
 #include "game/world.h"
 
 #include <cmath>
@@ -40,6 +42,30 @@ int main() {
         std::cout << "ring y " << ringY << ": static model " << found << ", bullet hit " << bulletHitsRing << ", box fraction "
                   << p.fraction << " material " << p.material << "\n";
         if (!found || !bulletHitsRing || !boxIgnoresRing) ++fails;
+    }
+    // Crouched in the pipe with a stand wish (a released +movedown): one blocked-rise event (0x8d parm 1), which turns the client
+    // stance to crouch, and no more while walking on.
+    {
+        ClientInput input;
+        PlayerState ps;
+        ps.origin = {-610, -3000, 362};
+        ps.stance = Stance::Crouch;
+        ps.viewHeightTarget = 40;
+        int blocked = 0, seen = 0;
+        for (int i = 0; i < 240; ++i) {
+            PlayerInput in;
+            in.forward = 1;
+            in.yaw = 90;
+            in.stance = input.stance() == 1 ? Stance::Crouch : input.stance() == 2 ? Stance::Prone : Stance::Stand;
+            playerMove(c, ps, in, 1.0f / 60.0f);
+            for (; seen < ps.eventSeq; ++seen) {
+                const int ev = ps.events[seen & 3];
+                if (ev == 0x8d && ps.eventParms[seen & 3] == 1) ++blocked;
+                input.stanceEvent(ev);
+            }
+        }
+        std::cout << "blocked rise events " << blocked << ", client stance " << input.stance() << "\n";
+        if (blocked != 1 || input.stance() != 1 || ps.stance != Stance::Crouch) ++fails;
     }
     // Tower legs (prop_pipetower_angleiron, no collision surfaces): a player walking into them is stopped by a clip brush.
     for (float legY : {-4023.0f, -3303.0f}) {

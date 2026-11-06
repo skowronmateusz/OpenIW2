@@ -52,6 +52,9 @@ public:
 
     int stance() const { return stance_; } // 0 stand, 1 crouch, 2 prone (client stance, 0x59b724 +8)
     void setStance(int s) { stance_ = s; }
+    // Player-state events 0x8c / 0x8d / 0x8e (cgame 0x4bac21..0x4bac60): the client stance becomes stand / crouch / prone, unless
+    // +prone or +movedown is held (client +0xc, kept by 0x408cd0). This is what ends a blocked rise after one event.
+    void stanceEvent(int ev) { if (ev >= 0x8c && ev <= 0x8e && !stanceLocked()) stance_ = ev - 0x8c; }
     bool adsToggled() const { return adsToggle_; }
     void clearAds() { adsToggle_ = false; } // map load (0x40e821)
     // weapnext / weapprev requests since the last call: +1 next, −1 previous, 0 none.

@@ -30,12 +30,15 @@ struct VertexOut {
     float3 eyeVec;
 };
 
-// Clip position of a world / model vertex, shared by every vertex shader that draws world or model surfaces: a decal that reuses
-// the triangles of the surface under it (same vertices, e.g. the trainyard pipe chalk on stalingradwinter_pipe_b) relies on
-// bit-identical depth to pass the LessEqual test without a polygon offset, so the expression must not differ between shaders.
+// Clip position of a world / model vertex, shared by every vertex shader that draws world or model surfaces. Every overlaid pass (a
+// decal reusing the triangles of the surface under it, the l_point light passes, the multiply fog pass) relies on bit-identical
+// depth to pass LessEqual. Sharing the source expression is not enough: with fast math the compiler contracts and reorders the
+// multiply-adds differently in each vertex function, depending on what else that function computes. Explicit fma calls fix the
+// rounding of every step, so vs_main and vs_spec agree on every vertex.
 static float4 world_clip(float4x4 viewProj, float4x4 model, float3 p, float depthBias) {
-    float4 c = viewProj * (model * float4(p, 1.0));
-    c.z += depthBias * c.w; // polygon offset: constant depth bias (D3DRS_DEPTHBIAS)
+    const float4 w = fma(model[2], float4(p.z), fma(model[1], float4(p.y), fma(model[0], float4(p.x), model[3])));
+    float4 c = fma(viewProj[3], float4(w.w), fma(viewProj[2], float4(w.z), fma(viewProj[1], float4(w.y), viewProj[0] * float4(w.x))));
+    c.z = fma(depthBias, c.w, c.z); // polygon offset: constant depth bias (D3DRS_DEPTHBIAS)
     return c;
 }
 
@@ -365,13 +368,14 @@ fragment float4 fs_glow_apply(GlowVOut in [[stage_in]], constant GlowU& u [[buff
 struct DLightU {
     float4 light;  // xyz position, w radius
     float4 color;  // rgb
-    float4 params; // x: alpha test
+    float4 params; // x: alpha test, y: depth probe
     float4 eye;
     float4 ramp[4]; // images/falloff_linear.iwi texels / 255 (16 x 1, bilinear, clamp)
 };
 fragment float4 fs_dlight(VertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], sampler s [[sampler(0)]]) {
     const float4 base = colorMap.sample(s, in.uv) * in.color;
     if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
+    if (u.params.y > 0.5) return float4(1.0, 0.0, 0.0, 1.0); // IW2_DEPTH_PROBE
     const float3 wp = in.eyeVec + u.eye.xyz;
     const float3 delta = (u.light.xyz - wp) / u.light.w;
     const float d = length(delta);
