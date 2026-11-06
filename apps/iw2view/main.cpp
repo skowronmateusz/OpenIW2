@@ -4848,6 +4848,8 @@ int main(int argc, char** argv) {
                 if (const auto* g = f->find(ch)) width += float(g->dx) * gs;
             return width;
         };
+        bool showFps = false; // F12, openiw2 feature: frame counter in the top right corner
+        int fpsShown = 0;
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
             menuScreenH = float(h);
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
@@ -6465,6 +6467,12 @@ int main(int argc, char** argv) {
             out.insert(out.end(), front.begin(), front.end());
             // Without menus the fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
             if (!fadeDrawn) drawScreenFade();
+            if (showFps)
+                if (const assets::Font* f = font("normalFont")) {
+                    const float fpsSc = float(h) / 480.0f;
+                    const uint8_t yellow[4] = {255, 255, 0, 255};
+                    hudText(out, std::to_string(fpsShown) + " FPS", float(w) - 8.0f * fpsSc, 20.0f * fpsSc, 0.3f * 48.0f / float(f->pixelHeight) * fpsSc, *f, yellow, 1.0f, 1.0f, 3);
+                }
             (void)c;
             return out;
         };
@@ -7106,6 +7114,8 @@ int main(int argc, char** argv) {
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
         else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
+        uint64_t fpsSince = SDL_GetTicksNS();
+        int fpsFrames = 0;
         // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
         auto playScripted = [&](const std::string& n) { return playCinematic(n, true, false, false); };
         if (const char* mv = std::getenv("IW2_PLAY_CINEMATIC")) { // debug: play video/<name>.roq (e.g. "iw_logo" or "legal!" for unskippable) first
@@ -7143,6 +7153,11 @@ int main(int argc, char** argv) {
             }
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
+                // F12 works everywhere and needs no cheats; only a BIND item waiting for a key takes it first.
+                if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.scancode == SDL_SCANCODE_F12 && !frontStack.capturing()) {
+                    showFps = !showFps;
+                    continue;
+                }
                 if (!frontStack.empty()) {
                     // The menus own the mouse (cursor), the keyboard navigation and ESC; key releases still reach the bindings.
                     if (ev.type == SDL_EVENT_MOUSE_MOTION) {
@@ -7272,6 +7287,12 @@ int main(int argc, char** argv) {
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
             frameDt = std::min(dt, 0.1f);
+            // The F12 counter shows the frames of the last half second, so that it stays readable.
+            ++fpsFrames;
+            if (now - fpsSince >= 500000000ull) {
+                fpsShown = int(double(fpsFrames) * 1e9 / double(now - fpsSince) + 0.5);
+                fpsFrames = 0, fpsSince = now;
+            }
             // The frame scale (time_slow) scales every Com_Frame msec (0x42eb70): player movement, weapon and view run at it too.
             const float simDt = game::scaledFrameTime(dt, slowmo);
             last = now;

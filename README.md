@@ -51,7 +51,7 @@ It starts in the game's main menu. Your profiles and saved games are kept in
 `~/Library/Logs/OpenIW2/` (`openiw2.log` and `openiw2.log.1`); attach it when you report a problem.
 
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
-opens the pause menu.
+opens the pause menu. `F12` shows or hides a frame rate counter in the top right corner (always available, not a cheat).
 
 ### Cheats and developer keys
 
