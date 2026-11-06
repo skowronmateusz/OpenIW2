@@ -28,6 +28,7 @@ int main() {
     const auto gm = iw2::ui::parseConfig(iw2::ui::formatConfig({{"r_gamma", "1.8"}, {"r_ignorehwgamma", "0"}, {"r_picmip", "1"}}));
     check(gm.size() == 2 && gm.at("r_gamma") == "1.8" && gm.at("r_ignorehwgamma") == "0", __LINE__);
     check(iw2::ui::registeredDefault("r_gamma") == "1" && iw2::ui::registeredDefault("r_ignorehwgamma") == "0", __LINE__);
+    check(iw2::ui::registeredDefault("ui_multiplayer") == "0", __LINE__);
     check(iw2::ui::registeredDefault("cg_hudGrenadeIconInScope") == "0" && iw2::ui::isArchivedCvar("cg_hudGrenadeIconInScope"), __LINE__);
     return failures ? 1 : 0;
 }
