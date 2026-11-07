@@ -147,7 +147,6 @@ void gunnerTest(iw2::fs::Vfs& vfs) {
     ts.target.reset();
     ts.engaged.reset(); // an engaged sentient would be suppressed at its last known position first
     ts.hitBy.reset();
-    gunner->obj->set("ignoreall", iw2::script::Value(int32_t(1)));
     gunner->obj->set("enemy", iw2::script::Value());
     ts.dropPitch = -40.0f;
     ts.pitch = -40.0f;

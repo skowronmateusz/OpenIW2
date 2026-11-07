@@ -68,11 +68,9 @@ void test(iw2::fs::Vfs& vfs, bool hitCase) {
         if (up->isActor && up->obj->get("team").toString() != own && up->obj->get("team").toString() != "neutral" && up->ai.stack[0] != AiTurret) threat = up.get();
     CHECK(threat);
     if (!threat) return;
-    threat->obj->set("ignoreall", Value(int32_t(1)));
     threat->obj->set("ignoreme", Value(int32_t(0)));
-    for (const Mount& m : all) m.gunner->obj->set("ignoreall", Value(int32_t(1)));
     // Nobody may target the gunner's side: the map keeps fighting and the animscripts' fire notetracks fire real bullets.
-    // The threat, staged next to the gun, keeps its own enemy (ignoreall is not read by the engine here) and its shots at
+    // The threat, staged next to the gun, keeps its own enemy (CoD2 has no ignoreall: neither the exe nor any shipped script has it) and its shots at
     // that enemy hit the gunner in between. A dead gunner leaves the turret (0x4fdc69), which then turns to the drop
     // pitch on its own (0x51d2e2), and case 4 would test nothing.
     for (const auto& up : w.entities())
@@ -169,7 +167,6 @@ void test(iw2::fs::Vfs& vfs, bool hitCase) {
     ts.hitBy = threat->obj;
     ts.yawConvergenceTime = ts.pitchConvergenceTime = 2.0f; // slow tracking turn
     ts.engageStartMs = w.timeMs();
-    gunner.obj->set("ignoreall", Value(int32_t(0))); // ignoreall would clear the enemy in the frame
     gunner.obj->set("favoriteenemy", Value(threat->obj));
     int frames = 0;
     bool levelling = false;
