@@ -121,6 +121,18 @@ void World::takeWeapon(Inventory& inv, const std::string& name) {
     if (inv.offhand == w) inv.offhand.clear();
 }
 
+void World::logLoadout(script::CallContext& c, const char* call, const std::string& arg) {
+    if (loadoutLog.size() >= 400) return;
+    const std::string bt = vm_.backtrace(c.thread); // " < file:line function [self ..] {local ..}" per frame, innermost last
+    std::string site = "?";
+    if (const size_t p = bt.rfind(" < "); p != std::string::npos) {
+        site = bt.substr(p + 3);
+        site = site.substr(0, site.find(" [self"));
+        site = site.substr(0, site.find(" {"));
+    }
+    loadoutLog.push_back({timeMs_, call, arg, site});
+}
+
 void World::registerInventoryBuiltins() {
     auto player = [this](CallContext& c) -> Entity& {
         Entity* e = entityOf(c.self);
@@ -157,6 +169,7 @@ void World::registerInventoryBuiltins() {
         Entity& p = player(c);
         Inventory& inv = inventory(p);
         const std::string w = known(c.arg(0));
+        logLoadout(c, "giveweapon", w);
         const bool had = inv.owned.count(w) != 0;
         const std::string cls = lowerCopy(weaponField(w, "weaponClass")), oc = lowerCopy(weaponField(w, "offhandClass"));
         const std::string slot = lowerCopy(weaponField(w, "weaponSlot"));
@@ -176,6 +189,7 @@ void World::registerInventoryBuiltins() {
     vm_.registerBuiltin("takeweapon", [this, player, known](CallContext& c) {
         Inventory& inv = inventory(player(c));
         const std::string w = known(c.arg(0));
+        logLoadout(c, "takeweapon", w);
         inv.ammo[weaponField(w, "ammoName")] = 0;
         inv.clip[weaponField(w, "clipName")] = 0;
         takeWeapon(inv, w);
@@ -183,6 +197,7 @@ void World::registerInventoryBuiltins() {
     });
     vm_.registerBuiltin("takeallweapons", [this, player](CallContext& c) {
         Entity& p = player(c);
+        logLoadout(c, "takeallweapons", "");
         inventory(p) = Inventory{};
         p.obj->set("$weapon", Value("none"));
         return Value();
@@ -246,6 +261,7 @@ void World::registerInventoryBuiltins() {
         Inventory& inv = inventory(p);
         const int s = slotIndex(c.arg(0).toString());
         const std::string w = lowerCopy(c.arg(1).toString());
+        logLoadout(c, "setweaponslotweapon", lowerCopy(c.arg(0).toString()) + " " + w);
         if (w != "none" && !weapon(w)) throw std::runtime_error("Unknown weapon " + c.arg(1).toString() + ".");
         if (w != "none") {
             const std::string ws = lowerCopy(weaponField(w, "weaponSlot"));

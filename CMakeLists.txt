@@ -92,7 +92,7 @@ add_library(iw2_game
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
-  src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/spawnchecks.cpp src/game/softlock.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
+  src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/spawnchecks.cpp src/game/softlock.cpp src/game/firemonitor.cpp src/game/inventorydiff.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
   src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
 target_include_directories(iw2_game PUBLIC src)
@@ -497,6 +497,12 @@ add_test(NAME spawndrop COMMAND test_spawndrop)
 add_executable(test_softlock tests/test_softlock.cpp)
 target_link_libraries(test_softlock PRIVATE iw2_game)
 add_test(NAME softlock COMMAND test_softlock)
+add_executable(test_firemonitor tests/test_firemonitor.cpp)
+target_link_libraries(test_firemonitor PRIVATE iw2_game)
+add_test(NAME firemonitor COMMAND test_firemonitor)
+add_executable(test_inventorydiff tests/test_inventorydiff.cpp)
+target_link_libraries(test_inventorydiff PRIVATE iw2_game)
+add_test(NAME inventorydiff COMMAND test_inventorydiff)
 add_executable(test_spawnchecks tests/test_spawnchecks.cpp)
 target_link_libraries(test_spawnchecks PRIVATE iw2_game)
 add_test(NAME spawnchecks COMMAND test_spawnchecks)

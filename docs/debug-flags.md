@@ -192,3 +192,48 @@ the key shows the localized "cheats not enabled" message. TODO(spec): the origin
 
 ## Brightness
 - Cvar `r_gamma` (`--cvar r_gamma=1.8` for iw2view, also the options slider; archived in the profile; 0.5 .. 3, default 1): the brightness ramp, applied to the whole frame by a final full-screen pass. `--cvar r_ignorehwgamma=1` turns the ramp off (the original's software path is not implemented). With `--shot`, `IW2_NO_HUD=1` avoids the level-start fade-in for brightness comparisons.
+
+## Fire rate (iw2game `--report`, tools/script_sweep.sh)
+A bug once made AI soldiers play their firing animation without ever calling `shoot`, on many maps, while the god-mode sweep only counted script errors
+and objectives. `--report` now has the AI fire counters (the monitor samples every 50 ms frame only when `--report` is given and never changes the run):
+- Report fields per team (`axis`, `allies`): `ai_shots_<team>` (bullets and rockets fired by AI: the `shoot` built-in, turret gunners, vehicle turrets, counted
+  for the gunner's team or the shooter's `team` field; the player's own shots are not counted), `ai_combat_secs_<team>` (seconds an actor of the team was alive
+  with a valid `enemy`), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
+  gunless or unteamed shooters such as map-placed turrets) and the silent shooters.
+- Silent shooter: an actor whose enemy was in line of sight (eye-to-eye trace) for 10 s in a row (gaps under 1 s ignored) without one shot. The line gives the
+  entity number, classname, position, start time and the number of shooting animations (nodes whose animation has a `fire` notetrack) started meanwhile.
+  It also catches behaviour that is not the animation bug (an actor that never shoots at a visible enemy, see the moscow finding below),
+  so a few stretches per run are normal on some maps: `SILENT:n` is flagged from 10 stretches per run (data below: 0..4 on most maps, 26 on decoytrenches).
+- Sweep flags (summary.md table column "fire flags" and section "Fire rate"): `NO-FIRE:team` (a team with at least 120 combat seconds fired nothing),
+  `LOW-RATE:team(rate<baseline)` (an autoplay run under 65% of `tools/firerate-baseline.txt`, the rate of a clean 400 s autoplay run of that map and team,
+  produced by `tools/script_sweep.sh --make-firerate-baseline --out DIR` from the `-s1-auto.txt` reports; only maps listed there are compared),
+  `SILENT:n`.
+- Data (seed 1, 400 s autoplay, axis / allies shots per combat minute, fix present vs the `noteSource` line of `AnimState::updateTime` removed):
+  decoytrenches 36.8 / 32.8 vs 34.2 / 14.7, toujane 48.0 / 8.3 vs 27.0 / 4.6, hill400_defend 12.1 / 38.1 vs 7.1 / 36.0, moscow 0.0 / 42.7 vs 0.0 / 8.4.
+  Without the fix one or both rates fall to 20-59% of the clean value on all four maps (so the sweep flags each of them), but the clean rates differ too
+  much between maps (8 to 48) for a global threshold, hence the per-map baseline. The silent-shooter count does not separate the two builds (decoytrenches
+  26 vs 37, others 1..9 vs 3..5): it points at actors that never shoot a visible enemy for whatever reason, not at this bug.
+- Open finding: on moscow the axis team has 433 combat seconds and fires no shot in either build (`NO-FIRE:axis`, the Wehrmacht actors there stay silent with
+  the player's side in sight for 36-47 s).
+
+## Inventory across level changes (iw2game `--carry-out` / `--carry-from` / `--inventory-check` / `--end-level`)
+Checks that the player's weapons survive the hand-over of a persistent level change (the path iw2view takes with `World::carriedPlayerState` /
+`setCarriedPlayer`):
+- `--end-level T`: at sim time T runs the mission-complete call of the shipped scripts (`_endmission.gsc` `nextmission`), so the real next map and the
+  persistent flag come out; the run stops at the level change (like `--autoplay` does).
+- `--carry-out FILE`: at a persistent level change writes the carried player state (current weapon, owned weapons, primary / primaryb, offhand, ammo and clip per
+  name, health) as text. Nothing is written for a non-persistent change (the next map starts from its own loadout).
+- `--carry-from FILE`: starts the map with that state (as iw2view would) and `--inventory-check S` (default 8) seconds into the run compares it with the
+  player's inventory, after the map's start scripts. Output: console block `[inventory ...]`, report section `[inventory]` and fields `inventory_checked`,
+  `inventory_lost`, `inventory_unexplained`. Lines: `lost weapon`, `gained weapon`, `slot`, `offhand`, `current weapon`, `ammo`, `clip` differences, then
+  `level scripts set the loadout: yes|no` with every `giveweapon` / `takeweapon` / `takeallweapons` / `setweaponslotweapon` call the scripts made
+  (time, argument, `file:line function`). A lost weapon is `EXPLAINED-LOSS` when the scripts took it (`takeallweapons`, `takeweapon` of it, or a
+  `setweaponslotweapon` into the slot it held) and `UNEXPLAINED-LOSS` otherwise: that is the real finding (a weapon that vanished with nothing taking it).
+  Gains, offhand and ammo changes are information (maps/_loadout.gsc and the level scripts hand out fixed weapons). A `giveweapon` the engine refuses
+  (both primary slots full) is a script runtime error in the same run.
+- Sweep: `tools/script_sweep.sh --carry [--maps "a b"] [--seconds 120]` autoplays each map, ends it 20 s before `--seconds` with `--end-level`, and for every run that
+  ended in a persistent change starts the next map with `--carry-from` (30 s, tag `carry-from-<map>`); `--full` does the same for the autoplay runs that
+  reached a persistent change by themselves. summary.md has the section "Inventory across level changes" and the table column "inventory" (lost/unexplained).
+- Manual: `iw2game <main> decoytrenches 120 --god --end-level 30 --carry-out a.carry`, then `iw2game <main> decoytown 30 --god --carry-from a.carry`.
+- Limits: only map pairs the scripts actually link through a persistent change are checked; the carried state is what the bot has at the change time, so the
+  bot's pickups are carried like a player's; a map with several exits only follows the one `nextmission` takes.

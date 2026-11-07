@@ -15,6 +15,7 @@
 #include "game/campaign.h"
 #include "game/fx.h"
 #include "game/fog.h"
+#include "game/firemonitor.h"
 #include "game/collision.h"
 #include "game/compassping.h"
 #include "game/friendlychain.h"
@@ -982,8 +983,16 @@ public:
                       const TraceResult& tr, Entity* hit);
     int64_t lastBloodMs_ = -100000; // time of the last flesh impact with blood (0xf7e8c0)
     bool canSee(Entity& from, Entity& to);
+    void noteAiShot(const Entity& shooter, const Entity* attacker);
     struct Stats { int shots = 0, hits = 0, kills = 0, grenades = 0, grenadeExplosions = 0, bulletImpacts = 0, lookatTouches = 0, bulletPenetrations = 0, playerNoise = 0, actorNoise = 0, actorFoliage = 0, floatingActors = 0, groundHit = 0, groundMiss = 0, grenadeFlee = 0, grenadeCower = 0, grenadeFleeRetry = 0, rockets = 0, followLinks = 0, followReleases = 0, waterSplashes = 0; } stats;
     const PathGraph& paths() const { return paths_; }
+    // Debug: the player-inventory calls the scripts made (giveweapon, takeweapon, takeallweapons, setweaponslotweapon), with the call
+    // site; iw2game --inventory-check compares them with the inventory carried over a level change.
+    struct LoadoutEvent { int64_t ms = 0; std::string call, arg, site; };
+    std::vector<LoadoutEvent> loadoutLog;
+    void logLoadout(script::CallContext& c, const char* call, const std::string& arg);
+    FireMonitor fireMon; // AI fire-rate counters (iw2game --report); sampled only when fireMon.enabled
+    void sampleFireMonitor(); // one 50 ms step of the monitor (combat.cpp)
 
 private:
     Entity& spawnEntity(const std::string& classname);

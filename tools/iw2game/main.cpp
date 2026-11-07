@@ -16,6 +16,7 @@
 #include "game/playerweapon.h"
 #include "game/savestate.h"
 #include "game/softlock.h"
+#include "game/inventorydiff.h"
 #include "game/world.h"
 
 #include <algorithm>
@@ -696,6 +697,12 @@ int main(int argc, char** argv) {
         // desertion, minefield triggers); --autoplay-skip a,b adds more.
         std::vector<std::string> autoplaySkip = {"killplayer", "kill_player", "playerkill", "desert", "awol", "minefield", "missionfail", "wrongway", "shoot_prisoner"};
         float stallSecs = 25.0f;
+        // --carry-out FILE: at the first persistent level change writes the player state handed to the next map. --carry-from FILE: starts
+        // with that state (what iw2view hands over) and, --inventory-check S (default 8) seconds in, compares it with the inventory.
+        std::string carryOut, carryFrom;
+        double endLevelAt = -1; // --end-level T: at sim time T starts maps/_endmission.gsc nextmission (what a finished mission calls), stops at the change
+        bool endLevelDone = false;
+        double inventoryCheckSecs = -1;
         std::string reportFile; // --report FILE: machine-readable summary of the run (errors, built-ins, objectives, stalls, actions)
         std::vector<std::string> targets; // --targets FILE: the level notifies a complete run of this map reaches (`map: a b c` lines), "reached k of n"
         for (int i = 3; i < argc; ++i) {
@@ -789,6 +796,14 @@ int main(int argc, char** argv) {
                 }
             } else if (a == "--autoplay-force") {
                 autoplay = autoplayForce = true;
+            } else if (a == "--end-level" && i + 1 < argc) {
+                endLevelAt = std::atof(argv[++i]);
+            } else if (a == "--carry-out" && i + 1 < argc) {
+                carryOut = argv[++i];
+            } else if (a == "--carry-from" && i + 1 < argc) {
+                carryFrom = argv[++i];
+            } else if (a == "--inventory-check" && i + 1 < argc) {
+                inventoryCheckSecs = std::atof(argv[++i]);
             } else if (a == "--report" && i + 1 < argc) {
                 reportFile = argv[++i];
             } else if (a == "--targets" && i + 1 < argc) {
@@ -874,6 +889,18 @@ int main(int argc, char** argv) {
             }
         };
         const auto t0 = std::chrono::steady_clock::now();
+        world.fireMon.enabled = !reportFile.empty();
+        std::optional<iw2::game::World::CarriedPlayer> carriedIn;
+        if (!carryFrom.empty()) {
+            std::ifstream cf(carryFrom);
+            carriedIn = iw2::game::parseCarried(std::string((std::istreambuf_iterator<char>(cf)), {}));
+            if (!carriedIn) throw std::runtime_error(carryFrom + ": not a carried player state");
+            world.setCarriedPlayer(*carriedIn);
+            if (inventoryCheckSecs < 0) inventoryCheckSecs = 8;
+        }
+        bool carryWritten = false, inventoryChecked = false;
+        std::vector<std::string> inventoryLines;
+        int inventoryLost = 0, inventoryUnexplained = 0;
         if (!loadFile.empty()) {
             std::ifstream lf(loadFile, std::ios::binary);
             const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(lf)), {});
@@ -1538,6 +1565,10 @@ int main(int argc, char** argv) {
                     world.queueSave(it->second, "iw2game --save-at", "$default", 0, 6);
                     it = saveAts.erase(it);
                 } else ++it;
+            if (endLevelAt >= 0 && !endLevelDone && world.timeMs() >= int64_t(endLevelAt * 1000.0)) {
+                endLevelDone = true;
+                world.vm().start("maps/_endmission.gsc", "nextmission", {}, iw2::script::Value(world.vm().level()));
+            }
             world.frame();
             if (mixer) { // advance the unheard mixer by one 50 ms frame so finished voices leave their slots
                 if (const auto* pl = world.player()) {
@@ -1551,16 +1582,34 @@ int main(int argc, char** argv) {
             }
             if (auto ch = world.takeDueLevelChange()) { // 0x4d9f90: the change falls due (iw2game does not load the next map)
                 lastChange = ch;
+                if (!carryOut.empty() && !carryWritten && ch->persistent && world.player()) {
+                    if (auto cp = world.carriedPlayerState()) {
+                        std::ofstream cof(carryOut);
+                        cof << iw2::game::serializeCarried(*cp);
+                        carryWritten = true;
+                    }
+                }
                 std::cout << "[" << world.timeMs() << " ms] level change to " << ch->map << (ch->persistent ? " (persistent)" : "")
                           << (ch->victoryScreen ? ": openvictoryscreen, nextlevel loads it" : ch->failed ? " (failed)" : "") << "\n";
             }
             writeSaves();
+            if (carriedIn && !inventoryChecked && inventoryCheckSecs >= 0 && world.player() && world.timeMs() >= int64_t(inventoryCheckSecs * 1000)) {
+                inventoryChecked = true;
+                const auto& inv = world.inventory(*world.player());
+                const auto d = iw2::game::diffInventory(carriedIn->inventory, carriedIn->weapon, inv, world.player()->obj->get("$weapon").toString());
+                const auto v = iw2::game::judgeInventory(carriedIn->inventory, d, world.loadoutLog);
+                inventoryLost = int(d.lost.size());
+                inventoryUnexplained = int(v.unexplainedLost.size());
+                inventoryLines = iw2::game::formatInventoryReport(d, v, world.loadoutLog);
+                std::cout << "[inventory " << world.timeMs() << " ms] carried in vs now:\n";
+                for (const auto& l : inventoryLines) std::cout << "    " << l << "\n";
+            }
             for (int i = 0; i < 16; ++i)
                 if (world.objectives()[size_t(i)].state != objStates[size_t(i)]) {
                     objStates[size_t(i)] = world.objectives()[size_t(i)].state;
                     lastProgressT = f * 0.05f;
                 }
-            if (autoplay && lastChange) break; // the level ends (victory screen, load, mission failed): nothing more to follow
+            if ((autoplay || endLevelAt >= 0) && lastChange) break; // the level ends (victory screen, load, mission failed): nothing more to follow
             if (lastProgressT != lastSeenProgressT) { lastSeenProgressT = lastProgressT; actionsSinceProgress = 0; }
             if (autoplay && world.player() && f % 40 == 0) // when each "death" wait first showed up (the kill gate takes the oldest wave first)
                 for (const auto& w : world.vm().waiters())
@@ -2462,6 +2511,18 @@ int main(int argc, char** argv) {
             r << "stalls " << stallCount << "\n";
             r << "forced " << forcedEvents.size() << "\n";
             const auto softlock = iw2::game::analyzeSoftlocks(world);
+            world.fireMon.endRun();
+            for (const char* team : {"axis", "allies"}) {
+                const auto it = world.fireMon.teams().find(team);
+                const iw2::game::FireMonitor::TeamTotals t = it == world.fireMon.teams().end() ? iw2::game::FireMonitor::TeamTotals{} : it->second;
+                char fb[160];
+                std::snprintf(fb, sizeof fb, "ai_shots_%s %d\nai_combat_secs_%s %.1f\nai_shots_per_min_%s %.1f\n", team, t.shots, team, t.combatSecs, team, t.shotsPerMinute());
+                r << fb;
+            }
+            r << "silent_shooters " << world.fireMon.silent().size() << "\n";
+            r << "inventory_checked " << (inventoryChecked ? 1 : 0) << "\n";
+            r << "inventory_lost " << inventoryLost << "\n";
+            r << "inventory_unexplained " << inventoryUnexplained << "\n";
             r << "softlock_groups " << softlock.softlockGroups() << "\n";
             r << "softlock_groups_unwaited " << softlock.unwaitedSoftlockGroups() << "\n";
             r << "short_spawners " << softlock.shortSpawners.size() << "\n";
@@ -2498,6 +2559,20 @@ int main(int argc, char** argv) {
             for (const auto& d : world.vm().describeThreads())
                 if (d.rfind("maps/", 0) == 0) ++sites[d];
             for (const auto& [k, n] : sites) r << n << " " << k << "\n";
+            r << "[firerate]\n"; // docs/debug-flags.md "Fire rate": silent shooters (enemy in sight, firing animation, no shot)
+            for (const auto& [team, t] : world.fireMon.teams()) {
+                char fb[160];
+                std::snprintf(fb, sizeof fb, "team %s shots %d combat_secs %.1f shots_per_min %.1f fire_anim_starts %d", team.c_str(), t.shots, t.combatSecs, t.shotsPerMinute(), t.animStarts);
+                r << fb << "\n";
+            }
+            for (const auto& ss : world.fireMon.silent()) {
+                char fb[256];
+                std::snprintf(fb, sizeof fb, "SILENT-SHOOTER #%d %s %s at %.0f,%.0f,%.0f from %.1f s: enemy in sight %.1f s, %d firing animation starts, no shot", ss.number, ss.classname.c_str(),
+                              ss.team.c_str(), ss.pos[0], ss.pos[1], ss.pos[2], ss.startSecs, ss.visibleSecs, ss.animStarts);
+                r << fb << "\n";
+            }
+            r << "[inventory]\n"; // docs/debug-flags.md "Inventory across level changes"
+            for (const auto& l : inventoryLines) r << l << "\n";
             r << "[softlock]\n"; // docs/debug-flags.md: AI-group waits, spawner statistics, level waits that no thread names
             r << "untouched_spawners " << softlock.untouchedSpawners << "\n";
             for (const auto& l : iw2::game::formatSoftlockReport(softlock, true)) r << l << "\n";

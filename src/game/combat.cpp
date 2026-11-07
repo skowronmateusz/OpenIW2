@@ -202,6 +202,38 @@ Vec3 World::eyePosition(Entity& e) {
     return add(o, {0, 0, p == "prone" ? 12.0f : p == "crouch" ? 40.0f : 60.0f});
 }
 
+// Fire-rate monitor (debug): an AI shot is any bullet or rocket whose shooter is not the player and not the world; a turret or vehicle
+// counts for its gunner's team (the attacker), else its own team field.
+void World::noteAiShot(const Entity& shooter, const Entity* attacker) {
+    if (!fireMon.enabled || shooter.isPlayer || (attacker && attacker->isPlayer)) return;
+    const Entity* who = attacker && attacker->isActor ? attacker : &shooter;
+    if (!who->isActor && who->obj->get("team").toString().empty()) return;
+    fireMon.shot(shooter.number, who->obj->get("team").toString());
+}
+
+void World::sampleFireMonitor() {
+    if (!fireMon.enabled) return;
+    fireMon.tick(0.05);
+    for (const auto& up : entities_) {
+        Entity& e = *up;
+        if (!e.isActor) continue;
+        if (!isAlive(e)) {
+            fireMon.closeActor(e.number);
+            continue;
+        }
+        FireMonitor::Sample s;
+        s.number = e.number;
+        s.classname = e.classname;
+        s.team = e.obj->get("team").toString();
+        s.pos = e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0};
+        Entity* en = entityOf(e.obj->get("enemy"));
+        s.hasEnemy = en && isAlive(*en);
+        s.enemyVisible = s.hasEnemy && canSee(e, *en);
+        if (e.anim) s.fireAnimStarts = e.anim->fireAnimStarts;
+        fireMon.sample(s, 0.05);
+    }
+}
+
 bool World::canSee(Entity& from, Entity& to) {
     const Vec3 a = eyePosition(from), b = eyePosition(to);
     const TraceResult tr = collision_->trace(a, b, {0, 0, 0}, {0, 0, 0}, Contents::Solid);
@@ -598,6 +630,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     bulletImpact(shooter, def, start, end, tr, hit);
     if (depth == 0) {
         ++stats.shots;
+        noteAiShot(shooter, attacker);
         if (def) playWeaponFireSound(shooter, *def, start, playerLastShot_);
     }
     // Penetration (0x531665): a hit on contents 0x10 goes on from just behind the hit point towards the same end with the

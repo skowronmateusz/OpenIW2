@@ -190,6 +190,13 @@ void AnimState::set(int n, const SetArgs& a) {
         // 0x4790a2..0x4790d2: a flagged synced blend node takes its notetrack leaf now; any other node has none.
         const auto& tn = nodes[size_t(node)];
         s.noteSource = !notify.empty() && !tn.children.empty() && (tn.syncFlags & 3) ? noteSourceOf(node) : 0;
+        if (const int leaf = tn.children.empty() ? node : s.noteSource; !notify.empty() && leaf > 0)
+            if (const assets::XAnim* an = nodeAnim(leaf))
+                for (const auto& note : an->notes)
+                    if (note.name == "fire") {
+                        ++fireAnimStarts;
+                        break;
+                    }
     };
     if (a.knob || a.knobAllRoot >= 0) knobSiblings(n, weight, a.blendTime);
     setNode(n, weight, a.rate, a.notify);

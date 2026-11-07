@@ -62,6 +62,7 @@ Entity& World::spawnRocket(Entity& parent, const std::string& weaponName, const 
     if (!model.empty()) e.obj->set("model", Value(model));
     rockets_.push_back(&e);
     ++stats.rockets;
+    noteAiShot(parent, &parent);
     // CG_Missile (0x4ab3af): the weapon's projTrailEffect (+0x458, handle weapon info +0x170) is played once (cent +0x143),
     // bolted (0x4853f0) on the missile's tag_origin (scr const 0x1c7f144, 0x47eec0). Queued here at the launch.
     // projectileDLight: CG_Missile (0x4ab3fe..0x4ab43c) adds, when the weapon info's radius +0x14c is not 0,

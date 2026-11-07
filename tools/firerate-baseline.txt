@@ -1,0 +1,8 @@
+# Clean autoplay AI shots per combat minute (seed 1): '<map> <team> <rate>'. tools/script_sweep.sh flags a run under 65% of it.
+decoytrenches axis 36.8
+decoytrenches allies 32.8
+hill400_defend axis 12.1
+hill400_defend allies 38.1
+moscow allies 42.7
+toujane axis 48.0
+toujane allies 8.3

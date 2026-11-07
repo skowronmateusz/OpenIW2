@@ -5,6 +5,10 @@
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --smoke [--bin build/iw2game]          (the ctest subset; exit 1 on any finding)
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --determinism [--maps "a b"] [--seconds 120]
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --reload --maps "a b" [--seconds 600]  (reload every autosave, compare with the unbroken run)
+#   IW2_MAIN=<main dir> tools/script_sweep.sh --carry [--maps "a b"] [--seconds 200]    (autoplay each map, end it with the mission-complete call, then start the next map with the carried player and compare the inventory)
+#   IW2_MAIN=<main dir> tools/script_sweep.sh --make-firerate-baseline --out DIR      (print tools/firerate-baseline.txt lines from the autoplay reports in DIR)
+#   --full also writes the fire-rate flags (AI shots per combat minute, silent shooters) and the inventory checks of the maps whose autoplay run ended in a
+#   persistent level change into summary.md; see docs/debug-flags.md "Fire rate" and "Inventory across level changes".
 #
 # Every run is `iw2game <main> <map> <seconds> --god --answer-menus ok,... --report <file>`; the full sweep runs each map plain and
 # with --autoplay (a god-mode bot that enters the triggers the scripts wait for and kills the actors they wait the death of).
@@ -22,8 +26,9 @@ maps=""
 force=""
 while [ $# -gt 0 ]; do
     case "$1" in
-    --full | --smoke | --determinism | --summarize | --reload) mode="${1#--}" ;;
+    --full | --smoke | --determinism | --summarize | --reload | --carry) mode="${1#--}" ;;
     --make-targets) mode="make_targets" ;;
+    --make-firerate-baseline) mode="make_firerate_baseline" ;;
     --bin) bin="$2"; shift ;;
     --seeds) seeds="$2"; shift ;;
     --seconds) seconds="$2"; shift ;;
@@ -65,6 +70,8 @@ run() {
         esac
     fi
     local base="$out/$map-s$seed-$tag"
+    # Autoplay runs keep the player state a persistent level change would hand over (checked by carry_checks).
+    [ "$tag" = auto ] && set -- "$@" --carry-out "$base.carry"
     IW2_SCRIPT_SEED=$seed "$bin" "$IW2_MAIN" "$map" "$secs" --god --answer-menus "$answers" --report "$base.txt" $targets_opt "$@" > "$base.log" 2>&1
     local rc=$?
     [ $rc -eq 0 ] || echo "exit $rc" >> "$base.txt"
@@ -132,7 +139,66 @@ do_full() {
     done
     wait
     wall=$(( $(date +%s) - started ))
+    carry_checks
     write_summary
+}
+# --carry: autoplay each map and end it 20 s before --seconds (iw2game --end-level: what a finished mission calls, so the real next map and the
+# persistent flag come out), then the carry checks. Use a short --seconds (120..300): the bot picks up what it finds meanwhile.
+do_carry() {
+    started=$(date +%s)
+    for m in $maps; do
+        run "$m" 1 "$seconds" auto --autoplay $force --end-level $(( seconds > 40 ? seconds - 20 : 20 )) &
+        while [ "$(jobs -r | wc -l)" -ge "$jobs" ]; do sleep 1; done
+    done
+    wait
+    wall=$(( $(date +%s) - started ))
+    carry_checks
+    write_summary
+}
+# For every autoplay run that ended in a persistent level change to a map of the campaign: start that map with the carried player
+# state (iw2game --carry-from) and compare it with the inventory 8 s in, after the start scripts (report section [inventory]).
+carry_checks() {
+    local c m seed next
+    for c in "$out"/*-s*-auto.carry; do
+        [ -f "$c" ] || continue
+        m=$(basename "$c" .carry); m=${m%-s*}
+        seed=$(basename "$c" .carry); seed=${seed#*-s}; seed=${seed%%-*}
+        next=$(field "${c%.carry}.txt" level_change); next=${next%% *}
+        [ -n "$next" ] || continue
+        all_maps | grep -qx "$next" || continue
+        run "$next" "$seed" 30 "carry-from-$m" --carry-from "$c" --inventory-check 8 &
+        while [ "$(jobs -r | wc -l)" -ge "$jobs" ]; do sleep 1; done
+    done
+    wait
+}
+# Fire-rate flags of one report (tools/firerate-baseline.txt: `map team shots-per-combat-minute` of a clean autoplay run):
+#   NO-FIRE:team     a team with at least 120 combat seconds fired no shot
+#   LOW-RATE:team    an autoplay run whose rate is under 65% of the baseline of that map and team (the animation-note bug cut it to 20..56%)
+#   SILENT:n         10 or more silent-shooter stretches (an enemy in sight for 10 s or more, no shot)
+fire_flags() {
+    local r=$1 map=$2 tag=$3 f="" t secs shots rate base v
+    for t in axis allies; do
+        secs=$(field "$r" ai_combat_secs_$t); shots=$(field "$r" ai_shots_$t); rate=$(field "$r" ai_shots_per_min_$t)
+        [ -n "$secs" ] || continue
+        if awk -v s="$secs" -v n="$shots" 'BEGIN { exit !(s >= 120 && n == 0) }'; then f="$f NO-FIRE:$t"; fi
+        if [ "$tag" = auto ] && [ -f "$here/tools/firerate-baseline.txt" ]; then
+            base=$(awk -v m="$map" -v t="$t" '$1 == m && $2 == t { print $3; exit }' "$here/tools/firerate-baseline.txt")
+            if [ -n "$base" ] && awk -v s="$secs" -v r="$rate" -v b="$base" 'BEGIN { exit !(s >= 120 && r < 0.65 * b) }'; then f="$f LOW-RATE:$t($rate<$base)"; fi
+        fi
+    done
+    v=$(field "$r" silent_shooters)
+    [ "${v:-0}" -ge 10 ] && f="$f SILENT:$v"
+    echo "${f# }"
+}
+do_make_firerate_baseline() {
+    echo "# Clean autoplay AI shots per combat minute (seed 1): '<map> <team> <rate>'. tools/script_sweep.sh flags a run under 65% of it."
+    for r in "$out"/*-s1-auto.txt; do
+        [ -f "$r" ] || continue
+        m=$(basename "$r" .txt); m=${m%-s*}
+        for t in axis allies; do
+            awk -v m="$m" -v t="$t" '$1 == "ai_combat_secs_" t { s = $2 } $1 == "ai_shots_per_min_" t { r = $2 } END { if (s >= 120 && r > 0) printf "%s %s %.1f\n", m, t, r }' "$r"
+        done
+    done
 }
 do_summarize() { wall=0; seconds="?"; seeds="?"; write_summary; }
 # --make-targets --out DIR: print a campaign-targets file from the reports in DIR: per map, every level notify any run reached
@@ -155,13 +221,13 @@ write_summary() {
     {
         echo "# Script sweep $(date '+%Y-%m-%d %H:%M'), $seconds s, seeds: $seeds, $wall s wall"
         echo
-        echo "| map | seed | mode | errors | loop kills | missing built-ins | objectives done | stages | notifies | stalls | softlock | short | dead waits | forced | level change | exit |"
-        echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        echo "| map | seed | mode | errors | loop kills | missing built-ins | objectives done | stages | notifies | stalls | softlock | short | dead waits | forced | level change | axis shots/min | allies shots/min | silent | fire flags | inventory | exit |"
+        echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         for r in "$out"/*-s*-*.txt; do
             b=$(basename "$r" .txt)
             m=${b%-s*}; rest=${b#*-s}; seed=${rest%%-*}; tag=${rest#*-}
             stages="$(field "$r" targets_reached)/$(field "$r" targets_total)"
-            echo "| $m | $seed | $tag | $(field "$r" runtime_errors) | $(field "$r" loop_guard_kills) | $(field "$r" unimplemented_builtins) | $(count_done_objectives "$r") | $stages | $(field "$r" notifies) | $(field "$r" stalls) | $(field "$r" softlock_groups) | $(field "$r" short_spawners) | $(field "$r" dead_spawn_waits) | $(field "$r" forced) | $(field "$r" level_change) | $(field "$r" exit) |"
+            echo "| $m | $seed | $tag | $(field "$r" runtime_errors) | $(field "$r" loop_guard_kills) | $(field "$r" unimplemented_builtins) | $(count_done_objectives "$r") | $stages | $(field "$r" notifies) | $(field "$r" stalls) | $(field "$r" softlock_groups) | $(field "$r" short_spawners) | $(field "$r" dead_spawn_waits) | $(field "$r" forced) | $(field "$r" level_change) | $(field "$r" ai_shots_per_min_axis) | $(field "$r" ai_shots_per_min_allies) | $(field "$r" silent_shooters) | $(fire_flags "$r" "$m" "$tag") | $(field "$r" inventory_lost)/$(field "$r" inventory_unexplained) | $(field "$r" exit) |"
         done
         echo
         echo "## Missed stages per autoplay run"
@@ -182,6 +248,22 @@ write_summary() {
         echo "## Soft-locks: AI groups with spawners nothing can start, and flood spawners that stopped short"
         for r in "$out"/*-s*-*.txt; do
             awk -v b="$(basename "$r" .txt)" '/^\[softlock\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s && /^(SOFTLOCK|SHORT-SPAWNER|DEAD-SPAWN-WAIT)/ { print "- " b ": " $0; g = ($1 == "SOFTLOCK") } s && g && /^    / { print "  " $0 } s && /^(group|spawner|levelwait|untouched)/ { g = 0 }' "$r"
+        done
+        echo
+        echo "## Fire rate: flagged runs (AI shots per combat minute; flags in docs/debug-flags.md) and their silent shooters"
+        for r in "$out"/*-s*-*.txt; do
+            b=$(basename "$r" .txt); m=${b%-s*}; rest=${b#*-s}; tag=${rest#*-}
+            fl=$(fire_flags "$r" "$m" "$tag")
+            [ -n "$fl" ] || continue
+            echo "- $b: $fl"
+            awk '/^\[firerate\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s && /^SILENT-SHOOTER/ && n++ < 5 { print "    " $0 }' "$r"
+        done
+        echo
+        echo "## Inventory across level changes (carried player state vs the inventory 8 s into the next map)"
+        for r in "$out"/*-s*-carry-from-*.txt; do
+            [ -f "$r" ] || continue
+            echo "- $(basename "$r" .txt): lost weapons $(field "$r" inventory_lost), unexplained $(field "$r" inventory_unexplained)"
+            awk '/^\[inventory\]/ { s = 1; next } /^\[[a-z_]+\]$/ { s = 0 } s { print "    " $0 }' "$r"
         done
         echo
         echo "## Stalls: autoplay runs that ran out of triggers and kill gates"

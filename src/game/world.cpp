@@ -794,6 +794,7 @@ void World::frame(bool advanceTime) {
         if (Entity* v = entityByNumber(player_->usingVehicle)) runEntity(*v);
     runEntityPass(); // stage 8
     debugActorCounts();
+    sampleFireMonitor();
     updatePlayerLink(); // ClientEndFrame (0x4e7f90, 0x4db144) after the entity pass
     edgeButtons_ = 0;   // ... which clears the went-down button bits (client +0x8640)
     trimCorpses();      // 0x4db159

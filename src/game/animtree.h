@@ -129,6 +129,9 @@ public:
     }
 
     float time(int n) const { return nodes_[size_t(n)].time; }
+    // Debug (fire-rate monitor): how many times a node with a notify name was set whose animation (the leaf, or a synced blend
+    // node's note source) has a "fire" notetrack, i.e. a shooting animation the animscripts wait on; not saved.
+    int fireAnimStarts = 0;
     const AnimTree& tree() const { return tree_; }
 
     // Savegame: the per-node playback state (one entry per tree node).
