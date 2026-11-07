@@ -227,7 +227,10 @@ void World::sampleFireMonitor() {
         s.team = e.obj->get("team").toString();
         s.pos = e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0};
         Entity* en = entityOf(e.obj->get("enemy"));
-        s.hasEnemy = en && isAlive(*en);
+        // An actor held in the scripted state (riders, scenes: the state's animscript only waits for killanimscript) cannot fire, so its
+        // time with an enemy is no combat time and it is no silent shooter.
+        const bool scripted = std::find(e.ai.stack.begin(), e.ai.stack.begin() + e.ai.depth + 1, int(AiScripted)) != e.ai.stack.begin() + e.ai.depth + 1;
+        s.hasEnemy = !scripted && en && isAlive(*en);
         s.enemyVisible = s.hasEnemy && canSee(e, *en);
         if (e.anim) s.fireAnimStarts = e.anim->fireAnimStarts;
         fireMon.sample(s, 0.05);

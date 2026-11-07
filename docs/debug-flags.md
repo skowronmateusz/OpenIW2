@@ -198,7 +198,7 @@ A bug once made AI soldiers play their firing animation without ever calling `sh
 and objectives. `--report` now has the AI fire counters (the monitor samples every 50 ms frame only when `--report` is given and never changes the run):
 - Report fields per team (`axis`, `allies`): `ai_shots_<team>` (bullets and rockets fired by AI: the `shoot` built-in, turret gunners, vehicle turrets, counted
   for the gunner's team or the shooter's `team` field; the player's own shots are not counted), `ai_combat_secs_<team>` (seconds an actor of the team was alive
-  with a valid `enemy`), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
+  with a valid `enemy`, not held in the scripted state: riders and scene actors cannot fire), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
   gunless or unteamed shooters such as map-placed turrets) and the silent shooters.
 - Silent shooter: an actor whose enemy was in line of sight (eye-to-eye trace) for 10 s in a row (gaps under 1 s ignored) without one shot. The line gives the
   entity number, classname, position, start time and the number of shooting animations (nodes whose animation has a `fire` notetrack) started meanwhile.
@@ -213,8 +213,14 @@ and objectives. `--report` now has the AI fire counters (the monitor samples eve
   Without the fix one or both rates fall to 20-59% of the clean value on all four maps (so the sweep flags each of them), but the clean rates differ too
   much between maps (8 to 48) for a global threshold, hence the per-map baseline. The silent-shooter count does not separate the two builds (decoytrenches
   26 vs 37, others 1..9 vs 3..5): it points at actors that never shoot a visible enemy for whatever reason, not at this bug.
-- Open finding: on moscow the axis team has 433 combat seconds and fires no shot in either build (`NO-FIRE:axis`, the Wehrmacht actors there stay silent with
-  the player's side in sight for 36-47 s).
+- Moscow `NO-FIRE:axis` (seed 1) is not an engine gap. The run ends at 1426 s with a mission failure (maps/moscow.gsc:2598 melee_scene_damage, after the
+  autoplay kill gate), before any German infantry fight. Nearly all of the 433 axis combat seconds belong to the four riders of the `smoke_halftrack`
+  vehicle (map entity at 1170,200,-171, `script_vehicleride 2`, `script_vehiclestartmove 2`). They sit in the halftrack's idle loop
+  (maps/_halftrack.gsc:366 guy_idle, animscripted until `unload`, state `scripted`, which only waits for `killanimscript`: animscripts/scripted.gsc:41)
+  and never fire by design. `unload` comes at the end of the vehicle path (maps/_vehicle.gsc:1159-1164), and the path starts only when the player
+  enters the startmove-2 `trigger_radius` at 598,-128,-165, which the seed-1 bot never reaches. The rest are three `last_guys` with no line of sight
+  (27 s). In that section the halftrack's own MG fires as an unmanned turret (counted under `undefined`). With seed 2 the bot gets to 1852 s and the
+  axis fire 1134 shots in 3010 combat seconds (22.6 per minute). The only silent shooters are the same riders, so moscow has no axis baseline.
 
 ## Inventory across level changes (iw2game `--carry-out` / `--carry-from` / `--inventory-check` / `--end-level`)
 Checks that the player's weapons survive the hand-over of a persistent level change (the path iw2view takes with `World::carriedPlayerState` /
