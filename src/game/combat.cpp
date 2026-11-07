@@ -319,7 +319,13 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // (0x5a95ac). Script models (handler 0xd) and brush models (0xc) have no pain or die callback (0x5a5744 /
     // 0x5a5748), so they stay damageable. Spawn health: "health" is an int spawn key stored at ent+0x13c (field tables 0x16f518 / 0x170868), the
     // entity memory is zeroed otherwise, so the key or 0 is exact. The kill counter 0x82552c (0x5284b8) has no reader, so it is not modelled.
+    // openiw2 hit marker: the player's shot (also through the vehicle he uses, e.g. a flak88, whose fire credits the vehicle)
+    // on a living enemy actor, or on an enemy drone (a script_model with a team, maps/_drones.gsc).
+    const bool byPlayer = attacker && (attacker->isPlayer || (attacker->vehicle && player_ && player_->usingVehicle == attacker->number));
+    const std::string playerTeam = player_ ? player_->obj->get("team").toString() : std::string();
     if (!target.isActor && !target.isPlayer) {
+        if (target.classname == "script_model" && hitMarkerTrigger(byPlayer, true, true, playerTeam, target.obj->get("team").toString(), amount))
+            hitMarkerMs_ = timeMs_; // a drone: a hit only (its death is the drone script's, so no kill marker)
         const Value hv = target.obj->get("health");
         int health = (hv.isNumber() ? hv.asInt() : 0) - amount;
         if (health < -999) health = -999;
@@ -333,8 +339,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // part not taken goes out as "damage_armor" (0x1c7f05a, same arguments as "damage"); +0xb4 asks the think for the
     // delayed death (0x4ff215, actorDelayedDeath). An actor already at 1 health takes nothing and leaves at 0x5283cc.
     // openiw2 hit marker: decided on the amount before the held-back part is taken off, so a lethal hit on a held actor still counts.
-    const bool markerHit = hitMarkerTrigger(attacker && attacker->isPlayer, target.isActor, isAlive(target),
-                                            attacker ? attacker->obj->get("team").toString() : std::string(), target.obj->get("team").toString(), amount);
+    const bool markerHit = hitMarkerTrigger(byPlayer, target.isActor, isAlive(target), playerTeam, target.obj->get("team").toString(), amount);
     if (target.isActor) {
         const auto held = [&](int st) {
             return std::find(target.ai.stack.begin(), target.ai.stack.begin() + target.ai.depth + 1, st) != target.ai.stack.begin() + target.ai.depth + 1;

@@ -192,6 +192,22 @@ menuDef
     w.debugDamageAt(*axis2, nullptr, 2, {0, 0, 0}, "head"); // the delayed death's shape: no attacker, more than the health
     CHECK(axis2->obj->get("health").asInt() <= 0 && !axis2->ai.deathPendingMarker);
     CHECK(w.playerHitMarkerKillMs() == w.timeMs() && hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    // An enemy drone (script_model with team "axis", maps/_drones.gsc) hit by the player shows the marker (a hit, never a kill);
+    // a teamless script model does not.
+    for (int i = 0; i < 3; ++i) w.frame();
+    Entity& drone = w.debugSpawn("script_model");
+    drone.obj->set("origin", axis2->obj->get("origin"));
+    drone.obj->set("health", iw2::script::Value(int32_t(1000000)));
+    drone.obj->set("$takedamage", iw2::script::Value(true)); // setcandamage(true), as the drone script does
+    Entity& prop = w.debugSpawn("script_model");
+    prop.obj->set("origin", axis2->obj->get("origin"));
+    prop.obj->set("$takedamage", iw2::script::Value(true));
+    const int64_t beforeProp = w.playerHitMarkerMs();
+    w.debugDamage(prop, 10);
+    CHECK(w.playerHitMarkerMs() == beforeProp);
+    drone.obj->set("team", iw2::script::Value(std::string("axis")));
+    w.debugDamage(drone, 10);
+    CHECK(w.playerHitMarkerMs() == w.timeMs() && !hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
     // Killing a friendly is no kill marker (last: it starts the friendly-fire failure).
     for (int i = 0; i < 3; ++i) w.frame();
     const int64_t killBefore = w.playerHitMarkerKillMs();

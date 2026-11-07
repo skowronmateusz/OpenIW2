@@ -55,7 +55,8 @@ opens the pause menu. `F12` shows or hides a frame rate counter in the top right
 
 OpenIW2 adds one option that the original game does not have: **Options > Game Options > Hit marker** (off by default). When on, the
 multiplayer hit marker (a small X next to the crosshair, fading in about a second, no sound) shows whenever you damage an enemy
-soldier. With the value **Red on kill** the X turns red when your hit killed the soldier (multiplayer always shows it white).
+soldier, also when you fire a mounted gun or a flak gun and when you hit the distant running soldiers some levels show
+(drones). With the value **Red on kill** the X turns red when your hit killed the soldier (multiplayer always shows it white).
 It is saved in your profile.
 
 Of the original options, the ones the engine has no counterpart for do nothing: texture quality and filter, anti-aliasing,
