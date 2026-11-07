@@ -14,6 +14,12 @@ const char* const kNames[23] = {"default", "bark", "brick", "carpet", "cloth", "
 
 const char* surfaceAliasName(int surface) { return surface >= 0 && surface < 23 ? kNames[surface] : "default"; }
 
+const char* bulletTraceSurfaceType(float fraction, unsigned surfaceFlags) {
+    if (fraction == 1.0f) return "none";
+    const int surface = int((surfaceFlags >> 20) & 0x1f);
+    return surface > 0 && surface < 23 ? kNames[surface] : "default";
+}
+
 std::vector<std::string> playerEventSounds(int ev, bool footsteps) {
     std::vector<std::string> out;
     auto with = [&](const char* family, int base) { out.push_back(std::string(family) + "_" + surfaceAliasName(ev - base)); };

@@ -10,6 +10,11 @@ namespace iw2::game {
 // Surface type names in the order of the engine's table (0x5a0358; index 0 "default"), used as sound alias suffixes.
 const char* surfaceAliasName(int surface);
 
+// The "surfacetype" string of a bullettrace result (0x4f2230): "none" when nothing was hit (fraction 1), else the
+// surface type of the hit material, (surfaceFlags >> 20) & 0x1f, named from the engine's table (0x5a0344) for
+// types 1..22 and "default" for 0 and anything above.
+const char* bulletTraceSurfaceType(float fraction, unsigned surfaceFlags);
+
 // The sound aliases the cgame starts, in order, for the own player's event `ev` (the "_plr" families of the
 // registration at 0x4a27b0, "%s_%s" with the surface name):
 //   1..0x17 step_run_plr_<surface>, 0x18..0x2e step_walk_plr_<surface>, 0x2f..0x45 step_prone_plr_<surface>

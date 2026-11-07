@@ -216,7 +216,13 @@ and `0.125·b/|d.xy|`. Other submodels: the leaf of the model. Entities (`FUN_00
 `FUN_0044bba0`, `FUN_0044bc80`): the world first, then each entity as a box (no hit
 boxes). `sighttracepassed` (`FUN_004f2580`): mask 0x280d803 (0x801803 without characters), then
 `FUN_0048b090` below 0x592020 also blocks (TODO: not read). `bullettrace` (`FUN_004f2230`):
-G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero priority map.
+G_Trace with mask 0x280e831 (0x802831 without characters), locational, zero priority map. The result array: "fraction",
+"position" (start + fraction · (end − start)), "entity" only when an entity (not 0x7ff / 0x7fe) was hit, "normal" and
+"surfacetype". With fraction ≠ 1.0 the normal is the hit plane's and surfacetype is the name of surface type
+(surfaceFlags >> 20) & 0x1f from the table at 0x5a0344 (entries of 20 bytes, name first; 1 bark … 22 asphalt) for
+types 1..22, otherwise "default" (0x5792a8). With fraction 1.0 the normal is the normalized trace direction (0x4210d0)
+and surfacetype is "none". Scripts depend on the type: the artillery target (maps/_artillery.gsc:386-399) is refused
+when the trace misses or reports "default".
 
 ## Script model collision surfaces (`FUN_00474440`, `FUN_0047c210`)
 

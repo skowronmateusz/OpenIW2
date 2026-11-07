@@ -6,6 +6,7 @@
 #include "game/bulletdamage.h"
 #include "game/damagerules.h"
 #include "game/itempickup.h"
+#include "game/playerevents.h"
 #include "game/vehicles.h"
 #include "game/triggerdamage.h"
 
@@ -1434,7 +1435,8 @@ void World::registerCombatBuiltins() {
     for (const char* noop : {"setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
-    // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").
+    // "position", "entity", "normal", "surfacetype"). surfacetype: bulletTraceSurfaceType; on a miss the normal is the
+    // normalized trace direction (0x4f245f).
     // bullettrace (FUN_004f2230): G_Trace, mask 0x280e831 (0x802831 without characters), locational with no priority
     // map, so characters are boxes.
     vm_.registerBuiltin("bullettrace", [this](CallContext& c) {
@@ -1446,8 +1448,14 @@ void World::registerCombatBuiltins() {
         auto put = [&](const char* k, Value v) { arr->set(ArrayKey{true, 0, k}, std::move(v)); };
         put("fraction", Value(tr.fraction));
         put("position", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
-        put("normal", Value(Vec3{tr.normal[0], tr.normal[1], tr.normal[2]}));
-        put("surfacetype", Value(tr.fraction < 1.0f ? "default" : "none"));
+        Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
+        if (tr.fraction == 1.0f) {
+            n = sub(b, a);
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 0) n = {n[0] / len, n[1] / len, n[2] / len};
+        }
+        put("normal", Value(n));
+        put("surfacetype", Value(bulletTraceSurfaceType(tr.fraction, tr.surfaceFlags)));
         if (tr.entity >= 0)
             if (Entity* e = entityByNumber(tr.entity)) put("entity", Value(e->obj));
         return Value(arr);
