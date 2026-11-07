@@ -111,6 +111,16 @@ int main() {
         CHECK(near(v[0], 0.5f) && near(v[1], 1.0f) && near(v[2], -1.5f));
         CHECK(scopedViewBob({1, 2, 3}, 1.0f, false)[0] == 0);
     }
+    {
+        // The dip, step and kick read the client time 0xf708dc (0x4babdb, 0x4ae62f, 0x4baca5, 0x4addb1, 0x4ba2a7, 0x4ae3ce),
+        // which advances every drawn frame: evaluated at clientRenderTimeMs, the dip changes between two 20 Hz server steps.
+        ViewImpulses r;
+        r.reset();
+        r.land(38.0f, 0, clientRenderTimeMs(1000, 0.0f)); // dip 8 at render time 950
+        const float a = r.landOffset(clientRenderTimeMs(1050, 0.2f)), b = r.landOffset(clientRenderTimeMs(1050, 0.6f));
+        CHECK(near(a, -8.0f * 60.0f / 150.0f) && near(b, -8.0f * 80.0f / 150.0f) && a != b);
+        CHECK(r.landOffset(clientRenderTimeMs(1050, 0.6f)) < 0); // a render time after the stamp keeps the dip
+    }
     if (failures == 0) std::cout << "viewimpulses tests passed\n";
     return failures ? 1 : 0;
 }

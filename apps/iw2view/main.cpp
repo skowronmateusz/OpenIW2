@@ -7555,7 +7555,7 @@ int main(int argc, char** argv) {
                     if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
                     for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
                         world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
-                        if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], world->timeMs()); // CG_EntityEvent 0x4bac84
+                        if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], game::clientRenderTimeMs(world->timeMs(), lerpFrac)); // CG_EntityEvent 0x4bac84
                         // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
                         const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
                         input.stanceEvent(ev); // the wish follows the event, so a blocked rise is not asked for again
@@ -7607,10 +7607,10 @@ int main(int argc, char** argv) {
                     if (world) {
                         if (ps.landSeq != lastLandSeq) { // a landing (cgame 0x4bab6e / 0x4bab15: the own client's fall event)
                             lastLandSeq = ps.landSeq;
-                            viewImp.land(ps.landHeight, ps.landDamage, world->timeMs());
+                            viewImp.land(ps.landHeight, ps.landDamage, game::clientRenderTimeMs(world->timeMs(), lerpFrac));
                         }
-                        cam.pos.z += viewImp.landOffset(world->timeMs()); // 0x4ae6c7
-                        cam.pos.z -= viewImp.stepOffset(world->timeMs()); // 0x4addb0 (step event 0x8f)
+                        cam.pos.z += viewImp.landOffset(game::clientRenderTimeMs(world->timeMs(), lerpFrac)); // 0x4ae6c7, at cg.time (render time), not the 20 Hz server time
+                        cam.pos.z -= viewImp.stepOffset(game::clientRenderTimeMs(world->timeMs(), lerpFrac)); // 0x4addb0 (step event 0x8f)
                     }
                 }
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
@@ -7946,7 +7946,7 @@ int main(int argc, char** argv) {
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
                     if (df.count != 0) { // 0x4ba1c3: only with a damage count
                         const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
-                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, world->timeMs());
+                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, game::clientRenderTimeMs(world->timeMs(), lerpFrac));
                     }
                     if (!(df.pitch == 0xff && df.yaw == 0xff)) {
                         size_t slot = 0;
@@ -8350,7 +8350,7 @@ int main(int argc, char** argv) {
             cam.yaw += bobAngles[1];
             if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll
                 const std::string ret = pweapon.field("adsOverlayReticle");
-                const auto dk = viewImp.damageKick(world->timeMs(), pweapon.adsFrac(), !ret.empty() && ret != "none");
+                const auto dk = viewImp.damageKick(game::clientRenderTimeMs(world->timeMs(), lerpFrac), pweapon.adsFrac(), !ret.empty() && ret != "none");
                 cam.pitch += dk[0];
                 cam.roll += dk[1];
             }

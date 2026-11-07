@@ -281,3 +281,7 @@ impulse of the player weapon is zero for them.
 The shake (0x4bf540 elapsed time, 0x4bf700 sine phase T) reads the client time 0xf708dc, which advances every drawn frame. OpenIW2 therefore
 evaluates ViewShake at the render time of each frame (`clientRenderTimeMs`: server time - 50 + interpolation fraction * 50), not at the 20 Hz
 server time; the offset then changes smoothly between server steps (tested in test_recoil).
+
+The first-person camera impulses use the same client time: the landing stamp (0x4babdb) and the dip curve (0x4ae62f), the
+step offset (0x4baca5, 0x4addb1) and the damage kick (0x4ba2a7, 0x4ae3ce). OpenIW2 stamps and evaluates all three at
+`clientRenderTimeMs`, so the landing dip moves every drawn frame instead of in 50 ms steps (tested in test_viewimpulses).
