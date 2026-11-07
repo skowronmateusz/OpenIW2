@@ -92,6 +92,35 @@ int main() {
         for (int i = 0; i < 100; ++i) m.sample(actor(4, "axis", true, true), 0.05);
         CHECK(m.silent().size() == 1);
     }
+    {
+        // Context of a stretch: suppressed seconds, the animscript most of it was spent in, and the reason it is explained.
+        FireMonitor m;
+        for (int i = 0; i < 240; ++i) {
+            FireMonitor::Sample s = actor(5, "allies", true, true);
+            s.suppressed = i < 150;
+            s.animScript = i < 100 ? "cover_crouch" : "combat";
+            m.sample(s, 0.05);
+        }
+        for (int i = 0; i < 240; ++i) {
+            FireMonitor::Sample s = actor(6, "axis", true, true);
+            s.animScript = i < 200 ? "move" : "stop";
+            m.sample(s, 0.05);
+        }
+        for (int i = 0; i < 240; ++i) {
+            FireMonitor::Sample s = actor(8, "axis", true, true);
+            s.suppressed = i < 100;
+            s.animScript = "combat";
+            m.sample(s, 0.05);
+        }
+        CHECK(m.silent().size() == 3);
+        if (m.silent().size() == 3) {
+            CHECK(std::fabs(m.silent()[0].suppressedSecs - 7.5) < 0.01 && m.silent()[0].mainScript == "combat");
+            CHECK(m.silent()[0].reason() == "suppressed");
+            CHECK(m.silent()[1].mainScript == "move" && m.silent()[1].reason() == "running");
+            CHECK(m.silent()[2].reason().empty()); // 5 s of 12 suppressed: not explained
+        }
+        CHECK(m.unexplainedSilent() == 1);
+    }
     if (failures) return 1;
     std::cout << "firemonitor OK\n";
     return 0;

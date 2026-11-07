@@ -26,14 +26,21 @@ void FireMonitor::sample(const Sample& s, double dt) {
     if (a.visible == 0) a.shotsAtStart = a.shots;
     a.visible += dt;
     a.stretchStarts += started;
+    if (s.suppressed) a.suppressedSecs += dt;
+    a.scriptSecs[s.animScript] += dt;
     // Flag as soon as the stretch qualifies (a shot afterwards does not undo it: the report lists the stretch).
     if (a.silentIdx < 0 && a.visible >= kSilentVisibleSecs && a.shots == a.shotsAtStart) {
         a.silentIdx = int(silent_.size());
-        silent_.push_back({s.number, a.classname, a.team, a.pos, elapsed_ - a.visible, a.visible, a.stretchStarts});
+        silent_.push_back({s.number, a.classname, a.team, a.pos, elapsed_ - a.visible, a.visible, a.stretchStarts, 0, {}});
     }
     if (a.silentIdx >= 0) {
         silent_[size_t(a.silentIdx)].visibleSecs = a.visible;
-        silent_[size_t(a.silentIdx)].animStarts = a.stretchStarts;
+        SilentShooter& ss = silent_[size_t(a.silentIdx)];
+        ss.animStarts = a.stretchStarts;
+        ss.suppressedSecs = a.suppressedSecs;
+        double best = -1;
+        for (const auto& [name, secs] : a.scriptSecs)
+            if (secs > best) best = secs, ss.mainScript = name;
     }
 }
 
@@ -42,6 +49,8 @@ void FireMonitor::finishStretch(Actor& a) {
     a.stretchStarts = 0;
     a.hidden = 0;
     a.silentIdx = -1;
+    a.suppressedSecs = 0;
+    a.scriptSecs.clear();
 }
 
 void FireMonitor::closeActor(int number) {

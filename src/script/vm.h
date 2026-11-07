@@ -159,7 +159,7 @@ public:
     // Debug: "file:line function (state event)" for each live thread's innermost frame.
     std::vector<std::string> describeThreads() const;
     std::string describeThread(uint64_t id) const; // debug: wait site of one thread (empty if gone)
-    std::vector<std::string> describeThreadsOf(const ObjectPtr& self) const; // debug: wait sites of the threads whose innermost self is `self`
+    std::vector<std::string> describeThreadsOf(const ObjectPtr& self, bool detail = false) const; // detail: wait time left and the calling frames // debug: wait sites of the threads whose innermost self is `self`
     // Debug (iw2game --autoplay): every thread suspended in waittill / waittillmatch (the object and event it waits for) or in a
     // timed wait (its innermost self, event ""), with the innermost wait site ("file:line function"). Read-only.
     struct Waiter { ObjectPtr object; std::string event; std::string site; };

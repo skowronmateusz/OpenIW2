@@ -131,7 +131,7 @@ described in the code that reads them.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 
-- Env `IW2_ACTOR_TRACE_THREADS=1` (with `IW2_ACTOR_TRACE`) also prints the wait site of every live script thread whose innermost `self` is the traced actor (battlechatter / coldbreath threads left out) and its active animation nodes (weight, goal, time, rate, notify flag). Debug only.
+- Env `IW2_ACTOR_TRACE_THREADS=1` (with `IW2_ACTOR_TRACE`) also prints the wait site of every live script thread whose innermost `self` is the traced actor (battlechatter / coldbreath threads left out; a `wait` shows the milliseconds left, and the calling frames follow after `<`) and its active animation nodes (weight, goal, time, rate, notify flag). Debug only.
 
 - `IW2_ACTOR_FOLLOW=0` (iw2game): keeps the yield step 0x501620 and the clear scan 0x501380 from setting the followed link (+0x2148) of other actors; the yield move itself still runs. On by default.
 - `IW2_FOLLOW_SCAN=0` (iw2game): disables the follow retarget scan 0x504630 (`scanFollowed`), so no actor starts following a blocker from the scan. On by default.
@@ -201,20 +201,33 @@ and objectives. `--report` now has the AI fire counters (the monitor samples eve
   with a valid `enemy`, not held in the scripted state: riders and scene actors cannot fire), `ai_sight_secs_<team>` (the part of those seconds in which the
   eye-to-eye line to the actor's own enemy was clear), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
   gunless or unteamed shooters such as map-placed turrets) and the silent shooters.
-- Silent shooter: an actor whose enemy was in line of sight (eye-to-eye trace) for 10 s in a row (gaps under 1 s ignored) without one shot. The line gives the
-  entity number, classname, position, start time and the number of shooting animations (nodes whose animation has a `fire` notetrack) started meanwhile.
-  It also catches behaviour that is not the animation bug (an actor that never shoots at a visible enemy, see the moscow finding below),
-  so a few stretches per run are normal on some maps: `SILENT:n` is flagged from 10 stretches per run (data below: 0..4 on most maps, 26 on decoytrenches).
+- Silent shooter: an actor whose enemy its own sight record marks visible (the record the `cansee` built-in and so the animscripts read: field of view,
+  sight distance, sight traces; the monitor reads it without making a check) for 10 s in a row (gaps under 1 s ignored) without one shot. A shot of a turret
+  or vehicle gun counts for its gunner. The line gives the entity number, classname, position, start time, the number of shooting animations (nodes whose
+  animation has a `fire` notetrack) started meanwhile, the seconds it held a suppression line (what `issuppressed` reads), the animscript it spent most of
+  the stretch in, and a reason: `running` (mostly in `move`: the run script never shoots while running, its shoot-while-running test is commented out,
+  animscripts/run.gsc:12-42), `suppressed` (suppressed for at least half of it: the cover scripts hide while suppressed, e.g.
+  animscripts/cover_crouch.gsc:1033-1034), else `unexplained`. Report fields `silent_shooters` (all) and `silent_unexplained`. `SILENT:n` is flagged from
+  10 unexplained stretches per run.
+- Seed-1 classification of the decoytrenches / decoytown / crossroads stretches (eye-trace monitor before: 26 / 18 / 11; now all / unexplained: 14 / 6,
+  10 / 0, 4 / 3): turret gunners whose MG fired (credited to the turret entity before, 11 on decoytrenches); running (the bulk on decoytown: axis
+  reinforcements running down the street); suppressed (allied riflemen in the decoytrenches trenches under MG fire); enemies the eye trace saw but the
+  actor's own sight did not (behind it or beyond its sight); an actor that sees its enemy but whose muzzle traces are blocked by the trench edge
+  (canshoot fails in both poses, the exposed script only aims: animscripts/utility.gsc canShootEnemyFrom, animscripts/exposedcombat.gsc:336); a
+  pistol-melee loop against the god-mode player; corner actors whose step-out point fails maymovetopoint (the corner script idles until it passes:
+  animscripts/corner_axis.gsc:1208-1215), once because a teammate's line to its enemy crosses the step and once because the point lies outside the
+  actor's goal volume (both rules of docs/spec/ai.md "maymovetopoint"; not compared with a run of the original); idle MG gunners. None of the traced
+  actors (about ten) was stuck in an animscript waiting for a notify that never comes.
 - Sweep flags (summary.md table column "fire flags" and section "Fire rate"): `NO-FIRE:team` (a team with at least 120 sight seconds fired nothing; reports without
   `ai_sight_secs_<team>` fall back to combat seconds),
   `LOW-RATE:team(rate<baseline)` (an autoplay run under 65% of `tools/firerate-baseline.txt`, the rate of a clean 400 s autoplay run of that map and team,
   produced by `tools/script_sweep.sh --make-firerate-baseline --out DIR` from the `-s1-auto.txt` reports; only maps listed there are compared),
-  `SILENT:n`.
+  `SILENT:n` (unexplained stretches; older reports without `silent_unexplained`: all).
 - Data (seed 1, 400 s autoplay, axis / allies shots per combat minute, fix present vs the `noteSource` line of `AnimState::updateTime` removed):
   decoytrenches 36.8 / 32.8 vs 34.2 / 14.7, toujane 48.0 / 8.3 vs 27.0 / 4.6, hill400_defend 12.1 / 38.1 vs 7.1 / 36.0, moscow 0.0 / 42.7 vs 0.0 / 8.4.
   Without the fix one or both rates fall to 20-59% of the clean value on all four maps (so the sweep flags each of them), but the clean rates differ too
-  much between maps (8 to 48) for a global threshold, hence the per-map baseline. The silent-shooter count does not separate the two builds (decoytrenches
-  26 vs 37, others 1..9 vs 3..5): it points at actors that never shoot a visible enemy for whatever reason, not at this bug.
+  much between maps (8 to 48) for a global threshold, hence the per-map baseline. The silent-shooter count (then from an eye trace) did not separate the two builds
+  (decoytrenches 26 vs 37, others 1..9 vs 3..5): it points at actors that never shoot a visible enemy for whatever reason, not at this bug.
 - Why NO-FIRE counts sight seconds (seed 1, 400 s, plain run: the player stands at the start in god mode). An `enemy` is also set from knowledge alone (the
   player as goal entity of attackers, events), so "combat seconds" include actors that hold cover with an enemy they cannot see, and the shipped cover
   animscripts then wait by design until the enemy can be seen from the exposed position (cover_crouch.gsc main loop, idleUntilEnemyWouldBeVisible; utility.gsc

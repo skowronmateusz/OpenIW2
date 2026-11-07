@@ -1282,7 +1282,7 @@ int main(int argc, char** argv) {
                                     std::printf("  enemy none\n");
                             }
                             if (std::getenv("IW2_ACTOR_TRACE_THREADS")) { // the actor's script threads and animation nodes
-                                for (const auto& d : world.vm().describeThreadsOf(ep->obj))
+                                for (const auto& d : world.vm().describeThreadsOf(ep->obj, true))
                                     if (d.find("battlechatter") == std::string::npos && d.find("coldbreath") == std::string::npos) std::printf("    thread %s\n", d.c_str());
                                 if (ep->anim) std::printf("%s", ep->anim->debugString().c_str());
                             }
@@ -2556,6 +2556,7 @@ int main(int argc, char** argv) {
                 r << fb;
             }
             r << "silent_shooters " << world.fireMon.silent().size() << "\n";
+            r << "silent_unexplained " << world.fireMon.unexplainedSilent() << "\n";
             r << "inventory_checked " << (inventoryChecked ? 1 : 0) << "\n";
             r << "inventory_lost " << inventoryLost << "\n";
             r << "inventory_unexplained " << inventoryUnexplained << "\n";
@@ -2602,9 +2603,9 @@ int main(int argc, char** argv) {
                 r << fb << "\n";
             }
             for (const auto& ss : world.fireMon.silent()) {
-                char fb[256];
-                std::snprintf(fb, sizeof fb, "SILENT-SHOOTER #%d %s %s at %.0f,%.0f,%.0f from %.1f s: enemy in sight %.1f s, %d firing animation starts, no shot", ss.number, ss.classname.c_str(),
-                              ss.team.c_str(), ss.pos[0], ss.pos[1], ss.pos[2], ss.startSecs, ss.visibleSecs, ss.animStarts);
+                char fb[384];
+                std::snprintf(fb, sizeof fb, "SILENT-SHOOTER #%d %s %s at %.0f,%.0f,%.0f from %.1f s: enemy in sight %.1f s, %d firing animation starts, no shot, suppressed %.1f s, mostly in %s, reason %s", ss.number, ss.classname.c_str(),
+                              ss.team.c_str(), ss.pos[0], ss.pos[1], ss.pos[2], ss.startSecs, ss.visibleSecs, ss.animStarts, ss.suppressedSecs, ss.mainScript.empty() ? "-" : ss.mainScript.c_str(), ss.reason().empty() ? "unexplained" : ss.reason().c_str());
                 r << fb << "\n";
             }
             r << "[inventory]\n"; // docs/debug-flags.md "Inventory across level changes"

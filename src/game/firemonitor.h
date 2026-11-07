@@ -20,6 +20,17 @@ struct SilentShooter {
     script::Vec3 pos{0, 0, 0};
     double startSecs = 0, visibleSecs = 0;
     int animStarts = 0;
+    double suppressedSecs = 0; // seconds of the stretch the actor held a suppression line (issuppressed)
+    std::string mainScript;    // the animscript the actor spent most of the stretch in (e.g. mg42/stand, cover_crouch)
+    // A reason from the shipped animscripts why the actor does not shoot, or "" when the stretch is unexplained:
+    // "running" when it spent most of the stretch in the move script (the run script never shoots while running: its
+    // shoot-while-running test is commented out, animscripts/run.gsc:12-42), "suppressed" when it held a suppression line for
+    // at least half of it (the cover scripts hide while issuppressed is true, e.g. animscripts/cover_crouch.gsc:1033-1034).
+    std::string reason() const {
+        if (mainScript == "move") return "running";
+        if (suppressedSecs * 2 >= visibleSecs) return "suppressed";
+        return "";
+    }
 };
 
 class FireMonitor {
@@ -36,6 +47,8 @@ public:
         script::Vec3 pos{0, 0, 0};
         bool hasEnemy = false, enemyVisible = false;
         int fireAnimStarts = 0; // cumulative count of firing-animation starts of this actor
+        bool suppressed = false; // issuppressed() is true
+        std::string animScript;  // the running animscript
     };
     struct TeamTotals {
         int shots = 0;
@@ -55,6 +68,11 @@ public:
 
     const std::map<std::string, TeamTotals>& teams() const { return teams_; }
     const std::vector<SilentShooter>& silent() const { return silent_; }
+    int unexplainedSilent() const {
+        int n = 0;
+        for (const auto& ss : silent_) n += ss.reason().empty();
+        return n;
+    }
     void tick(double dt) { elapsed_ += dt; }
 
 private:
@@ -68,6 +86,8 @@ private:
         int shotsAtStart = 0;
         double hidden = 0;             // seconds without a visible enemy inside the stretch
         int silentIdx = -1;            // index into silent_ of the running stretch once flagged
+        double suppressedSecs = 0;     // suppressed seconds in the stretch
+        std::map<std::string, double> scriptSecs; // seconds per animscript in the stretch
     };
     void finishStretch(Actor& a);
     std::map<int, Actor> actors_;

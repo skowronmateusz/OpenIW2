@@ -174,7 +174,8 @@ carry_checks() {
 # Fire-rate flags of one report (tools/firerate-baseline.txt: `map team shots-per-combat-minute` of a clean autoplay run):
 #   NO-FIRE:team     a team with at least 120 sight seconds (an actor with its enemy in line of sight; reports without ai_sight_secs: combat seconds) fired no shot
 #   LOW-RATE:team    an autoplay run whose rate is under 65% of the baseline of that map and team (the animation-note bug cut it to 20..56%)
-#   SILENT:n         10 or more silent-shooter stretches (an enemy in sight for 10 s or more, no shot)
+#   SILENT:n         10 or more unexplained silent-shooter stretches (the enemy seen by the actor for 10 s or more, no shot, not running and
+#                    not suppressed; older reports without silent_unexplained count all stretches)
 fire_flags() {
     local r=$1 map=$2 tag=$3 f="" t secs sight shots rate base v
     for t in axis allies; do
@@ -187,7 +188,8 @@ fire_flags() {
             if [ -n "$base" ] && awk -v s="$secs" -v r="$rate" -v b="$base" 'BEGIN { exit !(s >= 120 && r < 0.65 * b) }'; then f="$f LOW-RATE:$t($rate<$base)"; fi
         fi
     done
-    v=$(field "$r" silent_shooters)
+    v=$(field "$r" silent_unexplained)
+    [ -n "$v" ] || v=$(field "$r" silent_shooters)
     [ "${v:-0}" -ge 10 ] && f="$f SILENT:$v"
     echo "${f# }"
 }

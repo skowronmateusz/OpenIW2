@@ -203,7 +203,7 @@ Vec3 World::eyePosition(Entity& e) {
 }
 
 // Fire-rate monitor (debug): an AI shot is any bullet or rocket whose shooter is not the player and not the world; a turret or vehicle
-// counts for its gunner's team (the attacker), else its own team field.
+// counts for its gunner (the attacker: team and silent-shooter credit), else its own team field.
 void World::noteAiShot(const Entity& shooter, const Entity* attacker) {
     if (!fireMon.enabled || shooter.isPlayer || (attacker && attacker->isPlayer)) return;
     const Entity* who = attacker && attacker->isActor ? attacker : &shooter;
@@ -218,7 +218,8 @@ void World::noteAiShot(const Entity& shooter, const Entity* attacker) {
         e = l != links_.end() ? entityByNumber(l->second.parent) : nullptr;
     }
     if (team.empty()) team = "undefined";
-    fireMon.shot(shooter.number, team);
+    // The shot counts for the actor behind it (a turret's gunner), so a gunner firing its turret is no silent shooter.
+    fireMon.shot(who->number, team);
 }
 
 void World::sampleFireMonitor() {
@@ -241,8 +242,17 @@ void World::sampleFireMonitor() {
         // time with an enemy is no combat time and it is no silent shooter.
         const bool scripted = std::find(e.ai.stack.begin(), e.ai.stack.begin() + e.ai.depth + 1, int(AiScripted)) != e.ai.stack.begin() + e.ai.depth + 1;
         s.hasEnemy = !scripted && en && isAlive(*en);
-        s.enemyVisible = s.hasEnemy && canSee(e, *en);
+        // Visible = the actor's own sight record of its enemy says so (what the cansee built-in and so the animscripts read:
+        // field of view, sight distance, sight traces), read without making a new check so the monitor does not change the run.
+        // A plain eye-to-eye trace is not used: it also counts enemies the AI does not see (behind its back, out of sight range).
+        // Nothing clears the record when checks stop, so a result older than a second counts as unknown (not visible).
+        if (s.hasEnemy)
+            if (auto it = e.sentientInfo.find(en->obj.get()); it != e.sentientInfo.end())
+                s.enemyVisible = it->second.lastCheckMs != 0 && it->second.lastCheckMs + 1000 >= timeMs_ && it->second.visible;
         if (e.anim) s.fireAnimStarts = e.anim->fireAnimStarts;
+        // Context for the report: a held suppression line (what issuppressed reads) and the running animscript.
+        for (const DangerPlane& p : e.dangerPlanes) s.suppressed = s.suppressed || (p.timeMs != 0 && !p.shortLived);
+        s.animScript = e.animScript;
         fireMon.sample(s, 0.05);
     }
 }

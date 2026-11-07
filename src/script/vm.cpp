@@ -1301,7 +1301,7 @@ std::vector<std::string> VM::describeThreads() const {
     return out;
 }
 
-std::vector<std::string> VM::describeThreadsOf(const ObjectPtr& self) const {
+std::vector<std::string> VM::describeThreadsOf(const ObjectPtr& self, bool detail) const {
     std::vector<std::string> out;
     for (const auto& th : threads_) {
         if (th->state == ThreadState::Done || th->frames.empty()) continue;
@@ -1309,9 +1309,17 @@ std::vector<std::string> VM::describeThreadsOf(const ObjectPtr& self) const {
         if (!std::holds_alternative<ObjectPtr>(fr.self.v) || std::get<ObjectPtr>(fr.self.v) != self) continue;
         const CompiledFunction& f = functions_[size_t(fr.function)];
         const int line = fr.pc > 0 && fr.pc <= f.code.size() ? f.code[fr.pc - 1].line : 0;
-        std::string st = th->state == ThreadState::Waiting ? "wait" : th->state == ThreadState::WaitingNotify ? "waittill " + th->waitEvent
+        std::string st = th->state == ThreadState::Waiting ? (detail ? "wait " + std::to_string(th->wakeTimeMs - nowMs_) + " ms" : "wait")
+                         : th->state == ThreadState::WaitingNotify ? "waittill " + th->waitEvent
                          : th->state == ThreadState::WaitingFrameEnd ? "frameend" : "ready";
-        out.push_back(f.file + ":" + std::to_string(line) + " " + f.name + " (" + st + ")");
+        std::string callers; // the calling frames, innermost first
+        for (size_t i = detail ? th->frames.size() - 1 : 0; i-- > 0;) {
+            const Frame& cf = th->frames[i];
+            const CompiledFunction& g = functions_[size_t(cf.function)];
+            const int l = cf.pc > 0 && cf.pc <= g.code.size() ? g.code[cf.pc - 1].line : 0;
+            callers += " < " + g.file + ":" + std::to_string(l) + " " + g.name;
+        }
+        out.push_back(f.file + ":" + std::to_string(line) + " " + f.name + " (" + st + ")" + callers);
     }
     return out;
 }
