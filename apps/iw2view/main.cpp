@@ -7131,7 +7131,7 @@ int main(int argc, char** argv) {
         bool running = true;
         bool walk = true;
         uint32_t prevButtons = 0;
-        int64_t lastWeaponCycleMs = -1000000; // 0xf796e4
+        int64_t lastWeaponCycleMs = 0; // 0xf796e4, zeroed by CG_Init on every map load
         std::string cgOffhand; // 0xf79700: the offhand as of the last frame, which a pickup event still sees
         float gameClock = 0;
         // The camera of a player placed by a link or a vehicle is drawn interpolated like the entities (they lag one server frame): the
@@ -8467,6 +8467,10 @@ int main(int argc, char** argv) {
                     lastLandSeq = 0;
                     lastEventSeq = 0;
                     viewImp.reset();
+                    // CG_Init (0x4a5c10) zeroes 0xf5bd00..0xf7eb4c on every map load, the last weapon cycle time 0xf796e4 among them.
+                    // Kept from the previous map (whose clock ran far ahead), it blocked weapnext / weapprev until the new map's
+                    // clock caught up.
+                    lastWeaponCycleMs = 0;
                     lerpPrev.clear();
                     prevAnim.clear();
                     prevTurret.clear();

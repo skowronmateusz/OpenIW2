@@ -29,6 +29,9 @@ int main() {
     CHECK(weaponCycleAllowed(false, 0, 0, 100, 100, 0)); // the default delay of 0 never blocks
     CHECK(!weaponCycleAllowed(true, 0, 0, 100, 0, 0));
     CHECK(!weaponCycleAllowed(false, 0x8000, 0, 100, 0, 0));
+    // A last cycle time from a previous map (its clock far ahead) blocks a new map's cycles; CG_Init (0x4a5c10) zeroes it on load.
+    CHECK(!weaponCycleAllowed(false, 0, 0, 5000, 733150, 0));
+    CHECK(weaponCycleAllowed(false, 0, 0, 5000, 0, 0));
     CHECK(!weaponCycleAllowed(false, 0, 0x20000, 100, 0, 0));
     CHECK(!weaponCycleAllowed(false, 0, 0, 100, 50, 51));
     CHECK(weaponCycleAllowed(false, 0, 0, 100, 50, 50));
