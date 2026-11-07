@@ -166,6 +166,17 @@ For a point trace with `locational` set and a non-zero priority map, entities wi
 traced against their hit boxes instead (below); bit 4 means xmodel collision surfaces (`FUN_00474440` →
 `FUN_0047c210`, below; tested in every locational trace, priority map or not). With a zero priority map (`bullettrace`) every entity is a box.
 
+### Fake AI (`makefakeai`, 0x4f82a0)
+
+`makefakeai` (script models only) clears `ent+0xa2` bits 2 and 4 (`andb $-7` at 0x4f830c), writes the box
+(-15, -15, 0)..(15, 15, 72) into r.mins / r.maxs, ORs 0x8000 into the contents (0x2080 → 0xa080) and relinks. With
+`ent+0xa2 & 6` clear, 0x44b840 skips both the hit-box and the collision-surface branches (0x44b8e9..0x44b8f1) and
+takes the box path (0x44baef: the linked contents against the mask, absolute bounds 0x419450, then the box trace
+0x417c20). So a drone (`maps/_vehicledroneai.gsc`: `spawn` script_model, `makefakeai`, `setcandamage`, then a wait for
+"damage") is hit by bullets through that box; its character model has no collision surfaces, so without the box no
+bullet reached it and only radius damage (the flak88 shell) killed drones. (implemented: `makefakeai`,
+`World::syncEntityClips`, `World::locationalTrace`)
+
 ## Hit boxes (`FUN_00473d20`)
 
 - Data: per bone of each xmodel, after the LOD material lists, `float mins[3], maxs[3]` (24 bytes, bone space;

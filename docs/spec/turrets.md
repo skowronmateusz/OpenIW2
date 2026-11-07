@@ -91,7 +91,12 @@ turret angles (entity +0x70 pitch, +0x74 yaw, relative) are published as `$turre
 
 `shootturret` (0x51b250 → 0x51ada0): countdown = fireTime · 3; a bullet from `tag_flash`, towards the aim point with a
 random offset of up to 8 units across the line of fire (0x5501e0) when it stays within 0.95 of the barrel direction,
-else along the barrel; spread aiSpread (playerSpread for a player), range 8192. Scripts (`maps/_mg42.gsc`) call it
+else along the barrel; spread aiSpread (playerSpread for a player), range 8192. The aim-point step is chosen by the
+third argument of 0x51ada0 (tested at 0x51ae05): 0x51b250 passes 0 when the turret's user is a client (user +0xfc set,
+0x51b26e..0x51b27c) and the turret's flag 0x40 otherwise (0x51b296..0x51b2a5). So a player on a turret always shoots
+along the barrel, even when an engaged target and flag 0x40 are still on the turret from an AI gunner or a script
+(decoytown: an MG42 that AI used first bent the player's bullets towards the old aim point while the view stayed
+within the 0.95 cone). Scripts (`maps/_mg42.gsc`) call it
 every 0.1 s while `isfiringturret()`.
 
 ## AI gunner turret state

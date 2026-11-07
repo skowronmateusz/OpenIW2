@@ -295,7 +295,11 @@ void World::shootTurret(Entity& t) {
     const Vec3 base = t.obj->get("angles").asVector();
     Vec3 dir = forwardOf({base[0] + ts.pitch, base[1] + ts.yaw, 0});
     Entity* target = ts.engaged ? entityOf(Value(ts.engaged)) : nullptr;
-    if (target && (ts.flags & 0x40u)) {
+    // 0x51b250 passes the aim flag only for a user that is not a client (+0xfc): for the player it is 0, so the player's
+    // shots always go along the barrel, even when an AI gunner or a script left an engaged target and flag 0x40 behind.
+    Entity* owner = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
+    const bool clientUser = owner && owner->isPlayer;
+    if (target && (ts.flags & 0x40u) && !clientUser) {
         const Vec3 d = normalized(sub(ts.aimPoint, muzzle));
         const Vec3 up{0, 0, 1};
         const Vec3 across = normalized(cross(d, up));

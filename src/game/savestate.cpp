@@ -650,9 +650,11 @@ void World::loadState(StateReader& r) {
     shockRecords_.clear();
     if (r.version >= 13)
         for (uint32_t i = 0, n = r.u32(); i < n; ++i) addShellShock(r.str());
-    else if (vm_.level()->get("script").isString())
-        // Older saves have no list. Every level that runs maps/_load.gsc precaches "default" in its load phase (_load.gsc:103 ->
-        // shock_ondeath, _utility.gsc:1403), which a loaded save resumes past; restore that one so a death shock still works.
+    else
+        // Older saves have no list. Every SP level runs maps/_load.gsc, which precaches "default" in its load phase (_load.gsc:103 ->
+        // shock_ondeath, _utility.gsc:1403), and a loaded save resumes past it; restore that one so the death shock still finds it
+        // (the original never misses it: its table is part of the saved game state). Not tied to a level field, so a level whose
+        // fields are not readable at this point still gets it.
         addShellShock("default");
     for (auto& o : objectives_) {
         o.state = r.i32();

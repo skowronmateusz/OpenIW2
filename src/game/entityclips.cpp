@@ -166,6 +166,20 @@ void World::syncEntityClips() {
             clips.push_back(c);
             continue;
         }
+        // A fake AI (makefakeai 0x4f82a0, the drones): ent+0xa2 & 6 cleared, so traces test its box (-15,-15,0)..(15,15,72) at the
+        // origin with its contents (0x2080 | 0x8000): the box path of the entity trace 0x44b840 (0x44baef..0x44bb5b).
+        if (!e.obj->removed && e.classname == "script_model" && e.obj->get("$fakeai").truthy()) {
+            const Value o = e.obj->get("origin"), mn = e.obj->get("$fakeai_mins"), mx = e.obj->get("$fakeai_maxs");
+            if (!o.isVector() || !mn.isVector() || !mx.isVector()) continue;
+            EntityClip c;
+            c.id = e.number;
+            c.origin = o.asVector();
+            c.mins = mn.asVector();
+            c.maxs = mx.asVector();
+            c.contents = entityContents(e);
+            if (c.contents) clips.push_back(c);
+            continue;
+        }
         if (e.obj->removed || e.classname != "script_brushmodel") continue;
         if (e.obj->get("$notsolid").truthy()) continue;
         const Value m = e.obj->get("model");

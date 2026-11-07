@@ -398,6 +398,12 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
     const bool binocPossible = inBinoc() || (in.binoculars && binocularDef && binocularDef());
     const bool idleNoWeapon = name_.empty() && (in.weapon.empty() || !lookup || (holstered_ && in.holster));
     if (idleNoWeapon && !binocPossible) {
+        // No weapon (ps weapon 0, e.g. holstered in a vehicle): weapon 0 has no aimDownSight, so the aim update (0x4dd13b ->
+        // 0x4dd12b) sets the aim fraction and the exit timer to 0.
+        adsFrac_ = 0;
+        adsExitTimer_ = 0;
+        zoomingIn_ = true;
+        adsHeld_ = false;
         binocPrev_ = in.binoculars, usePrev_ = in.use, prevCmdWeapon_ = in.weapon;
         return 0;
     }
@@ -442,7 +448,8 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
         if (segmented()) blocked = inReloadStates() || (state_ == State::ReloadEnd && timer_ - reloadTrans > 0);
         else blocked = state_ == State::Reloading && timer_ - reloadTrans > 0;
         if (state_ == State::Rechamber && time("rechamberWhileAds", 0) == 0) blocked = true;
-        bool want = can && in.ads && !blocked;
+        // The aim flag (0x4dd020) needs 0x4dcf70: not while raising, dropping, in melee or the offhand states.
+        bool want = can && in.ads && !blocked && adsAllowed();
         if (can && time("adsFire", 0) != 0 && delay_ > 0 && state_ == State::Firing) want = true;
         if (inBinoc()) want = can && (state_ == State::BinocEnter || state_ == State::BinocUp);
         // player_adsExitDelay (0x4dd0d0): at a full aim fraction, when aiming stops being allowed, the aim is held for

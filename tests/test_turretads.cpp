@@ -133,6 +133,37 @@ int main() {
         c.buttons = 0;
     }
 
+    // An engaged target with aim flag 0x40 left on the turret (an AI gunner used it first, decoytown) does not bend the
+    // player's shots: 0x51b250 passes aim flag 0 for a client user, so the shot goes along the barrel (docs/spec/turrets.md).
+    {
+        TurretState& ts = *t->turret;
+        Entity* other = nullptr;
+        for (const auto& e : w.entities())
+            if (!other && e->obj->kind == "actor" && !e->obj->removed) other = e.get();
+        ts.engaged = (other ? other : w.player())->obj;
+        ts.flags |= 0x40u;
+        const float ay = (a[1] + ts.yaw + 10.0f) * float(M_PI) / 180.0f; // 10 degrees off the barrel: inside the 0.95 cone
+        ts.aimPoint = {o[0] + std::cos(ay) * 500.0f, o[1] + std::sin(ay) * 500.0f, o[2]};
+        w.takeFxEvents();
+        int flashes = 0;
+        for (int i = 0; i < 6; ++i) {
+            c.buttons = 1;
+            w.setPlayerCommand(c);
+            w.frame();
+            for (const auto& fx : w.takeFxEvents()) {
+                if (fx.entity != t->number || fx.tag != "tag_flash") continue;
+                ++flashes;
+                const float p = (a[0] + ts.pitch) * float(M_PI) / 180.0f, y = (a[1] + ts.yaw) * float(M_PI) / 180.0f;
+                const float d = fx.forward[0] * std::cos(p) * std::cos(y) + fx.forward[1] * std::cos(p) * std::sin(y) - fx.forward[2] * std::sin(p);
+                CHECK(d > 0.9999f);
+            }
+        }
+        c.buttons = 0;
+        w.setPlayerCommand(c);
+        CHECK(flashes > 0);
+        CHECK(w.playerOnTurret());
+    }
+
     // On the turret: no hand-weapon step (iw2view skips pweapon.update, as PM_Weapon returns at 0x4dfc59).
     for (int i = 0; i < 20; ++i) {
         w.frame();

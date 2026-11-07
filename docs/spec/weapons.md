@@ -73,6 +73,18 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
   eFlags & 0x300 is set (0x4ae8a8..0x4ae8b4).
 - After getting off the kept aim fraction applies again: if the aim is still held the zoom and the overlay are back
   at once; otherwise the aim runs down at the normal rate. (implemented: `playerViewFov`, `scopeOverlayDrawAlpha`)
+
+### Aim when the weapon goes down (VAs in the patch 1.3 SP executable)
+
+- A vehicle gun (the flak88 is a `script_vehicle`) is not a turret: no turret eFlags, so the fov is not replaced by 55
+  (0x4ae8a8). The fov (0x4ae7b0) uses the player state's weapon and the aim fraction ps+0xb8 as on foot.
+- In a vehicle the hand weapon is lowered to weapon 0 (0x4de880). The aim flag pm_flags 0x40 (0x4dd020) is cleared each
+  step and set again only when 0x4dcf70 allows it: a linked player (pm_type 1) gets there with the local +0x30 zeroed by
+  the linked branch (0x50c8a2), so the weapon tests decide: aimDownSight (+0x32c) and a weapon state other than 1, 2
+  (raising, dropping), 10–16. So during the drop the aim runs out at the adsTransOutTime rate.
+- With weapon 0 (no aimDownSight) the aim update (0x4dd13b) goes to 0x4dd12b: aim fraction and exit timer are 0.
+  After getting out the weapon is raised first and the aim comes back only once it is ready.
+  (implemented: `PlayerWeapon::update`)
 - Other users of the overlay test 0x4bc8a0 (view flash 0x4b6131, damage indicators 0x4bdcb0 / 0x4be210) do not test
   the turret bits and still see the kept aim. TODO(spec): [stays: needs a run of the original] not checked in a window whether that is visible.
 - Grenade danger icons (VAs in the patch 1.3 SP executable): the loop 0x4be210 calls the overlay test first (0x4be227) and returns when it is true and the bool dvar `cg_hudGrenadeIconInScope` (registered at 0x4a1622, flags 0x1001, default 0) is off. So by default the icons are hidden under a scope overlay and shown under plain aim; with the dvar on they are drawn there too.

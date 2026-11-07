@@ -1862,15 +1862,19 @@ void World::registerBuiltins() {
         return Value();
     });
     // makefakeai (0x4f82a0): the entity must be a script_model (eType 5, else "makeFakeAI must be applied to a script_model",
-    // string 0x5853c4); it clears ent+0xa2 bits 1|2, sets the box mins (-15,-15,0) maxs (15,15,72) (0xa8..0xbc), ORs 0x8000
-    // into ent+0xc0 and relinks (0x44b2d0). Recorded as script fields; TODO(spec): [stays: not read] what the exe's traces/damage do with the
-    // 0x8000 contents of a fake AI (bullets only hit script models through their xmodel surfaces here).
-    vm_.registerBuiltin("makefakeai", [](CallContext& c) {
+    // string 0x5853c4); it clears ent+0xa2 bits 2|4 (andb $-7), sets the box mins (-15,-15,0) maxs (15,15,72) (0xa8..0xbc), ORs
+    // 0x8000 into ent+0xc0 and relinks (0x44b2d0). With ent+0xa2 & 6 clear the entity trace (0x44b840) takes the box path
+    // (0x44baef: linked contents against the mask, abs box test 0x419450, box trace 0x417c20) instead of the xmodel collision
+    // surfaces, so bullets hit a drone through its box (World::syncEntityClips).
+    vm_.registerBuiltin("makefakeai", [this](CallContext& c) {
         const ObjectPtr o = c.self.asObject();
         if (o->get("classname").toString() != "script_model") throw std::runtime_error("makeFakeAI must be applied to a script_model");
+        Entity* e = entityOf(c.self);
+        const uint32_t contents = (e ? entityContents(*e) : 0x2080u) | 0x8000u;
         o->set("$fakeai_mins", Value(Vec3{-15, -15, 0}));
         o->set("$fakeai_maxs", Value(Vec3{15, 15, 72}));
         o->set("$fakeai", Value(true));
+        o->set("$contents", Value(int32_t(contents)));
         return Value();
     });
     // getstance (0x4ee330): only for a client entity ("GetStance is only defined for players.", 0x587544); the string by

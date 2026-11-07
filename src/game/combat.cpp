@@ -565,6 +565,7 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
         if (e.obj->removed || (e.classname != "script_model" && !e.vehicle && e.classname != "script_vehicle_corpse") || e.number == passNum ||
             e.number == passOwnerNum)
             continue;
+        if (e.obj->get("$fakeai").truthy()) continue; // makefakeai cleared ent+0xa2 & 6: the box path (entity clips) instead
         const uint32_t entContents = entityContents(e); // ent+0xc0: 0x2080 script_model, a script_vehicle's 0x2080 / collmap 0x800000
         if (!(mask & entContents)) continue;
         const Value mv = e.obj->get("model"), ov = e.obj->get("origin");
