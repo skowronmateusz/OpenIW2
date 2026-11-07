@@ -187,6 +187,9 @@ void AnimState::set(int n, const SetArgs& a) {
         AnimNodeState& s = nodes_[size_t(node)];
         s.rate = rate;
         s.notify = notify;
+        // 0x4790a2..0x4790d2: a flagged synced blend node takes its notetrack leaf now; any other node has none.
+        const auto& tn = nodes[size_t(node)];
+        s.noteSource = !notify.empty() && !tn.children.empty() && (tn.syncFlags & 3) ? noteSourceOf(node) : 0;
     };
     if (a.knob || a.knobAllRoot >= 0) knobSiblings(n, weight, a.blendTime);
     setNode(n, weight, a.rate, a.notify);
@@ -201,6 +204,19 @@ void AnimState::set(int n, const SetArgs& a) {
     }
     for (int p = nodes[size_t(n)].parent; p > 0; p = nodes[size_t(p)].parent)
         if (nodes_[size_t(p)].goalWeight == 0) setNode(p, 1.0f, 1.0f, {});
+}
+
+int AnimState::noteSourceOf(int n) const {
+    const auto& node = tree_.nodes()[size_t(n)];
+    if (node.children.empty()) return n;
+    float best = 0;
+    int src = 0;
+    for (int c : node.children) {
+        const float g = nodes_[size_t(c)].goalWeight;
+        if (!(g > best)) continue;
+        if (const int r = noteSourceOf(c)) best = g, src = r;
+    }
+    return src;
 }
 
 // clearanim (0x4f6300 → 0x478940): the node and every descendant go to goal 0 (0x478890).
@@ -332,9 +348,9 @@ float AnimState::syncFreq(int n) const {
 }
 
 // Moves a leaf from its time to `to` (cycle `toCycle`) and calls `onNote` for the notetracks crossed (0x476f10).
-void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote) {
+void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote, const assets::XAnim* anim) {
     AnimNodeState& s = nodes_[size_t(n)];
-    const assets::XAnim* a = nodeAnim(n);
+    const assets::XAnim* a = anim ? anim : nodeAnim(n);
     const float before = s.time;
     const bool wrapped = toCycle > s.cycle;
     // A step crosses a note x when before <= x < to, or also x == to when to is 1.0; a wrapped step when x >= before or x < to
@@ -413,6 +429,9 @@ void AnimState::updateTime(int n, float dt, bool notes, const NoteFn& onNote) {
         advanceLeaf(n, to, cycle, notes, onNote);
         return;
     }
+    // 0x4766a8 -> 0x476f10: a synced top with a notify reports the notetracks of its source leaf (state +0, 0x476fde) on its
+    // own time line under its own notify name, before its descendants follow (0x4760b0, 0x476370).
+    if (s.noteSource > 0 && !s.notify.empty()) advanceLeaf(n, to, cycle, notes, onNote, nodeAnim(s.noteSource));
     s.time = to;
     s.cycle = cycle;
     for (int c : node.children) syncTo(c, s, notes, onNote);

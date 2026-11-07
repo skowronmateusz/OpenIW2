@@ -340,6 +340,7 @@ void World::saveState(StateWriter& w) {
                 w.i32(n.oldCycle);
                 w.b(n.ended);
                 w.str(n.notify);
+                w.i32(n.noteSource); // version 12
             }
         w.u32(uint32_t(e.attachments.size()));
         for (const auto& a : e.attachments) { w.str(a.model); w.str(a.tag); }
@@ -757,7 +758,15 @@ void World::loadState(StateReader& r) {
             n.oldCycle = r.i32();
             n.ended = r.b();
             n.notify = r.str();
+            n.noteSource = r.version >= 12 ? r.i32() : -1;
         }
+        // Saves before version 12 have no notetrack source: taken again from the goal weights (0x478e90), as when it was set.
+        if (r.version < 12)
+            for (uint32_t j = 0; j < nAnim; ++j) {
+                AnimNodeState& n = e->anim->nodeStates()[j];
+                const auto& tn = e->anim->tree().nodes()[j];
+                n.noteSource = !n.notify.empty() && !tn.children.empty() && (tn.syncFlags & 3) ? e->anim->noteSourceOf(int(j)) : 0;
+            }
         e->attachments.clear();
         for (uint32_t j = 0, m = r.u32(); j < m; ++j) {
             Attachment a;
@@ -1072,7 +1081,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 

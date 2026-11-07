@@ -121,6 +121,43 @@ body
                     CHECK(got.back() == "end");
                 }
 
+                // A synced blend node set with a notify (the auto-fire loop: combat_utility.gsc sets %crouch_shoot_auto flagged
+                // "animdone" over its aim children) reports the notetracks of its source leaf, the child with the largest goal
+                // weight when it was set (0x4790a2 -> 0x478e90), on its own time line under its own notify (0x4766a8 -> 0x476f10).
+                // The leaves themselves carry no notify.
+                {
+                    const int top = tree->find("crouch_shoot_auto"), straight = tree->find("crouch_shoot_auto_straight"),
+                              up = tree->find("crouch_shoot_auto_up");
+                    const iw2::assets::XAnim* sa = lib.anim("crouch_shoot_auto_straight");
+                    CHECK(top >= 0 && straight >= 0 && up >= 0 && sa != nullptr);
+                    if (top >= 0 && straight >= 0 && up >= 0 && sa) {
+                        CHECK((tree->nodes()[size_t(top)].syncFlags & 3) != 0);
+                        iw2::game::AnimState f(*tree, lib);
+                        f.set(body, on);
+                        iw2::game::AnimState::SetArgs w;
+                        w.blendTime = 0;
+                        w.weight = 0.2f;
+                        f.set(up, w);
+                        w.weight = 0.8f;
+                        f.set(straight, w);
+                        CHECK(f.noteSourceOf(top) == straight);
+                        iw2::game::AnimState::SetArgs fire;
+                        fire.blendTime = 0.1f;
+                        fire.knobAllRoot = body;
+                        fire.notify = "animdone";
+                        f.set(top, fire);
+                        const long perLoop = std::count_if(sa->notes.begin(), sa->notes.end(), [](const auto& n) { return n.name == "fire"; });
+                        CHECK(perLoop > 0 && sa->looping);
+                        long fires = 0;
+                        for (int i = 0; i < 60; ++i) // 3 s
+                            f.update(0.05f, [&](const std::string& flag, const std::string& note) {
+                                if (note == "fire") { CHECK(flag == "animdone"); ++fires; }
+                            });
+                        CHECK(fires >= perLoop * 2); // the loop runs more than twice in 3 s
+                        std::cout << "auto fire: " << fires << " fire notes in 3 s (" << perLoop << " per loop)\n";
+                    }
+                }
+
                 // Snapshot / restore (0x4796c0 / 0x478db0 / 0x478e10) and the truncated update (0x478220): a fresh state steps
                 // in 50 ms pieces, each cut at the next notetrack; every notetrack except "end" is reported by exactly one
                 // truncated step, and restoring the snapshot puts the time back.

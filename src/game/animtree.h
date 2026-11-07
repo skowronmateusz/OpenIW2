@@ -72,6 +72,7 @@ struct AnimNodeState {
     float rate = 1;
     bool ended = false;
     std::string notify;                               // flagged: notify name for notetracks
+    int noteSource = 0; // state +0 (0x4790c5): a flagged synced blend node's notetrack leaf (0x478e90), 0 for none
 };
 
 // Root motion of the weighted animations over the last time update (0x478550 → 0x477b80).
@@ -161,7 +162,12 @@ private:
     float syncFreq(int n) const;
     void updateTime(int n, float dt, bool notes, const NoteFn& onNote);
     void syncTo(int n, const AnimNodeState& top, bool notes, const NoteFn& onNote);
-    void advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote);
+    void advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote, const assets::XAnim* anim = nullptr);
+public:
+    // 0x478e90: the leaf itself, or under a blend node the source of the child with the largest goal weight (> 0, first on a
+    // tie, children without a source skipped); 0 when there is none.
+    int noteSourceOf(int n) const;
+private:
     float probeStep_ = 0; // the step of the node being advanced (0x475de0 divides by it)
     void deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, bool absolute, AnimDelta& out) const;
     void calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const;

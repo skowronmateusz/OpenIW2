@@ -85,6 +85,13 @@ model; which bones take the second order is not yet specified (OpenIW2 uses pare
   child weights; children with frequency 0 are skipped) × rate × dt, wrapping unless `nonloopsync`, and every
   weighted descendant is set to its time and cycle (0x476370: a descendant out of step first restarts from the
   top's old time). A new time is only taken when it does not go back.
+- Notetracks of a synced blend node: setting a node with a notify name (0x478f10) gives a synced blend node (flags & 3) a
+  notetrack source in its state (+0, 0x4790a2..0x4790d2): 0x478e90 returns a leaf itself, or under a blend node the source of
+  the child with the largest goal weight (strictly above the best so far, starting at 0, so the first wins a tie). Any other node,
+  and any set without a notify, has none. On each time step the synced top reports the source leaf's notetracks on its own time
+  line under its own notify (0x4766a8 -> 0x476f10, which reads the anim of the node named by state +0 when the node has children,
+  0x476fde), before its descendants follow. The AI auto-fire loops rely on it (a synced aim blend flagged "animdone" whose leaves
+  carry the "fire" notes). Saved since state version 12; older saves take the source again from the goal weights.
 - Sync flags (0x479260 / 0x479120): a blend node with `loopsync` gets flags 1|4, with `nonloopsync` 2|4; every blend
   node below it gets the same 1 or 2 without 4. A synced subtree may hold only looping (loopsync) or non-looping
   (nonloopsync) leaves. Decode of the leaf case of 0x479120 (arg: 1 loopsync, 0 nonloopsync): a leaf whose anim loop byte (+2)
