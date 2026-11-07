@@ -285,3 +285,8 @@ server time; the offset then changes smoothly between server steps (tested in te
 The first-person camera impulses use the same client time: the landing stamp (0x4babdb) and the dip curve (0x4ae62f), the
 step offset (0x4baca5, 0x4addb1) and the damage kick (0x4ba2a7, 0x4ae3ce). OpenIW2 stamps and evaluates all three at
 `clientRenderTimeMs`, so the landing dip moves every drawn frame instead of in 50 ms steps (tested in test_viewimpulses).
+
+The same holds for everything else the client draws: HUD fades and hudelem timers (0x4a9bd0, 0x4c1f30), fog transitions
+(0x4a5770), the screen fade (0x4bda70), shellshock kick and sound (0x4b24a0) and the refdef time the renderer uses for water and
+shader time (stored from cg.time at 0x4afc99). iw2view reads all of them through one render clock (`cgNowMs`); the server
+time stays only for simulation input, cache keys and debug output, each marked on its line (checked by test_renderclock).

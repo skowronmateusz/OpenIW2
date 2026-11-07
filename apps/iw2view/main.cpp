@@ -3518,10 +3518,10 @@ int main(int argc, char** argv) {
                         mixer.setListener({p[0], p[1], p[2]}, {std::cos(yaw), std::sin(yaw), 0}, {std::sin(yaw), -std::cos(yaw), 0});
                     }
                 }
-                trace("sound " + alias, wp->timeMs());
+                trace("sound " + alias, wp->timeMs()); // [server time]
                 const int handle = mixer.play(alias, origin ? std::optional<audio::Vec3>(*origin) : std::nullopt, &dur, {.owner = owner});
                 if (duration) *duration = dur;
-                trace("  -> handle " + std::to_string(handle) + ", length " + std::to_string(dur) + " s", wp->timeMs());
+                trace("  -> handle " + std::to_string(handle) + ", length " + std::to_string(dur) + " s", wp->timeMs()); // [server time]
                 // A started alias with a subtitle column shows its caption for max(sound length, cg_subtitleMinTime 3 s) (0x4a3540).
                 if (handle && !mixer.lastSubtitle().empty()) subtitles.push_back({mixer.lastSubtitle(), SDL_GetTicksNS(), dur});
                 return handle;
@@ -3544,7 +3544,7 @@ int main(int argc, char** argv) {
             } else {
                 w->start();
             }
-            trace("world started", w->timeMs());
+            trace("world started", w->timeMs()); // [server time]
             return w;
         };
         std::string currentMap = menuMode ? std::string() : args[1];
@@ -3632,8 +3632,14 @@ int main(int argc, char** argv) {
         std::optional<int64_t> fxTimeOverride;
         auto fxTime = [&]() -> int64_t {
             if (fxTimeOverride) return *fxTimeOverride;
-            return world ? world->timeMs() - 50 + int64_t(lerpFrac * 50.0f) : 0;
+            return world ? world->timeMs() - 50 + int64_t(lerpFrac * 50.0f) : 0; // [server time]
         };
+        // cg.time (0xf708dc) of this rendered frame. Everything the client draws reads it: the view impulses (0x4ae3ce, 0x4ae62f,
+        // 0x4addb1), the HUD fades and hudelems (0x4a9bd0, 0x4c1f30), fog (0x4a5770), screen fade (0x4bda70), shellshock
+        // (0x4b24a0) and the refdef time the renderer uses (0x4afc99). It advances every drawn frame, so a visual evaluated at
+        // the 20 Hz server time moves in 50 ms steps. Read the server time in this file only for simulation and debug output,
+        // marked "[server time]" on the line (checked by test_renderclock).
+        auto cgNowMs = [&]() -> int64_t { return world ? game::clientRenderTimeMs(world->timeMs(), lerpFrac) : 0; };
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
@@ -3697,8 +3703,8 @@ int main(int argc, char** argv) {
                             out = dt->second.tag; // the drawn pose of this rendered frame
                             return true;
                         }
-                        if (wp->timeMs() != lastT) {
-                            lastT = wp->timeMs();
+                        if (wp->timeMs() != lastT) { // [server time]
+                            lastT = wp->timeMs(); // [server time]
                             game::Vec3 p{};
                             std::array<game::Vec3, 3> ax{};
                             bool hasAxes = false;
@@ -3759,7 +3765,7 @@ int main(int argc, char** argv) {
                     if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
                 return true;
             };
-            const game::FogParams fogNow = world->clientFog.current(world->timeMs());
+            const game::FogParams fogNow = world->clientFog.current(cgNowMs());
             Uploader up(dev, false);
             ++renderStamp;
             for (const auto& e : world->entities()) {
@@ -3823,7 +3829,7 @@ int main(int argc, char** argv) {
                 // t = (cur + trunc((next - cur) * frac)) * 0.001. Otherwise the material time stays 0 (memset 0x4ac7b0) and t is
                 // the scene time.
                 {
-                    const double sceneMs = double(world->timeMs()) - 50.0 + double(lerpFrac) * 50.0;
+                    const double sceneMs = double(world->timeMs()) - 50.0 + double(lerpFrac) * 50.0; // [server time] the same render time, kept in double
                     double t = sceneMs * 0.001;
                     if (e->vehicle) {
                         const int next = e->vehicle->texScroll;
@@ -3906,7 +3912,7 @@ int main(int argc, char** argv) {
                     // Prone tilt (cgame 0x4c1cc0 / 0x4c1b90): a DObj control on tag_origin, rotation pitch (0x423970) times
                     // roll (0x423a10, corpse blend only) = anglesQuat(pitch, 0, roll), lift on z. The fraction uses cg.time,
                     // which lies between the two snapshots it interpolates (0x4a4c10): the effect time below.
-                    const int64_t cgTime = world->timeMs() - 50 + int64_t(lerpFrac * 50.0f);
+                    const int64_t cgTime = cgNowMs();
                     static const bool noTilt = std::getenv("IW2_NO_PRONE_TILT") != nullptr;
                     if (float tiltPitch = 0, tiltRoll = 0, tiltLift = 0; !noTilt && world->actorProneTilt(*e, cgTime, tiltPitch, tiltRoll, tiltLift)) {
                         for (size_t bi = 0; bi < body->parts.bones.size(); ++bi) {
@@ -3974,8 +3980,8 @@ int main(int argc, char** argv) {
             playWorldFx();
             fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
             fxSystem.viewUp = {fxUp.x, fxUp.y, fxUp.z};
-            for (const auto& d : fxSystem.takeDecals(world->timeMs()))
-                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, world->timeMs());
+            for (const auto& d : fxSystem.takeDecals(cgNowMs()))
+                scene.marks.impactMark(d.material, d.origin, d.dir, d.rotation, d.rgba, d.size, cgNowMs());
             if (const GpuModel* mm = marksModel(scene, dev, up, vfs)) {
                 DrawItem it;
                 it.model = mm;
@@ -3983,7 +3989,7 @@ int main(int argc, char** argv) {
                 it.ambient[0] = it.ambient[1] = it.ambient[2] = 1.0f;
                 it.sunVisibility = 0;
                 items.push_back(it);
-                scene.marks.markDrawn(world->timeMs()); // TODO(spec): [view cull not read] the per-mark view cull (0x486e30)
+                scene.marks.markDrawn(cgNowMs()); // TODO(spec): [view cull not read] the per-mark view cull (0x486e30)
             }
             // Effects are evaluated at the drawn time (cg.time in the original, per client frame): the server time minus the one
             // frame the drawn state lags plus the interpolation fraction, so particles move smoothly instead of at 20 Hz.
@@ -4456,7 +4462,7 @@ int main(int argc, char** argv) {
                     std::vector<std::string> t;
                     for (std::string x; fa >> x;) t.push_back(x);
                     if (t.size() >= 5) {
-                        const int64_t now = world ? world->timeMs() : 0;
+                        const int64_t now = cgNowMs();
                         screenFade.command(float(std::atoi(t[3].c_str())) * 0.003921568859368563f, int(now), std::atoi(t[4].c_str()) * 1000, now);
                     }
                 }
@@ -4710,7 +4716,7 @@ int main(int argc, char** argv) {
             mixer.setLoading(false);
             traceFramesAfterLoad = 0;
             firstFramePending = true;
-            trace(menuEnv.getCvar("cl_paused") == "1" ? "load ended (pregame, paused)" : "load ended (running)", world ? world->timeMs() : 0);
+            trace(menuEnv.getCvar("cl_paused") == "1" ? "load ended (pregame, paused)" : "load ended (running)", world ? world->timeMs() : 0); // [server time]
         };
         endLoad();
         // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
@@ -4904,7 +4910,7 @@ int main(int argc, char** argv) {
             auto lerpOver = [&](const script::ObjectPtr& o, const char* startKey, const char* timeKey) {
                 const script::Value st = o->get(startKey), tm = o->get(timeKey);
                 if (!st.isNumber() || !tm.isNumber() || tm.asFloat() <= 0) return 1.0f;
-                return std::clamp((float(world->timeMs()) - st.asFloat()) / tm.asFloat(), 0.0f, 1.0f);
+                return std::clamp((float(cgNowMs()) - st.asFloat()) / tm.asFloat(), 0.0f, 1.0f);
             };
             if (world) {
                 hudElemStart = out.size();
@@ -4957,7 +4963,7 @@ int main(int argc, char** argv) {
                             // Clock needle (cgame 0x4c2c30): material + "needle" over the same box, rotated by the angle of the
                             // remaining (or elapsed) time: R * 360 / duration (or one turn per minute without a duration), in 1/65536 turns.
                             const float endMs = o->get("$timerend").asFloat();
-                            float r = o->get("$clockup").asInt() ? float(world->timeMs()) - endMs : endMs - float(world->timeMs());
+                            float r = o->get("$clockup").asInt() ? float(cgNowMs()) - endMs : endMs - float(cgNowMs());
                             r = std::max(0.0f, r);
                             const float dur = o->get("$clockdur").asFloat();
                             const int a16 = (dur != 0.0f ? int(r * 360.0f / dur * 182.04444885f) : int(r * 1.0922666f)) & 0xffff;
@@ -4980,8 +4986,8 @@ int main(int argc, char** argv) {
                     std::string text = str(o->get("$text"));
                     if (o->get("$timerend").isNumber()) {
                         const bool up = o->get("$timerup").isNumber(); // 0x4c1f6a: now - start
-                        const int secs = std::max(0, up ? int((float(world->timeMs()) - o->get("$timerend").asFloat()) / 1000.0f)
-                                                        : int(std::ceil((o->get("$timerend").asFloat() - float(world->timeMs())) / 1000.0f)));
+                        const int secs = std::max(0, up ? int((float(cgNowMs()) - o->get("$timerend").asFloat()) / 1000.0f)
+                                                        : int(std::ceil((o->get("$timerend").asFloat() - float(cgNowMs())) / 1000.0f)));
                         text = std::to_string(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + std::to_string(secs % 60);
                     } else if (o->get("$value").isDefined()) {
                         const script::Value v = o->get("$value");
@@ -5106,7 +5112,7 @@ int main(int argc, char** argv) {
                 if (menuEnv.getCvar("cg_drawpaused") == "0") objFade = 0.0f;
                 else if (hudFade.objectivesHeld) objFade = 1.0f;
                 else if (world && hudFade.objectives != 0) {
-                    const int64_t el = world->timeMs() - hudFade.objectives;
+                    const int64_t el = cgNowMs() - hudFade.objectives;
                     if (el < 300) objFade = el <= 0 ? 1.0f : float(300 - el) / 300.0f;
                 }
                 const float msgAlpha = menuEnv.getCvar("cl_paused") == "1" ? 0.0f : 1.0f - objFade;
@@ -5227,7 +5233,7 @@ int main(int argc, char** argv) {
             float hintFade = 1.0f;
             if (world) {
                 const auto& cur = world->playerUseHint();
-                const int64_t hnow = world->timeMs();
+                const int64_t hnow = cgNowMs();
                 constexpr int64_t hintFadeTime = 100, hintFadeSpan = 100; // cg_hintFadeTime default; the 0x4b0900 argument
                 if (cur.hint != 0 || !cur.weapon.empty()) {
                     hudFade.hintStart = hnow;
@@ -5293,7 +5299,7 @@ int main(int argc, char** argv) {
             // (cg_hudDamageIconInScope 0). The corner-to-UV order of the gfx quad draw (0x617b68, render command 0x12, handler
             // 0x1002f280) is (0,0) (1,0) (1,1) (0,1) for the corners in the order given.
             if (world && !(scopeAlpha() > 0)) {
-                const int64_t nowMs = world->timeMs();
+                const int64_t nowMs = cgNowMs();
                 const float W = 128.0f, H = 64.0f, O = 128.0f;
                 const float px[4] = {W * 0.5f, -W * 0.5f, -W * 0.5f, W * 0.5f}, py[4] = {O + H, O + H, O, O};
                 const float cxs = left43 + 320.0f * sc, cys = 240.0f * sc;
@@ -5390,7 +5396,7 @@ int main(int argc, char** argv) {
             // 0x4de4c0 / 0x4deb70 on an empty weapon, not modelled in PlayerWeapon) and 4 / 5 (events 0x8d / 0x8e with parm 1 / 2,
             // 0x4bac40 / 0x4bac60; the server stance trace 0x4fc000 is not modelled).
             if (world && invalidCmdItem && invalidCmdState != 0) {
-                const int64_t nowMs = world->timeMs();
+                const int64_t nowMs = cgNowMs();
                 if (nowMs > invalidCmdStartMs + 1800) invalidCmdState = 0;
                 else {
                     static const char* const keys[] = {"", "WEAPON_NO_AMMO", "WEAPON_NO_FRAG_GRENADE", "WEAPON_NO_SMOKE_GRENADE", "GAME_STAND_BLOCKED", "GAME_CROUCH_BLOCKED"};
@@ -5423,7 +5429,7 @@ int main(int argc, char** argv) {
                 float objAlpha = 0.0f;
                 if (hudFade.objectivesHeld) objAlpha = 1.0f;
                 else if (hudFade.objectives != 0) {
-                    const int64_t el = world->timeMs() - hudFade.objectives;
+                    const int64_t el = cgNowMs() - hudFade.objectives;
                     if (el < 300) objAlpha = el <= 0 ? 1.0f : float(300 - el) / 300.0f;
                 }
                 if (objAlpha > 0.0f) {
@@ -5540,7 +5546,7 @@ int main(int argc, char** argv) {
             // textstyle reaches the text draw (menu 0x4cec99 → 0x4c4070 → 0x4aa690 → 0x4aa2a0 → 0x4cc6a0 → 0x4c3790),
             // so ITEM_TEXTSTYLE_SHADOWED gets the renderer's shadow (see hudText). TODO(spec): [argument mapping not read] which ownerdraw
             // arguments carry textalignx/textaligny (from the menu's "point to center around" comments).
-            if (world && deadQuoteItem && deadScreenMs && deadScreenMs < world->timeMs()) {
+            if (world && deadQuoteItem && deadScreenMs && deadScreenMs < cgNowMs()) {
                 const auto qv = world->cvars.find("ui_deadquote");
                 // Font for textfont 0 (0x4c38e0): textscale × (screen height / 480) ≤ ui_smallFont (0.25) → $smallfont,
                 // ≥ ui_extraBigFont (0.55) → $extrabigfont, < ui_bigFont (0.4) → $font, else $bigfont. The aliases
@@ -5556,7 +5562,7 @@ int main(int argc, char** argv) {
                 if (qv != world->cvars.end() && f) {
                     int fadeMs = 1000;
                     if (auto it = world->cvars.find("hud_deathQuoteFadeTime"); it != world->cvars.end()) fadeMs = std::atoi(it->second.c_str());
-                    const int64_t since = world->timeMs() - deadScreenMs;
+                    const int64_t since = cgNowMs() - deadScreenMs;
                     const float alpha = fadeMs > 0 && since <= fadeMs ? float(since) / float(fadeMs) : 1.0f;
                     std::string key = qv->second;
                     if (!key.empty() && key[0] == '@') key.erase(0, 1);
@@ -5700,7 +5706,7 @@ int main(int argc, char** argv) {
                 !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
                 const game::GrenadeIndicatorCfg gcfg;
                 const std::array<float, 3> pOrigin{c.pos.x, c.pos.y, c.pos.z - hudViewHeight};
-                const float ga = game::grenadeIndicatorAlpha(gcfg, world->timeMs());
+                const float ga = game::grenadeIndicatorAlpha(gcfg, cgNowMs());
                 for (const auto& g : world->hudGrenades()) {
                     const std::array<float, 3> gb{g.base[0], g.base[1], g.base[2]}, gd{g.delta[0], g.delta[1], g.delta[2]};
                     if (!game::grenadeIndicatorVisible(gcfg, gb, gd, pOrigin, hudViewHeight)) continue;
@@ -5728,7 +5734,7 @@ int main(int argc, char** argv) {
                 std::atof(menuEnv.getCvar("iw2_hitMarker").c_str()) != 0 &&
                 !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
                 const game::HitMarkerLook look;
-                if (const float ha = game::hitMarkerAlpha(world->timeMs(), world->playerHitMarkerMs(), look); ha > 0) {
+                if (const float ha = game::hitMarkerAlpha(cgNowMs(), world->playerHitMarkerMs(), look); ha > 0) {
                     Quad2D q{left43 + (320.0f + look.offset) * sc, (240.0f + look.offset) * sc, 0, 0};
                     q.x1 = q.x0 + look.size * sc;
                     q.y1 = q.y0 + look.size * sc;
@@ -5776,7 +5782,7 @@ int main(int argc, char** argv) {
             auto fadeAlpha = [&](int64_t touch, float dvarSeconds, int ticksMs) {
                 if (!drawPausedOn) return 0.0f;
                 if (dvarSeconds == 0.0f) return 1.0f;
-                const int64_t now = world ? world->timeMs() : 0, el = now - touch;
+                const int64_t now = cgNowMs(), el = now - touch;
                 if (touch == 0 || el >= ticksMs) return 0.0f;
                 const int64_t rem = ticksMs - el;
                 return rem >= 700 ? 1.0f : float(rem) / 700.0f;
@@ -5874,7 +5880,7 @@ int main(int argc, char** argv) {
                         } else {
                             hudText(out, clip, x0, y0, gs, *f, col, 0.0f, 1.0f, st);
                             if (clipLow) {
-                                const int64_t now = world ? world->timeMs() : 0;
+                                const int64_t now = cgNowMs();
                                 if (hudFade.flashStart > now || hudFade.flashStart + 800 < now) hudFade.flashStart = now;
                                 const float saw = float(hudFade.flashStart - now + 800) * 0.00125f;
                                 const uint8_t flash[4] = {uint8_t(0.89f * 255.0f), uint8_t(0.18f * 255.0f), uint8_t(0.01f * 255.0f),
@@ -6006,7 +6012,7 @@ int main(int argc, char** argv) {
             // quad (0x4a8a0f) spans x = fraction .. trail with texcoords s fraction .. trail, t 0 .. 1, colour (1, 0, 0,
             // fade alpha) as implemented.
             if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player() && std::atof(menuEnv.getCvar("cg_drawHealth").c_str()) != 0.0) {
-                const int64_t now = world->timeMs();
+                const int64_t now = cgNowMs();
                 const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
                 hudFade.lastHudMs = now;
                 const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
@@ -6075,7 +6081,7 @@ int main(int argc, char** argv) {
             // TODO(spec): [scale constants not read] the cg_hudStanceHintPrints text lines (default 0, 0xf569c0), the position scale factors (0xf5bcc8, 0x591f30) and
             // the bool dvar 0x1040c4c checked in the fade.
             if (const ui::Menu* sm = hudMenus.find("stance"); sm && world) {
-                const int64_t now = world->timeMs();
+                const int64_t now = cgNowMs();
                 const uint32_t st = world->playerPmFlags() & 3u;
                 if (hudFade.stanceChange > now || hudFade.stanceState != st) hudFade.stanceChange = now;
                 hudFade.stanceState = st;
@@ -6152,12 +6158,12 @@ int main(int argc, char** argv) {
             // cg_hudObjectiveRingTime 10000 > 0, start >= 0, start + time > now) the compass is touched every frame.
             constexpr int ringNum = 10, ringTime = 10000;
             auto ringElapsed = [&](const game::Objective& ob) -> int64_t {
-                if (!world || ob.state != 4 || ob.ringStartMs < 0 || ob.ringStartMs + ringTime <= world->timeMs()) return -1;
-                return world->timeMs() - ob.ringStartMs;
+                if (!world || ob.state != 4 || ob.ringStartMs < 0 || ob.ringStartMs + ringTime <= cgNowMs()) return -1;
+                return cgNowMs() - ob.ringStartMs;
             };
             if (world)
                 for (const auto& ob : world->objectives())
-                    if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = world->timeMs();
+                    if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = cgNowMs();
             const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
                 // Compass dvars from the world's dvar table (maps set cg_hudCompassMaxRange with setsavedcvar: demolition 700/400,
@@ -6203,7 +6209,7 @@ int main(int argc, char** argv) {
                         // (0xf79a30) fed by the view yaw instead of the raw yaw; the arrow rotation (4c1265) keeps the raw yaw.
                         // The spring is the 0x4b09a0 algorithm (5 ms steps, 500 ms reset) with its own angle/velocity; the exe shares
                         // the time word 0xf79a20 between both springs (not reproduced).
-                        const float pyaw = std::atof(menuEnv.getCvar("cg_hudCompassSpringyPointers").c_str()) != 0.0 ? pointerSpring.update(int(world->timeMs()), cyaw) : cyaw;
+                        const float pyaw = std::atof(menuEnv.getCvar("cg_hudCompassSpringyPointers").c_str()) != 0.0 ? pointerSpring.update(int(cgNowMs()), cyaw) : cyaw;
                         const float ccx = bx + qw * 0.5f, ccy = by + qh * 0.5f, icon = (tanks ? 16.0f : 10.0f) * csize * sc;
                         auto place = [&](float px, float py, float& ix, float& iy) {
                             const float dx = px - c.pos.x, dy = py - c.pos.y;
@@ -6212,7 +6218,7 @@ int main(int argc, char** argv) {
                             ix = ccx - icon * 0.5f - std::sin(th) * rad, iy = ccy - icon * 0.5f - std::cos(th) * rad;
                         };
                         const int tex = materialTexture(it.background);
-                        const int64_t now = world->timeMs();
+                        const int64_t now = cgNowMs();
                         for (const auto& m : tanks ? world->compassVehicles() : world->compassFriendlies()) {
                             float ix, iy;
                             place(m.pos[0], m.pos[1], ix, iy);
@@ -6259,7 +6265,7 @@ int main(int argc, char** argv) {
                         Quad2D q{bx, by, bx + qw, by + qh};
                         std::memcpy(q.rgba, col, 4);
                         q.texture = materialTexture(it.background);
-                        if (it.ownerDraw == 84) q.rotDeg = compassSpring.update(int(world->timeMs()), wrap360(cyaw - north)); // 0x4b09a0
+                        if (it.ownerDraw == 84) q.rotDeg = compassSpring.update(int(cgNowMs()), wrap360(cyaw - north)); // 0x4b09a0
                         out.push_back(q);
                         continue;
                     }
@@ -6319,7 +6325,7 @@ int main(int argc, char** argv) {
             // after the cgame (the victory screen over the level-end fade), so with menus open it goes below them.
             bool fadeDrawn = false;
             auto drawScreenFade = [&] {
-                screenFade.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+                screenFade.update(cgNowMs(), int64_t(SDL_GetTicks()));
                 if (screenFade.alpha() > 0) {
                     Quad2D q{0, 0, float(w), float(h)};
                     q.rgba[0] = q.rgba[1] = q.rgba[2] = 0;
@@ -6701,7 +6707,7 @@ int main(int argc, char** argv) {
                     world->frame();
                     if (auto change = world->takeDueLevelChange()) { // a --shot stops at a level change; the victory screen is shown
                         std::cout << "shot: level change to " << change->map << (change->victoryScreen ? " (victory screen)" : "") << " at "
-                                  << world->timeMs() << " ms\n";
+                                  << cgNowMs() << " ms\n";
                         if (change->victoryScreen) {
                             for (const auto& cmd : world->takeClientCommands()) if (cmd.name == "openvictoryscreen") break;
                             menuMx = 320.0f, menuMy = 448.0f;
@@ -6715,7 +6721,7 @@ int main(int argc, char** argv) {
                     fxSystem.viewValid = true;
                     setFxFrustum(fxSystem, cam, float(width) / float(height));
                     playWorldFx();
-                    (void)fxSystem.sprites(world->timeMs());
+                    (void)fxSystem.sprites(cgNowMs());
                     if ((world->playerPmFlags() & 0x20000) && rideDrive) { // the vehicle view as in play (cgame 0x4aeb60): pitch follows tag_body, yaw while pm_flags 0x40000
                         std::array<game::Vec3, 3> body;
                         if (world->playerVehicleBodyAxis(body)) {
@@ -6750,28 +6756,28 @@ int main(int argc, char** argv) {
                         std::cout << "\n";
                     }
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen and script menus too
-                        if (cmd.name == "opendeadscreen") deadScreenMs = world->timeMs();
+                        if (cmd.name == "opendeadscreen") deadScreenMs = cgNowMs();
                         else if (cmd.name == "popupopen" || cmd.name == "popupclose") menuCommand(cmd.name, cmd.arg);
                         else if (cmd.name == "fog") {
                             std::istringstream a(cmd.arg);
                             float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                             a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                            if (one >= 1.0f) world->clientFog.command(nearD, farD, r, g, b, int(ms), world->timeMs());
-                            else world->clientFog.commandExp(one, r, g, b, int(ms), world->timeMs());
+                            if (one >= 1.0f) world->clientFog.command(nearD, farD, r, g, b, int(ms), cgNowMs());
+                            else world->clientFog.commandExp(one, r, g, b, int(ms), cgNowMs());
                         }
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
-                            shotMsgs.push_back({cmd.name == "gm" ? cmd.arg : "^2\x14" + cmd.arg, world->timeMs(), false}); // obj_*: "^2%s" (0x57f6a0)
-                        else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, world->timeMs(), true});
+                            shotMsgs.push_back({cmd.name == "gm" ? cmd.arg : "^2\x14" + cmd.arg, cgNowMs(), false}); // obj_*: "^2%s" (0x57f6a0)
+                        else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, cgNowMs(), true});
                 }
                 frontStack.settleFades(); // a single-frame shot shows the menus after their fades
                 // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
                 for (const auto& m : shotMsgs)
-                    if (world->timeMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(world->timeMs() - m.at) * 1000000ull;
+                    if (cgNowMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(cgNowMs() - m.at) * 1000000ull;
                         screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
                 // Debug: IW2_SHOT_HINT=<state> shows an invalid-command hint state 300 ms into its blink cycle.
-                if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), world->timeMs() - 300);
+                if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), cgNowMs() - 300);
                 // Debug: IW2_SHOT_OBJECTIVES=1 shows the objectives screen as if +scores were held.
                 if (std::getenv("IW2_SHOT_OBJECTIVES")) hudFade.objectivesHeld = true;
                 // Debug: IW2_SHOT_HEALTH=<hp or fraction of maxhealth when <= 1>[,<trail fraction>[,<pulse phase ms>]] sets the player health, the red trail of the health bar
@@ -6785,10 +6791,10 @@ int main(int argc, char** argv) {
                     }
                     world->player()->obj->set("health", script::Value(int32_t(v[0])));
                     if (v[1] >= 0) hudFade.healthTrail = v[1];
-                    hudFade.healthPulse = world->timeMs() - int64_t(v[2]);
+                    hudFade.healthPulse = cgNowMs() - int64_t(v[2]);
                 }
                 // A still shot has no input history: show the faded HUD blocks as just touched (IW2_HUD_FADED=1 keeps them untouched).
-                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = world->timeMs();
+                if (!std::getenv("IW2_HUD_FADED")) hudFade.compass = hudFade.ammo = hudFade.weaponChange = hudFade.stance = hudFade.health = hudFade.offhand = cgNowMs();
                 // A script link carries the player: shoot from there (--yaw / --pitch kept); IW2_SHOT_FREE_CAM=1 keeps --pos.
                 if (world->playerLinked() && !std::getenv("IW2_SHOT_FREE_CAM")) {
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
@@ -6952,7 +6958,7 @@ int main(int argc, char** argv) {
                     stepCam.pos.z += shotViewHeight - 60.0f;
                     const game::Vec lo = game::leanOffset(stepCam.yaw, shotLean);
                     stepCam.pos = stepCam.pos + Vec3{lo[0], lo[1], lo[2]};
-                    fxTimeOverride = world->timeMs() - int64_t(shotSteps - 1 - i) * 20;
+                    fxTimeOverride = world->timeMs() - int64_t(shotSteps - 1 - i) * 20; // [server time]
                     std::vector<DrawItem> scratch;
                     addViewModel(scratch, stepCam);
                     (void)fxSystem.sprites(*fxTimeOverride);
@@ -6976,24 +6982,24 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
-            setFxFar(fxSystem, cam, (world ? world->clientFog.current(world->timeMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
+            setFxFar(fxSystem, cam, (world ? world->clientFog.current(cgNowMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
             if (const char* test = std::getenv("IW2_FX_TEST"); test && world) {
                 // Debug: play an effect 150 units ahead and show it after IW2_FX_MS milliseconds.
                 const float dist = std::getenv("IW2_FX_TEST_DIST") ? float(std::atof(std::getenv("IW2_FX_TEST_DIST"))) : 150.0f;
                 const Vec3 at = cam.pos + cam.forward() * dist;
-                const int64_t t0 = world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200);
+                const int64_t t0 = world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 200); // [server time]
                 fxSystem.play(efx(test), {at.x, at.y, at.z}, {0, 0, 1}, t0);
                 // IW2_FX_STEP=<ms>: update the effects every <ms> from the play time to the shot, like client frames (element
                 // updates such as emitFx and bounces then run with that frame time instead of one large step).
                 if (const char* st = std::getenv("IW2_FX_STEP"); st && std::atoi(st) > 0)
-                    for (int64_t t = t0; t < world->timeMs(); t += std::atoi(st)) (void)fxSystem.sprites(t);
+                    for (int64_t t = t0; t < cgNowMs(); t += std::atoi(st)) (void)fxSystem.sprites(t);
             }
             if (const char* tt = std::getenv("IW2_TRACER_TEST"); tt && world) {
                 // Debug: N tracer attempts (cg_tracerchance applies) from beside the view towards 1500 units ahead, aged IW2_FX_MS.
                 const Vec3 from = cam.pos + cam.right() * 30.0f + Vec3{0, 0, -15.0f};
                 const Vec3 to = cam.pos + cam.forward() * 1500.0f;
                 for (int i = 0; i < std::atoi(tt); ++i)
-                    fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100));
+                    fxSystem.addTracer({from.x, from.y, from.z}, {to.x, to.y + float(i) * 10.0f, to.z}, world->timeMs() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 100)); // [server time]
             }
             if (const char* as = std::getenv("IW2_AIM_SPREAD")) hudAimSpread = float(std::atof(as)); // debug: aim spread for the shot
             // Pose the view model before the effects are drawn, as the live loop does (plays a pending view flash, refreshes the
@@ -7009,8 +7015,8 @@ int main(int argc, char** argv) {
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
-            updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : 0.0f);
-            renderer.fog = (world ? world->clientFog.consts(world->timeMs()) : game::FogConsts{});
+            updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : 0.0f);
+            renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             renderer.gamma = gammaFrom(uiCvars);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
@@ -7339,7 +7345,7 @@ int main(int argc, char** argv) {
                         if (world)
                             if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
                                 const auto& ss = world->shellShock();
-                                const game::ShockMouse m = game::shockMouse(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                                const game::ShockMouse m = game::shockMouse(*rec, int(cgNowMs() - ss.startMs), ss.durationMs);
                                 dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
                                 if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
                                 if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
@@ -7517,7 +7523,7 @@ int main(int argc, char** argv) {
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
                 if (world && world->shellShockRecord()) { // usercmd 0x800 (0x409c82): cgame flag 0x621560 = shock running (0x4b24db)
                     const auto& ss = world->shellShock();
-                    const int64_t el = world->timeMs() - ss.startMs;
+                    const int64_t el = world->timeMs() - ss.startMs; // [server time] pmove input, simulation
                     pmp.shellShockSlow = ss.startMs != 0 && el >= 0 && el < ss.durationMs;
                 }
                 if (pweapon.equipped()) {
@@ -7555,11 +7561,11 @@ int main(int argc, char** argv) {
                     if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
                     for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
                         world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
-                        if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], game::clientRenderTimeMs(world->timeMs(), lerpFrac)); // CG_EntityEvent 0x4bac84
+                        if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], cgNowMs()); // CG_EntityEvent 0x4bac84
                         // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
                         const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
                         input.stanceEvent(ev); // the wish follows the event, so a blocked rise is not asked for again
-                        if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, world->timeMs());
+                        if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, cgNowMs());
                         if (ev == 0x95) input.clearAds(); // 0x4dd090 (the prone aim cancel): the cgame clears the toggled aim (0x4bafbc)
                     }
                 }
@@ -7607,10 +7613,10 @@ int main(int argc, char** argv) {
                     if (world) {
                         if (ps.landSeq != lastLandSeq) { // a landing (cgame 0x4bab6e / 0x4bab15: the own client's fall event)
                             lastLandSeq = ps.landSeq;
-                            viewImp.land(ps.landHeight, ps.landDamage, game::clientRenderTimeMs(world->timeMs(), lerpFrac));
+                            viewImp.land(ps.landHeight, ps.landDamage, cgNowMs());
                         }
-                        cam.pos.z += viewImp.landOffset(game::clientRenderTimeMs(world->timeMs(), lerpFrac)); // 0x4ae6c7, at cg.time (render time), not the 20 Hz server time
-                        cam.pos.z -= viewImp.stepOffset(game::clientRenderTimeMs(world->timeMs(), lerpFrac)); // 0x4addb0 (step event 0x8f)
+                        cam.pos.z += viewImp.landOffset(cgNowMs()); // 0x4ae6c7, at cg.time (render time), not the 20 Hz server time
+                        cam.pos.z -= viewImp.stepOffset(cgNowMs()); // 0x4addb0 (step event 0x8f)
                     }
                 }
                 // Lean moves the view origin sideways and down (0x4ae770); the view itself does not roll.
@@ -7654,9 +7660,9 @@ int main(int argc, char** argv) {
                 // count (both commands pass 0). The walk over weapons outside the slots (0x4b72f0) finds nothing: only item, turret and
                 // non-player classes have no slot, and no shipped SP script gives the player a turret or non-player weapon.
                 if (const int cycle = input.takeWeaponCycle(); cycle && world->player() &&
-                    game::weaponCycleAllowed(menuEnv.getCvar("cl_paused") == "1", world->playerControlsFrozen() ? 0x8000u : 0u, world->playerPmFlags(), world->timeMs(), lastWeaponCycleMs,
+                    game::weaponCycleAllowed(menuEnv.getCvar("cl_paused") == "1", world->playerControlsFrozen() ? 0x8000u : 0u, world->playerPmFlags(), world->timeMs(), lastWeaponCycleMs, // [server time]
                                              int(world->cvarFloat("cg_weaponCycleDelay", 0.0f)))) {
-                    lastWeaponCycleMs = world->timeMs();
+                    lastWeaponCycleMs = world->timeMs(); // [server time]
                     const game::Inventory& inv = world->inventory(*world->player());
                     const int cur = inv.slot[2] == weaponSelect ? 2 : 1;
                     const std::string& other = inv.slot[cur == 1 ? 2 : 1];
@@ -7675,7 +7681,7 @@ int main(int argc, char** argv) {
                         input.clearAds();
                     // Selecting a weapon (0x4b8360) stamps the weapon-change time 0xf796e4 and touches the weapon-info fade (0xf79a40, via 0x4a6130 case 4)
                     // at that moment, so the ammo and name displays (which follow the selection) show for their fade window from the key press.
-                    if (!weaponSelect.empty()) hudFade.ammo = hudFade.weaponChange = world->timeMs();
+                    if (!weaponSelect.empty()) hudFade.ammo = hudFade.weaponChange = cgNowMs();
                     prevSelect = weaponSelect;
                 }
                 wi.weapon = weaponSelect;
@@ -7712,7 +7718,7 @@ int main(int argc, char** argv) {
                     //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
                     //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
                     // TODO(spec): [snapshot bit unidentified] the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
-                    const int64_t nowMs = world ? world->timeMs() : 0;
+                    const int64_t nowMs = cgNowMs();
                     if (pweapon.name() != hudFade.weapon) {
                         if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
                         hudFade.weapon = pweapon.name();
@@ -7740,7 +7746,7 @@ int main(int argc, char** argv) {
                     if (!std::getenv("IW2_SHOT_OBJECTIVES") && input.objectivesHeld() != hudFade.objectivesHeld) hudFade.objectivesHeld = input.objectivesHeld(), hudFade.objectives = nowMs;
                 }
                 for (const auto& pe : world->takePickupEvents()) { // events 0x90 / 0x91 for the local client (0x4bad52 -> 0x4ba680)
-                    const int64_t nowMs = world->timeMs();
+                    const int64_t nowMs = cgNowMs();
                     // The selected offhand 0xf79700 is only ever written with a weapon (0x4b8ba0), so "none" is the first pickup of a level;
                     // the primary state 0xf796e0 is weaponSelect.
                     switch (game::pickupHudAction(pe.itemClass, pe.offhand, !weaponSelect.empty(), !cgOffhand.empty())) {
@@ -7773,17 +7779,17 @@ int main(int argc, char** argv) {
                         world->playerThrowGrenade(e.weapon, eye, angles, ps.velocity, pweapon.takeFuseMs());
                     else if (e.kind == game::PlayerWeapon::Event::OffhandExplode && world->player()) // event 200 (0x4e775d)
                         world->playerGrenadeInHand(eye, e.weapon);
-                    else if (e.kind == game::PlayerWeapon::Event::NoAmmo) setInvalidCmd(1, world->timeMs()); // event 0x92 (0x4baeb6)
+                    else if (e.kind == game::PlayerWeapon::Event::NoAmmo) setInvalidCmd(1, cgNowMs()); // event 0x92 (0x4baeb6)
                     else if (e.kind == game::PlayerWeapon::Event::NoOffhand) { // events 0x94 (touch offhand) + 0xc9 / 0xca (0x4baf06)
-                        hudFade.offhand = world->timeMs();
-                        setInvalidCmd(e.weapon == "Frag Grenade" ? 2 : 3, world->timeMs());
+                        hudFade.offhand = cgNowMs();
+                        setInvalidCmd(e.weapon == "Frag Grenade" ? 2 : 3, cgNowMs());
                     }
                 }
                 float shockRatio = 0;
                 if (world)
                     if (const game::ShockRecord* rec = world->shellShockRecord()) {
                         const auto& ss = world->shellShock();
-                        shockRatio = game::shellShockRatio(int(ss.startMs + ss.durationMs - world->timeMs()), rec->viewKickFadeMs);
+                        shockRatio = game::shellShockRatio(int(ss.startMs + ss.durationMs - cgNowMs()), rec->viewKickFadeMs);
                     }
                 // Shell shock sounds (0x4b1f90): the loop (blended to its silent twin over the last loopFade ms) and the end sound.
                 if (world) {
@@ -7793,7 +7799,7 @@ int main(int argc, char** argv) {
                         if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
                         shockSeenStart = rec ? int(ss.startMs) : -1;
                     }
-                    switch (shockEnd.update(rec && rec->sound, int(world->timeMs()), int(ss.startMs), rec ? game::shockEndSoundMs(*rec, ss.durationMs) : 0)) {
+                    switch (shockEnd.update(rec && rec->sound, int(cgNowMs()), int(ss.startMs), rec ? game::shockEndSoundMs(*rec, ss.durationMs) : 0)) {
                     case game::ShockEndSound::Action::PlayEnd: mixer.play("shellshock_end", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // TODO(spec): [mixer has no start offset] the start offset (shockEnd.offsetMs())
                     case game::ShockEndSound::Action::PlayAbort: mixer.play("shellshock_end_abort", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // null.wav, replaces the end sound (same owner + channel)
                     case game::ShockEndSound::Action::None: break;
@@ -7803,7 +7809,7 @@ int main(int argc, char** argv) {
                         // active one (0x793cdc; set 0x4431f0, clear 0x443390, fade 0 = 1 ms). Shell shock writes slot 4 (0x4b2237)
                         // while its record has cg_shock_sound and the fraction is > 0, else clears it (0x4b1fa0 / 0x4b1ffc); the
                         // hold-breath blend writes slot 2 (0x4b682a) and clears it at blend 0 (0x4b671d); none active = 1.
-                        const int el = rec ? int(world->timeMs() - ss.startMs) : 0;
+                        const int el = rec ? int(cgNowMs() - ss.startMs) : 0;
                         const float f = rec && rec->sound ? game::shockSoundFraction(*rec, el, ss.durationMs) : 0.0f;
                         const float bb = breathSnd.volumeBlend();
                         const float vb = volSlots.active[1] ? std::clamp(float(SDL_GetTicksNS() - victoryVol.startNs) * 1e-6f / float(victoryVol.ms), 0.0f, 1.0f) : 0.0f;
@@ -7823,7 +7829,7 @@ int main(int argc, char** argv) {
                         volSlots.resolve(mixer.channelScale);
                     }
                     if (rec && rec->sound) {
-                        const int el = int(world->timeMs() - ss.startMs);
+                        const int el = int(cgNowMs() - ss.startMs);
                         const float b = game::shockLoopBlend(*rec, el, ss.durationMs);
                         const audio::Vec3 at{cam.pos.x, cam.pos.y, cam.pos.z};
                         if (b >= 0 && !shockLoop) shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
@@ -7927,7 +7933,7 @@ int main(int argc, char** argv) {
                     }
                     if (world->player()) prevPlayerO = world->player()->obj->get("origin").asVector();
                     world->frame();
-                    if (startTrace && traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) trace("server frame run", world->timeMs());
+                    if (startTrace && traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) trace("server frame run", world->timeMs()); // [server time]
                     gameClock -= 0.05f;
                 }
                 lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
@@ -7942,11 +7948,11 @@ int main(int argc, char** argv) {
                 // angle. The view kick (0xf7979c / 0xf797a0) is viewImp.damage. TODO(spec): [flag not read] the "Health" menu flag.
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
-                    if (hudFade.health < world->timeMs()) hudFade.health = world->timeMs(); // 0x4ba537: damage touches the health bar
+                    if (hudFade.health < cgNowMs()) hudFade.health = cgNowMs(); // 0x4ba537: damage touches the health bar
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
                     if (df.count != 0) { // 0x4ba1c3: only with a damage count
                         const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
-                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, game::clientRenderTimeMs(world->timeMs(), lerpFrac));
+                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, cgNowMs());
                     }
                     if (!(df.pitch == 0xff && df.yaw == 0xff)) {
                         size_t slot = 0;
@@ -7954,7 +7960,7 @@ int main(int argc, char** argv) {
                             if (damageIcons[k].start < damageIcons[slot].start) slot = k;
                         const float y = float(df.yaw) / 255.0f * 360.0f + (float(std::rand() % 32768) / 32768.0f - 0.5f) * 20.0f;
                         const int sh = int(y * (65536.0f / 360.0f)) & 0xffff;
-                        damageIcons[slot] = {world->timeMs(), 2000, float(sh) * (360.0f / 65536.0f)};
+                        damageIcons[slot] = {cgNowMs(), 2000, float(sh) * (360.0f / 65536.0f)};
                     }
                 }
                 if (const auto tp = world->takePlayerTeleport()) { // setorigin
@@ -8005,7 +8011,7 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "gmb")
                         screenMessages.push_back({cmd.arg, SDL_GetTicksNS() + 8000000000ull, true, SDL_GetTicksNS(), SDL_GetTicksNS() + 8000000000ull}); // con_boldgamemessagetime 8 s (0x571100)
                     else if (cmd.name == "opendeadscreen")
-                        deadScreenMs = world->timeMs(); // cg.time (0x4a6d3c)
+                        deadScreenMs = cgNowMs(); // cg.time (0x4a6d3c)
                     else if (cmd.name == "time_slow") { // time_slow <ms> <from> <to> (0x4a69a0 → 0x4bec20)
                         int ms = 0;
                         a >> ms >> slowFrom >> slowTo;
@@ -8050,14 +8056,14 @@ int main(int argc, char** argv) {
                     else if (cmd.name == "fog") { // fog <near> <far> <1> <r> <g> <b> <ms> (0x4a5770)
                         float nearD = 0, farD = 0, one = 1, r = 0, g = 0, b = 0, ms = 0;
                         a >> nearD >> farD >> one >> r >> g >> b >> ms;
-                        if (one >= 1.0f) world->clientFog.command(nearD, farD, r, g, b, int(ms), world->timeMs());
-                        else world->clientFog.commandExp(one, r, g, b, int(ms), world->timeMs());
+                        if (one >= 1.0f) world->clientFog.command(nearD, farD, r, g, b, int(ms), cgNowMs());
+                        else world->clientFog.commandExp(one, r, g, b, int(ms), cgNowMs());
                     }
                     else if (cmd.name == "scr_fade") { // scr_fade <alpha> <start ms> <duration ms> (0x4a6f3c)
                         float alpha = 0;
                         int startMs = 0, durMs = 0;
                         a >> alpha >> startMs >> durMs;
-                        screenFade.command(alpha, startMs, durMs, world->timeMs());
+                        screenFade.command(alpha, startMs, durMs, cgNowMs());
                     }
                     else if (cmd.name == "clear_blur")
                         screenBlur.clear();
@@ -8065,7 +8071,7 @@ int main(int argc, char** argv) {
                         int ms = 0, rt = 0, prio = 0;
                         float radius = 0;
                         a >> ms >> radius >> rt >> prio;
-                        const int64_t now = rt ? int64_t(SDL_GetTicks()) : world->timeMs();
+                        const int64_t now = rt ? int64_t(SDL_GetTicks()) : cgNowMs();
                         // The original's real-time base is "ms since first use" (0x1cbaec4); only differences are used, so SDL ticks are equivalent.
                         screenBlur.command(ms, radius, rt != 0, prio, std::max<int64_t>(now, 1), screenBlur.composed());
                     }
@@ -8286,7 +8292,7 @@ int main(int argc, char** argv) {
                     } else
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
-                    std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n";
+                    std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n"; // [server time]
                     nextKey = SDL_GetTicksNS() + 2000000000ull;
                 }
             }
@@ -8322,7 +8328,7 @@ int main(int argc, char** argv) {
                 const game::V3 eye{cam.pos.x, cam.pos.y, cam.pos.z};
                 for (const auto& ev : world->takeShakeEvents())
                     viewShake.add({ev.origin[0], ev.origin[1], ev.origin[2]}, ev.scale, ev.durationMs, ev.radius, ev.startMs, eye);
-                const game::V3 sh = viewShake.update(game::clientRenderTimeMs(world->timeMs(), lerpFrac), eye);
+                const game::V3 sh = viewShake.update(cgNowMs(), eye);
                 cam.pitch += sh[0];
                 cam.yaw += sh[1];
                 cam.roll += sh[2];
@@ -8330,7 +8336,7 @@ int main(int argc, char** argv) {
             if (world)
                 if (const game::ShockRecord* rec = world->shellShockRecord()) { // shell shock view kick (0x4b2380), render only
                     const auto& ss = world->shellShock();
-                    const game::ShockKick k = game::shockViewKick(*rec, int(world->timeMs() - ss.startMs), ss.durationMs);
+                    const game::ShockKick k = game::shockViewKick(*rec, int(cgNowMs() - ss.startMs), ss.durationMs);
                     cam.yaw += std::atan(k.x) * 57.29578f;
                     cam.pitch -= std::atan(k.y) * 57.29578f;
                 }
@@ -8350,7 +8356,7 @@ int main(int argc, char** argv) {
             cam.yaw += bobAngles[1];
             if (world && !onTurret) { // damage kick (0x4ae371): pitch and roll
                 const std::string ret = pweapon.field("adsOverlayReticle");
-                const auto dk = viewImp.damageKick(game::clientRenderTimeMs(world->timeMs(), lerpFrac), pweapon.adsFrac(), !ret.empty() && ret != "none");
+                const auto dk = viewImp.damageKick(cgNowMs(), pweapon.adsFrac(), !ret.empty() && ret != "none");
                 cam.pitch += dk[0];
                 cam.roll += dk[1];
             }
@@ -8361,7 +8367,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
-            setFxFar(fxSystem, cam, (world ? world->clientFog.current(world->timeMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
+            setFxFar(fxSystem, cam, (world ? world->clientFog.current(cgNowMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
             // The view model is posed (and its flash / brass played) before the effects are drawn: the exe adds the view weapon
             // (0x4b026f) before the effect draw, and the bolted particles re-read tag_flash / tag_brass through 0x47fcd0 ->
             // 0x48abb0 once per frame stamp 0x6221a8 (bumped at the frame start, 0x4afca3), i.e. this frame's gun pose. Posing it
@@ -8389,9 +8395,9 @@ int main(int argc, char** argv) {
             profWait += double(SDL_GetTicksNS() - profA) * 1e-6;
             if (gotSwap && swap)
             {
-                renderer.fog = (world ? world->clientFog.consts(world->timeMs()) : game::FogConsts{});
+                renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
                 renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
-                screenBlur.update(world ? world->timeMs() : 0, int64_t(SDL_GetTicks()));
+                screenBlur.update(cgNowMs(), int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
                 { // shell shock screen blend (0x4b16b0): blendMs scaled by the remaining time; elapsed = real time since the last capture
                     static int64_t lastGhostTicks = 0;
@@ -8400,7 +8406,7 @@ int main(int argc, char** argv) {
                     if (world)
                         if (const game::ShockRecord* rec = world->shellShockRecord()) {
                             const auto& ss = world->shellShock();
-                            const int remaining = int(ss.startMs + ss.durationMs - world->timeMs());
+                            const int remaining = int(ss.startMs + ss.durationMs - cgNowMs());
                             if (ss.startMs != 0 && ss.durationMs != 0 && remaining > 0) {
                                 renderer.ghostActive = true;
                                 renderer.ghostBlendMs = float(game::shockBlendMs(*rec, remaining));
@@ -8410,9 +8416,9 @@ int main(int argc, char** argv) {
                     lastGhostTicks = nowTicks;
                 }
                 const uint64_t profB = SDL_GetTicksNS();
-                updateWaterMaps(scene, dev, world ? float(world->timeMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
+                updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
-                renderer.gameTimeSeconds = float(((world ? world->timeMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
+                renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
                 renderer.gamma = gammaFrom(uiCvars);
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
                 profWater += double(profC - profB) * 1e-6;
@@ -8425,7 +8431,7 @@ int main(int argc, char** argv) {
                 if (traceFramesAfterLoad == 1)
                     for (const std::string& v : mixer.describeVoices())
                         if (!v.empty()) what += " [" + v + "]"; // the opening dialogue's remaining length
-                trace(what, world ? world->timeMs() : 0);
+                trace(what, world ? world->timeMs() : 0); // [server time]
             }
             profFrame += double(SDL_GetTicksNS() - profFrameStart) * 1e-6;
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
