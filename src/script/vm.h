@@ -92,7 +92,7 @@ struct Thread {
     std::vector<Value> stack;
     std::vector<Ref> refs;
     int64_t wakeTimeMs = 0;
-    uint64_t waitSeq = 0;     // filing order of the wait (0x46a2e9 links the thread at the head of its frame's list)
+    uint64_t waitSeq = 0;     // filing order: of the waittill until a notify wakes the thread, then of its place in the frame list
     Value result;             // value of the first function's return; a thread call yields it if the thread ends at once
     // waittill / waittillmatch
     ObjectPtr waitObject;
@@ -127,6 +127,7 @@ public:
 
     // Advances script time and runs every thread that is due. Call once per server frame.
     void runFrame(int64_t nowMs);
+    static int64_t waitFrames(float seconds); // frames of a non-zero `wait`
     int64_t time() const { return nowMs_; }
     // Sets the script clock before the frame's threads run (the engine's entity loop runs woken threads first).
     void setTime(int64_t nowMs) { nowMs_ = nowMs; }

@@ -38,7 +38,10 @@ animation reference, animation tree.
   calls it made; in the thread's first function that ends the thread, otherwise the caller continues as if the call
   returned undefined. A call's endons are dropped when it returns (*inferred*: `animscripts/shared.gsc`
   `DoNoteTracksForTime` ends a looping notetrack wait with `ent endon("stop_notetracks")` and `run.gsc` keeps going
-  after it). Threads are ended before the waiters of the same notify run (*inferred* ordering).
+  after it). The caller does not go on inside the notify: 0x46c130 cuts the stack at the registering call, sets the thread to
+  state 0x11 and files it under the current frame (0x46c1d9..0x46c2d7), so it runs from the frame list like a woken thread, after
+  the code that sent the notify has moved on. After `delete()` (notify "death", then the free) such a caller finds its entity
+  gone. openiw2 handles endons before waiters and files both by registration order; the exe walks them in one pass (0x46ccc4).
 - A runtime error stops only the failing thread and is reported. The original prints a script runtime error and,
   in developer mode, halts.
 
@@ -64,7 +67,7 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   oldest registration (a waittill is linked at the head: 0x46afb3..0x46afdb -> 0x465730 -> 0x4643a0). After every handled entry it
   restarts from the list; a waittillmatch whose arguments do not match stays and the walk moves on to the entry before it. Endon
   entries (type 0) are handled in the same pass (0x46ccc4). A thread's endon is older than its waittill, so handling endons first
-  gives the same result.
+  gives the same result (ours does).
   Each woken thread is filed under the current frame counter 0x9bef20 by an inlined head insertion (0x46ce73..0x46ceba). Oldest
   walked first and head filing give: the NEWEST registration of a notify runs first, and threads woken by a later notify run before
   those of an earlier one. Behaviour agrees: beltot.gsc:1762-1793 (the later waiter truck_pause_node must beat the generic trigger
@@ -79,13 +82,10 @@ threads cooperatively. All 621 valid shipped scripts compile (`iw2script <main> 
   removes it. So timed threads run before the animation time step of stage 4, not after. Stage 4 runs a list filed by notetracks
   (0x4dadc3) and stage 5 what is left (0x4daf3d), then 0x467150, then counter + 1. Scr_RunFrame (0x46f5c0) has the same tail for the
   callers outside G_RunFrame. 0x467150 is not a frame-end step: it empties the freed object list [0x9bef38] (see "Freeing a script
-  object").
+  object"). Ours: `VM::drainReady` is the list run and `VM::runFrame` is stage 5.
 - `wait s` (0x46a1fc..0x46a2e9): frames = fistp(float(s * 20) + 2^-30) (constant 0x591f20), which rounds to nearest with ties up, not
   a truncation; a non-zero s that rounds to 0 becomes 1. An integer argument gives value * 20. `wait 0` files under the current
-  counter, at the head of the list being run.
-- TODO(spec): the three points above are decoded but NOT implemented; a trial changed mission runs and is held back. Ours still: `VM::notify` queues
-  the woken threads newest registration first, `VM::runFrame` runs in stage 5 with the due timed threads first (newest filed first), then the queue, then the
-  frame-end threads in thread order, each pass followed by a queue drain. `VM::drainReady` runs only the queue. A `wait` wakes at the first frame at or after s seconds, so it can differ from the exe's rounding by a frame.
+  counter, at the head of the list being run. Ours: `VM::waitFrames`; the wake time is 50 ms per frame.
 - Consequence for init: threads woken or left in `wait 0` by main() run in the first frame list; `wait 0.05` threads are in the
   next one. World::start drains the queue and runs one game frame (matmata: the start trigger_multiple fires and spawns
   the jeep before ridein's `wait 0.05` calls getent("jeep")). Evidenced: the server spawn (0x4488b0) runs the frame start

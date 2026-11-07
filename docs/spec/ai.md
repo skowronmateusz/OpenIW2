@@ -116,8 +116,8 @@ Then (0x4db11d) for each client in use 0x530cf0 and ClientEndFrame 0x4e7f90, the
 0x4da0e0. The server frame end 0x44a900 finishes a budgeted G_RunFrame (0x44a870), processes the save queue (0x44a230) and
 builds the snapshot (0x4db2b0).
 Port (World::frame): stage 1 = the use part of ClientThink (pmove itself runs in the front end before the frame), the
-moved byte, trigger and item touches, then the threads the trigger notifies woke (stage 3); the animation step (stages 2
-and 4, weights inside each entity's update); the script frame; bad places; the ridden vehicle (stage 7); stage 8 =
+moved byte, trigger and item touches, then the frame's whole script list, timed threads included (stage 3); the animation step (stages 2
+and 4, weights inside each entity's update); what was filed since, then the freed objects (stage 5); bad places; the ridden vehicle (stage 7); stage 8 =
 World::runEntity for every entity in number order (once per frame, link parent first; link follow, mover, vehicle,
 turret, missile, item, script model, actor); ClientEndFrame (player link), death screen, saves.
 The first frame and the level's main run at level time 50: the server spawn runs the frame start 0x44a6a0 (0x448985)

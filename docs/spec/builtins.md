@@ -574,10 +574,10 @@ S = the node's state record (0xa0a200 + index * 40 + 0xc) the leaf takes S[+0x10
 steps newT = S[+4] + xanim[+8] * S[+0x18] * dt (the base time of the step plus rate-scaled dt; a looping anim wraps newT below 1.0 and counts
 loops up, a non-looping one clamps at 1.0), and passes 0x475ea0 a block R = {+0 newT, +4 S[+0] (the time reached by the previous step),
 +8 new loop count, +0xa S[+8] (old loop count)} and S itself as T (time at +4, loop at +0xa); 0x475de0's `a` / `b` are then newT / the previous
-time. Decoded: a step crosses a note x when b <= x < a, or also x == a when a is 1.0; a wrapped step (a < b) crosses it when x >= b or x < a (the +1 loop). b == 1.0 crosses
-nothing. The result is (loops + x - T.time) / d. The firing side 0x476f10 agrees (first note not before the previous time, 0x475ca0; fires while the new time is past the note), so a note at
-time 0 fires on the first step. TODO(spec): not implemented; a trial made a scripted animation start on a dead AI in moscow. `AnimState::noteFraction` still takes the linear position of the first note crossed in (previous, new]
-("end" counts at time 1 for non-looping anims). TODO(spec): the exe's per-actor scratch snapshot (an
+time. A step crosses a note x when b <= x < a, or also x == a when a is 1.0; a wrapped step (a < b) crosses it when x >= b (the rest of the old
+cycle) or x < a (the new one, the +1 loop). b == 1.0 crosses nothing. The result is (loops + x - T.time) / d, the fraction of the step. The firing side
+0x476f10 agrees: it starts at the first note not before the previous time (0x475ca0) and fires while the new time is past the note, so a note at
+time 0 fires on the first step and a note exactly at the new time waits for the next step. `AnimState::advanceLeaf` implements both. TODO(spec): the exe's per-actor scratch snapshot (an
 endprediction on another actor than the begin); the move block fields the port keeps outside `ActorAi` (nothing found).
 ### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
 

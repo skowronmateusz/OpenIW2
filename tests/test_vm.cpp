@@ -90,6 +90,51 @@ helper(x)
         CHECK(h.vm.errors().empty());
     }
 
+    // Frame list order (docs/spec/gsc-vm.md): one stack by filing, frame-end threads at the tail, oldest first.
+    {
+        CHECK(iw2::script::VM::waitFrames(0.12f) == 2);
+        CHECK(iw2::script::VM::waitFrames(0.13f) == 3);
+        CHECK(iw2::script::VM::waitFrames(0.001f) == 1);
+        Harness h;
+        h.files["test/order.gsc"] = R"(
+main()
+{
+    level thread timed("t1");
+    level thread timed("t2");
+    level thread listener("go", "w1");
+    level thread listener("go", "w2");
+    level thread listener("xf2", "woke");
+    level thread frameend("f1");
+    level thread frameend("f2");
+    wait 0.05;
+    level notify("go");
+}
+timed(n)
+{
+    wait 0.05;
+    println(n);
+}
+listener(e, n)
+{
+    level waittill(e);
+    println(n);
+}
+frameend(n)
+{
+    wait 0.05;
+    waittillframeend;
+    println(n);
+    level notify("x" + n);
+}
+)";
+        h.vm.start("test/order.gsc", "main");
+        h.vm.runFrame(50);
+        // main is the newest filing, so what it wakes runs before the older timed threads; f2 reached the tail before f1, and
+        // the thread f2 wakes runs before f1.
+        CHECK(h.joined() == "w2|w1|t2|t1|f2|woke|f1|");
+        if (h.joined() != "w2|w1|t2|t1|f2|woke|f1|") std::cerr << h.joined() << "\n";
+    }
+
     // Threads, wait, notify/waittill with arguments, endon.
     {
         Harness h;
@@ -159,8 +204,10 @@ timed(ent)
         h.vm.start("test/endon.gsc", "main");
         CHECK(h.joined() == "");
         h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        h.vm.drainReady();
         CHECK(h.joined() == "back 0|");
         h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        h.vm.drainReady();
         CHECK(h.joined() == "back 0|back 1|");
         h.vm.notify(h.vm.level()->get("ent").asObject(), "stop"); // endon of the returned call is gone
         h.vm.notify(h.vm.level(), "later");
@@ -201,6 +248,29 @@ late()
         if (h.joined() != "late|early|") std::cerr << h.joined() << "\n";
     }
 
+    // A caller whose called function was ended by endon goes on from the frame list, not inside the notify (0x46c130).
+    {
+        Harness h;
+        h.files["test/endonfile.gsc"] = R"(
+main()
+{
+    level.ent = spawnstruct();
+    inner(level.ent);
+    println("caller");
+}
+inner(ent)
+{
+    ent endon("stop");
+    ent waittill("never");
+}
+)";
+        h.vm.start("test/endonfile.gsc", "main");
+        h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        CHECK(h.joined() == "");
+        h.vm.drainReady();
+        CHECK(h.joined() == "caller|");
+    }
+
     // A call ended by endon in the middle of an assignment (`w = inner();`) leaves no reference behind: the
     // caller's own pending assignment still targets its variable (crossroads --spawn-all wrote past the locals).
     {
@@ -232,6 +302,7 @@ inner()
 )";
         h.vm.start("test/endonref.gsc", "main");
         h.vm.notify(h.vm.level()->get("ent").asObject(), "stop");
+        h.vm.drainReady();
         CHECK(h.joined() == "1 2 3 0|");
         if (h.joined() != "1 2 3 0|") std::cerr << h.joined() << "\n";
     }

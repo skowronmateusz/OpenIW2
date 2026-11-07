@@ -117,9 +117,7 @@ public:
     // 0x478220 (a time update only, 0x476490: it steps from each node's old time, which the weight update 0x476960 sets; calling it
     // twice without updateWeights repeats the same step): with `toNotetrack` false an update of dt without notetrack callbacks (0x476490 with the callback flag 0); with
     // it true the fraction of dt up to the first notetrack (0x476c80) shortens the update to fraction * dt + 0.001 when that does
-    // not exceed dt, notetracks reported, and the result is true when it stopped there. TODO(spec): the notetrack search
-    // helpers 0x475ea0 / 0x475de0 / 0x476bb0 are not decoded; the fraction is taken as the linear position of the first note
-    // crossed by the leaves that report notes.
+    // not exceed dt, notetracks reported, and the result is true when it stopped there.
     bool updateTruncated(float dt, bool toNotetrack, const std::function<void(const std::string&, const std::string&)>& onNote);
     // 0x476c80 for the whole tree: the fraction (0..1) of dt after which the first notetrack is crossed, 1 when there is none.
     float noteFraction(float dt);
@@ -164,6 +162,7 @@ private:
     void updateTime(int n, float dt, bool notes, const NoteFn& onNote);
     void syncTo(int n, const AnimNodeState& top, bool notes, const NoteFn& onNote);
     void advanceLeaf(int n, float to, int toCycle, bool notes, const NoteFn& onNote);
+    float probeStep_ = 0; // the step of the node being advanced (0x475de0 divides by it)
     void deltaNode(int n, float weight, bool first, bool nested, bool goalWeights, bool absolute, AnimDelta& out) const;
     void calc(int n, float weight, assets::AnimAccum& acc, bool top, const assets::XModelParts& parts) const;
 

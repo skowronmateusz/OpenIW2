@@ -1005,22 +1005,22 @@ void VM::step(Thread& t, bool& suspended) {
         const float s = pop().asFloat();
         if (s < 0) throw std::runtime_error("negative wait");
         if (s == 0.0f) {
-            // The exe's wait (0x46a1fc..0x46a2e9): frames = (int)(s * 20 + 0.5), a non-zero s that rounds to 0 becomes 1; the
-            // thread is scheduled for counter + frames (0x9bef20). wait 0 therefore lands in the CURRENT frame's list
-            // (filed at the head like a notify wake, see VM::notify), run by the same Scr_RunFrame, not in the next frame.
+            // wait 0 lands in the CURRENT frame's list (0x46a2e9, counter + 0), filed at the head like a notify wake.
             t.state = ThreadState::Ready;
+            t.waitSeq = ++waitSeq_;
             ready_.push_front(&t);
             suspended = true;
             break;
         }
         t.state = ThreadState::Waiting;
-        t.wakeTimeMs = nowMs_ + std::max<int64_t>(1, int64_t(std::lround(s * 1000.0f)));
+        t.wakeTimeMs = nowMs_ + 50 * waitFrames(s);
         t.waitSeq = ++waitSeq_;
         suspended = true;
         break;
     }
     case Op::WaitTillFrameEnd:
-        t.state = ThreadState::WaitingFrameEnd;
+        t.state = ThreadState::WaitingFrameEnd; // the tail of the current frame's list (0x46a495 -> 0x4643f0)
+        t.waitSeq = ++waitSeq_;
         suspended = true;
         break;
     case Op::WaitTill:
@@ -1124,11 +1124,19 @@ std::vector<VM::ThreadInfo> VM::threadInfos() const {
     return out;
 }
 
+// 0x46a217..0x46a24f: fistp of s * 20 + 2^-30 (round to nearest; the bias takes a tie up), a non-zero s that rounds to 0 is 1.
+int64_t VM::waitFrames(float s) {
+    const float scaled = s * 20.0f;
+    const int64_t frames = std::llrint(double(scaled) + 0x1p-30);
+    return std::max<int64_t>(frames, 1);
+}
+
 void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<Value> args) {
     if (notifyHook) notifyHook(object, event); // debug
     if (static const char* log = std::getenv("IW2_NOTIFY_LOG"); log && (object->kind == "level" || std::string(log) == "all")) // debug
         print("[notify " + std::to_string(nowMs_) + "ms] " + object->kind + "#" + std::to_string(object->id) + " " + event + (!args.empty() && args[0].isString() ? " \"" + args[0].asString() + "\"" : ""));
-    // endon: end threads first (inferred ordering). An endon registered by a called function ends that call (and
+    // VM_Notify walks the event's list once from its oldest entry; endon entries act in that same pass. A thread's endon is
+    // older than its waittill, so ending threads first gives the same result. An endon registered by a called function ends that call (and
     // the calls it made); the caller continues as if it returned undefined (*inferred*, docs/spec/gsc-vm.md).
     std::vector<Thread*> resumed;
     for (size_t i = 0; i < threads_.size(); ++i) {
@@ -1143,25 +1151,29 @@ void VM::notify(const ObjectPtr& object, const std::string& event, std::vector<V
         } else if (th.running) {
             if (th.pendingUnwind < 0 || int(frame) < th.pendingUnwind) th.pendingUnwind = int(frame);
         } else {
+            // 0x46c130 cuts the stack at the registering call, sets the thread to state 0x11 and files it under the current frame
+            // (0x46c1d9..0x46c2d7), as a notify wake does: the caller goes on from the frame list, never inside this notify. So
+            // after `delete` (notify "death", then the free) it finds the entity gone.
             unwind(th, frame);
             resumed.push_back(&th);
         }
     }
-    for (Thread* th : resumed) run(*th);
-    // Wake waiters registered before this notify; run them in registration order.
-    std::vector<Thread*> woken;
+    // Wake the waiters registered before this notify.
+    std::vector<Thread*> woken = std::move(resumed);
     for (auto& th : threads_) {
         if (th->state != ThreadState::WaitingNotify || th->waitObject != object || th->waitEvent != event) continue;
         if (th->waitMatch && (args.empty() || args[0].toString() != *th->waitMatch)) continue;
         finishNotifyWait(*th, args);
         woken.push_back(th.get());
     }
-    // The waiters of one notify run newest-registered first: beltot's truck_pause_node waiter (registered after the generic
-    // vehicle-node trigger thread of _vehicle.gsc) must send its `pause` before the argument-less one (docs/spec/gsc-vm.md).
-    // The frame list takes new entries at its head (0x4643a0), so they are queued oldest first. What an earlier notify woke
-    // runs after them.
+    // VM_Notify (0x46ca60) takes the list's last entry, the oldest registration (0x46cb01..0x46cb26), and files each woken thread
+    // at the head of the current frame's list (0x46ce73..0x46ceba). So the newest registration runs first, and what an earlier
+    // notify woke runs after these.
     std::sort(woken.begin(), woken.end(), [](const Thread* a, const Thread* b) { return a->waitSeq < b->waitSeq; });
-    for (Thread* th : woken) ready_.push_front(th);
+    for (Thread* th : woken) {
+        th->waitSeq = ++waitSeq_;
+        ready_.push_front(th);
+    }
 }
 
 void VM::freeObject(const ObjectPtr& object) {
@@ -1235,39 +1247,41 @@ void VM::notifyRun(const ObjectPtr& object, const std::string& event) {
     ready_.swap(saved);
 }
 
+// VM_RunList (0x46d560) over the current frame's list. It runs the head until the list is empty, so this list is one stack ordered
+// by filing: the newest wake-up or wait runs first, and a thread filed while the list runs comes next. Frame-end threads sit at
+// the tail in filing order, and what one of them wakes goes to the head, before the next frame-end thread.
 void VM::drainReady() {
     if (draining_) return; // a nested call: the outer drain picks up what was queued
     draining_ = true;
-    while (!ready_.empty()) {
-        Thread* th = ready_.front();
-        ready_.pop_front();
-        if (th->state == ThreadState::Ready && !th->running) run(*th);
+    std::vector<Thread*> due; // nothing becomes due during the run: a wait is at least one frame
+    for (auto& th : threads_)
+        if (th->state == ThreadState::Waiting && th->wakeTimeMs <= nowMs_) due.push_back(th.get());
+    std::sort(due.begin(), due.end(), [](const Thread* a, const Thread* b) { return a->waitSeq > b->waitSeq; });
+    size_t next = 0;
+    for (;;) {
+        while (next < due.size() && due[next]->state != ThreadState::Waiting) ++next;
+        while (!ready_.empty() && (ready_.front()->state != ThreadState::Ready || ready_.front()->running)) ready_.pop_front();
+        if (!ready_.empty() && (next == due.size() || ready_.front()->waitSeq > due[next]->waitSeq)) {
+            Thread* th = ready_.front();
+            ready_.pop_front();
+            run(*th);
+        } else if (next < due.size()) {
+            run(*due[next++]);
+        } else {
+            Thread* tail = nullptr;
+            for (auto& th : threads_)
+                if (th->state == ThreadState::WaitingFrameEnd && !th->running && (!tail || th->waitSeq < tail->waitSeq)) tail = th.get();
+            if (!tail) break;
+            run(*tail);
+        }
     }
     draining_ = false;
 }
 
 void VM::runFrame(int64_t nowMs) {
     nowMs_ = nowMs;
-    processFreedObjects(); // objects freed by engine code since the last script run
-    // Threads due this frame. The exe files a waiting thread under its wake frame with the same head insertion
-    // (0x46a2e9 -> 0x4643a0) as a notify, and VM_RunList (0x46d560) starts at that head, so the newest wait runs first.
-    std::vector<Thread*> due;
-    for (auto& th : threads_)
-        if (th->state == ThreadState::Waiting && th->wakeTimeMs <= nowMs_) due.push_back(th.get());
-    std::sort(due.begin(), due.end(), [](const Thread* a, const Thread* b) { return a->waitSeq > b->waitSeq; });
-    for (Thread* th : due)
-        if (th->state == ThreadState::Waiting) run(*th);
-    drainReady(); // TODO(spec): the exe's list is one stack by filing (docs/spec/gsc-vm.md); not implemented, woken threads follow the timed ones here
-    // waittillframeend threads run after everything else this frame.
-    for (int pass = 0; pass < 8; ++pass) {
-        std::vector<Thread*> fe;
-        for (auto& th : threads_)
-            if (th->state == ThreadState::WaitingFrameEnd) fe.push_back(th.get());
-        if (fe.empty()) break;
-        for (Thread* th : fe) run(*th);
-        drainReady(); // TODO(spec): the exe files frame-end threads at the tail of the frame list (docs/spec/gsc-vm.md); not implemented
-    }
-    processFreedObjects(); // 0x467150 after the frame's script run (0x4daf56)
+    drainReady();
+    processFreedObjects(); // 0x467150, after the frame's last list run (0x4daf56)
     // Drop finished threads.
     threads_.erase(std::remove_if(threads_.begin(), threads_.end(), [](const auto& th) { return th->state == ThreadState::Done; }),
                    threads_.end());

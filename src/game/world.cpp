@@ -734,9 +734,9 @@ void World::frame(bool advanceTime) {
     //     trail 0x5154b0; 0x4e8180: the moved byte and G_TouchTriggers 0x4e7320 (triggers and items); the level change;
     //   2 (0x4daa14) every entity (from 1) the animation weight update 0x447ec0 -> 0x476960, then the queued "trigger"
     //     touches (0x1c610b4) are taken over;
-    //   3 (0x4dab00) those "trigger" notifies are sent, each trigger once per pass, the woken threads run between passes;
+    //   3 (0x4dab00) those "trigger" notifies are sent, each trigger once per pass; after each pass the current frame's list runs;
     //   4 (0x4dac9c) the animation time step of every entity (from 1);
-    //   5 (0x4daefc) woken threads, then the script frame (0x467150; frame counter 0x9bef20 + 1);
+    //   5 (0x4daefc) what was filed since runs, then the freed objects (0x467150; frame counter 0x9bef20 + 1);
     //   6 (0x4daf94) bad places (0x523a60);
     //   7 (0x4dafc6) 0x409ed0 / 0x5154b0 again (usercmds that arrived since stage 1), and, with ps +0x7c bit 0x20000 (in a
     //     vehicle, the bit VEH_LinkPlayer 0x511624 tests), G_RunEntity of the vehicle at entity +0xf4;
@@ -753,7 +753,7 @@ void World::frame(bool advanceTime) {
     deliverActorTouches(); // stage 3: the actors touched during the previous frame's stage 8
     runTriggers(); // G_TouchTriggers' triggers; their "trigger" notifies are stage 3
     touchItems();  // G_TouchTriggers' items (Touch_Item 0x521a90)
-    vm_.drainReady(); // 0x4dac2a: the threads the trigger notifies woke run before the animation step
+    vm_.drainReady(); // stage 3 (0x4dac2a, also with no touches): the frame's whole list runs here, timed threads included, before the animation step
     // Stages 2 and 4 (0x4dacd0..0x4daeb8): every entity with an animation tree steps it (0x476c80 / 0x476490)
     // and, after each step that ends at a notetrack, runs the threads that notify woke at once (0x46d560 at 0x4dadc3,
     // 0x4da692) before the next entity's animation moves. So a script that waits for one entity's "end" can start

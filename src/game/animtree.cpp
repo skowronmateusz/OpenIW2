@@ -337,35 +337,29 @@ void AnimState::advanceLeaf(int n, float to, int toCycle, bool notes, const Note
     const assets::XAnim* a = nodeAnim(n);
     const float before = s.time;
     const bool wrapped = toCycle > s.cycle;
-    if (probe_ && notes && a && !s.notify.empty() && !a->notes.empty()) {
-        // Position of each note on the unwrapped time line of this step, as a fraction of it.
-        const float span = (to + float(toCycle - s.cycle)) - before;
-        if (span > 0) {
-            for (int c = 0; c <= toCycle - s.cycle; ++c)
-                for (const auto& note : a->notes) {
-                    if (note.name == "end" && !a->looping) continue; // "end" is the time-1 notification below
-                    const float pos = note.time + float(c);
-                    if (pos > before && pos <= before + span) *probe_ = std::min(*probe_, (pos - before) / span);
-                    if (!a->looping) break;
-                }
-            if (!a->looping && before < 1.0f && to >= 1.0f) *probe_ = std::min(*probe_, (1.0f - before) / span);
+    // A step crosses a note x when before <= x < to, or also x == to when to is 1.0; a wrapped step when x >= before or x < to
+    // (0x476f10 starts at the first note not before the previous time, 0x475ca0, and fires while the new time is past the note).
+    const auto crossed = [&](float x) {
+        return wrapped ? (x >= before || x < to) : (x >= before && (x < to || (x == to && to == 1.0f)));
+    };
+    if (probe_ && notes && a && !s.notify.empty() && !a->notes.empty() && before != 1.0f && probeStep_ > 0) {
+        // 0x475de0: (loops + x - base time) / step. A note past the wrap counts one loop more.
+        for (const auto& note : a->notes) {
+            if (note.name == "end" && !a->looping) continue; // "end" is the time-1 notification below
+            if (!crossed(note.time)) continue;
+            const int loops = s.cycle - s.oldCycle + (wrapped && note.time < to ? 1 : 0);
+            *probe_ = std::min(*probe_, (float(loops) + note.time - s.oldTime) / probeStep_);
         }
+        if (!a->looping && to >= 1.0f) *probe_ = std::min(*probe_, (1.0f - s.oldTime) / probeStep_);
     }
     if (notes && a && !s.notify.empty()) {
-        if (a->looping) {
-            if (wrapped) {
-                for (const auto& note : a->notes)
-                    if (note.time > before) onNote(s.notify, note.name);
-                for (const auto& note : a->notes)
-                    if (note.time <= to && note.name != "end") onNote(s.notify, note.name);
-            } else {
-                for (const auto& note : a->notes)
-                    if (note.time > before && note.time <= to && note.name != "end") onNote(s.notify, note.name);
-            }
-        } else {
+        for (const auto& note : a->notes)
+            if (note.name != "end" && wrapped && note.time >= before) onNote(s.notify, note.name);
+        for (const auto& note : a->notes)
+            if (note.name != "end" && (wrapped ? note.time < to : crossed(note.time))) onNote(s.notify, note.name);
+        if (a->looping && wrapped)
             for (const auto& note : a->notes)
-                if (note.name != "end" && note.time > before && note.time <= to) onNote(s.notify, note.name);
-        }
+                if (note.name == "end") onNote(s.notify, note.name);
     }
     // 0x476f10: a node that already stands at time 1.0 sends the last notetrack ("end") again on every call, so
     // a non-looping flagged node that sits at its end keeps ending (a pain anim reused without a restart ends at once).
@@ -401,6 +395,7 @@ void AnimState::updateTime(int n, float dt, bool notes, const NoteFn& onNote) {
         wrap = !(node.syncFlags & 2);
     }
     if (step == 0) return;
+    probeStep_ = step;
     float to = s.oldTime + step;
     int cycle = s.oldCycle;
     if (to >= 1.0f) {

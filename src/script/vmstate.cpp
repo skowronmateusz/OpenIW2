@@ -2,6 +2,7 @@
 // 0x461810 / 0x461b50 as raw memory images of its variable and thread tables (pointers inside), which have no counterpart here; saves of the two are not interchangeable.
 #include "script/vm.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace iw2::script {
@@ -97,6 +98,7 @@ void VM::saveState(StateWriter& w, const ObjectTable& t) const {
             t.writeValue(w, rf.key);
         }
         w.i64(th.wakeTimeMs);
+        w.u64(th.waitSeq); // version 11
         t.writeValue(w, th.result);
         w.i32(t.indexOf(th.waitObject));
         w.str(th.waitEvent);
@@ -168,6 +170,8 @@ void VM::loadState(StateReader& r, const ObjectTable& t) {
             th->refs.push_back(std::move(rf));
         }
         th->wakeTimeMs = r.i64();
+        if (r.version >= 11) th->waitSeq = r.u64();
+        waitSeq_ = std::max(waitSeq_, th->waitSeq);
         th->result = t.readValue(r);
         th->waitObject = t.object(r.i32());
         th->waitEvent = r.str();

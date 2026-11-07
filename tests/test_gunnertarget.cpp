@@ -93,7 +93,7 @@ void test(iw2::fs::Vfs& vfs, bool hitCase) {
         ts.flags |= 0x10u;
         ts.hitBy = threat->obj;
         ts.yaw = 3.0f;
-        stage(gunner, gun, 180.0f);
+        stage(gunner, gun, 150.0f); // far outside the arc; straight behind, the map blocks the sight the rule needs
         w.frame();
         CHECK(!(ts.inUse && ts.owner == gunner.obj));
         CHECK(ts.yaw == 3.0f);
