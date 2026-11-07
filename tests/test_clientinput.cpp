@@ -136,12 +136,44 @@ void adsAndWeapons() {
 
 } // namespace
 
+// Turn / look keys, strafe, mlook and centerview (CL_AdjustAngles 0x409400, CL_KeyMove 0x409500, 0x408b10 / 0x408b20, 0x409240).
+void lookAndTurn() {
+    ClientInput in;
+    in.loadConfig("unbindall\nbind LEFTARROW \"+left\"\nbind RIGHTARROW \"+right\"\nbind PGUP \"+lookup\"\nbind PGDN \"+lookdown\"\n"
+                  "bind ALT \"+strafe\"\nbind m \"+mlook\"\nbind END \"centerview\"\nbind d \"+moveright\"\n");
+    in.key("LEFTARROW", true);
+    CHECK(in.turnLeft() == 1.0f && in.turnRight() == 0.0f && in.rightMove() == 0); // a turn, not a side move
+    in.key("ALT", true);
+    CHECK(in.strafeHeld() && in.rightMove() == -127);                             // +strafe: +left is a side move (0x4095da)
+    in.key("d", true);
+    CHECK(in.rightMove() == 0);                                                    // -127 + 127
+    in.key("d", false), in.key("LEFTARROW", false), in.key("ALT", false);
+    in.key("PGUP", true);
+    CHECK(in.lookUp() == 1.0f && in.lookDown() == 0.0f);
+    in.key("PGUP", false);
+    // Mouse contributions add to the command and are clamped to a signed byte.
+    in.setMouseMove(40, -300);
+    CHECK(in.rightMove() == 40 && in.forwardMove() == -128);
+    in.setMouseMove(0, 0);
+    // centerview always; -mlook only without cl_freelook (0x408b20).
+    CHECK(!in.takeCenterView(true));
+    in.key("END", true);
+    CHECK(in.takeCenterView(true) && !in.takeCenterView(true));
+    in.key("m", true);
+    CHECK(in.mlookHeld());
+    in.key("m", false);
+    CHECK(!in.mlookHeld() && !in.takeCenterView(true));
+    in.key("m", true), in.key("m", false);
+    CHECK(in.takeCenterView(false));
+}
+
 int main() {
     keyTable();
     bindings();
     stance();
     adsAndWeapons();
     rebinding();
+    lookAndTurn();
     if (failures) return 1;
     std::cout << "clientinput tests passed\n";
     return 0;

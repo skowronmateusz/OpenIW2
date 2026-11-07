@@ -145,3 +145,28 @@ Ghidra procedure: carve it). On a turret, pressing use again sets +0x112 to 2 wh
 player-turret use, view clamp, firing and release are in src/game/playeruse.cpp;
 on the client side (iw2view) PmoveSingle skips movement and PM_Weapon (0x50c918), the eye is the turret's
 tag_player (0x4e8b70), and no view model is drawn (0x4b6d40 returns with eFlags & 0x300).
+
+## Look and turn options (CL_CreateCmd 0x409da0)
+
+Each command runs CL_AdjustAngles (0x409400), CL_KeyMove (0x409500) and CL_MouseMove (0x409720), then limits the pitch change of
+the command (0x409ddd).
+- CL_AdjustAngles: speed = frame msec * 0.001, times `cl_anglespeedkey` (default 1.5) while the +speed button is held. Without
+  +strafe, +right / +left turn the yaw by speed * `cl_yawspeed` (140) times their key state; +lookup / +lookdown change the
+  pitch by speed * `cl_pitchspeed` (140). No frozen-controls test.
+- CL_KeyMove: with +strafe held, +right / +left add +-127 to the side move.
+- CL_MouseMove: mouse deltas are summed per frame into one of two slots; `m_filter` (bool, default 0) uses the mean of this and
+  the previous frame, else this frame's sum. With +strafe the x motion is the side move (round(x * `m_side`), 0.25), else the
+  yaw. The y motion pitches the view while +mlook or `cl_freelook` (default 1) is on and +strafe is not held, else it is the
+  forward move (-round(y * `m_forward`), 0.25). Command bytes are clamped to -128..127.
+- `centerview` (0x409240) levels the pitch; -mlook (0x408b20) does the same when `cl_freelook` is 0.
+- Implemented in iw2view (per-frame mouse pass) and ClientInput; tested in test_clientinput.
+
+## Other option dvars
+
+- `cg_blood` (cgame, bool, default 1, archived): off, flesh hits play the no-blood impact effect with no reflect (0x4b823d).
+- `cg_drawCrosshair` (bool, default 1, archived): off, no hand crosshair (0x4bd129); turret and vehicle reticles ignore it.
+- `r_zFeather` (renderer, bool, default 1, flags 0x2000, not archived): off, effects use the unfeathered emissive technique;
+  the graphics menu sets it when it closes.
+- `r_swapInterval` (renderer, bool, archived, latched): the presentation interval is one frame when set, else immediate
+  (gfx 0x100115a3); applied at window creation and on vid_restart. The DLL default is 0 and `com_maxfps` defaults to 0 (no
+  frame limit), so the original draws as fast as it can; openiw2 deliberately defaults r_swapInterval to 1.

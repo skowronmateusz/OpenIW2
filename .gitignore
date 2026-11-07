@@ -6,3 +6,4 @@ build/
 /main/
 .DS_Store
 build-*/
+pmove_replay.bin

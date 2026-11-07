@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -75,7 +76,12 @@ private:
     std::map<std::string, int> seq_; // binding order per key (slot order of a command)
     int nextSeq_ = 0;
     KButton attack_, melee_, holdBreath_, frag_, smoke_, binoculars_, activate_, reload_, useReload_, leanLeft_,
-        leanRight_, prone_, stanceKey_, jump_, goStand_, moveDown_, speed_, forward_, back_, moveLeft_, moveRight_;
+        leanRight_, prone_, stanceKey_, jump_, goStand_, moveDown_, speed_, forward_, back_, moveLeft_, moveRight_,
+        left_, right_, lookUp_, lookDown_, strafe_; // +left / +right (0x5d1fa8 / 0x5d1fbc), +lookup / +lookdown, +strafe (0x5d2058)
+    bool mlook_ = false;       // +mlook (0x408b10 sets the byte 0x5d20bc, -mlook 0x408b20 clears it)
+    bool centerView_ = false;  // centerview (0x409240) or -mlook without cl_freelook, taken by the caller
+    bool mlookReleased_ = false;
+    int mouseSide_ = 0, mouseForward_ = 0; // CL_MouseMove contributions of this frame (m_side / m_forward)
     int stance_ = 0;
     bool adsToggle_ = false;
     bool objectivesHeld_ = false; // +scores held (cgame 0xf791fc): shows the objectives screen
@@ -84,8 +90,30 @@ private:
 public:
     bool objectivesHeld() const { return objectivesHeld_; }
     // Movement keys held (W/S/A/D): forward and right command values.
-    int forwardMove() const { return (forward_.active ? 127 : 0) - (back_.active ? 127 : 0); }
-    int rightMove() const { return (moveRight_.active ? 127 : 0) - (moveLeft_.active ? 127 : 0); }
+    // CL_KeyMove 0x409500: with +strafe held, +right / +left add +-127 to the side move (0x4095da); CL_MouseMove adds the mouse's
+    // side / forward part; the command bytes are clamped to -128..127.
+    int forwardMove() const { return std::clamp((forward_.active ? 127 : 0) - (back_.active ? 127 : 0) + mouseForward_, -128, 127); }
+    int rightMove() const {
+        const int turn = strafe_.active ? (right_.active ? 127 : 0) - (left_.active ? 127 : 0) : 0;
+        return std::clamp((moveRight_.active ? 127 : 0) - (moveLeft_.active ? 127 : 0) + turn + mouseSide_, -128, 127);
+    }
+    // Key state of the turn and look buttons (CL_KeyState 0x408c60), the strafe / mlook / speed modifiers, for CL_AdjustAngles.
+    // TODO(spec): [stays: sub-frame fraction] 0x408c60 returns the fraction of the frame a key was down; held keys give 1 here,
+    // as for the movement keys above.
+    float turnLeft() const { return left_.active ? 1.0f : 0.0f; }
+    float turnRight() const { return right_.active ? 1.0f : 0.0f; }
+    float lookUp() const { return lookUp_.active ? 1.0f : 0.0f; }
+    float lookDown() const { return lookDown_.active ? 1.0f : 0.0f; }
+    bool strafeHeld() const { return strafe_.active; }
+    bool speedHeld() const { return speed_.active; }
+    bool mlookHeld() const { return mlook_; }
+    void setMouseMove(int side, int forward) { mouseSide_ = side, mouseForward_ = forward; }
+    // centerview requested since the last call (the command, or -mlook; the caller drops the -mlook one when cl_freelook is set).
+    bool takeCenterView(bool freelook) {
+        const bool r = centerView_ || (mlookReleased_ && !freelook);
+        centerView_ = mlookReleased_ = false;
+        return r;
+    }
 };
 
 } // namespace iw2::game

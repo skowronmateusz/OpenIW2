@@ -11,6 +11,10 @@ bool isArchivedCvar(const std::string& name) {
     if (n == "sensitivity" || n == "m_pitch" || n == "snd_volume" || n == "g_gameskill" || n == "mis_difficulty" || n == "mis_none") return true;
     if (n == "r_gamma" || n == "r_ignorehwgamma") return true; // renderer registrations with flags 0x2001 / 0x2021 (archive), gfx 0x1000ab8a / 0x1000abc0
     if (n == "ai_corpsecount") return true; // flags 0x1003 at 0x4d887f (archive)
+    // Client / cgame option dvars registered with flags 0x1001 (archive): cg_blood (0x4a249d), cg_drawCrosshair, cg_subtitles,
+    // m_filter, cl_freelook (client block 0x40e2d5..0x40e400); r_swapInterval with 0x2021 (archive + latched, gfx 0x1000b1d1).
+    if (n == "cg_blood" || n == "cg_drawcrosshair" || n == "cg_subtitles" || n == "m_filter" || n == "cl_freelook" || n == "r_swapinterval")
+        return true;
     if (n == "iw2_hitmarker") return true; // openiw2 option (docs/debug-flags.md), archived like the shipped options
     if (n == "cg_hudgrenadeiconinscope") return true; // flags 0x1001 at 0x4a1622 (archive)
     if (n == "sv_lastsavegame") return true; // registered with flags 0x1001 (archive) at 0x449d78

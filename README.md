@@ -58,6 +58,11 @@ multiplayer hit marker (a small X next to the crosshair, fading in about a secon
 soldier. With the value **Red on kill** the X turns red when your hit killed the soldier (multiplayer always shows it white).
 It is saved in your profile.
 
+Of the original options, the ones the engine has no counterpart for do nothing: texture quality and filter, anti-aliasing,
+renderer, SLI, shadows, aspect ratio, sound quality and sound card, the console, and the video mode and refresh rate (the window
+keeps its size; resize it yourself). **Sync every frame** is on by default in OpenIW2 (the original starts with it off and no
+frame limit).
+
 ### Cheats and developer keys
 
 Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:

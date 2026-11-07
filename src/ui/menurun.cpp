@@ -71,6 +71,10 @@ std::string registeredDefault(const std::string& n) {
         {"iw2_hitMarker", "0"},     // openiw2 option (src/game/hitmarker.h), off by default; not a dvar of the shipped game
         {"monkeytoy", "1"},         // 0x4037ba
         {"cl_freelook", "1"},       // 0x40e2e0
+        {"m_filter", "0"},          // 0x40e3c0 (bool, flags 0x1001)
+        {"m_forward", "0.25"}, {"m_side", "0.25"}, // 0x40e39f.. (float, flags 0x1001)
+        {"cl_yawspeed", "140"}, {"cl_pitchspeed", "140"}, // 0x40e2.. (float, flags 0x1001)
+        {"cl_anglespeedkey", "1.5"}, // (float 0..FLT_MAX, flags 0x1000)
         {"cl_mouseAccel", "0"},     // 0x40e2c3 (float 0..100)
         {"cl_showmouserate", "0"},  // 0x40e2f9
         {"r_inGameVideo", "1"},     // 0x40e311
@@ -82,7 +86,10 @@ std::string registeredDefault(const std::string& n) {
         // none, dx9, dx7 -> 0; r_aspectRatio: auto, standard, wide 16:10, wide 16:9 -> 0).
         {"r_picmip", "0"}, {"r_picmip_bump", "0"}, {"r_picmip_spec", "0"}, {"r_picmip_manual", "0"},
         {"r_texturemode", "bilinear"}, {"r_aspectratio", "auto"}, {"r_rendererpreference", "none"},
-        {"r_swapinterval", "0"}, {"r_aasamples", "1"}, {"r_dlightlimit", "4"}, {"r_gamma", "1"}, {"r_ignorehwgamma", "0"}, // bool default 0 (gfx 0x1000abc0): the brightness slider shows
+        {"r_zfeather", "1"}, {"r_depthprepassmodels", "0"}, // flags 0x2000 (not archived), gfx 0x1000b4.. (pushed before the names)
+        // r_swapinterval: deliberate deviation, the DLL registers 0 (flags 0x2021, gfx 0x1000b1d1). With 0 and com_maxfps 0 (the exe's
+        // default, 0x42df14: int 0..1000) the original draws as fast as it can; openiw2 starts with vsync instead.
+        {"r_swapinterval", "1"}, {"r_aasamples", "1"}, {"r_dlightlimit", "4"}, {"r_gamma", "1"}, {"r_ignorehwgamma", "0"}, // bool default 0 (gfx 0x1000abc0): the brightness slider shows
     };
     for (const auto& [k, v] : defaults)
         if (lowerStr(n) == lowerStr(k)) return v;

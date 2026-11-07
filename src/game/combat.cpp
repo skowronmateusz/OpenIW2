@@ -721,7 +721,14 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     if (l > 0) d = scale(d, 1.0f / l);
     const Vec3 reflect = add(d, scale(n, -2.0f * dot(d, n)));
     std::string normalFx = impactEffect(type, surface), reflectFx = impactEffect(type + 1, surface);
-    if (surface == 7) {
+    // cg_blood (cgame bool, default 1, read at 0x4b823d): off, every flesh hit plays flesh_hit_noblood.efx along the normal and no
+    // reflect effect, and the 330 ms timer is not touched.
+    const auto bloodIt = cvars.find("cg_blood");
+    const bool blood = bloodIt == cvars.end() || std::atoi(bloodIt->second.c_str()) != 0;
+    if (surface == 7 && !blood) {
+        normalFx = "fx/impacts/flesh_hit_noblood.efx";
+        reflectFx.clear();
+    } else if (surface == 7) {
         if (timeMs_ - lastBloodMs_ < 330) {
             normalFx = "fx/impacts/flesh_hit_noblood.efx";
             reflectFx.clear();

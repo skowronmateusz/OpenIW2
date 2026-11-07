@@ -30,5 +30,11 @@ int main() {
     check(iw2::ui::registeredDefault("r_gamma") == "1" && iw2::ui::registeredDefault("r_ignorehwgamma") == "0", __LINE__);
     check(iw2::ui::registeredDefault("ui_multiplayer") == "0", __LINE__);
     check(iw2::ui::registeredDefault("cg_hudGrenadeIconInScope") == "0" && iw2::ui::isArchivedCvar("cg_hudGrenadeIconInScope"), __LINE__);
+    // Option dvars archived in the profile (flags 0x1001 / 0x2021) and r_zFeather not (0x2000); vsync on by default (deviation).
+    for (const char* n : {"cg_blood", "cg_drawCrosshair", "cg_subtitles", "m_filter", "cl_freelook", "r_swapInterval"})
+        check(iw2::ui::isArchivedCvar(n), __LINE__);
+    check(!iw2::ui::isArchivedCvar("r_zFeather") && iw2::ui::registeredDefault("r_zFeather") == "1", __LINE__);
+    check(iw2::ui::registeredDefault("r_swapInterval") == "1" && iw2::ui::registeredDefault("m_filter") == "0", __LINE__);
+    check(iw2::ui::registeredDefault("cl_yawspeed") == "140" && iw2::ui::registeredDefault("cl_anglespeedkey") == "1.5", __LINE__);
     return failures ? 1 : 0;
 }

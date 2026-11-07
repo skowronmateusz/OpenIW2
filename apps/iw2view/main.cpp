@@ -1656,6 +1656,13 @@ static float gammaFrom(const std::map<std::string, std::string>& cvars) {
     return it == cvars.end() ? game::kGammaDefault : game::clampGamma(float(std::atof(it->second.c_str())));
 }
 
+// r_zFeather (bool, default 1; the graphics menu's "soft smoke edges" sets it on close from ui_zfeather): the menu cvar store.
+static bool zFeatherFrom(const std::map<std::string, std::string>& cvars) {
+    for (const char* k : {"r_zFeather", "r_zfeather"})
+        if (const auto it = cvars.find(k); it != cvars.end()) return std::atoi(it->second.c_str()) != 0;
+    return true;
+}
+
 // r_dlightLimit dvar (int 0..32, registered at DLL 0x1000b318 with default 4): the menu cvar store, else the registered default.
 static size_t dlightLimitFrom(const std::map<std::string, std::string>& cvars) {
     for (const char* k : {"r_dlightLimit", "r_dlightlimit"}) {
@@ -1805,6 +1812,7 @@ struct Renderer {
     SDL_GPUTexture* gammaTex = nullptr;           // the whole frame (scene, menus, HUD) when r_gamma != 1
     uint32_t gammaW = 0, gammaH = 0;
     float gamma = 1.0f;                           // r_gamma, set by the caller each frame (game/gammaramp.h)
+    bool zFeather = true;                         // r_zFeather (gfx 0x101ce694, default 1), set by the caller each frame
     SDL_GPUGraphicsPipeline* glowSetupPipe = nullptr;
     SDL_GPUGraphicsPipeline* glowBlurPipe = nullptr;
     SDL_GPUGraphicsPipeline* glowApplyPipe = nullptr;
@@ -2798,7 +2806,9 @@ struct Renderer {
                 for (const Batch& b : it.model->batches) {
                     if (b.pass != p) continue;
                     if (b.fxKind == 2 && !postSunReady) continue; // distortion needs the post-sun copy (Skip before, docs/spec/effects.md)
-                    if (b.fxKind != 0 && postSunReady) {
+                    // r_zFeather 0: the effects use technique type 0x15 "emissive no fog" instead of 0x18 "emissive feathered" (the
+                    // distortion keeps its float-z variant), i.e. the ordinary unfeathered draw below.
+                    if (b.fxKind != 0 && postSunReady && (b.fxKind == 2 || zFeather)) {
                         // distortion_floatz.tech / zfeather(_add).tech: vertex uniforms + the material constant, samplers colorMap,
                         // resolvedPostSun / floatZ.
                         SDL_GPUBufferBinding mvb{it.model->vertices, 0};
@@ -3630,6 +3640,9 @@ int main(int argc, char** argv) {
         // advanced copy +0x4 that plays read, e.g. 0x4855e4) before the view weapon is added (0x4afd17, then 0x4b026f). Both the view
         // flash play (0x4b6c37 -> 0x4853f0, no time argument) and the particle draw use it. The shot-script turn steps override it.
         std::optional<int64_t> fxTimeOverride;
+        // r_swapInterval (bool, default 0, latched; gfx 0x100115a3: the D3D presentation interval is 1 when set, else immediate):
+        // applied when the window is created and on vid_restart.
+        bool presentModeDirty = true;
         auto fxTime = [&]() -> int64_t {
             if (fxTimeOverride) return *fxTimeOverride;
             return world ? world->timeMs() - 50 + int64_t(lerpFrac * 50.0f) : 0; // [server time]
@@ -4501,6 +4514,7 @@ int main(int argc, char** argv) {
                 // openiw2 does not implement (TODO: renderer / mixer re-init), so it only logs.
                 else if (c == "vid_restart" || c == "snd_restart") {
                     if (world && !pendingDisconnect) world->queueSave("internal/" + c, "", "", 0, 4);
+                    else if (c == "vid_restart") presentModeDirty = true; // the renderer part openiw2 restarts: the present mode
                     else std::cout << c << ": no subsystem restart in openiw2\n";
                 }
                 // "loadgame <name>" (exe "You must specify a savegame to load", "Can't find savegame %s") and loadgame_continue
@@ -5632,7 +5646,9 @@ int main(int argc, char** argv) {
             }
             const int wst = pweapon.stateNumber();
             const float crossAlpha = 1.0f - (world ? scopeAlpha() : 0.0f);
-            const bool drawCross = !pausedHide && !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
+            // cg_drawCrosshair (bool, default 1; 0x4bd129) off: no hand crosshair (the turret and vehicle reticles do not test it).
+            const bool crossOn = menuEnv.getCvar("cg_drawCrosshair") != "0" && menuEnv.getCvar("cg_drawcrosshair") != "0";
+            const bool drawCross = crossOn && !pausedHide && !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
                                    wst != 1 && wst != 2 && wst != 5 && wst != 10 && wst != 11;
             // Look (0x4bd760 → 0x4bd2c0 centre, 0x4bd520 sides). Aiming (0x4bd230, fraction past 1 − adsCrosshairInFrac
             // while zooming in, adsCrosshairOutFrac out): scale 1 − f/2 and the centre moved down by 480 / fov_y ·
@@ -7024,7 +7040,7 @@ int main(int argc, char** argv) {
             updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : 0.0f);
             renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
-            renderer.gamma = gammaFrom(uiCvars);
+            renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
@@ -7182,7 +7198,7 @@ int main(int argc, char** argv) {
                         quads.push_back(bar);
                     }
                     quads.push_back(q);
-                    renderer.gamma = gammaFrom(uiCvars);
+                    renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
                     renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
                 }
                 SDL_SubmitGPUCommandBuffer(cmd);
@@ -7215,6 +7231,7 @@ int main(int argc, char** argv) {
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
         else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
+        float mouseAccX = 0, mouseAccY = 0, mousePrevX = 0, mousePrevY = 0; // CL_MouseMove slots (0x621538 / 0x621540)
         uint64_t fpsSince = SDL_GetTicksNS();
         int fpsFrames = 0;
         // The scripted `cinematic <name> 0` (flags 0): skippable, no letterbox, no loop.
@@ -7333,32 +7350,9 @@ int main(int argc, char** argv) {
                 else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0)
                     input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", true), input.key(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN", false);
                 else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
-                    // CG_CalcFov 0x4ae8c0: look sensitivity is scaled by zoomSens = fovX / cg_fov (80), linear in degrees (0xf791c8, applied in
-                    // CL_MouseMove 0x409720). The base 0.15 deg per SDL count is kept on purpose: the exe turns raw counts into degrees as
-                    // count · sensitivity · m_yaw (default 5 · 0.022 = 0.11), but SDL's xrel is in window points, not raw device counts, so the
-                    // constant is a feel calibration for the macOS port rather than a spec value.
-                    const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
-                    // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
-                    // the base 0.15 stands for the default.
-                    // The base 0.15 deg/count stands for the default sensitivity 5 (cvar sensitivity 1..30 from the options menu).
-                    const float lookSens = uiCvars.count("sensitivity") ? std::clamp(float(std::atof(uiCvars["sensitivity"].c_str())), 1.0f, 30.0f) / 5.0f : 1.0f;
-                    float pitchScale = 1.0f;
-                    if (world)
-                        if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
-                    if (!(world && world->playerControlsFrozen())) { // pm_flags 0x8000 (freezecontrols or an absolute playerlinkto): the client mouse function returns before applying the delta (0x409871)
-                        float dyaw = ev.motion.xrel * 0.15f * lookSens * zoomSens, dpitch = ev.motion.yrel * 0.15f * lookSens * zoomSens * pitchScale;
-                        // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
-                        if (world)
-                            if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
-                                const auto& ss = world->shellShock();
-                                const game::ShockMouse m = game::shockMouse(*rec, int(cgNowMs() - ss.startMs), ss.durationMs);
-                                dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
-                                if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
-                                if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
-                            }
-                        cam.yaw -= dyaw;
-                        cam.pitch = std::clamp(cam.pitch + dpitch, -89.0f, 89.0f);
-                    }
+                    // The mouse deltas of a frame are summed into the current slot (0x4096f8: two slots, 0x621538 / 0x621540) and
+                    // used once per frame by CL_MouseMove (below, after the events).
+                    mouseAccX += ev.motion.xrel, mouseAccY += ev.motion.yrel;
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
                 if (ev.key.scancode == SDL_SCANCODE_ESCAPE) {
@@ -7395,6 +7389,78 @@ int main(int argc, char** argv) {
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
             frameDt = std::min(dt, 0.1f);
+            if (presentModeDirty) {
+                presentModeDirty = false;
+                const bool vsync = std::atoi(menuEnv.getCvar("r_swapInterval").c_str()) != 0 || std::atoi(menuEnv.getCvar("r_swapinterval").c_str()) != 0;
+                SDL_GPUPresentMode pm = SDL_GPU_PRESENTMODE_VSYNC;
+                if (!vsync) {
+                    if (SDL_WindowSupportsGPUPresentMode(dev, window, SDL_GPU_PRESENTMODE_IMMEDIATE)) pm = SDL_GPU_PRESENTMODE_IMMEDIATE;
+                    else if (SDL_WindowSupportsGPUPresentMode(dev, window, SDL_GPU_PRESENTMODE_MAILBOX)) pm = SDL_GPU_PRESENTMODE_MAILBOX;
+                }
+                if (!SDL_SetGPUSwapchainParameters(dev, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, pm))
+                    std::cerr << "present mode: " << SDL_GetError() << "\n";
+                std::cout << "present mode: " << (pm == SDL_GPU_PRESENTMODE_VSYNC ? "vsync" : pm == SDL_GPU_PRESENTMODE_IMMEDIATE ? "immediate" : "mailbox") << "\n";
+            }
+            // CL_CreateCmd 0x409da0: CL_AdjustAngles (0x409400), the key move, then CL_MouseMove (0x409720).
+            input.setMouseMove(0, 0);
+            {
+                const auto cvf = [&](const char* n, float def) {
+                    const std::string v = menuEnv.getCvar(n);
+                    return v.empty() ? def : float(std::atof(v.c_str()));
+                };
+                // CL_AdjustAngles: speed = frame msec * 0.001, times cl_anglespeedkey while the +speed button is held (0x409401); without
+                // +strafe, +right / +left turn by speed * cl_yawspeed (0x40942c), and +lookup / +lookdown pitch by speed * cl_pitchspeed.
+                // It runs for every command, with no frozen-controls test. TODO(spec): [server side not read] whether the server applies
+                // keyboard-turned angles while pm_flags 0x8000 is set (the mouse path below is stopped on the client).
+                if (world && frontStack.empty()) {
+                    const float sp = frameDt * (input.speedHeld() ? cvf("cl_anglespeedkey", 1.5f) : 1.0f);
+                    if (!input.strafeHeld()) cam.yaw += sp * cvf("cl_yawspeed", 140.0f) * (input.turnLeft() - input.turnRight());
+                    cam.pitch = std::clamp(cam.pitch + sp * cvf("cl_pitchspeed", 140.0f) * (input.lookDown() - input.lookUp()), -89.0f, 89.0f);
+                }
+                // centerview (0x409240), also -mlook without cl_freelook (0x408b20): the view pitch goes back to level.
+                if (input.takeCenterView(cvf("cl_freelook", 1.0f) != 0.0f) && world) cam.pitch = 0.0f;
+                // CL_MouseMove 0x409720: m_filter averages this frame's sum with the previous one (* 0.5), else this frame's alone.
+                float mx = mouseAccX, my = mouseAccY;
+                if (cvf("m_filter", 0.0f) != 0.0f) mx = (mouseAccX + mousePrevX) * 0.5f, my = (mouseAccY + mousePrevY) * 0.5f;
+                mousePrevX = mouseAccX, mousePrevY = mouseAccY;
+                mouseAccX = mouseAccY = 0.0f;
+                if ((mx != 0.0f || my != 0.0f) && world) {
+                    // CG_CalcFov 0x4ae8c0: look sensitivity is scaled by zoomSens = fovX / cg_fov (80), linear in degrees (0xf791c8, applied in
+                    // CL_MouseMove 0x409720). The base 0.15 deg per SDL count is kept on purpose: the exe turns raw counts into degrees as
+                    // count · sensitivity · m_yaw (default 5 · 0.022 = 0.11), but SDL's xrel is in window points, not raw device counts, so the
+                    // constant is a feel calibration for the macOS port rather than a spec value.
+                    const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
+                    // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
+                    // the base 0.15 stands for the default.
+                    // The base 0.15 deg/count stands for the default sensitivity 5 (cvar sensitivity 1..30 from the options menu).
+                    const float lookSens = uiCvars.count("sensitivity") ? std::clamp(float(std::atof(uiCvars["sensitivity"].c_str())), 1.0f, 30.0f) / 5.0f : 1.0f;
+                    float pitchScale = 1.0f;
+                    if (world)
+                        if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
+                    if (!(world && world->playerControlsFrozen())) { // pm_flags 0x8000 (freezecontrols or an absolute playerlinkto): the client mouse function returns before applying the delta (0x409871)
+                        float dyaw = mx * 0.15f * lookSens * zoomSens, dpitch = my * 0.15f * lookSens * zoomSens * pitchScale;
+                        // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
+                        if (world)
+                            if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
+                                const auto& ss = world->shellShock();
+                                const game::ShockMouse m = game::shockMouse(*rec, int(cgNowMs() - ss.startMs), ss.durationMs);
+                                dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
+                                if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
+                                if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
+                            }
+                        // +strafe held: the x motion is the side move (round(mx * m_side), 0x4098ed), else the yaw. The y motion pitches the
+                        // view while +mlook or cl_freelook is on and +strafe is not held (0x4099ba..0x4099db), else it is the forward move
+                        // (-round(my * m_forward), 0x409a71).
+                        int side = 0, fwd = 0;
+                        if (input.strafeHeld()) side = int(std::lround(mx * cvf("m_side", 0.25f)));
+                        else cam.yaw -= dyaw;
+                        if ((input.mlookHeld() || cvf("cl_freelook", 1.0f) != 0.0f) && !input.strafeHeld())
+                            cam.pitch = std::clamp(cam.pitch + dpitch, -89.0f, 89.0f);
+                        else fwd = -int(std::lround(my * cvf("m_forward", 0.25f)));
+                        input.setMouseMove(side, fwd);
+                    }
+                }
+            }
             // The F12 counter shows the frames of the last half second, so that it stays readable.
             ++fpsFrames;
             if (now - fpsSince >= 500000000ull) {
@@ -8430,7 +8496,7 @@ int main(int argc, char** argv) {
                 updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
                 renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
-                renderer.gamma = gammaFrom(uiCvars);
+                renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
                 renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
                 profWater += double(profC - profB) * 1e-6;
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;

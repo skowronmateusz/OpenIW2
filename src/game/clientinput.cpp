@@ -176,7 +176,13 @@ void ClientInput::command(const std::string& cmdIn, bool down, const std::string
             {"activate", &activate_},   {"reload", &reload_},       {"usereload", &useReload_},
             {"leanleft", &leanLeft_},   {"leanright", &leanRight_}, {"speed", &speed_},
             {"forward", &forward_},     {"back", &back_},           {"moveleft", &moveLeft_},
-            {"moveright", &moveRight_}};
+            {"moveright", &moveRight_}, {"left", &left_},         {"right", &right_},
+            {"lookup", &lookUp_},       {"lookdown", &lookDown_},   {"strafe", &strafe_}};
+        if (name == "mlook") { // 0x408b10 / 0x408b20
+            if (down) mlook_ = true;
+            else mlook_ = false, mlookReleased_ = true;
+            return;
+        }
         auto act = [&](KButton& b) { down ? press(b, keyName) : release(b, keyName); };
         if (name == "scores") { objectivesHeld_ = down; return; } // cgame 0x4a4d40 (+scores) / 0x4a4d20 (-scores): the objectives screen
         if (auto it = buttons.find(name); it != buttons.end()) return act(*it->second);
@@ -216,6 +222,7 @@ void ClientInput::command(const std::string& cmdIn, bool down, const std::string
     else if (name == "lowerstance") stance_ = std::min(stance_ + 1, 2); // 0x409280
     else if (name == "raisestance") stance_ = std::max(stance_ - 1, 0); // 0x4092c0
     if (name == "weapnext") cycle_ = 1;  // cgame 0x4b6fd0
+    if (name == "centerview") centerView_ = true; // 0x409240
     if (name == "weapprev") cycle_ = -1; // cgame 0x4b7030
 }
 
