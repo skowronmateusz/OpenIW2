@@ -475,6 +475,11 @@ Flak88 collision (checked): the only solid part is the collmap brush (0x50dc40; 
 Test: tests/test_barrelclip.cpp. Script barrels (`maps/_interactable_objects.gsc`): a targeted script_brushmodel clip is
 deleted on explosion (`connectpaths`, `delete`); the entity clip disappears with it (same test, libya).
 
+Turret of the wreck: 0x511c80 does not write the turret angles (es +0x70 pitch, +0x74 yaw), and the client dispatch 0x4acd30
+(eType at centity +0xa0, table 0x4acd74) sends eType 0xc and 0xd alike to the vehicle draw 0x4ac2b0, which applies them as
+bone controls. A tank destroyed with its turret turned keeps it turned. OpenIW2 keeps the two angles on the object at
+freevehicle and draws the wreck's tag_turret / tag_barrel with them (also in tag positions); tested in test_deadtank.
+
 ## Client anim time of script-animated vehicles (flak88 recoil)
 
 The flak88 is a script vehicle (type artillery) whose script plays a firing animation on it (the flak88 animtree). The cgame

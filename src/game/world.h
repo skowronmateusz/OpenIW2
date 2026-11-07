@@ -608,6 +608,13 @@ public:
     int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
     // Game time (ms) of the last of those hits that killed the actor (it reached the death branch of the damage), -1 before the first.
     int64_t playerHitMarkerKillMs() const { return hitMarkerKillMs_; }
+    // Turret pitch and yaw a freed vehicle (script_vehicle_corpse, eType 0xd) kept from freevehicle; none for other entities.
+    static std::optional<std::array<float, 2>> corpseTurret(const Entity& e) {
+        if (e.vehicle) return std::nullopt;
+        const script::Value p = e.obj->get("$corpseTurretPitch"), y = e.obj->get("$corpseTurretYaw");
+        if (!p.isNumber() || !y.isNumber()) return std::nullopt;
+        return std::array<float, 2>{p.asFloat(), y.asFloat()};
+    }
     // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
     void applyPlayerEvent(int ev, int parm);
     // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached

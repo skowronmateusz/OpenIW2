@@ -8,6 +8,7 @@
 #include "game/world.h"
 
 #include <cmath>
+#include <map>
 #include <cstdlib>
 #include <iostream>
 
@@ -115,9 +116,27 @@ int main() {
     // Same without a save: both tigers killed straight away.
     World c(vfs, "rhine");
     startTigers(c);
-    for (int id : tigers(c)) c.debugDamage(*ent(c, id), 100000);
-    for (int i = 0; i < 300; ++i) c.frame();
-    for (int id : tigers(c)) CHECK(hasClip(c, id));
+    const std::vector<int> cIds = tigers(c);
+    for (int id : cIds) {
+        ent(c, id)->vehicle->turretYaw = 70.0f; // turned before the kill
+        ent(c, id)->vehicle->turretPitch = -5.0f;
+        c.debugDamage(*ent(c, id), 100000);
+    }
+    std::map<int, std::array<float, 2>> lastTurret;
+    for (int i = 0; i < 300; ++i) {
+        for (int id : cIds)
+            if (Entity* t = ent(c, id); t && t->vehicle) lastTurret[id] = {t->vehicle->turretPitch, t->vehicle->turretYaw};
+        c.frame();
+    }
+    for (int id : cIds) CHECK(hasClip(c, id));
+    // The wreck keeps the turret where it was (freevehicle 0x511c80 leaves es +0x70 / +0x74; eType 0xd is drawn with them).
+    for (int id : cIds) {
+        Entity* t = ent(c, id);
+        const auto ct = t ? World::corpseTurret(*t) : std::nullopt;
+        CHECK(t && t->classname == "script_vehicle_corpse" && ct);
+        if (ct) CHECK((*ct)[0] == lastTurret[id][0] && (*ct)[1] == lastTurret[id][1] && (*ct)[1] != 0.0f);
+        if (ct) std::cout << "tank " << id << " wreck turret p/y " << (*ct)[0] << "/" << (*ct)[1] << "\n";
+    }
     // Flak88 shells (flak88_turret, direct hit MOD_PROJECTILE, the player as the shooter) kill both tigers one after the other; a save
     // taken while the second one is dead but not yet freed (the tank_down autosave) must keep its clip after the load too.
     {
