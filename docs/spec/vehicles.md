@@ -282,6 +282,10 @@ attack (0x4df9b0 uses 0x30014), so the player's own weapon does not fire. View (
 world axes (previous stored transposed, 0x422ab0), lerped from identity by `cg_viewVehicleInfluence` (default 1)
 through quaternions; view axes · D (0x422450) → angles; pitch always taken, yaw only while pm_flags 0x40000. The
 command's delta angles are adjusted so the input keeps that view.
+The client draws the driven vehicle and the player from the last two snapshots by the frame fraction (CG_InterpolatePlayerState
+0x4b9940, entity lerp 0x4a4c10). iw2view therefore takes `tag_body`'s axes between the previous and the current server frame by
+that fraction (re-orthonormalized) for Bcur, and the driver's eye from the interpolated player origin, so the view does not
+step at 20 Hz.
 
 ## Player use (`useby`)
 

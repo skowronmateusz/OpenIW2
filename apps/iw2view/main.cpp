@@ -7151,6 +7151,11 @@ int main(int argc, char** argv) {
         bool fellOut = false;
         std::array<game::Vec3, 3> prevBody{};
         bool havePrevBody = false;
+        // The driven vehicle's body axes at the previous server frame (set with prevPlayerO): the client draws the vehicle and
+        // the player from the two last snapshots by the frame fraction (CG_InterpolatePlayerState 0x4b9940, entity lerp
+        // 0x4a4c10), so the driver's view origin and body turn are interpolated too instead of stepping at 20 Hz.
+        std::array<game::Vec3, 3> tickBodyPrev{};
+        bool haveTickBodyPrev = false;
         const game::MoveParams mp;
         game::MantleAnims mantleAnims;
         for (int i = 1; i < 11; ++i) mantleAnims.anims[size_t(i)] = viewAnim(vfs, game::mantleAnimName(i));
@@ -7602,6 +7607,20 @@ int main(int argc, char** argv) {
                 // times Bprevᵀ·Bcur; the pitch always follows, the yaw only while pm_flags 0x40000 is set.
                 std::array<game::Vec3, 3> body;
                 if (world->playerVehicleBodyAxis(body)) {
+                    if (haveTickBodyPrev) { // the body axes between the last two server frames, re-orthonormalized
+                        for (size_t i = 0; i < 3; ++i)
+                            for (size_t j = 0; j < 3; ++j) body[i][j] = tickBodyPrev[i][j] + (body[i][j] - tickBodyPrev[i][j]) * lerpFrac;
+                        auto norm = [](game::Vec3& v) {
+                            const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                            if (l > 0) v = {v[0] / l, v[1] / l, v[2] / l};
+                        };
+                        norm(body[0]);
+                        const float d = body[1][0] * body[0][0] + body[1][1] * body[0][1] + body[1][2] * body[0][2];
+                        body[1] = {body[1][0] - d * body[0][0], body[1][1] - d * body[0][1], body[1][2] - d * body[0][2]};
+                        norm(body[1]);
+                        body[2] = {body[0][1] * body[1][2] - body[0][2] * body[1][1], body[0][2] * body[1][0] - body[0][0] * body[1][2],
+                                   body[0][0] * body[1][1] - body[0][1] * body[1][0]};
+                    }
                     if (!havePrevBody) prevBody = body;
                     float d[3][3], v[3][3], m[3][3];
                     for (int i = 0; i < 3; ++i)
@@ -7625,7 +7644,9 @@ int main(int argc, char** argv) {
                     havePrevBody = true;
                 }
                 const script::Vec3 po = world->player()->obj->get("origin").asVector();
-                cam.pos = {po[0], po[1], po[2] + 60.0f}; // stand view height 60 in a vehicle (0x509d10)
+                const script::Vec3 pl{prevPlayerO[0] + (po[0] - prevPlayerO[0]) * lerpFrac, prevPlayerO[1] + (po[1] - prevPlayerO[1]) * lerpFrac,
+                                      prevPlayerO[2] + (po[2] - prevPlayerO[2]) * lerpFrac};
+                cam.pos = {pl[0], pl[1], pl[2] + 60.0f}; // stand view height 60 in a vehicle (0x509d10), at the interpolated origin
                 camLinkLerp = true;
                 camLinkHeight = 60.0f;
                 ps.origin = {po[0], po[1], po[2]};
@@ -8130,6 +8151,7 @@ int main(int argc, char** argv) {
                         prevAnim.emplace(e->number, *e->anim);
                     }
                     if (world->player()) prevPlayerO = world->player()->obj->get("origin").asVector();
+                    haveTickBodyPrev = world->playerVehicleBodyAxis(tickBodyPrev);
                     world->frame();
                     if (startTrace && traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) trace("server frame run", world->timeMs()); // [server time]
                     gameClock -= 0.05f;
