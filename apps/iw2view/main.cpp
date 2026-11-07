@@ -41,6 +41,7 @@
 #include "game/fx.h"
 #include "game/fog.h"
 #include "game/viewcull.h"
+#include "game/viewspace.h"
 #include "game/marks.h"
 #include "game/outdoor.h"
 #include "ui/focuspulse.h"
@@ -1693,6 +1694,9 @@ struct DrawItem {
     // `model` is null then.
     const std::vector<Batch>* worldBatches = nullptr;
     Mat4 transform{};
+    // Depth-hack items (the view model) only: the same transform with the eye subtracted from its translation (game/viewspace.h).
+    // They are drawn in camera-relative space (applyViewModelSpace) so the clip position is not rounded at map-coordinate size.
+    Mat4 relTransform{};
     float ambient[3] = {0.5f, 0.5f, 0.5f};
     float sunVisibility = 1.0f;
     bool hasProbe = false;
@@ -1731,6 +1735,17 @@ Mat4 entityTransform(const Vec3& origin, const Vec3& angles, float scale = 1.0f)
     const Vec3 u{cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp};
     return {f.x * scale, f.y * scale, f.z * scale, 0, l.x * scale, l.y * scale, l.z * scale, 0,
             u.x * scale, u.y * scale, u.z * scale, 0, origin.x, origin.y, origin.z, 1};
+}
+
+// Depth-hack items are drawn in camera-relative space: model = relTransform, view matrix with the eye at the origin, eye uniform 0.
+// Every pass of the item (light, fog, decal, l_point) must use it, since they rely on bit-identical depth (world_clip).
+template <class V>
+static void applyViewModelSpace(V& mu, const Camera& cam, const DrawItem& it, float aspect) {
+    Camera rel = cam;
+    rel.pos = {0.0f, 0.0f, 0.0f};
+    mu.vp = rel.viewProj(aspect, it.zNear, true);
+    mu.model = it.relTransform;
+    mu.eye[0] = mu.eye[1] = mu.eye[2] = 0.0f;
 }
 
 // A screen-space textured quad in pixels of the render target (HUD).
@@ -2640,7 +2655,7 @@ struct Renderer {
                             SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
                             VU mu = vu;
                             mu.model = it.transform;
-                            if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
+                            if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                             mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                             SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                             SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
@@ -2652,6 +2667,10 @@ struct Renderer {
                             fu.params[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
                             fu.params[1] = depthProbe ? 1.0f : 0.0f;
                             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
+                            if (it.depthMax < 1.0f) { // camera-relative item (applyViewModelSpace): the light moves with the eye
+                                fu.light[0] -= cam.pos.x, fu.light[1] -= cam.pos.y, fu.light[2] -= cam.pos.z;
+                                fu.eye[0] = fu.eye[1] = fu.eye[2] = 0.0f;
+                            }
                             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
                             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
                             SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
@@ -2851,7 +2870,7 @@ struct Renderer {
                         SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
+                        if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         continue;
                     }
@@ -2862,7 +2881,7 @@ struct Renderer {
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
+                        if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                         SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
                         bound = true;
                     }
@@ -2884,14 +2903,14 @@ struct Renderer {
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
+                        if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                         bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
                     SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
-                        if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
+                        if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                         bindOffset(p, 0, 0, mu);
                     }
                 }
@@ -2947,7 +2966,7 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 VU mu = vu;
                 mu.model = it.transform;
-                if (it.depthMax < 1.0f) mu.vp = cam.viewProj(float(w) / float(h), it.zNear, true);
+                if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                 for (const Batch& b : it.model->batches) drawObjective(b, mu);
                 if (it.depthMax < 1.0f) {
                     const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
@@ -4227,13 +4246,17 @@ int main(int argc, char** argv) {
                 const auto gk = recoil.gunKick(); // 0x4b5d10
                 for (int k = 0; k < 3; ++k) rt[size_t(k)] += gk[size_t(k)];
             }
-            base.transform = entityTransform(c.pos + c.forward() * mv[0] + c.right() * mv[1] + cross(c.right(), c.forward()) * mv[2],
-                                             {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
+            const Vec3 vmFwd = c.forward(), vmRight = c.right(), vmUp = cross(vmRight, vmFwd);
+            const auto vmOff = game::viewModelOffset({vmFwd.x, vmFwd.y, vmFwd.z}, {vmRight.x, vmRight.y, vmRight.z}, {vmUp.x, vmUp.y, vmUp.z},
+                                                     {mv[0], mv[1], mv[2]});
+            base.transform = entityTransform(c.pos + Vec3{vmOff[0], vmOff[1], vmOff[2]}, {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
+            base.relTransform = entityTransform({vmOff[0], vmOff[1], vmOff[2]}, {c.pitch + rt[0], c.yaw + rt[1], rt[2]});
             if (const char* dbg = std::getenv("IW2_VIEWMODEL_DEBUG")) {
                 // Debug: show the view model from outside, `dist` units ahead, turned by `yaw` degrees.
                 float dist = 40, turn = 180;
                 std::sscanf(dbg, "%f,%f", &dist, &turn);
                 base.transform = entityTransform(c.pos + c.forward() * dist, {0, c.yaw + turn, 0});
+                base.relTransform = entityTransform(c.forward() * dist, {0, c.yaw + turn, 0});
             }
             assets::LightGridCoeffs lc;
             float sun = 1.0f;

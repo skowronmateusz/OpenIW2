@@ -140,3 +140,16 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
   and the class switch is in the walker 0x1002f830. TODO(spec): inference, not traced: that command 0x17 reaches this walker (the
   dispatch was not read), hence that the view model enters the floatz list with its range and projection. OpenIW2 draws it so.
 - OpenIW2: `game/viewprojection.h`, test_viewprojection.
+
+## View model precision (OpenIW2 renderer measure)
+
+- The view model is attached to the eye; on screen it is a function of the view-model offsets and the view angles only. iw2view
+  used to place it at the eye plus the offset in world coordinates and project it with the world view matrix. On a map with
+  coordinates in the tens of thousands (float step 0.004 at 50000) the model translation and the view translation are both rounded
+  at that size, so the depth gap of near-coplanar parts (the button on the sleeve) changed from frame to frame as the gun swayed
+  and the eye moved by hundredths of a unit; the part flickered between lit and covered.
+- The view model's draw items now carry a camera-relative transform (offset from the eye) and are drawn with a view matrix whose
+  eye is the origin (`applyViewModelSpace` in apps/iw2view/main.cpp, offset from `viewModelOffset`, src/game/viewspace.h). The
+  eye uniform and the l_point light positions of these items are shifted the same way, so distances (fog, specular half angle,
+  light falloff) are unchanged. `IW2_NO_DEPTH_HACK=1` (view model without the depth range) draws it in world space as before,
+  since the camera-relative path is taken only by depth-hack items. Test: tests/test_viewspace.cpp. TODO(spec): the original's own handling of this rounding.
