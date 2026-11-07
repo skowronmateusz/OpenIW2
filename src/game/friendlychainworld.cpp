@@ -71,10 +71,13 @@ void World::setFriendlyChain(Entity& sentient, int node) {
     sentient.friendlyChain = node;
 }
 
-// Touch 0x529140 → 0x518bf0: the chain node named by the trigger's target becomes the toucher's chain node (when
-// g_spawnai is on; default 1, TODO(spec): the dvar is not modelled). TODO(spec): the toucher filter of 0x529140.
+// Touch 0x529140 → 0x518bf0: the chain node named by the trigger's target becomes the toucher's chain node, when g_spawnai
+// (the dvar at 0x1c1487c, registered at 0x4d8854 with default 1) is not 0. 0x529140 has no toucher filter of its own: who touches
+// is decided by the trigger's contents, which 0x528dc0 rebuilds from the spawnflags after the spawn 0x529170 (team bits, and
+// 0x40000000 unless bit 8). A toucher without a sentient (+0x104) would be dereferenced at 0x518c05 in the exe; none is let in here.
 // The exe's Com_Error cases are logged and ignored (the touch runs outside the VM).
 void World::touchFriendlyChain(Entity& trigger, Entity& other) {
+    if (cvarFloat("g_spawnai", 1.0f) == 0.0f) return; // 0x518bf5: the dvar byte gates the whole routine
     if (!isSentient(other)) return;
     const std::string id = strField(trigger.obj, "target");
     if (id.empty()) return print("ERROR: trigger_friendlychain must target a friendly chain node");

@@ -549,7 +549,7 @@ Implemented (src/game/actorpredict.cpp, tests/test_actorpredict.cpp, tests/test_
   the snapshot record 0x1c7edb0: +0x218 / +0x21c / +0x220 anim mode words, the 0x43 dwords at +0x224 (the move block), +0x114..+0x123,
   +0x104..+0x113 (facing blocks), +0x124, gentity +0xdc / +0xe8 (origin, angles), actor +0xe0.. (look axes). The tree snapshot is a copy
   of every 0x28-byte node entry (0x4796c0: ten dwords per entry); the port saves `AnimState::snapshot()`, a copy of its `ActorAi`
-  (all of the fields above live there), the entity origin / angles / velocity.
+  (all of the fields above live there except +0x124, which is the script-visible `desiredangle` field and is saved and put back separately), the entity origin / angles / velocity.
 - `endprediction` (0x53fb80): decrements the counter, error "endPrediction already called" (0x5912b0) when it is not zero afterwards; restores
   the animation state (0x4796c0, 0x478db0, 0x478e10) and every field above. Nothing but the counter is cleared when a script error
   aborts between the two (the exe has the same single counter).
@@ -579,6 +579,13 @@ cycle) or x < a (the new one, the +1 loop). b == 1.0 crosses nothing. The result
 0x476f10 agrees: it starts at the first note not before the previous time (0x475ca0) and fires while the new time is past the note, so a note at
 time 0 fires on the first step and a note exactly at the new time waits for the next step. `AnimState::advanceLeaf` implements both. TODO(spec): the exe's per-actor scratch snapshot (an
 endprediction on another actor than the begin); the move block fields the port keeps outside `ActorAi` (nothing found).
+### Path connect built-ins
+
+`connectpaths` (0x4eff40) and `disconnectpaths` (0x4efe80) run only on an entity whose flags (+0x128) have 0x100: the script_brushmodel spawn sets it
+from spawnflags bit 1 (0x53346c) and the script_vehicle spawn always (0x50d8e8..0x50d90a). Otherwise a script_brushmodel raises "script_brushmodel
+must have DYNAMICPATH set to connect paths" (or "... disconnect paths") and any other class "entity of type '%s' cannot connect paths" /
+"... cannot disconnect paths" with its classname; no entity raises "not an entity" (tests/test_chaintouch.cpp).
+
 ### Key table built-ins (`buttonpressed`, `getcommandfromkey`)
 
 The exe keeps a 256-entry key table of 12-byte entries at 0x5d2728: +0 the down flag (written by the key event 0x40c0fd from its

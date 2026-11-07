@@ -365,6 +365,8 @@ public:
     bool debugIsSentient(const Entity& e) const { return isSentient(e); }
     void debugQueueTouch(Entity& trigger, Entity& toucher) { actorTouches_.push_back({trigger.obj, toucher.obj}); }
     void debugDeliverTouches() { deliverActorTouches(); }
+    void debugTouchFriendlyChain(Entity& trigger, Entity& other) { touchFriendlyChain(trigger, other); }
+    int debugChainNode(const Entity& e) const { return e.friendlyChain; }
     size_t debugTouchCount() const { return actorTouches_.size(); }
     void debugFree(Entity& e) { freeEntity(e); }
     MoverChannel& debugMoverPos(Entity& e) { return movers_[e.number].pos; }
@@ -1210,6 +1212,7 @@ private:
     struct PredictionSave {
         ActorAi ai;
         Vec3 origin{}, angles{}, velocity{};
+        Value desiredAngle; // +0x124 (saved to the record at +0x13c by 0x53fa92, put back by 0x53fcc4)
         AnimState::Snapshot anim;
         bool hasAnim = false;
     };

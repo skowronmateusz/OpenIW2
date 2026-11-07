@@ -32,6 +32,7 @@ main()
 {
 	self.o0 = self.origin;
 	self.a0 = self.angles;
+	self.d0 = self.desiredangle;
 	self beginprediction();
 	self.stops = 0;
 	for (i = 0; i < 20; i++)
@@ -45,6 +46,7 @@ main()
 	self endprediction();
 	self.o2 = self.origin;
 	self.a2 = self.angles;
+	self.d2 = self.desiredangle;
 	self.done = 1;
 }
 )";
@@ -59,6 +61,7 @@ main()
     int refused = 0;
     for (const auto& e : w.entities()) {
         if (!e->isActor || !e->anim || e->obj->removed || !e->obj->get("origin").isVector()) continue;
+        e->obj->set("desiredangle", iw2::script::Value(77.0f)); // not the facing target the predicted steps will write
         w.vm().start("maps/predtest", "main", {}, iw2::script::Value(e->obj));
         if (e->obj->get("done").isNumber()) {
             actor = e.get();
@@ -76,6 +79,9 @@ main()
     CHECK(!(o1 == o0)); // the predicted steps moved the actor
     CHECK(o2 == o0);   // and endprediction put it back
     CHECK(actor->obj->get("a2").asVector() == actor->obj->get("a0").asVector());
+    // 0x53fa92 saves and 0x53fcc4 restores desiredangle (+0x124): "face current" after a prediction sees the old target.
+    CHECK(actor->obj->get("d0").asFloat() == 77.0f);
+    CHECK(actor->obj->get("d2").asFloat() == actor->obj->get("d0").asFloat());
     std::filesystem::remove_all(dir);
     if (failures) return 1;
     std::cout << "actor predict test passed\n";

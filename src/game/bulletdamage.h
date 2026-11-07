@@ -39,7 +39,7 @@ float aiHitChance(const AccuracyGraph& g, float distance, float actorAccuracy, f
 
 // Where an AI shot is aimed once the hit roll is decided (0x550360 → 0x54ff90 hit, 0x550390 miss; both build the
 // unit axis c = normalize(v × up), v = unit muzzle → target point T, up = the shooter's third frame axis (ctx +0xf8;
-// world up here, TODO(spec) whether it is the exact shooter up)). Random inputs are u = rand() / 32768 draws in order
+// the actor's look frame, aiShooterUp)). Random inputs are u = rand() / 32768 draws in order
 // (the exe's LCG 0x343fd / 0x269ec3, state >> 17).
 struct Vec3f {
     float x, y, z;
@@ -53,5 +53,8 @@ Vec3f aiHitPoint(Vec3f T, Vec3f c, Vec3f up, bool targetIsClient, float accuracy
 Vec3f aiMissPoint(Vec3f T, Vec3f v, Vec3f c, Vec3f up, bool targetIsClient, float u1, float u2, float u3);
 // c = normalize(v × up) as the exe computes it (0x550027); zero when v ∥ up.
 Vec3f aiSideAxis(Vec3f v, Vec3f up);
+// The shooter's up axis: the third axis of the actor's look frame, built from the look pitch (+0xd8) and look yaw (+0xdc) by 0x5049a0 (0x421da0 with
+// roll 0, stored at +0xf8) and copied into the shot context by 0x54fee0; (sin p cos y, sin p sin y, cos p) for pitch p, yaw y in degrees.
+Vec3f aiShooterUp(float pitchDeg, float yawDeg);
 
 } // namespace iw2::game

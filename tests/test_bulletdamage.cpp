@@ -56,6 +56,11 @@ int main() {
     {
         using namespace iw2::game;
         const Vec3f up{0, 0, 1};
+        // the look frame's up: level it is world up; looking 90 degrees down along yaw 0 it is +x; yaw turns it about z
+        const Vec3f u0 = aiShooterUp(0, 123), u1 = aiShooterUp(90, 0), u2 = aiShooterUp(45, 90);
+        CHECK(std::fabs(u0.x) < 1e-6f && std::fabs(u0.y) < 1e-6f && std::fabs(u0.z - 1) < 1e-6f);
+        CHECK(std::fabs(u1.x - 1) < 1e-6f && std::fabs(u1.z) < 1e-6f);
+        CHECK(std::fabs(u2.y - 0.70710678f) < 1e-5f && std::fabs(u2.z - 0.70710678f) < 1e-5f && std::fabs(u2.x) < 1e-5f);
         const Vec3f c = aiSideAxis({1, 0, 0}, up);
         CHECK(std::fabs(c.y + 1.0f) < 1e-6f && c.x == 0 && c.z == 0);
         const Vec3f T{100, 0, 60};

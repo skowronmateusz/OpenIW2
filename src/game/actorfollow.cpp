@@ -95,8 +95,9 @@ bool World::aiReach(const Vec3& start, const Vec3& target, int passEnt, uint32_t
         out = tr.endPos;
         return !(out[2] >= cur[2] && tr.fraction != 1.0f && tr.normal[2] < 0.7f);
     };
-    // TODO(spec): the exe loop has no found bound, but a sentient with contents bit 0x10 (a sidestepping actor, only 0x4000 is
-    // dropped from the mask below) is hit again from the same place; a cap of 16 passes keeps that from spinning.
+    // The exe loop (0x543d82..0x543fa3) has no pass counter: its back edge is unconditional. A sentient with contents bit 0x10 (a
+    // sidestepping actor, only 0x4000 is dropped from the mask below) is hit again from the same place, which would spin there.
+    // The cap of 16 passes is a deliberate guard of this port, not an engine rule.
     for (int pass16 = 0;; ++pass16) {
         if (pass16 >= 16) return false;
         const TraceResult tr = collision_->trace(cur, {target[0], target[1], cur[2]}, mins, maxs, mask, pass);
@@ -197,7 +198,9 @@ void World::updateFollowed(Entity& e) {
 // and whose box overlaps the player's box shifted by its velocity * 0.1 (0x59202c; 0x447830, an AABB test for an actor), follows
 // the player: +0x2148 = the player gentity. When it stands at its claimed node (0x504610: node set, 0x502660 close) it is skipped
 // while the client byte +0x86b6 (the player moved 0.1 units or more since the last frame, 0x4e81e5) is set; otherwise its claimed node
-// is taken over by the player (0x519050). TODO(spec): the player's mins/maxs (+0x540/+0x54c; the standing box is used).
+// is taken over by the player (0x519050). The player's box is the client copy at +0x540/+0x54c: only the spawn (0x4e914c..0x4e9188,
+// from r.mins / r.maxs at spawn) stores to it, and pmove reads it at the start of each move (0x509d2b), so it stays the standing
+// box (-15, -15, 0)..(15, 15, 70) whatever the stance; the stance box lives in r.mins / r.maxs (0x4e7d68) and is not used here.
 void World::retargetFollowed(Entity& e, Entity& player) {
     ActorAi& ai = e.ai;
     const Value dap = e.obj->get("dontavoidplayer");

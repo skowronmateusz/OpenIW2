@@ -193,6 +193,11 @@ can sight-trace to. Behind sight-only cover (rhine's fallen trunk, contents 0x80
 and `canshoot` fail, so an exposed actor falls back to suppression of the last sight position; its bullets (mask
 0x280e831) are not stopped by such cover.
 
+The hit and miss point generators (0x54ff90 / 0x550390) work in the shot context 0x54fee0 copies from the actor: its look frame
+(+0xe0, +0xec, +0xf8). The third axis, "up", is built by 0x5049a0 from the look pitch (+0xd8) and look yaw (+0xdc) with roll 0
+(`aiShooterUp`), so an actor looking down at the player scatters its shots along the tilted up axis, not along world up; the body
+angles are not used (test_bulletdamage).
+
 TODO: the accuracy term (0x550da0: weapon accuracy graphs, player accuracy cvars), the fog
 limit, `notarget` (entity flag 4 at +0x128), the actor fields +0x1738 / +0x1764 cleared with an enemy change, the
 `clearenemy` builtin (OpenIW2 clears the field directly, bypassing 0x515150), the node visibility derivation of
@@ -694,7 +699,10 @@ node drop below.
 %.2f) is not a friendly chain node."); it is stored as the sentient's chain node (+0x30). `trigger_friendlychain` (type 5, spawn 0x529170,
 contents 0x405c0008, spawnflags |= 1, needs `target`) does the same on touch (0x529140 -> 0x518bf0) for the chain node named by its `target`,
 unless the sentient already is on a node of that name; errors "Node '%s' is not part of a friendly chain" and "Friendly chain node '%s' does
-not exist". It is gated by g_spawnai (default 1, not modelled).
+not exist". The routine returns at once when g_spawnai (the dvar at 0x1c1487c, registered at 0x4d8854, default 1) is 0 (test_chaintouch). The touch
+0x529140 has no toucher filter of its own: the trigger's contents are rebuilt by 0x528dc0 after the spawn 0x529170 from the spawnflags (0x40000000
+unless bit 8, 0x40000 / 0x80000 / 0x100000 for bits 1 / 2 / 4), so the 0x405c0008 stored by the spawn does not survive; a toucher without a
+sentient would be dereferenced (0x518c05), and the port lets none in.
 
 An actor with a goal entity (`setgoalentity`, +0x77c) that is a sentient runs 0x505ed0 from the path update (0x503490, before the fighting test):
 for an enemy-team goal entity it records the enemy (0x500c50) and clears its chain node (+0x78c); with followmin > followmax it clears it;
@@ -718,7 +726,7 @@ volume (+0x778) in mode 0 and none otherwise; the in-goal test, isingoal and the
 to (origin, 4, 80) (0x4fc80d..0x4fc837). Without a sentient goal entity 0x505ed0 clears the chain node (+0x78c). The cover search, `pathToGoal` and the in-goal test read it
 (`World::actorGoal`; the script fields stand in until the first update). `isingoal` (0x540c00 -> 0x5026d0) tests a point against it: |dz| <= height and 2D distance <= radius (plus the goal volume, 0x447830 = World::triggerContact on the point).
 
-The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. Not done: the toucher filter of 0x529140, the g_spawnai dvar.
+The turret think (0x54aba0) is the second caller (0x54ad05), unless the claimed node is kept. The g_spawnai dvar is read by the friendly chain touch only; the actor spawn test (0x4fc640) is not gated by it here.
 
 ## Unimplemented actor built-ins: decode status (matmata prediction family, gethitenttype; checkprone done)
 

@@ -334,8 +334,8 @@ void World::connectEntityPaths(Entity& e) {
 
 // disconnectpaths (0x4efe80 -> 0x519860): reconnects first, then every link whose segment, swept by the box
 // (-15,-15,18)..(15,15,72) (0x56fe00), touches the entity's model (mask 0x2820011) is disabled for all teams (0x5196b0 -> 0x519560).
-// TODO(spec): the DYNAMICPATH spawnflag check (errors "script_brushmodel must have DYNAMICPATH set to disconnect paths" and
-// "entity of type '%s' cannot disconnect paths"), the exact contact test 0x44c5b0 (here a model trace), the enabled-range
+// The DYNAMICPATH check of the builtins is in registerBadPlaceBuiltins.
+// TODO(spec): the exact contact test 0x44c5b0 (here a model trace), the enabled-range
 // reordering of the node's links (only affects ties in the search).
 void World::disconnectEntityPaths(Entity& e) {
     connectEntityPaths(e);
@@ -367,12 +367,26 @@ void World::disconnectEntityPaths(Entity& e) {
 }
 
 void World::registerBadPlaceBuiltins() {
-    vm_.registerBuiltin("connectpaths", [this](CallContext& c) {
-        if (Entity* e = entityOf(c.self)) connectEntityPaths(*e);
+    // connectpaths (0x4eff40) / disconnectpaths (0x4efe80): the entity must carry flags 0x100 (DYNAMICPATH), which only the
+    // script_brushmodel spawn sets, from its spawnflags bit 1 (0x53346c: flags |= 0x300), and the script_vehicle spawn sets always
+    // (0x50d8e8 .. 0x50d90a); no other spawn does. Without it a script_brushmodel (type string 0x1c7f0c0) errors with the
+    // DYNAMICPATH text, any other class with the "cannot ... paths" text naming its classname.
+    auto pathEntity = [this](CallContext& c, const char* verb) -> Entity& {
+        Entity* e = entityOf(c.self);
+        if (!e) throw std::runtime_error("not an entity");
+        const Value sf = e->obj->get("spawnflags");
+        if (e->vehicle || e->classname.compare(0, 14, "script_vehicle") == 0) return *e;
+        if (e->classname == "script_brushmodel" && sf.isInt() && (sf.asInt() & 1)) return *e;
+        if (e->classname == "script_brushmodel")
+            throw std::runtime_error(std::string("script_brushmodel must have DYNAMICPATH set to ") + verb + " paths");
+        throw std::runtime_error("entity of type '" + e->classname + "' cannot " + verb + " paths" + (verb[0] == 'd' ? ".\n \n " : " \n\n"));
+    };
+    vm_.registerBuiltin("connectpaths", [this, pathEntity](CallContext& c) {
+        connectEntityPaths(pathEntity(c, "connect"));
         return Value();
     });
-    vm_.registerBuiltin("disconnectpaths", [this](CallContext& c) {
-        if (Entity* e = entityOf(c.self)) disconnectEntityPaths(*e);
+    vm_.registerBuiltin("disconnectpaths", [this, pathEntity](CallContext& c) {
+        disconnectEntityPaths(pathEntity(c, "disconnect"));
         return Value();
     });
     // badplace_delete(name) (0x4f5800 → 0x5235c0).

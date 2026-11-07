@@ -76,6 +76,12 @@ Vec3f aiSideAxis(Vec3f v, Vec3f up) {
     return {c.x / l, c.y / l, c.z / l};
 }
 
+Vec3f aiShooterUp(float pitchDeg, float yawDeg) {
+    const float k = 0.01745329238474369f; // degrees to radians
+    const float p = pitchDeg * k, y = yawDeg * k;
+    return {std::sin(p) * std::cos(y), std::sin(p) * std::sin(y), std::cos(p)};
+}
+
 Vec3f aiHitPoint(Vec3f T, Vec3f c, Vec3f up, bool targetIsClient, float accuracy, float u1, float u2) {
     float zBase, W, H;
     if (targetIsClient) {

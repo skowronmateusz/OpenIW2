@@ -318,8 +318,9 @@ bool World::grenadeAcquire(Entity& e) {
     const float dx = o[0] - landing[0], dy = o[1] - landing[1];
     if (std::sqrt(dx * dx + dy * dy) > 96.0f) return false;
     // The approach point: 32 units from the landing point, away from the enemy (towards the actor without one).
-    // TODO(spec): the arguments of the 0x5027e0 test that keeps the landing point itself, and the normalisation of
-    // the direction, are inferred.
+    // 0x51fb20 (0x51fbd8..0x51fca2): the 2D direction is normalised in place by 0x421160 (a zero length leaves it zero, so the
+    // point is the landing point); 0x5027e0 is called with the landing point and the actor's origin and keeps the landing point
+    // when the vertical difference squared is at most 6400 (0x591fdc) and the horizontal one at most 4 (0x591e64).
     Vec3 aim = landing;
     float ax = enemy ? landing[0] - target[0] : dx, ay = enemy ? landing[1] - target[1] : dy;
     const float al = std::sqrt(ax * ax + ay * ay);

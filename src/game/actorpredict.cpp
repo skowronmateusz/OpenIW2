@@ -27,6 +27,7 @@ void World::registerPredictionBuiltins() {
         s.origin = o.isVector() ? o.asVector() : Vec3{0, 0, 0};
         s.angles = a.isVector() ? a.asVector() : Vec3{0, 0, 0};
         s.velocity = e.velocity;
+        s.desiredAngle = e.obj->get("desiredangle");
         if (e.anim) {
             s.anim = e.anim->snapshot();
             s.hasAnim = true;
@@ -49,6 +50,7 @@ void World::registerPredictionBuiltins() {
         e.obj->set("origin", Value(s.origin));
         e.obj->set("angles", Value(s.angles));
         e.velocity = s.velocity;
+        e.obj->set("desiredangle", s.desiredAngle);
         if (e.anim && s.hasAnim) e.anim->restore(s.anim);
         predictionSaves_.erase(it);
         return Value();

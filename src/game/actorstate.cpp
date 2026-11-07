@@ -1179,8 +1179,10 @@ void World::registerActorStateBuiltins() {
     // orientmode(mode[, angle | vector]) (0x53f510): sets the override facing +0x114 and, for the explicit modes, the
     // override target +0x120 (16-bit quantised yaw). "face enemy" 3, "face enemy or motion" 4, "face goal" 6, "face
     // motion" 2 only set the override. "face default" (0x5063f0) copies the override pair into the base pair and
-    // clears the override. TODO(spec): "face current" takes desiredangle (+0x124), which only follows the turn target here
-    // when this turn code ran, so the current yaw is used; 0x504aa0 (animation yaw delta into the pairs) is not modelled.
+    // clears the override. "face current" copies desiredangle (+0x124) into the override target. The only writer of +0x124 during
+    // play is the body turn 0x504ca0 (its single call is 0x504314 in the move frame 0x504160, after the animation yaw delta
+    // 0x504aa0 and the facing selector 0x505d80), which actorMoveFrame/actorFacing reproduce, so the field holds the target of the
+    // last move frame. TODO(spec): [stays: the routine 0x53fb80..0x53fcc4 also stores +0x124, from a record copied into the actor; not read] that second store.
     // teleport(origin[, angles]) (0x53dfb0, actor only). Once the level runs: a move of more than 10 units fails (prints,
     // returns false) when the player could see the goal or the actor (0x532100: 11 probe points around the target,
     // box +-15 x +-15 x 0..72, traced from the player's eye, mask 0x801; unlimited distance here since 0x1c61038 is
@@ -1189,7 +1191,9 @@ void World::registerActorStateBuiltins() {
     // The checks run once the level is loaded (0x53e033: 0x1c61048 == 0, cleared by 0x4da540; docs/spec/ai.md "Spawn
     // checks"). A move over 128 units also flips eFlags bit 2 (0x53e18b). The only client reader
     // found (0x4a4985) tests the player's own entity, and those moves pass only out of the player's sight, so the bit has no
-    // visible effect here and no field. TODO(spec): the pass entities of this 0x532100 call (the probe here is a plain trace).
+    // visible effect here and no field. The 0x532100 calls (0x53e113 and its twin for the actor's own origin) pass the player and the
+    // actor itself as the ignored entities of the 0x801 sight trace; neither carries those contents (the player 0x2000000, the actor
+    // 0x4000), so the plain trace here is the same.
     vm_.registerBuiltin("teleport", [this](CallContext& c) {
         Entity* a = entityOf(c.self);
         if (!a || !a->isActor) throw std::runtime_error("not an actor");
