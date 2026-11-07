@@ -8471,6 +8471,10 @@ int main(int argc, char** argv) {
                     // Kept from the previous map (whose clock ran far ahead), it blocked weapnext / weapprev until the new map's
                     // clock caught up.
                     lastWeaponCycleMs = 0;
+                    // The same block holds the HUD fade touches (0xf791fc..) and the invalid-command hint (0xf79694 / 0xf79698): a
+                    // touch time from the previous map would be "in the future" of the new map's clock and keep its block shown.
+                    hudFade = HudFade{};
+                    invalidCmdState = 0, invalidCmdStartMs = 0;
                     lerpPrev.clear();
                     prevAnim.clear();
                     prevTurret.clear();
