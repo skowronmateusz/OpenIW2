@@ -1,3 +1,4 @@
+#include <cctype>
 #include <array>
 // iw2game: run a level headless (scripts, entities, no rendering).
 //
@@ -2171,9 +2172,35 @@ int main(int argc, char** argv) {
                     const bool killGate = actionsSinceProgress <= 3; // once per no-progress cycle, then force / stall (which restarts the chase)
                     // An entity some thread waits on from a function whose name says "missionfail" (beltot.gsc missionfailedondamage on the
                     // prisoner): killing it ends the mission, so the kill gate leaves it alone.
+                    // A map-own wait site whose function fails the mission (its name says so, or its body calls missionfailed*: moscow's
+                    // melee_scene_damage fails the mission when the player hurts the prisoner) guards that entity. Read from the map's
+                    // own source: from the wait's line to the next function header (a line starting with an identifier and "(").
+                    static std::map<std::string, bool> guardSite;
+                    const auto siteFailsMission = [&](const std::string& site) {
+                        if (site.find("missionfail") != std::string::npos) return true;
+                        if (auto it = guardSite.find(site); it != guardSite.end()) return it->second;
+                        bool fails = false;
+                        const size_t colon = site.find(':'), sp = site.find(' ');
+                        if (colon != std::string::npos && sp != std::string::npos && sp > colon) {
+                            const std::string file = site.substr(0, colon);
+                            const int line = std::atoi(site.substr(colon + 1, sp - colon - 1).c_str());
+                            if (const auto data = vfs.read(file)) {
+                                std::istringstream in(std::string(data->begin(), data->end()));
+                                std::string l;
+                                for (int n = 1; std::getline(in, l); ++n) {
+                                    if (n < line) continue;
+                                    if (n > line && !l.empty() && (std::isalpha(static_cast<unsigned char>(l[0])) || l[0] == '_') && l.find('(') != std::string::npos) break;
+                                    std::string low = l;
+                                    for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                                    if (low.find("missionfailed") != std::string::npos) { fails = true; break; }
+                                }
+                            }
+                        }
+                        return guardSite[site] = fails;
+                    };
                     const auto protectedEntity = [&](const iw2::script::ObjectPtr& o) {
                         for (const auto& w2 : waiters) // map-own sites only: the library's killfriends_missionfail_think guards every ally anyway
-                            if (w2.object == o && w2.site.rfind(mapPrefix, 0) == 0 && w2.site.find("missionfail") != std::string::npos) return true;
+                            if (w2.object == o && w2.site.rfind(mapPrefix, 0) == 0 && siteFailsMission(w2.site)) return true;
                         return false;
                     };
                     // hill400_defend: a mortar team that dies before the bunker is sealed is not counted (the script counts eliminations
