@@ -170,3 +170,27 @@ the command (0x409ddd).
 - `r_swapInterval` (renderer, bool, archived, latched): the presentation interval is one frame when set, else immediate
   (gfx 0x100115a3); applied at window creation and on vid_restart. The DLL default is 0 and `com_maxfps` defaults to 0 (no
   frame limit), so the original draws as fast as it can; openiw2 deliberately defaults r_swapInterval to 1.
+
+## Screenshots
+
+The commands live in the renderer DLL (gfx_d3d_x86_s.dll), not the exe. Sources: string area near file offset 0x1924a8
+(command names) and 0x1970bc (file naming) of the DLL, the shipped `default.cfg` binding.
+
+- The command names are `screenshotJpeg` and `screenshot` (string area near file offset 0x1924a8). The shipped
+  `default.cfg` binds F12 to `screenshotJpeg`.
+- Both write into `screenshots/` under the game's writable base folder, named `shot%04i.<ext>` with the first free
+  number 0000..9999; when none is free, `shot9999` is used again, overwriting it (string near file offset 0x1970bc).
+- After a successful write the console prints `Wrote %s`; a file that cannot be created prints
+  `ScreenShot: Couldn't create a file`.
+
+Port implementation (iw2view): the base folder is the app's writable preference folder (the same one that keeps
+profiles and saves; `--shot` runs use the executable's folder), never the game's `main` folder. The capture is the
+frame as displayed — scene and HUD at the window size — drawn a second time into an offscreen target, because the
+swapchain texture cannot be read back. `screenshotJpeg` encodes JPEG with macOS ImageIO (`CGImageDestination`,
+apps/iw2view/jpeg.cpp, quality 95). `screenshot` writes PNG instead of the original's TGA: the port has no TGA writer
+and PNG is lossless and natively viewable on macOS, which serves the command's purpose better. Deliberate deviation
+for the key: OpenIW2 uses F12 for its frame-rate counter, so whenever loaded bindings sit `screenshotJpeg` on F12 (the
+shipped default), the port moves that binding to F11 and keeps F12 for the counter; the key can be rebound in the
+controls menu (the screenshot row of the interact page). The naming is implemented in `src/util/screenshot.{h,cpp}`
+and tested in test_screenshotname.
+

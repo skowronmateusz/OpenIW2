@@ -61,6 +61,8 @@
 #include <filesystem>
 #include <fstream>
 #include "util/png.h"
+#include "util/screenshot.h"
+#include "jpeg.h"
 
 #include <SDL3/SDL.h>
 
@@ -3143,8 +3145,9 @@ struct Renderer {
     }
 };
 
-void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h, const std::string& out,
-                const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
+// Renders one frame into an offscreen target (the same draw as to the swapchain) and returns its pixels, top row first.
+std::vector<uint8_t> captureRgba(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h,
+                                 const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -3177,10 +3180,17 @@ void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camer
     SDL_ReleaseGPUFence(dev, fence);
 
     const auto* px = static_cast<const uint8_t*>(SDL_MapGPUTransferBuffer(dev, tb, false));
-    util::writePngRgba(out, px, int(w), int(h));
+    std::vector<uint8_t> out(px, px + size_t(w) * size_t(h) * 4);
     SDL_UnmapGPUTransferBuffer(dev, tb);
     SDL_ReleaseGPUTransferBuffer(dev, tb);
     SDL_ReleaseGPUTexture(dev, target);
+    return out;
+}
+
+void screenshot(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h, const std::string& out,
+                const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
+    const std::vector<uint8_t> px = captureRgba(dev, r, scene, cam, w, h, items, overlay, blur);
+    util::writePngRgba(out, px.data(), int(w), int(h));
     std::cout << "wrote " << out << "\n";
 }
 
@@ -3471,6 +3481,17 @@ int main(int argc, char** argv) {
         game::ClientInput input;
         if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
         else std::cerr << "warning: default.cfg not found, no key bindings\n";
+        // The shipped default.cfg binds F12 to screenshotJpeg, but OpenIW2's F12 is the frame-rate counter (see the event
+        // loop), so as a deliberate, documented deviation (README Play; docs/spec/controls.md, Screenshots) the screenshot
+        // key moves to F11 whenever the loaded bindings keep it on F12. The user can rebind it in the controls menu
+        // (the screenshot row of the interact page); a saved F11 binding is left alone.
+        auto moveScreenshotKeyOffF12 = [&] {
+            std::string cmd = input.commandFromKey("F12");
+            for (char& ch : cmd) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            if (cmd != "screenshotjpeg") return;
+            input.loadConfig("unbind F12\nbind F11 \"screenshotJpeg\"\n");
+        };
+        moveScreenshotKeyOffF12();
         // A level's game world. game[] survives only a persistent level change (changelevel / missionsuccess with persistent set:
         // G_ShutdownGame 0x4d9d3c -> 0x46e1c0 -> 0x4689e0 frees the game object 0x9bef30 otherwise, and G_InitGame 0x4da481 creates
         // a new one); then its fields are copied into the new world before its script starts (maps/_loadout.gsc "gaveweapons").
@@ -3486,6 +3507,8 @@ int main(int argc, char** argv) {
         // and the profile name when none is chosen, here "default").
         // The app start keeps profiles and saves in its preference folder, so the game folder may stay read-only.
         const std::filesystem::path playersDir = app ? app->pref / "players" : std::filesystem::path(args[0]).parent_path() / "players";
+        // Screenshots (screenshotJpeg / screenshot) go under the same writable base as profiles and saves, never into the game folder.
+        const std::filesystem::path shotBase = app ? app->pref : std::filesystem::path(args[0]).parent_path();
         std::string profileName = "default";
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
@@ -3496,6 +3519,7 @@ int main(int argc, char** argv) {
             uiCvars = ui::parseConfig(cfgText);
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
+        moveScreenshotKeyOffF12(); // a profile saved by the original game still carries F12
         for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma") uiCvars[k] = v; // renderer dvars live in the menu store
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
@@ -4623,6 +4647,7 @@ int main(int argc, char** argv) {
                     fresh = ui::parseConfig(cfgText);
                     if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText);
                 }
+                moveScreenshotKeyOffF12();
                 for (const char* keep : {"ui_playerProfileCount", "ui_playerProfileSelected", "ui_playerProfileNameNew", "ui_playerProfileAlreadyChosen"})
                     fresh[keep] = uiCvars[keep];
                 fresh["com_playerProfile"] = profileName;
@@ -4914,6 +4939,28 @@ int main(int argc, char** argv) {
         };
         bool showFps = false; // F12, openiw2 feature: frame counter in the top right corner
         int fpsShown = 0;
+        // The screenshotJpeg / screenshot commands (docs/spec/controls.md, Screenshots): set by a key event, taken after the
+        // frame was drawn, so the file holds the frame as displayed (scene and HUD, at the window size).
+        enum class Shot { None, Jpeg, Png };
+        Shot pendingShot = Shot::None;
+        auto takeShot = [&](Shot s, const std::vector<uint8_t>& px, uint32_t w, uint32_t h) {
+            const std::string ext = s == Shot::Jpeg ? "jpg" : "png";
+            std::error_code ec;
+            std::filesystem::create_directories(shotBase / "screenshots", ec);
+            const std::filesystem::path path = util::screenshotPath(shotBase / "screenshots", ext);
+            bool ok = false;
+            if (s == Shot::Jpeg) ok = iw2view::writeJpegRgba(path, px.data(), int(w), int(h), 95);
+            else {
+                try {
+                    util::writePngRgba(path, px.data(), int(w), int(h));
+                    ok = true;
+                } catch (const std::exception&) {
+                }
+            }
+            // "Wrote %s" / "ScreenShot: Couldn't create a file": the renderer DLL's own messages.
+            if (ok) std::cout << "Wrote " << path.string() << "\n";
+            else std::cout << "ScreenShot: Couldn't create a file\n";
+        };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
             menuScreenH = float(h);
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
@@ -7340,8 +7387,16 @@ int main(int argc, char** argv) {
                     if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) { frontStack.key(ev.wheel.y > 0 ? ui::MenuStack::Key::WheelUp : ui::MenuStack::Key::WheelDown); continue; }
                 }
                 if (ev.type == SDL_EVENT_QUIT) running = false;
-                else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat)
+                else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat) {
                     input.key(keyName(ev.key.scancode), ev.type == SDL_EVENT_KEY_DOWN);
+                    // The bound screenshot commands ask for the capture; the file is written once the frame was drawn.
+                    if (ev.type == SDL_EVENT_KEY_DOWN) {
+                        std::string c = input.commandFromKey(keyName(ev.key.scancode));
+                        for (char& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        if (c == "screenshotjpeg") pendingShot = Shot::Jpeg;
+                        else if (c == "screenshot") pendingShot = Shot::Png;
+                    }
+                }
                 else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_BUTTON_UP)
                     // SDL numbers left, middle, right as 1, 2, 3; the engine's MOUSE2 is the right button.
                     input.key(ev.button.button == SDL_BUTTON_RIGHT ? "MOUSE2" : ev.button.button == SDL_BUTTON_MIDDLE ? "MOUSE3"
@@ -8497,9 +8552,14 @@ int main(int argc, char** argv) {
                 const uint64_t profC = SDL_GetTicksNS();
                 renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
                 renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
-                renderer.draw(cmd, swap, w, h, scene, cam, items, buildHud(w, h, cam), blur);
+                const std::vector<Quad2D> hud = buildHud(w, h, cam);
+                renderer.draw(cmd, swap, w, h, scene, cam, items, hud, blur);
                 profWater += double(profC - profB) * 1e-6;
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;
+                // screenshotJpeg / screenshot: the same frame drawn again into an offscreen target (the swapchain texture
+                // cannot be read back), so the file holds the frame as displayed.
+                if (pendingShot != Shot::None)
+                    takeShot(std::exchange(pendingShot, Shot::None), captureRgba(dev, renderer, scene, cam, w, h, items, hud, blur), w, h);
             }
             SDL_SubmitGPUCommandBuffer(cmd);
             if (std::exchange(firstFramePending, false)) last = SDL_GetTicksNS(); // see endLoad

@@ -44,7 +44,8 @@ add_library(iw2_assets
   src/assets/xanim.cpp
   src/assets/font.cpp
   src/assets/efx.cpp
-  src/util/png.cpp)
+  src/util/png.cpp
+  src/util/screenshot.cpp)
 target_include_directories(iw2_assets PUBLIC src)
 target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
 
@@ -132,14 +133,20 @@ add_executable(test_iwi tests/test_iwi.cpp)
 target_link_libraries(test_iwi PRIVATE iw2_assets)
 add_test(NAME iwi COMMAND test_iwi)
 
+add_executable(test_screenshotname tests/test_screenshotname.cpp)
+target_link_libraries(test_screenshotname PRIVATE iw2_assets)
+add_test(NAME screenshotname COMMAND test_screenshotname)
+
 add_executable(test_d3dbsp tests/test_d3dbsp.cpp)
 target_link_libraries(test_d3dbsp PRIVATE iw2_assets)
 add_test(NAME d3dbsp COMMAND test_d3dbsp)
 
 find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
-  add_executable(iw2view apps/iw2view/main.cpp)
+  add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp)
   target_link_libraries(iw2view PRIVATE iw2_game iw2_audio iw2_ui iw2_video SDL3::SDL3)
+  # The screenshotJpeg command encodes with ImageIO (apps/iw2view/jpeg.cpp).
+  target_link_libraries(iw2view PRIVATE "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation")
   else()
   message(STATUS "SDL3 not found: iw2view will not be built (brew install sdl3)")
 endif()

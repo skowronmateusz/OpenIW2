@@ -52,6 +52,10 @@ It starts in the game's main menu. Your profiles and saved games are kept in
 
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
 opens the pause menu. `F12` shows or hides a frame rate counter in the top right corner (always available, not a cheat).
+`F11` saves a screenshot (JPEG) of the frame as displayed — scene and HUD at the window size — into
+`~/Library/Application Support/OpenIW2/screenshots/` (`shot0000.jpg`, `shot0001.jpg`, …; the game's original
+screenshot key was F12, which OpenIW2 uses for the counter). The key can be changed in the controls menu, like every
+other key.
 
 OpenIW2 adds one option that the original game does not have: **Options > Game Options > Hit marker** (off by default). When on, the
 multiplayer hit marker (a small X next to the crosshair, fading in about a second, no sound) shows whenever you damage an enemy
