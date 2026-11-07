@@ -2325,7 +2325,7 @@ int main(int argc, char** argv) {
             const auto& inv = world.inventory(*world.player());
             std::cout << "player weapons:";
             for (const auto& w : inv.owned) std::cout << " " << w;
-            std::cout << "; current " << world.player()->obj->get("$weapon").toString() << ", offhand " << inv.offhand << "\n";
+            std::cout << "; current " << world.player()->obj->get("$weapon").toString() << ", offhand " << inv.offhand << ", slots [" << inv.slot[1] << ", " << inv.slot[2] << "]\n";
         }
         {
             int played = 0;
