@@ -252,3 +252,13 @@ After the background the window paint draws the border by type (+0xd4) in the bo
 (0x4c35f0: the second bar at y + h - size), 3 left and right (0x4c3510: the second bar at x + w - size). The bars lie inside the rect and overlap at the corners. `setitemcolor ... bordercolor`
 changes the colour at run time; the mission select uses this to mark the hovered flag. Style 4 has a fixed-tint branch (0x4c74b5) that no shipped menu reaches. Shader backgrounds use the forecolor only
 with item flag 0x10000 and white otherwise (0x4c7346); the flag comes with `setitemcolor forecolor` (0x4c7c94). OpenIW2's default forecolor is white, so `MenuStack::foreColor` gives the same.
+
+## ESC at the front end
+
+- `ingameclose <menu>` (script handler 0x4c8320) acts only while the dvar `cl_paused` (name 0x57122c) is nonzero and a menu
+  name token follows (0x4c7ef0); then UI_SetActiveMenu(0) closes the menus and unpauses (0x4c7f90). The main menu's focused
+  overlay `main_text` runs `ingameclose main` on ESC, so in the pause menu ESC returns to the game, while at the front end
+  (cl_paused 0) it does nothing and the main menu stays open. Tested in test_frontend.
+- With no menu open, ESC in CL_KeyEvent goes by the connection state (0x5d5680): in a level (4) it opens the pause menu
+  (UI_SetActiveMenu(2), 0x40c2b2); with no level (states 1, 2) 0x40e0b0 stops a skippable cinematic and, disconnected (0),
+  opens the main menu (UI_SetActiveMenu(1)). ESC never quits the game; only the menu's Quit does.

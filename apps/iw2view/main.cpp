@@ -7366,7 +7366,12 @@ int main(int argc, char** argv) {
                         menuEnv.setCvar("cl_paused", "1");
                         menuMx = 320.0f, menuMy = 240.0f;
                         frontStack.open("main");
-                    } else running = false;
+                    } else if (!world && frontStack.empty()) {
+                        // 0x40c2c7 -> 0x40e0b0: ESC with no level and no menu never quits; disconnected (state 0) it opens the main
+                        // menu again (UI_SetActiveMenu(1)). The game is left only through the menu's Quit.
+                        menuMx = 320.0f, menuMy = 240.0f;
+                        frontStack.open("main");
+                    }
                 }
                 // V (walk/fly) and L (fullbright) are openiw2 developer keys: like the cheat commands, they need sv_cheats.
                 else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_V) && !cheatsOn()) {}

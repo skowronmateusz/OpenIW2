@@ -225,6 +225,23 @@ int main() {
     st.close("diff");
     st.key(iw2::ui::MenuStack::Key::Escape);
     CHECK(st.empty());
+    // ingameclose (0x4c8320) acts only while cl_paused is nonzero and a menu name follows: at the front end (cl_paused 0) the
+    // main menu's ESC script "ingameclose main" leaves the menus open; in the pause menu it closes them and unpauses.
+    {
+        int closes = 0;
+        iw2::ui::MenuEnv e2 = env;
+        e2.closeAll = [&] { ++closes; };
+        const iw2::ui::Script sc = iw2::ui::parseScript({"ingameclose", "main", ";"});
+        cv["cl_paused"] = "0";
+        iw2::ui::runScript(sc, "main_text", e2);
+        CHECK(closes == 0 && cv["cl_paused"] == "0");
+        cv["cl_paused"] = "1";
+        iw2::ui::runScript(iw2::ui::parseScript({"ingameclose", ";"}), "main_text", e2); // no menu name: nothing
+        CHECK(closes == 0 && cv["cl_paused"] == "1");
+        iw2::ui::runScript(sc, "main_text", e2);
+        CHECK(closes == 1 && cv["cl_paused"] == "0");
+        cv.erase("cl_paused");
+    }
 
     // Options widgets: origin adds to the rect (exe 0x4d1dd0); slider, yes/no and multi items.
     {

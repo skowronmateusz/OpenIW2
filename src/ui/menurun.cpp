@@ -118,6 +118,9 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         const std::string name = lowerStr(cmd[0]);
         if (name == "play" && cmd.size() > 1) { if (env.play) env.play(cmd[1]); }
         else if (name == "ingameclose") { // UI_SetActiveMenu(0) 0x4c6520: clear the catcher and the paused state, close every menu
+            // The script handler 0x4c8320 does it only while the dvar cl_paused (name 0x57122c) is nonzero and a menu name token
+            // follows (0x4c7ef0); at the front end cl_paused is 0, so main_text's ESC (ingameclose main) does nothing there.
+            if (cmd.size() < 2 || !env.getCvar || std::atoi(env.getCvar("cl_paused").c_str()) == 0) continue;
             env.setCvar("cl_paused", "0");
             if (env.closeAll) env.closeAll();
         } else if (name == "ingameopen" && cmd.size() > 1) { // UI_SetActiveMenu(2): cl_paused 1, open the menu
