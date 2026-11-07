@@ -671,9 +671,9 @@ int World::deathThink(Entity& e) {
         // +0x28; EAX = 1 << team, 0x548a25..0x548a2a).
         aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0}, 0.0f, aiOwnMask(e));
         // 0x548a34..0x548a6d: a grenade this actor was going for is let go, and leaves the hand if it held it (0x520470).
-        if (ai.grenade && ai.grenade->grenade && ai.grenade->grenade->holder == &e) {
-            if (ai.grenade->grenade->inHand) releaseHeldGrenade(e);
-            ai.grenade->grenade->holder = nullptr;
+        if (ai.grenade && missileAi(*ai.grenade) && missileAi(*ai.grenade)->holder == &e) {
+            if (missileAi(*ai.grenade)->inHand) releaseHeldGrenade(e);
+            missileAi(*ai.grenade)->holder = nullptr;
         }
         clearActorPath(e);
         releaseNode(e); // the sentient release (0x514d50) frees the claimed node (0x5191a0)
@@ -786,8 +786,8 @@ bool World::muzzleTraceOk(Entity& e, const Vec3& muzzle, const Vec3& target) {
         return hit && isSentient(*hit) && hit->obj->get("team").toString() != e.obj->get("team").toString();
     }();
     if (static const char* log = std::getenv("IW2_CANSHOOT_LOG"); log && (std::atoi(log) == e.number || std::atoi(log) < 0))
-        std::printf("[canshoot %lldms] #%d muzzle (%.0f %.0f %.0f) target (%.0f %.0f %.0f) fraction %.3f hit %d -> %d\n", (long long)timeMs_,
-                    e.number, muzzle[0], muzzle[1], muzzle[2], target[0], target[1], target[2], tr.fraction, tr.entity, int(ok));
+        std::printf("[canshoot %lldms] #%d muzzle (%.0f %.0f %.0f) target (%.0f %.0f %.0f) fraction %.3f hit %d contents 0x%x -> %d\n", (long long)timeMs_,
+                    e.number, muzzle[0], muzzle[1], muzzle[2], target[0], target[1], target[2], tr.fraction, tr.entity, tr.contents, int(ok));
     return ok;
 }
 

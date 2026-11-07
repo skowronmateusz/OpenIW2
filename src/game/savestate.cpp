@@ -416,6 +416,11 @@ void World::saveState(StateWriter& w) {
             w.i64(rk->trTime);
             w.vec3(rk->trBase);
             w.vec3(rk->trDelta);
+            // 14: the missile AI fields a rocket gets from the grenade ping (holder +0x150, landing +0x154, landing time +0x160).
+            w.i32(num(rk->ai.holder));
+            w.b(rk->ai.inHand);
+            w.vec3(rk->ai.landing);
+            w.i64(rk->ai.landingMs);
         }
         w.b(e.turret != nullptr);
         if (const TurretState* tu = e.turret.get()) {
@@ -732,7 +737,7 @@ void World::loadState(StateReader& r) {
 
     // --- entities ---
     const int playerNum = r.i32();
-    struct Fix { Entity* e; int lastAttacker, grenadeParent, grenadeHolder, rocketParent; };
+    struct Fix { Entity* e; int lastAttacker, grenadeParent, grenadeHolder, rocketParent, rocketHolder = -1; };
     std::vector<Fix> fixes;
     std::vector<int> savedNumbers;
     for (uint32_t i = 0, n = r.u32(); i < n; ++i) {
@@ -870,6 +875,12 @@ void World::loadState(StateReader& r) {
             rk->trTime = r.i64();
             rk->trBase = r.vec3();
             rk->trDelta = r.vec3();
+            if (r.version >= 14) { // older saves: no landing predicted yet (the next ping predicts it)
+                fx.rocketHolder = r.i32();
+                rk->ai.inHand = r.b();
+                rk->ai.landing = r.vec3();
+                rk->ai.landingMs = r.i64();
+            }
             e->rocket = std::move(rk);
         }
         if (r.b()) {
@@ -977,7 +988,11 @@ void World::loadState(StateReader& r) {
             f.e->grenade->parent = entityByNumber(f.grenadeParent);
             f.e->grenade->holder = entityByNumber(f.grenadeHolder);
         }
-        if (f.e->rocket) f.e->rocket->parent = entityByNumber(f.rocketParent);
+        if (f.e->rocket) {
+            f.e->rocket->parent = entityByNumber(f.rocketParent);
+            f.e->rocket->ai.holder = entityByNumber(f.rocketHolder);
+            rocketAiSync(*f.e);
+        }
     }
     grenades_.clear();
     rockets_.clear();

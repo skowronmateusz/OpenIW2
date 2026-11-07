@@ -231,7 +231,24 @@ and objectives. `--report` now has the AI fire counters (the monitor samples eve
   sight, suppression, the last `issuppressed` answer, clip, weapon, AI state, script state and their script threads' wait sites, on stderr),
   `IW2_MAYMOVE_LOG=n` (-1 for all: each maymovetopoint call of that actor and which test failed, with the team mate for the fire-line test),
   `IW2_CANSHOOT_LOG=n` (each muzzle trace of `canshoot`), `IW2_SIGHTTRACE_LOG=n` (-1 for all: each `sighttracepassed` call of that self, with
-  the trace's fraction and hit entity), `IW2_FIRE_TRACE_ANIM=1` (with `IW2_FIRE_TRACE`: also the weighted animation nodes, `#index name(pparent)`).
+  the trace's fraction and hit entity), `IW2_FIRE_TRACE_ANIM=1` (with `IW2_FIRE_TRACE`: also the weighted animation nodes, `#index name(pparent)`, the model and
+  attachments and the world positions of tag_weapon_right, tag_flash, tag_eye, j_mainroot, j_wrist_ri), `IW2_FIRE_TRACE_FIELDS=a,b`
+  (with `IW2_FIRE_TRACE`: those script fields of the actor), and the `contents` of the hit in `IW2_CANSHOOT_LOG` lines.
+- The "muzzle 42 units up" of #613 / #549 is the crouch pose test: canShootEnemyFromPose("crouch") from a standing actor adds (0, 0, -20)
+  (animscripts/utility.gsc:436-437) to the real muzzle (about 62 up in the stand aim pose, `IW2_FIRE_TRACE_ANIM`). The stand tests fail
+  on the eye line itself: canshoot's trace (mask 0x200c861) stops on solid world (contents 0x8000001) about 330 units out, while the
+  monitor's sight record comes from the sight trace with its own mask and timing. No pose or attachment error was found: the shipped
+  weapon_thompson hangs its tag_weapon root on the body's tag_weapon_right with tag_flash 9.9 units forward.
+- Baseline update with the rocket ping (AI event 9, docs/spec/ai.md "AI events": actors near a flying rocket now take it like a grenade
+  and may flee its predicted impact): axis / allies crossroads 43.1 / 12.4 → 49.7 / 11.1, duhoc_defend 50.3 / 67.7 → 46.0 / 71.5, matmata
+  83.7 / 5.3 → 77.4 / 6.3, newvillers 13.8 / 25.2 → 17.6 / 16.4, rhine 206.0 / 32.0 → 137.5 / 38.3, silotown_assault 84.4 / 98.4 → 93.6 /
+  82.7, toujane_ride 16.9 / 17.1 → 16.6 / 15.7; decoytown moved too (axis 38.4 → 55.8) but its line is owned by the determinism work and
+  was left. Silent stretches (all / unexplained): decoytrenches 22 / 7, crossroads 1 / 0, decoytown 11 / 0.
+- Crossroads #958 reproduced with seed 5 (#954, 88 s): the allied panzerschreck soldier holds a script target (maps/_spawner.gsc
+  panzer_target: `panzer_ent` the Tiger, a script_vehicle about 3600 units away, offset (0, 0, 80)); exposedcombat.gsc:61 loops in
+  panzerGuyShootsTarget and ShootIt fires only once sightTracePassed from tag_flash to the target passes (exposedcombat.gsc:1050-1063).
+  It never does from its node (the trace stops at 18 % on world geometry), so it never shoots its own enemy either. sighttracepassed
+  matches the exe (0x4f2580); not compared with a run of the original.
 - Baseline update with the AI event receiver masks (docs/spec/ai.md "AI events": an actor's bullet events no longer reach its own team or
   neutral actors, death events only the dead actor's team): seed-1 rates moved on four maps, axis / allies downtown_assault 87.9 / 31.5 → 98.9 / 41.8,
   hill400_assault 38.8 / 24.0 → 36.0 / 18.6, hill400_defend 11.3 / 39.3 → 13.2 / 38.1, toujane 40.9 / 6.7 → 30.7 / 11.3; all other maps unchanged.

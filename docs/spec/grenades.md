@@ -115,7 +115,7 @@ kept), the velocity (+0x20f4), and only with +0x20d4 set the target (+0x20e8).
 
 ## AI
 
-grenade_ping (0x535d70 case 8/9 → 0x5200e0): actors with grenadeawareness ≠ 0 and no grenade (or one
+grenade_ping (0x535d70 case 8/9 → 0x5200e0; event 8 from grenades every 500 ms, event 9 from every other missile every frame, see ai.md "AI events"): actors with grenadeawareness ≠ 0 and no grenade (or one
 without a landing) notice it with that probability; a grenade of the enemy team calls 0x4f9f30 / 0x4fa070(1); the
 landing is predicted; it is forgotten when the path leads away from it (0x51fe90) or the actor's position is safe
 (0x51f8b0: 0x5285b0 from the landing point within 1.1 × explosionRadius fails).

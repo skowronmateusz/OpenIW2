@@ -69,6 +69,7 @@ track()
     Entity& enemy = *actors[1];
     Entity& mate = *actors[2];
     Entity& neutral = *actors[3];
+    const Vec3 enemyWas0 = enemy.obj->get("origin").asVector();
     // 6. The muzzle is computed once per level frame (0x500b57): moving the actor within the frame does not move it; the next
     // frame does.
     {
@@ -170,6 +171,34 @@ track()
     CHECK(slot >= 0 && enemy.dangerPlanes[size_t(slot)].timeMs == 0 && enemy.dangerPlanes[size_t(slot)].sourceEnt == player->number);
     w.debugAddDangerPlane(enemy, *player, a, b);
     CHECK(slot >= 0 && enemy.dangerPlanes[size_t(slot)].timeMs == w.timeMs());
+    // 7. The missile ping of a rocket (event 9, every frame, 0x526bd0): an actor with grenadeawareness 1 within 512 units of a flying
+    // rocket takes it as its grenade (0x5200e0) with a predicted landing, unless it is safe from it at once.
+    {
+        Entity& a = enemy;
+        a.obj->set("team", Value(std::string("allies")));
+        a.obj->set("grenadeawareness", Value(1.0f));
+        a.ai.grenade = nullptr;
+        a.obj->set("origin", Value(enemyWas0));
+        w.frame(); // the actor settles where it stands
+        const Vec3 ao = a.obj->get("origin").asVector();
+        // The player (allies) fires it from 300 units away along the ground towards the actor, so its landing is near the actor.
+        Entity& r = w.debugSpawnRocket("panzerfaust", Vec3{ao[0] - 300.0f, ao[1], ao[2] + 40.0f}, Vec3{1, 0, 0});
+        CHECK(World::missileAi(r) != nullptr && World::missileAi(r) == &r.rocket->ai);
+        bool pinged = false;
+        for (int i = 0; i < 3 && !pinged && !r.obj->removed; ++i) {
+            w.frame();
+            const GrenadeState* g = World::missileAi(r);
+            const bool landed = g && (g->landing[0] != 0.0f || g->landing[1] != 0.0f || g->landing[2] != 0.0f);
+            pinged = landed;
+        }
+        if (!pinged)
+            std::cerr << "rocket removed " << r.obj->removed << " actor alive " << a.ai.alive << " grenade " << (a.ai.grenade == &r)
+                      << " actor at " << a.obj->get("origin").asVector()[0] << "," << a.obj->get("origin").asVector()[2] << " rocket at "
+                      << r.obj->get("origin").asVector()[0] << "," << r.obj->get("origin").asVector()[2] << " corpse " << a.ai.corpse
+                      << " removed " << a.obj->removed << "\n";
+        CHECK(pinged);
+        CHECK(World::missileAi(r)->trType == 2 && !World::missileAi(r)->bounce && World::missileAi(r)->weapon == "panzerfaust");
+    }
     fsys::remove_all(dir);
     if (failures) return 1;
     std::cout << "aieventmask tests passed\n";

@@ -198,18 +198,6 @@ struct ActorAi {
     ActorProne prone;                         // +0x140 .. +0x16c, +0x288 (src/game/proneworld.cpp)
 };
 
-// A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
-struct RocketState {
-    std::string weapon;
-    struct Entity* parent = nullptr; // +0x134
-    int64_t explodeMs = 0;           // +0x138 think
-    int64_t trTime = 0;              // s.pos: linear (2)
-    Vec3 trBase{}, trDelta{};
-    float destabMs = 0;              // +0x168: ms after trTime until the next destabilization (0x526960)
-    bool destabilized = false;
-    bool stable = false;             // +0x128 & 0x20000 (setstablemissile on the shooter): never destabilizes       // +0x128 & 0x10000: destabilized at least once
-};
-
 // A grenade missile entity (0x5275f0; s.pos trajectory at +0x14, fuse +0x138, AI fields +0x150 … +0x164).
 struct GrenadeState {
     std::string weapon;
@@ -229,6 +217,23 @@ struct GrenadeState {
     Vec3 aBase{}, aDelta{};
     int64_t aTime = 0;
 };
+
+// A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
+struct RocketState {
+    std::string weapon;
+    struct Entity* parent = nullptr; // +0x134
+    int64_t explodeMs = 0;           // +0x138 think
+    int64_t trTime = 0;              // s.pos: linear (2)
+    Vec3 trBase{}, trDelta{};
+    float destabMs = 0;              // +0x168: ms after trTime until the next destabilization (0x526960)
+    bool destabilized = false;
+    bool stable = false;             // +0x128 & 0x20000 (setstablemissile on the shooter): never destabilizes       // +0x128 & 0x10000: destabilized at least once
+    // The missile AI fields the grenade ping 0x5200e0 and the actor grenade state read on any missile (+0x134 parent, +0x138 think,
+    // s.pos trajectory, +0x150 holder, +0x154 landing, +0x160 landing time): kept in grenade form so the same code serves both.
+    // weapon / parent / explodeMs / trajectory mirror the fields above (rocketAiSync).
+    GrenadeState ai;
+};
+
 
 // The scripted animation block of an entity (+0x1d0, 0x60 bytes from the pool 0x82e980; src/game/animscripted.cpp).
 struct ScriptedAnim {
@@ -1451,6 +1456,11 @@ private:
     bool safeFromGrenade(Entity& e, Entity& g, const Vec3& pos);
     void setActorGrenade(Entity& e, Entity* g);
     void grenadePing(Entity& g);
+public:
+    // The missile AI fields (GrenadeState) of a grenade or a rocket, else null.
+    static GrenadeState* missileAi(Entity& e) { return e.grenade ? e.grenade.get() : e.rocket ? &e.rocket->ai : nullptr; }
+private:
+    void rocketAiSync(Entity& e); // copies a rocket's weapon, parent, think time and trajectory into its AI fields
     bool grenadeStateStart(Entity& e);
     void grenadeStateFinish(Entity& e);
     void grenadeReact(Entity& e, bool keepPath);

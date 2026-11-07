@@ -144,15 +144,31 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     freeEntity(e);
 }
 
-// TODO(spec): [stays: needs the grenade-state fields of 0x5200e0 (landing +0x154..+0x15c) for a rocket] the ping 0x526bd0 sends a
-// non-grenade missile every frame as AI event 9 (mask -1, 512²), which 0x535d70 hands to the grenade ping 0x5200e0 like event 8;
-// rockets send nothing here yet.
+// The missile ping 0x526bd0 (first thing of G_RunMissile, 0x526c57): a missile that is not a grenade sends AI event 9 every frame
+// (mask -1, the 512² default, at its origin, 0x526c19..0x526c28), which the dispatch 0x535d70 hands to the grenade ping 0x5200e0
+// like event 8 (jump table 0x535ee4). Its AI fields are the rocket's `ai` block (rocketAiSync).
 // G_RunMissile (0x526c30) for a linear missile: a point trace from the origin to the trajectory's position now
 // (clip 0x280e891, the parent passes); the sky (surface flag 0x10) frees it, anything else is the impact. The think
 // at 30 s explodes it in the air. Without a hit, a moving projectile-type weapon's missile may destabilize (0x527017..0x527061,
 // destabilizeRocket). Rockets (handler 0xf, type 5 at 0x5a59e8) do not run the trigger_damage segment test 0x5297b0, which is
 // for handler type 3 (grenades) only. Water entry: missileTrace (0x526b40). TODO(spec): [stays: the event of that think is not read] the 30 s think's event.
+// The rocket's fields the grenade ping and the actor grenade state read: weapon, parent (+0x134), think time (+0x138), the linear
+// s.pos trajectory (type 2, 0x5278a6) and no bounce flag (G_FireRocket sets +0x10 | 0x400, never 0x1000000: 0x52786c).
+void World::rocketAiSync(Entity& e) {
+    RocketState& r = *e.rocket;
+    r.ai.weapon = r.weapon;
+    r.ai.parent = r.parent;
+    r.ai.explodeMs = r.explodeMs;
+    r.ai.trType = 2;
+    r.ai.trTime = r.trTime;
+    r.ai.trBase = r.trBase;
+    r.ai.trDelta = r.trDelta;
+    r.ai.bounce = false;
+}
+
 void World::runRocket(Entity& e) {
+    rocketAiSync(e);
+    grenadePing(e); // 0x526c57 -> 0x526bd0: type 9, every frame
     {
         {
             RocketState& r = *e.rocket;

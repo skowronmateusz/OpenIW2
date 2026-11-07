@@ -33,11 +33,11 @@ float dist2dSq(const Vec3& a, const Vec3& b) { return (a[0] - b[0]) * (a[0] - b[
 } // namespace
 
 // 1.1 × the grenade's explosionRadius (0x56fe28): the danger radius.
-float World::grenadeDangerRadius(Entity& g) { return weaponFloat(g.grenade->weapon, "explosionRadius") * 1.1f; }
+float World::grenadeDangerRadius(Entity& g) { return weaponFloat(missileAi(g)->weapon, "explosionRadius") * 1.1f; }
 
 // 0x51f8b0: `pos` is safe from the grenade's predicted landing point (0x5285b0 fails).
 bool World::safeFromGrenade(Entity& e, Entity& g, const Vec3& pos) {
-    return !canDamage(e, g.grenade->landing, grenadeDangerRadius(g), &pos);
+    return !canDamage(e, missileAi(g)->landing, grenadeDangerRadius(g), &pos);
 }
 
 void World::setActorGrenade(Entity& e, Entity* g) {
@@ -64,7 +64,7 @@ bool World::grenadePathLeadsAway(Entity& e, Entity& ge) {
     if (!actorHasPath(e)) return false;
     const Vec3 o = originOf(e.obj);
     if (inScriptGoal(e, o)) return false;
-    const GrenadeState& g = *ge.grenade;
+    const GrenadeState& g = *missileAi(ge);
     float dx = g.landing[0] - o[0], dy = g.landing[1] - o[1];
     const float len = std::sqrt(dx * dx + dy * dy);
     if (len > 0.0f) { dx /= len; dy /= len; }
@@ -88,11 +88,11 @@ void World::grenadePing(Entity& g) {
         const float awareness = aw.isNumber() ? aw.asFloat() : 0.0f;
         if (awareness == 0.0f) continue;
         Entity* cur = e.ai.grenade;
-        const bool curLanded = cur && (cur->grenade->landing[0] != 0.0f || cur->grenade->landing[1] != 0.0f || cur->grenade->landing[2] != 0.0f);
+        const bool curLanded = cur && (missileAi(*cur)->landing[0] != 0.0f || missileAi(*cur)->landing[1] != 0.0f || missileAi(*cur)->landing[2] != 0.0f);
         if (cur && curLanded) continue;
         if (float(rng_() % 32768) > awareness * 32767.0f) continue;
         setActorGrenade(e, &g);
-        if (Entity* thrower = g.grenade->parent; thrower && isSentient(*thrower) && onEnemyTeam(e, *thrower))
+        if (Entity* thrower = missileAi(g)->parent; thrower && isSentient(*thrower) && onEnemyTeam(e, *thrower))
             vm_.notify(e.obj, "grenade danger", {Value(g.obj)});
         predictGrenadeLanding(g);
         if (grenadePathLeadsAway(e, g) || safeFromGrenade(e, g, o)) setActorGrenade(e, nullptr);
@@ -103,7 +103,7 @@ void World::grenadePing(Entity& g) {
 // between flee, cover and cower (0x51f900).
 bool World::grenadeStateStart(Entity& e) {
     if (!e.ai.grenade) return false;
-    GrenadeState& g = *e.ai.grenade->grenade;
+    GrenadeState& g = *missileAi(*e.ai.grenade);
     if (!g.holder && !e.ai.throwPending && grenadeAcquire(e)) return true;
     grenadeReact(e, false);
     return true;
@@ -112,7 +112,7 @@ bool World::grenadeStateStart(Entity& e) {
 // Finish / suspend (0x520600 / 0x520650): a grenade this actor holds drops from its hand.
 void World::grenadeStateFinish(Entity& e) {
     if (!e.ai.grenade) return;
-    GrenadeState& g = *e.ai.grenade->grenade;
+    GrenadeState& g = *missileAi(*e.ai.grenade);
     if (g.holder == &e) {
         if (g.inHand) releaseHeldGrenade(e);
         g.holder = nullptr;
@@ -127,7 +127,7 @@ void World::grenadeStateFinish(Entity& e) {
 void World::grenadeReact(Entity& e, bool keepPath) {
     ActorAi& ai = e.ai;
     Entity& ge = *ai.grenade;
-    GrenadeState& g = *ge.grenade;
+    GrenadeState& g = *missileAi(ge);
     if (g.holder == &e) {
         if (g.inHand) releaseHeldGrenade(e);
         g.holder = nullptr;
@@ -200,7 +200,7 @@ bool World::pathNearPoint(Entity& e, const Vec3& p, float r2) {
 // radius of the landing point or that the explosion cannot reach, usable, facing the enemy and covering; the highest
 // cover score wins (0x54bf10).
 int World::grenadeCoverNode(Entity& e, float r) {
-    const Vec3 landing = e.ai.grenade->grenade->landing;
+    const Vec3 landing = missileAi(*e.ai.grenade)->landing;
     int best = -1;
     float bestScore = 0.0f;
     std::string script;
@@ -309,7 +309,7 @@ bool World::pathAwayFrom(Entity& e, const Vec3& p, float dist, bool usePlanes) {
 bool World::grenadeAcquire(Entity& e) {
     ActorAi& ai = e.ai;
     Entity& ge = *ai.grenade;
-    GrenadeState& g = *ge.grenade;
+    GrenadeState& g = *missileAi(ge);
     Entity* thrower = g.parent;
     if (!thrower || !(thrower->isActor || thrower->isPlayer) || teamOf(*thrower) != enemyTeam(teamOf(e))) return false;
     const Vec3 landing = g.landing, o = originOf(e.obj);
@@ -363,7 +363,7 @@ bool World::grenadeAcquire(Entity& e) {
 // keepPath, false). The acquire think's two give-ups (0x520b1e / 0x520b5b) pass skipAcquire 1.
 bool World::grenadeGiveUp(Entity& e, bool skipAcquire) {
     ActorAi& ai = e.ai;
-    GrenadeState& g = *ai.grenade->grenade;
+    GrenadeState& g = *missileAi(*ai.grenade);
     if (!skipAcquire && dist2dSq(originOf(ai.grenade->obj), originOf(e.obj)) <= 9216.0f && grenadeAcquire(e)) return false;
     if (g.holder == &e && safeFromGrenade(e, *ai.grenade, originOf(e.obj))) {
         g.holder = nullptr;
@@ -390,7 +390,7 @@ int World::grenadeAcquireThink(Entity& e) {
     if (std::fabs(o[2] - e.path.goal[2]) > 32.0f && grenadeGiveUp(e, true)) return 1;
     if (ai.substate != kAcquire) return 0;
     ai.facing = 1;
-    if (ai.grenade->grenade->landingMs <= timeMs_) {
+    if (missileAi(*ai.grenade)->landingMs <= timeMs_) {
         ai.substate = kThrowBack;
         return grenadeThrowBackThink(e);
     }
@@ -407,7 +407,7 @@ int World::grenadeThrowBackThink(Entity& e) {
         return 0;
     }
     aiSetState(e, AiExposed);
-    if (e.ai.grenade && e.ai.grenade->grenade->holder == &e && e.ai.grenade->grenade->inHand) {
+    if (e.ai.grenade && missileAi(*e.ai.grenade)->holder == &e && missileAi(*e.ai.grenade)->inHand) {
         const Vec3 o = originOf(e.obj);
         throw std::runtime_error("ai classname '" + e.classname + "' at (" + std::to_string(o[0]) + " " + std::to_string(o[1]) +
                                  " " + std::to_string(o[2]) + ") finished the grenade return script without throwing a grenade");
@@ -510,7 +510,7 @@ void World::grenadeHitCharacter(Entity& ge, Entity* hit) {
     if (!hit) return;
     const uint32_t contents = hit->isActor && hit->ai.dyingContents ? hit->ai.dyingContents : entityContents(*hit);
     if (!(contents & 0x200c000u)) return;
-    ge.grenade->landing = {0, 0, 0};
+    missileAi(ge)->landing = {0, 0, 0};
     predictGrenadeLanding(ge);
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& a = *entities_[i];

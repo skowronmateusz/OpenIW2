@@ -13,7 +13,7 @@ namespace iw2::game {
 class World;
 
 constexpr char kStateMagic[8] = {'O', 'I', 'W', '2', 'S', 'A', 'V', 'E'};
-constexpr uint32_t kStateVersion = 13; // 13: the precacheshellshock names; 12: the synced notetrack source (anim state +0); 11: the threads' filing order; 10: the actor delayed death (+0xb4); 9: the sentient enemy event time (+0x20); 8: the touch records; 7: the corpse table; 2: movie-pending flag (0x1c60fe4) after the level change; 3: vehicle setswitchnode replacement;
+constexpr uint32_t kStateVersion = 14; // 14: the rockets' missile AI fields; 13: the precacheshellshock names; 12: the synced notetrack source (anim state +0); 11: the threads' filing order; 10: the actor delayed death (+0xb4); 9: the sentient enemy event time (+0x20); 8: the touch records; 7: the corpse table; 2: movie-pending flag (0x1c60fe4) after the level change; 3: vehicle setswitchnode replacement;
                                       // 4: setturretanim node / flag and the AI gunner pose fields of turrets (version 3 still loads)
                                       // 5: the collmap brush of a vehicle (VehicleState::collmap)
                                       // 6: the AI fog sight limit and the renderer fog record (World::clientFog)

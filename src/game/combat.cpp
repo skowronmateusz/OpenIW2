@@ -120,6 +120,10 @@ std::vector<HitBoxModel> World::entityModels(Entity& e) {
     std::vector<HitBoxModel> models;
     const Value m = e.obj->get("model");
     if (!m.isString()) return models;
+    // TODO(spec): [stays: the exe caches per bone (0x447d71) and the order of the frame's first bone queries differs here] the
+    // skeleton cache 0x447d30 (DObj +0x8 against the counter 0x822440, which the server frame raises with the level time at
+    // 0x44a719..0x44a73a) keeps each calculated bone for the rest of the frame; here every query poses the model anew. A whole-
+    // skeleton cache was tried and moved the fire rates by up to a factor of three (docs/spec/ai.md "Script sight builtins").
     const assets::XModelParts* body = skeleton(m.asString());
     if (!body) return models;
     // A turret's bone controls (0x51d740) also apply on top of an animation tree (the mg42 animscripts give the turret one).
@@ -268,7 +272,27 @@ void World::sampleFireMonitor() {
                          e.obj->get("bulletsinclip").toString().c_str(), e.obj->get("weapon").toString().c_str(), int(e.ai.stack[size_t(e.ai.depth)]),
                          e.scriptState.c_str());
             for (const std::string& t : vm_.describeThreadsOf(e.obj, true)) std::fprintf(stderr, "    %s\n", t.c_str());
-            if (e.anim && std::getenv("IW2_FIRE_TRACE_ANIM")) std::fprintf(stderr, "    anims %s\n", e.anim->debugString().c_str());
+            if (const char* fields = std::getenv("IW2_FIRE_TRACE_FIELDS")) { // comma-separated script fields of the actor
+                std::string list = fields;
+                for (size_t p = 0; p <= list.size();) {
+                    const size_t q = std::min(list.find(',', p), list.size());
+                    const std::string name = list.substr(p, q - p);
+                    const Value v = e.obj->get(name);
+                    Entity* ve = entityOf(v);
+                    std::fprintf(stderr, "    field %s = %s%s\n", name.c_str(), v.toString().c_str(),
+                                 ve ? (" (entity " + std::to_string(ve->number) + (ve->obj->removed ? " removed" : "") + " " + ve->classname + ")").c_str() : "");
+                    p = q + 1;
+                }
+            }
+            if (e.anim && std::getenv("IW2_FIRE_TRACE_ANIM")) {
+                std::fprintf(stderr, "    model %s anims %s\n", e.obj->get("model").toString().c_str(), e.anim->debugString().c_str());
+                for (const Attachment& at : e.attachments) std::fprintf(stderr, "    attach %s at %s\n", at.model.c_str(), at.tag.c_str());
+                const auto bones = entityBones(e);
+                for (const char* t : {"tag_weapon_right", "tag_flash", "tag_eye", "j_mainroot", "j_wrist_ri"})
+                    if (auto it = bones.find(t); it != bones.end())
+                        std::fprintf(stderr, "    bone %s %.1f %.1f %.1f (origin-relative z %.1f)\n", t, it->second.position[0], it->second.position[1],
+                                     it->second.position[2], it->second.position[2] - s.pos[2]);
+            }
         }
     }
 }

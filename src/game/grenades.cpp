@@ -71,6 +71,10 @@ float World::weaponFloat(const std::string& weaponName, const char* key) {
 
 // BG_EvaluateTrajectory (0x4fae80) for the two kinds a grenade uses: stationary, and gravity (z − 400·t²).
 Vec3 World::grenadePosition(const GrenadeState& g, int64_t atMs) const {
+    if (g.trType == 2) { // linear (a rocket's s.pos, 0x5278a6): base + delta · t (0x4fae80)
+        const float t = float(atMs - g.trTime) * 0.001f;
+        return {g.trBase[0] + g.trDelta[0] * t, g.trBase[1] + g.trDelta[1] * t, g.trBase[2] + g.trDelta[2] * t};
+    }
     if (g.trType != 5) return g.trBase;
     const float t = float(atMs - g.trTime) * 0.001f;
     return {g.trBase[0] + g.trDelta[0] * t, g.trBase[1] + g.trDelta[1] * t, g.trBase[2] + g.trDelta[2] * t - 400.0f * t * t};
@@ -83,6 +87,7 @@ Vec3 World::grenadeAngles(const GrenadeState& g, int64_t atMs) const {
 }
 
 Vec3 World::grenadeVelocity(const GrenadeState& g, int64_t atMs) const {
+    if (g.trType == 2) return g.trDelta;
     if (g.trType != 5) return {0, 0, 0};
     const float t = float(atMs - g.trTime) * 0.001f;
     return {g.trDelta[0], g.trDelta[1], g.trDelta[2] - 800.0f * t};
@@ -285,7 +290,7 @@ void World::forgetGrenade(Entity& g) {
             ep->ai.grenade = nullptr;
             ep->obj->set("grenade", Value());
         }
-    g.grenade->holder = nullptr;
+    missileAi(g)->holder = nullptr;
 }
 
 // G_RunMissile (0x526c30) for grenades: the grenade_ping event every 500 ms (0x526bd0), a resting grenade that lost
@@ -372,7 +377,7 @@ void World::runGrenade(Entity& e) {
 // bounces (0x527080) on a copy; the rest point and its time, or the position when the fuse runs out. Hitting the sky
 // gives no prediction (the current origin is used).
 void World::predictGrenadeLanding(Entity& e) {
-    GrenadeState& g = *e.grenade;
+    GrenadeState& g = *missileAi(e);
     if (g.landing[0] != 0.0f || g.landing[1] != 0.0f || g.landing[2] != 0.0f) return;
     GrenadeState s = g;
     Vec3 o = originOf(e.obj);
@@ -380,9 +385,11 @@ void World::predictGrenadeLanding(Entity& e) {
     int64_t t = timeMs_ + 50;
     g.landingMs = g.explodeMs;
     bool ok = true;
-    for (; t < g.explodeMs && s.trType == 5; t += 50) {
+    for (; t < g.explodeMs && s.trType != 0; t += 50) { // 0x5272cd: until the think time +0x138; any trajectory (0x4fae80)
         const Vec3 to = grenadePosition(s, t);
-        const TraceResult tr = collision_->trace(o, to, {0, 0, 0}, {0, 0, 0}, kGrenadeClip, pass);
+        // 0x51f81c: the prediction runs with the missile's clipmask +0x12c & 0xfdff3fff (no character bits 0x2000000 / 0xc000), which
+        // 0x527270 reads at 0x5272f4; the mask is put back afterwards. Grenades and rockets both carry 0x280e891.
+        const TraceResult tr = collision_->trace(o, to, {0, 0, 0}, {0, 0, 0}, kGrenadeClip & 0xfdff3fffu, pass);
         o = tr.endPos;
         if (tr.fraction < 1.0f) {
             if (tr.surfaceFlags & 0x10) {

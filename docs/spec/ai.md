@@ -255,7 +255,15 @@ limit 0x1c61038 it fails).
 - The muzzle 0x500b40 is the world position of tag_flash from 0x4d74b0 (the pose of the entity's animation, computed by 0x4d7390 →
   0x4782d0, plus the per-handler bone controller of table 0x5a5750: 0x5024e0 for actors only bends the prone legs). It is cached per
   level time (+0x18c compared with 0x1c60534 at 0x500b4f, position +0x190, direction +0x19c), so all `canshoot` calls of a frame use the
-  first pose of that frame; `gettagorigin` in the scripts computes the tag anew. The scripts add (geteye − gettagorigin("tag_flash")) as
+  first pose of that frame. Below it, the skeleton itself is cached per server frame: 0x447d30 compares DObj +0x8 with the counter
+  0x822440, which the server frame raises with the level time (0x44a719..0x44a73a; 0x447c70, the pool reset, has no direct caller and
+  0x4488ce / 0x4492a3 zero it at load), so every tag query of a frame (also `gettagorigin`, tag_eye, hit boxes) uses the animation
+  state of the frame's first query of that bone (0x447d71 tests a per-bone bit). TODO(spec): not implemented; `entityModels` poses
+  the model anew on each query. A cache of the whole skeleton at the first query (not what the exe does, which keeps bones one by
+  one) changed the seed-1 autoplay rates by up to a factor of three (bergstein allies 80.3 → 27.4, tankhunt allies 29.8 → 12.9), so
+  only an exact per-bone cache in the exe's frame order should replace it. The shipped data put tag_flash of an AI weapon at
+  about 58-60 units in the stand aim animations (stand_aim_straight / stand_shoot_auto_straight with weapon_thompson: tag_weapon_right
+  at z 56-58, tag_flash 9.9 forward of the weapon's tag_weapon root) and at about 40 in the model's base pose. The scripts add (geteye − gettagorigin("tag_flash")) as
   the offset for the eye test (animscripts/utility.gsc:523-536), and the pose offsets of canShootEnemyFromPose (utility.gsc:410-473).
 - `sighttracepassed(start, end, characters, ignore)` (0x4f2580): four arguments (else a usage error); mask 0x280d803 with characters,
   0x801803 without (0x4f2590 / 0x4f25b6); the fourth argument is ignored unless it is an entity (type 1 and class 0x15), then its number
@@ -570,8 +578,14 @@ The complete list of callers (0x535770: 0x4e786b, 0x4e787b, 0x4e8111, 0x526c07, 
 player's origin to 1 << enemy team (0x4e7862..0x4e787b); type 7 with mask 0 from the player code at 0x4e810c (its handler only prints
 "not yet handled", so it has no effect; not sent here); the missile ping 0x526bd0 from G_RunMissile 0x526c30: a grenade (handler type 3)
 sends type 8 at most every 500 ms (+0x164), any other missile type 9 every frame, both with mask -1 at the missile's origin, and the
-dispatch hands 8 and 9 to the grenade ping 0x5200e0 (jump table 0x535ee4). TODO(spec): the type 9 ping of rockets is not sent here
-(the grenade ping needs the landing fields of a grenade). No script builtin, explosion or vehicle sends an AI event besides these. Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
+dispatch hands 8 and 9 to the grenade ping 0x5200e0 (jump table 0x535ee4). The ping reads on the missile only the generic missile
+fields: parent +0x134 (thrower test), the landing +0x154..+0x15c and its time +0x160 (predicted by 0x51f7c0 → 0x527270, which
+steps the missile's own s.pos trajectory, any type via 0x4fae80, in 50 ms steps up to the think time +0x138 with the clipmask
++0x12c & 0xfdff3fff, restored afterwards), and through 0x51f8b0 the weapon's explosion radius. For a rocket these are the
+fields G_FireRocket 0x527810 sets: parent, think time now + 30000 (0x527860), linear trajectory (type 2, 0x5278a6), flags +0x10
+| 0x400 with no bounce bit 0x1000000 (0x52786c). Implemented: `RocketState::ai` (filled by `rocketAiSync`) and `grenadePing` at the
+start of `runRocket`; the actor grenade state then handles the rocket like a grenade (it forgets it once the entity is freed,
+`ai.grenade->obj->removed`). No script builtin, explosion or vehicle sends an AI event besides these. Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
 turret only if < 3 s); 4 weapon fired (0x550a70 → 0x535ba0) — the player gives a plain position update, an actor
 passes on its own knowledge of its enemy (copied per-sentient when the target's is staler); 5 pain 500 ms in
 (0x54d340) — the attacker (sentient +0x28, set by G_Damage 0x5284dd) is revealed and then forgotten; 6 death
