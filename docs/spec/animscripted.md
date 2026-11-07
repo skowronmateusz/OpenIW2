@@ -124,6 +124,20 @@ conj(q) and the delta is identity; later delta = q · reference (0x4235e0), refe
 moved towards identity by the fraction (xyz · f, (w − 1) · f + 1); the view angles (ps +0x56c) become the delta
 applied to them (0x423680, 0x424b70). With 0x10000000: view angles = AxisToAngles(F). Eye = F.origin + F.up · view
 height (ps +0xd4), origin = eye − view height in z, trajectory stationary, linked (0x44b2d0). Open: here the new
-view angles go to the front end like setplayerangles (the original writes ps viewangles; its delta_angles handling
+view angles go to the front end (their own channel, `takePlayerLinkView`; the original writes ps viewangles; its delta_angles handling
 is not read). +0x8680 is cleared by a client frame without a link (0x4e7fd6 -> 0x4e8023), so a link replacing a live one keeps
 the reference.
+
+Any link on a client runs this: ClientEndFrame tests the entity's link pointer (+0x1c8 at 0x4e7fd6), not which call made it, so a plain
+`linkto(parent)` on the player is placed the same way, with the view fraction left at 0 (the view stays, the position follows the parent's
+frame; the offset given or implied by `linkto` is not used). Without a link the client's pm_type returns to 0 / 4 (0x4e8023..0x4e803c).
+decoytown (decoytown.gsc:665-745, the opening ride): the player is linked with the delta mode, fraction 1, to the carrier's seat tag
+(decoytown.gsc:692) after `dontinterpolate` (:691) and `setplayerangles` (:693); when the carrier has reached its end node the script waits
+2 s, unlinks (:711), links the player to a script_origin with a plain `linkto` (:712), moves that origin along its targets in 0.5 s steps (:714-722)
+and unlinks again (:730). The player thus leaves the carrier's collision hull on the origin's path. The port skipped the plain link for the player
+(its entity pass runs no client), so the player stayed in the seat, inside the hull, and every move started solid (`test_decoyride`).
+
+Client side: the view origin and view angles of a linked player are interpolated between the last two snapshots by the frame fraction
+(0x4ab740, CG_InterpolatePlayerState 0x4b9940), unless the snapshots' toggle bits (eFlags bit 2, flipped by `dontinterpolate`, 0x4edf90) differ.
+The port draws the origin from the previous and the current server frame by the fraction and spreads the link's view turn over the interval
+(`LinkViewSmoother`, linkview.h); `dontinterpolate` on the player makes the front end take the new origin at once.

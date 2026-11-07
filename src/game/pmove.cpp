@@ -1272,6 +1272,39 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     ps.prevCmdFwd = cmdFwd; // the next step's previous command (raw, before the zeroing above)
     ps.prevCmdRight = cmdRight;
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
+    if (ps.pmType == 1 || ps.pmType == 5) {
+        // Linked by script (0x50c881; the jump table at 0x50cbfc sends pm_type 1 and 5 here): the ladder flag is dropped (0x20 gives
+        // 0x40000), no ground entity (ps+0x60 = 0x7ff), the velocity and both move commands are zero, then the aim command (0x4dd020),
+        // the stance change and view height (0x509d10), the pm_time countdown, the footsteps (0x50a850; nothing at zero speed) and
+        // PM_Weapon (0x4dfc30, whose first step is the aim fraction 0x4dd0d0). The position is the link's (ClientEndFrame, playerlink.cpp):
+        // nothing moves here. So a linked player can aim, change stance and lean (0x50ae01 allows the lean without ground for pm_type 1).
+        clearLadder(ps);
+        ps.onGround = false;
+        ps.velocity = {0, 0, 0};
+        updateLean(w, ps, in, float(ms), in.yaw);
+        updateAds(ps, in, 0.0f, 0.0f);
+        if (in.dead) {
+            ps.viewHeightTarget = 8;
+            ps.transitionStartMs = -1;
+            const float stepH = pml.frametime * 180.0f;
+            ps.viewHeight = ps.viewHeight > 8.0f ? std::max(8.0f, ps.viewHeight - stepH) : std::min(8.0f, ps.viewHeight + stepH);
+        } else {
+            updateStance(w, ps, in, mp);
+            updateViewHeight(ps);
+        }
+        updateHoldBreath(ps, in, mp.breath, ms, pml.frametime);
+        if (ps.pmTimeMs != 0) {
+            if (ms < ps.pmTimeMs) {
+                ps.pmTimeMs -= ms;
+            } else {
+                ps.pmTimeMs = 0;
+                ps.jumping = false;
+                ps.landTimer = false;
+                ps.spawnSlide = false;
+            }
+        }
+        return;
+    }
     if (ps.pmType == 2 || ps.pmType == 3) {
         // noclip / ufo (0x50c77b / 0x50c800): lean, the pm_flags 0x80 update, the ladder flag cleared to "just left", the aim flags,
         // the free-fly move and the pm_time countdown; nothing of the walking path runs.

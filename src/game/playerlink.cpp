@@ -92,14 +92,30 @@ void World::registerPlayerLinkBuiltins() {
 // 0x4d6ec0 from ClientEndFrame while linked: the frame of the parent's tag (0x4d6ad0). In delta mode the view
 // turns by the fraction of the frame's rotation since the last frame (the first frame only takes the reference);
 // absolute mode puts the view on the tag's angles. The eye is at the tag origin + up · view height, the origin that
-// minus the view height in z, with no velocity. The original writes ps viewangles directly; here the
-// result goes through the setplayerangles channel to the front end, which owns the view angles.
+// minus the view height in z, with no velocity. The original writes ps viewangles at the 20 Hz server rate and the
+// client interpolates the player state between snapshots (CG_InterpolatePlayerState 0x4b9940: origin and view
+// angles by the frame fraction 0x4ab740); here the new view angles go to the front end in their own channel
+// (takePlayerLinkView), which spreads the change over the next server interval.
 void World::updatePlayerLink() {
-    if (!playerLink_ || !player_) return;
-    PlayerLink& pl = *playerLink_;
+    if (!player_) return;
+    // ClientEndFrame (0x4e7fd6) runs 0x4d6ec0 for any client whose entity has a link (ent+0x1c8), whichever call made it: playerlinkto*
+    // or a plain linkto on the player (decoytown: the ride ends with linkto on a script_origin that then moves). The plain link
+    // leaves the view fraction at 0 (client +0x8694), so only the position follows. A vehicle driver's link is placed by the
+    // vehicle code (usingVehicle).
+    PlayerLink plain;
+    PlayerLink* plp = nullptr;
     Link l;
-    l.parent = pl.parent;
-    l.tag = pl.tag;
+    if (playerLink_) {
+        plp = &*playerLink_;
+        l.parent = plp->parent;
+        l.tag = plp->tag;
+    } else if (const auto it = links_.find(player_->number); it != links_.end() && player_->usingVehicle < 0) {
+        l = it->second;
+        plp = &plain;
+    } else {
+        return;
+    }
+    PlayerLink& pl = *plp;
     Vec3 origin;
     Axis axis;
     if (!linkParentFrame(l, origin, axis)) {
@@ -107,8 +123,10 @@ void World::updatePlayerLink() {
         return;
     }
     const assets::Quat q = axisQuat(axis);
-    if (pl.absolute) {
-        playerViewAngles_ = axisAngles(axis);
+    if (plp == &plain) {
+        // a plain link: fraction 0, the view stays
+    } else if (pl.absolute) {
+        playerLinkView_ = LinkView{axisAngles(axis), true};
     } else if (!pl.haveRef) {
         pl.haveRef = true;
     } else {
@@ -122,9 +140,10 @@ void World::updatePlayerLink() {
         const float n = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z + d.w * d.w);
         if (n > 0.0f) {
             d.x /= n; d.y /= n; d.z /= n; d.w /= n;
-            const Vec3 va = playerCmd_.viewAngles;
-            const assets::Quat v = multiply(d, axisQuat(anglesAxis(va)));
-            playerViewAngles_ = axisAngles(quatAxis(v));
+            const assets::Quat v = multiply(d, axisQuat(anglesAxis(playerCmd_.viewAngles)));
+            const Vec3 va = axisAngles(quatAxis(v));
+            playerLinkView_ = LinkView{va, false};
+            playerCmd_.viewAngles = va; // a second server frame before the next command builds on this one
         }
     }
     pl.ref = q;

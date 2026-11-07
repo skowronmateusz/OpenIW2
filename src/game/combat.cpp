@@ -1274,13 +1274,16 @@ void World::registerCombatBuiltins() {
         return Value(v.fireTimerMs <= 0);
     });
     // dontinterpolate (0x4edf90): toggles bit 2 (the teleport bit) of the client's eFlags (+0x7c) or the entity's (+0x128) so the
-    // renderer skips interpolation for one snapshot. The client case (ps eFlags) has no interpolation state here. The entity case xors
+    // renderer skips interpolation for one snapshot. The client case is the request takePlayerNoInterp hands to the front end. The entity case xors
     // bit 2 of the gentity flags, the very bit the demigod cheat uses (0x4edfe1, G_Damage 0x5283d2), so on an entity without a client
     // (an actor) the call toggles demigod: the port reproduces that through `$demigod`. (0x526540 is no flag user: it xors bit 2 of the
     // entityState eFlags, ent+0x10, of a recycled missile.)
     vm_.registerBuiltin("dontinterpolate", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (e && !e->isPlayer) e->obj->set("$demigod", Value(!e->obj->get("$demigod").truthy()));
+        // The client's eFlags bit 2 toggles: CG_InterpolatePlayerState (0x4b9940) compares the toggle bits of the two snapshots and skips the
+        // origin and view angle interpolation when they differ, so the next view change shows at once. The front end takes the request.
+        if (e && e->isPlayer) playerNoInterp_ = true;
         return Value();
     });
     // earthquake(scale, duration, origin, radius) (0x4f4330): scale, duration and radius must be > 0; event 0xc7 goes to the clients.

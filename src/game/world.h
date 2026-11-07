@@ -674,6 +674,15 @@ public:
     // 0x4e8890) and setplayerangles (0x538560 → 0x4e8940).
     std::optional<Vec3> takePlayerTeleport() { return std::exchange(playerTeleport_, std::nullopt); }
     std::optional<Vec3> takePlayerViewAngles() { return std::exchange(playerViewAngles_, std::nullopt); }
+    // The view angles the player link (playerlinktodelta / playerlinktoabsolute) computed in the last server frame(s); `absolute`
+    // for an absolute link (the angles are the tag's), else the view turned by the tag's rotation since the last frame.
+    struct LinkView {
+        Vec3 angles;
+        bool absolute = false;
+    };
+    // dontinterpolate on the player since the last call: the next snapshot is not interpolated with the previous one.
+    bool takePlayerNoInterp() { return std::exchange(playerNoInterp_, false); }
+    std::optional<LinkView> takePlayerLinkView() { return std::exchange(playerLinkView_, std::nullopt); }
     // playerlinktodelta / playerlinktoabsolute: the player is placed by the link (pm_type 1, no own movement);
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
@@ -1524,6 +1533,8 @@ private:
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
     std::optional<TurretRelease> turretRelease_;
     std::optional<Vec3> playerTeleport_, playerViewAngles_;
+    std::optional<LinkView> playerLinkView_;
+    bool playerNoInterp_ = false;
     struct PlayerLink {
         int parent = -1;
         std::string tag;

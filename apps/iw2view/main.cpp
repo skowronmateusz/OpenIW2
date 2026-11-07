@@ -19,6 +19,7 @@
 #include "fs/gamedir.h"
 #include "audio/sound.h"
 #include "game/itempickup.h"
+#include "game/linkview.h"
 #include "game/screenfade.h"
 #include "video/roq.h"
 #include "game/compassspring.h"
@@ -7136,6 +7137,8 @@ int main(int argc, char** argv) {
         // The camera of a player placed by a link or a vehicle is drawn interpolated like the entities (they lag one server frame): the
         // player origin before the last server frame and whether the camera follows the link this frame. TODO(spec): [no original rule found yet] the original's rule.
         script::Vec3 prevPlayerO{0, 0, 0};
+        // The view turn a player link made in the last server frame, shown over the server interval (linkview.h).
+        game::LinkViewSmoother linkView;
         bool camLinkLerp = false;
         float camLinkHeight = 60.0f;
         game::PlayerState ps;
@@ -7628,13 +7631,53 @@ int main(int argc, char** argv) {
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
             } else if (world && world->playerHasLinkParent()) {
-                // Linked by script (pm_type 1): the link places the player (src/game/playerlink.cpp); no own movement.
+                // Linked by script (pm_type 1): the link places the player (src/game/playerlink.cpp); no own movement. PmoveSingle still
+                // runs its linked branch (0x50c881): aim command and fraction, stance and view height, lean, hold breath (game::playerMove
+                // with ps.pmType 1, docs/spec/pmove.md "Linked player").
                 const script::Vec3 po = world->player()->obj->get("origin").asVector();
+                ps.origin = {po[0], po[1], po[2]};
+                ps.velocity = {0, 0, 0};
+                havePrevBody = false;
+                {
+                    game::PlayerInput in;
+                    in.stanceHeld = (buttons & game::Button::StanceHeld) != 0;
+                    in.stance = (buttons & game::Button::Prone) ? game::Stance::Prone
+                                : (buttons & game::Button::Crouch) ? game::Stance::Crouch : game::Stance::Stand;
+                    in.leanLeft = (buttons & game::Button::LeanLeft) != 0 && !(world->playerPmFlags() & 0x2000000u);
+                    in.leanRight = (buttons & game::Button::LeanRight) != 0 && !(world->playerPmFlags() & 0x4000000u);
+                    in.yaw = cam.yaw;
+                    in.pitch = cam.pitch;
+                    in.dead = playerDead;
+                    ps.pmType = world->playerPmType();
+                    in.controlsFrozen = world->playerControlsFrozen();
+                    in.adsHeld = (buttons & game::Button::Ads) != 0;
+                    in.adsAllowed = pweapon.adsAllowed();
+                    in.adsFrac = pweapon.adsFrac();
+                    in.weaponState = pweapon.stateNumber();
+                    in.holdBreathHeld = !controlsBlocked && (buttons & game::Button::HoldBreath) != 0;
+                    {
+                        const std::string ret = pweapon.field("adsOverlayReticle");
+                        breathWeapon = pweapon.equipped() && !ret.empty() && ret != "none" && pweapon.field("weaponClass") != "item";
+                        in.breathWeapon = breathWeapon;
+                    }
+                    game::MoveParams lmp = mp;
+                    if (world->player()) lmp.passEntity = world->player()->number;
+                    if (pweapon.equipped()) {
+                        auto n = [&](const char* k) { return pweapon.number(k); };
+                        lmp.hipSpread = {n("hipSpreadStandMin"), n("hipSpreadDuckedMin"), n("hipSpreadProneMin"), n("hipSpreadMax"),
+                                         n("hipSpreadDuckedMax"), n("hipSpreadProneMax"), n("hipSpreadDecayRate"), n("hipSpreadFireAdd"),
+                                         n("hipSpreadTurnAdd"), n("hipSpreadMoveAdd"), n("hipSpreadDuckedDecay"), n("hipSpreadProneDecay")};
+                    }
+                    if (scene.collision) game::playerMove(world->collision(), ps, in, std::min(simDt, 0.1f), lmp);
+                    ps.origin = {po[0], po[1], po[2]}; // the link's placement, whatever the step did
+                    ps.velocity = {0, 0, 0};
+                    world->setPlayerPmFlag(0x4000, ps.holdingBreath);
+                    world->setPlayerPmFlag(1, ps.stance == game::Stance::Prone);
+                    world->setPlayerPmFlag(2, ps.stance == game::Stance::Crouch);
+                }
                 cam.pos = {po[0], po[1], po[2] + ps.viewHeight};
                 camLinkLerp = true;
                 camLinkHeight = ps.viewHeight;
-                ps.origin = {po[0], po[1], po[2]};
-                ps.velocity = {0, 0, 0};
             } else if (walk && world) {
                 camLinkLerp = false;
                 if (havePrevBody) { // just got out: continue from where the vehicle code put the player (tag_detach)
@@ -8092,6 +8135,11 @@ int main(int argc, char** argv) {
                     gameClock -= 0.05f;
                 }
                 lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
+                if (world->takePlayerNoInterp() && world->player()) { // dontinterpolate: no interpolation from the previous snapshot (0x4b9940)
+                    prevPlayerO = world->player()->obj->get("origin").asVector();
+                    lerpPrev.erase(world->player()->number);
+                    linkView.clear();
+                }
                 if (camLinkLerp && world->player()) { // see prevPlayerO
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {prevPlayerO[0] + (po[0] - prevPlayerO[0]) * lerpFrac, prevPlayerO[1] + (po[1] - prevPlayerO[1]) * lerpFrac,
@@ -8127,6 +8175,9 @@ int main(int argc, char** argv) {
                     cam.pitch = std::remainder((*va)[0], 360.0f); // axisAngles gives [0,360): 355 would clamp to 89 (looking down)
                     cam.yaw = (*va)[1];
                 }
+                if (const auto lv = world->takePlayerLinkView()) linkView.push(lv->angles[0], lv->angles[1], cam.pitch, cam.yaw, lv->absolute);
+                if (!world->playerHasLinkParent()) linkView.clear();
+                else linkView.step(lerpFrac, cam.pitch, cam.yaw);
                 if (const auto rel = world->takeTurretRelease()) {
                     // Off the turret (0x51b3d0): back where the player got on, in the stance it had (events 0x8c–0x8e).
                     ps.origin = {rel->origin[0], rel->origin[1], rel->origin[2]};

@@ -129,6 +129,18 @@ aimDownSight, weapon state not 1, 2, 10–16); prone only when the aim was just 
 0x800). Prone and aiming from the previous step clears forward/right. pm_flags 0x100 = aiming, not prone, weapon
 state not 5–9: the ×0.4 of cmdScale.
 
+### Linked player (pm_type 1 and 5, 0x50c881)
+
+PmoveSingle dispatches on pm_type through the table at 0x50cbfc: 1 and 5 go to 0x50c881, 2 to 0x50c77b (noclip), 3 to 0x50c800 (ufo), 0 and 4 to
+the walking code (0x50c918). The linked branch drops the ladder flag (0x20 gives 0x40000), sets the ground entity to none (ps+0x60 = 0x7ff),
+zeroes the velocity and both move commands, then runs the aim command (0x4dd020), the stance change and view height (0x509d10), the pm_time
+countdown, the footsteps (0x50a850) and PM_Weapon (0x4dfc30; its first step is the aim fraction 0x4dd0d0). The lean (0x50ade0, called from
+0x50b120 before the dispatch) is allowed without ground for pm_type 1 (0x50ae01). The position is the link's (animscripted.md "Player links"):
+nothing moves in the branch. So a script-linked player can aim down the sights, crouch and lean (decoytown's ride; the script only forbids
+prone with `allowprone(false)`); the absolute link sets pm_flags 0x8000 (controls frozen) and blocks the buttons. The port reaches it through
+`playerMove` with `ps.pmType` 1 or 5 (`PlayerState::pmType`); before, iw2view skipped pmove for a linked player, so the aim command never ran and
+the aim fraction stayed at 0. TODO(spec): the footsteps/bob call is not modelled (zero speed).
+
 ## Mantle (0x5257f0 check, 0x5259b0 move, 0x524bd0 delta, 0x525b60 yaw cap)
 
 Mantle brushes are found with contents

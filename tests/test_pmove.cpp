@@ -50,6 +50,36 @@ int main() {
     }
 
     {
+        // A script-linked player (pm_type 1, PmoveSingle branch 0x50c881) does not move or fall but still runs the aim command
+        // (0x4dd020), so aiming down the sights works on a ride (decoytown: playerlinktodelta on the carrier); a held crouch
+        // lowers the view height target (0x509d10); the lean is allowed without ground for pm_type 1 (0x50ae01).
+        CollisionWorld empty;
+        PlayerState ps;
+        ps.origin = {100, 200, 300};
+        ps.velocity = {50, 0, -400};
+        ps.pmType = 1;
+        PlayerInput in;
+        in.forward = 1.0f;
+        in.adsHeld = true;
+        in.adsAllowed = true;
+        in.leanRight = true;
+        for (int i = 0; i < 10; ++i) playerMove(empty, ps, in, 0.05f);
+        CHECK(ps.ads);
+        CHECK(ps.origin[0] == 100 && ps.origin[1] == 200 && ps.origin[2] == 300);
+        CHECK(ps.velocity[0] == 0 && ps.velocity[1] == 0 && ps.velocity[2] == 0);
+        CHECK(!ps.onGround);
+        CHECK(ps.lean > 0.3f);
+        in.adsHeld = false;
+        in.leanRight = false;
+        playerMove(empty, ps, in, 0.05f);
+        CHECK(!ps.ads);
+        // not linked: the same input falls
+        PlayerState free;
+        free.origin = {100, 200, 300};
+        for (int i = 0; i < 4; ++i) playerMove(empty, free, in, 0.05f);
+        CHECK(free.origin[2] < 300.0f);
+    }
+    {
         // PM_AddEvent (0x507ba0): event 0 is ignored, the ring keeps the newest 4.
         PlayerState ps;
         addPmEvent(ps, 0);
