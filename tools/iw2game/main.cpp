@@ -1272,6 +1272,15 @@ int main(int argc, char** argv) {
                         if (ep->isActor && ep->number == std::atoi(tr)) {
                             const auto ao = ep->obj->get("origin").asVector();
                             { const auto av = ep->obj->get("angles"); const auto dv = ep->obj->get("desiredangle"); std::printf("[atrace %.1f] state %d sub %d goal %s script %s path %d trav %d flags %x stopsoon %lld pos %.0f %.0f %.0f yaw %.4f desired %.1f facing %d orient %d animmode %d\n", f * 0.05f, ep->ai.stack[size_t(ep->ai.depth)], ep->ai.substate, ep->obj->get("$goalpos").toString().c_str(), ep->animScript.c_str(), ep->path.count, ep->path.traversal, ep->path.flags, (long long)ep->ai.stopSoonMs, ao[0], ao[1], ao[2], av.isVector() ? av.asVector()[1] : 0.0f, dv.isNumber() ? dv.asFloat() : 0.0f, ep->ai.facing, ep->ai.orient, ep->ai.animMode); }
+                            { // the current enemy: entity number, distance and whether the eye-to-eye line is clear
+                                bool seen = false;
+                                const auto en = world.debugEnemy(*ep, &seen);
+                                if (en && en->obj->get("origin").isVector()) {
+                                    const auto eo = en->obj->get("origin").asVector();
+                                    std::printf("  enemy #%d %s dist %.0f sight %d\n", en->number, en->classname.c_str(), std::sqrt((eo[0] - ao[0]) * (eo[0] - ao[0]) + (eo[1] - ao[1]) * (eo[1] - ao[1]) + (eo[2] - ao[2]) * (eo[2] - ao[2])), seen ? 1 : 0);
+                                } else
+                                    std::printf("  enemy none\n");
+                            }
                             if (std::getenv("IW2_ACTOR_TRACE_THREADS")) { // the actor's script threads and animation nodes
                                 for (const auto& d : world.vm().describeThreadsOf(ep->obj))
                                     if (d.find("battlechatter") == std::string::npos && d.find("coldbreath") == std::string::npos) std::printf("    thread %s\n", d.c_str());
@@ -2543,7 +2552,7 @@ int main(int argc, char** argv) {
                 const auto it = world.fireMon.teams().find(team);
                 const iw2::game::FireMonitor::TeamTotals t = it == world.fireMon.teams().end() ? iw2::game::FireMonitor::TeamTotals{} : it->second;
                 char fb[160];
-                std::snprintf(fb, sizeof fb, "ai_shots_%s %d\nai_combat_secs_%s %.1f\nai_shots_per_min_%s %.1f\n", team, t.shots, team, t.combatSecs, team, t.shotsPerMinute());
+                std::snprintf(fb, sizeof fb, "ai_shots_%s %d\nai_combat_secs_%s %.1f\nai_sight_secs_%s %.1f\nai_shots_per_min_%s %.1f\n", team, t.shots, team, t.combatSecs, team, t.sightSecs, team, t.shotsPerMinute());
                 r << fb;
             }
             r << "silent_shooters " << world.fireMon.silent().size() << "\n";
@@ -2589,7 +2598,7 @@ int main(int argc, char** argv) {
             r << "[firerate]\n"; // docs/debug-flags.md "Fire rate": silent shooters (enemy in sight, firing animation, no shot)
             for (const auto& [team, t] : world.fireMon.teams()) {
                 char fb[160];
-                std::snprintf(fb, sizeof fb, "team %s shots %d combat_secs %.1f shots_per_min %.1f fire_anim_starts %d", team.c_str(), t.shots, t.combatSecs, t.shotsPerMinute(), t.animStarts);
+                std::snprintf(fb, sizeof fb, "team %s shots %d combat_secs %.1f sight_secs %.1f shots_per_min %.1f fire_anim_starts %d", team.c_str(), t.shots, t.combatSecs, t.sightSecs, t.shotsPerMinute(), t.animStarts);
                 r << fb << "\n";
             }
             for (const auto& ss : world.fireMon.silent()) {

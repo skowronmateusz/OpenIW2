@@ -377,6 +377,12 @@ public:
     void debugRestoreCorpsesOldSave() { restoreCorpses(nullptr); }
     Entity& debugSpawn(const std::string& classname) { return spawnEntity(classname); }
     Entity* debugEntity(int number) { return entityByNumber(number); }
+    // The actor's current enemy (nullptr: none) and whether the eye-to-eye sight line to it is clear (IW2_ACTOR_TRACE).
+    Entity* debugEnemy(Entity& e, bool* sight) {
+        Entity* en = entityOf(e.obj->get("enemy"));
+        if (sight) *sight = en && canSee(e, *en);
+        return en;
+    }
     void debugLink(Entity& child, Entity& parent) { Link l; l.parent = parent.number; links_[child.number] = l; }
     bool debugLinked(const Entity& e) const { return links_.count(e.number) != 0; }
     void loadState(script::StateReader& r);

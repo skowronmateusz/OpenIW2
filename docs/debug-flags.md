@@ -127,7 +127,7 @@ described in the code that reads them.
 
 - Env `IW2_NODE_DROP_STRICT=0` (iw2game/iw2view): the level-start node drop (`World::dropPathNodes`, 0x515d70) keeps the type of a node it finds "in solid" or "floating" instead of making it a BAD NODE (type 0) as the exe does (the default since the drop test was checked against 0x416480, docs/spec/ai.md "Node drop"). With the default, breakout and silotown_assault print "Bad node in friendly chain" and clear their chain fields. Debug only.
 
-- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) for one actor (default every 20 frames). Debug only.
+- Env `IW2_ACTOR_TRACE=<entity number>[,<from s>[,<every n frames>]]` (iw2game): prints `[atrace t] state sub goal script path trav flags stopsoon pos yaw facing orient` (plus `animdelta ... budget plan lookIdx`) and a line `enemy #n classname dist d sight 0|1` (or `enemy none`) for one actor (default every 20 frames). Debug only.
 
 - Env `IW2_ACTOR_TRACE_LINKS=1` (with `IW2_ACTOR_TRACE`) also prints the path points and the pathdata links of their nodes. Env `IW2_ENT_DUMP=<entity number>` (iw2game) prints classname/targetname/target/origin of that entity at the end of the run. Env `IW2_REACH_LOG=1` prints every blocked step of the actor reach test (aiReach: start, target, hit entity, normal, contents).
 
@@ -198,13 +198,15 @@ A bug once made AI soldiers play their firing animation without ever calling `sh
 and objectives. `--report` now has the AI fire counters (the monitor samples every 50 ms frame only when `--report` is given and never changes the run):
 - Report fields per team (`axis`, `allies`): `ai_shots_<team>` (bullets and rockets fired by AI: the `shoot` built-in, turret gunners, vehicle turrets, counted
   for the gunner's team or the shooter's `team` field; the player's own shots are not counted), `ai_combat_secs_<team>` (seconds an actor of the team was alive
-  with a valid `enemy`, not held in the scripted state: riders and scene actors cannot fire), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
+  with a valid `enemy`, not held in the scripted state: riders and scene actors cannot fire), `ai_sight_secs_<team>` (the part of those seconds in which the
+  eye-to-eye line to the actor's own enemy was clear), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
   gunless or unteamed shooters such as map-placed turrets) and the silent shooters.
 - Silent shooter: an actor whose enemy was in line of sight (eye-to-eye trace) for 10 s in a row (gaps under 1 s ignored) without one shot. The line gives the
   entity number, classname, position, start time and the number of shooting animations (nodes whose animation has a `fire` notetrack) started meanwhile.
   It also catches behaviour that is not the animation bug (an actor that never shoots at a visible enemy, see the moscow finding below),
   so a few stretches per run are normal on some maps: `SILENT:n` is flagged from 10 stretches per run (data below: 0..4 on most maps, 26 on decoytrenches).
-- Sweep flags (summary.md table column "fire flags" and section "Fire rate"): `NO-FIRE:team` (a team with at least 120 combat seconds fired nothing),
+- Sweep flags (summary.md table column "fire flags" and section "Fire rate"): `NO-FIRE:team` (a team with at least 120 sight seconds fired nothing; reports without
+  `ai_sight_secs_<team>` fall back to combat seconds),
   `LOW-RATE:team(rate<baseline)` (an autoplay run under 65% of `tools/firerate-baseline.txt`, the rate of a clean 400 s autoplay run of that map and team,
   produced by `tools/script_sweep.sh --make-firerate-baseline --out DIR` from the `-s1-auto.txt` reports; only maps listed there are compared),
   `SILENT:n`.
@@ -213,6 +215,15 @@ and objectives. `--report` now has the AI fire counters (the monitor samples eve
   Without the fix one or both rates fall to 20-59% of the clean value on all four maps (so the sweep flags each of them), but the clean rates differ too
   much between maps (8 to 48) for a global threshold, hence the per-map baseline. The silent-shooter count does not separate the two builds (decoytrenches
   26 vs 37, others 1..9 vs 3..5): it points at actors that never shoot a visible enemy for whatever reason, not at this bug.
+- Why NO-FIRE counts sight seconds (seed 1, 400 s, plain run: the player stands at the start in god mode). An `enemy` is also set from knowledge alone (the
+  player as goal entity of attackers, events), so "combat seconds" include actors that hold cover with an enemy they cannot see, and the shipped cover
+  animscripts then wait by design until the enemy can be seen from the exposed position (cover_crouch.gsc main loop, idleUntilEnemyWouldBeVisible; utility.gsc
+  canSeeEnemyFromExposed). Sight seconds per team (axis / allies): beltot 4.7 / 47.4 (axis 545 combat s), crossroads 0.3 / 0.3 (1953 / 2734 combat s),
+  demolition 0.0 / 0.0 (1545 / 749 combat s). crossroads allies: the intro group holds position in the building, its enemy is an axis actor 2200 units away
+  behind walls. demolition: the German and Russian squads sit in cover 423 units apart without a line (cover_left / cover_crouch), waiting for each other.
+  beltot axis: the wave runs along its path with the player (3000 units away) as enemy and is shot by the allies within about 1.5 s of the first hit; the
+  survivors hold a cover node far from the allies. The demolition axis "35 fire animation starts" are the corner look animation
+  (corner_nowall_l_stand_alert2look, which carries a `fire` notetrack), not shooting. Autoplay runs of the same maps fire (axis 27..44 shots per minute).
 - Moscow `NO-FIRE:axis` (seed 1) is not an engine gap. The run ends at 1426 s with a mission failure (maps/moscow.gsc:2598 melee_scene_damage, after the
   autoplay kill gate), before any German infantry fight. Nearly all of the 433 axis combat seconds belong to the four riders of the `smoke_halftrack`
   vehicle (map entity at 1170,200,-171, `script_vehicleride 2`, `script_vehiclestartmove 2`). They sit in the halftrack's idle loop

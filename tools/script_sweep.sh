@@ -172,15 +172,16 @@ carry_checks() {
     wait
 }
 # Fire-rate flags of one report (tools/firerate-baseline.txt: `map team shots-per-combat-minute` of a clean autoplay run):
-#   NO-FIRE:team     a team with at least 120 combat seconds fired no shot
+#   NO-FIRE:team     a team with at least 120 sight seconds (an actor with its enemy in line of sight; reports without ai_sight_secs: combat seconds) fired no shot
 #   LOW-RATE:team    an autoplay run whose rate is under 65% of the baseline of that map and team (the animation-note bug cut it to 20..56%)
 #   SILENT:n         10 or more silent-shooter stretches (an enemy in sight for 10 s or more, no shot)
 fire_flags() {
-    local r=$1 map=$2 tag=$3 f="" t secs shots rate base v
+    local r=$1 map=$2 tag=$3 f="" t secs sight shots rate base v
     for t in axis allies; do
         secs=$(field "$r" ai_combat_secs_$t); shots=$(field "$r" ai_shots_$t); rate=$(field "$r" ai_shots_per_min_$t)
         [ -n "$secs" ] || continue
-        if awk -v s="$secs" -v n="$shots" 'BEGIN { exit !(s >= 120 && n == 0) }'; then f="$f NO-FIRE:$t"; fi
+        sight=$(field "$r" ai_sight_secs_$t); [ -n "$sight" ] || sight=$secs
+        if awk -v s="$sight" -v n="$shots" 'BEGIN { exit !(s >= 120 && n == 0) }'; then f="$f NO-FIRE:$t"; fi
         if [ "$tag" = auto ] && [ -f "$here/tools/firerate-baseline.txt" ]; then
             base=$(awk -v m="$map" -v t="$t" '$1 == m && $2 == t { print $3; exit }' "$here/tools/firerate-baseline.txt")
             if [ -n "$base" ] && awk -v s="$secs" -v r="$rate" -v b="$base" 'BEGIN { exit !(s >= 120 && r < 0.65 * b) }'; then f="$f LOW-RATE:$t($rate<$base)"; fi

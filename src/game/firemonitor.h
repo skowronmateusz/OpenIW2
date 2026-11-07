@@ -41,6 +41,7 @@ public:
         int shots = 0;
         int animStarts = 0;
         double combatSecs = 0;
+        double sightSecs = 0; // seconds an actor of the team had its enemy in line of sight (a subset of combatSecs)
         double shotsPerMinute() const { return combatSecs > 0 ? shots * 60.0 / combatSecs : 0.0; }
     };
 

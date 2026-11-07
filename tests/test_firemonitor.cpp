@@ -44,6 +44,17 @@ int main() {
         CHECK(t.at("allies").shots == 0 && std::fabs(t.at("allies").combatSecs - 3.0) < 0.01);
         CHECK(t.at("allies").shotsPerMinute() == 0.0);
         CHECK(m.silent().empty());
+        CHECK(t.at("axis").sightSecs == 0.0 && t.at("allies").sightSecs == 0.0); // enemy known but never in sight: no sight time
+    }
+    {
+        // Sight seconds count only the samples with the enemy in line of sight, a subset of the combat seconds.
+        FireMonitor m;
+        for (int i = 0; i < 100; ++i) m.sample(actor(1, "axis", true, false), 0.05); // 5 s known only
+        for (int i = 0; i < 60; ++i) m.sample(actor(1, "axis", true, true), 0.05);   // 3 s in sight
+        for (int i = 0; i < 40; ++i) m.sample(actor(2, "axis", false, true), 0.05);  // no enemy: no sight
+        const auto& t = m.teams();
+        CHECK(std::fabs(t.at("axis").combatSecs - 8.0) < 0.01);
+        CHECK(std::fabs(t.at("axis").sightSecs - 3.0) < 0.01);
     }
     {
         // 12 s of sight without a shot: silent; its animation starts are counted.

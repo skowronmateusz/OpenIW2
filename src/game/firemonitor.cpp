@@ -16,6 +16,7 @@ void FireMonitor::sample(const Sample& s, double dt) {
     a.lastStarts = s.fireAnimStarts;
     teams_[s.team].animStarts += started;
     if (s.hasEnemy) teams_[s.team].combatSecs += dt;
+    if (s.hasEnemy && s.enemyVisible) teams_[s.team].sightSecs += dt;
     if (!(s.hasEnemy && s.enemyVisible)) {
         a.hidden += dt;
         if (a.hidden >= kGraceSecs) finishStretch(a);
