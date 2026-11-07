@@ -3,7 +3,9 @@
 // 1. Visibility is the actor's own sight record of its enemy, not an eye trace: with the record saying "not visible" no stretch starts.
 // 2. With the record saying "visible" for 12 s and no shot the gunner is a silent shooter.
 // 3. A shot of the gunner's turret (shooter = the turret, attacker = the gunner) counts for the gunner: no silent stretch.
-// 4. The suppression time and the main animscript of a stretch are recorded; a stretch spent suppressed is explained.
+// 4. The suppression time and the main animscript of a stretch are recorded; a stretch spent suppressed is explained when the
+//    scripts' issuppressed answer was yes.
+// 5. The sight record counts while it is at most 250 ms old (cansee's default).
 #include "fs/vfs.h"
 #include "game/world.h"
 
@@ -92,17 +94,37 @@ int main() {
         CHECK(ss.mainScript == gunner->animScript && !ss.mainScript.empty());
         CHECK(ss.reason().empty());
     }
-    // 4. A held suppression line for the whole next stretch: recorded, and the stretch is explained.
+    // 4. A held suppression line (the engine state issuppressed reads) for the whole next stretch: recorded; it explains the
+    // stretch only once the scripts were told so by issuppressed.
     run(30, false, false);
     gunner->dangerPlanes[0].timeMs = w.timeMs() > 0 ? w.timeMs() : 1;
     gunner->dangerPlanes[0].shortLived = false;
+    CHECK(w.isSuppressed(*gunner));
+    gunner->lastSuppressedAnswer = 0;
     run(240, true, false);
     CHECK(stretchesOf(w, gunner->number) == 2);
     if (stretchesOf(w, gunner->number) == 2) {
         const SilentShooter& ss = w.fireMon.silent().back();
         CHECK(ss.suppressedSecs >= 11.9);
-        CHECK(ss.reason() == "suppressed");
+        CHECK(ss.reason().empty());
     }
+    run(30, false, false);
+    gunner->lastSuppressedAnswer = 1;
+    run(240, true, false);
+    CHECK(stretchesOf(w, gunner->number) == 3);
+    if (stretchesOf(w, gunner->number) == 3) CHECK(w.fireMon.silent().back().reason() == "suppressed");
+    // A short-lived plane (same-team source) is not suppression.
+    gunner->dangerPlanes[0].shortLived = true;
+    CHECK(!w.isSuppressed(*gunner));
+    // 5. Sight older than cansee's default 250 ms counts as not visible (0x53da00); 250 ms old still counts.
+    gunner->dangerPlanes = {};
+    run(30, false, false);
+    info.lastCheckMs = w.timeMs() - 300;
+    run(240, true, false);
+    CHECK(stretchesOf(w, gunner->number) == 3);
+    info.lastCheckMs = w.timeMs() - 250;
+    run(240, true, false);
+    CHECK(stretchesOf(w, gunner->number) == 4);
     if (failures) return 1;
     std::cout << "fire monitor world tests passed\n";
     return 0;

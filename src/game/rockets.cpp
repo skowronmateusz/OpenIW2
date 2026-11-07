@@ -102,7 +102,7 @@ void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at,
 // surface and the hit normal, the missile stops there and the radius damage (explosionInnerDamage /
 // OuterDamage / Radius from the parent, the hit entity skipped, MOD_PROJECTILE_SPLASH) follows.
 // Before any of that (0x52624c..0x526272) a missile that is not a grenade and has a parent tells the AI: a line event of
-// type 0x11 (512² default) from the parent's origin (+0x20) to the impact point, not forced (the parent must be a sentient of a
+// type 0x11 (512² default) from the parent's origin (+0x20) to the impact point with receiver mask 0 (the parent must be a sentient of a
 // team with an enemy; the receivers are that enemy team).
 // TODO(spec): [stays: no shipped projectile weapon reaches the bounce] projImpactExplode 0 (the missile bounces, 0x525f30; no shipped projectile weapon sets 0, so no map or script reaches it),
 // and that the exploded missile stays as an ET_GENERAL entity until freed.
@@ -110,7 +110,7 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     RocketState& r = *e.rocket;
     if (r.parent) {
         const Value po = r.parent->obj->get("origin");
-        if (po.isVector()) aiEventLine(*r.parent, 17, po.asVector(), tr.endPos, 0.0f, false);
+        if (po.isVector()) aiEventLine(*r.parent, 17, po.asVector(), tr.endPos, 0.0f, 0);
     }
     Entity* hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
     const int damage = std::atoi(weaponField(r.weapon, "damage").c_str());

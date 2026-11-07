@@ -213,14 +213,11 @@ bool World::aiStart(Entity& e, int state) {
 
 // 0x54d300 / the tail of 0x54d340: with an attacker pending on the sentient (+0x28) the pain event (type 5) is sent from the
 // actor's own origin (+0xdc) to the actors of its own team (EAX = 1 << team, radius 0 = the type's default), then +0x28 is
-// cleared. Team none has bit 0 set in the mask, which skips the source gate.
+// cleared. The mask is never 0, so the source gate is skipped for every team.
 void World::painBroadcast(Entity& e) {
     if (!e.lastAttacker) return;
-    const Value t = e.obj->get("team");
-    const std::string ts = t.isString() ? t.asString() : std::string();
-    const bool noTeam = !(ts == "axis" || ts == "allies" || ts == "neutral");
     const Value o = e.obj->get("origin");
-    aiEventPoint(e, 5, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, noTeam, AiHear::Own);
+    aiEventPoint(e, 5, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, aiOwnMask(e));
     e.lastAttacker = nullptr;
 }
 
@@ -333,8 +330,11 @@ void World::setActorAnimScript(Entity& e, const std::string& name, int movemode,
     // Another script (0x53acf1..0x53ad96): besides the kill (0x53ac40), the anim mode override +0x21c is dropped (the mode is then the
     // argument), the gentity no-physics flag (+0x128 & 0x1000) is cleared and so are keepclaimednode / keepclaimednodeingoal
     // (+0x740 / +0x741), and the solved grenade throw +0x20d0 is dropped. The string words +0x2140 / +0x2144 (scriptstate /
-    // statechangereason, set only by trackscriptstate and read by a debug print) are released there too: not modelled, the shipped
-    // scripts only copy `self.scriptState` into an unused local.
+    // statechangereason, set only by trackscriptstate and read by a debug print) are released there too. They are kept on the
+    // entity for the fire monitor; the script fields stay unmodelled (the shipped scripts only copy `self.scriptState` into an
+    // unused local).
+    e.scriptState.clear();
+    e.stateChangeReason.clear();
     // 0x53ad0b: "face default" (0x5063f0) too: the orientmode override of the old script is handed to the base block and
     // released, so a stale "face enemy" / "face angle" does not outlive its script.
     actorFaceDefault(ai);
@@ -667,8 +667,9 @@ int World::painThink(Entity& e) {
 int World::deathThink(Entity& e) {
     ActorAi& ai = e.ai;
     if (ai.substate == kSubDeath && timeMs_ - ai.baseStateMs > 799) {
-        // 0x548a10: the death event (type 6) makes the actors around learn the killer (sentient +0x28).
-        aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0});
+        // 0x548a10: the death event (type 6) makes the actors of the dead actor's own team around learn the killer (sentient
+        // +0x28; EAX = 1 << team, 0x548a25..0x548a2a).
+        aiEventPoint(e, 6, e.obj->get("origin").isVector() ? e.obj->get("origin").asVector() : Vec3{0, 0, 0}, 0.0f, aiOwnMask(e));
         // 0x548a34..0x548a6d: a grenade this actor was going for is let go, and leaves the hand if it held it (0x520470).
         if (ai.grenade && ai.grenade->grenade && ai.grenade->grenade->holder == &e) {
             if (ai.grenade->grenade->inHand) releaseHeldGrenade(e);
@@ -1333,7 +1334,7 @@ void World::actorMoveNoise(Entity& e) {
     if (ai.moveNoiseMs < 500) return;
     const Value o = e.obj->get("origin");
     ++stats.actorNoise;
-    aiEventPoint(e, 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
+    aiEventPoint(e, 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, aiEnemyMask(e)); // 0x5485f2..0x548620
     ai.moveNoiseMs %= 500;
 }
 

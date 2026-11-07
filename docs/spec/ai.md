@@ -254,7 +254,8 @@ enemy's eye - 16 (G_Trace 0x44bf00 start EBX, end EDI), clear or ending on a sen
 limit 0x1c61038 it fails).
 - Script sight builtins: `canshoot(target [, offset])` (0x53d800) is 0x54cf40 from tag_flash + offset (script error
   "Couldn't find tag_flash in entity %d" without the tag); `cansee(ent [, seconds])` (0x53d930) on a sentient is the cached
-  sight 0x54ce10 no older than seconds × 1000 (truncated; default 250 ms), refreshed by 0x54ca60 (TODO(spec): non-sentient
+  sight 0x54ce10 no older than seconds × 1000 (truncated; default 250 ms: the push 0xfa at 0x53da00, also used by 0x54ce70;
+the engine has no 1 s sight age), refreshed by 0x54ca60 (TODO(spec): non-sentient
   targets, 0x54cc87); `geteye()` (0x4eee60) of an actor is tag_eye (0x500910, scr const 0x1c7f156) looked up in the whole
   DObj, so the head model's tag_eye counts; without one, origin + 64 (warning 0x589b84).
 - Combat 100: path update 0x503490; with a path and the enemy seen (0x54ce70): clear the path when +0x728 or +0x2148 is set, or when
@@ -483,8 +484,15 @@ source's own slot, else the oldest) adds the half plane through the line a–b o
 c = n·a, flipped so the actor's origin stays on the kept side (n·origin ≤ c); only a source of the enemy team adds one
 (entity +0xfc is the player's client pointer — the team gate is skipped for player fire, which marks the slot
 short-lived and drops the actor's path; confirmed by 0x53145c's G_Damage client-or-actor pair). 0x54b4d0 (each actor
-think) expires a short-lived slot after 300 ms, the rest after `suppressionwait`
-(+0x20b0); 0x54b5a0 (per-sentient release 0x4fe170) drops the slots of a released source; 0x54b610 reports a free or
+think) expires a slot once it is `suppressionwait` (+0x20b0, ms) old, a short-lived one already at 300 ms (0x54b4ee; a
+younger short-lived slot falls through to the `suppressionwait` test, 0x54b4f6, so it lasts min(300, wait)). Expiry clears
+only the time word (0x54b4fe): the slot keeps its source, and since the slot choice 0x54b370 looks for the source first
+(0x54b389), the same source gets its old slot back. issuppressed (0x53e6a0) is true while a slot has a time and is not
+short-lived (+0x14 == 0). The shipped scripts ask it through `isSuppressedWrapper` (animscripts/utility.gsc:2163-2171:
+false under forced cover "show", with `suppressionwait` <= 0 or `isSuppressable` false), and hide or stop firing on a yes
+(e.g. cover_crouch.gsc:1179 and 1431, combat_utility.gsc:302 stopOnSuppression). The only producer of hostile planes is the
+type 16 line (the 128² radius around muzzle → impact, any bullet of a sentient attacker, see "AI events"); nothing else
+(no near-miss count, no cvar) feeds it. 0x54b5a0 (per-sentient release 0x4fe170) drops the slots of a released source; 0x54b610 reports a free or
 not short-lived slot (the grenade flee gate 0x51faa2); 0x54b670 collects the active planes. Planning with planes
 (0x503650 / 0x503890 third argument, 0x503a50): the start node comes from the uncached 0x5150d0, the goal query keeps
 the planes, 0x5428a0 requires both end nodes on the kept side (0x542710: n·p > dist fails) and searches 0x545ca0.
@@ -502,6 +510,14 @@ opposite sides of the other). A point trace from 128 above the point to 128 belo
 solid (trace +0x22). The move check 0x543d30 runs from the origin with mask +0x28c | 0x4004 and step 10 at prone tilt, else 18. The end must
 lie in the working goal (0x5026d0); when it does not, 0x503100 may start pathing to the enemy and the goal test runs once more against the
 goal this produces. Only a point that passes all of this returns 1 and stamps +0x744.
+
+Re-checked step by step against the exe: the link gate 0x53dd2c; the sentient loop 0x515230 / 0x515270 with the mask 1 << the actor's team
+(sentient +0x4), which yields the sentient slots in use (byte +0x3a; the slot is released at death or removal, 0x4fe170, so a corpse is not
+tested; the player is a sentient too), skipping the actor itself (0x53dd80) and sentients without an enemy (+0x1c, 0x53dd85); the segments
+are that sentient's origin (+0xdc) to its enemy's origin and the actor's origin to the point; 0x53dc50 needs both side products strictly
+below 0; the ±128 offsets are the float 0x591e3c (128.0); the all-solid byte of the trace returns 0 (0x53de98..0x53def8); the step float is
+10.0 (0x41200000) when +0x288 is set, else 18.0 (0x41900000, 0x53defc..0x53df0e); then 0x543d30, 0x5026d0 on the working goal (+0x748),
+0x503100 and the goal test again (0x53df44..0x53df71). The corner animscripts idle while it fails (animscripts/corner_axis.gsc:1208-1215).
 
 0x503100 needs an enemy, +0x788 clear, the enemy nearer (2D) than pathenemyfightdist, its position known within 5 s (0x503080 with argument
 1, which skips the node test) and either the claimed node seeing the enemy's node or the enemy seen within 5 s (record +0x8). It sets +0x788
@@ -528,8 +544,17 @@ direction and length. The signs are as observed: they do not read as a plain dis
 0x535770 broadcasts a point event of `type` at `pos` to every live actor within the type's radius² (table 0x57031c,
 stride 8: 3 → 256², 4/6/13 → 1024², 10 → 2048², 11 → 4096², 16 → 128², 20 → 256², else 512²); 0x535860 the line
 variant along a–b (closest point, behind `a` does not count) with its handler 0x535f20; the per-actor dispatch is
-0x535d70. Unless the broadcast is forced (producers pass 1 or 1 | 1 << team), the source must be a sentient of a team
-with an enemy (axis ↔ allies). Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
+0x535d70. EAX is the receiver mask, one bit per team number (sentient +0x4: 0 none, 1 axis, 2 allies, 3 neutral): the actor
+iterators 0x4fe2c0 / 0x4fe310 yield only actors whose bit 1 << team is in it. A non-zero mask is used as it is and skips
+the source gate (0x53577f, 0x53586f); with 0 the source must be a sentient (+0x104) whose team has an enemy in the table
+{0, 2, 1, 0, 0}, and the mask becomes 1 << that enemy team (0x535795..0x5357c1, 0x535883..0x5358af). The producers' masks:
+the bullet events of Bullet_Fire_Extended, sent only when the attacker is a sentient (0x531420), go to 1 << the attacker's
+enemy team (type 10, 0x53144b..0x531457), and the suppression line (type 16) to the same team plus, for the player
+(entity +0xfc, 0x53145c..0x53147a), 1 << its own team; so an actor's shot never reaches its own team or neutral actors, and
+the player's shot reaches the enemy team and its own team (where it adds a short-lived plane), not neutral actors. Death
+(type 6, 0x548a25..0x548a2a), pain (type 5, 0x54d31b / 0x54d416) and the team-wide enemy events (type 4, 0x53574e, 0x550b5f)
+use 1 << the source's own team; the actor movement noise (type 2, 0x5485f2..0x548620) and the player's footstep events use
+1 << the enemy team; grenade pings pass -1 (0x526c04); the weapon-fired line of a missile impact (0x526272) passes 0. Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
 turret only if < 3 s); 4 weapon fired (0x550a70 → 0x535ba0) — the player gives a plain position update, an actor
 passes on its own knowledge of its enemy (copied per-sentient when the target's is staler); 5 pain 500 ms in
 (0x54d340) — the attacker (sentient +0x28, set by G_Damage 0x5284dd) is revealed and then forgotten; 6 death
@@ -599,7 +624,7 @@ read-only"); 0x536480 clamps to [0, 1] and 0x536520 to ≥ 0 (strings "actor fie
 | maxsightdistsqrd | 0x1770 | float | | useable | 0x211b | byte |
 | followmin / followmax | 0x714 / 0x718 | int | | dropweapon | 0x211c | int |
 | chainfallback | 0x738 | 1 | | drawoncompass | 0x2120 | int |
-| interval | 0x71c | float | | scriptstate / lastscriptstate / statechangereason | 0x2140 / 0x2142 / 0x2144 | string, ro; set only by trackscriptstate (0x5402d6: last = old state, state, reason), read by a debug print (0x5005d6), released by the animscript switch 0x53ac90; not modelled (trackscriptstate is a no-op, the shipped scripts only copy `self.scriptState` into an unused local) |
+| interval | 0x71c | float | | scriptstate / lastscriptstate / statechangereason | 0x2140 / 0x2142 / 0x2144 | string, ro; set only by trackscriptstate (0x5402d6: last = old state, state, reason), read by a debug print (0x5005d6), released by the animscript switch 0x53ac90 (0x540280 needs exactly two arguments, else the usage error "trackScriptState newStateName, reasonForTransition"; argument 0 goes to +0x2140, 1 to +0x2144). Kept on the entity (read by the fire monitor); the script fields are not modelled (the shipped scripts only copy `self.scriptState` into an unused local) |
 | damagetaken / damagedir / damageyaw | 0x1e4 / 0x1ec / 0x1e8 | ro | | groundtype | 0x24c | string, ro |
 | damagelocation / damageweapon | 0x1f8 / 0x1fa | string, ro | | anim_pose | 0x146 | string |
 | proneok | 0x154 | int, ro | | goalradius | 0x770 | float ≥ 4 |

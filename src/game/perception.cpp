@@ -241,7 +241,7 @@ void World::setEnemy(Entity& actor, Entity* enemy, bool notify) {
     // Sentient +0x20: 1000 ms after an enemy is set the sentient tells its own team about it (event 4, 0x535740). The
     // event goes out from a notifying call of the enemy setter, when it is due, or early, when the enemy changes.
     auto tellTeam = [&] {
-        aiEventPoint(actor, 4, actor.obj->get("origin").asVector(), 0, true, AiHear::Own);
+        aiEventPoint(actor, 4, actor.obj->get("origin").asVector(), 0, aiOwnMask(actor));
         actor.enemyEventMs = 0;
     };
     if (notify && old && actor.enemyEventMs != 0 && timeMs_ >= actor.enemyEventMs) tellTeam();

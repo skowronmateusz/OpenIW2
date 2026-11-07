@@ -93,33 +93,55 @@ int main() {
         CHECK(m.silent().size() == 1);
     }
     {
-        // Context of a stretch: suppressed seconds, the animscript most of it was spent in, and the reason it is explained.
+        // A shot ends the stretch: 5 s, a shot, then 12 s without one is a silent stretch of its own.
         FireMonitor m;
-        for (int i = 0; i < 240; ++i) {
-            FireMonitor::Sample s = actor(5, "allies", true, true);
-            s.suppressed = i < 150;
+        for (int i = 0; i < 340; ++i) {
+            if (i == 100) m.shot(9, "axis");
+            m.tick(0.05);
+            m.sample(actor(9, "axis", true, true), 0.05);
+        }
+        CHECK(m.silent().size() == 1);
+        if (m.silent().size() == 1) CHECK(std::fabs(m.silent()[0].visibleSecs - 12.0) < 0.06 && std::fabs(m.silent()[0].startSecs - 5.0) < 0.06);
+        // A flagged stretch stops growing at the first shot.
+        for (int i = 0; i < 40; ++i) {
+            if (i == 20) m.shot(9, "axis");
+            m.tick(0.05);
+            m.sample(actor(9, "axis", true, true), 0.05);
+        }
+        if (m.silent().size() == 1) CHECK(std::fabs(m.silent()[0].visibleSecs - 13.0) < 0.06);
+    }
+    {
+        // Reasons. Each sample is explained by the move script (running) or by suppression the scripts were told about; a stretch is
+        // unexplained when the rest still adds up to 10 s.
+        FireMonitor m;
+        auto stretch = [&](int n, auto&& set) {
+            for (int i = 0; i < 240; ++i) { // 12 s
+                FireMonitor::Sample s = actor(n, "axis", true, true);
+                s.animScript = "combat";
+                set(s, i);
+                m.sample(s, 0.05);
+            }
+        };
+        stretch(5, [](FireMonitor::Sample& s, int i) { // suppressed and told so throughout
+            s.suppressed = s.toldSuppressed = true;
             s.animScript = i < 100 ? "cover_crouch" : "combat";
-            m.sample(s, 0.05);
-        }
-        for (int i = 0; i < 240; ++i) {
-            FireMonitor::Sample s = actor(6, "axis", true, true);
-            s.animScript = i < 200 ? "move" : "stop";
-            m.sample(s, 0.05);
-        }
-        for (int i = 0; i < 240; ++i) {
-            FireMonitor::Sample s = actor(8, "axis", true, true);
-            s.suppressed = i < 100;
-            s.animScript = "combat";
-            m.sample(s, 0.05);
-        }
-        CHECK(m.silent().size() == 3);
-        if (m.silent().size() == 3) {
-            CHECK(std::fabs(m.silent()[0].suppressedSecs - 7.5) < 0.01 && m.silent()[0].mainScript == "combat");
+        });
+        stretch(6, [](FireMonitor::Sample& s, int i) { s.animScript = i < 200 ? "move" : "stop"; }); // 10 s moving, 2 s in stop
+        stretch(8, [](FireMonitor::Sample& s, int) { s.suppressed = true; });                       // suppressed, scripts told no
+        stretch(10, [](FireMonitor::Sample& s, int i) { s.animScript = i < 80 ? "move" : "combat"; }); // 4 s moving, 8 s left
+        stretch(11, [](FireMonitor::Sample& s, int i) { s.toldSuppressed = true; s.suppressed = i < 20; }); // told yes, engine 1 s only
+        stretch(12, [](FireMonitor::Sample& s, int) { s.scriptState = "melee"; }); // the melee script state throughout
+        CHECK(m.silent().size() == 6);
+        if (m.silent().size() == 6) CHECK(m.silent()[5].reason() == "melee" && std::fabs(m.silent()[5].meleeSecs - 12.0) < 0.06);
+        if (m.silent().size() == 6) {
+            CHECK(std::fabs(m.silent()[0].suppressedSecs - 12.0) < 0.06 && m.silent()[0].mainScript == "combat");
             CHECK(m.silent()[0].reason() == "suppressed");
             CHECK(m.silent()[1].mainScript == "move" && m.silent()[1].reason() == "running");
-            CHECK(m.silent()[2].reason().empty()); // 5 s of 12 suppressed: not explained
+            CHECK(m.silent()[2].reason().empty() && m.silent()[2].suppressedSecs >= 11.9);
+            CHECK(m.silent()[3].reason() == "running" && m.silent()[3].mainScript == "combat");
+            CHECK(m.silent()[4].reason().empty());
         }
-        CHECK(m.unexplainedSilent() == 1);
+        CHECK(m.unexplainedSilent() == 2);
     }
     if (failures) return 1;
     std::cout << "firemonitor OK\n";

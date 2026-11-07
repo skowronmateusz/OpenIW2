@@ -2604,8 +2604,8 @@ int main(int argc, char** argv) {
             }
             for (const auto& ss : world.fireMon.silent()) {
                 char fb[384];
-                std::snprintf(fb, sizeof fb, "SILENT-SHOOTER #%d %s %s at %.0f,%.0f,%.0f from %.1f s: enemy in sight %.1f s, %d firing animation starts, no shot, suppressed %.1f s, mostly in %s, reason %s", ss.number, ss.classname.c_str(),
-                              ss.team.c_str(), ss.pos[0], ss.pos[1], ss.pos[2], ss.startSecs, ss.visibleSecs, ss.animStarts, ss.suppressedSecs, ss.mainScript.empty() ? "-" : ss.mainScript.c_str(), ss.reason().empty() ? "unexplained" : ss.reason().c_str());
+                std::snprintf(fb, sizeof fb, "SILENT-SHOOTER #%d %s %s at %.0f,%.0f,%.0f from %.1f s: enemy in sight %.1f s, %d firing animation starts, no shot, suppressed %.1f s (told %.1f s), moving %.1f s, melee %.1f s, mostly in %s, reason %s", ss.number, ss.classname.c_str(),
+                              ss.team.c_str(), ss.pos[0], ss.pos[1], ss.pos[2], ss.startSecs, ss.visibleSecs, ss.animStarts, ss.suppressedSecs, ss.hidingSecs, ss.movingSecs, ss.meleeSecs, ss.mainScript.empty() ? "-" : ss.mainScript.c_str(), ss.reason().empty() ? "unexplained" : ss.reason().c_str());
                 r << fb << "\n";
             }
             r << "[inventory]\n"; // docs/debug-flags.md "Inventory across level changes"

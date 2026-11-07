@@ -77,8 +77,8 @@ bool isEnemyTeam(const Entity& me, const Entity& other) {
 // path.
 void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) {
     // The team check is skipped for the player (its entity +0xfc, the client pointer, is nonzero — G_Damage's
-    // "client or actor" pair 0x528050, confirmed by 0x53145c), so player fire also suppresses same-team and
-    // neutral actors (which then get a short-lived plane and their path dropped).
+    // "client or actor" pair 0x528050, confirmed by 0x53145c). Its suppression line also reaches its own team
+    // (0x53147a), whose actors then get a short-lived plane and their path dropped.
     if (!source.isPlayer && !isEnemyTeam(e, source)) return;
     int slot = -1;
     int64_t best = std::numeric_limits<int64_t>::max();
@@ -110,16 +110,24 @@ void World::addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const
     if (p.shortLived) clearActorPath(e); // 0x54b48f: a same-team source drops the actor's path
 }
 
-// 0x54b4d0 (each actor think, 0x4ff030): a short-lived plane expires after 300 ms, the others after the actor's
-// `suppressionwait` (field +0x20b0, ms; default 5000).
+// 0x54b4d0 (each actor think, 0x4ff030): a plane expires once it is `suppressionwait` old (field +0x20b0, ms; default
+// 5000), a short-lived one already at 300 ms (0x54b4ee; it falls through to the wait test before that). Only the time
+// word is cleared (0x54b4fe): the slot keeps its source, so the slot choice 0x54b370 still gives that source its old slot.
 void World::expireDangerPlanes(Entity& e) {
     const Value w = e.obj->get("suppressionwait");
     const int64_t wait = int64_t((w.isNumber() ? w.asFloat() : 5.0f) * 1000.0f);
     for (DangerPlane& p : e.dangerPlanes) {
         if (p.timeMs == 0) continue;
         const int64_t since = timeMs_ - p.timeMs;
-        if (since >= (p.shortLived ? 300 : wait)) p = {};
+        if ((p.shortLived && since >= 300) || since >= wait) p.timeMs = 0;
     }
+}
+
+// issuppressed (0x53e6a0): one of the four slots is in use (+0x0 time != 0) and not short-lived (+0x14 == 0).
+bool World::isSuppressed(const Entity& e) const {
+    for (const DangerPlane& p : e.dangerPlanes)
+        if (p.timeMs != 0 && !p.shortLived) return true;
+    return false;
 }
 
 // 0x54b5a0 (from the per-sentient release 0x4fe170, on the sentient's death/removal): the planes it added go.

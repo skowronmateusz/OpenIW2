@@ -2,6 +2,12 @@
 
 namespace iw2::game {
 
+std::string SilentShooter::reason() const {
+    if (visibleSecs - movingSecs - hidingSecs - meleeSecs >= FireMonitor::kSilentVisibleSecs) return "";
+    if (movingSecs >= hidingSecs && movingSecs >= meleeSecs) return "running";
+    return hidingSecs >= meleeSecs ? "suppressed" : "melee";
+}
+
 void FireMonitor::shot(int shooter, const std::string& team) {
     ++teams_[team].shots;
     ++actors_[shooter].shots;
@@ -22,22 +28,36 @@ void FireMonitor::sample(const Sample& s, double dt) {
         if (a.hidden >= kGraceSecs) finishStretch(a);
         return;
     }
+    // A shot ends the stretch (a flagged one keeps the seconds up to the shot) and the next silent stretch starts here.
+    if (a.visible > 0 && a.shots != a.shotsAtStart) finishStretch(a);
     a.hidden = 0;
     if (a.visible == 0) a.shotsAtStart = a.shots;
     a.visible += dt;
     a.stretchStarts += started;
     if (s.suppressed) a.suppressedSecs += dt;
+    if (s.animScript == "move") a.movingSecs += dt;
+    else if (s.suppressed && s.toldSuppressed) a.hidingSecs += dt;
+    else if (s.scriptState == "melee") a.meleeSecs += dt;
     a.scriptSecs[s.animScript] += dt;
-    // Flag as soon as the stretch qualifies (a shot afterwards does not undo it: the report lists the stretch).
-    if (a.silentIdx < 0 && a.visible >= kSilentVisibleSecs && a.shots == a.shotsAtStart) {
+    // Flag as soon as the stretch qualifies (a later shot ends it but does not undo it: the report lists the stretch).
+    if (a.silentIdx < 0 && a.visible >= kSilentVisibleSecs) {
         a.silentIdx = int(silent_.size());
-        silent_.push_back({s.number, a.classname, a.team, a.pos, elapsed_ - a.visible, a.visible, a.stretchStarts, 0, {}});
+        SilentShooter ss;
+        ss.number = s.number;
+        ss.classname = a.classname;
+        ss.team = a.team;
+        ss.pos = a.pos;
+        ss.startSecs = elapsed_ - a.visible;
+        silent_.push_back(ss);
     }
     if (a.silentIdx >= 0) {
         silent_[size_t(a.silentIdx)].visibleSecs = a.visible;
         SilentShooter& ss = silent_[size_t(a.silentIdx)];
         ss.animStarts = a.stretchStarts;
         ss.suppressedSecs = a.suppressedSecs;
+        ss.movingSecs = a.movingSecs;
+        ss.hidingSecs = a.hidingSecs;
+        ss.meleeSecs = a.meleeSecs;
         double best = -1;
         for (const auto& [name, secs] : a.scriptSecs)
             if (secs > best) best = secs, ss.mainScript = name;
@@ -50,6 +70,7 @@ void FireMonitor::finishStretch(Actor& a) {
     a.hidden = 0;
     a.silentIdx = -1;
     a.suppressedSecs = 0;
+    a.movingSecs = a.hidingSecs = a.meleeSecs = 0;
     a.scriptSecs.clear();
 }
 

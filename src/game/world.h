@@ -286,6 +286,10 @@ struct Entity {
     bool turretAnimSet = false;            // actor +0x211a: setturretanim was called
     ActorAi ai;                            // actor state machine (src/game/actorstate.cpp)
     std::array<DangerPlane, 4> dangerPlanes; // actor +0x2050 (src/game/actorpath.cpp)
+    // trackscriptstate (0x540280): actor +0x2140 scriptstate, +0x2142 lastscriptstate, +0x2144 statechangereason. In the exe only a
+    // debug print reads them; here the fire monitor does. Not saved (empty after a load until the next call).
+    std::string scriptState, lastScriptState, stateChangeReason;
+    int lastSuppressedAnswer = -1; // debug only (fire monitor), not saved: the last issuppressed answer (1 yes, 0 no, -1 none yet)
     struct Entity* lastAttacker = nullptr; // sentient +0x28 (G_Damage 0x5284dd; AI events 5/6 reveal it, pain clears it)
     std::unique_ptr<GrenadeState> grenade; // grenade missile (src/game/grenades.cpp)
     std::unique_ptr<RocketState> rocket;   // rocket missile (src/game/rockets.cpp)
@@ -815,6 +819,8 @@ public:
     Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }
     // Test hook: Bullet_Fire from any entity (its `weapon` field names the weapon, as for actors).
     Entity* debugFireBulletFrom(Entity& shooter, const Vec3& start, const Vec3& end) { return fireBullet(shooter, start, end, 10, &shooter); }
+    void debugExpireDangerPlanes(Entity& e) { expireDangerPlanes(e); } // test hook: the per-think expiry 0x54b4d0
+    void debugAddDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) { addDangerPlane(e, source, a, b); }
     Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
         return spawnGrenade(*player_, weapon, start, velocity, fuseMs);
     }
@@ -1335,15 +1341,25 @@ public:
     void playerPmEvents(int eventSeq, const int (&events)[4], bool crouched);
 private:
     int playerEventSeq_ = 0;
-    // Receivers of an AI event by team (the mask in EAX of 0x535770: 0 = the source's enemy team, 1 << team otherwise).
-    enum class AiHear { All, Enemy, Own };
+    // Receivers of an AI event by team: the mask in EAX of 0x535770 / 0x535860, bit n = team number n (0 none, 1 axis, 2 allies,
+    // 3 neutral). 0 makes the broadcast gate the source (a sentient of axis or allies) and use 1 << its enemy team.
+public:
+    static int aiTeamNumber(const Entity& e);
+    static uint32_t aiEnemyMask(const Entity& e) { return 1u << kAiEnemyTeam[aiTeamNumber(e)]; } // table {0, 2, 1, 0, 0}
+    static uint32_t aiOwnMask(const Entity& e) { return 1u << aiTeamNumber(e); }
+private:
+    static constexpr int kAiEnemyTeam[5] = {0, 2, 1, 0, 0};
     void painBroadcast(Entity& e); // 0x54d300
-    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2 = 0, bool forced = true, AiHear hear = AiHear::All); // 0x535770
-    void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2 = 0,
-                     bool forced = true); // 0x535860 + 0x535f20
+    void aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2, uint32_t teamMask); // 0x535770
+    void aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2,
+                     uint32_t teamMask); // 0x535860 + 0x535f20
     // Path planner (src/game/actorpath.cpp)
     void addDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b); // 0x54b3b0 (slot 0x54b370)
     void expireDangerPlanes(Entity& e);  // 0x54b4d0 (from the actor think 0x4ff030)
+public:
+    bool isSuppressed(const Entity& e) const; // 0x53e6a0 (issuppressed)
+    static constexpr int64_t kCanSeeDefaultMs = 250; // cansee without a time argument: record age 250 ms (0x53da00)
+private:
     void removeDangerPlanesFrom(int sourceNumber); // 0x54b5a0 (sentient release 0x4fe170)
     std::vector<PathPlane> dangerPlanesOf(const Entity& e) const; // 0x54b670
     bool hasFreeDangerPlane(const Entity& e) const; // 0x54b610

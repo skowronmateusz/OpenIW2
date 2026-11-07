@@ -16,8 +16,8 @@ decoytrenches axis 36.8
 decoytrenches allies 32.8
 demolition axis 43.4
 demolition allies 16.6
-downtown_assault axis 87.9
-downtown_assault allies 31.5
+downtown_assault axis 98.9
+downtown_assault allies 41.8
 downtown_sniper axis 25.8
 downtown_sniper allies 1.3
 duhoc_defend axis 50.3
@@ -26,10 +26,10 @@ elalamein axis 9.8
 elalamein allies 17.6
 eldaba axis 97.5
 eldaba allies 33.4
-hill400_assault axis 38.8
-hill400_assault allies 24.0
-hill400_defend axis 11.3
-hill400_defend allies 39.3
+hill400_assault axis 36.0
+hill400_assault allies 18.6
+hill400_defend axis 13.2
+hill400_defend allies 38.1
 libya axis 226.1
 matmata axis 84.2
 matmata allies 4.7
@@ -43,8 +43,8 @@ silotown_assault axis 84.4
 silotown_assault allies 98.4
 tankhunt axis 48.9
 tankhunt allies 29.8
-toujane axis 40.9
-toujane allies 6.7
+toujane axis 30.7
+toujane allies 11.3
 toujane_ride axis 12.0
 toujane_ride allies 16.0
 trainyard axis 40.6

@@ -245,15 +245,30 @@ void World::sampleFireMonitor() {
         // Visible = the actor's own sight record of its enemy says so (what the cansee built-in and so the animscripts read:
         // field of view, sight distance, sight traces), read without making a new check so the monitor does not change the run.
         // A plain eye-to-eye trace is not used: it also counts enemies the AI does not see (behind its back, out of sight range).
-        // Nothing clears the record when checks stop, so a result older than a second counts as unknown (not visible).
+        // The record counts as long as cansee without a time argument would use it (0x54ce10 with the default 250 ms,
+        // 0x53da00; the shipped animscripts call it so). An older one counts as not visible: cansee would check anew,
+        // which the monitor does not do, so it can undercount sight but never invents it.
         if (s.hasEnemy)
             if (auto it = e.sentientInfo.find(en->obj.get()); it != e.sentientInfo.end())
-                s.enemyVisible = it->second.lastCheckMs != 0 && it->second.lastCheckMs + 1000 >= timeMs_ && it->second.visible;
+                s.enemyVisible = it->second.lastCheckMs != 0 && it->second.lastCheckMs + kCanSeeDefaultMs >= timeMs_ && it->second.visible;
         if (e.anim) s.fireAnimStarts = e.anim->fireAnimStarts;
         // Context for the report: a held suppression line (what issuppressed reads) and the running animscript.
-        for (const DangerPlane& p : e.dangerPlanes) s.suppressed = s.suppressed || (p.timeMs != 0 && !p.shortLived);
+        s.suppressed = isSuppressed(e);
+        s.toldSuppressed = e.lastSuppressedAnswer == 1;
+        s.scriptState = e.scriptState;
         s.animScript = e.animScript;
         fireMon.sample(s, 0.05);
+        // IW2_FIRE_TRACE=n,m,...: once per second, what a listed actor does (debug; reads only).
+        static const char* traceList = std::getenv("IW2_FIRE_TRACE");
+        if (traceList && timeMs_ % 1000 == 0 && (std::string(",") + traceList + ",").find("," + std::to_string(e.number) + ",") != std::string::npos) {
+            const Vec3 eo = en && en->obj->get("origin").isVector() ? en->obj->get("origin").asVector() : Vec3{0, 0, 0};
+            std::fprintf(stderr, "[firetrace %lld] #%d at %.0f,%.0f,%.0f script %s pose %s enemy %d at %.0f,%.0f,%.0f visible %d suppressed %d told %d clip %s weapon %s state %d scriptstate %s\n",
+                         (long long)timeMs_, e.number, s.pos[0], s.pos[1], s.pos[2], e.animScript.c_str(), e.obj->get("anim_pose").toString().c_str(),
+                         en ? en->number : -1, eo[0], eo[1], eo[2], int(s.enemyVisible), int(s.suppressed), e.lastSuppressedAnswer,
+                         e.obj->get("bulletsinclip").toString().c_str(), e.obj->get("weapon").toString().c_str(), int(e.ai.stack[size_t(e.ai.depth)]),
+                         e.scriptState.c_str());
+            for (const std::string& t : vm_.describeThreadsOf(e.obj, true)) std::fprintf(stderr, "    %s\n", t.c_str());
+        }
     }
 }
 
@@ -641,12 +656,14 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         }
         break;
     }
-    // 0x531443…0x531489: the shot is told to the AI around — a "bullet fired" point event at the muzzle (type 10,
-    // 2048²) and the suppression line muzzle → impact (type 16, 128², 0x535860 → 0x54b3b0 adds a danger plane) —
-    // both with the broadcast gate forced, when the shooter is a sentient.
+    // 0x531420…0x531489: when the attacker is a sentient (+0x104) the shot is told to the AI around — a "bullet fired" point
+    // event at the muzzle (type 10, 2048²) to the attacker's enemy team (EAX = 1 << enemy team, 0x53144b / 0x53144f) and the
+    // suppression line muzzle → impact (type 16, 128², 0x535860 → 0x54b3b0 adds a danger plane) to the same team, plus the
+    // attacker's own team when it is the player (entity +0xfc, 0x53145c…0x53147a).
     if (attacker && (attacker->isActor || attacker->isPlayer)) {
-        aiEventPoint(*attacker, 10, start);
-        aiEventLine(*attacker, 16, start, tr.endPos);
+        const uint32_t enemies = aiEnemyMask(*attacker);
+        aiEventPoint(*attacker, 10, start, 0.0f, enemies);
+        aiEventLine(*attacker, 16, start, tr.endPos, 0.0f, attacker->isPlayer ? enemies | aiOwnMask(*attacker) : enemies);
     }
     // 0x5314ac: the trigger_damage brushes the shot crosses (start -> impact) are hit with the weapon's damage.
     triggerDamageSegment(attacker ? attacker : &shooter, start, tr.endPos, damageAmount, rifle ? 2 : 1);
@@ -930,7 +947,7 @@ void World::registerCombatBuiltins() {
         Entity* b = entityOf(c.arg(0));
         if (!a || !b) return Value(false);
         if (a->isActor && isSentient(*b)) {
-            const int64_t within = c.argc() > 1 ? int64_t(c.arg(1).asFloat() * 1000.0f) : 250;
+            const int64_t within = c.argc() > 1 ? int64_t(c.arg(1).asFloat() * 1000.0f) : kCanSeeDefaultMs;
             return Value(seesWithin(*a, *b, within));
         }
         return Value(canSee(*a, *b));
@@ -970,7 +987,7 @@ void World::registerCombatBuiltins() {
         if (!c.arg(1).isVector()) {
             // Firing at the current enemy is an AI event (type 4) at the shooter's origin, heard by its own team
             // (0x550b5f: EAX 1 << the shooter's team; 0x535ba0 passes the shooter's enemy knowledge on).
-            if (enemy) aiEventPoint(*a, 4, a->obj->get("origin").asVector(), 0.0f, true, AiHear::Own);
+            if (enemy) aiEventPoint(*a, 4, a->obj->get("origin").asVector(), 0.0f, aiOwnMask(*a));
             const Value accV = a->obj->get("accuracy");
             const float actorAcc = accV.isNumber() ? accV.asFloat() : 0.5f;
             const Value wnv = a->obj->get("weapon");
@@ -1378,7 +1395,18 @@ void World::registerCombatBuiltins() {
         if (c.argc() > 1) e->obj->set("$lookatsub", Value(text(c.arg(1))));
         return Value();
     });
-    for (const char* noop : {"trackscriptstate", "setdefaultdroppitch", "restoredefaultdroppitch"})
+    // trackscriptstate(state, reason) (0x540280): actor only (0x591798); exactly two arguments, else the usage error (0x5911e8); the
+    // old state moves to lastscriptstate (+0x2142), the new one to +0x2140, the reason to +0x2144.
+    vm_.registerBuiltin("trackscriptstate", [this](CallContext& c) {
+        Entity* e = entityOf(c.self);
+        if (!e || !e->isActor) throw std::runtime_error("not an actor");
+        if (c.argc() != 2) throw std::runtime_error("trackScriptState newStateName, reasonForTransition");
+        e->lastScriptState = e->scriptState;
+        e->scriptState = c.arg(0).toString();
+        e->stateChangeReason = c.arg(1).toString();
+        return Value();
+    });
+    for (const char* noop : {"setdefaultdroppitch", "restoredefaultdroppitch"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
     // Traces (result keys as used by the shipped scripts and present as strings in the exe: "fraction",
     // "position", "entity", "normal", "surfacetype"). Surface types are not decoded yet ("default").
@@ -1497,9 +1525,9 @@ void World::registerCombatBuiltins() {
     vm_.registerBuiltin("issuppressed", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e || !e->isActor) throw std::runtime_error("not an actor");
-        for (const DangerPlane& p : e->dangerPlanes)
-            if (p.timeMs != 0 && !p.shortLived) return Value(true);
-        return Value(false);
+        const bool s = isSuppressed(*e);
+        e->lastSuppressedAnswer = s ? 1 : 0; // read by the fire monitor only
+        return Value(s);
     });
     // getclosestenemysqdist (0x53c290): self must be a sentient ("not a sentient", 0x590bd8); the smallest squared distance from self's origin
     // to the origin of an enemy-team sentient (team mask table 0x53c2e7: allies 2, axis 1) that self has a known record of (+0x1784 > 0),

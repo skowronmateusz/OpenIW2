@@ -855,21 +855,32 @@ bool segmentsCross(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d) {
 
 // 0x53dce0: docs/spec/ai.md "maymovetopoint".
 bool World::mayMoveToPoint(Entity& e, const Vec3& point) {
-    if (links_.count(e.number)) return false;
+    // IW2_MAYMOVE_LOG=<actor number> (or -1 for all): which test failed (debug; docs/debug-flags.md).
+    static const char* log = std::getenv("IW2_MAYMOVE_LOG");
+    const bool logIt = log && (std::atoi(log) == e.number || std::atoi(log) < 0);
+    auto fail = [&](const char* why, int other) {
+        if (logIt)
+            std::fprintf(stderr, "[maymove %lld] #%d point %.0f,%.0f,%.0f fails: %s %d\n", (long long)timeMs_, e.number, point[0], point[1],
+                         point[2], why, other);
+        return false;
+    };
+    if (links_.count(e.number)) return fail("linked", -1);
     const Vec3 o = vecField(e.obj, "origin");
     const std::string team = e.obj->get("team").toString();
     for (const auto& t : entities_) {
         if (t.get() == &e || !isSentient(*t) || t->obj->get("team").toString() != team) continue;
         Entity* foe = entityOf(t->obj->get("enemy"));
-        if (foe && segmentsCross(vecField(t->obj, "origin"), vecField(foe->obj, "origin"), o, point)) return false;
+        if (foe && segmentsCross(vecField(t->obj, "origin"), vecField(foe->obj, "origin"), o, point))
+            return fail("crosses the fire line of", t->number);
     }
     const uint32_t mask = e.ai.noPush ? 0x2820011u : 0x820011u;
     const TraceResult tr = collision_->trace({point[0], point[1], point[2] + 128.0f}, {point[0], point[1], point[2] - 128.0f}, {0, 0, 0}, {0, 0, 0},
                                              mask | 0x6000u, e.number);
-    if (tr.allSolid) return false;
+    if (tr.allSolid) return fail("all solid", -1);
     Vec3 out{};
-    if (!aiReach(o, point, e.number, mask | 0x4004u, out, e.ai.prone.tilt ? 10.0f : 18.0f)) return false;
-    if (!inActorGoal(e, point) && !(startPathToEnemy(e) && inActorGoal(e, point))) return false;
+    if (!aiReach(o, point, e.number, mask | 0x4004u, out, e.ai.prone.tilt ? 10.0f : 18.0f)) return fail("move check", -1);
+    if (!inActorGoal(e, point) && !(startPathToEnemy(e) && inActorGoal(e, point))) return fail("outside the goal", -1);
+    if (logIt) std::fprintf(stderr, "[maymove %lld] #%d point %.0f,%.0f,%.0f passes\n", (long long)timeMs_, e.number, point[0], point[1], point[2]);
     e.ai.mayMoveMs = timeMs_; // 0x53df8d, read by 0x548be0
     return true;
 }

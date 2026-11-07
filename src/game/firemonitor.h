@@ -20,17 +20,21 @@ struct SilentShooter {
     script::Vec3 pos{0, 0, 0};
     double startSecs = 0, visibleSecs = 0;
     int animStarts = 0;
-    double suppressedSecs = 0; // seconds of the stretch the actor held a suppression line (issuppressed)
+    double suppressedSecs = 0; // seconds of the stretch the engine held the actor suppressed (issuppressed, 0x53e6a0)
+    double movingSecs = 0;     // seconds in the move animscript
+    double hidingSecs = 0;     // seconds outside it while suppressed and the scripts' last issuppressed answer was yes
+    double meleeSecs = 0;      // seconds outside both in the melee script state (trackscriptstate "melee")
     std::string mainScript;    // the animscript the actor spent most of the stretch in (e.g. mg42/stand, cover_crouch)
-    // A reason from the shipped animscripts why the actor does not shoot, or "" when the stretch is unexplained:
-    // "running" when it spent most of the stretch in the move script (the run script never shoots while running: its
-    // shoot-while-running test is commented out, animscripts/run.gsc:12-42), "suppressed" when it held a suppression line for
-    // at least half of it (the cover scripts hide while issuppressed is true, e.g. animscripts/cover_crouch.gsc:1033-1034).
-    std::string reason() const {
-        if (mainScript == "move") return "running";
-        if (suppressedSecs * 2 >= visibleSecs) return "suppressed";
-        return "";
-    }
+    // A reason from the shipped animscripts why the actor does not shoot, or "" when the stretch is unexplained. Each sample
+    // is explained by "running" when the actor is in the move animscript (its run and walk handlers never shoot: the run
+    // script's shoot-while-running test is commented out, animscripts/run.gsc:13-42, and walk.gsc has no fire call;
+    // move.gsc:119-129 picks one of the two), or by "suppressed" when the engine holds it suppressed and the last answer the
+    // animscripts got from issuppressed was yes (the cover scripts hide or stop firing on it, e.g. cover_crouch.gsc:1179,
+    // 1431), or by "melee" when the animscripts' own state (trackscriptstate, 0x540280) is "melee": animscripts/melee.gsc:6-8
+    // MeleeCombat strikes instead of shooting as long as the enemy stays in melee range (melee.gsc:19-25; against a god-mode
+    // player that is for ever). The stretch is unexplained when the samples explained by neither still add up to the silent threshold
+    // (FireMonitor::kSilentVisibleSecs, the same test that flags a stretch); otherwise the larger explained part names it.
+    std::string reason() const;
 };
 
 class FireMonitor {
@@ -47,8 +51,10 @@ public:
         script::Vec3 pos{0, 0, 0};
         bool hasEnemy = false, enemyVisible = false;
         int fireAnimStarts = 0; // cumulative count of firing-animation starts of this actor
-        bool suppressed = false; // issuppressed() is true
-        std::string animScript;  // the running animscript
+        bool suppressed = false;   // the engine's issuppressed state (World::isSuppressed)
+        bool toldSuppressed = false; // the animscripts' last issuppressed call answered yes
+        std::string scriptState;   // the last trackscriptstate state of the running animscript (e.g. "melee")
+        std::string animScript;    // the running animscript
     };
     struct TeamTotals {
         int shots = 0;
@@ -87,6 +93,7 @@ private:
         double hidden = 0;             // seconds without a visible enemy inside the stretch
         int silentIdx = -1;            // index into silent_ of the running stretch once flagged
         double suppressedSecs = 0;     // suppressed seconds in the stretch
+        double movingSecs = 0, hidingSecs = 0, meleeSecs = 0;
         std::map<std::string, double> scriptSecs; // seconds per animscript in the stretch
     };
     void finishStretch(Actor& a);

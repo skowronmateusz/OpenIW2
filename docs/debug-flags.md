@@ -202,22 +202,37 @@ and objectives. `--report` now has the AI fire counters (the monitor samples eve
   eye-to-eye line to the actor's own enemy was clear), `ai_shots_per_min_<team>` (shots per combat minute). Section `[firerate]` lists every team (also `neutral`/`undefined` for
   gunless or unteamed shooters such as map-placed turrets) and the silent shooters.
 - Silent shooter: an actor whose enemy its own sight record marks visible (the record the `cansee` built-in and so the animscripts read: field of view,
-  sight distance, sight traces; the monitor reads it without making a check) for 10 s in a row (gaps under 1 s ignored) without one shot. A shot of a turret
-  or vehicle gun counts for its gunner. The line gives the entity number, classname, position, start time, the number of shooting animations (nodes whose
-  animation has a `fire` notetrack) started meanwhile, the seconds it held a suppression line (what `issuppressed` reads), the animscript it spent most of
-  the stretch in, and a reason: `running` (mostly in `move`: the run script never shoots while running, its shoot-while-running test is commented out,
-  animscripts/run.gsc:12-42), `suppressed` (suppressed for at least half of it: the cover scripts hide while suppressed, e.g.
-  animscripts/cover_crouch.gsc:1033-1034), else `unexplained`. Report fields `silent_shooters` (all) and `silent_unexplained`. `SILENT:n` is flagged from
-  10 unexplained stretches per run.
-- Seed-1 classification of the decoytrenches / decoytown / crossroads stretches (eye-trace monitor before: 26 / 18 / 11; now all / unexplained: 14 / 6,
-  10 / 0, 4 / 3): turret gunners whose MG fired (credited to the turret entity before, 11 on decoytrenches); running (the bulk on decoytown: axis
-  reinforcements running down the street); suppressed (allied riflemen in the decoytrenches trenches under MG fire); enemies the eye trace saw but the
-  actor's own sight did not (behind it or beyond its sight); an actor that sees its enemy but whose muzzle traces are blocked by the trench edge
-  (canshoot fails in both poses, the exposed script only aims: animscripts/utility.gsc canShootEnemyFrom, animscripts/exposedcombat.gsc:336); a
-  pistol-melee loop against the god-mode player; corner actors whose step-out point fails maymovetopoint (the corner script idles until it passes:
-  animscripts/corner_axis.gsc:1208-1215), once because a teammate's line to its enemy crosses the step and once because the point lies outside the
-  actor's goal volume (both rules of docs/spec/ai.md "maymovetopoint"; not compared with a run of the original); idle MG gunners. None of the traced
-  actors (about ten) was stuck in an animscript waiting for a notify that never comes.
+  sight distance, sight traces; the monitor reads it without making a check, and only while it is at most 250 ms old, the age `cansee` without a time
+  argument accepts (0x53da00); an older record counts as not visible, so the monitor can undercount sight but never invents it) for 10 s in a row (gaps
+  under 1 s ignored) without one shot. A shot ends the stretch (a flagged stretch keeps its seconds up to that shot) and the next stretch starts there. A
+  shot of a turret or vehicle gun counts for its gunner. The line gives the entity number, classname, position, start time, the number of shooting
+  animations (nodes whose animation has a `fire` notetrack) started meanwhile, the seconds the engine held the actor suppressed (`World::isSuppressed`,
+  what `issuppressed` returns, 0x53e6a0) and of those the seconds after the scripts were told so, the seconds in the move script and in the melee state,
+  the animscript it spent most of the stretch in, and a reason. Each sample is explained by `running` (the actor is in the `move` animscript: its run
+  and walk handlers never shoot, the run script's shoot-while-running test is commented out, animscripts/run.gsc:13-42, walk.gsc has no fire call,
+  move.gsc:119-129 picks one of them), else `suppressed` (the engine holds it suppressed and the last answer the animscripts got from `issuppressed`
+  was yes: they hide or stop firing on it, e.g. cover_crouch.gsc:1179 / 1431, combat_utility.gsc:302), else `melee` (the animscripts' own state set by
+  `trackscriptstate`, 0x540280, is `melee`: melee.gsc:6-25 strikes instead of shooting while the enemy stays in melee range, which against a god-mode
+  player lasts for ever). The stretch is `unexplained` when the samples none of these explains still add up to 10 s (the silent threshold itself),
+  otherwise the largest explained part names it. Report fields `silent_shooters` (all) and `silent_unexplained`. `SILENT:n` is flagged from 10
+  unexplained stretches per run.
+- Seed-1 400 s autoplay, all / unexplained stretches: decoytrenches 14 / 6 → 20 / 4, crossroads 4 / 3 → 5 / 1, decoytown 10 / 0 → 12 / 0 (before: the
+  1 s sight age, the half-the-stretch suppression rule, the main script for `running`, and stretches that went on through shots; the extra stretches
+  are the ones a shot used to hide, nearly all `melee`). The traced remaining cases: an allied Thompson gunner in the decoytrenches trench (#613,
+  two stretches) whose eye sees the enemy but whose muzzle line is blocked (`canshoot` fails from both poses, so exposedcombat.gsc only aims,
+  exposedcombat.gsc:336; the muzzle trace stops about 110 units out at the trench edge while the eye trace is clear); an axis rifleman (#549) 3400
+  units from its enemy in the same aim-only branch between two shots 15 s apart (its muzzle traces were not logged); an axis corner actor (#745) idling in corner_axis.gsc:1208-1215 because its step-out point crosses a team mate's line to its enemy
+  (maymovetopoint, 0x53dc50), until it steps out and fires; on crossroads an allied panzerschreck soldier (#958) that holds a script target and only
+  fires at it once the sight trace from tag_flash to the target passes (exposedcombat.gsc:61, 1050-1063). The melee stretches are axis soldiers in
+  melee range of the god-mode player. A crossroads actor in the bad place state (#794: it runs the `stop` script there, stop.gsc standstillthink) is
+  now `running`. Not compared with a run of the original; the muzzle height of the aim poses and `sighttracepassed` were not checked against the exe.
+  Debug aids: `IW2_FIRE_TRACE=n,m,...` (iw2game with `--report`: once per second of game time the listed actors' animscript, pose, enemy,
+  sight, suppression, the last `issuppressed` answer, clip, weapon, AI state, script state and their script threads' wait sites, on stderr),
+  `IW2_MAYMOVE_LOG=n` (-1 for all: each maymovetopoint call of that actor and which test failed, with the team mate for the fire-line test),
+  `IW2_CANSHOOT_LOG=n` (each muzzle trace of `canshoot`).
+- Baseline update with the AI event receiver masks (docs/spec/ai.md "AI events": an actor's bullet events no longer reach its own team or
+  neutral actors, death events only the dead actor's team): seed-1 rates moved on four maps, axis / allies downtown_assault 87.9 / 31.5 → 98.9 / 41.8,
+  hill400_assault 38.8 / 24.0 → 36.0 / 18.6, hill400_defend 11.3 / 39.3 → 13.2 / 38.1, toujane 40.9 / 6.7 → 30.7 / 11.3; all other maps unchanged.
 - Sweep flags (summary.md table column "fire flags" and section "Fire rate"): `NO-FIRE:team` (a team with at least 120 sight seconds fired nothing; reports without
   `ai_sight_secs_<team>` fall back to combat seconds),
   `LOW-RATE:team(rate<baseline)` (an autoplay run under 65% of `tools/firerate-baseline.txt`, the rate of a clean 400 s autoplay run of that map and team,

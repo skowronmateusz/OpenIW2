@@ -26,29 +26,29 @@ float aiEventRadius2(int type) {
     }
 }
 
-// The 0x535770 / 0x535860 gate (when not forced, EAX flags 0): the source must be a sentient of a team that has an
-// enemy (axis ↔ allies, table {0, 2, 1, 0, 0}).
-bool aiEventSourceValid(const Entity& source, bool forced) {
-    if (forced) return true;
-    if (!(source.isActor || source.isPlayer)) return false;
-    const Value t = source.obj->get("team");
-    const std::string s = t.isString() ? t.asString() : std::string();
-    return s == "axis" || s == "allies";
+// The 0x535770 / 0x535860 receiver mask (EAX). A non-zero mask is used as it is (0x53577f / 0x53586f skip the gate). With 0 the
+// source must be a sentient (+0x104) whose team has an enemy in the table {0, 2, 1, 0, 0}, and the mask is 1 << that enemy team
+// (0x535795…0x5357c1, 0x535883…0x5358af); otherwise nothing is sent (0 is returned).
+uint32_t aiEventReceivers(const Entity& source, uint32_t mask) {
+    if (mask != 0) return mask;
+    if (!(source.isActor || source.isPlayer)) return 0;
+    const int t = World::aiTeamNumber(source);
+    return (t == 1 || t == 2) ? World::aiEnemyMask(source) : 0u;
 }
 
-// 0x535770 with EAX 0: the receivers are the actors of the source's enemy team (table {0, 2, 1, 0, 0}).
-bool aiEventEnemyTeams(const Entity& source, const Entity& actor) {
-    const Value t = source.obj->get("team"), u = actor.obj->get("team");
-    const std::string s = t.isString() ? t.asString() : std::string(), a = u.isString() ? u.asString() : std::string();
-    return (s == "axis" && a == "allies") || (s == "allies" && a == "axis");
-}
-
-bool aiEventSameTeam(const Entity& source, const Entity& actor) {
-    const Value t = source.obj->get("team"), u = actor.obj->get("team");
-    return t.isString() && u.isString() && t.asString() == u.asString();
+// The receiver iterators 0x4fe2c0 / 0x4fe310: live actors whose team bit (1 << actor team) is in the mask.
+bool aiEventHears(const Entity& actor, uint32_t mask) {
+    return (mask & (1u << World::aiTeamNumber(actor))) != 0;
 }
 
 } // namespace
+
+// The sentient team number (sentient +0x4): 1 axis, 2 allies, 3 neutral, 0 anything else.
+int World::aiTeamNumber(const Entity& e) {
+    const Value t = e.obj->get("team");
+    const std::string s = t.isString() ? t.asString() : std::string();
+    return s == "axis" ? 1 : s == "allies" ? 2 : s == "neutral" ? 3 : 0;
+}
 
 // 0x500c50: `target` learns `about`'s current position (last known time, position and where the target itself was
 // then; the ignore-until copy of sentient +0x38 is not modelled — the field is not read elsewhere in the exe).
@@ -138,42 +138,41 @@ void World::playerPmEvents(int eventSeq, const int (&events)[4], bool crouched) 
         if (!run && !walk) continue;
         const Value o = p->obj->get("origin");
         ++stats.playerNoise;
-        aiEventPoint(*p, walk ? 3 : 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, false, AiHear::Enemy);
+        aiEventPoint(*p, walk ? 3 : 2, o.isVector() ? o.asVector() : Vec3{0, 0, 0}, 0.0f, aiEnemyMask(*p));
     }
 }
 
 // 0x535770: an event of `type` at `pos`, radius² `radius2` (0: the type's default from the table 0x57031c), from
-// `source` to every actor within the radius. `forced` is the broadcast's EAX flag (bit 0 skips the team gate; the
-// producers pass 1, or 1 | 1 << team, except the weapon-fire line 0x526272 which passes 0).
-void World::aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2, bool forced, AiHear hear) {
-    if (!forced && hear == AiHear::All) hear = AiHear::Enemy; // EAX 0: the table's enemy team
-    if (!aiEventSourceValid(source, forced)) return;
+// `source` to every live actor within the radius whose team is in `teamMask` (0: the source's enemy team, gated).
+void World::aiEventPoint(Entity& source, int type, const Vec3& pos, float radius2, uint32_t teamMask) {
+    const uint32_t mask = aiEventReceivers(source, teamMask);
+    if (mask == 0) return;
     if (radius2 == 0.0f) radius2 = aiEventRadius2(type);
     for (const auto& ep : entities_) {
         Entity& a = *ep;
         if (!a.isActor || a.obj->removed || !a.ai.alive || a.ai.corpse) continue;
-        if (hear == AiHear::Enemy && !aiEventEnemyTeams(source, a)) continue;
-        if (hear == AiHear::Own && !aiEventSameTeam(source, a)) continue; // 1 << the source's team
+        if (!aiEventHears(a, mask)) continue;
         const Vec3 o = a.obj->get("origin").isVector() ? a.obj->get("origin").asVector() : Vec3{0, 0, 0};
         const float dx = o[0] - pos[0], dy = o[1] - pos[1], dz = o[2] - pos[2];
         if (dx * dx + dy * dy + dz * dz <= radius2) aiEventDispatch(source, a, type);
     }
 }
 
-// 0x535860 with its handler 0x535f20: an event of `type` along the segment a–b. Every actor within `radius2` (0: the
-// type's default) of the segment — measured at the closest point of it, behind `a` does not count — is told: the
+// 0x535860 with its handler 0x535f20: an event of `type` along the segment a–b. Every live actor of a team in `teamMask`
+// (as for 0x535770) within `radius2` (0: the type's default) of the segment — measured at the closest point of it, behind `a` does not count — is told: the
 // attacker mark (+0x1780 = now) and the source's position, and for type 16 (the suppression line of
 // Bullet_Fire_Extended) a danger plane on the far side of the segment (0x54b3b0). `source` must be a sentient.
-void World::aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2, bool forced) {
+void World::aiEventLine(Entity& source, int type, const Vec3& a, const Vec3& b, float radius2, uint32_t teamMask) {
     if (!(source.isActor || source.isPlayer)) return;
-    if (!aiEventSourceValid(source, forced)) return;
+    const uint32_t mask = aiEventReceivers(source, teamMask);
+    if (mask == 0) return;
     if (radius2 == 0.0f) radius2 = aiEventRadius2(type);
     const Vec3 d{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     const float len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
     for (const auto& ep : entities_) {
         Entity& t = *ep;
         if (!t.isActor || t.obj->removed || !t.ai.alive || t.ai.corpse) continue;
-        if (!forced && !aiEventEnemyTeams(source, t)) continue;
+        if (!aiEventHears(t, mask)) continue;
         const Vec3 o = t.obj->get("origin").isVector() ? t.obj->get("origin").asVector() : Vec3{0, 0, 0};
         const float along = (o[0] - a[0]) * d[0] + (o[1] - a[1]) * d[1] + (o[2] - a[2]) * d[2];
         if (along < 0.0f) continue; // behind the start: no event
