@@ -5731,14 +5731,16 @@ int main(int argc, char** argv) {
             // (which is spliced in below them), so it shows over a scope as the multiplayer script element does. No sound. Hidden with
             // menus open, while paused and while the player is dead.
             if (world && world->player() && frontStack.empty() && menuEnv.getCvar("cl_paused") != "1" &&
-                std::atof(menuEnv.getCvar("iw2_hitMarker").c_str()) != 0 &&
+                game::hitMarkerMode(float(std::atof(menuEnv.getCvar("iw2_hitMarker").c_str()))) != game::HitMarkerMode::Off &&
                 !(world->player()->obj->get("health").isNumber() && world->player()->obj->get("health").asInt() <= 0)) {
                 const game::HitMarkerLook look;
                 if (const float ha = game::hitMarkerAlpha(cgNowMs(), world->playerHitMarkerMs(), look); ha > 0) {
                     Quad2D q{left43 + (320.0f + look.offset) * sc, (240.0f + look.offset) * sc, 0, 0};
                     q.x1 = q.x0 + look.size * sc;
                     q.y1 = q.y0 + look.size * sc;
-                    std::memset(q.rgba, 255, 3);
+                    const auto col = game::hitMarkerColor(game::hitMarkerMode(float(std::atof(menuEnv.getCvar("iw2_hitMarker").c_str()))),
+                                                          world->playerHitMarkerMs(), world->playerHitMarkerKillMs());
+                    std::copy(col.begin(), col.end(), q.rgba);
                     q.rgba[3] = uint8_t(std::clamp(ha, 0.0f, 1.0f) * 255.0f + 0.5f);
                     q.texture = materialTexture("damage_feedback");
                     out.push_back(q);

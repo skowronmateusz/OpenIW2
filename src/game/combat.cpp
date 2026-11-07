@@ -332,6 +332,9 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // 0x5282e7 -> 0x4ff360: an actor held by the animscripted or negotiation state survives a lethal hit at 1 health. The
     // part not taken goes out as "damage_armor" (0x1c7f05a, same arguments as "damage"); +0xb4 asks the think for the
     // delayed death (0x4ff215, actorDelayedDeath). An actor already at 1 health takes nothing and leaves at 0x5283cc.
+    // openiw2 hit marker: decided on the amount before the held-back part is taken off, so a lethal hit on a held actor still counts.
+    const bool markerHit = hitMarkerTrigger(attacker && attacker->isPlayer, target.isActor, isAlive(target),
+                                            attacker ? attacker->obj->get("team").toString() : std::string(), target.obj->get("team").toString(), amount);
     if (target.isActor) {
         const auto held = [&](int st) {
             return std::find(target.ai.stack.begin(), target.ai.stack.begin() + target.ai.depth + 1, st) != target.ai.stack.begin() + target.ai.depth + 1;
@@ -340,6 +343,7 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         const int armor = actorDamageReduction(amount, target.obj->get("health").asInt(), allow.truthy(), held(AiScripted) || held(AiNegotiation));
         if (armor > 0) {
             target.ai.deathPending = true;
+            if (markerHit) target.ai.deathPendingMarker = true;
             amount -= armor;
             vm_.notify(target.obj, "damage_armor", {Value(int32_t(armor)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
             if (amount == 0) return;
@@ -365,10 +369,8 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     // G_Damage (0x5284d3): the target's sentient remembers its attacker (sentient +0x28); the AI events 5/6
     // reveal it to the actors around.
     if (attacker) target.lastAttacker = attacker;
-    // openiw2 hit marker (src/game/hitmarker.h): the player's damage to a living enemy actor.
-    if (hitMarkerTrigger(attacker && attacker->isPlayer, target.isActor, isAlive(target), attacker ? attacker->obj->get("team").toString() : std::string(),
-                         target.obj->get("team").toString(), amount))
-        hitMarkerMs_ = timeMs_;
+    // openiw2 hit marker (src/game/hitmarker.h): the player's damage to a living enemy actor (markerHit, above).
+    if (markerHit) hitMarkerMs_ = timeMs_;
     // FL_DEMI_GODMODE (flags & 2, toggled by the "demigod" cheat 0x4ea030): a hit that would take health to 0 or below is cut to health - 1
     // (0x5283d2..0x5283ec, after the blood accumulation; the "damage" notify carries the cut amount).
     if (target.obj->get("$demigod").truthy()) {
@@ -399,6 +401,10 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     }
     if (target.isActor) {
         ++stats.kills;
+        // openiw2 kill marker: this hit killed the enemy (after any demigod cut), or it ends a death the player's hit left pending
+        // (the delayed death of a held actor has no attacker): the marker shows again, red, at the moment of death.
+        if (markerHit || target.ai.deathPendingMarker) hitMarkerMs_ = hitMarkerKillMs_ = timeMs_;
+        target.ai.deathPendingMarker = false;
         // G_Damage notifies "death" (attacker, means-of-death name 0x5a95ac; 0x528474), then the die callback
         // (0x4ff530) sets the death state.
         vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});

@@ -119,6 +119,7 @@ struct ActorAi {
     std::array<int, 5> stack{AiExposed};      // +0x8, depth +0x1c
     int depth = 0;
     bool deathPending = false;                // +0xb4: a lethal hit was held back by 0x4ff360; the think kills once the state is gone (0x4ff215)
+    bool deathPendingMarker = false;          // openiw2 kill marker: that held-back hit was the player's (not saved: cosmetic)
     int bumpedEnt = 0x7ff;                    // +0x318 the entity the last actor slide move hit (0x7ff none, 0x7fe world); slide move only (default on)
     float hitNormal[2] = {0, 0};              // +0x324 / +0x328 (block +0x100 / +0x104): wall normal x / y recorded by the slide move; persists between moves (only +0x318 / +0x32d are reset per move)
     bool deflected = false;                   // +0x32d (block byte +0x109): the last slide move was stopped short by a trace (gethityaw / isdeflected)
@@ -605,6 +606,8 @@ public:
     // Game time (ms) of the last damage the player dealt to a living enemy actor (hitMarkerTrigger), -1 before the first. The front end
     // draws the hit marker from it when the option iw2_hitMarker is on (src/game/hitmarker.h).
     int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
+    // Game time (ms) of the last of those hits that killed the actor (it reached the death branch of the damage), -1 before the first.
+    int64_t playerHitMarkerKillMs() const { return hitMarkerKillMs_; }
     // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
     void applyPlayerEvent(int ev, int parm);
     // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
@@ -1495,7 +1498,7 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
-    int64_t hitMarkerMs_ = -1;
+    int64_t hitMarkerMs_ = -1, hitMarkerKillMs_ = -1;
     std::vector<Earthquake> earthquakes_;
     std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight
     uint32_t crosshairFlags_ = 0;

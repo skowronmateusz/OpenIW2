@@ -3,8 +3,11 @@
 // with an offset of (-12, -12), 24 x 24 virtual units, alpha 1 fading linearly to 0 over one second, restarted by every hit
 // (maps/mp/gametypes/_damagefeedback.gsc:12-33). The multiplayer sound is not played here. The gametype damage callbacks call it
 // for every damage a player deals to another player (dm.gsc:274, tdm.gsc:344), whatever the means of death.
+// Kill marker (iw2_hitMarker 2, also an openiw2 deviation, from multiplayer too): the same marker tinted red when the hit killed
+// the enemy. Multiplayer draws it white in every case.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -28,6 +31,24 @@ inline bool hitMarkerEnemies(const std::string& a, const std::string& b) {
 inline bool hitMarkerTrigger(bool attackerIsPlayer, bool targetIsActor, bool targetAlive, const std::string& attackerTeam,
                              const std::string& targetTeam, int amount) {
     return attackerIsPlayer && targetIsActor && targetAlive && amount > 0 && hitMarkerEnemies(attackerTeam, targetTeam);
+}
+
+// Option values of iw2_hitMarker: 0 off, 1 the multiplayer marker, 2 the marker red on a kill.
+enum class HitMarkerMode { Off = 0, On = 1, RedOnKill = 2 };
+inline HitMarkerMode hitMarkerMode(float cvar) {
+    if (cvar >= 1.5f) return HitMarkerMode::RedOnKill;
+    return cvar != 0.0f ? HitMarkerMode::On : HitMarkerMode::Off;
+}
+
+// Whether the marker shown for the last hit at hitMs is a kill: the last kill happened in the same frame. Several hits of one frame
+// (shotgun pellets, one explosion) show red when any of them killed; a later non-lethal hit shows white again.
+inline bool hitMarkerIsKill(int64_t hitMs, int64_t killMs) { return hitMs >= 0 && killMs == hitMs; }
+
+// Marker colour (0..255): white, or red for a kill in RedOnKill mode (the texture is a white X with a black outline, so the tint
+// turns the X red and keeps the outline).
+inline std::array<uint8_t, 3> hitMarkerColor(HitMarkerMode mode, int64_t hitMs, int64_t killMs) {
+    if (mode == HitMarkerMode::RedOnKill && hitMarkerIsKill(hitMs, killMs)) return {255, 0, 0};
+    return {255, 255, 255};
 }
 
 // Alpha of the marker `nowMs - hitMs` after the last hit (hitMs < 0: never hit).

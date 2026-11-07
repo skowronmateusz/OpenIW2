@@ -34,7 +34,8 @@ bool addOpenIw2Options(MenuLibrary& lib) {
     newLabel->name = "iw2_hitmarker_label";
     auto newValue = std::make_unique<Item>(*value);
     newValue->dvar = "iw2_hitMarker";
-    newValue->floatList = {{"@MENU_YES", 1.0f}, {"@MENU_NO", 0.0f}};
+    // 0 off, 1 the multiplayer marker, 2 red on a kill (src/game/hitmarker.h). The third label is not a localized key: shown as written.
+    newValue->floatList = {{"@MENU_YES", 1.0f}, {"Red on kill", 2.0f}, {"@MENU_NO", 0.0f}};
     newValue->rect.y = y;
     newValue->name = "iw2_hitmarker";
     m->items.push_back(std::move(newLabel));

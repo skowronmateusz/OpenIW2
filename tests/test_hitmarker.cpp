@@ -43,6 +43,12 @@ int main() {
     CHECK(hitMarkerAlpha(6000, 5000) == 0.0f && hitMarkerAlpha(9000, 5000) == 0.0f);
     CHECK(hitMarkerAlpha(4000, 5000) == 0.0f);
     const HitMarkerLook look;
+    // Kill marker (iw2_hitMarker 2): red only for a kill in the frame of the last hit, white otherwise and in mode 1.
+    CHECK(hitMarkerMode(0) == HitMarkerMode::Off && hitMarkerMode(1) == HitMarkerMode::On && hitMarkerMode(2) == HitMarkerMode::RedOnKill);
+    CHECK(!hitMarkerIsKill(-1, -1) && !hitMarkerIsKill(5000, -1) && hitMarkerIsKill(5000, 5000) && !hitMarkerIsKill(5050, 5000));
+    CHECK((hitMarkerColor(HitMarkerMode::RedOnKill, 5000, 5000) == std::array<uint8_t, 3>{255, 0, 0}));
+    CHECK((hitMarkerColor(HitMarkerMode::RedOnKill, 5050, 5000) == std::array<uint8_t, 3>{255, 255, 255})); // later non-lethal hit
+    CHECK((hitMarkerColor(HitMarkerMode::On, 5000, 5000) == std::array<uint8_t, 3>{255, 255, 255}));         // mode 1: always white
     CHECK(look.size == 24.0f && look.offset == -12.0f && look.fadeMs == 1000); // multiplayer: 24 x 24 at (-12, -12), fadeOverTime(1)
 
     // Off by default, and archived (saved in the profile).
@@ -101,7 +107,8 @@ menuDef
             const auto& value = *m->items[4];
             CHECK(label.decoration && label.text == "Hit marker" && label.rect.y == 75.0f);
             CHECK(value.type == 12 && value.dvar == "iw2_hitMarker" && value.rect.y == 75.0f && !value.decoration);
-            CHECK(value.floatList.size() == 2 && value.floatList[0].second == 1.0f && value.floatList[1].second == 0.0f);
+            CHECK(value.floatList.size() == 3 && value.floatList[0].second == 1.0f && value.floatList[1].second == 2.0f &&
+                  value.floatList[1].first == "Red on kill" && value.floatList[2].second == 0.0f);
         }
         iw2::ui::MenuLibrary empty(vfs);
         CHECK(!iw2::ui::addOpenIw2Options(empty)); // no menu, nothing added
@@ -118,7 +125,7 @@ menuDef
     World w(vfs, "toujane");
     w.start();
     for (int i = 0; i < 20; ++i) w.frame();
-    CHECK(w.playerHitMarkerMs() == -1);
+    CHECK(w.playerHitMarkerMs() == -1 && w.playerHitMarkerKillMs() == -1);
     // The level starts with allied actors only; two of them are switched to the opposing team, a third to neutral.
     Entity *axis = nullptr, *axis2 = nullptr, *ally = nullptr, *neutral = nullptr;
     for (const auto& e : w.entities()) {
@@ -138,7 +145,7 @@ menuDef
     w.frame();
     w.debugDamage(*axis, 1);
     const int64_t first = w.playerHitMarkerMs();
-    CHECK(first == w.timeMs());
+    CHECK(first == w.timeMs() && w.playerHitMarkerKillMs() == -1); // a hit, not a kill
     for (int i = 0; i < 10; ++i) w.frame();
     w.debugDamage(*axis2, 1);
     CHECK(w.playerHitMarkerMs() == w.timeMs() && w.playerHitMarkerMs() > first);
@@ -151,11 +158,44 @@ menuDef
     CHECK(w.playerHitMarkerMs() == before);
     // The killing blow counts, a corpse does not.
     for (int i = 0; i < 3; ++i) w.frame();
+    // These actors play a scripted animation, which holds a lethal hit back at 1 health (0x4ff360) unless allowdeath is set.
+    // With allowdeath the hit kills at once: red.
+    axis->obj->set("allowdeath", iw2::script::Value(int32_t(1)));
     w.debugDamage(*axis, 100000);
-    CHECK(w.playerHitMarkerMs() == w.timeMs());
+    CHECK(axis->obj->get("health").asInt() <= 0);
+    CHECK(w.playerHitMarkerMs() == w.timeMs() && w.playerHitMarkerKillMs() == w.timeMs());
+    CHECK(hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    for (int i = 0; i < 400 && axis->obj->get("health").asInt() > 0; ++i) w.frame();
+    CHECK(axis->obj->get("health").asInt() <= 0);
+    CHECK(w.playerHitMarkerKillMs() >= 0 && hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
     for (int i = 0; i < 3; ++i) w.frame();
     const int64_t beforeDead = w.playerHitMarkerMs();
     w.debugDamage(*axis, 5);
     CHECK(w.playerHitMarkerMs() == beforeDead);
+    // A later non-lethal hit on another enemy shows white again.
+    w.debugDamage(*axis2, 1);
+    CHECK(w.playerHitMarkerMs() == w.timeMs() && !hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    // Demigod cuts the killing blow to health - 1: a hit, no kill.
+    for (int i = 0; i < 3; ++i) w.frame();
+    axis2->obj->set("$demigod", iw2::script::Value(int32_t(1)));
+    w.debugDamage(*axis2, 100000);
+    CHECK(w.playerHitMarkerMs() == w.timeMs() && !hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    // Held back (no allowdeath): white at the hit, the pending death remembers the player's hit; the later delayed death (no
+    // attacker, 0x4ff215) shows the marker again, red.
+    for (int i = 0; i < 3; ++i) w.frame();
+    axis2->obj->set("$demigod", iw2::script::Value());
+    w.debugDamage(*axis2, 100000);
+    CHECK(axis2->obj->get("health").asInt() == 1 && axis2->ai.deathPending && axis2->ai.deathPendingMarker);
+    CHECK(!hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    for (int i = 0; i < 3; ++i) w.frame();
+    axis2->obj->set("allowdeath", iw2::script::Value(int32_t(1))); // stands in for the scripted state ending
+    w.debugDamageAt(*axis2, nullptr, 2, {0, 0, 0}, "head"); // the delayed death's shape: no attacker, more than the health
+    CHECK(axis2->obj->get("health").asInt() <= 0 && !axis2->ai.deathPendingMarker);
+    CHECK(w.playerHitMarkerKillMs() == w.timeMs() && hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    // Killing a friendly is no kill marker (last: it starts the friendly-fire failure).
+    for (int i = 0; i < 3; ++i) w.frame();
+    const int64_t killBefore = w.playerHitMarkerKillMs();
+    w.debugDamage(*ally, 100000);
+    CHECK(w.playerHitMarkerKillMs() == killBefore);
     return failures ? 1 : 0;
 }
