@@ -3847,16 +3847,17 @@ int main(int argc, char** argv) {
                     base.sunVisibility = sun;
                     storeProbe(base, c);
                 }
-                const auto corpseTurret = world ? game::World::corpseTurret(*e) : std::nullopt;
-                if ((e->vehicle && e->vehicle->info) || corpseTurret) {
-                    // A freed vehicle's wreck (eType 0xd) goes through the same client path (0x4acd30 -> 0x4ac2b0) with the turret
-                    // angles freevehicle left; it has no jolt, steering or suspension state here (TODO(spec): [wheels unproven]
-                    // whether the wreck's wheels are still placed on the ground).
+                const auto corpse = world ? game::World::corpseVehicle(*e) : std::nullopt;
+                if ((e->vehicle && e->vehicle->info) || corpse) {
+                    // A freed vehicle's wreck (eType 0xd) goes through the same client path (0x4acd30 -> 0x4ac2b0) with the fields
+                    // freevehicle left (turret, body tilt, steer, suspension travel); its wheels are still placed on the ground.
                     // Vehicle turret (cgame 0x4ac2b0 bone controls on tag_turret / tag_barrel; es+0x70 pitch, es+0x74 yaw, lerped).
                     // TODO(spec): [bone control order unproven] which control gets the pitch and which the yaw is a hypothesis (yaw on tag_turret, pitch on tag_barrel).
                     const Scene::CpuModel* vm = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!vm) continue;
-                    float tp = e->vehicle ? e->vehicle->turretPitch : (*corpseTurret)[0], ty = e->vehicle ? e->vehicle->turretYaw : (*corpseTurret)[1];
+                    float tp = e->vehicle ? e->vehicle->turretPitch : corpse->turretPitch, ty = e->vehicle ? e->vehicle->turretYaw : corpse->turretYaw;
+                    const float bodyPitch = e->vehicle ? e->vehicle->joltPitch : corpse->bodyPitch, bodyRoll = e->vehicle ? e->vehicle->joltRoll : corpse->bodyRoll;
+                    const float travel = e->vehicle ? e->vehicle->info->suspensionTravel : corpse->travel, steer = e->vehicle ? e->vehicle->steerAngle : corpse->steer;
                     if (auto pt = prevTurret.find(e->number); pt != prevTurret.end()) {
                         tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
                         ty = pt->second.second + angleDelta(ty, pt->second.second) * lerpFrac;
@@ -3865,7 +3866,7 @@ int main(int argc, char** argv) {
                     for (size_t bi = 0; bi < vm->parts.bones.size(); ++bi) {
                         std::string n = vm->parts.bones[bi].name;
                         for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                        if (n == "tag_body" && e->vehicle) ctl.push_back({int(bi), assets::anglesQuat(e->vehicle->joltPitch, 0, e->vehicle->joltRoll), {0, 0, 0}});
+                        if (n == "tag_body") ctl.push_back({int(bi), assets::anglesQuat(bodyPitch, 0, bodyRoll), {0, 0, 0}});
                         else if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0), {0, 0, 0}});
                         else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0), {0, 0, 0}});
                     }
@@ -3877,10 +3878,9 @@ int main(int argc, char** argv) {
                     else
                         vpose = e->anim ? e->anim->pose(vm->parts) : assets::bindPose(vm->parts);
                     // Wheel suspension (cgame 0x4ac2b0): each wheel bone is moved to the ground under it.
-                    if (world && e->vehicle)
+                    if (world)
                         for (const auto& wc : game::vehicleWheelControls(world->collision(), vm->parts, vpose, {ov[0], ov[1], ov[2]},
-                                                                         {av[0], av[1], av[2]}, e->vehicle->info->suspensionTravel,
-                                                                         e->vehicle->steerAngle, e->number))
+                                                                         {av[0], av[1], av[2]}, travel, steer, e->number))
                             ctl.push_back(wc);
                     const assets::XPose drawnPose = assets::applyControls(vm->parts, vpose, ctl);
                     DrawItem it = base;

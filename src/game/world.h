@@ -608,12 +608,14 @@ public:
     int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
     // Game time (ms) of the last of those hits that killed the actor (it reached the death branch of the damage), -1 before the first.
     int64_t playerHitMarkerKillMs() const { return hitMarkerKillMs_; }
-    // Turret pitch and yaw a freed vehicle (script_vehicle_corpse, eType 0xd) kept from freevehicle; none for other entities.
-    static std::optional<std::array<float, 2>> corpseTurret(const Entity& e) {
+    // Drawn vehicle fields a freed vehicle (script_vehicle_corpse, eType 0xd) kept from freevehicle; none for other entities.
+    struct CorpseVehicle { float turretPitch = 0, turretYaw = 0, bodyPitch = 0, bodyRoll = 0, steer = 0, travel = 0; };
+    static std::optional<CorpseVehicle> corpseVehicle(const Entity& e) {
         if (e.vehicle) return std::nullopt;
         const script::Value p = e.obj->get("$corpseTurretPitch"), y = e.obj->get("$corpseTurretYaw");
         if (!p.isNumber() || !y.isNumber()) return std::nullopt;
-        return std::array<float, 2>{p.asFloat(), y.asFloat()};
+        auto num = [&](const char* k) { const script::Value v = e.obj->get(k); return v.isNumber() ? v.asFloat() : 0.0f; };
+        return CorpseVehicle{p.asFloat(), y.asFloat(), num("$corpseBodyPitch"), num("$corpseBodyRoll"), num("$corpseSteer"), num("$corpseTravel")};
     }
     // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
     void applyPlayerEvent(int ev, int parm);

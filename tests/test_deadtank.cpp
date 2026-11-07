@@ -132,10 +132,12 @@ int main() {
     // The wreck keeps the turret where it was (freevehicle 0x511c80 leaves es +0x70 / +0x74; eType 0xd is drawn with them).
     for (int id : cIds) {
         Entity* t = ent(c, id);
-        const auto ct = t ? World::corpseTurret(*t) : std::nullopt;
-        CHECK(t && t->classname == "script_vehicle_corpse" && ct);
-        if (ct) CHECK((*ct)[0] == lastTurret[id][0] && (*ct)[1] == lastTurret[id][1] && (*ct)[1] != 0.0f);
-        if (ct) std::cout << "tank " << id << " wreck turret p/y " << (*ct)[0] << "/" << (*ct)[1] << "\n";
+        const auto cv = t ? World::corpseVehicle(*t) : std::nullopt;
+        CHECK(t && t->classname == "script_vehicle_corpse" && cv);
+        if (cv) CHECK(cv->turretPitch == lastTurret[id][0] && cv->turretYaw == lastTurret[id][1] && cv->turretYaw != 0.0f);
+        // Suspension travel stays (es +0x60): the wreck's wheels are still placed on the ground.
+        if (cv) CHECK(cv->travel > 0.0f);
+        if (cv) std::cout << "tank " << id << " wreck turret p/y " << cv->turretPitch << "/" << cv->turretYaw << " travel " << cv->travel << "\n";
     }
     // Flak88 shells (flak88_turret, direct hit MOD_PROJECTILE, the player as the shooter) kill both tigers one after the other; a save
     // taken while the second one is dead but not yet freed (the tank_down autosave) must keep its clip after the load too.

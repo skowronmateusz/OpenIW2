@@ -595,12 +595,13 @@ Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* tu
             else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat(e.vehicle->turretPitch, 0, 0)});
         }
         pose = assets::applyControls(*parts, pose, ctl);
-    } else if (const auto ct = corpseTurret(e)) { // freevehicle's wreck (eType 0xd) keeps the turret controls
+    } else if (const auto cv = corpseVehicle(e)) { // freevehicle's wreck (eType 0xd) keeps the body and turret controls
         std::vector<std::pair<int, assets::Quat>> ctl;
         for (size_t b = 0; b < parts->bones.size(); ++b) {
             const std::string n = lowerCopy(parts->bones[b].name);
-            if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, (*ct)[1], 0)});
-            else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat((*ct)[0], 0, 0)});
+            if (n == "tag_body") ctl.push_back({int(b), assets::anglesQuat(cv->bodyPitch, 0, cv->bodyRoll)});
+            else if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, cv->turretYaw, 0)});
+            else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat(cv->turretPitch, 0, 0)});
         }
         pose = assets::applyControls(*parts, pose, ctl);
     }
@@ -1479,11 +1480,17 @@ void World::registerVehicleBuiltins() {
         if (fv.spinHandle) stopSound(fv.spinHandle);
         Entity* e = entityOf(c.self);
         const std::string brush = vehicleCollmap(*e); // the clip survives: 0x511c80 leaves contents +0xc0 and the brush model alone
-        // 0x511c80 changes eType 0xc to 0xd but leaves the turret angles (es +0x70 pitch, +0x74 yaw) alone, and the client draws
-        // both eTypes through the vehicle path with those bone controls (dispatch 0x4acd30, table 0x4acd74 -> 0x4ac2b0): the wreck
-        // keeps its turret where it was. Kept on the object (saved with it) for the corpse.
+        // 0x511c80 changes eType 0xc to 0xd but leaves the drawn vehicle fields alone (es +0x70 / +0x74 turret pitch / yaw, +0x64 /
+        // +0x6c body pitch / roll, +0x94 steer, +0x60 suspension travel), and the client draws both eTypes through the vehicle path
+        // (dispatch 0x4acd30, table 0x4acd74 -> 0x4ac2b0). The wreck's handler 0xb (table 0x5a573c) has no think, so nothing writes
+        // them again: the wreck keeps its turret, steer and body tilt, and its wheels are still placed on the ground every frame.
+        // Kept on the object (saved with it) for the corpse.
         e->obj->set("$corpseTurretPitch", Value(fv.turretPitch));
         e->obj->set("$corpseTurretYaw", Value(fv.turretYaw));
+        e->obj->set("$corpseBodyPitch", Value(fv.joltPitch));
+        e->obj->set("$corpseBodyRoll", Value(fv.joltRoll));
+        e->obj->set("$corpseSteer", Value(fv.steerAngle));
+        e->obj->set("$corpseTravel", Value(fv.info ? fv.info->suspensionTravel : 0.0f));
         e->vehicle.reset();
         if (!brush.empty()) e->obj->set("$collmap", Value(brush));
         e->classname = "script_vehicle_corpse";

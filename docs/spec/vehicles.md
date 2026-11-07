@@ -477,8 +477,12 @@ deleted on explosion (`connectpaths`, `delete`); the entity clip disappears with
 
 Turret of the wreck: 0x511c80 does not write the turret angles (es +0x70 pitch, +0x74 yaw), and the client dispatch 0x4acd30
 (eType at centity +0xa0, table 0x4acd74) sends eType 0xc and 0xd alike to the vehicle draw 0x4ac2b0, which applies them as
-bone controls. A tank destroyed with its turret turned keeps it turned. OpenIW2 keeps the two angles on the object at
-freevehicle and draws the wreck's tag_turret / tag_barrel with them (also in tag positions); tested in test_deadtank.
+bone controls. A tank destroyed with its turret turned keeps it turned. The same holds for the other drawn fields 0x511c80
+leaves: body pitch / roll (+0x64 / +0x6c, frozen at their last value), steer (+0x94) and suspension travel (+0x60). The
+wreck's handler 0xb (table 0x5a573c, stride 0x2c) has no think at +0x20 (the live vehicle's handler 9 has 0x512b80), so
+nothing writes them again, and 0x4ac2b0 still traces the wheels to the ground every client frame. OpenIW2 keeps these
+fields on the object at freevehicle and draws the wreck with them (turret and body also in tag positions); tested in
+test_deadtank.
 
 ## Client anim time of script-animated vehicles (flak88 recoil)
 
