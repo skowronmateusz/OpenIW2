@@ -209,19 +209,20 @@ SoftlockReport analyzeSoftlocks(World& w) {
 
     // Map-script threads waiting for a spawner's "spawned" while no live thread can start the spawner (waittill_aiAndSpawners_dead and the like).
     {
-        std::map<const Object*, Entity*> byObject;
+        std::map<const Object*, Entity*> byObject; // lookup only
+        std::map<int, Entity*> byNumber;
         for (const auto& ep : w.entities())
-            if (ep->isSpawner && !ep->obj->removed) byObject[ep->obj.get()] = ep.get();
-        std::map<std::pair<const Object*, std::string>, int> waits;
+            if (ep->isSpawner && !ep->obj->removed) { byObject[ep->obj.get()] = ep.get(); byNumber[ep->number] = ep.get(); }
+        std::map<std::pair<int, std::string>, int> waits; // by entity number: an address order would differ between runs
         for (const auto& t : threads) {
             if (t.state != ThreadState::WaitingNotify || t.waitEvent != "spawned" || !t.waitObject || t.frames.empty()) continue;
             const auto& fr = t.frames.back();
             // the library's own prethink / override threads sit on every spawner
             if (fr.file == "maps/_spawner.gsc" || fr.file == "maps/_load.gsc" || fr.file.rfind("animscripts/", 0) == 0) continue;
-            if (byObject.count(t.waitObject.get())) ++waits[{t.waitObject.get(), fr.file + ":" + std::to_string(fr.line) + " " + fr.function}];
+            if (const auto bo = byObject.find(t.waitObject.get()); bo != byObject.end()) ++waits[{bo->second->number, fr.file + ":" + std::to_string(fr.line) + " " + fr.function}];
         }
         for (const auto& [key, n] : waits) {
-            Entity& e = *byObject[key.first];
+            Entity& e = *byNumber.at(key.first);
             const Value cv = e.obj->get("count");
             if (!cv.isInt() || cv.asInt() <= 0) continue;
             // only a spawner whose spawn was refused and never retried: one nothing has tried yet may still be started by a script

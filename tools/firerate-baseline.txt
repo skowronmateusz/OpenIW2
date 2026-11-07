@@ -10,8 +10,8 @@ cityhall axis 26.5
 cityhall allies 18.3
 crossroads axis 43.1
 crossroads allies 12.4
-decoytown axis 40.6
-decoytown allies 39.7
+decoytown axis 38.4
+decoytown allies 43.2
 decoytrenches axis 34.9
 decoytrenches allies 31.3
 demolition axis 43.4
@@ -28,8 +28,8 @@ eldaba axis 97.5
 eldaba allies 33.4
 hill400_assault axis 36.5
 hill400_assault allies 18.9
-hill400_defend axis 13.2
-hill400_defend allies 38.1
+hill400_defend axis 17.2
+hill400_defend allies 33.9
 libya axis 226.1
 matmata axis 83.7
 matmata allies 5.3

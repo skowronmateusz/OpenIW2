@@ -19,6 +19,7 @@
 #include "game/softlock.h"
 #include "game/inventorydiff.h"
 #include "game/world.h"
+#include "deathseen.h"
 
 #include <algorithm>
 #include <chrono>
@@ -876,7 +877,7 @@ int main(int argc, char** argv) {
         bool placedItemsTaken = false;
         float lastProgressT = 0.0f;
         int stallCount = 0, savesSeen = 0;
-        std::map<const void*, float> deathSeen; // autoplay: sim time a "death" wait on an object was first seen
+        iw2::tools::DeathSeen deathSeen; // autoplay: when each "death" wait first showed up (tools/iw2game/deathseen.h)
         int actionsSinceProgress = 0; // autoplay actions since the last real progress: escalation level
         float lastActionT = 0.0f, lastSeenProgressT = 0.0f;
         std::array<int, 16> objStates{};
@@ -1580,6 +1581,23 @@ int main(int argc, char** argv) {
                 world.vm().start("maps/_endmission.gsc", "nextmission", {}, iw2::script::Value(world.vm().level()));
             }
             world.frame();
+            // IW2_STATE_HASH=1: per frame, a hash of every entity's number, origin, angles and health and the live script thread count
+            // (two runs with the same seed must print the same lines; the first differing line is the first divergent frame).
+            if (static const bool stateHash = std::getenv("IW2_STATE_HASH") != nullptr; stateHash) {
+                uint64_t h = 1469598103934665603ull;
+                auto mix = [&](const void* p, size_t n) { for (size_t i = 0; i < n; ++i) h = (h ^ static_cast<const unsigned char*>(p)[i]) * 1099511628211ull; };
+                for (const auto& ep : world.entities()) {
+                    if (!ep || !ep->obj || ep->obj->removed) continue;
+                    mix(&ep->number, sizeof ep->number);
+                    for (const char* k : {"origin", "angles"})
+                        if (const auto v = ep->obj->get(k); v.isVector()) { const auto a = v.asVector(); mix(&a, sizeof a); }
+                    const std::string hp = ep->obj->get("health").toString();
+                    mix(hp.data(), hp.size());
+                }
+                const size_t threads = world.vm().liveThreadCount();
+                mix(&threads, sizeof threads);
+                std::printf("statehash %lld %016llx threads %zu\n", (long long)world.timeMs(), (unsigned long long)h, threads);
+            }
             if (mixer) { // advance the unheard mixer by one 50 ms frame so finished voices leave their slots
                 if (const auto* pl = world.player()) {
                     const auto o = pl->obj->get("origin").asVector();
@@ -1623,7 +1641,7 @@ int main(int argc, char** argv) {
             if (lastProgressT != lastSeenProgressT) { lastSeenProgressT = lastProgressT; actionsSinceProgress = 0; }
             if (autoplay && world.player() && f % 40 == 0) // when each "death" wait first showed up (the kill gate takes the oldest wave first)
                 for (const auto& w : world.vm().waiters())
-                    if (w.event == "death") deathSeen.emplace(w.object.get(), f * 0.05f);
+                    if (w.event == "death") deathSeen.note(w.object, f * 0.05f);
             if (autoplay && world.player() && f * 0.05f - std::max(lastProgressT, lastActionT) >= stallSecs) {
                 const float t = f * 0.05f;
                 char head[64];
@@ -2285,8 +2303,7 @@ int main(int argc, char** argv) {
                                 bool dup = false;
                                 for (const auto& gc : gateCands) dup = dup || gc.first == e.get();
                                 if (dup) continue;
-                                const auto seen = deathSeen.find(w.object.get());
-                                gateCands.push_back({e.get(), seen == deathSeen.end() ? t : seen->second});
+                                gateCands.push_back({e.get(), deathSeen.first(w.object).value_or(t)});
                                 ++killed; // counts candidates here; the kills below
                             }
                     }
