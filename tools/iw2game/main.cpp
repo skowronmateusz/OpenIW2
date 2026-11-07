@@ -2353,7 +2353,7 @@ int main(int argc, char** argv) {
             int alive = 0, dead = 0;
             for (const auto& e : world.entities())
                 if (e->isActor) (world.isAlive(*e) ? alive : dead)++;
-            std::cout << "actors alive " << alive << ", dead " << dead << "; player health " << world.player()->obj->get("health").toString() << "\n";
+            std::cout << "actors alive " << alive << ", dead " << dead << "; player health " << world.player()->obj->get("health").toString() << (world.playerOnTurret() ? "; player on turret " + world.playerTurretWeapon() : std::string()) << "\n";
             std::cout << "shots " << world.stats.shots << ", hits " << world.stats.hits << ", kills " << world.stats.kills << "; grenades "
                       << world.stats.grenades << ", exploded " << world.stats.grenadeExplosions << "; bullet impacts " << world.stats.bulletImpacts << ", penetrations " << world.stats.bulletPenetrations << ", player noise events " << world.stats.playerNoise << ", actor noise events " << world.stats.actorNoise << ", actor foliage sounds " << world.stats.actorFoliage << ", floating actor reports " << world.stats.floatingActors << ", ground trace hit/miss " << world.stats.groundHit << "/" << world.stats.groundMiss << ", follow links/releases " << world.stats.followLinks << "/" << world.stats.followReleases << ", grenade away-flee/cower/plane-retry " << world.stats.grenadeFlee << "/" << world.stats.grenadeCower << "/" << world.stats.grenadeFleeRetry << "\n";
             std::cout << "actor animscripts:";

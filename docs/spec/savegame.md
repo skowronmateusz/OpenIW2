@@ -191,6 +191,10 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   it; openiw2 restores them on purpose, see savestate.cpp. TODO(spec): what refills them after a load in a fresh process. Per-entity runtime that is
   rebuilt rather than restored (animation playback, AI state machine, paths, vehicles, turrets, missiles, perception) is listed as
   TODO(spec) in the header of savestate.cpp.
+- Player on a turret: the saved player eFlags (0x300 bits), use state and each turret's in-use flag and owner are restored; the player's turret
+  pointer (ps+0x568) is rebound to the turret that names the player as owner, with its view clamp recomputed from the arcs. A save that says
+  "on a turret" with no such turret drops the on-turret state. Without the rebind the client kept the turret view (fov 55, no gun, no way off).
+  TODO(spec): how the exe rebinds ps+0x568 on a load.
 
 ## 6. Save/load menu drawing (FEEDER_SAVEGAMES, ui/save_load.menu)
 

@@ -1498,6 +1498,8 @@ private:
     bool turretUsableByPlayer(Entity& t);
     void playerUseTurret(Entity& t);
     void thinkPlayerTurret();
+    void setPlayerViewClamp(const Entity& t);
+    void rebindPlayerTurret(); // savegame load: ps+0x568 from the turret that holds the player
     void releasePlayerTurret(Entity& t);
     int playerViewLocked_ = 0;           // ps+0x564 while on a turret: 1 idle, 2 fired this think
     int playerUseState_ = 0;             // player entity +0x112: 1 on a turret, 2 getting off

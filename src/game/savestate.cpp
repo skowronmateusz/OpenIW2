@@ -9,7 +9,7 @@
 // TODO(spec) (not restored; rebuilt or reset on load; the compass ping table is cleared on load, as CG_Init 0x4a5c10 does):
 //  - the rest of ActorAi (requests, cover lists, timers; the state stack and depth are saved), danger planes, perception (sentientInfo), eye cache;
 //  - sound handles of vehicles and turrets; FriendlyChains runtime beyond the per-entity chain node;
-//  - the player's turret pointer (playerTurret_) / shell shock / view kick / damage feedback / use hints and the front end's pmove state;
+//  - shell shock / view kick / damage feedback / use hints and the front end's pmove state;
 //  - precached shell shocks, fx sight blockers and other caches (rebuilt by the level's precache code that ran in the save's past:
 //    they are NOT rebuilt, because main() does not run again).
 #include "game/savestate.h"
@@ -958,6 +958,7 @@ void World::loadState(StateReader& r) {
     }
     for (uint32_t i = 0; i < nNodes; ++i) nodes_[i].owner = entityByNumber(nodeOwners[i]);
     player_ = entityByNumber(playerNum);
+    rebindPlayerTurret();
     restoreCorpses(r.version >= 7 ? &savedCorpses : nullptr);
     actorTouches_.clear();
     for (const auto& [trigger, toucher] : savedTouches) { // 0x4e528c..0x4e52fc

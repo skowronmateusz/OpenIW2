@@ -383,11 +383,37 @@ void World::playerUseTurret(Entity& t) {
     playerEFlags_ = ts.stance == 2 ? 0x100u : ts.stance == 1 ? 0x200u : 0x300u;
     const Vec3 base = t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0};
     turretAnglesFromView(ts, base, playerCmd_.viewAngles);
+    setPlayerViewClamp(t);
+    vm_.notify(t.obj, "turretownerchange");
+}
+
+// The view clamp ps+0xe8..+0xf4 from the turret's base angles and current arcs (set when the player gets on).
+void World::setPlayerViewClamp(const Entity& t) {
+    const TurretState& ts = *t.turret;
+    const Vec3 base = t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0};
     viewClampRange_[0] = angleDelta(ts.bottomArc, ts.topArc) * 0.5f;
     viewClampBase_[0] = angleNormalize360(base[0] + ts.bottomArc - viewClampRange_[0]);
     viewClampRange_[1] = angleDelta(ts.leftArc, ts.rightArc) * 0.5f;
     viewClampBase_[1] = angleNormalize360(base[1] + ts.leftArc - viewClampRange_[1]);
-    vm_.notify(t.obj, "turretownerchange");
+}
+
+// After a savegame load: the saved ps eFlags / use state say the player is on a turret, and the turret's saved owner names the
+// player. The turret pointer (ps+0x568) is rebound to that turret, with the view clamp it had. When no turret in the
+// world holds the player (a turret removed in the meantime), the on-turret state is dropped so the player is not left in a
+// turret view without a gun. TODO(spec): how the exe rebinds ps+0x568 on a load (the saved client state was not read).
+void World::rebindPlayerTurret() {
+    playerTurret_ = nullptr;
+    playerViewLocked_ = 0;
+    if (!player_) return;
+    for (const auto& e : entities_) {
+        if (!e->turret || e->obj->removed || !e->turret->inUse || e->turret->owner != player_->obj) continue;
+        playerTurret_ = e.get();
+        setPlayerViewClamp(*e);
+        playerViewLocked_ = 1;
+        return;
+    }
+    playerEFlags_ &= ~0x300u;
+    if (playerUseState_ == 1 || playerUseState_ == 2) playerUseState_ = 0;
 }
 
 void World::clampPlayerView(float& pitch, float& yaw) const {

@@ -5,6 +5,7 @@
 // checked without it.
 #include "fs/vfs.h"
 #include "game/playerweapon.h"
+#include "game/savestate.h"
 #include "game/viewweapon.h"
 #include "game/world.h"
 
@@ -97,6 +98,40 @@ int main() {
     press(8);
     press(0);
     CHECK(w.playerOnTurret());
+
+    // A save taken on the turret (the decoytown checkpoint on an MG42): after the load the player is still on it, with the
+    // turret bound (view locked to its arcs, gun fire and getting off work), not in a turret view without a turret.
+    {
+        SaveRequest req;
+        req.name = "turret";
+        req.description = "on a turret";
+        const auto file = buildSaveFile(w, req);
+        LoadedSave ls;
+        CHECK(parseSaveFile(file, ls).empty());
+        World b(vfs, ls.info.mapName);
+        b.prepareStart();
+        restoreSave(b, ls);
+        CHECK(b.playerOnTurret());
+        CHECK(b.playerTurretWeapon() == w.playerTurretWeapon() && !b.playerTurretWeapon().empty());
+        float pitch = 77, yaw = a[1] + 170;
+        b.clampPlayerView(pitch, yaw);
+        CHECK(pitch != 77); // the view is held inside the turret's arcs again
+        float tp = 0, ty = 0;
+        CHECK(b.playerTurretAnglesFor({0, a[1], 0}, tp, ty));
+        b.setPlayerCommand(c);
+        for (int i = 0; i < 5; ++i) b.frame();
+        CHECK(b.playerOnTurret());
+        auto pressB = [&](uint32_t bt) {
+            c.buttons = bt;
+            b.setPlayerCommand(c);
+            b.frame();
+        };
+        pressB(0);
+        pressB(8);
+        pressB(0);
+        CHECK(!b.playerOnTurret()); // the use key gets off the restored turret
+        c.buttons = 0;
+    }
 
     // On the turret: no hand-weapon step (iw2view skips pweapon.update, as PM_Weapon returns at 0x4dfc59).
     for (int i = 0; i < 20; ++i) {
