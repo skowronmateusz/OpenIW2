@@ -757,12 +757,18 @@ bool World::seesEnemyRecently(Entity& e, int64_t withinMs) {
 
 // 0x500b40: the actor's muzzle, the world position of its tag "tag_flash" (scr const 0x1c7f14a, string 0x589fdc,
 // registered at 0x507032), cached per level time at actor +0x18c..+0x1a4 (position +0x190, direction +0x19c). It fails
-// (returns 0 at 0x500c39) when the model has no such tag.
+// (returns 0 at 0x500c39) when the model has no such tag. The first call in a level frame computes it (0x500b57: +0x18c
+// is compared with level time 0x1c60534), from the pose the animation has then (0x4d74b0 -> 0x4d7390 -> 0x4782d0); later
+// calls in the same frame get that position even when a script changed the animation meanwhile.
 bool World::muzzlePosition(Entity& e, Vec3& out) {
-    const auto bones = entityBones(e);
-    auto it = bones.find("tag_flash");
-    if (it == bones.end()) return false;
-    out = it->second.position;
+    if (e.muzzleFrameMs != timeMs_) {
+        const auto bones = entityBones(e);
+        auto it = bones.find("tag_flash");
+        if (it == bones.end()) return false;
+        e.muzzlePos = it->second.position;
+        e.muzzleFrameMs = timeMs_;
+    }
+    out = e.muzzlePos;
     return true;
 }
 

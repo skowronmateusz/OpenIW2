@@ -252,6 +252,15 @@ combat without a path (+0x6b0 <= 0) or with +0x728/+0x2148 set, else when the en
 0x54d010 passes (0x54cf40: a point trace, mask 0x200c861, from the actor's muzzle (0x500b40, tag_flash; no tag fails) to the
 enemy's eye - 16 (G_Trace 0x44bf00 start EBX, end EDI), clear or ending on a sentient of another team; beyond the fog
 limit 0x1c61038 it fails).
+- The muzzle 0x500b40 is the world position of tag_flash from 0x4d74b0 (the pose of the entity's animation, computed by 0x4d7390 →
+  0x4782d0, plus the per-handler bone controller of table 0x5a5750: 0x5024e0 for actors only bends the prone legs). It is cached per
+  level time (+0x18c compared with 0x1c60534 at 0x500b4f, position +0x190, direction +0x19c), so all `canshoot` calls of a frame use the
+  first pose of that frame; `gettagorigin` in the scripts computes the tag anew. The scripts add (geteye − gettagorigin("tag_flash")) as
+  the offset for the eye test (animscripts/utility.gsc:523-536), and the pose offsets of canShootEnemyFromPose (utility.gsc:410-473).
+- `sighttracepassed(start, end, characters, ignore)` (0x4f2580): four arguments (else a usage error); mask 0x280d803 with characters,
+  0x801803 without (0x4f2590 / 0x4f25b6); the fourth argument is ignored unless it is an entity (type 1 and class 0x15), then its number
+  is passed as the trace's ignore entity, the second ignore is always 0x7ff (none); the sight trace 0x44c3c0 from start to end; a clear
+  trace still fails when the visibility through effects 0x48b090 is below 0.2 (0x592020). Matches `sighttracepassed` in combat.cpp.
 - Script sight builtins: `canshoot(target [, offset])` (0x53d800) is 0x54cf40 from tag_flash + offset (script error
   "Couldn't find tag_flash in entity %d" without the tag); `cansee(ent [, seconds])` (0x53d930) on a sentient is the cached
   sight 0x54ce10 no older than seconds × 1000 (truncated; default 250 ms: the push 0xfa at 0x53da00, also used by 0x54ce70;
@@ -554,7 +563,15 @@ enemy team (type 10, 0x53144b..0x531457), and the suppression line (type 16) to 
 the player's shot reaches the enemy team and its own team (where it adds a short-lived plane), not neutral actors. Death
 (type 6, 0x548a25..0x548a2a), pain (type 5, 0x54d31b / 0x54d416) and the team-wide enemy events (type 4, 0x53574e, 0x550b5f)
 use 1 << the source's own team; the actor movement noise (type 2, 0x5485f2..0x548620) and the player's footstep events use
-1 << the enemy team; grenade pings pass -1 (0x526c04); the weapon-fired line of a missile impact (0x526272) passes 0. Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
+1 << the enemy team; grenade pings pass -1 (0x526c04); the weapon-fired line of a missile impact (0x526272) passes 0.
+The complete list of callers (0x535770: 0x4e786b, 0x4e787b, 0x4e8111, 0x526c07, 0x526c28, 0x531457, 0x53575b, 0x548625, 0x548a2f, 0x54d325,
+0x54d420, 0x550b69; 0x535860: 0x526272, 0x531489; 0x535740 (type 4, own team): 0x4fe1d5, 0x4fe1eb in the sentient release, 0x515179,
+0x51519f in the enemy setter), all with radius 0 (the type's default) except where noted: player walk / run steps type 3 / 2 at the
+player's origin to 1 << enemy team (0x4e7862..0x4e787b); type 7 with mask 0 from the player code at 0x4e810c (its handler only prints
+"not yet handled", so it has no effect; not sent here); the missile ping 0x526bd0 from G_RunMissile 0x526c30: a grenade (handler type 3)
+sends type 8 at most every 500 ms (+0x164), any other missile type 9 every frame, both with mask -1 at the missile's origin, and the
+dispatch hands 8 and 9 to the grenade ping 0x5200e0 (jump table 0x535ee4). TODO(spec): the type 9 ping of rockets is not sent here
+(the grenade ping needs the landing fields of a grenade). No script builtin, explosion or vehicle sends an AI event besides these. Handlers: 2/3 pain/death — the actors around learn the source if stale (> 2 s; on a
 turret only if < 3 s); 4 weapon fired (0x550a70 → 0x535ba0) — the player gives a plain position update, an actor
 passes on its own knowledge of its enemy (copied per-sentient when the target's is staler); 5 pain 500 ms in
 (0x54d340) — the attacker (sentient +0x28, set by G_Damage 0x5284dd) is revealed and then forgotten; 6 death

@@ -144,6 +144,9 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     freeEntity(e);
 }
 
+// TODO(spec): [stays: needs the grenade-state fields of 0x5200e0 (landing +0x154..+0x15c) for a rocket] the ping 0x526bd0 sends a
+// non-grenade missile every frame as AI event 9 (mask -1, 512²), which 0x535d70 hands to the grenade ping 0x5200e0 like event 8;
+// rockets send nothing here yet.
 // G_RunMissile (0x526c30) for a linear missile: a point trace from the origin to the trajectory's position now
 // (clip 0x280e891, the parent passes); the sky (surface flag 0x10) frees it, anything else is the impact. The think
 // at 30 s explodes it in the air. Without a hit, a moving projectile-type weapon's missile may destabilize (0x527017..0x527061,

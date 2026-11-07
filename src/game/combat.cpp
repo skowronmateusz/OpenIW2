@@ -268,6 +268,7 @@ void World::sampleFireMonitor() {
                          e.obj->get("bulletsinclip").toString().c_str(), e.obj->get("weapon").toString().c_str(), int(e.ai.stack[size_t(e.ai.depth)]),
                          e.scriptState.c_str());
             for (const std::string& t : vm_.describeThreadsOf(e.obj, true)) std::fprintf(stderr, "    %s\n", t.c_str());
+            if (e.anim && std::getenv("IW2_FIRE_TRACE_ANIM")) std::fprintf(stderr, "    anims %s\n", e.anim->debugString().c_str());
         }
     }
 }
@@ -1444,11 +1445,22 @@ void World::registerCombatBuiltins() {
     vm_.registerBuiltin("sighttracepassed", [this](CallContext& c) {
         const Entity* ignore = entityOf(c.arg(3));
         const Vec3 start = c.arg(0).asVector(), end = c.arg(1).asVector();
-        if (collision_->sightBlocked(start, end, {0, 0, 0}, {0, 0, 0},
-                                     c.arg(2).truthy() ? Contents::SightMask : Contents::SightMaskNoCharacters,
-                                     ignore ? ignore->number : -1))
-            return Value(false);
-        return Value(!(fxVisibility(start, end) < 0.2f));
+        const bool blocked = collision_->sightBlocked(start, end, {0, 0, 0}, {0, 0, 0},
+                                                      c.arg(2).truthy() ? Contents::SightMask : Contents::SightMaskNoCharacters,
+                                                      ignore ? ignore->number : -1);
+        const bool ok = !blocked && !(fxVisibility(start, end) < 0.2f);
+        if (static const char* log = std::getenv("IW2_SIGHTTRACE_LOG"); log) {
+            const Entity* self = entityOf(c.self);
+            if (std::atoi(log) < 0 || (self && self->number == std::atoi(log))) {
+                const TraceResult tr = collision_->trace(start, end, {0, 0, 0}, {0, 0, 0},
+                                                         c.arg(2).truthy() ? Contents::SightMask : Contents::SightMaskNoCharacters,
+                                                         ignore ? ignore->number : -1);
+                std::fprintf(stderr, "[sighttrace %lld] self %d (%.0f %.0f %.0f) -> (%.0f %.0f %.0f) chars %d ignore %d blocked %d fraction %.3f hit %d -> %d\n",
+                             (long long)timeMs_, self ? self->number : -1, start[0], start[1], start[2], end[0], end[1], end[2],
+                             int(c.arg(2).truthy()), ignore ? ignore->number : -1, int(blocked), tr.fraction, tr.entity, int(ok));
+            }
+        }
+        return Value(ok);
     });
     vm_.registerBuiltin("physicstrace", [this](CallContext& c) {
         const TraceResult tr = collision_->trace(c.arg(0).asVector(), c.arg(1).asVector(), {0, 0, 0}, {0, 0, 0}, Contents::Solid);

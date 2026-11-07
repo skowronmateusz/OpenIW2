@@ -229,10 +229,19 @@ and objectives. `--report` now has the AI fire counters (the monitor samples eve
   Debug aids: `IW2_FIRE_TRACE=n,m,...` (iw2game with `--report`: once per second of game time the listed actors' animscript, pose, enemy,
   sight, suppression, the last `issuppressed` answer, clip, weapon, AI state, script state and their script threads' wait sites, on stderr),
   `IW2_MAYMOVE_LOG=n` (-1 for all: each maymovetopoint call of that actor and which test failed, with the team mate for the fire-line test),
-  `IW2_CANSHOOT_LOG=n` (each muzzle trace of `canshoot`).
+  `IW2_CANSHOOT_LOG=n` (each muzzle trace of `canshoot`), `IW2_SIGHTTRACE_LOG=n` (-1 for all: each `sighttracepassed` call of that self, with
+  the trace's fraction and hit entity), `IW2_FIRE_TRACE_ANIM=1` (with `IW2_FIRE_TRACE`: also the weighted animation nodes, `#index name(pparent)`).
 - Baseline update with the AI event receiver masks (docs/spec/ai.md "AI events": an actor's bullet events no longer reach its own team or
   neutral actors, death events only the dead actor's team): seed-1 rates moved on four maps, axis / allies downtown_assault 87.9 / 31.5 → 98.9 / 41.8,
   hill400_assault 38.8 / 24.0 → 36.0 / 18.6, hill400_defend 11.3 / 39.3 → 13.2 / 38.1, toujane 40.9 / 6.7 → 30.7 / 11.3; all other maps unchanged.
+- Baseline update with the per-frame muzzle cache (0x500b40, docs/spec/ai.md "Script sight builtins"): all `canshoot` calls of a frame now use
+  the muzzle of the frame's first pose, so the runs change on most maps. Updated where two runs of the build agree: beltot, bergstein, cityhall,
+  crossroads, decoytrenches, downtown_sniper, duhoc_defend, hill400_assault, matmata, toujane_ride. decoytown and hill400_defend are not
+  deterministic between runs of the same build (main too: decoytown axis 49.2 and 40.6 in two runs), so their lines were left as they were.
+  Silent stretches (all / unexplained) then: decoytrenches 22 / 7, crossroads 0 / 0, decoytown 13 / 0 (one run). The decoytrenches ones are the
+  aim-only cases: #613 (Thompson, muzzle 42 units above its origin in the stand_aim / stand_shoot_auto blend, the line blocked about 130 units out
+  while the eye line, 62 units up, is clear) and #549 (kar98, the same: muzzle traces blocked after 0.9 % of the way, eye trace clear), plus
+  corner actors. Whether the original poses put tag_flash that low was not checked against a run of the original.
 - Sweep flags (summary.md table column "fire flags" and section "Fire rate"): `NO-FIRE:team` (a team with at least 120 sight seconds fired nothing; reports without
   `ai_sight_secs_<team>` fall back to combat seconds),
   `LOW-RATE:team(rate<baseline)` (an autoplay run under 65% of `tools/firerate-baseline.txt`, the rate of a clean 400 s autoplay run of that map and team,

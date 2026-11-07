@@ -69,6 +69,28 @@ track()
     Entity& enemy = *actors[1];
     Entity& mate = *actors[2];
     Entity& neutral = *actors[3];
+    // 6. The muzzle is computed once per level frame (0x500b57): moving the actor within the frame does not move it; the next
+    // frame does.
+    {
+        Entity* gunman = nullptr;
+        Vec3 m0{};
+        for (Entity* e : actors)
+            if (w.debugMuzzlePosition(*e, m0)) {
+                gunman = e;
+                break;
+            }
+        CHECK(gunman != nullptr);
+        if (gunman) {
+            const Vec3 was = gunman->obj->get("origin").asVector();
+            gunman->obj->set("origin", Value(Vec3{was[0] + 100.0f, was[1], was[2]}));
+            Vec3 m1{};
+            CHECK(w.debugMuzzlePosition(*gunman, m1) && m1[0] == m0[0] && m1[1] == m0[1] && m1[2] == m0[2]);
+            gunman->muzzleFrameMs = w.timeMs() - 50; // as if the frame had advanced
+            CHECK(w.debugMuzzlePosition(*gunman, m1) && m1[0] != m0[0]);
+            gunman->obj->set("origin", Value(was));
+            gunman->muzzleFrameMs = -1;
+        }
+    }
     // 5. trackscriptstate.
     w.vm().start("maps/iw2test_aieventmask.gsc", "track", {}, Value(shooter.obj));
     CHECK(shooter.scriptState == "cover" && shooter.lastScriptState == "melee" && shooter.stateChangeReason == "hide");

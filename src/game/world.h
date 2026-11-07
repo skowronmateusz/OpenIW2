@@ -316,6 +316,8 @@ struct Entity {
     int attackers = 0;
     int64_t enemyEventMs = 0;                 // sentient +0x20: when the team is told about the enemy (event 4), 0 none
     int64_t eyeFrameMs = -1;               // per-frame cache of the eye (0x500910 caches by frame time)
+    int64_t muzzleFrameMs = -1;            // actor +0x18c: level time of the cached muzzle (0x500b40); not saved
+    Vec3 muzzlePos{0, 0, 0};               // actor +0x190
     Vec3 eyePos{}, eyeForward{};
 };
 
@@ -820,6 +822,7 @@ public:
     // Test hook: Bullet_Fire from any entity (its `weapon` field names the weapon, as for actors).
     Entity* debugFireBulletFrom(Entity& shooter, const Vec3& start, const Vec3& end) { return fireBullet(shooter, start, end, 10, &shooter); }
     void debugExpireDangerPlanes(Entity& e) { expireDangerPlanes(e); } // test hook: the per-think expiry 0x54b4d0
+    bool debugMuzzlePosition(Entity& e, Vec3& out) { return muzzlePosition(e, out); } // test hook: the muzzle 0x500b40
     void debugAddDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) { addDangerPlane(e, source, a, b); }
     Entity& debugSpawnGrenade(const std::string& weapon, const Vec3& start, const Vec3& velocity, int fuseMs) {
         return spawnGrenade(*player_, weapon, start, velocity, fuseMs);

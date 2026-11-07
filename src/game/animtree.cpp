@@ -507,7 +507,7 @@ std::string AnimState::debugString() const {
         const AnimNodeState& s = nodes_[i];
         if (s.weight <= 0 && s.goalWeight <= 0) continue;
         char buf[256];
-        std::snprintf(buf, sizeof buf, "  %s(p%d,f%d) w=%.2f goal=%.2f t=%.2f rate=%.2f notify=%s leaf=%d anim=%d\n", nodes[i].name.c_str(), nodes[i].parent, nodes[i].syncFlags, s.weight, s.goalWeight,
+        std::snprintf(buf, sizeof buf, "  #%zu %s(p%d,f%d) w=%.2f goal=%.2f t=%.2f rate=%.2f notify=%s leaf=%d anim=%d\n", i, nodes[i].name.c_str(), nodes[i].parent, nodes[i].syncFlags, s.weight, s.goalWeight,
                       s.time, s.rate, s.notify.c_str(), int(nodes[i].children.empty()), lib_.anim(nodes[i].name) != nullptr);
         out += buf;
     }
