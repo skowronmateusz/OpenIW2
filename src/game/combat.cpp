@@ -207,8 +207,18 @@ Vec3 World::eyePosition(Entity& e) {
 void World::noteAiShot(const Entity& shooter, const Entity* attacker) {
     if (!fireMon.enabled || shooter.isPlayer || (attacker && attacker->isPlayer)) return;
     const Entity* who = attacker && attacker->isActor ? attacker : &shooter;
-    if (!who->isActor && who->obj->get("team").toString().empty()) return;
-    fireMon.shot(shooter.number, who->obj->get("team").toString());
+    if (who->vehicle && player_ && player_->usingVehicle == who->number) return; // the player's own vehicle
+    // An unmanned gun has no team of its own: a vehicle carries the spawner's script_team (maps/_vehicle.gsc:1364), a gun mounted on
+    // one takes its parent's (followed up the links).
+    std::string team;
+    for (const Entity* e = who; e && team.empty();) {
+        for (const char* k : {"team", "script_team"})
+            if (const Value v = e->obj->get(k); team.empty() && v.isString() && !v.asString().empty()) team = v.asString();
+        const auto l = links_.find(e->number);
+        e = l != links_.end() ? entityByNumber(l->second.parent) : nullptr;
+    }
+    if (team.empty()) team = "undefined";
+    fireMon.shot(shooter.number, team);
 }
 
 void World::sampleFireMonitor() {
