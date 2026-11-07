@@ -188,6 +188,11 @@ void worldRoundTrip() {
             sw->path.switched.obj = e->obj; sw->path.original.obj = e->obj;
             sw->path.switched.name = "sw"; sw->path.switched.next = 7; sw->path.switched.length = 12.5f;
             sw->path.original.next = 3; break; }
+    // An actor in the animscripted state: the stack and the predicted copy must both survive (a restored predicted stack at depth 0
+    // made the state impossible to pop; the scripted animscript then restarted without arguments).
+    int scriptedActor = -1;
+    for (const auto& e : a.entities())
+        if (e->isActor && (e->obj->get("health").asInt() > 0)) { a.debugPushAiState(*e, iw2::game::AiScripted); scriptedActor = e->number; break; }
     // The renderer fog record travels with the save (0x402d60 -> gfx 0x1000bca0); the level script does not resend it on a load.
     a.clientFog.command(0, 3000, 0.562f, 0.57f, 0.59f, 0, a.timeMs());
     iw2::game::SaveRequest req;
@@ -211,6 +216,18 @@ void worldRoundTrip() {
     {
         const iw2::game::FogConsts fa = a.clientFog.consts(a.timeMs()), fb = b.clientFog.consts(b.timeMs());
         CHECK(fb.active && !fb.exponential && fb.scale == fa.scale && fb.shift == fa.shift && fb.color[2] == fa.color[2]);
+    }
+    // The precacheshellshock table is part of the saved game state; the level script does not precache again on a load.
+    CHECK(!a.shellShockNames().empty());
+    CHECK(a.shellShockNames() == b.shellShockNames());
+    if (scriptedActor >= 0) {
+        const iw2::game::Entity* ea = a.debugEntity(scriptedActor);
+        const iw2::game::Entity* eb = b.debugEntity(scriptedActor);
+        CHECK(ea && eb && eb->ai.depth == ea->ai.depth && ea->ai.depth >= 1);
+        if (ea && eb) {
+            CHECK(eb->ai.predictedDepth == ea->ai.predictedDepth);
+            CHECK(eb->ai.predicted[size_t(eb->ai.predictedDepth)] == iw2::game::AiScripted);
+        }
     }
     const std::string da = a.stateDigest(), db = b.stateDigest();
     CHECK(da == db);

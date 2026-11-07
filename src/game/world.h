@@ -829,6 +829,9 @@ public:
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
     }
     void debugDamage(Entity& e, int amount);
+    // Tests: the precacheshellshock names (index - 1), and pushing a state on an actor's stack at once (request applied).
+    const std::vector<std::string>& shellShockNames() const { return shockNames_; }
+    void debugPushAiState(Entity& e, int state) { aiPushState(e, state); aiApplyRequests(e); }
     void debugDamageAt(Entity& e, Entity* attacker, int amount, const Vec3& dir, const std::string& location) {
         damage(e, attacker, amount, dir, e.obj->get("origin").asVector(), "MOD_UNKNOWN", location);
     }
@@ -1091,6 +1094,7 @@ private:
     void registerCombatBuiltins();
     void registerSoundBuiltins();
     void registerShellShockBuiltins();
+    void addShellShock(const std::string& name); // appends a precached shell shock (name + record from shock/<name>.shock)
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();

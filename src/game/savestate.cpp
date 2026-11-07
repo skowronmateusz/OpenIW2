@@ -244,6 +244,8 @@ void World::saveState(StateWriter& w) {
     }
     w.u32(uint32_t(menus_.size()));
     for (const auto& m : menus_) w.str(m);
+    w.u32(uint32_t(shockNames_.size()));
+    for (const auto& n : shockNames_) w.str(n);
     for (const auto& o : objectives_) {
         w.i32(o.state);
         w.str(o.text);
@@ -636,6 +638,17 @@ void World::loadState(StateReader& r) {
     }
     menus_.clear();
     for (uint32_t i = 0, n = r.u32(); i < n; ++i) menus_.push_back(r.str());
+    // The precacheshellshock table is a config-string table of the game state, so it survives a load; the level script ran its
+    // precaches before the save, and a thread resumed from the save does not run them again. The records are re-read from the
+    // shock files. Saves older than version 13 have no table (TODO(spec): the names cannot be recovered for them).
+    shockNames_.clear();
+    shockRecords_.clear();
+    if (r.version >= 13)
+        for (uint32_t i = 0, n = r.u32(); i < n; ++i) addShellShock(r.str());
+    else if (vm_.level()->get("script").isString())
+        // Older saves have no list. Every level that runs maps/_load.gsc precaches "default" in its load phase (_load.gsc:103 ->
+        // shock_ondeath, _utility.gsc:1403), which a loaded save resumes past; restore that one so a death shock still works.
+        addShellShock("default");
     for (auto& o : objectives_) {
         o.state = r.i32();
         o.text = r.str();
@@ -792,6 +805,13 @@ void World::loadState(StateReader& r) {
         if (nStack != e->ai.stack.size()) throw std::runtime_error("savegame: AI state stack size differs");
         for (int& st : e->ai.stack) st = r.i32();
         e->ai.depth = r.i32();
+        // The predicted stack (the script-visible copy that animscripted pops check, ActorAi::predicted) is not saved: a game is
+        // written between frames, when aiApplyRequests (0x4fe4e0) has just made it equal to the real stack, so it is rebuilt from it.
+        // Without this a restored actor in the animscripted state could not pop it (aiPopState did nothing) and restarted the
+        // scripted animscript with no arguments.
+        e->ai.requests.clear();
+        e->ai.predicted = e->ai.stack;
+        e->ai.predictedDepth = e->ai.depth;
         e->animScriptThread = r.u64();
         e->animScript = r.str();
         e->animScriptStartMs = r.i64();
@@ -1081,7 +1101,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11 && ver != 12) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 

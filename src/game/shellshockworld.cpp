@@ -24,6 +24,16 @@ const ShockRecord* World::shellShockRecord() const {
     return shockRecords_[size_t(shellShock_.index - 1)].get();
 }
 
+void World::addShellShock(const std::string& name) {
+    ShockRecord rec;
+    if (const auto data = vfs_.read("shock/" + name + ".shock"))
+        rec = parseShockFile(std::string(data->begin(), data->end()));
+    // A missing file is a drop error in the cgame (0x4a3111 -> Com_Error 0x42c7f0 code 1, "couldn't register shell shock '%s'"
+    // 0x57e27c); here the dvar defaults stay. Every shipped shock file exists, so the case is not reachable with the game data.
+    shockNames_.push_back(name);
+    shockRecords_.push_back(std::make_shared<const ShockRecord>(std::move(rec)));
+}
+
 void World::registerShellShockBuiltins() {
     // precacheshellshock(name): a config string (base 0x45d, 16 slots); the cgame then reads "shock/<name>.shock"
     // (0x4b1740) into the record table at 0xf56bdc. The original raises a script error when it is called after the level script
@@ -34,13 +44,7 @@ void World::registerShellShockBuiltins() {
         for (const std::string& n : shockNames_)
             if (sameName(n, name)) return Value();
         if (shockNames_.size() >= 15) return Value();
-        ShockRecord rec;
-        if (const auto data = vfs_.read("shock/" + name + ".shock"))
-            rec = parseShockFile(std::string(data->begin(), data->end()));
-        // A missing file is a drop error in the cgame (0x4a3111 -> Com_Error 0x42c7f0 code 1, "couldn't register shell shock '%s'"
-        // 0x57e27c); here the dvar defaults stay. Every shipped shock file exists, so the case is not reachable with the game data.
-        shockNames_.push_back(name);
-        shockRecords_.push_back(std::make_shared<const ShockRecord>(std::move(rec)));
+        addShellShock(name);
         return Value();
     });
     // shellshock(name, seconds) on the player: stores the name index, the level time and the duration in
