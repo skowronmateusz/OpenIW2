@@ -1,0 +1,75 @@
+// Fixed-function state stored in a material file, decoded the way the 1.3 renderer applies it (docs/spec/material.md
+// "Alpha test" and "Texture sampler state"). Header-only and free of GPU types so the rules can be tested without a device.
+#pragma once
+#include <algorithm>
+#include <cstdint>
+#include <string>
+
+namespace iw2::assets {
+
+// mtlAlphaTest. Values match the shader uniform: 0 is no test.
+enum class AlphaFunc : uint8_t { None = 0, GreaterEqual128 = 1, GreaterThan0 = 2, Less128 = 3 };
+
+// State word 0 (material file offset 0x2c): bit 0x800 disables the test, bits 0x3000 pick the function.
+constexpr AlphaFunc decodeAlphaFunc(uint32_t stateWord0) {
+    if (stateWord0 & 0x800) return AlphaFunc::None;
+    switch (stateWord0 & 0x3000) {
+        case 0x1000: return AlphaFunc::GreaterThan0;
+        case 0x2000: return AlphaFunc::Less128;
+        default: return AlphaFunc::GreaterEqual128;
+    }
+}
+
+// Whether a fragment with this 8-bit output alpha is rejected.
+constexpr bool alphaRejected(AlphaFunc f, uint8_t alpha) {
+    switch (f) {
+        case AlphaFunc::None: return false;
+        case AlphaFunc::GreaterEqual128: return alpha < 128;
+        case AlphaFunc::GreaterThan0: return alpha == 0;
+        case AlphaFunc::Less128: return alpha >= 128;
+    }
+    return false;
+}
+
+// r_textureMode, in the order of its value list; the registered default is Bilinear.
+enum class TextureMode : uint8_t { Nearest, Linear, Bilinear, Trilinear, Anisotropic };
+constexpr int kDefaultAnisotropy = 8, kMinAnisotropy = 2, kMaxAnisotropy = 16;
+
+// The sampler byte a texture with no filter bits of its own takes from r_textureMode.
+constexpr uint8_t textureModeState(TextureMode m) {
+    constexpr uint8_t table[5] = {0x01, 0x02, 0x06, 0x0a, 0x0b};
+    return table[size_t(m)];
+}
+
+// Accepts the mode name or its index; anything else is the default.
+inline TextureMode parseTextureMode(const std::string& v) {
+    static const char* const names[5] = {"nearest", "linear", "bilinear", "trilinear", "anisotropic"};
+    for (int i = 0; i < 5; ++i)
+        if (v == names[i] || v == std::to_string(i)) return TextureMode(i);
+    return TextureMode::Bilinear;
+}
+
+enum class MipFilter : uint8_t { None, Nearest, Linear };
+
+struct SamplerDesc {
+    bool linear = true;      // minification and magnification; false = point
+    bool anisotropic = false; // uses r_anisotropy
+    MipFilter mip = MipFilter::None;
+    bool clampU = false, clampV = false, clampW = false; // false = wrap
+};
+
+// `state` is MaterialTexture::samplerState. Filter bits 0-1 and mip bits 2-3 index {none, point, linear, anisotropic}.
+constexpr SamplerDesc decodeSamplerState(uint8_t state, TextureMode mode) {
+    if ((state & 0xf) == 0) state |= textureModeState(mode);
+    const int filter = state & 3, mip = (state >> 2) & 3;
+    SamplerDesc d;
+    d.linear = filter >= 2;
+    d.anisotropic = filter == 3;
+    d.mip = mip == 0 ? MipFilter::None : mip == 1 ? MipFilter::Nearest : MipFilter::Linear;
+    d.clampU = (state & 0x10) != 0, d.clampV = (state & 0x20) != 0, d.clampW = (state & 0x40) != 0;
+    return d;
+}
+
+inline int clampAnisotropy(int a) { return std::clamp(a, kMinAnisotropy, kMaxAnisotropy); }
+
+} // namespace iw2::assets

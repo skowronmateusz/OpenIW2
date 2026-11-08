@@ -30,6 +30,15 @@ struct VertexOut {
     float3 eyeVec;
 };
 
+// Fixed-function alpha test on the shader's output alpha (docs/spec/material.md "Alpha test"): mode 1 GE128, 2 GT0, 3 LT128, otherwise none.
+static bool alpha_rejected(float mode, float alpha) {
+    const float a8 = rint(saturate(alpha) * 255.0);
+    if (mode > 2.5) return a8 >= 128.0;
+    if (mode > 1.5) return a8 == 0.0;
+    if (mode > 0.5) return a8 < 128.0;
+    return false;
+}
+
 // Clip position of a world / model vertex, shared by every vertex shader that draws world or model surfaces. Every overlaid pass (a
 // decal reusing the triangles of the surface under it, the l_point light passes, the multiply fog pass) relies on bit-identical
 // depth to pass LessEqual. Sharing the source expression is not enough: with fast math the compiler contracts and reorders the
@@ -101,7 +110,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     // Detail texture (shade library, USE_DETAIL variant): the detail sample, centred on 0.5, is added to the base colour before the vertex colour multiply.
     if (u.scroll.y > 0.5) tex0.rgb += detailMap.sample(detailSampler, in.uv * u.scroll.zw).rgb - 0.5;
     float4 base = tex0 * in.color;
-    if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
+    if (alpha_rejected(u.params.x, base.a)) discard_fragment();
     const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
 
     if (u.params.y > 4.5) { // multiply fog fix-up (second pass of vertcol_mul_lfog / _efog, stateMap multiply_fog: One, One):
@@ -272,7 +281,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     float4 tex = colorMap.sample(colorSampler, in.uv);
     if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
     float4 base = tex * in.color;
-    if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
+    if (alpha_rejected(u.params.x, base.a)) discard_fragment();
     const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
     // Normal_GetSample (PC: channels wy = alpha, green) and Normal_DecodeNormalizedWorldSpace: N + (2x-1) T + (2y-1) B.
@@ -383,7 +392,7 @@ struct DLightU {
 };
 fragment float4 fs_dlight(VertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], sampler s [[sampler(0)]]) {
     const float4 base = colorMap.sample(s, in.uv) * in.color;
-    if (u.params.x > 0.5 && base.a < 0.5) discard_fragment();
+    if (alpha_rejected(u.params.x, base.a)) discard_fragment();
     if (u.params.y > 0.5) return float4(1.0, 0.0, 0.0, 1.0); // IW2_DEPTH_PROBE
     const float3 wp = in.eyeVec + u.eye.xyz;
     const float3 delta = (u.light.xyz - wp) / u.light.w;

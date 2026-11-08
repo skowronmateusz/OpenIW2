@@ -72,6 +72,42 @@ built from part 0.
 
 Lightmap index 31 on a triangle soup means "no lightmap".
 
+## Alpha test (1.3 DLL 0x1003c8c0..0x1003ca29)
+
+mtlAlphaTest lives in state word 0 (file 0x2c; value table 0x1018f7d8). Bit 0x800 set = test off (Always). Otherwise bits 0x3000
+choose the D3D function and reference: 0x1000 GT0 = GREATER 0, 0x2000 LT128 = LESS 0x80, 0x3000 GE128 = GREATEREQUAL 0x80 (the
+function falls through to GREATEREQUAL for any other value). The test belongs to the material, not to the technique name.
+Shipped use: `phong_alphatest` is GE128 for 59 materials, LT128 for the 48 `foliage_masked@*` ones (no shipped map or model references them), GT0 for one; the `*_detail` and
+`*_spec_detail` variants have GT0 too (e.g. `toujane_decal_rug1`), and blend / effect materials commonly have GT0 or GE128 on.
+
+The test acts on the shader's output alpha, here quantized to 8 bits. iw2view applies the material's function in fs_main,
+fs_spec and fs_dlight. The multiply techniques are excluded because their output alpha is a constant 1, which GT0 / GE128 pass.
+The depth-only "build floatz" technique keeps its own fixed reference (`lib/float_z_build_alphatest.hlsl`).
+
+## Texture sampler state (1.3 DLL 0x1003ddc0)
+
+Byte 4 of each texture entry. Bits 0-1 give min/mag filter, bits 2-3 the mip filter, both through {NONE, POINT, LINEAR,
+ANISOTROPIC} (0x10190714); bits 4/5/6 clamp U/V/W, clear = wrap. Mip NONE samples only level 0. A filter of ANISOTROPIC
+(0x1003dc90) uses r_anisotropy limited by the device, the POINT / LINEAR values never do.
+
+A byte whose low four bits are zero (0x1003dec6) has the default ORed in: `{1, 2, 6, 0xa, 0xb}[r_textureMode]` (table
+0x101906b0; nearest, linear, bilinear, trilinear, anisotropic). r_textureMode registers with default "bilinear" (byte 6: LINEAR
+min/mag, POINT mip, no anisotropy; 0x1000abb6), and the shipped `configure.cfg` and `safemode.cfg` set the same value. r_anisotropy is
+an int 2..16 with default 8 (0x1000abd1). This covers colorMaps too: for example `egypt_rug1` (state 0x30) clamps U and V, and most
+shipped colorMaps have state 0 and so follow r_textureMode.
+
+iw2view reads both dvars from the menu cvar store (`--cvar r_texturemode=anisotropic` for a shot). The dvars are latched
+in the original; here a change applies at the next frame.
+
+Code samplers have fixed bytes in the lookups 0x10038dd0 / 0x10039030; floatZ (code sampler 0x15) is 0x31: point, no mip, clamped.
+
+The shipped mips carry their own alpha. For instance level 0 of `egypt_rug3_c` (the striped blanket on the bench in decoytown)
+is a noise mask spread evenly over the image: a third of its texels are in 128..159 and 0.6 % are below 128, while every smaller
+level is fully opaque after filtering. Filtered samples of level 0 near the reference flip with the sampling position, so holes and
+teeth appear and move wherever level 0 is the sampled mip. There is no MSAA at the default r_aaSamples of 1 (registered at
+0x1000b212), so the original has this as well; forced anisotropy keeps level 0 in use at more angles, the default mode less.
+No D3DSAMP_MIPMAPLODBIAS call exists in the renderer, so there is no texture LOD bias.
+
 ## Polygon offset (1.3 DLL 0x1003d230)
 
 mtlPolygonOffset values "0" / "1" / "2" = 0 / 0x10 / 0x20 (value list 0x1018fab8); the statemaps pass it through.

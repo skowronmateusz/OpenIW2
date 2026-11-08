@@ -13,6 +13,7 @@
 #include "assets/iwi.h"
 #include "assets/lightgrid.h"
 #include "assets/material.h"
+#include "assets/materialstate.h"
 #include "assets/xanim.h"
 #include "assets/xmodel.h"
 #include "fs/vfs.h"
@@ -330,6 +331,8 @@ struct Batch {
     // *_spec techniques (lmap_s: lib/phong.hlsl): indices into Scene::textures of the normalMap / specularMap, -1 = none.
     int normalTex = -1, specTex = -1;
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
+    uint8_t colorState = 0; // MaterialTexture::samplerState of the colorMap
+    assets::AlphaFunc alphaFunc = assets::AlphaFunc::None; // see MatInfo::alphaFunc
     int detail = -1; // Scene::details index
     bool alphaOne = false; // see MatInfo::alphaOne
     int fxKind = 0;        // see MatInfo::fxKind
@@ -354,6 +357,8 @@ struct MatInfo {
     // For Pass::Water `texture` indexes Scene::waters.
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState
+    uint8_t colorState = 0; // MaterialTexture::samplerState of the colorMap
+    assets::AlphaFunc alphaFunc = assets::AlphaFunc::None; // mtlAlphaTest (state word 0), docs/spec/material.md "Alpha test"
     int detail = -1; // Scene::details index (technique set *_detail)
     // Effect techniques that read the post-sun scene copy / $floatz (docs/spec/effects.md "Sprite vertices, $floatz and the
     // post-sun copy"): 1 = effect_zfeather* (zfeather.tech, fxParm[0] = featherParms.x), 2 = distortion (distortion_floatz.tech,
@@ -570,6 +575,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             const int cf = ((*md)[0x2d] >> 6) & 3; // bits 14–15 of the word at 0x2c
             mi.cull = cf == 2 ? 1 : cf == 3 ? 2 : 0;
             mi.waterBlend = (((*md)[0x2d]) & 7) != 0; // blendOp, bits 8-10
+            mi.alphaFunc = assets::decodeAlphaFunc(uint32_t((*md)[0x2c]) | uint32_t((*md)[0x2d]) << 8);
         }
         try {
             const auto m = assets::parseMaterial(*md);
@@ -606,6 +612,8 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             }
             mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             mi.alphaOne = mi.pass == Pass::Opaque && (m.techniqueSet.rfind("phong_", 0) == 0 || m.techniqueSet.rfind("ambient_", 0) == 0);
+            for (const auto& t : m.textures)
+                if (t.samplerName == "colorMap") { mi.colorState = t.samplerState; break; }
             const std::string& img = m.colorImage();
             auto imageSlot = [&](const std::string& image) {
                 auto it = scene.imageIndex.find(image);
@@ -694,6 +702,8 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
         b.scroll = mi.scroll;
             b.detail = mi.detail;
             b.alphaOne = mi.alphaOne;
+            b.colorState = mi.colorState;
+            b.alphaFunc = mi.alphaFunc;
             b.firstIndex = uint32_t(indices.size());
             for (uint16_t i : surfs[si].indices) indices.push_back(base + i);
             b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -777,6 +787,8 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.scroll = mi.scroll;
         b.detail = mi.detail;
         b.alphaOne = mi.alphaOne;
+        b.colorState = mi.colorState;
+        b.alphaFunc = mi.alphaFunc;
         b.firstIndex = uint32_t(indices.size());
         for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
@@ -839,6 +851,7 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.fxKind == 2 ? Pass::Blend : mi.pass;
         b.texture = mi.texture;
+        b.colorState = mi.colorState;
         b.lightmap = -3;
         b.fullbright = true;
         b.fxKind = mi.fxKind;
@@ -1023,6 +1036,7 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
         b.texture = mi.texture;
+        b.colorState = mi.colorState;
         b.lightmap = -3;
         b.fullbright = true;
         b.firstIndex = uint32_t(verts.size() / 4 * 6);
@@ -1117,6 +1131,7 @@ const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         Batch b;
         b.pass = mi.pass == Pass::Additive ? Pass::Additive : Pass::Blend;
         b.texture = mi.texture;
+        b.colorState = mi.colorState;
         b.lightmap = k.second < int(scene.lightmaps.size()) ? k.second : -3;
         b.polygonOffset = mi.polygonOffset;
         b.firstIndex = uint32_t(idx.size());
@@ -1384,8 +1399,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
-    std::map<std::tuple<int, int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
-    std::map<int, std::map<std::tuple<int, int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>>> brushGroups;
+    std::map<std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>> groups;
+    std::map<int, std::map<std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int>, std::vector<uint32_t>>> brushGroups;
     for (size_t si = 0; si < bsp.soups().size(); ++si) {
         const auto& s = bsp.soups()[si];
         const MatInfo& mi = mats[s.material];
@@ -1399,7 +1414,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne)}];
+        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc)}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
         if (soupOwner[si] > 0) {
             auto bb = scene.brushBounds.try_emplace(soupOwner[si], std::array<float, 6>{1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f}).first;
@@ -1503,7 +1518,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne)}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc)}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1525,6 +1540,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.specState = uint8_t(std::get<8>(key));
         b.detail = std::get<9>(key);
         b.alphaOne = std::get<10>(key) != 0;
+        b.colorState = uint8_t(std::get<11>(key));
+        b.alphaFunc = assets::AlphaFunc(std::get<12>(key));
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -1779,7 +1796,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* waterPipelines[2][3] = {}; // [blend][cull none / back / front]
     SDL_GPUSampler* repeatSampler = nullptr;
     SDL_GPUSampler* clampSampler = nullptr;
-    SDL_GPUSampler* pointClampSampler = nullptr; // $floatz reads (TODO(spec): [sampler state not traced] floatZSampler's filter state)
+    SDL_GPUSampler* pointClampSampler = nullptr; // $floatz reads: code sampler 0x15 has state 0x31 (point min/mag, no mip, clamp U/V; lookup 0x10039030)
     // Post-sun scene copy (resolvedPostSun, render command 0x100310a0) and $floatz (R32F clip z, build pass 0x10024ee0).
     SDL_GPUTexture* postSunTex = nullptr;
     SDL_GPUTexture* floatzTex = nullptr;
@@ -1791,21 +1808,30 @@ struct Renderer {
     SDL_GPUSampler* waterMapSampler = nullptr;
     SDL_GPUDevice* samplerDev = nullptr;
     SDL_GPUSampler* matSamplers[128] = {};
-    // Per-material sampler state (MaterialTexture::samplerState; SetSamplerState in gfx 0x1003dd00..0x1003e1b1): bits 0-1 min/mag filter
-    // (1 point, 2 linear, 0/3 default = linear here), bits 2-3 mip filter (1 point, 2 linear, 0/3 default = linear), bit 4/5 = clamp U/V (clear = wrap).
+    assets::TextureMode textureMode = assets::TextureMode::Bilinear; // r_textureMode
+    int anisotropy = assets::kDefaultAnisotropy;                     // r_anisotropy
+    // r_textureMode / r_anisotropy decide the sampler of every texture without filter bits of its own: rebuilt when they change.
+    void setTextureFilter(assets::TextureMode mode, int aniso) {
+        aniso = assets::clampAnisotropy(aniso);
+        if (mode == textureMode && aniso == anisotropy) return;
+        textureMode = mode, anisotropy = aniso;
+        for (SDL_GPUSampler*& s : matSamplers)
+            if (s) SDL_ReleaseGPUSampler(samplerDev, s), s = nullptr;
+    }
+    // Per-material sampler state (MaterialTexture::samplerState), docs/spec/material.md "Texture sampler state".
     SDL_GPUSampler* matSampler(uint8_t state) {
         state &= 0x7f;
         if (!matSamplers[state]) {
+            const assets::SamplerDesc d = assets::decodeSamplerState(state, textureMode);
             SDL_GPUSamplerCreateInfo si{};
-            const int mm = state & 3, mip = (state >> 2) & 3;
-            si.min_filter = si.mag_filter = mm == 1 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-            si.mipmap_mode = mip == 1 ? SDL_GPU_SAMPLERMIPMAPMODE_NEAREST : SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-            si.address_mode_u = state & 0x10 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-            si.address_mode_v = state & 0x20 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-            si.address_mode_w = state & 0x40 ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-            si.enable_anisotropy = mm != 1;
-            si.max_anisotropy = 8;
-            si.max_lod = 1000;
+            si.min_filter = si.mag_filter = d.linear ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
+            si.mipmap_mode = d.mip == assets::MipFilter::Linear ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+            si.address_mode_u = d.clampU ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.address_mode_v = d.clampV ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.address_mode_w = d.clampW ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+            si.enable_anisotropy = d.anisotropic;
+            si.max_anisotropy = float(anisotropy);
+            si.max_lod = d.mip == assets::MipFilter::None ? 0.0f : 1000.0f;
             matSamplers[state] = SDL_CreateGPUSampler(samplerDev, &si);
         }
         return matSamplers[state];
@@ -1852,6 +1878,13 @@ struct Renderer {
     void applyFog(FragmentUniforms& fu, Pass p) const {
         applyFog(fu);
         if (p == Pass::Additive) fu.fogColor[0] = fu.fogColor[1] = fu.fogColor[2] = 0.0f;
+    }
+
+    // params.x of the world / model fragment shaders: the mtlAlphaTest function, -1 for a USE_ALPHA 0 technique. The multiply
+    // techniques write a constant alpha of 1, which the material's GT0 / GE128 always passes.
+    static float alphaParam(const Batch& b, Pass p) {
+        if (p == Pass::Multiply) return 0.0f;
+        return b.alphaOne ? -1.0f : float(int(b.alphaFunc));
     }
 
     void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_) {
@@ -2523,7 +2556,7 @@ struct Renderer {
                 SDL_BindGPUGraphicsPipeline(fp, floatzPipes[std::clamp(int(b.polygonOffset), 0, 2)][std::clamp(b.cull, 0, 2)]);
                 u.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                 SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
-                SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
                 SDL_BindGPUFragmentSamplers(fp, 0, &tb, 1);
                 const struct { float p[4]; } fzu{{b.pass == Pass::AlphaTest ? 1.0f : 0.0f, 0.0f, 0, 0}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fzu, sizeof(fzu));
@@ -2627,13 +2660,13 @@ struct Renderer {
                             du.model = wg.model;
                             du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                             SDL_PushGPUVertexUniformData(cmd, 0, &du, sizeof(du));
-                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
                             SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
                             struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
                             std::memcpy(fu.light, dl.pos, 12);
                             fu.light[3] = dl.radius;
                             std::memcpy(fu.color, dl.rgb, 12);
-                            fu.params[0] = dp == Pass::AlphaTest ? 1.0f : 0.0f;
+                            fu.params[0] = float(int(b.alphaFunc));
                             fu.params[1] = depthProbe ? 1.0f : 0.0f;
                             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
                             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
@@ -2660,13 +2693,13 @@ struct Renderer {
                             if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                             mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                             SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
-                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
                             SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
                             struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
                             std::memcpy(fu.light, dl.pos, 12);
                             fu.light[3] = dl.radius;
                             std::memcpy(fu.color, dl.rgb, 12);
-                            fu.params[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                            fu.params[0] = float(int(b.alphaFunc));
                             fu.params[1] = depthProbe ? 1.0f : 0.0f;
                             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
                             if (it.depthMax < 1.0f) { // camera-relative item (applyViewModelSpace): the light moves with the eye
@@ -2747,13 +2780,13 @@ struct Renderer {
                 if (b.polygonOffset || b.cull) bindOffset(p, b.polygonOffset, b.cull, gu);
                 const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                 SDL_GPUTextureSamplerBinding tex[4] = {
-                    {scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
+                    {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
                 SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                     {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                    {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
+                    {alphaParam(b, p), p == Pass::Multiply ? 4.0f : b.lightmap >= 0 ? 1.0f : (b.lightmap == -2 ? 2.0f : 0.0f), lmScale, fullbright ? 1.0f : 0.0f},
                     {0, 0, 0, 0}};
                 detailUniforms(fu, b.detail);
                 // Additive world surfaces: their fogged techniques (lmap_add_lfog, effect_add_lfog) fog through the fixed-function fog
@@ -2794,7 +2827,7 @@ struct Renderer {
                     svu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                     SDL_PushGPUVertexUniformData(cmd, 0, &svu, sizeof(svu));
                     const Lightmap& lm = scene.lightmaps[size_t(b.lightmap)];
-                    SDL_GPUTextureSamplerBinding tex[8] = {{scene.textures[size_t(b.texture)], repeatSampler}, {lm.coeffs, clampSampler},
+                    SDL_GPUTextureSamplerBinding tex[8] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler},
                                                            {lm.sun, clampSampler}, {scene.textures[size_t(b.normalTex)], matSampler(b.normalState)},
                                                            {scene.textures[size_t(b.specTex)], matSampler(b.specState)}, {scene.specularity, clampSampler}, {scene.lmWeightTex, clampSampler},
                                                            {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
@@ -2804,7 +2837,7 @@ struct Renderer {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {b.detail >= 0 ? scene.details[size_t(b.detail)].scale[0] : 0.0f, b.detail >= 0 ? scene.details[size_t(b.detail)].scale[1] : 0.0f, b.detail >= 0 ? 1.0f : 0.0f, 0.0f},
-                        {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {alphaParam(b, p), 1.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {0, 0, 0, 0}};
                     applyFog(fu);
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -2844,12 +2877,12 @@ struct Renderer {
                         evu.base.model = it.transform;
                         SDL_PushGPUVertexUniformData(cmd, 0, &evu, sizeof(evu));
                         if (b.fxKind == 2) {
-                            SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(b.texture)], repeatSampler}, {postSunTex, clampSampler},
+                            SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {postSunTex, clampSampler},
                                                                    {floatzTex, pointClampSampler}};
                             SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
                         } else {
                             const bool outdoorOk = b.fxKind == 3 && outdoorTex;
-                            SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(b.texture)], repeatSampler}, {floatzTex, pointClampSampler},
+                            SDL_GPUTextureSamplerBinding tex[3] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {floatzTex, pointClampSampler},
                                                                    {outdoorOk ? outdoorTex : floatzTex, pointClampSampler}};
                             SDL_BindGPUFragmentSamplers(pass, 0, tex, 3);
                             evu.parms[1] = outdoorOk ? 1.0f : 0.0f;
@@ -2889,13 +2922,13 @@ struct Renderer {
                     }
                     const Lightmap& elm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                     SDL_GPUTextureSamplerBinding tex[4] = {
-                        {scene.textures[size_t(b.texture)], repeatSampler}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
+                        {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
                         {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
-                        {p == Pass::AlphaTest ? 1.0f : b.alphaOne ? -1.0f : 0.0f, b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                        {alphaParam(b, p), b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
                         {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
                         {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
                     std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
@@ -2943,7 +2976,7 @@ struct Renderer {
                 VU ov = u;
                 ov.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
                 SDL_PushGPUVertexUniformData(cmd, 0, &ov, sizeof(ov));
-                SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], repeatSampler};
+                SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
                 SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
                 SDL_PushGPUFragmentUniformData(cmd, 0, &ou, sizeof(ou));
                 SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
@@ -3165,6 +3198,17 @@ struct Renderer {
         }
     }
 };
+
+// r_textureMode (default "bilinear", 0x1000abb6) and r_anisotropy (int 2..16, default 8, 0x1000abd1): the menu cvar store, else the defaults.
+static void applyTextureFilter(Renderer& r, const std::map<std::string, std::string>& cvars) {
+    assets::TextureMode mode = assets::TextureMode::Bilinear;
+    for (const char* k : {"r_textureMode", "r_texturemode"})
+        if (const auto it = cvars.find(k); it != cvars.end()) mode = assets::parseTextureMode(it->second);
+    int aniso = assets::kDefaultAnisotropy;
+    for (const char* k : {"r_anisotropy"})
+        if (const auto it = cvars.find(k); it != cvars.end()) aniso = std::atoi(it->second.c_str());
+    r.setTextureFilter(mode, aniso);
+}
 
 // Renders one frame into an offscreen target (the same draw as to the swapchain) and returns its pixels, top row first.
 std::vector<uint8_t> captureRgba(SDL_GPUDevice* dev, Renderer& r, const Scene& scene, const Camera& cam, uint32_t w, uint32_t h,
@@ -3541,7 +3585,7 @@ int main(int argc, char** argv) {
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
         moveScreenshotKeyOffF12(); // a profile saved by the original game still carries F12
-        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma") uiCvars[k] = v; // renderer dvars live in the menu store
+        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_texturemode" || k == "r_anisotropy") uiCvars[k] = v; // renderer dvars live in the menu store
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
         // Debug IW2_START_TRACE=1: level start timing (real ms since this point, level time, sound starts, load end, first frames).
@@ -7111,6 +7155,7 @@ int main(int argc, char** argv) {
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : 0.0f);
             renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
+            applyTextureFilter(renderer, uiCvars);
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
@@ -8651,7 +8696,8 @@ int main(int argc, char** argv) {
             if (gotSwap && swap)
             {
                 renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
-                renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
+                applyTextureFilter(renderer, uiCvars);
+            renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(cgNowMs(), int64_t(SDL_GetTicks()));
                 const float blur = std::max(screenBlur.composed(), forcedBlur);
                 { // shell shock screen blend (0x4b16b0): blendMs scaled by the remaining time; elapsed = real time since the last capture
