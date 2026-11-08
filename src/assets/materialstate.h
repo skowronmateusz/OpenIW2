@@ -3,6 +3,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace iw2::assets {
@@ -29,6 +30,20 @@ constexpr bool alphaRejected(AlphaFunc f, uint8_t alpha) {
         case AlphaFunc::Less128: return alpha >= 128;
     }
     return false;
+}
+
+// r_aaSamples for the scene passes: 1 (off), 2, 4 or 8. openiw2 defaults to 4, the original to 1 (docs/spec/material.md "Multisampling").
+constexpr int kDefaultAaSamples = 4;
+inline int parseAaSamples(const std::string& v) {
+    if (v.empty()) return kDefaultAaSamples;
+    const int n = std::atoi(v.c_str());
+    return n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1;
+}
+
+// params.x of the world and model fragment shaders: -1 for a USE_ALPHA 0 technique, else the function. A pass with alpha to
+// coverage adds 8, so 9 selects the GE128 coverage ramp and the other values keep their test with a coverage of 1.
+constexpr float alphaShaderParam(AlphaFunc f, bool alphaOne, bool coverage) {
+    return (alphaOne ? -1.0f : float(int(f))) + (coverage ? 8.0f : 0.0f);
 }
 
 // r_textureMode, in the order of its value list; the registered default is Bilinear.

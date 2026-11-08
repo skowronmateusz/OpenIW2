@@ -104,9 +104,20 @@ Code samplers have fixed bytes in the lookups 0x10038dd0 / 0x10039030; floatZ (c
 The shipped mips carry their own alpha. For instance level 0 of `egypt_rug3_c` (the striped blanket on the bench in decoytown)
 is a noise mask spread evenly over the image: a third of its texels are in 128..159 and 0.6 % are below 128, while every smaller
 level is fully opaque after filtering. Filtered samples of level 0 near the reference flip with the sampling position, so holes and
-teeth appear and move wherever level 0 is the sampled mip. There is no MSAA at the default r_aaSamples of 1 (registered at
-0x1000b212), so the original has this as well; forced anisotropy keeps level 0 in use at more angles, the default mode less.
+teeth appear and move wherever level 0 is the sampled mip. The original has no MSAA at its default r_aaSamples of 1 (registered at
+0x1000b212), so it has this as well; forced anisotropy keeps level 0 in use at more angles, the default mode less.
 No D3DSAMP_MIPMAPLODBIAS call exists in the renderer, so there is no texture LOD bias.
+
+## Multisampling (r_aaSamples, deliberate deviation in the default)
+
+The original registers r_aaSamples with default 1 (0x1000b212), and its graphics menu offers Off, 2x and 4x. openiw2 defaults to 4 to
+remove the alpha-test shimmer described above; this is not the original's look, and "Off" in the menu restores single sampling.
+The value is read when the renderer starts, so a change applies at the next start. It is lowered when the device lacks the count.
+
+The scene passes render into multisampled colour and depth targets and resolve into the scene image; $floatz, the screen filters and the
+2D pass stay single-sampled, and the post-sun copy is made from a resolve. This alpha to coverage is an openiw2 addition with no
+counterpart in the original: when more than one sample is active, the AlphaTest pass enables it. GE128 materials output
+`saturate((a - 128/255) / fwidth(a) + 0.5)` as coverage and are not discarded; other functions keep their test and output 1.
 
 ## Polygon offset (1.3 DLL 0x1003d230)
 

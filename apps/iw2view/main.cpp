@@ -1841,6 +1841,10 @@ struct Renderer {
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
     SDL_GPUTextureFormat colorFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTexture* sceneTex = nullptr;
+    int sceneSamples = 1; // fixed at init, like the latched r_aaSamples
+    SDL_GPUTexture* msaaColor = nullptr; // scene pass targets when sceneSamples > 1; resolved into sceneTex
+    SDL_GPUTexture* msaaDepth = nullptr;
+    SDL_GPUGraphicsPipeline* overlayPipe = nullptr; // the 2D / composite pass is single-sampled; the Blend state with one sample
     // Shell shock screen blend (cmd 0xa capture + cmd 0x1d blend, gfx 0x10031120/0x10031160): ping-pong of composed frames.
     SDL_GPUTexture* ghostTex[2] = {nullptr, nullptr};
     int ghostCur = 0;
@@ -1882,14 +1886,27 @@ struct Renderer {
 
     // params.x of the world / model fragment shaders: the mtlAlphaTest function, -1 for a USE_ALPHA 0 technique. The multiply
     // techniques write a constant alpha of 1, which the material's GT0 / GE128 always passes.
-    static float alphaParam(const Batch& b, Pass p) {
+    float alphaParam(const Batch& b, Pass p) const {
         if (p == Pass::Multiply) return 0.0f;
-        return b.alphaOne ? -1.0f : float(int(b.alphaFunc));
+        return assets::alphaShaderParam(b.alphaFunc, b.alphaOne, sceneSamples > 1 && p == Pass::AlphaTest);
     }
 
-    void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_) {
+    // The scene passes render with r_aaSamples samples (docs/spec/material.md "Multisampling"); alpha-tested passes turn alpha into coverage.
+    void multisampleScene(SDL_GPUGraphicsPipelineCreateInfo& pi, bool coverage) const {
+        pi.multisample_state.sample_count = sampleCountEnum();
+        pi.multisample_state.enable_alpha_to_coverage = coverage && sceneSamples > 1;
+    }
+    SDL_GPUSampleCount sampleCountEnum() const {
+        return sceneSamples == 8 ? SDL_GPU_SAMPLECOUNT_8 : sceneSamples == 4 ? SDL_GPU_SAMPLECOUNT_4 : sceneSamples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
+    }
+
+    void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_, int samples = 1) {
         dev = device;
         colorFormat = colorFormat_;
+        sceneSamples = samples;
+        while (sceneSamples > 1 && !(SDL_GPUTextureSupportsSampleCount(dev, colorFormat, sampleCountEnum()) &&
+                                     SDL_GPUTextureSupportsSampleCount(dev, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, sampleCountEnum())))
+            sceneSamples /= 2;
         SDL_GPUShaderCreateInfo vs{};
         vs.code = reinterpret_cast<const Uint8*>(kShaderSource);
         vs.code_size = sizeof(kShaderSource) - 1;
@@ -1964,6 +1981,11 @@ struct Renderer {
             pi.target_info.num_color_targets = 1;
             pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
             pi.target_info.has_depth_stencil_target = true;
+            if (p == int(Pass::Blend)) {
+                overlayPipe = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                if (!overlayPipe) sdlFail("SDL_CreateGPUGraphicsPipeline");
+            }
+            multisampleScene(pi, p == int(Pass::AlphaTest));
             pipelines[p] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
             if (!pipelines[p]) sdlFail("SDL_CreateGPUGraphicsPipeline");
             // Polygon offset (1.3 renderer 0x1003d230): level = state bits 4–5; D3DRS_SLOPESCALEDEPTHBIAS =
@@ -1979,6 +2001,7 @@ struct Renderer {
                     pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
                     pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
                     pi.rasterizer_state.front_face = kFrontFace;
+                    multisampleScene(pi, p == int(Pass::AlphaTest));
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
                 }
@@ -1990,6 +2013,7 @@ struct Renderer {
                         pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
                         pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
                         pi.rasterizer_state.front_face = kFrontFace;
+                        multisampleScene(pi, false);
                         dlightPipelines[lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                         if (!dlightPipelines[lvl][c]) sdlFail("dlight pipeline");
                     }
@@ -2011,6 +2035,7 @@ struct Renderer {
                         pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
                         pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
                         pi.rasterizer_state.front_face = kFrontFace;
+                        multisampleScene(pi, p == int(Pass::AlphaTest));
                         specPipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                         if (!specPipelines[p][lvl][c]) sdlFail("spec pipeline");
                     }
@@ -2056,6 +2081,7 @@ struct Renderer {
             pi.target_info.has_depth_stencil_target = true;
             ct.blend_state.enable_color_write_mask = true;
             ct.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B; // alpha stays 0 for sky (scene alpha = non-sky mask for glow_setup)
+            multisampleScene(pi, false);
             skyPipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
             if (!skyPipeline) sdlFail("sky pipeline");
             // objective.sm: blendFunc Add, SrcAlpha, One; separateAlphaBlendFunc Disable; cullFace Back; depthTest LessEqual;
@@ -2098,6 +2124,7 @@ struct Renderer {
                 for (int lvl = 0; lvl <= 2; ++lvl) {
                     opi.rasterizer_state.enable_depth_bias = lvl > 0;
                     opi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                    multisampleScene(opi, false);
                     objectivePipelines[lvl] = SDL_CreateGPUGraphicsPipeline(dev, &opi);
                     if (!objectivePipelines[lvl]) sdlFail("objective pipeline");
                 }
@@ -2194,6 +2221,7 @@ struct Renderer {
                 pi.target_info.num_color_targets = 1;
                 pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
                 pi.target_info.has_depth_stencil_target = true;
+                multisampleScene(pi, false);
                 SDL_GPUGraphicsPipeline* gp = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                 if (!gp) sdlFail("effect pipeline");
                 SDL_ReleaseGPUShader(dev, evs);
@@ -2285,6 +2313,7 @@ struct Renderer {
                 pi.target_info.has_depth_stencil_target = true;
                 for (int c = 0; c < 3; ++c) {
                     pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                    multisampleScene(pi, false);
                     waterPipelines[blend][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!waterPipelines[blend][c]) sdlFail("water pipeline");
                 }
@@ -2381,6 +2410,18 @@ struct Renderer {
         if (!depth) sdlFail("depth texture");
         depthW = w;
         depthH = h;
+        if (sceneSamples > 1) {
+            for (SDL_GPUTexture** t : {&msaaColor, &msaaDepth})
+                if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
+            SDL_GPUTextureCreateInfo ms = info;
+            ms.sample_count = sampleCountEnum();
+            ms.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+            msaaDepth = SDL_CreateGPUTexture(dev, &ms);
+            ms.format = colorFormat;
+            ms.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+            msaaColor = SDL_CreateGPUTexture(dev, &ms);
+            if (!msaaDepth || !msaaColor) sdlFail("multisample targets");
+        }
     }
 
     // Draws the frame; with r_gamma != 1 the whole frame (menus and HUD included, like the hardware ramp of the original) goes to an
@@ -2428,7 +2469,7 @@ struct Renderer {
         // r_glow (default 1, gfx 0x1000b7b8); IW2_NO_GLOW=1 disables the chain.
         static const bool noGlow = std::getenv("IW2_NO_GLOW") != nullptr;
         const bool glowOn = !noGlow;
-        const bool post = blurA > 0.0f || glowOn || ghostActive;
+        const bool post = blurA > 0.0f || glowOn || ghostActive || sceneSamples > 1; // the resolve target is sceneTex
         if (post) {
             ensureBlurTargets(w, h);
             GpuVertex bv[12]{};
@@ -2511,6 +2552,11 @@ struct Renderer {
         color.clear_color = {0.55f, 0.65f, 0.78f, post ? 0.0f : 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
         color.store_op = SDL_GPU_STOREOP_STORE;
+        if (sceneSamples > 1) {
+            color.resolve_texture = sceneTex;
+            color.texture = msaaColor;
+            color.store_op = SDL_GPU_STOREOP_RESOLVE;
+        }
         // Effects that read the post-sun scene copy or $floatz (distortion, zfeather). The copy needs the scene in an offscreen
         // target (post) and is made only when the scene viewport is the whole window (0x10025ce5 flag; always here).
         // IW2_NO_POSTSUN=1 disables the copy and the float-z pass (distortion then skipped, zfeather drawn unfeathered).
@@ -2528,8 +2574,9 @@ struct Renderer {
             oup.texture(outdoorTex, 0, 0, 512, 512, scene.outdoor.image().data(), uint32_t(scene.outdoor.image().size()));
             outdoorFor = &scene.outdoor;
         }
+        if (sceneSamples > 1 && postSunWanted) color.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE; // the pass resumes after the post-sun copy
         SDL_GPUDepthStencilTargetInfo ds{};
-        ds.texture = depth;
+        ds.texture = sceneSamples > 1 ? msaaDepth : depth;
         ds.clear_depth = 1.0f;
         ds.load_op = SDL_GPU_LOADOP_CLEAR;
         ds.store_op = postSunWanted ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
@@ -2550,6 +2597,7 @@ struct Renderer {
             fz.store_op = SDL_GPU_STOREOP_STORE;
             SDL_GPUDepthStencilTargetInfo fds = ds;
             fds.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            fds.texture = depth; // $floatz is single-sampled
             SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, &fds);
             auto drawFz = [&](const Batch& b, VU u) {
                 if (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) return;
@@ -2733,6 +2781,7 @@ struct Renderer {
                 }
                 SDL_GPUColorTargetInfo again = color;
                 again.load_op = SDL_GPU_LOADOP_LOAD;
+                if (sceneSamples > 1) again.store_op = SDL_GPU_STOREOP_RESOLVE;
                 SDL_GPUDepthStencilTargetInfo dsAgain = ds;
                 dsAgain.load_op = SDL_GPU_LOADOP_LOAD;
                 dsAgain.store_op = SDL_GPU_STOREOP_DONT_CARE;
@@ -3076,6 +3125,7 @@ struct Renderer {
             c2.load_op = SDL_GPU_LOADOP_DONT_CARE;
             c2.store_op = SDL_GPU_STOREOP_STORE;
             SDL_GPUDepthStencilTargetInfo d2 = ds;
+            d2.texture = depth; // the composite pass is single-sampled
             SDL_GPURenderPass* p2 = SDL_BeginGPURenderPass(cmd, &c2, 1, &d2);
             SDL_BindGPUGraphicsPipeline(p2, copyPipe);
             {
@@ -3111,7 +3161,7 @@ struct Renderer {
                 SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
             }
             auto bindBlend = [&]() {
-                SDL_BindGPUGraphicsPipeline(p2, pipelines[int(Pass::Blend)]);
+                SDL_BindGPUGraphicsPipeline(p2, overlayPipe);
                 struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
                 SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
                 SDL_GPUBufferBinding bvb{blurVerts, 0};
@@ -3173,7 +3223,7 @@ struct Renderer {
 
     void drawOverlay(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<Quad2D>& overlay, size_t nq) {
         {
-            SDL_BindGPUGraphicsPipeline(pass, pipelines[int(Pass::Blend)]);
+            SDL_BindGPUGraphicsPipeline(pass, overlayPipe);
             struct VU2 { Mat4 vp; float eye[4]; Mat4 model; } ou{kIdentity, {0, 0, 0, 0}, kIdentity};
             SDL_PushGPUVertexUniformData(cmd, 0, &ou, sizeof(ou));
             SDL_GPUBufferBinding ovb{overlayVerts, 0};
@@ -3578,6 +3628,7 @@ int main(int argc, char** argv) {
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
         bool profileDirty = false;
+        const auto aaSamples = [&] { const auto it = uiCvars.find("r_aasamples"); return assets::parseAaSamples(it == uiCvars.end() ? "" : it->second); }; // read once, at renderer start
         ui::ProfileList profiles(playersDir); // FEEDER_PLAYER_PROFILES (src/ui/profilelist.h)
         if (std::ifstream cf(profileCfg); cf) {
             const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
@@ -3585,7 +3636,7 @@ int main(int argc, char** argv) {
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
         moveScreenshotKeyOffF12(); // a profile saved by the original game still carries F12
-        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_texturemode" || k == "r_anisotropy") uiCvars[k] = v; // renderer dvars live in the menu store
+        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_texturemode" || k == "r_anisotropy" || k == "r_aasamples") uiCvars[k] = v; // renderer dvars live in the menu store
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
         // Debug IW2_START_TRACE=1: level start timing (real ms since this point, level time, sound starts, load end, first frames).
@@ -7023,7 +7074,7 @@ int main(int argc, char** argv) {
                 std::cout << "shoot: " << world->stats.bulletImpacts << " impacts\n";
                 atExitMarks = true;
             }
-            renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
+            renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, aaSamples());
             syncWeapon();
             pweapon.update(1.0f, {});
             game::PlayerWeapon::Input shotIn;
@@ -7169,7 +7220,7 @@ int main(int argc, char** argv) {
                                               SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (!window) sdlFail("SDL_CreateWindow");
         if (!SDL_ClaimWindowForGPUDevice(dev, window)) sdlFail("SDL_ClaimWindowForGPUDevice");
-        renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window));
+        renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window), aaSamples());
         SDL_SetWindowRelativeMouseMode(window, true);
 
         if (menuMode) frontStack.open("main"); // UI_SetActiveMenu(MAIN) opens "main" (0x4c6520)

@@ -53,6 +53,18 @@ int main() {
     CHECK(clampAnisotropy(99) == kMaxAnisotropy);
     CHECK(clampAnisotropy(kDefaultAnisotropy) == 8);
 
+    CHECK(parseAaSamples("") == 4); // not set: the openiw2 default
+    CHECK(parseAaSamples("1") == 1);
+    CHECK(parseAaSamples("2") == 2);
+    CHECK(parseAaSamples("4") == 4);
+    CHECK(parseAaSamples("3") == 2);
+    CHECK(parseAaSamples("16") == 8);
+    CHECK(alphaShaderParam(AlphaFunc::GreaterEqual128, false, false) == 1.0f);
+    CHECK(alphaShaderParam(AlphaFunc::GreaterEqual128, false, true) == 9.0f);
+    CHECK(alphaShaderParam(AlphaFunc::Less128, false, true) == 11.0f);
+    CHECK(alphaShaderParam(AlphaFunc::None, true, false) == -1.0f);
+    CHECK(alphaShaderParam(AlphaFunc::None, true, true) == 7.0f);
+
     if (failures) return 1;
     std::printf("materialstate tests passed\n");
     return 0;

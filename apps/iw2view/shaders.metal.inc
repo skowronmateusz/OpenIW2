@@ -32,11 +32,20 @@ struct VertexOut {
 
 // Fixed-function alpha test on the shader's output alpha (docs/spec/material.md "Alpha test"): mode 1 GE128, 2 GT0, 3 LT128, otherwise none.
 static bool alpha_rejected(float mode, float alpha) {
+    if (mode > 3.5) mode -= 8.0; // alpha-to-coverage encoding (docs/spec/material.md "Multisampling")
     const float a8 = rint(saturate(alpha) * 255.0);
     if (mode > 2.5) return a8 >= 128.0;
     if (mode > 1.5) return a8 == 0.0;
     if (mode > 0.5) return a8 < 128.0;
     return false;
+}
+
+// Alpha-tested pass with multisampling: params.x is the function + 8 and the output alpha is the coverage. GE128 becomes a
+// one-pixel ramp around the reference, so an edge covers part of the samples instead of flipping a whole pixel.
+static bool uses_coverage_ramp(float mode) { return mode > 8.5 && mode < 9.5; }
+static float coverage_alpha(float mode, float alpha) {
+    if (!uses_coverage_ramp(mode)) return 1.0;
+    return saturate((alpha - 128.0 / 255.0) / max(fwidth(alpha), 1e-4) + 0.5);
 }
 
 // Clip position of a world / model vertex, shared by every vertex shader that draws world or model surfaces. Every overlaid pass (a
@@ -110,8 +119,8 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
     // Detail texture (shade library, USE_DETAIL variant): the detail sample, centred on 0.5, is added to the base colour before the vertex colour multiply.
     if (u.scroll.y > 0.5) tex0.rgb += detailMap.sample(detailSampler, in.uv * u.scroll.zw).rgb - 0.5;
     float4 base = tex0 * in.color;
-    if (alpha_rejected(u.params.x, base.a)) discard_fragment();
-    const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
+    if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
+    const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
 
     if (u.params.y > 4.5) { // multiply fog fix-up (second pass of vertcol_mul_lfog / _efog, stateMap multiply_fog: One, One):
         // adds (1 - Cm) · fogColor · (1 - f), so a multiply decal darkens the unfogged colour only (lib/multiply_fog.hlsl).
@@ -281,8 +290,8 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     float4 tex = colorMap.sample(colorSampler, in.uv);
     if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
     float4 base = tex * in.color;
-    if (alpha_rejected(u.params.x, base.a)) discard_fragment();
-    const float outA = u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
+    if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
+    const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
     // Normal_GetSample (PC: channels wy = alpha, green) and Normal_DecodeNormalizedWorldSpace: N + (2x-1) T + (2y-1) B.
     const float4 ns = normalMap.sample(normalSampler, in.uv);

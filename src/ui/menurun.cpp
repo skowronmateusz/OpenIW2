@@ -89,7 +89,7 @@ std::string registeredDefault(const std::string& n) {
         {"r_zfeather", "1"}, {"r_depthprepassmodels", "0"}, // flags 0x2000 (not archived), gfx 0x1000b4.. (pushed before the names)
         // r_swapinterval: deliberate deviation, the DLL registers 0 (flags 0x2021, gfx 0x1000b1d1). With 0 and com_maxfps 0 (the exe's
         // default, 0x42df14: int 0..1000) the original draws as fast as it can; openiw2 starts with vsync instead.
-        {"r_swapinterval", "1"}, {"r_aasamples", "1"}, {"r_dlightlimit", "4"}, {"r_gamma", "1"}, {"r_ignorehwgamma", "0"}, // bool default 0 (gfx 0x1000abc0): the brightness slider shows
+        {"r_swapinterval", "1"}, {"r_aasamples", "4"}, /* deliberate deviation, docs/spec/material.md "Multisampling" */ {"r_dlightlimit", "4"}, {"r_gamma", "1"}, {"r_ignorehwgamma", "0"}, // bool default 0 (gfx 0x1000abc0): the brightness slider shows
     };
     for (const auto& [k, v] : defaults)
         if (lowerStr(n) == lowerStr(k)) return v;
