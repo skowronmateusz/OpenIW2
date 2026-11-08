@@ -96,8 +96,10 @@ min/mag, POINT mip, no anisotropy; 0x1000abb6), and the shipped `configure.cfg` 
 an int 2..16 with default 8 (0x1000abd1). This covers colorMaps too: for example `egypt_rug1` (state 0x30) clamps U and V, and most
 shipped colorMaps have state 0 and so follow r_textureMode.
 
-iw2view reads both dvars from the menu cvar store (`--cvar r_texturemode=anisotropic` for a shot). The dvars are latched
-in the original; here a change applies at the next frame.
+iw2view reads both dvars from the menu cvar store (`--cvar r_texturemode=anisotropic` for a shot). Both register with flags
+0x2001, so they are archived in the player profile. The original's graphics page applies the filter row only through its Apply
+button and restart, and `ui/options_graphics.menu` hides Apply while a level runs. openiw2 applies a change at the next frame, so
+as a deliberate deviation a write to ui_r_texturemode also sets r_texturemode at once, in a level as well as in the main menu.
 
 Code samplers have fixed bytes in the lookups 0x10038dd0 / 0x10039030; floatZ (code sampler 0x15) is 0x31: point, no mip, clamped.
 

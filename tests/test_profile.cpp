@@ -36,5 +36,9 @@ int main() {
     check(!iw2::ui::isArchivedCvar("r_zFeather") && iw2::ui::registeredDefault("r_zFeather") == "1", __LINE__);
     check(iw2::ui::registeredDefault("r_swapInterval") == "1" && iw2::ui::registeredDefault("m_filter") == "0", __LINE__);
     check(iw2::ui::registeredDefault("cl_yawspeed") == "140" && iw2::ui::registeredDefault("cl_anglespeedkey") == "1.5", __LINE__);
+    // The texture filter is archived (flags 0x2001) and its menu row takes effect without the Apply button.
+    const auto tf = iw2::ui::parseConfig(iw2::ui::formatConfig({{"r_texturemode", "trilinear"}, {"r_anisotropy", "8"}, {"ui_r_texturemode", "trilinear"}}));
+    check(tf.size() == 2 && tf.at("r_texturemode") == "trilinear" && tf.at("r_anisotropy") == "8", __LINE__);
+    check(iw2::ui::immediateMenuDvar("ui_r_textureMode") == "r_texturemode" && iw2::ui::immediateMenuDvar("ui_r_picmip").empty(), __LINE__);
     return failures ? 1 : 0;
 }

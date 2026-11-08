@@ -318,7 +318,6 @@ struct GpuVertex {
 static_assert(sizeof(GpuVertex) == 56);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
-
 struct Batch {
     Pass pass = Pass::Opaque;
     int texture = 0;   // index into Scene::textures
@@ -4587,9 +4586,13 @@ int main(int argc, char** argv) {
             return u == uiCvars.end() ? ui::registeredDefault(n) : u->second;
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
-            if (ui::isArchivedCvar(n) && uiCvars[n] != v) profileDirty = true;
-            uiCvars[n] = v;
-            if (world) world->cvars[n] = v;
+            const auto store = [&](const std::string& name) {
+                if (ui::isArchivedCvar(name) && uiCvars[name] != v) profileDirty = true;
+                uiCvars[name] = v;
+                if (world) world->cvars[name] = v;
+            };
+            store(n);
+            if (const std::string direct = ui::immediateMenuDvar(n); !direct.empty()) store(direct);
         };
         menuEnv.scriptMenuResponse = [&](const std::string& menu, const std::string& response) {
             // "cmd mr <menu index> <response>" (0x4c8e20); the index is the menu's precache slot.
