@@ -216,6 +216,16 @@ Without it the setturretanim blend node has no weighted leaf and the gunner show
 - A bumped player who is not of the gunner's enemy team: after giving the turret up the gunner notifies "trigger" with the player
   (0x54aafa..0x54ab45). Start also makes the enemy team selectable again (0x54e3f0), drops the path (0x503e10), and clears flag 0x10 and +0x60
   unless its argument, the state being left, is pain (6). The think takes over the gunner's own node when usable (0x54ae32..0x54ae51).
+- Gunner on steep ground. VAs in the patch 1.3 SP executable. The pose only reaches the gunner through the actor physics: the xy
+  difference is the desired delta (+0x250, 0x54a862..0x54a888), and the move block 0x5487c0 turns a delta into a velocity only when the
+  ground probe found walkable ground (0x548110). With no ground, or a plane below 0.7 (0x5484aa, ground invalid), it runs the airborne
+  branch 0x5480d0: velocity only, gravity on. The pose step zeroes +0x230 every frame (0x54aa2b), so such a gunner stays where he is and
+  keeps animating from the pose while the gun turns. The branch at 0x54a84d tests the link parent (+0x1c8) of the turret, not of the gunner (ebx is loaded from the turret at 0x54a6cc,
+  and is reloaded with the gunner only at 0x54a85e), so a gunner on an unlinked turret is never placed directly. A gunner taking a gun left at the drop
+  pitch can be carried onto such ground: tag_weapon is up to 22 units further forward until the gun has
+  levelled, and the pose moves back by that much afterwards (turret flag 0x20 and the offsets, "Gun aim with an AI gunner"). elalamein
+  has two such guns (misc_turret at (-5439, -10725, 74) and (-5243, -9977, 54)). The physics rule is checked against the executable; whether
+  the original's collision yields the same plane at those exact spots is not. Tested in test_actorslide.
 - TODO(spec): 0x4e7150(+0x294, +0x298); the
   actor-turret link itself (the port computes the link height from the current origins); the pathToEnemy reset of 0x54ac80 with an
   enemy (0x502fc0 reads the node relation 0x517ed0, not loaded). The string at actor +0x21a0 is a debug label.

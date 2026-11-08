@@ -303,5 +303,50 @@ int main() {
         CHECK(b.hitEnt == 0x7ff);
     }
     if (failures == 0) std::cout << "actorslide: all passed\n";
+    {
+        // 0x5487c0: with a non-walkable ground plane (normal z < 0.7) the block takes the airborne branch (0x5480d0), which steps
+        // the velocity only. The desired delta (+0x2c) is converted to a velocity only on walkable ground (0x548110), so a turret
+        // gunner whose velocity the pose step zeroes does not move towards the pose (docs/spec/turrets.md "Gunner on steep ground").
+        const float nx = -0.88f, nz = 0.47f;
+        const SlideTraceFn steep = [=](const float* s, const float* e) {
+            SlideTrace t;
+            t.entity = 0x7ff;
+            const float dz = s[2] - e[2];
+            if (s[0] == e[0] && s[1] == e[1] && dz > 0.0f && dz <= 20.0f) { // the ground probe only
+                t.fraction = 0.5f;
+                t.normal[0] = nx;
+                t.normal[2] = nz;
+                t.entity = 0x7fe;
+            }
+            return t;
+        };
+        const auto run = [&](const SlideTraceFn& fn) {
+            ActorSlide pm;
+            pm.dt = 0.05f;
+            pm.timeMs = 50;
+            pm.mode = 1;
+            pm.mask = 1;
+            pm.groundEnt = 0x7fe;
+            pm.moveDelta[0] = -17.0f;
+            moveBlock(pm, fn);
+            return pm;
+        };
+        const ActorSlide on = run(steep);
+        CHECK(on.groundEnt == 0x7ff && !on.groundEntValid && on.groundPlane);
+        CHECK(near(on.origin[0], 0.0f, 0.01f));
+        const SlideTraceFn flat = [](const float* s, const float* e) {
+            SlideTrace t;
+            t.entity = 0x7ff;
+            const float dz = s[2] - e[2];
+            if (s[0] == e[0] && s[1] == e[1] && dz > 0.0f && dz <= 20.0f) {
+                t.fraction = 0.5f;
+                t.normal[2] = 1.0f;
+                t.entity = 0x7fe;
+            }
+            return t;
+        };
+        const ActorSlide walk = run(flat);
+        CHECK(walk.groundEntValid && near(walk.origin[0], -17.0f, 0.01f));
+    }
     return failures == 0 ? 0 : 1;
 }
