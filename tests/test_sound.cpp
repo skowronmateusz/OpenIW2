@@ -171,6 +171,40 @@ void testMixer() {
         for (int i = 0; i < Mixer::kPoolStream; i++) CHECK(y.play("stream", near) != 0);
         CHECK(y.active() == 3 + Mixer::kPoolStream);
         CHECK(y.play("stream", near) != 0 && y.active() == 3 + Mixer::kPoolStream);
+        // Stop-all (0x444730) at a level load: flags 0 end the music track, both ambient tracks, the shared streams, the 2D/3D
+        // samples and loops alike, and deactivate reverb layers 1 and 2 (bug: the decoytown music played on into the next map).
+        {
+            iw2::audio::Mixer s(vfs, al, 48000);
+            s.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+            auto fill = [&] {
+                s.play("stream", near, nullptr, {.dedicated = true, .music = true}); // music slot
+                s.play("stream", near, nullptr, {.dedicated = true});                // ambient slot
+                s.play("stream", near);                                              // shared stream
+                s.play("w3d", near, nullptr, {.owner = 7});                          // 3D sample
+                s.play("lp", near, nullptr, {.owner = 3, .refresh = true});          // loop
+                s.reverb.activateCommand(1, "cave", 1.0f, 0.5f, 0.0f);
+            };
+            fill();
+            CHECK(s.active() == 5 && s.reverb.activeSlot() == 1);
+            s.stopAll(0);
+            CHECK(s.active() == 0 && s.reverb.activeSlot() == 0);
+            // flag bits keep their group: 2 music, 4 ambient, 8 samples (streams still close), 1 reverb
+            fill();
+            s.stopAll(iw2::audio::kKeepMusic);
+            CHECK(s.active() == 1);
+            s.stopAll(0);
+            fill();
+            s.stopAll(iw2::audio::kKeepAmbient);
+            CHECK(s.active() == 1);
+            s.stopAll(0);
+            fill();
+            s.stopAll(iw2::audio::kKeepSamples | iw2::audio::kKeepReverb);
+            CHECK(s.active() == 2 && s.reverb.activeSlot() == 1);
+            s.stopAll(0);
+            CHECK(s.active() == 0 && s.reverb.activeSlot() == 0);
+            // a voice started after the stop-all (the new level's script) plays normally
+            CHECK(s.play("stream", near, nullptr, {.dedicated = true, .music = true}) != 0 && s.active() == 1);
+        }
         // loop refresh / sweep (0x441f80, 0x443510)
         iw2::audio::Mixer l(vfs, al, 48000);
         l.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});

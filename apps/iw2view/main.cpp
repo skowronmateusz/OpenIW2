@@ -75,6 +75,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -7174,6 +7175,8 @@ int main(int argc, char** argv) {
         // audio is queued when its frame is decoded. Any key or mouse button skips it when skippable (`cinematic` sets the skippable
         // byte 0x59a0d0, `unskippablecinematic` clears it). `loop` restarts it at the end (the command's flag '2', 0x49ded8).
         // Returns false when the window was closed.
+        // The client's stop-all (0x444730 with flags 0, docs/spec/sound.md "Stopping sounds"); defined once the voice handles exist.
+        std::function<void()> stopAllSounds;
         auto playCinematic = [&](const std::string& rawName, bool skippable, bool letterbox, bool loop) {
             std::string name = rawName;
             for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
@@ -7181,6 +7184,10 @@ int main(int argc, char** argv) {
             if (!data) { std::cerr << "cinematic: no video/" << name << ".roq\n"; return true; }
             std::unique_ptr<video::RoqDecoder> dec;
             try { dec = std::make_unique<video::RoqDecoder>(*data); } catch (const std::exception& e) { std::cerr << "cinematic " << name << ": " << e.what() << "\n"; return true; }
+            // CL_PlayCinematic_f (0x49e690): once the movie opened, every playing sound ends (0x49e752) and the master fade returns to
+            // full (0x49e75d..0x49e775) - a level's music does not resume behind or after the movie.
+            stopAllSounds();
+            mixer.fade(1.0f, 1);
             std::cout << "cinematic " << name << (skippable ? "" : " (unskippable)") << (letterbox ? " letterbox" : "") << (loop ? " loop" : "") << "\n";
             const bool stats = std::getenv("IW2_CINEMATIC_STATS") != nullptr;
             Scene movieScene = emptyScene(dev);
@@ -7290,6 +7297,7 @@ int main(int argc, char** argv) {
                           << (skipped ? "; skipped" : "") << "\n";
             }
             if (snd) SDL_DestroyAudioStream(snd);
+            stopAllSounds(); // the stop routine of a cinematic (0x49e800 -> 0x49e816) ends all sounds again
             if (audioStream) SDL_ResumeAudioStreamDevice(audioStream);
             SDL_WaitForGPUIdle(dev);
             releaseScene(dev, movieScene);
@@ -7306,6 +7314,14 @@ int main(int argc, char** argv) {
         // reached linearly over `ms` (slot fade 0x4431f0: a per-channel step of (target - current output) / max(ms, 1), advanced by the elapsed ms and clamped at the target; the start is the current output of the highest slot, which is full volume here).
         audio::ChannelVolumeSlots volSlots; // slot 1 doubles as the victory-screen volume (cleared on level load, 0x444730)
         struct { game::ShockRecord rec; uint64_t startNs = 0; int ms = 1; } victoryVol;
+        // 0x444730 with flags 0: every voice, the music and both ambient slots included, ends at once; reverb layers 1 and 2 and the
+        // volume slots 1..4 are cleared. The handles the client code holds for those voices go with them.
+        stopAllSounds = [&] {
+            mixer.stopAll(0);
+            volSlots.clearAll();
+            musicHandle = ambientHandle = menuLoopHandle = shockLoop = heartbeatLoop = 0;
+            ambientAlias.clear();
+        };
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
         else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
         float frameDt = 0.016f; // last frame time, for the shell shock mouse speed limit
@@ -8247,7 +8263,7 @@ int main(int argc, char** argv) {
                         slowEndNs = slowStartNs + uint64_t(std::max(ms, 0)) * 1000000ull;
                     } else if (cmd.name == "mu_play") { // mu_play <alias> (0x4a6e2b -> 0x443030): the music slot; a new one replaces it
                         if (musicHandle) mixer.stop(musicHandle);
-                        musicHandle = mixer.play(cmd.arg, std::nullopt, nullptr, {.dedicated = true});
+                        musicHandle = mixer.play(cmd.arg, std::nullopt, nullptr, {.dedicated = true, .music = true});
                     } else if (cmd.name == "ambient_play") { // ambient_play <alias> <fade ms> (client side of configstring 3, 0x443080)
                         std::string alias;
                         int ms = 0;
@@ -8338,6 +8354,7 @@ int main(int argc, char** argv) {
             if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
                 // Only the visible outcome of the exe's disconnect is needed: there is no server to tell.
                 pendingDisconnect = false;
+                stopAllSounds(); // CL_Disconnect ends with the stop-all (0x40e0f3), before the main menu starts its own music
                 pendingLevel.reset();
                 pendingPersistent = false;
                 loadScreenPhase = 0;
@@ -8350,7 +8367,6 @@ int main(int argc, char** argv) {
                 frontStack.closeAll();
                 frontStack.open("main");
                 mixer.resetPausable();
-                volSlots.clearAll();
                 for (float& v : mixer.channelScale) v = 1;
             }
             if (!deferredExec.empty()) execText(std::exchange(deferredExec, std::string()));
@@ -8397,7 +8413,10 @@ int main(int argc, char** argv) {
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);
                 mixer.resetPausable(); // 0x40cc80: channel pause flags back to the defaults on the new connection
-                volSlots.clearAll();   // 0x444730 clears volume slots 1..4 (the previous level's victory-screen volume must not carry over)
+                // The map load starts with the stop-all (0x449340 -> 0x40c9c0 -> 0x444730 flags 0; the cgame init 0x4a5cc7 repeats it): the
+                // previous level's music, ambient track, loops and queued voices end here, no fade. It also clears volume slots 1..4 (the
+                // previous level's victory-screen volume must not carry over). Voices the new level's script starts come later.
+                stopAllSounds();
                 for (float& v : mixer.channelScale) v = 1;
                 loadMapAliases(pendingLevel->first);
                 frontStack.closeAll();

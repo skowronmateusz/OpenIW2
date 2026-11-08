@@ -247,3 +247,19 @@ include them. Every level start therefore loads two sets: the level's rows and t
 This applies to the first map of a session as well as to restarts and level changes. Loading only the level's rows on a direct
 start (`iw2view <main> trainyard`) left the pause menu silent ("menu loop music_mainmenu not started" in the log) until the first
 restart reloaded the tables. Covered by `tests/test_sound.cpp` (needs IW2_MAIN).
+
+## Stopping sounds (level load, disconnect, cinematics)
+
+The stop-all routine (0x444730) takes a flag byte; a set bit keeps that part: 1 the reverb layers, 2 the music stream slot (32), 4 the two ambient stream slots (33, 34), 8 the 2D and 3D sample voices, 0x10 the channel-volume slots. With the flags clear it ends every sample voice and closes every open stream slot (music, ambient and the shared streams alike) at once, with no fade, deactivates reverb layers 1 and 2 (0x443fd0 with a fade of 0, which the routine clamps to 1 ms) and clears volume slots 1..4. Music started with `musicplay` and the ambient track live in stream slots, so they are not exempt: no part of the level-end flow keeps them. The port implements this as `Mixer::stopAll(flags)`.
+
+Callers with flags 0 on the paths a level can end by:
+
+- Map load: the client load driver (0x449340) calls the connection reset 0x40c9c0 right after it has recorded the map name (0x40ce90); it sets the master fade (snd_fade state 0x793a28 / 0x793a2c / 0x793a30) to target 0 with a rate that reaches it within a millisecond, then runs the stop-all. The cgame init (0x4a5c10, at 0x4a5cc7) runs it again for the new level, after the server has spawned it. The load end (0x4a3f10) sets the master fade back to target 1.0 at the same one-millisecond rate. Every level change goes through this load: `changelevel`, the next map after the victory screen (`nextlevel`), mission failed, loading a save, a map restart and the console `map` command. So music from the previous level cannot play on, and a `musicplay` of the new level's script starts a fresh track after the stop.
+- Disconnect (the routine ending at 0x40e0f3): back to the front end.
+- Cinematics (the play command 0x49e690): once the movie opened, the stop-all runs (0x49e752) and the master fade returns to full (0x49e75d); the stop routine of a cinematic (0x49e800, at 0x49e816) runs it again. A scripted `cinematic` between two levels therefore silences the previous level's music before the next map is even requested. A movie that fails to open stops nothing.
+
+Other callers use other flags and are not part of a level end: 0x446110 (flags 6, keeps music and ambient) and 0x41f4a0 (flags 8, streams only); their triggers were not identified.
+
+The victory screen does not stop anything (`openvictoryscreen` only makes the music channel non-pausable, so the level-end theme keeps playing under it); the track ends when the next map's load runs the stop-all.
+
+Port notes: iw2view calls the stop-all at the start of the load (before the old world is replaced, so it also drops its stored voice handles for music, ambient, menu loop, shell shock loop and heartbeat), on disconnect and around a cinematic. The load-start master fade to 0 is not modelled: the load is synchronous and the fade is set back to 1 at the load end. TODO(spec): the natural end of a movie was not traced to the stop routine 0x49e800 (the skip path was not either); the port stops all sounds at either end.

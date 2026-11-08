@@ -350,6 +350,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     v.prio = exch;
     v.pool = a->streamed ? 2 : is3DChannel(exch) ? 1 : 0;
     v.dedicated = opt.dedicated;
+    v.music = opt.dedicated && opt.music;
     v.refresh = opt.refresh;
     v.name = a->name;
     v.delayFrames = double(a->startDelayMs) * double(rate_) / 1000.0;
@@ -447,6 +448,20 @@ bool Mixer::setBlend(int handle, float f, const Vec3& origin) {
 void Mixer::stop(int handle) {
     std::lock_guard lock(mutex_);
     std::erase_if(voices_, [&](const Voice& v) { return v.handle == handle; });
+}
+
+// Stop-all 0x444730: samples (2D/3D) end unless bit 8; every open stream slot closes except slot 32 with bit 2 and slots 33/34 with bit 4
+// (the shared stream slots 35.. always close); bit 1 clear deactivates the reverb layers 1 and 2 (0x443fd0, fade argument 0 = 1 ms).
+void Mixer::stopAll(unsigned flags) {
+    std::lock_guard lock(mutex_);
+    std::erase_if(voices_, [&](const Voice& v) {
+        const bool stream = v.dedicated || v.pool == 2;
+        if (!stream) return (flags & kKeepSamples) == 0;
+        if (v.dedicated) return !(((flags & kKeepMusic) && v.music) || ((flags & kKeepAmbient) && !v.music));
+        return true;
+    });
+    if (!(flags & kKeepReverb))
+        for (int prio = 1; prio < EnvReverb::kSlots; ++prio) reverb.deactivate(prio, 0);
 }
 
 // mu_stop <ms> (0x442fb0): ms 0 stops the voice at once, otherwise its volume falls linearly to zero over `ms`.

@@ -76,6 +76,7 @@ struct PlayOptions {
     int owner = -1;          // slot owner (entity number, slot +0): sounds of one owner and channel replace each other (0x441b50), and a
                              // new sound prefers to steal its own owner's voice when the pool is full (0x441910). -1 = none (no exclusivity).
     bool dedicated = false;  // music / ambient slots (stream slots 32..34, 0x442df0): outside the shared pools
+    bool music = false;      // with `dedicated`: the music slot (stream slot 32, mu_play); a dedicated voice without it is an ambient slot (33 / 34)
     bool refresh = false;    // the caller re-plays a looping alias every frame (0x441f80): the same alias+owner refreshes the running voice,
                              // and sweepLoops() removes it once a frame passes without a refresh
 };
@@ -106,6 +107,15 @@ struct ChannelVolumeSlots {
     }
 };
 
+// Flags of the stop-all routine 0x444730 (docs/spec/sound.md "Stopping sounds"): a set bit keeps that part running.
+enum StopAllFlags : unsigned {
+    kKeepReverb = 1,      // reverb priority layers 1 and 2 stay active
+    kKeepMusic = 2,       // the music stream slot (32) stays open
+    kKeepAmbient = 4,     // the two ambient stream slots (33, 34) stay open
+    kKeepSamples = 8,     // the 2D and 3D sample voices stay (only the streams are closed)
+    kKeepVolumeSlots = 0x10 // the channel-volume slots 1..4 stay set (ChannelVolumeSlots, handled by the caller)
+};
+
 class Mixer {
 public:
     Mixer(const fs::Vfs& vfs, const SoundAliases& aliases, int outputRate);
@@ -121,6 +131,11 @@ public:
     // The subtitle key of the alias started by the last play() call (empty when none).
     const std::string& lastSubtitle() const { return lastSubtitle_; }
     void stop(int handle);
+    // Stop-all (0x444730): ends every voice except the groups named in `flags` (StopAllFlags), at once and without a fade, and
+    // deactivates the reverb layers 1 and 2 unless kKeepReverb. The volume slots are the caller's (ChannelVolumeSlots::clearAll).
+    // Runs on every level load (0x40c9c0 at the start of the map load, the cgame init 0x4a5c10), on disconnect and when a cinematic
+    // starts or ends, with flags 0.
+    void stopAll(unsigned flags = 0);
     void fadeOut(int handle, int ms);
     void fadeIn(int handle, int ms);
     // A looping low/high alias pair blended by fraction f (vehicle engine, cgame 0x4ac8a0 -> 0x4423d0): volume =
@@ -195,6 +210,7 @@ private:
         int prio = 0;             // slot +4: the exe channel number (auto 0, auto2d 1, menu 2, weapon 3, voice 4, item 5, body 6, local 7, music 8, announcer 9, shellshock 10)
         int pool = 0;             // 0 = 2D, 1 = 3D, 2 = stream (0x441ce0 / 0x441e10)
         bool dedicated = false;
+        bool music = false;       // dedicated voice of the music slot
         bool refresh = false;
         int stamp = 0;            // slot +0xc (0x793dc8)
         std::string name, name2;  // alias names compared by 0x441f80
