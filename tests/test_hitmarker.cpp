@@ -208,6 +208,20 @@ menuDef
     drone.obj->set("team", iw2::script::Value(std::string("axis")));
     w.debugDamage(drone, 10);
     CHECK(w.playerHitMarkerMs() == w.timeMs() && !hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    // A drone after makefakeai falls on its first damage: that hit is the kill, a later hit on the body shows nothing.
+    w.frame();
+    Entity& fake = w.debugSpawn("script_model");
+    fake.obj->set("origin", axis2->obj->get("origin"));
+    fake.obj->set("health", iw2::script::Value(int32_t(100000)));
+    fake.obj->set("$takedamage", iw2::script::Value(true));
+    fake.obj->set("$fakeai", iw2::script::Value(true));
+    fake.obj->set("team", iw2::script::Value(std::string("axis")));
+    w.debugDamage(fake, 10);
+    CHECK(w.playerHitMarkerMs() == w.timeMs() && hitMarkerIsKill(w.playerHitMarkerMs(), w.playerHitMarkerKillMs()));
+    w.frame();
+    const int64_t afterFall = w.playerHitMarkerMs();
+    w.debugDamage(fake, 10);
+    CHECK(w.playerHitMarkerMs() == afterFall);
     // Killing a friendly is no kill marker (last: it starts the friendly-fire failure).
     for (int i = 0; i < 3; ++i) w.frame();
     const int64_t killBefore = w.playerHitMarkerKillMs();

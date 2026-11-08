@@ -420,8 +420,16 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
     const bool byPlayer = attacker && (attacker->isPlayer || (attacker->vehicle && player_ && player_->usingVehicle == attacker->number));
     const std::string playerTeam = player_ ? player_->obj->get("team").toString() : std::string();
     if (!target.isActor && !target.isPlayer) {
-        if (target.classname == "script_model" && hitMarkerTrigger(byPlayer, true, true, playerTeam, target.obj->get("team").toString(), amount))
-            hitMarkerMs_ = timeMs_; // a drone: a hit only (its death is the drone script's, so no kill marker)
+        if (target.classname == "script_model") {
+            // A drone (makefakeai) falls on its first "damage" (_vehicledroneai.gsc:55, _drones.gsc:882); later hits land on a body.
+            const bool fakeAi = target.obj->get("$fakeai").truthy();
+            const bool down = fakeAi && target.obj->get("$droneDown").truthy();
+            if (hitMarkerTrigger(byPlayer, true, !down, playerTeam, target.obj->get("team").toString(), amount)) {
+                hitMarkerMs_ = timeMs_;
+                if (fakeAi) hitMarkerKillMs_ = timeMs_;
+            }
+            if (fakeAi && amount > 0) target.obj->set("$droneDown", Value(true));
+        }
         const Value hv = target.obj->get("health");
         int health = (hv.isNumber() ? hv.asInt() : 0) - amount;
         if (health < -999) health = -999;

@@ -4,7 +4,8 @@
 // (maps/mp/gametypes/_damagefeedback.gsc:12-33). The multiplayer sound is not played here. The gametype damage callbacks call it
 // for every damage a player deals to another player (dm.gsc:274, tdm.gsc:344), whatever the means of death.
 // Also counted (openiw2 choices): fire from a vehicle the player uses (a flak88 credits the vehicle as the attacker) and hits on an
-// enemy drone (a script_model with a team, maps/_drones.gsc), which never shows the kill colour because the drone script owns its death.
+// enemy drone (a script_model with a team, maps/_drones.gsc). A drone has huge health and its script plays the death on the first
+// "damage", so that first hit counts as the kill; later hits on the falling body show nothing.
 // Kill marker (iw2_hitMarker 2, also an openiw2 deviation, from multiplayer too): the same marker tinted red when the hit killed
 // the enemy. Multiplayer draws it white in every case.
 #pragma once
