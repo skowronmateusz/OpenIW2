@@ -142,6 +142,35 @@ level · r_polygonOffsetBias · 2⁻¹⁶ (0x1019be30); without slope-scale supp
 (0x1000adaa / 0x1000adce): r_polygonOffsetScale default −1 (−4..4), r_polygonOffsetBias default −1 (−16..16).
 iw2view: offset pipelines with the slope factor and the constant added to the clip depth in `vs_main`.
 
+## Draw order (1.3 DLL 0x100247d0, 0x10024900, 0x10025490)
+
+One scene list holds world surfaces, static models, dynamic models and marks. Its key is material rank << 21 | layer << 16 | entity << 4 |
+record type (writer 0x100247d0), sorted ascending once per frame (0x10024900). Material rank is the table order of 0x10016ae0: sort byte 0x0d,
+then technique set first-load order. Layer is the lightmap index, 31 for none. The builder 0x10025490 walks that same list three times: technique
+type 1 (sky, 0x10025565), type 6 (lightmap no fog, 0x10025570), then, after the sun and the post-sun copy, type 0x18 or 0x15 (emissive, 0x10025671).
+A surface is drawn only by a walk its technique set has a technique for: `effect*` sets have only emissive techniques, all others shipped
+with world surfaces only lit ones. So opaque, alpha-tested and blended lit materials interleave purely by sort byte, and blending comes
+after the opaque surfaces only because its byte is higher.
+
+The blend comes from state word 0, not from the technique set name, because every scene state map passes it through: source factor bits 0-3,
+destination bits 4-7, operation bits 8-10 (0 Disable, 1 Add), factors 1 Zero, 2 One, 3 SrcColor, 5 SrcAlpha, 6 InvSrcAlpha. Both
+`effect_multiply_nofog` materials multiply (Zero / SrcColor), and 9 of the 22 `unlit_blend` materials are additive. Depth write follows the blend
+(nofog.sm: Enable only for mtlBlendOp Disable), and all shipped materials test LessEqual.
+
+iw2view: `drawWorldLayer` walks the world and brush-model batches in this order, lit surfaces of sort byte 3 or less first, then the entity opaque
+and alpha-tested surfaces, the dynamic lights and water, then the remaining lit surfaces, the post-sun copy and the emissive ones.
+TODO(spec): the first-load order of technique sets is approximated by the first use in the map's material list; the lightmap layer and entity
+fields of the key are not reproduced (they only order surfaces of one material); dynamic models are not merged into the list; the place of water
+in the list and of the l_point passes relative to decal-range surfaces is not analysed (a depth-writing surface of a sort byte above 3 takes its
+lights right after its own draw).
+
+Coplanar layers (deliberate deviation). The original's depth buffer is D3DFMT_D24S8 (0x1001159c, 0x10022ce2). iw2view uses a 32-bit float
+depth because Apple GPUs have no 24-bit unorm format, so differently triangulated faces in one plane differ by rounding in tiles of the GPU's
+interpolation and a later surface loses LessEqual in blocks that change with the camera (trainyard: snow `stalingradwinter_snow02a` on the roof
+`mtl_hill400_roof_01`). A world surface that does not write depth is moved 2^-19 of clip depth toward the camera, an eighth of one polygon offset
+level, so that it wins the tie with any coplanar surface drawn earlier, which is the outcome LessEqual asks for. Coplanar depth-writing surfaces are not changed.
+TODO(spec): the original's result on such faces has not been observed at run time.
+
 ## Face culling (1.3 DLL 0x1003cb13)
 
 mtlCullFace = bits 14–15 of state word 0 (file 0x2c, mask 0xc000; values None / Back / Front = 0x4000 / 0x8000 /

@@ -65,6 +65,31 @@ constexpr float alphaShaderParam(AlphaFunc f, bool alphaOne, bool coverage) {
     return (alphaOne ? -1.0f : float(int(f))) + (coverage ? 8.0f : 0.0f);
 }
 
+// The blend of state word 0 (material file offset 0x2c): source factor bits 0-3, destination factor bits 4-7, operation bits 8-10
+// (0 Disable, 1 Add). Factors: 1 Zero, 2 One, 3 SrcColor, 5 SrcAlpha, 6 InvSrcAlpha (docs/spec/material.md "Draw order").
+enum class MaterialBlend : uint8_t { None, Alpha, Additive, Multiply };
+constexpr MaterialBlend decodeMaterialBlend(uint32_t stateWord0) {
+    if (((stateWord0 >> 8) & 7) == 0) return MaterialBlend::None;
+    const uint32_t src = stateWord0 & 0xf, dst = (stateWord0 >> 4) & 0xf;
+    if (src == 2 && dst == 2) return MaterialBlend::Additive;
+    if (src == 1 && dst == 3) return MaterialBlend::Multiply;
+    return MaterialBlend::Alpha;
+}
+
+// Highest material sort byte of the opaque range: the shipped opaque materials use 3, decals 8 and up.
+inline constexpr int kOpaqueSortMax = 3;
+
+// True when surface a is drawn before b in the one sorted surface list: sort byte, then technique set first-load order.
+constexpr bool surfaceDrawsBefore(int sortA, int techsetRankA, int sortB, int techsetRankB) {
+    return sortA != sortB ? sortA < sortB : techsetRankA < techsetRankB;
+}
+
+// Clip depth added to a world surface that does not write depth, toward the camera. It makes
+// the LessEqual tie with a coplanar surface drawn earlier hold for differently triangulated faces (deliberate deviation, see
+// docs/spec/material.md "Draw order"). An eighth of one polygon offset level.
+inline constexpr float kLayerTieBias = -1.0f / 524288.0f;
+constexpr float layerTieBias(bool writesDepth) { return writesDepth ? 0.0f : kLayerTieBias; }
+
 // r_textureMode, in the order of its value list; the registered default is Bilinear.
 enum class TextureMode : uint8_t { Nearest, Linear, Bilinear, Trilinear, Anisotropic };
 constexpr int kDefaultAnisotropy = 8, kMinAnisotropy = 2, kMaxAnisotropy = 16;

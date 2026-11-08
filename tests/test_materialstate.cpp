@@ -81,6 +81,16 @@ int main() {
     CHECK(alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(181, 41)));
     CHECK(alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(124, 255))); // the darkest level-0 texel fails even under opaque vertices
 
+    CHECK(decodeMaterialBlend(0x28124812) == MaterialBlend::None);
+    CHECK(decodeMaterialBlend(0x28129165) == MaterialBlend::Alpha);
+    CHECK(decodeMaterialBlend(0x28125122) == MaterialBlend::Additive);
+    CHECK(decodeMaterialBlend(0x28128931) == MaterialBlend::Multiply);
+    CHECK(surfaceDrawsBefore(8, 5, 11, 1));
+    CHECK(surfaceDrawsBefore(10, 1, 10, 2));
+    CHECK(!surfaceDrawsBefore(10, 2, 10, 2));
+    CHECK(layerTieBias(true) == 0.0f);
+    CHECK(layerTieBias(false) < 0.0f && layerTieBias(false) > -1.0f / 65536.0f);
+
     if (failures) return 1;
     std::printf("materialstate tests passed\n");
     return 0;
