@@ -65,6 +65,22 @@ int main() {
     CHECK(alphaShaderParam(AlphaFunc::None, true, false) == -1.0f);
     CHECK(alphaShaderParam(AlphaFunc::None, true, true) == 7.0f);
 
+    // The scene pass resumed after the post-sun copy keeps its colour samples and depth; an uninterrupted one resolves / drops them.
+    CHECK(scenePassStores(4, true).color == StoreOp::ResolveAndStore && scenePassStores(4, true).depth == StoreOp::Store);
+    CHECK(scenePassStores(2, false).color == StoreOp::Resolve && scenePassStores(2, false).depth == StoreOp::DontCare);
+    CHECK(scenePassStores(1, true).color == StoreOp::Store && scenePassStores(1, true).depth == StoreOp::Store);
+    CHECK(scenePassStores(1, false).color == StoreOp::Store && scenePassStores(1, false).depth == StoreOp::DontCare);
+
+    // The decoytown bench blanket (egypt_rug3, GE128): the colour map's alpha averages 181; the vertex alpha fades from 255 at the top
+    // of the hanging face to 41 at its lower edge, so the product passes at the top and fails below the point where it reaches ~180.
+    CHECK(shaderOutputAlpha(255, 255) == 255);
+    CHECK(shaderOutputAlpha(181, 255) == 181);
+    CHECK(!alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(181, 255)));
+    CHECK(!alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(181, 181)));
+    CHECK(alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(181, 140)));
+    CHECK(alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(181, 41)));
+    CHECK(alphaRejected(AlphaFunc::GreaterEqual128, shaderOutputAlpha(124, 255))); // the darkest level-0 texel fails even under opaque vertices
+
     if (failures) return 1;
     std::printf("materialstate tests passed\n");
     return 0;

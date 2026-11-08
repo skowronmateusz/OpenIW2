@@ -1899,6 +1899,15 @@ struct Renderer {
     SDL_GPUSampleCount sampleCountEnum() const {
         return sceneSamples == 8 ? SDL_GPU_SAMPLECOUNT_8 : sceneSamples == 4 ? SDL_GPU_SAMPLECOUNT_4 : sceneSamples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
     }
+    static SDL_GPUStoreOp sdlStoreOp(assets::StoreOp op) {
+        switch (op) {
+            case assets::StoreOp::Store: return SDL_GPU_STOREOP_STORE;
+            case assets::StoreOp::Resolve: return SDL_GPU_STOREOP_RESOLVE;
+            case assets::StoreOp::ResolveAndStore: return SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+            case assets::StoreOp::DontCare: break;
+        }
+        return SDL_GPU_STOREOP_DONT_CARE;
+    }
 
     void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_, int samples = 1) {
         dev = device;
@@ -2551,11 +2560,9 @@ struct Renderer {
         color.texture = post ? sceneTex : target;
         color.clear_color = {0.55f, 0.65f, 0.78f, post ? 0.0f : 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
-        color.store_op = SDL_GPU_STOREOP_STORE;
         if (sceneSamples > 1) {
             color.resolve_texture = sceneTex;
             color.texture = msaaColor;
-            color.store_op = SDL_GPU_STOREOP_RESOLVE;
         }
         // Effects that read the post-sun scene copy or $floatz (distortion, zfeather). The copy needs the scene in an offscreen
         // target (post) and is made only when the scene viewport is the whole window (0x10025ce5 flag; always here).
@@ -2574,12 +2581,17 @@ struct Renderer {
             oup.texture(outdoorTex, 0, 0, 512, 512, scene.outdoor.image().data(), uint32_t(scene.outdoor.image().size()));
             outdoorFor = &scene.outdoor;
         }
-        if (sceneSamples > 1 && postSunWanted) color.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE; // the pass resumes after the post-sun copy
+        // The scene pass is interrupted before the blended passes for the post-sun copy (also read by glow_setup) and resumed with
+        // LOAD, so its first part must keep the colour samples and the depth (assets::scenePassStores, docs/spec/material.md
+        // "Multisampling"); a resolve-only / DONT_CARE store left the resumed pass reading undefined sample memory.
+        const bool resumedPass = postSunWanted || glowOn;
+        const assets::ScenePassStores stores = assets::scenePassStores(sceneSamples, resumedPass);
+        color.store_op = sdlStoreOp(stores.color);
         SDL_GPUDepthStencilTargetInfo ds{};
         ds.texture = sceneSamples > 1 ? msaaDepth : depth;
         ds.clear_depth = 1.0f;
         ds.load_op = SDL_GPU_LOADOP_CLEAR;
-        ds.store_op = postSunWanted ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
+        ds.store_op = sdlStoreOp(stores.depth);
         ds.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         struct VU { Mat4 vp; float eye[4]; Mat4 model; } vu{cam.viewProj(float(w) / float(h)), {cam.pos.x, cam.pos.y, cam.pos.z, 0}, kIdentity};
@@ -2767,7 +2779,7 @@ struct Renderer {
                 SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             }
-            if (p == Pass::Blend && !fxStep && (postSunWanted || glowOn)) { // glow_setup reads the copy too
+            if (p == Pass::Blend && !fxStep && resumedPass) { // glow_setup reads the copy too
                 // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
                 // the back buffer into resolvedPostSun), then the effect lists. ($floatz was built at the start of the frame.)
                 SDL_EndGPURenderPass(pass);

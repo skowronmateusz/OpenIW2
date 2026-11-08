@@ -101,12 +101,18 @@ in the original; here a change applies at the next frame.
 
 Code samplers have fixed bytes in the lookups 0x10038dd0 / 0x10039030; floatZ (code sampler 0x15) is 0x31: point, no mip, clamped.
 
-The shipped mips carry their own alpha. For instance level 0 of `egypt_rug3_c` (the striped blanket on the bench in decoytown)
-is a noise mask spread evenly over the image: a third of its texels are in 128..159 and 0.6 % are below 128, while every smaller
-level is fully opaque after filtering. Filtered samples of level 0 near the reference flip with the sampling position, so holes and
-teeth appear and move wherever level 0 is the sampled mip. The original has no MSAA at its default r_aaSamples of 1 (registered at
-0x1000b212), so it has this as well; forced anisotropy keeps level 0 in use at more angles, the default mode less.
-No D3DSAMP_MIPMAPLODBIAS call exists in the renderer, so there is no texture LOD bias.
+The alpha the test sees from a USE_ALPHA technique is the colour map's alpha times the vertex alpha (shade library: the textured
+diffuse is multiplied by the vertex colour and the lightmap / light-probe shaders write that product's alpha; iw2view
+`base = tex0 * in.color`, `assets::shaderOutputAlpha`). The shipped mips carry their own alpha. Measured example, the striped
+blanket on the bench in decoytown (`egypt_rug3`, GE128, colour map `egypt_rug3_c`, DXT5 256 × 128): the alpha averages 181/255 at
+every level; level 0 is noisy (124..255, a third of the texels in 128..159, 0.6 % below 128), level 1 and smaller are smooth
+(131..253 at level 1, 164..199 at level 3). Under opaque vertices the product is ~0.71 and passes everywhere. The map paints the
+blanket's vertex alpha from 255 along the top edge of its hanging face down to 41 at the lower edge, so the product crosses 128/255
+inside the lower half of that face: there level 0 gives a dissolved cut that moves with the sampling position, level 1 a clean line.
+At the player's distance the LOD across the face lies between 0 and 0.5 (measured +0.1..+0.3 in a 1280 × 800 view), so with the
+default point mip filter a small move can switch the face between the two looks. This follows from the sampler and alpha-test rules
+read from the renderer and from the shipped shaders and map; it has not been compared against the original's picture. Forced
+anisotropy keeps level 0 in use at more angles. No D3DSAMP_MIPMAPLODBIAS call exists in the renderer, so there is no texture LOD bias.
 
 ## Multisampling (r_aaSamples, deliberate deviation in the default)
 
@@ -117,7 +123,14 @@ The value is read when the renderer starts, so a change applies at the next star
 The scene passes render into multisampled colour and depth targets and resolve into the scene image; $floatz, the screen filters and the
 2D pass stay single-sampled, and the post-sun copy is made from a resolve. This alpha to coverage is an openiw2 addition with no
 counterpart in the original: when more than one sample is active, the AlphaTest pass enables it. GE128 materials output
-`saturate((a - 128/255) / fwidth(a) + 0.5)` as coverage and are not discarded; other functions keep their test and output 1.
+`saturate((a - 128/255) / fwidth(a) + 0.5)` as coverage and are not discarded; other functions keep their test and output 1. On a
+noisy alpha the ramp is wide, so a dissolved edge comes out as partial coverage (a dither) rather than as whole-pixel holes.
+
+The scene pass is interrupted before the blended passes for the post-sun copy (made whenever glow is on or an effect reads the copy)
+and resumed with LOAD, so its first part stores its colour samples (RESOLVE_AND_STORE) and its depth (`assets::scenePassStores`).
+Storing the resolve alone, or DONT_CARE for the depth, leaves the resumed pass reading undefined sample memory: in a 1280 × 800
+4-sample shot of the decoytown bench the alpha-tested surfaces (the blanket, the floor rugs, the view model) were missing in 3 of 5
+renders before this rule and in none of 5 after it; with one sample the depth of the resumed pass was undefined the same way.
 
 ## Polygon offset (1.3 DLL 0x1003d230)
 

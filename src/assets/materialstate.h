@@ -40,6 +40,25 @@ inline int parseAaSamples(const std::string& v) {
     return n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1;
 }
 
+// Store operations of the first part of the scene pass (docs/spec/material.md "Multisampling"). The pass is interrupted before the
+// blended passes for the post-sun copy and resumed with LOAD; when it resumes, the colour samples and the depth must be kept, since
+// a store of the resolve alone, or DONT_CARE for the depth, leaves the resumed pass reading undefined memory.
+enum class StoreOp : uint8_t { DontCare, Store, Resolve, ResolveAndStore };
+struct ScenePassStores {
+    StoreOp color, depth;
+};
+constexpr ScenePassStores scenePassStores(int samples, bool resumed) {
+    const bool multisampled = samples > 1;
+    return {multisampled ? (resumed ? StoreOp::ResolveAndStore : StoreOp::Resolve) : StoreOp::Store,
+            resumed ? StoreOp::Store : StoreOp::DontCare};
+}
+
+// The alpha the fixed-function test sees from a USE_ALPHA technique: the colour map's alpha times the vertex alpha (shade library,
+// the textured diffuse multiplied by the vertex colour, whose alpha the lightmap and light-probe shaders write out), as 8 bits.
+constexpr uint8_t shaderOutputAlpha(uint8_t textureAlpha, uint8_t vertexAlpha) {
+    return uint8_t((unsigned(textureAlpha) * unsigned(vertexAlpha) + 127u) / 255u);
+}
+
 // params.x of the world and model fragment shaders: -1 for a USE_ALPHA 0 technique, else the function. A pass with alpha to
 // coverage adds 8, so 9 selects the GE128 coverage ramp and the other values keep their test with a coverage of 1.
 constexpr float alphaShaderParam(AlphaFunc f, bool alphaOne, bool coverage) {
