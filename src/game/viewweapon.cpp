@@ -1,6 +1,8 @@
-// View weapon offsets, following CoD2SP_s.exe 1.3 (docs/spec/weapons.md): 0x4b5380 (position), 0x4b5730
+// View weapon offsets, from the patch 1.3 SP executable (docs/spec/weapons.md): 0x4b5380 (position), 0x4b5730
 // (rotation), 0x4ae7d9 (aiming field of view). The cg_gun_* dvars default to 0 and are left out.
 #include "game/viewweapon.h"
+
+#include "game/axis.h"
 
 #include <algorithm>
 #include <cmath>
@@ -244,6 +246,47 @@ std::array<float, 2> ViewImpulses::damageKick(int64_t timeMs, float adsFrac, boo
     }
     f *= b;
     return {damagePitch_ * f, damageRoll_ * f};
+}
+
+V3 ViewImpulses::gunDamageKick(int64_t timeMs, float adsFrac, bool reticle) const {
+    if (damageTime_ == 0) return {0, 0, 0};
+    const float scale = (adsFrac + 1.0f) * 0.5f, rise = 100.0f * scale, fall = 400.0f * scale;
+    float amplitude = scale;
+    if (adsFrac != 0 && reticle) amplitude *= 1.0f - 0.75f * adsFrac;
+    const float t = float(timeMs - damageTime_);
+    float k;
+    if (t < rise) {
+        const float x = t / rise;
+        k = amplitude * x * (2.0f - std::fabs(x));
+    } else {
+        const float x = (t - rise) / fall;
+        if (1.0f - x <= 0) return {0, 0, 0};
+        k = amplitude * (1.0f - x * (2.0f - std::fabs(x)));
+    }
+    return {damagePitch_ * k * 0.5f, -damageRoll_ * k, damageRoll_ * k * 0.5f};
+}
+
+GunAim computeGunAim(const GunAimPose& p) {
+    GunAim out;
+    out.valid = true;
+    out.pitch = p.viewAngles[0];
+    out.yaw = p.viewAngles[1];
+    if (!p.adsWeapon || p.adsFrac == 0) return out; // 0x4b60b6, 0x4b61ac, 0x4b6192
+    const Axis view = anglesAxis(p.viewAngles), bob = anglesAxis(p.rawBob);
+    // Forward, left, up (the second row of anglesAxis is the left vector): rotated by the bob, then the lag.
+    script::Vec3 local = axisApply({0, 0, 0}, bob, p.moveBeforeLag);
+    local[1] -= p.lagSide;
+    local[2] += p.lagUp;
+    const script::Vec3 world = axisApply({0, 0, 0}, view, local);
+    out.offset = {world[0] * p.adsFrac, world[1] * p.adsFrac, (world[2] + p.landZ) * p.adsFrac}; // 0x4b6030
+    if (p.overlay) return out; // 0x4b6139
+    const script::Vec3 a = axisAngles(axisMul(anglesAxis(p.gunAngles), view));
+    auto toShort = [](float deg) { // 0x4b613b..0x4b618a: _ftol truncates towards zero, then 16 bits
+        return float(int(deg * 182.04444885253906f) & 0xffff) * 0.0054931640625f;
+    };
+    out.pitch = toShort(a[0]);
+    out.yaw = toShort(a[1]);
+    return out;
 }
 
 void AimBlend::set(W& s, float goal, float blend) {

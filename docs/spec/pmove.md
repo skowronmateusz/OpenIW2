@@ -131,6 +131,8 @@ state not 5–9: the ×0.4 of cmdScale.
 
 ### Linked player (pm_type 1 and 5, 0x50c881)
 
+The aim spread update (0x4de540, from 0x50c6cb, before this dispatch) counts a player as airborne only when the ground entity is none (0x7ff) and pm_type is not 1, at both the halved decay and the extra increase. A linked player (pm_type 1, whose ground entity is always none) decays and grows as if on the ground.
+
 PmoveSingle dispatches on pm_type through the table at 0x50cbfc: 1 and 5 go to 0x50c881, 2 to 0x50c77b (noclip), 3 to 0x50c800 (ufo), 0 and 4 to
 the walking code (0x50c918). The linked branch drops the ladder flag (0x20 gives 0x40000), sets the ground entity to none (ps+0x60 = 0x7ff),
 zeroes the velocity and both move commands, then runs the aim command (0x4dd020), the stance change and view height (0x509d10), the pm_time

@@ -37,6 +37,16 @@ int main() {
         CHECK(near(fireSpreadDegrees(h, 40, 255, 0.5f, 0.3f), 4.0f, 1e-4f));
         CHECK(near(fireSpreadDegrees(h, 60, 0, 1.0f, 0.3f), 0.3f, 1e-4f));
         CHECK(near(fireSpreadDegrees(h, 60, 255, 1.0f, 0.3f), 8.0f, 1e-4f));
+        { // The shot's own increment leaves the value from before the command untouched: a steady first hip shot uses the minimum.
+            PlayerState shotPs;
+            shotPs.aimSpread = 0;
+            const float beforeCmd = shotPs.aimSpread;
+            HipSpread add = h;
+            add.fireAdd = 1;
+            addFireSpread(shotPs, add, 0);
+            CHECK(near(shotPs.aimSpread, 255, 1e-3f));
+            CHECK(near(fireSpreadDegrees(h, 60, beforeCmd, 0, 0.3f), 2.0f, 1e-4f));
+        }
     }
     {
         // Free fall without a map: the slide move uses the average of the start and end vertical speed (0x54eac0),
@@ -437,6 +447,23 @@ int main() {
         tenth.pmType = 2;
         for (int i = 0; i < 12; ++i) playerMove(empty, tenth, fwd, 0.002f, mp);   // a tenth of the time (frame scale 0.1)
         CHECK(tenth.origin[0] < 0.2f * dNormal);
+    }
+    {
+        // Aim spread (0x4de540): airborne means no ground entity and pm_type != 1, at both the decay and the increase.
+        CollisionWorld empty;
+        MoveParams mp;
+        mp.hipSpread.decayRate = 5;
+        PlayerState linked;
+        linked.pmType = 1;
+        linked.onGround = false;
+        linked.aimSpread = 200;
+        playerMove(empty, linked, {}, 0.02f, mp);
+        CHECK(near(linked.aimSpread, 200 - 5 * 0.02f * 255, 1e-2f)); // the full decay, no airborne increase
+        PlayerState air;
+        air.onGround = false;
+        air.aimSpread = 200;
+        playerMove(empty, air, {}, 0.02f, mp);
+        CHECK(near(air.aimSpread, 200 + (2.56f - 2.5f) * 0.02f * 255, 1e-2f)); // halved decay, 2 * 1.28 increase
     }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;

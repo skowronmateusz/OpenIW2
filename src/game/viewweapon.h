@@ -34,6 +34,10 @@ public:
     // Offsets to add: forward/right/up and pitch/yaw/roll, already faded for aiming down the sights.
     const V3& move() const { return outMove_; }
     const V3& rot() const { return outRot_; }
+    // move() before sway() applied the lag (0x4b61d0 rotates this part by the gun bob first), and the two lag values.
+    V3 moveBeforeLag() const { return {outMove_[0], outMove_[1] + lagSide_, outMove_[2] - lagUp_}; }
+    float lagSide() const { return lagSide_; }
+    float lagUp() const { return lagUp_; }
 
 private:
     V3 curMove_{}, curRot_{}, outMove_{}, outRot_{};
@@ -70,6 +74,40 @@ private:
 // every rendered frame adds crandom() * vertViewJitter to the view pitch and then crandom() * horizViewJitter to the yaw
 // (crandom = 2 * rand() / 32768 - 1, a fresh pair per frame, no accumulation). Returns {pitch, yaw, 0} degrees to add.
 V3 turretViewJitter(float vertJitter, float horizJitter, unsigned& seed);
+
+// The gun pose a shot uses (cgame 0x4b6d40; docs/spec/weapons.md, "Shot direction and muzzle").
+struct GunAimPose {
+    bool adsWeapon = false;   // aimDownSight (+0x32c)
+    float adsFrac = 0;
+    bool overlay = false;     // the scope overlay test 0x4bc8a0
+    V3 viewAngles{};          // the final view angles of this frame, with view kick (0xf79190)
+    V3 moveBeforeLag{};       // ViewWeaponMotion::moveBeforeLag(): forward, left, up
+    V3 rawBob{};              // the gun bob angles without the reticle factor (0xf79940)
+    float lagSide = 0, lagUp = 0; // ViewWeaponMotion::lagSide() / lagUp()
+    V3 gunAngles{};           // the gun's angles relative to the view (0x4b6420 before 0x4b5f80)
+    float landZ = 0;          // ViewImpulses::gunLandOffset()
+};
+struct GunAim {
+    bool valid = false;  // false until a pose was drawn
+    float pitch = 0, yaw = 0;
+    V3 offset{};         // from the eye to the muzzle, world units
+};
+GunAim computeGunAim(const GunAimPose& pose);
+
+// The command staleness of the gun pose: a shot reads the pose stored by the previous ClientThink (0x4e7e86 runs after the
+// events), which the previous command took from the frame drawn before it. One step per simulated frame.
+class GunAimDelay {
+public:
+    GunAim step(const GunAim& drawnLastFrame) {
+        const GunAim out = stored_;
+        stored_ = drawnLastFrame;
+        return out;
+    }
+    void reset() { stored_ = GunAim{}; }
+
+private:
+    GunAim stored_{};
+};
 
 // Screen shake (cgame 0x4bf5e0 add, per-frame combine 0x4bf700 called at 0x4af609 after the view offsets). Fed by the
 // EV_FIRE_WEAPON_MG42 event 0xaf (scale 0.05, 100 ms, radius 100, at the turret entity origin) and the earthquake event
@@ -198,6 +236,10 @@ public:
     // {pitch, roll} added to the view at `timeMs` (0x4ae371-0x4ae4a9): 100 ms in, 400 ms out; aiming scales it by
     // 1 - 0.5 * adsFrac (times 1 + 0.5 * adsFrac for a weapon with an ADS overlay reticle).
     std::array<float, 2> damageKick(int64_t timeMs, float adsFrac, bool reticle) const;
+    // The same damage as angles on the gun, {pitch, yaw, roll} (0x4b64dc..0x4b660f; docs/spec/weapons.md, "Damage kick on the gun").
+    V3 gunDamageKick(int64_t timeMs, float adsFrac, bool reticle) const;
+    // World z the landing adds to the gun: a quarter of the eye's dip (0x4b6397..0x4b63d1).
+    float gunLandOffset(int64_t timeMs) { return landOffset(timeMs) * 0.25f; }
     // The own client's step event 0x8f (cgame 0x4bac84): the view step change = the unfinished part of the previous one
     // ((100 - elapsed) * change * 0.01 * 0.9 within 100 ms) + (parm - 0x80), clamped to -16..24, stamped `timeMs`.
     void step(int parm, int64_t timeMs);

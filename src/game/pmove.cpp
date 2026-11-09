@@ -947,7 +947,7 @@ void updateHoldBreath(PlayerState& ps, const PlayerInput& in, const BreathParams
 // air, × frametime. scale += (increase − decay) · 255, kept in 0..255.
 void updateAimSpread(PlayerState& ps, const PlayerInput& in, float f, float r, float frametime, const MoveParams& mp) {
     const HipSpread& h = mp.hipSpread;
-    const bool inAir = !ps.onGround;
+    const bool inAir = !ps.onGround && ps.pmType != 1; // ground entity 0x7ff and pm_type != 1 (0x4de572, 0x4de69c)
     float decay = h.decayRate, inc = 0;
     if (decay == 0) {
         decay = 1.0f;

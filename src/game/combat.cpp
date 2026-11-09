@@ -912,9 +912,8 @@ Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, floa
     const Value w = player_->obj->get("$weapon");
     // FireWeapon (0x531c40) dispatches on weaponType (+0x78): 0 bullet (0x5312b0), 1 grenade (0x531990), 2 projectile
     // (0x531a40 -> G_FireRocket 0x527810). The muzzle point is the eye (0x4e8b70) plus the usercmd gun offset (0x531bff,
-    // client +0x864c..0x8654), the axes come from AnglesToAxis of the gun angles (0x531b90): forward, left, up.
-    // TODO(spec): [stays: needs the view model state on the game side] the gun angles and offset equal the view angles and zero except while an aimDownSight weapon is between
-    // hip and full aim (0x4b6030 / 0x4b60e0 take the view model's sway, bob and kick state, 0x4b4dc0 / 0x4b5d10 etc.).
+    // client +0x864c..0x8654), the axes come from AngleVectors of the gun angles (0x531b90): forward, right, up. The caller
+    // supplies the forward and offset of the command's gun pose (computeGunAim, docs/spec/weapons.md).
     const Vec3 origin = add(eye, gunOffset);
     const float pitch = -std::asin(std::clamp(forward[2], -1.0f, 1.0f)) * 180.0f / float(M_PI);
     const float yaw = std::atan2(forward[1], forward[0]) * 180.0f / float(M_PI);
@@ -926,7 +925,7 @@ Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, floa
     const float rad = float(nextRand()) * 3.0517578125e-05f;
     const float dx = std::cos(ang) * rad, dy = std::sin(ang) * rad;
     const float t = std::tan(spreadDeg * 0.01745329238474369f);
-    const auto offset = [&](float k) { return add(scale(axes[1], dx * t * k), scale(axes[2], dy * t * k)); };
+    const auto offset = [&](float k) { return spreadDiscOffset(axes, dx * t * k, dy * t * k); };
     if (w.isString() && weaponField(w.asString(), "weaponType") == "projectile") {
         Vec3 dir = add(axes[0], offset(1.0f));
         const float l = len(dir);

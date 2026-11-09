@@ -4445,6 +4445,13 @@ int main(int argc, char** argv) {
             world->player()->obj->set("$weapon", script::Value(pweapon.name()));
             weaponWritten = pweapon.name();
         };
+        // The gun's rotation relative to the view: sway and rotation offsets (0x4b51a0, 0x4b5730), gun bob (0x4b4d10), gun kick (0x4b5d10).
+        auto gunRelativeAngles = [&]() {
+            auto rt = vmMotion.rot();
+            const auto gk = recoil.gunKick();
+            for (size_t k = 0; k < 3; ++k) rt[k] += gunBobAngles[k] + gk[k];
+            return rt;
+        };
         auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c, bool drawn = true) { // drawn = 0x4b69b0's third argument (0 under the scope overlay)
             if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
             const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
@@ -4484,12 +4491,7 @@ int main(int argc, char** argv) {
             if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): [flag writer not found] the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
             // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
             const auto mv = vmMotion.move();
-            auto rt = vmMotion.rot();
-            for (int k = 0; k < 3; ++k) rt[size_t(k)] += gunBobAngles[size_t(k)]; // 0x4b4d10
-            {
-                const auto gk = recoil.gunKick(); // 0x4b5d10
-                for (int k = 0; k < 3; ++k) rt[size_t(k)] += gk[size_t(k)];
-            }
+            const auto rt = gunRelativeAngles();
             const Vec3 vmFwd = c.forward(), vmRight = c.right(), vmUp = cross(vmRight, vmFwd);
             const auto vmOff = game::viewModelOffset({vmFwd.x, vmFwd.y, vmFwd.z}, {vmRight.x, vmRight.y, vmRight.z}, {vmUp.x, vmUp.y, vmUp.z},
                                                      {mv[0], mv[1], mv[2]});
@@ -5050,6 +5052,9 @@ int main(int argc, char** argv) {
         };
         bool mantleHint = false;
         float hudAimSpread = 255.0f, hudViewHeight = 60.0f; // ps+0x5b0 and the view height for the crosshair
+        float aimSpreadBeforeCmd = 255.0f;
+        game::GunAim drawnGunAim;     // the pose stored by the last drawn frame (cgame 0x4b6d40), for the next command
+        game::GunAimDelay gunAimDelay; // the staleness of that pose for a shot (docs/spec/weapons.md)
         // Damage direction icons (cgame 0x4ba2a0 → 8 slots at 0xf79704: start, duration, yaw).
         struct DamageIcon { int64_t start = -1000000; int duration = 0; float yaw = 0; };
         std::array<DamageIcon, 8> damageIcons{};
@@ -7852,6 +7857,7 @@ int main(int argc, char** argv) {
                 pc.adsFrac = pweapon.adsFrac();
                 world->setPlayerCommand(pc);
             }
+            aimSpreadBeforeCmd = ps.aimSpread; // ClientThink keeps ps+0x5b0 / 255 at client +0x8670 (0x4e7c7d) before Pmove; the shot's spread reads that (0x531c85)
             if (onTurret) {
                 // The eye is the turret's tag_player (0x4e8b70); the turret code places the player behind it.
                 game::Vec3 eye;
@@ -8067,8 +8073,6 @@ int main(int argc, char** argv) {
                 if ((ps.stance == game::Stance::Prone && (in.forward != 0 || in.right != 0)) || pweapon.stateNumber() == 10 ||
                     pweapon.stateNumber() == 11)
                     ps.aimSpread = 255.0f;
-                hudAimSpread = ps.aimSpread;
-                hudViewHeight = ps.viewHeight;
                 cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 // Dead view (cgame 0x4ae2f5: pm_type ≥ 4): pitch −15, roll 40, yaw the player state's dead yaw
@@ -8118,6 +8122,8 @@ int main(int argc, char** argv) {
                 cam.pos = cam.pos + normalize(move) * speed;
             }
 
+            hudAimSpread = ps.aimSpread; // on every branch: the crosshair of a linked player too
+            hudViewHeight = ps.viewHeight;
             if (world && world->player() && pendingF10) {
                 pendingF10 = false;
                 if (world->godOn()) { if (world->cheatGod()) world->cheatDemigod(); } // god -> demigod (the gate was checked by the first call)
@@ -8364,7 +8370,16 @@ int main(int argc, char** argv) {
                     const Vec3 f = cam.forward(), r = cam.right();
                     mixer.setListener({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, {r.x, r.y, r.z});
                 }
-                const Vec3 f = cam.forward();
+                // The gun pose of the command before this one (0x531b90; a vehicle shot keeps the view angles, 0x531bbc).
+                const game::GunAim shotAim = gunAimDelay.step(drawnGunAim);
+                Camera shotCam = cam;
+                game::Vec3 shotOffset{0, 0, 0};
+                if (shotAim.valid && !inVehicle) {
+                    shotCam.pitch = shotAim.pitch;
+                    shotCam.yaw = shotAim.yaw;
+                    shotOffset = {shotAim.offset[0], shotAim.offset[1], shotAim.offset[2]};
+                }
+                const Vec3 f = shotCam.forward();
                 {
                     game::HipSpread hs;
                     hs.fireAdd = pweapon.number("hipSpreadFireAdd");
@@ -8379,9 +8394,9 @@ int main(int argc, char** argv) {
                         game::HipSpread hs;
                         hs.standMin = fld("hipspreadstandmin"); hs.duckedMin = fld("hipspreadduckedmin"); hs.proneMin = fld("hipspreadpronemin");
                         hs.max = fld("hipspreadmax"); hs.duckedMax = fld("hipspreadduckedmax"); hs.proneMax = fld("hipspreadpronemax");
-                        spreadDeg = game::fireSpreadDegrees(hs, ps.viewHeight, ps.aimSpread, pweapon.adsFrac(), fld("adsspread"));
+                        spreadDeg = game::fireSpreadDegrees(hs, ps.viewHeight, aimSpreadBeforeCmd, pweapon.adsFrac(), fld("adsspread"));
                     }
-                    const auto kick = world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, pweapon.clip() == 0 && i == shots - 1, spreadDeg);
+                    const auto kick = world->playerFire({cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, pweapon.clip() == 0 && i == shots - 1, spreadDeg, shotOffset);
                     for (int k = 0; k < 3; ++k) ps.velocity[k] -= kick[k]; // 0x531b1b
                 }
                 if (shots) std::cout << pweapon.name() << " " << pweapon.clip() << "/" << pweapon.stock() << "  hits " << world->stats.hits << " kills " << world->stats.kills << "\n";
@@ -8734,6 +8749,8 @@ int main(int argc, char** argv) {
                     lastLandSeq = 0;
                     lastEventSeq = 0;
                     viewImp.reset();
+                    drawnGunAim = {};
+                    gunAimDelay.reset();
                     // CG_Init (0x4a5c10) zeroes 0xf5bd00..0xf7eb4c on every map load, the last weapon cycle time 0xf796e4 among them.
                     // Kept from the previous map (whose clock ran far ahead), it blocked weapnext / weapprev until the new map's
                     // clock caught up.
@@ -8872,6 +8889,31 @@ int main(int argc, char** argv) {
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
             setFxFar(fxSystem, cam, (world ? world->clientFog.current(cgNowMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
+            // The gun pose of this frame (cgame 0x4b6d40, after the view offsets), read by the next command. The pass stops, keeping the last
+            // pose, with pm_type 2 or 3, on a turret, and in a vehicle outside the binocular weapon states (0x4b6d54..0x4b6db9).
+            if (const int gs = pweapon.stateNumber(); world && ps.pmType != 2 && ps.pmType != 3 && !world->playerOnTurret() &&
+                                                      !((world->playerPmFlags() & 0x20000) && !(gs >= 0x11 && gs <= 0x16))) {
+                game::GunAimPose gp;
+                gp.viewAngles = {cam.pitch, cam.yaw, cam.roll};
+                if (pweapon.equipped() || pweapon.binocularsUp()) { // no weapon: the view angles and no offset (0x4b6ede)
+                    const std::string ret = pweapon.field("adsOverlayReticle");
+                    const bool reticle = !ret.empty() && ret != "none";
+                    const auto dk = viewImp.gunDamageKick(cgNowMs(), pweapon.adsFrac(), reticle);
+                    gp.adsWeapon = pweapon.number("aimDownSight") != 0;
+                    gp.adsFrac = pweapon.adsFrac();
+                    gp.overlay = scopeAlpha() > 0;
+                    gp.moveBeforeLag = vmMotion.moveBeforeLag();
+                    gp.rawBob = rawGunBob;
+                    gp.lagSide = vmMotion.lagSide();
+                    gp.lagUp = vmMotion.lagUp();
+                    gp.gunAngles = gunRelativeAngles();
+                    gp.gunAngles[0] += pweapon.number("adsAimPitch") * gp.adsFrac + dk[0]; // 0x4b5b6c, the damage kick
+                    gp.gunAngles[1] += dk[1];
+                    gp.gunAngles[2] += dk[2];
+                    gp.landZ = viewImp.gunLandOffset(cgNowMs());
+                }
+                drawnGunAim = game::computeGunAim(gp);
+            }
             // The view model is posed (and its flash / brass played) before the effects are drawn: the exe adds the view weapon
             // (0x4b026f) before the effect draw, and the bolted particles re-read tag_flash / tag_brass through 0x47fcd0 ->
             // 0x48abb0 once per frame stamp 0x6221a8 (bumped at the frame start, 0x4afca3), i.e. this frame's gun pose. Posing it

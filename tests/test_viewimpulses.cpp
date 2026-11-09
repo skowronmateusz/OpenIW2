@@ -46,11 +46,31 @@ int main() {
     CHECK(near(d.damageKick(400, 0, false)[0], -7.5f)); // 1 - x(2 - x), x = (300 - 100) / 400
     CHECK(d.damageKick(700, 0, false)[0] == 0);
     CHECK(near(d.damageKick(200, 1.0f, false)[0], -15.0f)); // aiming halves it
+    { // The same damage on the gun (0x4b64dc): at aim 0 scale 0.5, rise 50 ms, fall 200 ms.
+        CHECK(near(d.gunDamageKick(150, 0, false)[0], -30.0f * 0.5f * 0.5f));
+        CHECK(near(d.gunDamageKick(100, 0, false)[0], 0.0f));
+        CHECK(near(d.gunDamageKick(250, 0, false)[0], -30.0f * 0.5f * 0.5f * (1.0f - 0.5f * 1.5f))); // x = 0.5
+        CHECK(d.gunDamageKick(350, 0, false)[0] == 0);
+        CHECK(near(d.gunDamageKick(200, 1.0f, false)[0], -15.0f));         // aim 1: scale 1, rise 100 ms, full kick
+        CHECK(near(d.gunDamageKick(200, 1.0f, true)[0], -15.0f * 0.25f));  // with an overlay reticle: amplitude * 0.25
+        ViewImpulses none;
+        CHECK(none.gunDamageKick(500, 0, false)[0] == 0);
+        ViewImpulses roll;
+        roll.damage(64, 0, 10, f, l, 1); // a shot along +y: the kick direction is the view's left
+        const V3 k = roll.gunDamageKick(101, 1.0f, false);
+        CHECK(k[2] == 0 ? false : near(k[1], -2.0f * k[2]));
+    }
     // A hit from the front-left of a view looking along +x: byte yaw 0 = the shot travels along +x, so the kick direction
     // v = -(1, 0, 0) is behind the view: pitch kick = -(f . v) * kick = +kick.
     ViewImpulses e;
     e.damage(0, 0, 10, f, l, 0 + 1);
     CHECK(near(e.damageKick(101, 0, false)[0], 6.0f));
+    { // The landing dip on the gun (0x4b6397): a quarter of the eye's.
+        ViewImpulses g;
+        g.land(100.0f, 0, 1000);
+        CHECK(near(g.gunLandOffset(1075), g.landOffset(1075) * 0.25f));
+        CHECK(g.gunLandOffset(1075) < 0);
+    }
     // Shell-shock envelope of the gun sway (0x4b4e01).
     CHECK(shellShockRatio(0, 1000) == 0 && shellShockRatio(-5, 1000) == 0);
     CHECK(shellShockRatio(2000, 1000) == 1.0f && near(shellShockRatio(500, 1000), 0.5f));

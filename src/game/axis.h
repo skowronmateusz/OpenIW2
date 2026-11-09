@@ -66,6 +66,14 @@ inline Axis axisMul(const Axis& local, const Axis& parent) {
     return r;
 }
 
+// The spread disc on the view axes (0x531210): x along the right vector, y along the up vector. anglesAxis gives left, so the
+// right vector is the negated second row.
+inline script::Vec3 spreadDiscOffset(const Axis& axes, float x, float y) {
+    script::Vec3 r;
+    for (size_t i = 0; i < 3; ++i) r[i] = -axes[1][i] * x + axes[2][i] * y;
+    return r;
+}
+
 // Inverse of an orthonormal frame.
 inline Axis axisTranspose(const Axis& m) {
     Axis r{};
