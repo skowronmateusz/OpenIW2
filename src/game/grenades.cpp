@@ -799,6 +799,7 @@ const std::string& World::impactEffect(int type, int surface) {
                                             "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
                                             "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
         for (const std::string& dir : {std::string("fx/"), "fx/maps/" + mapName_ + "/"}) {
+            if (dir != "fx/") globalImpactEffects_ = impactEffects_;
             std::vector<std::string> files;
             for (const auto& f : vfs_.list(dir)) {
                 const std::string rest = f.substr(dir.size());
@@ -844,10 +845,19 @@ bool World::effectHasDecal(const std::string& path) {
     return found;
 }
 
-std::string World::rifleMarkFallback(int surface) {
-    if (surface == 7 || effectHasDecal(impactEffect(2, surface)) || effectHasDecal(impactEffect(3, surface))) return {};
-    const std::string& small = impactEffect(0, surface);
-    return effectHasDecal(small) ? small : std::string();
+std::string World::impactMarkFallback(int type, int surface) {
+    enum { Cloth = 4, Flesh = 7, Foliage = 8, Glass = 9, Gravel = 11, Ice = 12, Snow = 19, Water = 20 };
+    if (surface == Cloth || surface == Flesh || surface == Foliage || surface == Glass || surface == Water) return {};
+    if (effectHasDecal(impactEffect(type, surface)) || effectHasDecal(impactEffect(type + 1, surface))) return {};
+    std::string small = impactEffect(0, surface);
+    if (effectHasDecal(small)) return small;
+    small = globalImpactEffects_[0][size_t(surface)];
+    if (effectHasDecal(small)) return small;
+    if (surface == Snow || surface == Ice) { // the shipped gravel effect carries the snow mark material
+        small = globalImpactEffects_[0][Gravel];
+        if (effectHasDecal(small)) return small;
+    }
+    return {};
 }
 
 } // namespace iw2::game

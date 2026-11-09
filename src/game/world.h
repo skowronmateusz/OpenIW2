@@ -844,8 +844,8 @@ public:
     // Tests: the hit-location multiplier (0x528100) for an attacker holding `weapon` ("" = no weapon).
     // Vehicle immunity filter of G_Damage (0x5122f0, called at the top of 0x528050 when ent+0x108 is set): true = ignored.
     static bool vehicleIgnoresDamage(const VehicleInfo& info, int mod, int dflags);
-    // The small-bullet effect whose marks a rifle bullet adds on `surface`, or "" (deliberate deviation, docs/spec/effects.md).
-    std::string rifleMarkFallback(int surface);
+    // The effect whose marks a bullet of impact `type` adds on `surface`, or "" (deliberate deviation, docs/spec/effects.md).
+    std::string impactMarkFallback(int type, int surface);
     float debugLocMultiplier(const std::string& weapon, const std::string& location) {
         player_->obj->set("$weapon", script::Value(weapon));
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
@@ -1429,6 +1429,7 @@ private:
     std::map<std::string, bool> effectHasDecal_;
     TraceResult missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta); // 0x526d6b..0x526df7
     std::vector<std::array<std::string, 23>> impactEffects_;
+    std::vector<std::array<std::string, 23>> globalImpactEffects_; // the table of fx/ alone, before a map overrides it
     void forgetGrenade(Entity& g);
     void runGrenade(Entity& e);
     Entity& spawnRocket(Entity& parent, const std::string& weaponName, const Vec3& start, const Vec3& dir);
