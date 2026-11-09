@@ -365,8 +365,7 @@ step at 20 Hz.
   helper entities get their origin (no vehicle code writes it; G_Spawn leaves it at 0), so playback is not wired.
 - Texture scrolling (`g_vehicleTexScrollScale`).
 - Animated wheel tags: 0x4d7460 returns the matrix of the per-frame skeleton of 0x4d7390 (animation plus the controller 0x5127a0, section "Tag queries"), so
-  a wheel tag under tag_body also carries the body jolt; openiw2's ground alignment reads the plain animation pose (bind pose without one). TODO(spec): which models parent the
-  wheel tags under tag_body, whether the jolt feeds the alignment through them.
+  a wheel tag under tag_body would carry the body jolt. None does: in the 42 shipped models with `tag_wheel_*` bones no wheel tag has tag_body (or tag_turret) among its ancestors (bone parent table of each xmodelparts file), so the jolt never feeds the alignment and openiw2's use of the plain animation pose (bind pose without one) gives the same wheel positions.
 - Exact frame order of the vehicle think relative to script threads.
 
 ### Barrel pull-back (+0x19c / +0x198), partly decoded
