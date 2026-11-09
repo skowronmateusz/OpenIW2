@@ -314,12 +314,14 @@ struct GpuVertex {
     float uv[2];
     float lmUv[2];
     float light[3];
+    float tangent[3];  // lib/normalmap.hlsl frame, read by the l_point pass
+    float binormal[3];
 };
-static_assert(sizeof(GpuVertex) == 56);
+static_assert(sizeof(GpuVertex) == 80);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
 // Grouping of world surfaces into batches; the last six fields are the draw-list fields of Batch.
-using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>;
+using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>;
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -333,6 +335,8 @@ struct Batch {
     // *_spec techniques (lmap_s: lib/phong.hlsl): indices into Scene::textures of the normalMap / specularMap, -1 = none.
     int normalTex = -1, specTex = -1;
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState of the two maps
+    int pointNormalTex = -1; // normalMap of the l_point techniques, -1 for the flat default
+    uint8_t pointNormalState = 0;
     uint8_t colorState = 0; // MaterialTexture::samplerState of the colorMap
     assets::AlphaFunc alphaFunc = assets::AlphaFunc::None; // see MatInfo::alphaFunc
     int detail = -1; // Scene::details index
@@ -361,6 +365,8 @@ struct MatInfo {
     // For Pass::Water `texture` indexes Scene::waters.
     bool scroll = false; // techset `*_scroll` (the scroll technique subtracts the game-time value from the V coordinate)
     uint8_t normalState = 0, specState = 0; // MaterialTexture::samplerState
+    int pointNormalTex = -1; // see Batch
+    uint8_t pointNormalState = 0;
     uint8_t colorState = 0; // MaterialTexture::samplerState of the colorMap
     assets::AlphaFunc alphaFunc = assets::AlphaFunc::None; // mtlAlphaTest (state word 0), docs/spec/material.md "Alpha test"
     int detail = -1; // Scene::details index (technique set *_detail)
@@ -667,6 +673,13 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
             } else if (!img.empty() && (img == "$black" || (img[0] != '$' && (mi.pass != Pass::Skip || mi.fxKind == 2)))) { // the "black" material (technique set "tools") is a UI background
                 mi.texture = imageSlot(img);
+                // The l_point techniques of every phong_* techset sample material.normalMap; "$identitynormalmap" is the flat default.
+                if (m.techniqueSet.rfind("phong_", 0) == 0)
+                    for (const auto& t : m.textures)
+                        if (t.semantic == assets::TextureSemantic::Normal && t.samplerName == "normalMap" && !t.imageName.empty() && t.imageName[0] != '$') {
+                            mi.pointNormalTex = imageSlot(t.imageName);
+                            mi.pointNormalState = t.samplerState;
+                        }
                 // phong_*_spec* techsets (lmap_s / lprobe_s): normalMap (semantic 3) + specularMap (semantic 4).
                 if (m.techniqueSet.rfind("phong_", 0) == 0 && m.techniqueSet.find("_spec") != std::string::npos)
                     for (const auto& t : m.textures) {
@@ -717,6 +730,8 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
                 GpuVertex g{};
                 std::memcpy(g.pos, v.position.data(), 12);
                 std::memcpy(g.normal, v.normal.data(), 12);
+                std::memcpy(g.tangent, v.tangent.data(), 12);
+                std::memcpy(g.binormal, v.binormal.data(), 12);
                 std::memcpy(g.color, v.color.data(), 4);
                 g.uv[0] = v.uv[0];
                 g.uv[1] = v.uv[1];
@@ -725,7 +740,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             }
             Batch b;
             b.pass = mi.pass;
-            b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
+            b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
             b.texture = mi.texture;
             b.lightmap = -3;
             b.polygonOffset = mi.polygonOffset;
@@ -804,6 +819,10 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
             assets::skinVertex(v, pose, p, n);
             std::memcpy(g.pos, p.data(), 12);
             std::memcpy(g.normal, n.data(), 12);
+            std::array<float, 3> tangent, binormal;
+            assets::skinTangents(v, pose, tangent, binormal);
+            std::memcpy(g.tangent, tangent.data(), 12);
+            std::memcpy(g.binormal, binormal.data(), 12);
             std::memcpy(g.color, v.color.data(), 4);
             g.uv[0] = v.uv[0];
             g.uv[1] = v.uv[1];
@@ -811,7 +830,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         }
         Batch b;
         b.pass = mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
         b.texture = mi.texture;
         b.lightmap = -3;
         b.polygonOffset = mi.polygonOffset;
@@ -882,7 +901,7 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         if ((mi.pass == Pass::Skip && mi.fxKind != 2) || mi.pass == Pass::Sky) continue;
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.fxKind == 2 ? Pass::Blend : mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = -3;
@@ -1068,7 +1087,7 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = -3;
@@ -1164,7 +1183,7 @@ const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
         Batch b;
         b.pass = mi.pass == Pass::Additive ? Pass::Additive : Pass::Blend;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = k.second < int(scene.lightmaps.size()) ? k.second : -3;
@@ -1410,6 +1429,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         GpuVertex& g = verts[i];
         std::memcpy(g.pos, v.position.data(), 12);
         std::memcpy(g.normal, v.normal.data(), 12);
+        std::memcpy(g.tangent, v.tangent.data(), 12);
+        std::memcpy(g.binormal, v.binormal.data(), 12);
         std::memcpy(g.color, v.color.data(), 4);
         std::memcpy(g.uv, v.uv.data(), 8);
         std::memcpy(g.lmUv, v.lightmapUv.data(), 8);
@@ -1451,7 +1472,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend)}];
+        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
         if (soupOwner[si] > 0) {
             auto bb = scene.brushBounds.try_emplace(soupOwner[si], std::array<float, 6>{1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f}).first;
@@ -1545,6 +1566,9 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 const Vec3 p = xf(v.position, scale, true), n = normalize(xf(v.normal, 1.0f, false));
                 g.pos[0] = p.x; g.pos[1] = p.y; g.pos[2] = p.z;
                 g.normal[0] = n.x; g.normal[1] = n.y; g.normal[2] = n.z;
+                const Vec3 tangent = normalize(xf(v.tangent, 1.0f, false)), binormal = normalize(xf(v.binormal, 1.0f, false));
+                g.tangent[0] = tangent.x; g.tangent[1] = tangent.y; g.tangent[2] = tangent.z;
+                g.binormal[0] = binormal.x; g.binormal[1] = binormal.y; g.binormal[2] = binormal.z;
                 std::memcpy(g.color, v.color.data(), 4);
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
                 const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
@@ -1555,7 +1579,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend)}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1585,6 +1609,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.multiplyFog = std::get<16>(key) != 0;
         b.pointLit = std::get<17>(key) != 0;
         b.pointBlend = std::get<18>(key) != 0;
+        b.pointNormalTex = std::get<19>(key);
+        b.pointNormalState = uint8_t(std::get<20>(key));
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -1998,9 +2024,15 @@ struct Renderer {
         sfsi.num_samplers = 8;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
-        dfsi.num_samplers = 1;
+        dfsi.num_samplers = 2;
         SDL_GPUShader* dlightFsh = SDL_CreateGPUShader(dev, &dfsi);
-        if (!dlightFsh) sdlFail("dlight shader");
+        SDL_GPUShaderCreateInfo dvsi = vs;
+        dvsi.entrypoint = "vs_dlight";
+        SDL_GPUShader* dlightVsh = SDL_CreateGPUShader(dev, &dvsi);
+        if (!dlightFsh || !dlightVsh) sdlFail("dlight shader");
+        SDL_GPUVertexAttribute dlightAttrs[8] = {attrs[0], attrs[1], attrs[2], attrs[3], attrs[4], attrs[5],
+                                                 {6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, tangent)},
+                                                 {7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, binormal)}};
         SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
         SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
         if (!specVsh || !specFsh) sdlFail("spec shaders");
@@ -2058,7 +2090,10 @@ struct Renderer {
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
                 }
             if (p == 3) { // l_point (stateMap additive_nofog): ONE / ONE, depth test only
+                pi.vertex_shader = dlightVsh;
                 pi.fragment_shader = dlightFsh;
+                pi.vertex_input_state.vertex_attributes = dlightAttrs;
+                pi.vertex_input_state.num_vertex_attributes = 8;
                 for (int lvl = 0; lvl <= 2; ++lvl)
                     for (int c = 0; c < 3; ++c) {
                         pi.rasterizer_state.enable_depth_bias = lvl > 0;
@@ -2069,7 +2104,10 @@ struct Renderer {
                         dlightPipelines[lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                         if (!dlightPipelines[lvl][c]) sdlFail("dlight pipeline");
                     }
+                pi.vertex_shader = vsh;
                 pi.fragment_shader = fsh;
+                pi.vertex_input_state.vertex_attributes = attrs;
+                pi.vertex_input_state.num_vertex_attributes = 6;
                 pi.rasterizer_state.enable_depth_bias = false;
                 pi.rasterizer_state.depth_bias_slope_factor = 0;
                 pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -2741,8 +2779,10 @@ struct Renderer {
             du.model = model;
             du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f + assets::layerTieBias(pointWritesDepth);
             SDL_PushGPUVertexUniformData(cmd, 0, &du, sizeof(du));
-            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
-            SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
+            const bool hasNormalMap = b.pointNormalTex >= 0;
+            const SDL_GPUTextureSamplerBinding tb[2] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)},
+                                                        {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)}};
+            SDL_BindGPUFragmentSamplers(pass, 0, tb, 2);
             struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
             std::memcpy(fu.light, dl.pos, 12);
             fu.light[3] = dl.radius;
@@ -2750,6 +2790,7 @@ struct Renderer {
             fu.params[0] = float(int(b.alphaFunc));
             fu.params[1] = depthProbe ? 1.0f : 0.0f;
             fu.params[2] = b.pointBlend ? 1.0f : 0.0f;
+            fu.params[3] = hasNormalMap ? 1.0f : 0.0f;
             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
@@ -2835,8 +2876,10 @@ struct Renderer {
             VU mu = itemVu(it);
             mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
             SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
-            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
-            SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
+            const bool hasNormalMap = b.pointNormalTex >= 0;
+            const SDL_GPUTextureSamplerBinding tb[2] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)},
+                                                        {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)}};
+            SDL_BindGPUFragmentSamplers(pass, 0, tb, 2);
             struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
             std::memcpy(fu.light, dl.pos, 12);
             fu.light[3] = dl.radius;
@@ -2844,6 +2887,7 @@ struct Renderer {
             fu.params[0] = float(int(b.alphaFunc));
             fu.params[1] = depthProbe ? 1.0f : 0.0f;
             fu.params[2] = b.pointBlend ? 1.0f : 0.0f;
+            fu.params[3] = hasNormalMap ? 1.0f : 0.0f;
             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
             if (it.depthMax < 1.0f) { // camera-relative item (applyViewModelSpace): the light moves with the eye
                 fu.light[0] -= cam.pos.x, fu.light[1] -= cam.pos.y, fu.light[2] -= cam.pos.z;
@@ -2984,7 +3028,7 @@ struct Renderer {
             }
             for (const DLight& dl : dlights)
                 for (auto r = drawList.rbegin(); r != drawList.rend(); ++r) {
-                    if (!r->batch->pointLit || r->batch->lightmap == -3) continue;
+                    if (!assets::receivesDynamicLight(r->batch->pointLit, r->batch->fullbright)) continue;
                     if (r->item) drawItemDlight(dl, *r->item, *r->batch);
                     else {
                         bindStream(0);

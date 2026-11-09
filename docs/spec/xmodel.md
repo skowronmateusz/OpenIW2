@@ -54,8 +54,9 @@ parent-first (`FUN_0047c780`): `rotation = parent.rotation × local`, and
 | vertices | see below |
 | indices | `triangleCount × 3 × uint16` |
 
-Vertex: `float normal[3]; uint8 color[4]; float uv[2]; float tangent[3]; float binormal[3]` (the tangent and binormal
-names are inferred), then:
+Vertex: `float normal[3]; uint8 color[4]; float uv[2]; float binormal[3]; float tangent[3]`, then (in the shipped bren model the
+first vector follows +V and the second +U, matching the binormal-before-tangent order of the renderer's vertex layout; both are
+unit vectors perpendicular to the normal):
 
 - rigid surface: `float position[3]` in the space of the rigid bone;
 - skinned surface: `uint8 extraWeights; int16 bone; float offset[3]`. If `extraWeights > 0`, an unknown `uint8`

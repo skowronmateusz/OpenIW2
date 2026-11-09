@@ -122,7 +122,7 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
   a triangle of stalingradwinter_pipe_b (phong_replace_spec_detail) and of stalingradwinter_wall_grime04_decal. Such a decal passes
   the LessEqual depth test only when its depth is bit-identical to the surface's, i.e. the clip position is computed the same way
   in every vertex shader.
-- The same holds for every overlaid pass: the l_point light passes (always through the plain world vertex shader, also over lmap_s
+- The same holds for every overlaid pass: the l_point light passes (with their own vertex shader, also over lmap_s
   surfaces) and the multiply fog pass.
 - OpenIW2: all world / model vertex shaders of iw2view compute the clip position through one function (world_clip) written with
   explicit fma steps. A shared source expression alone did not give equal depth: fast math rounded it differently per vertex

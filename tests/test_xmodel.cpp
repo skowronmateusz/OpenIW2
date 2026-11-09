@@ -56,7 +56,8 @@ int main() {
         put<float>(surfs, 0); put<float>(surfs, 0); put<float>(surfs, 1);
         for (int c = 0; c < 4; ++c) put<uint8_t>(surfs, 255);
         put<float>(surfs, 0.5f); put<float>(surfs, 0.25f);
-        for (int k = 0; k < 6; ++k) put<float>(surfs, 0);
+        put<float>(surfs, 1); put<float>(surfs, 0); put<float>(surfs, 0); // binormal
+        put<float>(surfs, 0); put<float>(surfs, 1); put<float>(surfs, 0); // tangent
         put<float>(surfs, v == 0 ? 1.0f : 0.0f); put<float>(surfs, 0); put<float>(surfs, float(v));
     }
     for (uint16_t i : {0, 1, 2}) put<uint16_t>(surfs, i);
@@ -66,6 +67,7 @@ int main() {
         CHECK(near(out[0].vertices[0].position[0], 10) && near(out[0].vertices[0].position[1], 1));
         CHECK(near(out[0].vertices[2].position[2], 2));
         CHECK(near(out[0].vertices[0].uv[1], 0.25f));
+        CHECK(near(out[0].vertices[0].boneBinormal[0], 1) && near(out[0].vertices[0].boneTangent[1], 1));
     }
 
     // Trailing bytes are rejected.

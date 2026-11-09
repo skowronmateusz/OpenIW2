@@ -81,11 +81,15 @@ struct XInfluence {
 struct XVertex {
     std::array<float, 3> position{}; // model space (base pose applied)
     std::array<float, 3> normal{};
+    std::array<float, 3> tangent{};  // model space, like normal
+    std::array<float, 3> binormal{};
     std::array<uint8_t, 4> color{};
     std::array<float, 2> uv{};
     // Skinning data: influences in bone space and the normal in the space of the first bone.
     std::vector<XInfluence> influences;
     std::array<float, 3> boneNormal{};
+    std::array<float, 3> boneTangent{};
+    std::array<float, 3> boneBinormal{};
 };
 
 struct XSurface {
@@ -127,6 +131,8 @@ Quat anglesQuat(float pitch, float yaw, float roll);
 
 // Re-skins a vertex with a pose (position and normal in model space).
 void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& position, std::array<float, 3>& normal);
+// The tangent and binormal under a pose. They follow the first bone, as the normal does.
+void skinTangents(const XVertex& v, const XPose& pose, std::array<float, 3>& tangent, std::array<float, 3>& binormal);
 
 std::array<float, 3> rotate(const Quat& q, const std::array<float, 3>& v);
 Quat multiply(const Quat& a, const Quat& b);

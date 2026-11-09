@@ -390,23 +390,48 @@ fragment float4 fs_glow_bloom(GlowVOut in [[stage_in]], constant GlowU& u [[buff
 // Dynamic point light, technique l_point (lib/light_point.hlsl): the distance to the light, divided by its radius, indexes the linear falloff ramp;
 // colour = diffuse * light colour * max(0, N.L) * falloff, added to the lit scene (lib/phong.hlsl Phong_Lighting with L = normalize of the
 // light delta, lib/light_point.hlsl). Every l_point shader variant defines USE_SPECULAR 0, so the Phong specular term of the technique is
-// zero and absent here. TODO(spec): the normal map of the technique (N from Normal_GetWorldSpace; the flat default map gives the
-// interpolated normal used here, but world batches carry no tangent stream outside the lmap_s path); the PRE_ALPHA_BLEND (l_point_blend) variant.
+// zero and absent here. The normal comes from the material's normal map (lib/normalmap.hlsl); the flat default map leaves the
+// interpolated normal.
 struct DLightU {
     float4 light;  // xyz position, w radius
     float4 color;  // rgb
-    float4 params; // x: alpha test, y: depth probe
+    float4 params; // x: alpha test, y: depth probe, z: PRE_ALPHA_BLEND, w: material has a normal map
     float4 eye;
     float4 ramp[4]; // images/falloff_linear.iwi texels / 255 (16 x 1, bilinear, clamp)
 };
-fragment float4 fs_dlight(VertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], sampler s [[sampler(0)]]) {
+struct DLightVertexOut {
+    float4 position [[position]];
+    float3 normal;
+    float3 tangent;
+    float3 binormal;
+    float4 color;
+    float2 uv;
+    float3 eyeVec;
+};
+vertex DLightVertexOut vs_dlight(SpecVertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
+    DLightVertexOut o;
+    o.position = world_clip(u.viewProj, u.model, in.position, u.eye.w);
+    o.normal = (u.model * float4(in.normal, 0.0)).xyz;
+    o.tangent = (u.model * float4(in.tangent, 0.0)).xyz;
+    o.binormal = (u.model * float4(in.binormal, 0.0)).xyz;
+    o.color = in.color;
+    o.uv = in.uv;
+    o.eyeVec = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
+    return o;
+}
+fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]]) {
     const float4 base = colorMap.sample(s, in.uv) * in.color;
     if (alpha_rejected(u.params.x, base.a)) discard_fragment();
     if (u.params.y > 0.5) return float4(1.0, 0.0, 0.0, 1.0); // IW2_DEPTH_PROBE
     const float3 wp = in.eyeVec + u.eye.xyz;
     const float3 delta = (u.light.xyz - wp) / u.light.w;
     const float d = length(delta);
-    const float ndl = max(dot(normalize(in.normal), delta / max(d, 1e-5)), 0.0);
+    float3 n = in.normal;
+    if (u.params.w > 0.5) {
+        const float4 ns = normalMap.sample(normalSampler, in.uv);
+        n += (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal;
+    }
+    const float ndl = max(dot(normalize(n), delta / max(d, 1e-5)), 0.0);
     const float x = clamp(saturate(d) * 16.0 - 0.5, 0.0, 15.0);
     const int i0 = int(floor(x)), i1 = min(i0 + 1, 15);
     const float f = mix(u.ramp[i0 >> 2][i0 & 3], u.ramp[i1 >> 2][i1 & 3], x - float(i0));

@@ -229,6 +229,15 @@ void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& posit
     normal = v.influences.empty() ? v.normal : rotate(pose.rotation[size_t(v.influences.front().bone)], v.boneNormal);
 }
 
+void skinTangents(const XVertex& v, const XPose& pose, std::array<float, 3>& tangent, std::array<float, 3>& binormal) {
+    if (v.influences.empty()) {
+        tangent = v.tangent, binormal = v.binormal;
+        return;
+    }
+    const auto& rotation = pose.rotation[size_t(v.influences.front().bone)];
+    tangent = rotate(rotation, v.boneTangent), binormal = rotate(rotation, v.boneBinormal);
+}
+
 std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XModelParts& parts) {
     Reader r(data, "xmodelsurfs");
     if (const int16_t v = r.get<int16_t>(); v != kVersion) r.fail("version " + std::to_string(v));
@@ -257,8 +266,8 @@ std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XMod
             std::array<float, 3> n = r.vec3();
             for (auto& c : v.color) c = r.get<uint8_t>();
             v.uv = {r.get<float>(), r.get<float>()};
-            r.vec3(); // tangent (inferred)
-            r.vec3(); // binormal (inferred)
+            const std::array<float, 3> bn = r.vec3(); // follows +V in the shipped models
+            const std::array<float, 3> t = r.vec3();  // follows +U
             if (surf.skinned) {
                 const uint8_t extra = r.get<uint8_t>();
                 const int16_t bone0 = r.get<int16_t>();
@@ -266,6 +275,8 @@ std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XMod
                 const auto p0 = r.vec3();
                 v.influences.push_back({bone0, 1.0f, p0});
                 v.boneNormal = n;
+                v.boneTangent = t, v.boneBinormal = bn;
+                v.tangent = rotate(b0.rotation, t), v.binormal = rotate(b0.rotation, bn);
                 std::array<float, 3> pos = toModel(b0, p0);
                 std::array<float, 3> nrm = rotate(b0.rotation, n);
                 if (extra) {
@@ -294,6 +305,8 @@ std::vector<XSurface> parseXModelSurfs(std::span<const uint8_t> data, const XMod
                 v.normal = rotate(b.rotation, n);
                 v.influences.push_back({rigidBone, 1.0f, off});
                 v.boneNormal = n;
+                v.boneTangent = t, v.boneBinormal = bn;
+                v.tangent = rotate(b.rotation, t), v.binormal = rotate(b.rotation, bn);
             }
         }
         surf.indices.resize(size_t(triCount) * 3);

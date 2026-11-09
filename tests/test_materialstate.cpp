@@ -92,6 +92,9 @@ int main() {
     CHECK(surfaceDrawsBefore({10, 1, 31, kStaticModelEntity}, {10, 1, 31, kWorldEntity}));
     CHECK(!surfaceDrawsBefore({10, 1, 2, 3}, {10, 1, 2, 3}));
     CHECK(materialOrder(1, 500) > materialOrder(0, 60000));
+    CHECK(receivesDynamicLight(true, false));
+    CHECK(!receivesDynamicLight(false, false));
+    CHECK(!receivesDynamicLight(true, true));
     CHECK(layerTieBias(true) == 0.0f);
     CHECK(layerTieBias(false) < 0.0f && layerTieBias(false) > -1.0f / 65536.0f);
 

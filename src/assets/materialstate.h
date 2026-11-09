@@ -97,6 +97,10 @@ constexpr int materialOrder(int techsetFirstUse, int materialFirstUse) { return 
 inline constexpr float kLayerTieBias = -1.0f / 524288.0f;
 constexpr float layerTieBias(bool writesDepth) { return writesDepth ? 0.0f : kLayerTieBias; }
 
+// Whether the dynamic light walk draws a surface: its technique set has a "pointlight" technique, for world and model surfaces alike. The
+// sprite-like batches iw2view builds for effects are fullbright and never lit.
+constexpr bool receivesDynamicLight(bool pointLit, bool fullbright) { return pointLit && !fullbright; }
+
 // r_textureMode, in the order of its value list; the registered default is Bilinear.
 enum class TextureMode : uint8_t { Nearest, Linear, Bilinear, Trilinear, Anisotropic };
 constexpr int kDefaultAnisotropy = 8, kMinAnisotropy = 2, kMaxAnisotropy = 16;
