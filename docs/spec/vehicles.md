@@ -241,6 +241,28 @@ maxs.x - 2. The first think runs with maxs.x 0, after level main, so a vehicle l
 an undriven crusader has r = 87.12. The body is a capsule of that radius. There are no stand-off clips around libya's buildings, so the hull (x -142..139, y +-68) overlaps walls by about 136 units head on: original behaviour.
 The later wheel samples of 0x50ef70 go through 0x50d2f0 too (0x50f083), so the wheels of a tank driven off a path sample within radius r - 2 of the origin. Box traces do not see static models (collision.md).
 
+Re-checked after a libya report (hull inside house walls, a pole through the hull in front of the turret); the order that gives r = 3 is fixed by the
+engine, not by the port:
+- ClientConnect (0x4e8f40, which stores the player's client at ent +0xfc) is called by the server spawn (0x448944) before the frame start (0x448985)
+  and G_InitGame; G_InitGame runs the level main thread (0x4da50e) before its first G_RunFrame (0x4da524). The spawn schedules the vehicle's first think
+  for level time + 50 (0x50d8ee) and the entity think dispatch (0x4da090) runs it only once that time is reached. The use slot of the spawn handler 9
+  (table 0x5a5730, row 9, offset +0x10) is the same 0x512f00 as handler 0xa's, so `useby` from `_vehicledrive.gsc` vehicle_wait (startinside) links the
+  player during main (VEH_LinkPlayer, bit 0 at 0x511736), before the first think. Bit 1 (path) is set only by the path start (0x51328d) and never cleared;
+  the player drives with the free physics, which needs it clear.
+- The body box is written in exactly two places: zeroed at spawn (0x50d9ef..0x50d9fe, reached only from 0x50dae1) and set by the first think
+  (0x5129f5..0x512a07). Nothing resizes it later. The pull-in in 0x50d2f0 applies when the squared tag offset exceeds the squared maxs.x (so always
+  while maxs.x is 0), normalizes the offset in place (0x4210d0) and scales it by maxs.x - 2: length 2, pointing inward, for every wheel.
+- All seven body traces (0x50e413, 0x50e490, 0x50e566, 0x50e78e, 0x50ec8a, 0x50ed16, 0x50edd4) pass the body mins/maxs, the vehicle's clip mask and
+  zero for the static-model argument; the wheel traces (0x50f24a) are point traces, also without it. The player aim trace (0x510b24) is a point trace
+  with mask 0x280e891 and the static-model argument set, so the aim point lands on whatever brush or collision-surface model is in front of the hull and
+  the barrel pitches to it while the hull drives on. A barrel that rises at a pole therefore says nothing about hull collision.
+- libya data: no pole misc_model or script_model exists; the poles are world geometry. The five `clip_vehicle` brushes (contents 0x28000200 /
+  0x20000200) are the map perimeter, none stands around a building or a pole. Only 101 misc_models have collision surfaces (doorknobs, awnings, wells,
+  a car); the thousands of `*_tankdrive*` shrubs have none. Measured in the port: the driven tank's origin stops 3.1 units from a solid brush face (a
+  caulk post at x -52102; the perimeter clip at y 14656). tag_player sits about 22 units ahead of the origin with the eye 60 above it, so an origin
+  3 units from a wall puts the eye about 19 units inside the wall: the reported view. Not verifiable here: the original in play; a head-on drive into a
+  libya house in the original decides it (goggle view inside the wall = r 3).
+
 ## Free physics and player driving (0x510d30)
 
 Body layout from vehicle +0xb8: origin, previous origin +0xc, angles +0x18, previous angles +0x24, mins/maxs
