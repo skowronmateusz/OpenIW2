@@ -616,6 +616,11 @@ add_test(NAME deathplant COMMAND test_deathplant)
 add_executable(test_deadtank tests/test_deadtank.cpp)
 target_link_libraries(test_deadtank PRIVATE iw2_game)
 add_test(NAME deadtank COMMAND test_deadtank)
+
+add_executable(test_flakcrew tests/test_flakcrew.cpp)
+target_link_libraries(test_flakcrew PRIVATE iw2_game)
+add_test(NAME flakcrew COMMAND test_flakcrew)
+
 add_executable(test_gammaramp tests/test_gammaramp.cpp)
 target_link_libraries(test_gammaramp PRIVATE iw2_game)
 add_test(NAME gammaramp COMMAND test_gammaramp)

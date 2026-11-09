@@ -253,7 +253,7 @@ combat without a path (+0x6b0 <= 0) or with +0x728/+0x2148 set, else when the en
 enemy's eye - 16 (G_Trace 0x44bf00 start EBX, end EDI), clear or ending on a sentient of another team; beyond the fog
 limit 0x1c61038 it fails).
 - The muzzle 0x500b40 is the world position of tag_flash from 0x4d74b0 (the pose of the entity's animation, computed by 0x4d7390 →
-  0x4782d0, plus the per-handler bone controller of table 0x5a5750: 0x5024e0 for actors only bends the prone legs). It is cached per
+  0x4782d0, plus the per-handler bone controller of table 0x5a5750: 0x5024e0 for actors only bends the prone legs; vehicles and turrets have their own, docs/spec/vehicles.md "Tag queries"). It is cached per
   level time (+0x18c compared with 0x1c60534 at 0x500b4f, position +0x190, direction +0x19c), so all `canshoot` calls of a frame use the
   first pose of that frame. Below it, the skeleton itself is cached per server frame: 0x447d30 compares DObj +0x8 with the counter
   0x822440, which the server frame raises with the level time (0x44a719..0x44a73a; 0x447c70, the pool reset, has no direct caller and

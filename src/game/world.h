@@ -738,6 +738,9 @@ public:
     bool actorProneTilt(const Entity& e, int64_t nowMs, float& pitch, float& roll, float& lift) const;
     static std::vector<std::pair<int, assets::Quat>> turretBoneControls(const assets::XModelParts& parts, float pitch, float yaw,
                                                                          float drop = 0.0f);
+    // Bone controls of a vehicle model (the server controller 0x5127a0, entity handlers 9 and 10 of the table 0x5a5750):
+    // tag_body, tag_turret and tag_barrel from the vehicle's jolt and turret angles.
+    static std::vector<std::pair<int, assets::Quat>> vehicleBoneControls(const assets::XModelParts& parts, const VehicleState& v);
     // The ridden vehicle's tag_body axes (rows forward, left, up); false when the player is not in a vehicle.
     bool playerVehicleBodyAxis(std::array<Vec3, 3>& axis);
     // The ridden vehicle's tag_player world position and up axis, and the player's eye (origin + view height 60); false
@@ -925,6 +928,8 @@ public:
     struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag{}; bool noMarks = false; bool marksOnly = false; };
     // World position of an entity tag (lower case), false when the entity or tag is gone.
     bool entityTagPosition(int number, const std::string& tag, Vec3& out);
+    // What the script tag queries read (gettagorigin / gettagangles 0x4eec20): the tag's world position and angles of the server pose.
+    bool scriptTagFrame(Entity& e, const std::string& tag, Vec3& origin, Vec3& angles);
     // The tag's world position and axis rows (forward, left, up = the bone rotation applied to x, y, z); hasAxes is false for
     // vehicle tags, whose rotation the bone-control path does not provide.
     bool entityTagOrientation(int number, const std::string& tag, Vec3& origin, std::array<Vec3, 3>& axes, bool& hasAxes);

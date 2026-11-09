@@ -127,10 +127,12 @@ std::vector<HitBoxModel> World::entityModels(Entity& e) {
     // skeleton cache was tried and moved the fire rates by up to a factor of three (docs/spec/ai.md "Script sight builtins").
     const assets::XModelParts* body = skeleton(m.asString());
     if (!body) return models;
-    // A turret's bone controls (0x51d740) also apply on top of an animation tree (the mg42 animscripts give the turret one).
+    // The per-handler bone controller of table 0x5a5750 runs on every server pose (0x4d7390): a turret's (0x51d740) and a vehicle's
+    // (0x5127a0, docs/spec/vehicles.md "Tag queries") turn their bones on top of the animation tree or the bind pose.
     const assets::XPose pose =
-        e.anim ? (e.turret ? assets::applyControls(*body, e.anim->pose(*body), turretBoneControls(*body, e.turret->pitch, e.turret->yaw, e.turret->drop))
-                           : e.anim->pose(*body))
+        e.vehicle ? assets::applyControls(*body, e.anim ? e.anim->pose(*body) : assets::bindPose(*body), vehicleBoneControls(*body, *e.vehicle))
+        : e.anim ? (e.turret ? assets::applyControls(*body, e.anim->pose(*body), turretBoneControls(*body, e.turret->pitch, e.turret->yaw, e.turret->drop))
+                             : e.anim->pose(*body))
         : e.turret ? assets::controlledPose(*body, turretBoneControls(*body, e.turret->pitch, e.turret->yaw, e.turret->drop))
                    : assets::bindPose(*body);
     // Bone lookup by name; the first model that has a name keeps it.
@@ -193,6 +195,23 @@ std::unordered_map<std::string, World::BoneXform> World::entityBones(Entity& e) 
             bones.emplace(lowerStr(m.parts->bones[i].name),
                           BoneXform{add(origin, assets::rotate(er, m.position[i])), assets::multiply(er, m.rotation[i])});
     return bones;
+}
+
+// 0x4eec20 / 0x4eee30: the tag's world frame of the server pose; the angles are AxisToAngles (0x424b70) of its full frame, so a rolled
+// tag reports its roll.
+bool World::scriptTagFrame(Entity& e, const std::string& tag, Vec3& origin, Vec3& angles) {
+    const auto bones = entityBones(e);
+    const auto it = bones.find(tag);
+    if (it == bones.end()) return false;
+    origin = it->second.position;
+    Axis m;
+    static const Vec3 units[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (size_t i = 0; i < 3; ++i) {
+        const auto v = assets::rotate(it->second.rotation, units[i]);
+        m[i] = Vec3{v[0], v[1], v[2]};
+    }
+    angles = axisAngles(m);
+    return true;
 }
 
 Vec3 World::eyePosition(Entity& e) {
@@ -960,13 +979,10 @@ void World::registerCombatBuiltins() {
     vm_.registerBuiltin("gettagangles", [this](CallContext& c) {
         Entity* e = entityOf(c.self);
         if (!e) throw std::runtime_error("gettagangles on a non-entity");
-        const auto bones = entityBones(*e);
-        auto it = bones.find(lowerStr(c.arg(0).toString()));
-        if (it == bones.end()) throw std::runtime_error("tag '" + c.arg(0).toString() + "' does not exist in model '" + (e->obj->get("model").isString() ? e->obj->get("model").asString() : std::string()) + "' (or any attached submodels)");
-        const auto fwd = assets::rotate(it->second.rotation, {1, 0, 0});
-        const float yaw = std::atan2(fwd[1], fwd[0]) * 180.0f / float(M_PI);
-        const float pitch = -std::atan2(fwd[2], std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1])) * 180.0f / float(M_PI);
-        return Value(Vec3{pitch, yaw, 0});
+        Vec3 origin, angles;
+        if (!scriptTagFrame(*e, lowerStr(c.arg(0).toString()), origin, angles))
+            throw std::runtime_error("tag '" + c.arg(0).toString() + "' does not exist in model '" + (e->obj->get("model").isString() ? e->obj->get("model").asString() : std::string()) + "' (or any attached submodels)");
+        return Value(angles);
     });
     vm_.registerBuiltin("geteye", [this](CallContext& c) {
         Entity* e = entityOf(c.self);

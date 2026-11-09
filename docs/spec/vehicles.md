@@ -180,6 +180,27 @@ pitch and in yaw separately (AngleSubtract 0x423f50, roll 0).
 Here bullets fly along the body's axes turned by the turret angles (inferred: the original uses the flash tag's own
 axis, rotated by the client-side turret bone controllers).
 
+### Tag queries (verified)
+
+Every server pose goes through one function: 0x4d7390 computes the skeleton (per frame, cached by 0x447d30) from the animation
+(0x4782d0) and then calls the entity handler's bone controller (the slot 0x5a5750 of the handler table, stride 0x2c, indexed by the
+handler byte +0x116; 0x4d7404..0x4d7419). `gettagorigin` / `gettagangles` (0x4eec20, 0x4eed42 → 0x4d74b0 → 0x4d7460 → 0x4d7390), the parent frame of a
+`linkto` with a tag (0x4d6ad0 → 0x4d7390) and the tag queries of the code all read this pose. The controllers: actors 0x5024e0 (slots 0x5a577c / 0x5a57a8:
+prone legs), vehicles 0x5127a0 (handlers 9 and 10: slots 0x5a58dc / 0x5a5908), turrets 0x51d740 (handlers 20 and 21: 0x5a5ac0 / 0x5a5aec). A vehicle's handler byte
+is 9 at setup (0x50d83d) and 10 after its first think (0x512b5c); a freed vehicle (handler 11, 0x511d11) has no controller (0x5a5934 is 0), so the wreck's tag queries return the
+plain animation pose.
+
+0x5127a0 (the bit test keeps a bone the query does not ask for) sets through 0x4746e0: info +0x20c (tag_body) angles (e+0x64, 0, e+0x6c), info +0x210 (tag_turret)
+angles (0, e+0x74, 0), info +0x214 (tag_barrel) angles (e+0x70, 0, 0). A vehicle's turret pitch and yaw (e+0x70 / +0x74) therefore turn tag_turret, tag_barrel and everything under
+them, also for the script queries and the links. The fields are read from the entity, not from the snapshot, so the pose is the state of this frame.
+
+`gettagangles` converts the tag's full frame with AxisToAngles (0x4eee30 → 0x424b70 on the matrix at 0x1c61080), so the result has roll and angles in [0, 360).
+
+The stationary gun crews depend on this. `maps/_flak88.gsc:131-135` plays each crew animation at the `tag_turret` origin and angles of the moment, `:583` links the man to `tag_turret`,
+and `:299-306` selects the turning animations from the yaw of `gettagangles("tag_turret")`. With an uncontrolled tag_turret every crew animation stays where the gun points at rest while the barrel
+has turned away, and the turn animations can never start. `maps/matmata.gsc:1038-1051` links the quad gun crew to `driver_flak`, `loaderL_flak` and `loaderR_flak`, the same way. The pose is
+applied in `World::entityModels` (controls from `World::vehicleBoneControls`); `tests/test_flakcrew.cpp`.
+
 ### Turret projectiles and the fire event
 
 A projectile turret weapon fires through 0x531a40 with no spread: a rocket from each flash tag along the same
@@ -343,8 +364,9 @@ step at 20 Hz.
   pitch in lerp(pitchMin…pitchMax) (0x442310); both aliases must use the same file (0x442650). Open: where the
   helper entities get their origin (no vehicle code writes it; G_Spawn leaves it at 0), so playback is not wired.
 - Texture scrolling (`g_vehicleTexScrollScale`).
-- Animated wheel tags: the tag positions come from the entity's current animation pose (bind pose without one);
-  the exact pose the original samples (0x4d7460) is not checked.
+- Animated wheel tags: 0x4d7460 returns the matrix of the per-frame skeleton of 0x4d7390 (animation plus the controller 0x5127a0, section "Tag queries"), so
+  a wheel tag under tag_body also carries the body jolt; openiw2's ground alignment reads the plain animation pose (bind pose without one). TODO(spec): which models parent the
+  wheel tags under tag_body, whether the jolt feeds the alignment through them.
 - Exact frame order of the vehicle think relative to script threads.
 
 ### Barrel pull-back (+0x19c / +0x198), partly decoded

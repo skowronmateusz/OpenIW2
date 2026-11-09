@@ -578,6 +578,17 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
 // tag_body / tag_turret / tag_barrel follows the init order 0x5071b4..0x5071e3 and the cgame use (0x4ac354).
 // turnedForward (optional): the world direction the body's forward axis takes through the controls of this tag
 // (rotation of the controlled tag times the inverse of its bind rotation, rotated into the world).
+std::vector<std::pair<int, assets::Quat>> World::vehicleBoneControls(const assets::XModelParts& parts, const VehicleState& v) {
+    std::vector<std::pair<int, assets::Quat>> ctl;
+    for (size_t b = 0; b < parts.bones.size(); ++b) {
+        const std::string n = lowerCopy(parts.bones[b].name);
+        if (n == "tag_body") ctl.push_back({int(b), assets::anglesQuat(v.joltPitch, 0, v.joltRoll)});
+        else if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, v.turretYaw, 0)});
+        else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat(v.turretPitch, 0, 0)});
+    }
+    return ctl;
+}
+
 Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* turnedForward, std::array<Vec3, 3>* tagAxis) {
     found = false;
     const Value model = e.obj->get("model");
@@ -587,14 +598,7 @@ Vec3 World::vehicleTagPosition(Entity& e, const char* tag, bool& found, Vec3* tu
     assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
     const assets::XPose uncontrolled = pose;
     if (e.vehicle) {
-        std::vector<std::pair<int, assets::Quat>> ctl;
-        for (size_t b = 0; b < parts->bones.size(); ++b) {
-            const std::string n = lowerCopy(parts->bones[b].name);
-            if (n == "tag_body") ctl.push_back({int(b), assets::anglesQuat(e.vehicle->joltPitch, 0, e.vehicle->joltRoll)});
-            else if (n == "tag_turret") ctl.push_back({int(b), assets::anglesQuat(0, e.vehicle->turretYaw, 0)});
-            else if (n == "tag_barrel") ctl.push_back({int(b), assets::anglesQuat(e.vehicle->turretPitch, 0, 0)});
-        }
-        pose = assets::applyControls(*parts, pose, ctl);
+        pose = assets::applyControls(*parts, pose, vehicleBoneControls(*parts, *e.vehicle));
     } else if (const auto cv = corpseVehicle(e)) { // freevehicle's wreck (eType 0xd) keeps the body and turret controls
         std::vector<std::pair<int, assets::Quat>> ctl;
         for (size_t b = 0; b < parts->bones.size(); ++b) {
