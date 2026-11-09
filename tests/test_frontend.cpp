@@ -8,6 +8,7 @@
 #include <iostream>
 #include <cmath>
 #include <map>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -329,5 +330,32 @@ int main() {
         CHECK(st.valueLabel(en) == "low");
     }
     if (failures) std::cerr << failures << " failure(s)\n";
+    { // A menu's soundLoop comes back after a stop-all, once, from the top open menu that has one.
+        std::ofstream(dir / "ui/loop.menu") << R"({
+	menuDef
+	{
+		name looped
+		rect 0 0 640 480
+		visible 1
+		soundloop "music_x"
+	}
+})";
+        iw2::ui::MenuLibrary loopLib(vfs);
+        CHECK(loopLib.loadFile("ui/loop.menu"));
+        std::vector<std::string> started;
+        iw2::ui::MenuEnv loopEnv;
+        loopEnv.startLoop = [&](const std::string& alias) { started.push_back(alias); };
+        iw2::ui::MenuStack loopStack(loopLib, loopEnv);
+        loopStack.resumeLoop();
+        CHECK(started.empty());
+        CHECK(loopStack.open("looped"));
+        CHECK(started.size() == 1);
+        loopStack.resumeLoop();
+        CHECK(started.size() == 1);
+        loopStack.soundsStopped();
+        loopStack.resumeLoop();
+        loopStack.resumeLoop();
+        CHECK(started.size() == 2 && started[1] == "music_x");
+    }
     return failures ? 1 : 0;
 }

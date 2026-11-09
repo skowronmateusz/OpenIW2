@@ -262,4 +262,6 @@ Other callers use other flags and are not part of a level end: 0x446110 (flags 6
 
 The victory screen does not stop anything (`openvictoryscreen` only makes the music channel non-pausable, so the level-end theme keeps playing under it); the track ends when the next map's load runs the stop-all.
 
+An open menu's `soundLoop` survives the stop-all because Menu_Paint re-submits it every frame (0x4cf92c, 0x4cfb40, 0x4cfd20 through 0x40fff0 and 0x4423d0): the main menu, open behind the start-up movies, is heard again on the first frame after them. iw2view does the same with `MenuStack::resumeLoop`.
+
 Port notes: iw2view calls the stop-all at the start of the load (before the old world is replaced, so it also drops its stored voice handles for music, ambient, menu loop, shell shock loop and heartbeat), on disconnect and around a cinematic. The load-start master fade to 0 is not modelled: the load is synchronous and the fade is set back to 1 at the load end. TODO(spec): the natural end of a movie was not traced to the stop routine 0x49e800 (the skip path was not either); the port stops all sounds at either end.

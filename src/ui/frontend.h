@@ -25,6 +25,10 @@ public:
     bool open(const std::string& name);
     void close(const std::string& name); // closes that menu (runs onClose)
     void closeAll();
+    // Every sound ended (the stop-all of a cinematic, load or disconnect): the menu loop has no voice any more.
+    void soundsStopped() { loopAlias_.clear(); }
+    // Once per frame: starts the top open menu's soundLoop again when nothing plays it (the Menu_Paint re-submission, docs/spec/sound.md).
+    void resumeLoop();
     bool empty() const { return stack_.empty(); }
     const std::vector<Menu*>& menus() const { return stack_; }
     Menu* top() const { return stack_.empty() ? nullptr : stack_.back(); }

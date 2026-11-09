@@ -398,6 +398,7 @@ struct DLightU {
     float4 params; // x: alpha test, y: depth probe, z: PRE_ALPHA_BLEND, w: material has a normal map
     float4 eye;
     float4 ramp[4]; // images/falloff_linear.iwi texels / 255 (16 x 1, bilinear, clamp)
+    float4 detail;  // xy: detailScale, z: l_point_dtl
 };
 struct DLightVertexOut {
     float4 position [[position]];
@@ -419,8 +420,10 @@ vertex DLightVertexOut vs_dlight(SpecVertexIn in [[stage_in]], constant VertexUn
     o.eyeVec = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
     return o;
 }
-fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]]) {
-    const float4 base = colorMap.sample(s, in.uv) * in.color;
+fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], texture2d<float> detailMap [[texture(2)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]], sampler detailSampler [[sampler(2)]]) {
+    float4 tex = colorMap.sample(s, in.uv);
+    if (u.detail.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.detail.xy).rgb - 0.5; // lib/shade.hlsl USE_DETAIL
+    const float4 base = tex * in.color;
     if (alpha_rejected(u.params.x, base.a)) discard_fragment();
     if (u.params.y > 0.5) return float4(1.0, 0.0, 0.0, 1.0); // IW2_DEPTH_PROBE
     const float3 wp = in.eyeVec + u.eye.xyz;

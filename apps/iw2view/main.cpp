@@ -2024,7 +2024,7 @@ struct Renderer {
         sfsi.num_samplers = 8;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
-        dfsi.num_samplers = 2;
+        dfsi.num_samplers = 3;
         SDL_GPUShader* dlightFsh = SDL_CreateGPUShader(dev, &dfsi);
         SDL_GPUShaderCreateInfo dvsi = vs;
         dvsi.entrypoint = "vs_dlight";
@@ -2780,10 +2780,12 @@ struct Renderer {
             du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f + assets::layerTieBias(pointWritesDepth);
             SDL_PushGPUVertexUniformData(cmd, 0, &du, sizeof(du));
             const bool hasNormalMap = b.pointNormalTex >= 0;
-            const SDL_GPUTextureSamplerBinding tb[2] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)},
-                                                        {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)}};
-            SDL_BindGPUFragmentSamplers(pass, 0, tb, 2);
-            struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
+            const SDL_GPUTextureSamplerBinding tb[3] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)},
+                                                        {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
+                                                        detailBinding(b.detail)};
+            SDL_BindGPUFragmentSamplers(pass, 0, tb, 3);
+            struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4]; } fu{};
+            if (b.detail >= 0) fu.detail[0] = scene.details[size_t(b.detail)].scale[0], fu.detail[1] = scene.details[size_t(b.detail)].scale[1], fu.detail[2] = 1.0f;
             std::memcpy(fu.light, dl.pos, 12);
             fu.light[3] = dl.radius;
             std::memcpy(fu.color, dl.rgb, 12);
@@ -2877,10 +2879,12 @@ struct Renderer {
             mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
             SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
             const bool hasNormalMap = b.pointNormalTex >= 0;
-            const SDL_GPUTextureSamplerBinding tb[2] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)},
-                                                        {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)}};
-            SDL_BindGPUFragmentSamplers(pass, 0, tb, 2);
-            struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
+            const SDL_GPUTextureSamplerBinding tb[3] = {{scene.textures[size_t(b.texture)], matSampler(b.colorState)},
+                                                        {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
+                                                        detailBinding(b.detail)};
+            SDL_BindGPUFragmentSamplers(pass, 0, tb, 3);
+            struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4]; } fu{};
+            if (b.detail >= 0) fu.detail[0] = scene.details[size_t(b.detail)].scale[0], fu.detail[1] = scene.details[size_t(b.detail)].scale[1], fu.detail[2] = 1.0f;
             std::memcpy(fu.light, dl.pos, 12);
             fu.light[3] = dl.radius;
             std::memcpy(fu.color, dl.rgb, 12);
@@ -7564,6 +7568,7 @@ int main(int argc, char** argv) {
             volSlots.clearAll();
             musicHandle = ambientHandle = menuLoopHandle = shockLoop = heartbeatLoop = 0;
             ambientAlias.clear();
+            frontStack.soundsStopped();
         };
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
         else std::cerr << "Couldn't find shock file [hold_breath.shock]\n"; // 0x57e240 (the exe then raises an error)
@@ -8805,6 +8810,7 @@ int main(int argc, char** argv) {
             if (profileDirty) saveProfileCfg(); // write the archived cvars (config.cfg) after a menu changed one
             frontStack.tick(int(SDL_GetTicks()));
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f) * 0.75f;
+            frontStack.resumeLoop();
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             mixer.pausedChannels = menuEnv.getCvar("cl_paused") == "1"; // 0x442dc0: pause / resume the pausable channels when cl_paused changes
             {   // The cursor is shown while menus are open (relative mouse look otherwise).

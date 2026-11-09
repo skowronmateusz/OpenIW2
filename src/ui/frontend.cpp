@@ -162,6 +162,16 @@ bool MenuStack::open(const std::string& name) {
     return true;
 }
 
+void MenuStack::resumeLoop() {
+    if (!loopAlias_.empty() || !env_.startLoop) return;
+    for (auto m = stack_.rbegin(); m != stack_.rend(); ++m)
+        if (!(*m)->soundLoop.empty()) {
+            loopAlias_ = lower((*m)->soundLoop);
+            env_.startLoop((*m)->soundLoop);
+            return;
+        }
+}
+
 void MenuStack::close(const std::string& name) {
     Menu* m = lib_.find(name);
     if (!m) return;
