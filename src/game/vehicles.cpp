@@ -1045,12 +1045,14 @@ void World::updateVehicleEngineSound(Entity& e) {
     const Value h = e.obj->get("health");
     const bool alive = !h.isNumber() || h.asInt() >= 1;
     const Vec3 origin = e.obj->get("origin").asVector();
-    auto pair = [&](int& handle, const std::string& lo, const std::string& hi, float f) {
+    // Each sound helper is an entity of its own (0x52f6f0), so it owns its voice (cent +0xa8); the port has no helper entities and uses numbers
+    // above the entity range, one per pair, so that a starting helper does not prefer another tank's voice as its steal victim (0x441910).
+    auto pair = [&](int& handle, const std::string& lo, const std::string& hi, float f, int owner) {
         const bool want = alive && v.engineOn && !lo.empty() && !hi.empty();
         if (!want) {
             if (handle) stopSound(handle);
             handle = 0;
-        } else if (!handle || !setBlendSound(handle, f, origin)) handle = playBlendSound(lo, hi, f, origin, -1);
+        } else if (!handle || !setBlendSound(handle, f, origin)) handle = playBlendSound(lo, hi, f, origin, owner);
     };
     // Turret sounds (0x510be0): state 2 loops turretSpinSnd (es+6), state 1 plays turretStopSnd once (event 0xb3).
     if (v.turretSnd == 2 && alive && !v.info->turretSpinSnd.empty()) {
@@ -1060,8 +1062,8 @@ void World::updateVehicleEngineSound(Entity& e) {
         v.spinHandle = 0;
     }
     if (v.turretSnd == 1 && alive && !v.info->turretStopSnd.empty()) playSound(v.info->turretStopSnd, &origin, nullptr, -1);
-    pair(v.idleHandle, v.info->lowIdleSnd, v.info->highIdleSnd, v.idleFrac);
-    pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac);
+    pair(v.idleHandle, v.info->lowIdleSnd, v.info->highIdleSnd, v.idleFrac, 0x1000 + e.number * 2);
+    pair(v.engHandle, v.info->lowEngineSnd, v.info->highEngineSnd, v.engFrac, 0x1001 + e.number * 2);
 }
 
 std::string World::playerVehicleTurretWeapon() {

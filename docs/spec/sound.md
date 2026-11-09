@@ -159,14 +159,14 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   the slot end time includes it. `lfe percentage` (col 23) is clamped 0..1 -> alias +0x38 and has no reader anywhere in the sound code (evidence by absence).
   `speakermap` (col 21) is handled by an empty case (0x4295c3): parsed and ignored. `type` (0x428e70): "streamed" (also the string at 0x5757e8) = 2, "loaded" = 1
   (default); 20,909 shipped rows are `streamed` (nearly all dialogue).
-- Slot pools (0x49eb80, 0x49ecec): slot indices 0..31 are 2D samples (count from the Miles driver, capped at 32), 32..44 are 13 streams (32..34 are the
-  dedicated music / ambient slots of 0x442df0), 45..52 are 8 3D samples. A play picks the pool by `type` (streamed -> stream pool, 0x441e10) and else by channel
+- Slot pools (0x49eb80, 0x49ecec): slot indices 0..N-1 are 3D samples (0x441a30; N is the Miles 3D provider's "Maximum supported samples", capped at 32 by 0x49ecec, printed as "%i max 3D channels"; the port uses the cap, TODO(spec) the value of the default provider, `mss_3d_provider` "Miles Fast 2D Positional Audio"), 32..44 are 13 streams (32..34 are the
+  dedicated music / ambient slots of 0x442df0), 45..52 are 8 2D samples (0x441990). A 3D sound never falls back to a 2D slot. A play picks the pool by `type` (streamed -> stream pool, 0x441e10) and else by channel
   (0x441d1c, table bytes at 0x441dfc): auto, weapon, voice, item, body use 3D (0x49f740, snd_enable3D); auto2d, menu, local, music, announcer, shellshock use 2D (0x49f470).
 - Channel numbers (0x59b334): auto 0, auto2d 1, menu 2, weapon 3, voice 4, item 5, body 6, local 7, music 8, announcer 9, shellshock 10. A slot stores owner (+0:
   entity number, 0x7ff / 0x7fe for world sounds), channel (+4, 0x4417d1), loop stamp (+0xc), end time (+0x10).
 - Voice priority = the channel number. Free slot first (0x441990 / 0x441a30 / 0x441ad0); else the steal choice 0x441910(base, count, owner, priority): candidates are slots with
   priority <= the new sound's (the stream window is 10 slots: 0x441e32 uses base 0x23, count 13 - 3); a slot of the new sound's own owner wins over another owner's
-  (and an owner-matching best is kept); otherwise the lowest priority, then the earlier end time (a loop's end is 0, 0x49f6db). No candidate: the play fails (handle -1 -> 0).
+  (and an owner-matching best is kept); otherwise the lowest priority, then the earlier end time (a loop has length 0, 0x49f6db, so its end is its start time, 0x441837: loops go before playing one-shots, the oldest loop first). No candidate: the play fails (handle -1 -> 0).
 - Generic play 0x4423d0 order: secondary alias first (recursion, 0x442401..0x44243e; an error if the secondary has one itself, 0x578df8); 3D channels are culled when
   dist^2 > dist_max^2 (0x4424e6; 2D channels are not); loop refresh 0x441f80 (a running loop slot with the same owner, alias and second alias name is updated and its stamp
   set to 0x793db8, the call returns 0); for channels other than auto / auto2d / menu and an alias WITHOUT a secondary, 0x441b50 stops the owner's running sounds of the
@@ -179,9 +179,9 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   Slot owners proven and passed by the port (`World::playSound(alias, origin, &duration, owner)` -> `PlayOptions.owner`): Bullet_Fire's fire sound = the shooter's entity
   number (0x4b7800 -> 0x4a35c0 -> 0x4423d0); grenade bounce, grenade explosion and rocket explosion = 0x7fe (0x4bb2ec, 0x4bb370, 0x4bb47c); script playsound /
   playsoundasmaster = the entity number (G_AddEvent on self 0x4ef2c0..0x4ef35b, client handler 0x4bb5ea..0x4bb69e). Without the shooter's owner every shot kept its own
-  slot for the whole sample (weapon channel, priority 3, no secondary alias), a firefight filled all 8 3D sample slots and the grenade bounce / explosion aliases (channel
+  slot for the whole sample (weapon channel, priority 3, no secondary alias), a firefight filled the 3D sample slots and the grenade bounce / explosion aliases (channel
   auto, priority 0, which may only steal priority-0 slots) were refused for as long as the shooting went on (demolition, assault on the German post). With the owner a
-  burst holds one slot per shooter (tests/test_soundpool.cpp). Remaining refusals are distance culls or more than 8 distinct owners, as in the original.
+  burst holds one slot per shooter (tests/test_soundpool.cpp). Remaining refusals are distance culls or more distinct owners than 3D slots, as in the original.
   TODO(spec): the owners of the other callers of 0x4423d0 (playlocalsound, impact / whizby sounds, projectile explosion sounds, vehicle / turret sounds, exact script-playsound
   event ids); the port's loops still pass `dedicated` / keep their handle, `sweepLoops` is not wired into the frame.
 
@@ -216,6 +216,7 @@ compatible (0x442650: same file format, flags, channel) and calls the generic pl
 - runs the loop refresh (0x441f80): a running voice of the same aliases and owner is only updated (volume and position), otherwise a voice is
   started in the pool of the first alias' channel (3D channels use the 3D pool, steal rules of 0x441910);
 - draws volume and pitch (0x442310) from the lerp of the two aliases' min and max values (volMin/volMax at alias +0x14/+0x18, pitch at +0x1c/+0x20).
+The fraction and volume never skip the play, so a silent pair holds a slot too; loops can steal and be stolen (0x441910 ignores the loop flag), and a stolen loop starts again from the sample start. All helpers are replayed every frame at any distance from the player (the SP snapshot 0x44b050 has no PVS test). The owner is the helper's entity number (es+8, 0x4d7993).
 A voice that is not refreshed in a frame is removed by the loop sweep, so an entity out of range stops sounding and restarts from the sample
 start when it comes back in range.
 The shipped rain emitters pair `<alias>_null` (same file, volume 0) with `<alias>`, so a fraction of 0 is silent and 1 is the loud rain.

@@ -361,8 +361,8 @@ step at 20 Hz.
   event 0xb3. cgame (0x4acf30 case 6 → 0x4ac8a0): with both aliases, the fraction interpolated between snapshots,
   play blend 0x442900 → 0x4423d0 at the helper's origin: culled beyond lerp(distMax), an already playing loop of the
   same pair only takes the volume lerp(volMin) (0x441f80), a new one a random volume in lerp(volMin…volMax) and
-  pitch in lerp(pitchMin…pitchMax) (0x442310); both aliases must use the same file (0x442650). Open: where the
-  helper entities get their origin (no vehicle code writes it; G_Spawn leaves it at 0), so playback is not wired.
+  pitch in lerp(pitchMin…pitchMax) (0x442310); both aliases must use the same file (0x442650). The helpers' origin
+  and angles are copied from the vehicle and relinked by 0x50d530..0x50d67e (inside 0x50d3e0, spawn and movement).
 - Texture scrolling (`g_vehicleTexScrollScale`).
 - Animated wheel tags: 0x4d7460 returns the matrix of the per-frame skeleton of 0x4d7390 (animation plus the controller 0x5127a0, section "Tag queries"), so
   a wheel tag under tag_body would carry the body jolt. None does: in the 42 shipped models with `tag_wheel_*` bones no wheel tag has tag_body (or tag_turret) among its ancestors (bone parent table of each xmodelparts file), so the jolt never feeds the alignment and openiw2's use of the plain animation pose (bind pose without one) gives the same wheel positions.

@@ -1,6 +1,6 @@
 // Sound slot ownership through the World (docs/spec/sound.md, "Slot owners"), only with IW2_MAIN=<game main dir>.
 // The generic play 0x4423d0 gets the entity number as the slot owner: the weapon channel then replaces the owner's previous sound
-// (0x44250a -> 0x441b50), so an actor's burst holds ONE of the 8 3D sample slots. Without owners every shot kept its own slot for the
+// (0x44250a -> 0x441b50), so an actor's burst holds ONE of the 3D sample slots. Without owners every shot kept its own slot for the
 // whole sample, a firefight filled the pool with weapon voices (priority 3) and the grenade bounce / explosion sounds (channel "auto",
 // priority 0, which may only steal priority-0 slots) were refused for as long as the shooting went on.
 #include "audio/sound.h"

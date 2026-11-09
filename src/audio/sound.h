@@ -125,9 +125,9 @@ public:
     // Frame sweep (0x443510..0x4436bc, called once per client frame; not while paused): stops every refresh-mode loop whose stamp is not the
     // previous sweep's time, then makes `soundTimeMs` (0x793db4) the stamp new/refreshed loops get (0x793db8).
     void sweepLoops(int soundTimeMs);
-    // Slot pools (0x49eb80: 8 3D samples, 13 streams of which 3 are the dedicated music/ambient slots; the 2D sample count comes from the Miles
-    // driver, capped at 32 by 0x49ecec: TODO(spec) what the driver reports, the cap is used).
-    static constexpr int kPool3D = 8, kPoolStream = 10, kPool2D = 32;
+    // Slot pools (0x49eb80: 8 2D samples, 13 streams of which 3 are the dedicated music/ambient slots; the 3D sample count is the Miles provider's
+    // "Maximum supported samples", capped at 32 by 0x49ecec: TODO(spec) what the default provider reports, the cap is used).
+    static constexpr int kPool3D = 32, kPoolStream = 10, kPool2D = 8;
     // The subtitle key of the alias started by the last play() call (empty when none).
     const std::string& lastSubtitle() const { return lastSubtitle_; }
     void stop(int handle);

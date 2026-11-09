@@ -228,6 +228,11 @@ void testMixer() {
         CHECK(bm.setBlend(bh, 0.9f, {650, 0, 0}) && bm.active() == 1); // lerp(500, 700, 0.9) = 680
         CHECK(!bm.setBlend(bh, 0.1f, {650, 0, 0}) && bm.active() == 0); // 520 < 650: culled
         CHECK(!bm.setBlend(bh, 0.1f, {10, 0, 0}));                      // gone stays gone
+        // 14 tanks with two blend helpers each fit the 3D pool: no helper steals another one's voice, so no loop restarts (libya).
+        std::vector<int> tanks;
+        for (int i = 0; i < 28; i++) tanks.push_back(bm.playBlend("bl0", "bl1", 0.5f, {100, 0, 0}, 0x1000 + i));
+        for (int frame = 0; frame < 3; frame++)
+            for (int h : tanks) CHECK(h != 0 && bm.setBlend(h, 0.5f, {100, 0, 0}));
         // startdelay 10 ms: silent for 480 frames at 48 kHz, then plays
         iw2::audio::Mixer d(vfs, al, 48000);
         d.masterVolume = 1.0f;
