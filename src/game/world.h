@@ -1547,6 +1547,7 @@ private:
     Vec3 vehicleSeatOrigin(Entity& vehicle, bool& found);
     void linkPlayerToVehicle(Entity& vehicle, Entity& player);
     void unlinkPlayerFromVehicle(Entity& vehicle, Entity& player);
+    void vehicleFirstThink(Entity& e, const Vec3& prevAngles);
     void alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float baseZ, const Vec3& prevAngles, bool settle);
     void vehiclePathMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);
     void vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevAngles);

@@ -50,7 +50,7 @@ struct Ground {
 };
 
 TraceResult traceMove(const CollisionWorld& w, const DriveTrace& t, const Vec& start, const Vec& end) {
-    return w.trace(start, end, {0, 0, 0}, {0, 0, 0}, t.mask, t.passEntity);
+    return w.trace(start, end, t.mins, t.maxs, t.mask, t.passEntity);
 }
 
 // 0x50e3a0: the first of the 26 unit offsets (table 0x56fb90, the same as the player's) that is not inside a solid

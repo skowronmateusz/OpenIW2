@@ -34,9 +34,10 @@ void driveAccelerations(const DriveParams& p, const DriveBody& b, const DriveCom
 // 0.99 away from it).
 Vec vehicleClipVelocity(const Vec& v, const Vec& n);
 
-// Collision settings of the move: the vehicle traces a point (its mins/maxs are zero, 0x50d970) with its clip mask
-// 0x810211 (0x50d900), skipping itself.
+// Collision settings of the move: the body box set by the vehicle's first think (0x5128f0, zero before it), its clip
+// mask 0x810211 (0x50d900), skipping itself.
 struct DriveTrace {
+    Vec mins{}, maxs{};
     uint32_t mask = 0x810211;
     int passEntity = -1;
 };

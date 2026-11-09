@@ -501,6 +501,8 @@ void World::saveState(StateWriter& w) {
             w.f32(v->engFrac);
             w.b(v->collmapSet); // version 5: the collmap brush model (+0xe), part of the saved gentity (docs/spec/savegame.md)
             w.str(v->collmap);
+            w.b(v->bodySet); // version 15: the body box of the first think 0x5128f0, part of the saved vehicle
+            w.f32(v->bodyRadius);
         }
     }
 }
@@ -971,6 +973,10 @@ void World::loadState(StateReader& r) {
                 v.collmapSet = r.b();
                 v.collmap = r.str();
             } // older saves: looked up again from the current model at the next clip sync
+            if (r.version >= 15) { // older saves: the first think runs again after the load
+                v.bodySet = r.b();
+                v.bodyRadius = r.f32();
+            }
             v.spinHandle = v.idleHandle = v.engHandle = 0; // sound handles: the front end restarts the loops
         }
         // runtime that is not saved starts over (see the TODO(spec) list at the top)

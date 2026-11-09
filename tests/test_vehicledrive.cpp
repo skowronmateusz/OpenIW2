@@ -137,6 +137,17 @@ int main() {
         const assets::XPose moved = assets::applyControls(parts, pose, std::vector<assets::BoneControl>{{1, {0, 0, 0, 1}, {0, 0, -8}}});
         CHECK(near(moved.position[1][2], 2.0f, 1e-4f) && near(moved.position[2][2], 10.0f, 1e-4f));
     }
+    {
+        // 0x50d2f0: only a driven vehicle off a path pulls its wheel offsets in, to length maxs.x - 2.
+        const std::array<float, 3> tag{60, 61, 0};
+        CHECK(vehicleWheelOffset(tag, false, false, 0.0f) == tag);
+        CHECK(vehicleWheelOffset(tag, true, true, 0.0f) == tag);
+        const auto first = vehicleWheelOffset(tag, true, false, 0.0f);
+        CHECK(near(std::sqrt(first[0] * first[0] + first[1] * first[1]), 2.0f, 1e-4f));
+        const auto later = vehicleWheelOffset(tag, true, false, 3.0f);
+        CHECK(near(std::sqrt(later[0] * later[0] + later[1] * later[1]), 1.0f, 1e-4f));
+        CHECK(vehicleWheelOffset({1, 0, 0}, true, false, 3.0f) == (std::array<float, 3>{1, 0, 0}));
+    }
     if (failures) std::cerr << failures << " failures\n";
     return failures ? 1 : 0;
 }

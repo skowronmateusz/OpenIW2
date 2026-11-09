@@ -2,6 +2,7 @@
 // generic link (0x4d6540 stores ent+0x1c8), so ClientEndFrame (0x4e7fd6) runs 0x4d6ec0 on it: eye = tag_player origin +
 // tag up * view height (60 in a vehicle), origin = eye - (0, 0, 60). The old code put the eye at tag + (0, 0, 60), which on a
 // tilted hull (88ridge settles at ~16 degrees of roll) moved the camera by ~17 units.
+#include "game/vehicledrive.h"
 #include "fs/vfs.h"
 #include "game/world.h"
 
@@ -55,6 +56,37 @@ int main() {
                 CHECK(d < 1.0f);
             }
         }
+        // A vehicle linked to the player at spawn gets the small body box of the first think (0x5128f0): radius 3, wheel samples within radius 1.
+        for (const auto& ent : w.entities())
+            if (ent->vehicle && w.player() && w.player()->usingVehicle == ent->number) {
+                CHECK(ent->vehicle->bodySet);
+                CHECK(std::fabs(ent->vehicle->bodyRadius - 3.0f) < 1e-3f);
+                // Driving at a wall: the body box of radius 3 stops 3 units short of it, a point would reach it.
+                const Vec3 c = ent->obj->get("origin").asVector();
+                bool tested = false;
+                for (int dx = -40; dx <= 40 && !tested; ++dx)
+                    for (int dy = -40; dy <= 40 && !tested; ++dy) {
+                        const Vec3 s{c[0] + float(dx) * 128.0f, c[1] + float(dy) * 128.0f, c[2] + 60.0f}, e2{s[0] + 200.0f, s[1], s[2]};
+                        const auto tr = w.collision().trace(s, e2, {0, 0, 0}, {0, 0, 0}, 0x810211u, ent->number);
+                        if (tr.startSolid || tr.fraction >= 1.0f || tr.normal[0] > -0.99f || tr.fraction * 200.0f < 40.0f) continue;
+                        const float wallX = s[0] + tr.fraction * 200.0f;
+                        auto drive = [&](float r) {
+                            DriveBody b;
+                            b.origin = {wallX - 30.0f, s[1], s[2]};
+                            b.velocity = {600.0f, 0, 0};
+                            DriveTrace dt;
+                            dt.passEntity = ent->number;
+                            dt.mins = {-r, -r, 0};
+                            dt.maxs = {r, r, 2.0f * r};
+                            for (int f = 0; f < 6; ++f) { b.velocity[0] = 600.0f; driveMove(w.collision(), b, {}, {}, dt); }
+                            return wallX - b.origin[0];
+                        };
+                        tested = true;
+                        CHECK(drive(0.0f) < 1.0f);
+                        CHECK(std::fabs(drive(3.0f) - 3.0f) < 1.0f);
+                    }
+                CHECK(tested);
+            }
         float maxTilt = 0.0f;
         for (int i = 0; i < 160; ++i) { // 8 s: the hull settles on the ground and the turret swings
             w.frame();

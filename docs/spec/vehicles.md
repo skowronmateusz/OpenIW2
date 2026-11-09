@@ -231,10 +231,20 @@ body is applied to the entity (0x50d3e0); touch (0x50ff00, TODO); +0x19c = 0; a 
 0) runs the player aim (0x5108e0); then the turret (0x5102e0). So artillery (type 4, flak88) does not move but
 still aims and fires for its driver. Here the driver is kept at `tag_player` right after the think.
 
+## First think (0x5128f0)
+
+The think table is 0x5a5730 + 0x2c x handler (dispatch 0x4da0a2..0x4da0b7). Handler 9 (spawn, 0x50d83d) is the first think 0x5128f0, handler 0xa
+(set at 0x512b5c) the regular think 0x512b80. For types 0 and 1 the first think takes the longest of the 4 or 6 wheel tag offsets through 0x50d2f0,
+L, and writes body mins (-r, -r, 0), maxs (r, r, 2r), r = L + 1 (0x5129d8..0x512a07). The vehicle does not move that frame; its wheels are placed on the ground without settling.
+0x50d2f0 pulls a wheel offset in when the vehicle has a driver (+0x174 bit 0) and is not on a path (bit 1 clear): an offset longer than maxs.x is normalized and scaled to
+maxs.x - 2. The first think runs with maxs.x 0, after level main, so a vehicle linked to the player at spawn (libya, 88ridge: `script_noteworthy` startinside, `_vehicledrive.gsc:70`) has L = 2, r = 3;
+an undriven crusader has r = 87.12. The body is a capsule of that radius. There are no stand-off clips around libya's buildings, so the hull (x -142..139, y +-68) overlaps walls by about 136 units head on: original behaviour.
+The later wheel samples of 0x50ef70 go through 0x50d2f0 too (0x50f083), so the wheels of a tank driven off a path sample within radius r - 2 of the origin. Box traces do not see static models (collision.md).
+
 ## Free physics and player driving (0x510d30)
 
 Body layout from vehicle +0xb8: origin, previous origin +0xc, angles +0x18, previous angles +0x24, mins/maxs
-+0x30/+0x3c (zero: the vehicle traces a point, 0x50d970), velocity +0x48, local velocity (forward, left, up) +0x54,
++0x30/+0x3c (zero at spawn, 0x50d970; set by the first think below and used by all seven body traces), velocity +0x48, local velocity (forward, left, up) +0x54,
 angular velocity +0x60. Clip mask 0x810211 (0x50d900), skipping the vehicle.
 
 1. Command: zero without a driver. With one, pm_flags 0x40000 is set; unless pm_flags 0x80000 or ps+0xc 0x8000
@@ -484,7 +494,7 @@ takedamage and the trajectories and sets eType 0xd, but writes neither the conte
 a freed wreck keeps blocking. OpenIW2 dropped the clip there (the entity clips required `Entity::vehicle`, which freevehicle resets), so
 after a libya tank was destroyed the player walked and drove through the wreck. `freevehicle` now stores the brush on the object
 (`$collmap`) and `syncEntityClips` / `entityContents` use it for a `script_vehicle_corpse` (`World::corpseCollmap`).
-A driven vehicle traces a point (body mins/maxs zero, 0x50d970 and the 0x44bf00 call at 0x50e78e pass them): the libya collmap *181 spans z 0..102 above the origin, so a point trace at exactly the origin height hits (test "point hits"). Live tanks were not affected: a headless probe of libya (all 13 AI crusaders, 80 s) showed every tank with clip model 181, contents
+A driven vehicle's body box starts at the origin height: the libya collmap *181 spans z 0..102 above the origin, so a trace at exactly the origin height hits (test "point hits"). Live tanks were not affected: a headless probe of libya (all 13 AI crusaders, 80 s) showed every tank with clip model 181, contents
 0x800000, and the live iw2view loop uses the same `World::collision()` as the tests (the `scene.collision` world without entities is
 used only by `--shot --walk-seconds`). Test: tests/test_vehiclehit.cpp ("wreck hits").
 Save and load: the exe writes the whole 0x1fc-byte entity record of every used entity (docs/spec/savegame.md), so a vehicle's brush model
@@ -504,7 +514,7 @@ Turret of the wreck: 0x511c80 does not write the turret angles (es +0x70 pitch, 
 (eType at centity +0xa0, table 0x4acd74) sends eType 0xc and 0xd alike to the vehicle draw 0x4ac2b0, which applies them as
 bone controls. A tank destroyed with its turret turned keeps it turned. The same holds for the other drawn fields 0x511c80
 leaves: body pitch / roll (+0x64 / +0x6c, frozen at their last value), steer (+0x94) and suspension travel (+0x60). The
-wreck's handler 0xb (table 0x5a573c, stride 0x2c) has no think at +0x20 (the live vehicle's handler 9 has 0x512b80), so
+wreck's handler 0xb (table 0x5a573c, stride 0x2c) has no think at +0x20 (the live vehicle's handler 0xa has 0x512b80), so
 nothing writes them again, and 0x4ac2b0 still traces the wheels to the ground every client frame. OpenIW2 keeps these
 fields on the object at freevehicle and draws the wreck with them (turret and body also in tag positions); tested in
 test_deadtank.

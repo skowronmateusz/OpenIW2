@@ -522,7 +522,7 @@ void World::alignVehicleToGround(Entity& e, Vec3& origin, Vec3& angles, float ba
     const Vec3 left{-right[0], -right[1], -right[2]};
     Vec3 p[6];
     for (int w = 0; w < wheels; ++w) {
-        const Vec3& o = tagPos[w];
+        const Vec3 o = vehicleWheelOffset(tagPos[w], v.owner >= 0, v.started, v.bodyRadius);
         Vec3 wp;
         const Vec3 base{origin[0], origin[1], baseZ};
         for (int i = 0; i < 3; ++i) wp[size_t(i)] = left[size_t(i)] * o[1] + up[size_t(i)] * o[2] + fwd[size_t(i)] * o[0] + base[size_t(i)];
@@ -806,6 +806,8 @@ void World::vehicleFreeMove(Entity& e, const Vec3& prevOrigin, const Vec3& prevA
     b.angularVelocity = v.angularVelocity;
     DriveTrace t;
     t.passEntity = e.number;
+    t.mins = {-v.bodyRadius, -v.bodyRadius, 0.0f};
+    t.maxs = {v.bodyRadius, v.bodyRadius, 2.0f * v.bodyRadius};
     driveMove(*collision_, b, params, cmd, t);
     v.velocity = b.velocity;
     v.localVelocity = b.localVelocity;
@@ -1071,6 +1073,33 @@ std::string World::playerVehicleTurretWeapon() {
     return v && v->vehicle && v->vehicle->info ? v->vehicle->info->turretWeapon : std::string();
 }
 
+// First think of wheeled and tracked vehicles (0x5128f0, once, before the regular think 0x512b80 takes over): the longest wheel tag offset L
+// (through 0x50d2f0, with maxs.x still 0) gives the body box of radius L + 1, the wheels are placed on the ground without settling, and the
+// vehicle does not move that frame. A vehicle that already has a driver (libya, 88ridge) therefore gets radius 3.
+void World::vehicleFirstThink(Entity& e, const Vec3& prevAngles) {
+    VehicleState& v = *e.vehicle;
+    v.bodySet = true;
+    const Value model = e.obj->get("model");
+    const assets::XModelParts* parts = model.isString() ? skeleton(model.asString()) : nullptr;
+    if (parts) {
+        const assets::XPose pose = e.anim ? e.anim->pose(*parts) : assets::bindPose(*parts);
+        const int wheels = v.info->type != 0 ? 6 : 4;
+        float longest = 0.0f;
+        for (int w = 0; w < wheels; ++w)
+            for (size_t b = 0; b < parts->bones.size(); ++b)
+                if (lowerCopy(parts->bones[b].name) == kWheelTags[w]) {
+                    const Vec3 o = vehicleWheelOffset(pose.position[b], v.owner >= 0, v.started, 0.0f);
+                    longest = std::max(longest, std::sqrt(dot(o, o)));
+                    break;
+                }
+        v.bodyRadius = longest + 1.0f;
+    }
+    Vec3 origin = e.obj->get("origin").asVector(), angles = e.obj->get("angles").asVector();
+    alignVehicleToGround(e, origin, angles, origin[2], prevAngles, false);
+    e.obj->set("origin", Value(origin));
+    e.obj->set("angles", Value(angles));
+}
+
 void World::thinkVehicle(Entity& e) {
     {
         if (e.obj->removed || e.classname != "script_vehicle") return;
@@ -1082,6 +1111,11 @@ void World::thinkVehicle(Entity& e) {
             if (owner && (!h.isNumber() || h.asInt() < 1)) unlinkPlayerFromVehicle(e, *owner);
         }
         if (!e.vehicle || e.obj->removed) return;
+        if (v.info && (v.info->type == 0 || v.info->type == 1) && !v.bodySet) {
+            vehicleFirstThink(e, prevAngles);
+            vehicleTouch(e, prevOrigin, prevAngles);
+            return;
+        }
         if (v.info && v.info->type != 4) {
             if (v.started) vehiclePathMove(e, prevOrigin, prevAngles);
             else vehicleFreeMove(e, prevOrigin, prevAngles);

@@ -5,6 +5,7 @@
 #include "assets/xmodel.h"
 #include "script/value.h"
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,9 @@ struct VehicleState {
     // The collmap brush model ('*N', vehicle +0xe) found once for the model at spawn / level load (0x50dc40 from 0x511a6f and
     // 0x511c5b only); setmodel does not look it up again, so a wreck model keeps the collision of the intact vehicle.
     std::string collmap;
+    // Body box (vehicle +0xe8 / +0xf4), set once by the first think 0x5128f0 of wheeled and tracked vehicles: (-r, -r, 0)..(r, r, 2r).
+    bool bodySet = false;
+    float bodyRadius = 0;
     bool collmapSet = false;
     // Per wheel (front_left, front_right, back_left, back_right, middle_left, middle_right): settling height and
     // vertical speed, and the surface type under it (vehicle +0x124/+0x13c/+0x154).
@@ -118,6 +122,17 @@ struct VehicleState {
     int idleHandle = 0, engHandle = 0;
     int owner = -1;            // entity number of the player using it (entity +0xf4, 0x7ff = none)
 };
+
+// 0x50d2f0: the offset of a wheel tag from the origin. A driven vehicle that is not on a path pulls a tag farther than the body's maxs.x in:
+// the offset is normalized and scaled to maxs.x - 2 (so before the first think, with maxs.x 0, to length 2).
+inline std::array<float, 3> vehicleWheelOffset(std::array<float, 3> o, bool driven, bool onPath, float maxsX) {
+    const float len = std::sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]);
+    if (driven && !onPath && len > maxsX) {
+        const float s = (maxsX - 2.0f) / len;
+        o = {o[0] * s, o[1] * s, o[2] * s};
+    }
+    return o;
+}
 
 // 0x510770: while amp > 0, es+0x64 / +0x6c = sin(phase deg) * amp * dirF / dirR, then amp -= 0.05, phase += 36.
 // Returns false when the jolt is idle (the entity fields keep their last values).

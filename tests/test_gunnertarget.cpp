@@ -65,9 +65,10 @@ void test(iw2::fs::Vfs& vfs, bool hitCase) {
     Entity* threat = nullptr;
     const std::string own = gunner.obj->get("team").toString();
     for (const auto& up : w.entities())
-        if (up->isActor && up->obj->get("team").toString() != own && up->obj->get("team").toString() != "neutral" && up->ai.stack[0] != AiTurret) threat = up.get();
+        if (up->isActor && up->obj->get("team").toString() != own && up->obj->get("team").toString() != "neutral" && up->ai.stack[0] != AiTurret && up->obj->get("health").asInt() > 0) threat = up.get();
     CHECK(threat);
     if (!threat) return;
+    threat->obj->set("health", Value(int32_t(100000))); // the map keeps fighting around the staged threat; a dead one would not be a threat
     threat->obj->set("ignoreme", Value(int32_t(0)));
     // Nobody may target the gunner's side: the map keeps fighting and the animscripts' fire notetracks fire real bullets.
     // The threat, staged next to the gun, keeps its own enemy (CoD2 has no ignoreall: neither the exe nor any shipped script has it) and its shots at
