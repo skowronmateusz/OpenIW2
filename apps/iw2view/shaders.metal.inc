@@ -410,7 +410,8 @@ fragment float4 fs_dlight(VertexOut in [[stage_in]], constant DLightU& u [[buffe
     const float x = clamp(saturate(d) * 16.0 - 0.5, 0.0, 15.0);
     const int i0 = int(floor(x)), i1 = min(i0 + 1, 15);
     const float f = mix(u.ramp[i0 >> 2][i0 & 3], u.ramp[i1 >> 2][i1 & 3], x - float(i0));
-    return float4(base.rgb * u.color.rgb * (ndl * f), 1.0);
+    // l_point_blend (PRE_ALPHA_BLEND): the light is scaled by the surface alpha.
+    return float4(base.rgb * u.color.rgb * (ndl * f) * (u.params.z > 0.5 ? base.a : 1.0), 1.0);
 }
 
 // Technique set "objective" (objective_base.tech / objective_base.hlsl): a pulsing gold silhouette of objective models.

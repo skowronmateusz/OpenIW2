@@ -318,8 +318,8 @@ struct GpuVertex {
 static_assert(sizeof(GpuVertex) == 56);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
-// Grouping of world surfaces into batches; the last four fields are the draw-list fields of Batch.
-using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>;
+// Grouping of world surfaces into batches; the last six fields are the draw-list fields of Batch.
+using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>;
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -339,8 +339,8 @@ struct Batch {
     bool alphaOne = false; // see MatInfo::alphaOne
     int fxKind = 0;        // see MatInfo::fxKind
     float fxParm[2] = {0, 0};
-    int sort = 0, techsetRank = 0; // see MatInfo
-    bool emissive = false, multiplyFog = false; // see MatInfo
+    int sort = 0, materialOrder = 0; // see MatInfo
+    bool emissive = false, multiplyFog = false, pointLit = false, pointBlend = false; // see MatInfo
 };
 
 struct Lightmap {
@@ -378,9 +378,11 @@ struct MatInfo {
     // glow pass would otherwise read as sky (fs_glow_setup nonSky = saturate(4 · alpha)) and bleed the sky colour over.
     bool alphaOne = false;
     int sort = 0;        // draw sort byte (material file offset 0x0d)
-    int techsetRank = 0; // first-load order of the technique set, the tie-break of equal sort bytes
+    int materialOrder = 0; // assets::materialOrder of the first use of the technique set and of the material
     bool emissive = false;    // effect* technique sets: no lit technique, so drawn in the emissive walk after the post-sun copy
     bool multiplyFog = false; // effect_multiply: the fogged techniques add the multiply_fog pass (effect_multiply_nofog has none)
+    bool pointLit = false;    // the technique set has a "pointlight no fog" technique
+    bool pointBlend = false;  // ... which is l_point_blend (light scaled by the surface alpha)
 };
 
 // water.techset / water_l_sun.tech (lib/water.hlsl): waterColor constant and the cubicEnvMap reflection cube.
@@ -419,7 +421,8 @@ struct Scene {
     std::unique_ptr<assets::LightGrid> grid;
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
-    std::map<std::string, int> techsetRanks; // technique set name -> first-load order
+    std::map<std::string, int> techsetRanks; // technique set name -> first-use order
+    int materialsSeen = 0;                   // materials registered so far
     std::unordered_map<std::string, std::optional<GpuModel>> models;
     // Brush submodels "*N" of script_brushmodel entities (lump 35 index → batches into `vertices` / `indices`, in model
     // space), drawn with the world shaders per entity at its origin/angles while the entity is not hidden
@@ -590,7 +593,12 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
             mi.sort = md->size() > 0x0d ? (*md)[0x0d] : 0;
-            mi.techsetRank = scene.techsetRanks.try_emplace(m.techniqueSet, int(scene.techsetRanks.size())).first->second;
+            mi.materialOrder = assets::materialOrder(scene.techsetRanks.try_emplace(m.techniqueSet, int(scene.techsetRanks.size())).first->second, scene.materialsSeen++);
+            if (const auto ts = vfs.read("materials/techniquesets/" + m.techniqueSet + ".techset")) {
+                const std::string text(ts->begin(), ts->end());
+                mi.pointLit = text.find("\"pointlight no fog\"") != std::string::npos;
+                mi.pointBlend = text.find("l_point_blend") != std::string::npos;
+            }
             mi.emissive = m.techniqueSet.rfind("effect", 0) == 0;
             mi.multiplyFog = m.techniqueSet == "effect_multiply";
             // The state maps pass the blend through from the material, so it decides the pass, not the technique set name
@@ -717,6 +725,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             }
             Batch b;
             b.pass = mi.pass;
+            b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
             b.texture = mi.texture;
             b.lightmap = -3;
             b.polygonOffset = mi.polygonOffset;
@@ -802,6 +811,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         }
         Batch b;
         b.pass = mi.pass;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
         b.texture = mi.texture;
         b.lightmap = -3;
         b.polygonOffset = mi.polygonOffset;
@@ -872,6 +882,7 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         if ((mi.pass == Pass::Skip && mi.fxKind != 2) || mi.pass == Pass::Sky) continue;
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.fxKind == 2 ? Pass::Blend : mi.pass;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = -3;
@@ -1057,6 +1068,7 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = -3;
@@ -1152,6 +1164,7 @@ const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
         Batch b;
         b.pass = mi.pass == Pass::Additive ? Pass::Additive : Pass::Blend;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = k.second < int(scene.lightmaps.size()) ? k.second : -3;
@@ -1364,6 +1377,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     }
 
     auto material = [&](const std::string& name) { return sceneMaterial(scene, dev, up, vfs, name); };
+    // Registered in soup order first (the 1.3 renderer's soup loader 0x10002a00): that fixes the first-use order of the technique sets.
+    for (const auto& soup : bsp.soups()) material(bsp.materials()[soup.material].name);
     std::vector<MatInfo> mats;
     for (const auto& bm : bsp.materials()) mats.push_back(material(bm.name));
 
@@ -1436,7 +1451,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.techsetRank, int(mi.emissive), int(mi.multiplyFog)}];
+        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend)}];
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
         if (soupOwner[si] > 0) {
             auto bb = scene.brushBounds.try_emplace(soupOwner[si], std::array<float, 6>{1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f}).first;
@@ -1540,7 +1555,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.techsetRank, int(mi.emissive), int(mi.multiplyFog)}];
+            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend)}];
             for (uint16_t i : surf.indices) dst.push_back(base + i);
         }
         ++modelCount;
@@ -1565,9 +1580,11 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.colorState = uint8_t(std::get<11>(key));
         b.alphaFunc = assets::AlphaFunc(std::get<12>(key));
         b.sort = std::get<13>(key);
-        b.techsetRank = std::get<14>(key);
+        b.materialOrder = std::get<14>(key);
         b.emissive = std::get<15>(key) != 0;
         b.multiplyFog = std::get<16>(key) != 0;
+        b.pointLit = std::get<17>(key) != 0;
+        b.pointBlend = std::get<18>(key) != 0;
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -2716,12 +2733,13 @@ struct Renderer {
         }
         // One l_point draw of a world batch (the DLL collects the touched surfaces per light, 0x10014fe0).
         auto drawDlightBatch = [&](const DLight& dl, const Batch& b, const Mat4& model) {
+            const bool pointWritesDepth = b.pass == Pass::Opaque || b.pass == Pass::AlphaTest;
             static const float ramp[16] = {255, 255, 244, 223, 202, 181, 159, 138, 117, 96, 74, 53, 32, 11, 0, 0}; // images/falloff_linear.iwi
             static const bool depthProbe = std::getenv("IW2_DEPTH_PROBE") != nullptr;
             SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
             VU du = vu;
             du.model = model;
-            du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+            du.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f + assets::layerTieBias(pointWritesDepth);
             SDL_PushGPUVertexUniformData(cmd, 0, &du, sizeof(du));
             SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
             SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
@@ -2731,37 +2749,142 @@ struct Renderer {
             std::memcpy(fu.color, dl.rgb, 12);
             fu.params[0] = float(int(b.alphaFunc));
             fu.params[1] = depthProbe ? 1.0f : 0.0f;
+            fu.params[2] = b.pointBlend ? 1.0f : 0.0f;
             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
             SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         };
-        // The scene draw list (1.3 renderer key writer 0x100247d0, sort 0x10024900): every world and brush-model surface in material order.
-        struct WorldRef { const Batch* batch; const Mat4* model; };
-        std::vector<WorldRef> worldOrder;
-        for (const WorldGroup& wg : worldGroups)
-            for (const Batch& b : *wg.batches)
-                if (b.pass == Pass::Opaque || b.pass == Pass::AlphaTest || b.pass == Pass::Blend || b.pass == Pass::Additive || b.pass == Pass::Multiply)
-                    worldOrder.push_back({&b, &wg.model});
-        std::stable_sort(worldOrder.begin(), worldOrder.end(), [](const WorldRef& x, const WorldRef& y) {
-            return assets::surfaceDrawsBefore(x.batch->sort, x.batch->techsetRank, y.batch->sort, y.batch->techsetRank);
-        });
-        // Draws the part of the list with this technique walk and sort byte range.
-        auto drawWorldLayer = [&](bool emissive, int minSort, int maxSort) {
+        // The scene draw list (1.3 renderer key writer 0x100247d0, sort 0x10024900): world, brush-model, static and dynamic surfaces in one order.
+        // Effect sprites and clouds stay after it (type-2 records sort after every other record).
+        struct ListRef { const Batch* batch; const Mat4* model; const DrawItem* item; assets::SurfaceKey key; };
+        std::vector<ListRef> drawList;
+        for (size_t g = 0; g < worldGroups.size(); ++g)
+            for (const Batch& b : *worldGroups[g].batches) {
+                if (b.pass == Pass::Sky || b.pass == Pass::Skip || b.pass == Pass::Objective) continue;
+                const int entity = g ? int(g) : b.lightmap == -2 ? assets::kStaticModelEntity : assets::kWorldEntity;
+                drawList.push_back({&b, &worldGroups[g].model, nullptr, {b.sort, b.materialOrder, b.lightmap >= 0 ? b.lightmap : 31, entity}});
+            }
+        for (size_t n = 0; n < items.size(); ++n) {
+            if (!items[n].model || items[n].effects) continue;
+            for (const Batch& b : items[n].model->batches)
+                if (b.fxKind == 0 && b.pass != Pass::Objective && b.pass != Pass::Skip && b.pass != Pass::Sky)
+                    drawList.push_back({&b, &items[n].transform, &items[n], {b.sort, b.materialOrder, 31, int(n)}});
+        }
+        std::stable_sort(drawList.begin(), drawList.end(), [](const ListRef& x, const ListRef& y) { return assets::surfaceDrawsBefore(x.key, y.key); });
+        int stream = -1; // what the world buffers are bound as: 0 single vertex stream, 1 with the tangent frame, -1 not bound
+        auto bindStream = [&](int want) {
+            if (stream == want) return;
+            if (want) {
+                SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
+                SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
+            } else SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+            SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            stream = want;
+        };
+        auto bindItem = [&](const DrawItem& it) {
+            SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
+            SDL_GPUBufferBinding mib{it.model->indices, 0};
+            SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            stream = -1;
+            if (it.depthMax < 1.0f) {
+                const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                SDL_SetGPUViewport(pass, &vpDepth);
+            }
+        };
+        auto unbindItem = [&](const DrawItem& it) {
+            if (it.depthMax < 1.0f) {
+                const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                SDL_SetGPUViewport(pass, &vpFull);
+            }
+        };
+        auto itemVu = [&](const DrawItem& it) {
+            VU mu = vu;
+            mu.model = it.transform;
+            if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
+            return mu;
+        };
+        auto drawItemBatch = [&](const DrawItem& it, const Batch& b) {
+            const Pass p = b.pass;
+            bindItem(it);
+            bindOffset(p, b.polygonOffset, b.cull, itemVu(it));
+            const Lightmap& elm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
+            SDL_GPUTextureSamplerBinding tex[4] = {
+                {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
+            SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
+            FragmentUniforms fu = {
+                {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
+                {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                {lmWeights[0], lmWeights[1], lmWeights[2], lmWeights[3]},
+                {alphaParam(b, p), b.lightmap >= 0 ? 1.0f : 3.0f, lmScale, fullbright ? 1.0f : 0.0f},
+                {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
+                {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
+            std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
+            detailUniforms(fu, b.detail);
+            if (p != Pass::Multiply) applyFog(fu, p); // additive: black fog colour (render-hints.md); the multiply fix-up pass is world-only
+            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            unbindItem(it);
+        };
+        auto drawItemDlight = [&](const DLight& dl, const DrawItem& it, const Batch& b) {
+            static const float ramp[16] = {255, 255, 244, 223, 202, 181, 159, 138, 117, 96, 74, 53, 32, 11, 0, 0}; // images/falloff_linear.iwi
+            static const bool depthProbe = std::getenv("IW2_DEPTH_PROBE") != nullptr;
+            bindItem(it);
+            SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
+            VU mu = itemVu(it);
+            mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+            SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
+            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+            SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
+            struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
+            std::memcpy(fu.light, dl.pos, 12);
+            fu.light[3] = dl.radius;
+            std::memcpy(fu.color, dl.rgb, 12);
+            fu.params[0] = float(int(b.alphaFunc));
+            fu.params[1] = depthProbe ? 1.0f : 0.0f;
+            fu.params[2] = b.pointBlend ? 1.0f : 0.0f;
+            fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
+            if (it.depthMax < 1.0f) { // camera-relative item (applyViewModelSpace): the light moves with the eye
+                fu.light[0] -= cam.pos.x, fu.light[1] -= cam.pos.y, fu.light[2] -= cam.pos.z;
+                fu.eye[0] = fu.eye[1] = fu.eye[2] = 0.0f;
+            }
+            for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
+            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            unbindItem(it);
+        };
+        auto drawWater = [&](const Batch& b, const Mat4& model) {
+            const WaterMat& wm = scene.waters[size_t(b.texture)];
+            if (!wm.cube || !wm.normalMap) return;
+            bindStream(0);
+            SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
+            VU wu = vu;
+            wu.model = model;
+            SDL_PushGPUVertexUniformData(cmd, 0, &wu, sizeof(wu));
+            // cubicEnvMap: sampler state 0x30 (clamp U/V); normalMap: 0x6 = linear min/mag, point mip filter, repeat (0x1003dd..e1b1).
+            SDL_GPUTextureSamplerBinding wsb[2] = {{wm.cube, clampSampler}, {wm.normalMap, waterMapSampler}};
+            SDL_BindGPUFragmentSamplers(pass, 0, wsb, 2);
+            FragmentUniforms fu = {
+                {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
+                {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
+                {0, 0, 0, 0},
+                {0, 0, 0, 0},
+                {wm.color[0], wm.color[1], wm.color[2], 0}};
+            applyFog(fu);
+            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+        };
+        // One walk of the list: the lit surfaces (technique type 6) or the emissive ones (0x18 / 0x15).
+        auto drawListWalk = [&](bool emissive) {
             static const bool noMultiply = std::getenv("IW2_DEPTH_PROBE") && std::atoi(std::getenv("IW2_DEPTH_PROBE")) == 2;
-            int stream = -1; // 0 single vertex stream, 1 with the tangent frame
-            auto bindStream = [&](int want) {
-                if (stream == want) return;
-                if (want) {
-                    SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
-                    SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
-                } else SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-                stream = want;
-            };
-            for (const WorldRef& r : worldOrder) {
+            stream = -1;
+            for (const ListRef& r : drawList) {
                 const Batch& b = *r.batch;
                 const Pass p = b.pass;
-                if (b.emissive != emissive || b.sort < minSort || b.sort > maxSort || (noMultiply && p == Pass::Multiply)) continue;
+                if (b.emissive != emissive || (noMultiply && p == Pass::Multiply)) continue;
+                if (r.item) { drawItemBatch(*r.item, b); continue; }
+                if (p == Pass::Water) { drawWater(b, *r.model); continue; }
                 const bool writesDepth = p == Pass::Opaque || p == Pass::AlphaTest;
                 const float tieBias = assets::layerTieBias(writesDepth);
                 if (b.specTex >= 0) {
@@ -2821,162 +2944,71 @@ struct Renderer {
                         SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     }
                 }
-                // A depth-writing surface sorted among the decals takes its dynamic lights right after its own draw.
-                if (writesDepth && b.sort > assets::kOpaqueSortMax && b.lightmap != -3 && !emissive) {
-                    bindStream(0);
-                    for (const DLight& dl : dlights) drawDlightBatch(dl, b, *r.model);
-                }
             }
-            SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+            bindStream(0);
             SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         };
-        struct PassStep { Pass p; bool fxStep; };
-        static const std::vector<WorldGroup> noGroups;
-        for (const PassStep step : {PassStep{Pass::Opaque, false}, {Pass::AlphaTest, false}, {Pass::Blend, false}, {Pass::Additive, false},
-                                    {Pass::Multiply, false}, {Pass::Blend, true}, {Pass::Additive, true}, {Pass::Multiply, true}}) {
-            const Pass p = step.p;
-            const bool fxStep = step.fxStep; // only the effect items of this pass: after every world / model surface of the emissive passes
-            const std::vector<WorldGroup>& groups = fxStep ? noGroups : worldGroups;
-            static const bool probeNoMultiply = std::getenv("IW2_DEPTH_PROBE") && std::atoi(std::getenv("IW2_DEPTH_PROBE")) == 2;
-            if (probeNoMultiply && p == Pass::Multiply) continue; // multiply decals would darken the painted surfaces
-            // IW2_DEPTH_PROBE=1 (debug): one light pass that paints every lit surface pure red; any surface pixel left unpainted failed
-            // LessEqual against its own first pass, i.e. the two vertex shaders produced different depth.
+        drawListWalk(false);
+        if (resumedPass) { // glow_setup reads the copy too
+            // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
+            // the back buffer into resolvedPostSun), then the effect lists. ($floatz was built at the start of the frame.)
+            SDL_EndGPURenderPass(pass);
+            {
+                SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureLocation src{}, dst{};
+                src.texture = sceneTex;
+                dst.texture = postSunTex;
+                SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+                SDL_EndGPUCopyPass(cp);
+            }
+            SDL_GPUColorTargetInfo again = color;
+            again.load_op = SDL_GPU_LOADOP_LOAD;
+            if (sceneSamples > 1) again.store_op = SDL_GPU_STOREOP_RESOLVE;
+            SDL_GPUDepthStencilTargetInfo dsAgain = ds;
+            dsAgain.load_op = SDL_GPU_LOADOP_LOAD;
+            dsAgain.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            pass = SDL_BeginGPURenderPass(cmd, &again, 1, &dsAgain);
+            SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+            SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+            postSunReady = true;
+        }
+        stream = -1;
+        // Dynamic lights (0x10015210, emitted at 0x10025643): after the lit walk and the post-sun copy, one reversed walk per light, over every
+        // surface whose technique set has a pointlight technique.
+        {
             static const bool depthProbe = std::getenv("IW2_DEPTH_PROBE") != nullptr;
-            if (depthProbe && p == Pass::Blend && !fxStep) {
+            if (depthProbe) {
                 dlights.clear();
                 dlights.push_back({{cam.pos.x, cam.pos.y, cam.pos.z}, 1e9f, {1, 0, 0}});
             }
-            if (p == Pass::Blend && !fxStep && !dlights.empty()) {
-                // l_point passes: every lit opaque / alpha-tested world batch once per light (the DLL collects the touched surfaces per
-                // light, 0x10014fe0; here the shader's radius falloff is the cull, TODO(spec): [optimisation only] per-surface bounds).
-                static const float ramp[16] = {255, 255, 244, 223, 202, 181, 159, 138, 117, 96, 74, 53, 32, 11, 0, 0}; // images/falloff_linear.iwi
-                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                for (const DLight& dl : dlights)
-                    for (Pass dp : {Pass::Opaque, Pass::AlphaTest})
-                        for (const WorldGroup& wg : groups)
-                        for (const Batch& b : *wg.batches) {
-                            if (b.pass != dp || b.lightmap == -3 || b.sort > assets::kOpaqueSortMax) continue; // later ones: drawWorldLayer
-                            drawDlightBatch(dl, b, wg.model);
-                        }
-                // Entity models (the sort list holds every entity type; 0x10014fe0 asks the per-type bounds getter), same state.
-                for (const DLight& dl : dlights)
-                    for (const DrawItem& it : items) {
-                        if (!it.model) continue;
-                        if (it.depthMax < 1.0f) {
-                            const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
-                            SDL_SetGPUViewport(pass, &vpDepth);
-                        }
-                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
-                        SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
-                        SDL_GPUBufferBinding mib{it.model->indices, 0};
-                        SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                        for (const Batch& b : it.model->batches) {
-                            if ((b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) || b.lightmap == -3) continue;
-                            SDL_BindGPUGraphicsPipeline(pass, dlightPipelines[b.polygonOffset][b.cull]);
-                            VU mu = vu;
-                            mu.model = it.transform;
-                            if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
-                            mu.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
-                            SDL_PushGPUVertexUniformData(cmd, 0, &mu, sizeof(mu));
-                            SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
-                            SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
-                            struct DU { float light[4], color[4], params[4], eye[4], ramp[16]; } fu{};
-                            std::memcpy(fu.light, dl.pos, 12);
-                            fu.light[3] = dl.radius;
-                            std::memcpy(fu.color, dl.rgb, 12);
-                            fu.params[0] = float(int(b.alphaFunc));
-                            fu.params[1] = depthProbe ? 1.0f : 0.0f;
-                            fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
-                            if (it.depthMax < 1.0f) { // camera-relative item (applyViewModelSpace): the light moves with the eye
-                                fu.light[0] -= cam.pos.x, fu.light[1] -= cam.pos.y, fu.light[2] -= cam.pos.z;
-                                fu.eye[0] = fu.eye[1] = fu.eye[2] = 0.0f;
-                            }
-                            for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
-                            SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
-                        }
-                        if (it.depthMax < 1.0f) {
-                            const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
-                            SDL_SetGPUViewport(pass, &vpFull);
-                        }
+            for (const DLight& dl : dlights)
+                for (auto r = drawList.rbegin(); r != drawList.rend(); ++r) {
+                    if (!r->batch->pointLit || r->batch->lightmap == -3) continue;
+                    if (r->item) drawItemDlight(dl, *r->item, *r->batch);
+                    else {
+                        bindStream(0);
+                        drawDlightBatch(dl, *r->batch, *r->model);
                     }
-                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
-            }
-            if (p == Pass::Blend && !fxStep) {
-            // Water (water_l_sun.tech): after the opaque passes, before the blended ones. No polygon offset: every shipped
-            // water material (iw_13.iwd materials/water_*) has polygon-offset level 0 (state byte 0x30 bits 4-5).
-            // Also the water soups of visible brush models (duhoc_assault / duhoc_defend water_section) at their entity transform.
-            for (const WorldGroup& wg : groups)
-            for (const Batch& b : *wg.batches) {
-                if (b.pass != Pass::Water) continue;
-                const WaterMat& wm = scene.waters[size_t(b.texture)];
-                if (!wm.cube || !wm.normalMap) continue;
-                SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
-                VU wu = vu;
-                wu.model = wg.model;
-                SDL_PushGPUVertexUniformData(cmd, 0, &wu, sizeof(wu));
-                // cubicEnvMap: sampler state 0x30 (clamp U/V); normalMap: 0x6 = linear min/mag, point mip filter, repeat (0x1003dd..e1b1).
-                SDL_GPUTextureSamplerBinding wsb[2] = {{wm.cube, clampSampler}, {wm.normalMap, waterMapSampler}};
-                SDL_BindGPUFragmentSamplers(pass, 0, wsb, 2);
-                FragmentUniforms fu = {
-                    {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
-                    {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
-                    {0, 0, 0, 0},
-                    {0, 0, 0, 0},
-                    {wm.color[0], wm.color[1], wm.color[2], 0}};
-                applyFog(fu);
-                SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
-            }
-            SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
-            }
-            // The world surfaces are one list in sort byte order, not one list per pass (docs/spec/material.md "Draw order").
-            if (p == Pass::Opaque && !fxStep) drawWorldLayer(false, 0, assets::kOpaqueSortMax);
-            if (p == Pass::Blend && !fxStep) {
-                drawWorldLayer(false, assets::kOpaqueSortMax + 1, 255);
-                if (resumedPass) { // glow_setup reads the copy too
-                    // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
-                    // the back buffer into resolvedPostSun), then the effect lists. ($floatz was built at the start of the frame.)
-                    SDL_EndGPURenderPass(pass);
-                    {
-                        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-                        SDL_GPUTextureLocation src{}, dst{};
-                        src.texture = sceneTex;
-                        dst.texture = postSunTex;
-                        SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
-                        SDL_EndGPUCopyPass(cp);
-                    }
-                    SDL_GPUColorTargetInfo again = color;
-                    again.load_op = SDL_GPU_LOADOP_LOAD;
-                    if (sceneSamples > 1) again.store_op = SDL_GPU_STOREOP_RESOLVE;
-                    SDL_GPUDepthStencilTargetInfo dsAgain = ds;
-                    dsAgain.load_op = SDL_GPU_LOADOP_LOAD;
-                    dsAgain.store_op = SDL_GPU_STOREOP_DONT_CARE;
-                    pass = SDL_BeginGPURenderPass(cmd, &again, 1, &dsAgain);
-                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-                    SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
-                    postSunReady = true;
                 }
-                drawWorldLayer(true, 0, 255);
-            }
+            bindStream(0);
+            SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
+        }
+        drawListWalk(true);
+        // Effect items: after every list surface.
+        for (const Pass p : {Pass::Blend, Pass::Additive, Pass::Multiply}) {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
             SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
             // Entity models of this pass. Effect items draw their emissive parts in the last steps (fxStep).
-            const bool emissivePass = p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply;
             for (const DrawItem& it : items) {
                 if (!it.model) continue;
-                if (emissivePass && it.effects != fxStep) continue;
                 bool bound = false;
                 if (it.depthMax < 1.0f) {
                     const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
                     SDL_SetGPUViewport(pass, &vpDepth);
                 }
                 for (const Batch& b : it.model->batches) {
-                    if (b.pass != p) continue;
+                    if (b.pass != p || (!it.effects && b.fxKind == 0)) continue;
                     if (b.fxKind == 2 && !postSunReady) continue; // distortion needs the post-sun copy (Skip before, docs/spec/effects.md)
                     // r_zFeather 0: the effects use technique type 0x15 "emissive no fog" instead of 0x18 "emissive feathered" (the
                     // distortion keeps its float-z variant), i.e. the ordinary unfeathered draw below.

@@ -76,13 +76,20 @@ constexpr MaterialBlend decodeMaterialBlend(uint32_t stateWord0) {
     return MaterialBlend::Alpha;
 }
 
-// Highest material sort byte of the opaque range: the shipped opaque materials use 3, decals 8 and up.
-inline constexpr int kOpaqueSortMax = 3;
-
-// True when surface a is drawn before b in the one sorted surface list: sort byte, then technique set first-load order.
-constexpr bool surfaceDrawsBefore(int sortA, int techsetRankA, int sortB, int techsetRankB) {
-    return sortA != sortB ? sortA < sortB : techsetRankA < techsetRankB;
+// Key of the scene draw list, compared field by field: material rank (sort byte, then the order of first use of the technique set
+// and of the material), layer (lightmap index, 31 for none), entity (dynamic slot < static models < world).
+struct SurfaceKey {
+    int sort = 0, materialOrder = 0, layer = 31, entity = 0;
+};
+inline constexpr int kStaticModelEntity = 0x7ff, kWorldEntity = 0x800;
+constexpr bool surfaceDrawsBefore(const SurfaceKey& a, const SurfaceKey& b) {
+    if (a.sort != b.sort) return a.sort < b.sort;
+    if (a.materialOrder != b.materialOrder) return a.materialOrder < b.materialOrder;
+    if (a.layer != b.layer) return a.layer < b.layer;
+    return a.entity < b.entity;
 }
+// Material order from the first-use indices of its technique set and of the material itself.
+constexpr int materialOrder(int techsetFirstUse, int materialFirstUse) { return techsetFirstUse << 16 | materialFirstUse; }
 
 // Clip depth added to a world surface that does not write depth, toward the camera. It makes
 // the LessEqual tie with a coplanar surface drawn earlier hold for differently triangulated faces (deliberate deviation, see

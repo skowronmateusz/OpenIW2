@@ -85,9 +85,13 @@ int main() {
     CHECK(decodeMaterialBlend(0x28129165) == MaterialBlend::Alpha);
     CHECK(decodeMaterialBlend(0x28125122) == MaterialBlend::Additive);
     CHECK(decodeMaterialBlend(0x28128931) == MaterialBlend::Multiply);
-    CHECK(surfaceDrawsBefore(8, 5, 11, 1));
-    CHECK(surfaceDrawsBefore(10, 1, 10, 2));
-    CHECK(!surfaceDrawsBefore(10, 2, 10, 2));
+    CHECK(surfaceDrawsBefore({8, 5, 0, 0}, {11, 1, 0, 0}));
+    CHECK(surfaceDrawsBefore({10, 1, 0, 0}, {10, 2, 0, 0}));
+    CHECK(surfaceDrawsBefore({10, 1, 2, 0}, {10, 1, 31, 0}));
+    CHECK(surfaceDrawsBefore({10, 1, 31, 3}, {10, 1, 31, kStaticModelEntity}));
+    CHECK(surfaceDrawsBefore({10, 1, 31, kStaticModelEntity}, {10, 1, 31, kWorldEntity}));
+    CHECK(!surfaceDrawsBefore({10, 1, 2, 3}, {10, 1, 2, 3}));
+    CHECK(materialOrder(1, 500) > materialOrder(0, 60000));
     CHECK(layerTieBias(true) == 0.0f);
     CHECK(layerTieBias(false) < 0.0f && layerTieBias(false) > -1.0f / 65536.0f);
 

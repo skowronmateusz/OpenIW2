@@ -157,12 +157,23 @@ destination bits 4-7, operation bits 8-10 (0 Disable, 1 Add), factors 1 Zero, 2 
 `effect_multiply_nofog` materials multiply (Zero / SrcColor), and 9 of the 22 `unlit_blend` materials are additive. Depth write follows the blend
 (nofog.sm: Enable only for mtlBlendOp Disable), and all shipped materials test LessEqual.
 
-iw2view: `drawWorldLayer` walks the world and brush-model batches in this order, lit surfaces of sort byte 3 or less first, then the entity opaque
-and alpha-tested surfaces, the dynamic lights and water, then the remaining lit surfaces, the post-sun copy and the emissive ones.
-TODO(spec): the first-load order of technique sets is approximated by the first use in the map's material list; the lightmap layer and entity
-fields of the key are not reproduced (they only order surfaces of one material); dynamic models are not merged into the list; the place of water
-in the list and of the l_point passes relative to decal-range surfaces is not analysed (a depth-writing surface of a sort byte above 3 takes its
-lights right after its own draw).
+Key details. Technique sets are first allocated at their first use (0x1001c280 on a miss of the name hash 0x101d82e8). The material and technique tables
+restart empty at every level start and at vid_restart (0x100131e0 -> 0x100177b0). The soup loader 0x10002a00 registers each soup's material in soup order
+during LoadWorld, which CG_Init calls first (0x4a2aac in the patch 1.3 SP executable). The table is sorted by an unstable introsort (0x10017c10), so materials equal in
+sort byte and technique set have no defined order. Layer is the lightmap index, 31 for none; entity is 0x800 + sort group for world soups (sort group 0x10002800:
+first appearance of a vertex range within the material), 0x7ff for static models, the reference entity slot for dynamic and brush models.
+Marks use 0x800 + a per-frame counter. Effect sprites sort after every other record (docs/spec/effects.md).
+
+Walks. The list is walked for technique type 1 (sky), type 6 (lit surfaces, water included: `water.techset` has a lit technique only, at its material's rank), then the
+sun, the post-sun copy, one walk per dynamic light, then the emissive walk. Dynamic lights (0x10015210, 0x10014fe0, emitted at 0x10025643) walk a reversed copy of the list
+filtered by radius with technique type 0x12 over every surface whose technique set has a "pointlight" technique, including the blended ones: `l_point_blend` scales the light by
+the surface alpha, and state map `additive_nofog.sm` tests Equal over opaque and LessEqual over blended surfaces.
+
+iw2view: `drawListWalk` follows this for world, brush-model, static and dynamic surfaces, with the post-sun copy before the lights. World surfaces of one material and
+lightmap form one batch, so sort groups have no effect; surfaces equal in sort byte and technique set are drawn in first-use order of the material (deliberate
+deviation: the original's order is unspecified). TODO(spec): the order of first use across static models and precached assets relative to soups could not be
+determined; iw2view registers static models after the soups. TODO(spec): `additive_nofog.sm` names the source factor InvDestAlpha, while iw2view adds with One / One and
+Equal is approximated by LessEqual; how the destination alpha behaves in a lit frame is not analysed. The mark layer source is not traced; marks use layer 31.
 
 Coplanar layers (deliberate deviation). The original's depth buffer is D3DFMT_D24S8 (0x1001159c, 0x10022ce2). iw2view uses a 32-bit float
 depth because Apple GPUs have no 24-bit unorm format, so differently triangulated faces in one plane differ by rounding in tiles of the GPU's
