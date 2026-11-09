@@ -273,6 +273,7 @@ void FxSystem::playAxes(const std::shared_ptr<const assets::EfxEffect>& fx, cons
                 std::fprintf(stderr, "fx skip element type %s name %s\n", e.type.c_str(), e.name.c_str());
             continue;
         }
+        if (onlyMarks && e.type != "Decal") continue;
         // 0x4853f0: count = trunc(random(count) + 0.5) (default 1), the element is skipped when 0.
         const int count = int(range(e.numbers("count"), 1) + 0.5f);
         for (int i = 0; i < count; ++i) {

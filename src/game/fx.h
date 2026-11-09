@@ -187,6 +187,8 @@ public:
     // Spawns every element of an effect at `origin` facing `forward`.
     // 0xf79778 for the length of a play: a Decal element without a delay draws no marks (a delayed one spawns after the flag is cleared).
     bool noImmediateMarks = false;
+    // Only the Decal elements of the effects played while this is set run.
+    bool onlyMarks = false;
     void play(const std::shared_ptr<const assets::EfxEffect>& fx, const FVec& origin, const FVec& forward, int64_t nowMs);
     // Plays an effect bolted to an entity tag (0x4853f0 with an attachment record): `relative` (flag 0x2) elements follow
     // the tag while they live and are not spawned when the attachment is invalid (0x485bf0).

@@ -350,6 +350,7 @@ their spawn delay are left out (the original lists every element in its two elem
   reflection (FUN_00485220). Flesh with `cg_blood` (0x1040c58, bool, default 1): the table effects at most once per
   330 ms (0x14a, last time 0xf7e8c0), otherwise `fx/impacts/flesh_hit_noblood.efx` (0xf5bcc4) along the normal only.
 - Then the tracer (0x4b8140, `cg_tracerChance`). The impact effects carry the bullet marks as Decal elements.
+- Deliberate deviation from the shipped data: some map tables give `bullet_large` an effect with no Decal element where `bullet_small` has one (for example sand in `elalamein`, whose large effect leaves no mark). OpenIW2 then also runs only the Decal elements of the small effect for a `rifleBullet` hit (`World::rifleMarkFallback`). Flesh is excluded.
 - OpenIW2: `World::bulletImpact` (fx events + sounds), penetration (surface flag 0x10, `combat.cpp`) and the tracers
   (`FxSystem::addTracer`); TODO(spec): dir-byte quantization, the hit entity of the event.
 

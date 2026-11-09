@@ -142,6 +142,14 @@ int main() {
     setHealth(*a, 100000);
     w.debugDamageAt(*a, nullptr, 1000, none, loc);
     CHECK(health(*a) == 100000 - int(1000.0f * w.debugHitLocationMultiplier(loc)));
+    // A scoped rifle counts a helmet hit as a head hit; other rifles keep the shipped helmet value.
+    CHECK(w.debugLocMultiplier("enfield_scope", "helmet") == w.debugLocMultiplier("enfield_scope", "head"));
+    CHECK(w.debugLocMultiplier("enfield", "helmet") == 0.5f);
+    {
+        World sandMap(vfs, "elalamein"); // large_dirthit_libya has no Decal element, the small effect has one
+        CHECK(sandMap.rifleMarkFallback(18) == "fx/impacts/small_dirthit_libya.efx");
+        CHECK(sandMap.rifleMarkFallback(7).empty());
+    }
     setHealth(*a, 100);
     watched = a->obj.get();
     seen.clear();

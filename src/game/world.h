@@ -844,6 +844,8 @@ public:
     // Tests: the hit-location multiplier (0x528100) for an attacker holding `weapon` ("" = no weapon).
     // Vehicle immunity filter of G_Damage (0x5122f0, called at the top of 0x528050 when ent+0x108 is set): true = ignored.
     static bool vehicleIgnoresDamage(const VehicleInfo& info, int mod, int dflags);
+    // The small-bullet effect whose marks a rifle bullet adds on `surface`, or "" (deliberate deviation, docs/spec/effects.md).
+    std::string rifleMarkFallback(int surface);
     float debugLocMultiplier(const std::string& weapon, const std::string& location) {
         player_->obj->set("$weapon", script::Value(weapon));
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
@@ -920,7 +922,7 @@ public:
 
     // Effects started by scripts since the last call: path, origin, forward.
     // entity/tag: bolted (0x4853f0). noMarks: played under 0xf79778 (EV_ROCKET_EXPLODE_NOMARKS / EV_CUSTOM_EXPLODE_NOMARKS).
-    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag{}; bool noMarks = false; };
+    struct FxEvent { std::string path; Vec3 origin; Vec3 forward; int entity = -1; std::string tag{}; bool noMarks = false; bool marksOnly = false; };
     // World position of an entity tag (lower case), false when the entity or tag is gone.
     bool entityTagPosition(int number, const std::string& tag, Vec3& out);
     // The tag's world position and axis rows (forward, left, up = the bone rotation applied to x, y, z); hasAxes is false for
@@ -1423,6 +1425,8 @@ private:
     // Impact effects (cgame 0x4b9090): impact type (0 bullet_small_normal … 9 grenade_explode, 10 rocket_explode)
     // × surface type (0 default … 22 asphalt) → effect file, "" for none.
     const std::string& impactEffect(int type, int surface);
+    bool effectHasDecal(const std::string& path);
+    std::map<std::string, bool> effectHasDecal_;
     TraceResult missileTrace(const Vec3& from, const Vec3& to, uint32_t clip, int pass, const Vec3& trDelta); // 0x526d6b..0x526df7
     std::vector<std::array<std::string, 23>> impactEffects_;
     void forgetGrenade(Entity& g);

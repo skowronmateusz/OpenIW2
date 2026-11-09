@@ -5,6 +5,7 @@
 #include "game/grenadeangles.h"
 #include "game/itemslide.h"
 #include "game/world.h"
+#include "assets/efx.h"
 
 #include <algorithm>
 #include <cmath>
@@ -825,6 +826,28 @@ const std::string& World::impactEffect(int type, int surface) {
     }
     if (type < 0 || type >= 11 || surface < 0 || surface >= 23) return kNone;
     return impactEffects_[size_t(type)][size_t(surface)];
+}
+
+bool World::effectHasDecal(const std::string& path) {
+    if (path.empty()) return false;
+    const auto known = effectHasDecal_.find(path);
+    if (known != effectHasDecal_.end()) return known->second;
+    bool found = false;
+    if (const auto data = vfs_.read(path)) {
+        try {
+            const auto fx = assets::parseEfx(std::string_view(reinterpret_cast<const char*>(data->data()), data->size()));
+            for (const auto& e : fx.elements) found = found || e.type == "Decal";
+        } catch (const std::exception&) {
+        }
+    }
+    effectHasDecal_[path] = found;
+    return found;
+}
+
+std::string World::rifleMarkFallback(int surface) {
+    if (surface == 7 || effectHasDecal(impactEffect(2, surface)) || effectHasDecal(impactEffect(3, surface))) return {};
+    const std::string& small = impactEffect(0, surface);
+    return effectHasDecal(small) ? small : std::string();
 }
 
 } // namespace iw2::game

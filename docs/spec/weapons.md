@@ -129,6 +129,7 @@ Otherwise the default table 0x1c91328 is used: 19 floats initialised to 1.0 (0x5
 Location order: none, helmet, head, neck, torso_upper, torso_lower, right_arm_upper, left_arm_upper, right_arm_lower,
 left_arm_lower, right_hand, left_hand, right_leg_upper, left_leg_upper, right_leg_lower, left_leg_lower, right_foot,
 left_foot, gun (name table 0x5a9538). OpenIW2 uses the attacker's `$weapon` since damage() has no inflictor argument.
+Deliberate deviation: a rifle with a scope overlay (`weaponClass` rifle, `adsOverlayReticle` set) uses its head multiplier on the helmet location too, because the shipped `locHelmet` of 0.5 lets a helmet stop a full-power rifle round. Shipped scripts still pick the helmet or head death.
 ## Bolt-action brass (exe evidence)
 
 Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): `rechamberTime` +0x208, `rechamberBoltTime` +0x20c (type 7, ms), `boltAction` +0x328.

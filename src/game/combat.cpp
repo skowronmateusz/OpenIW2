@@ -349,6 +349,11 @@ float World::hitLocationMultiplier(const Entity* attacker, const std::string& lo
         if (def) {
             auto type = def->find("weapontype");
             if (type == def->end() || type->second.empty() || lowerStr(type->second) == "bullet") {
+                // Deliberate deviation (docs/spec/weapons.md): a helmet does not stop a scoped rifle's bullet, the head value applies.
+                const auto reticle = def->find("adsoverlayreticle");
+                const auto cls = def->find("weaponclass");
+                const bool scopedRifle = reticle != def->end() && !reticle->second.empty() && lowerStr(reticle->second) != "none" && cls != def->end() && lowerStr(cls->second) == "rifle";
+                if (idx == 1 && scopedRifle) idx = 2;
                 std::string key = "loc";
                 for (const char c : std::string(kLocKeys[idx]))
                     if (c != '_') key += c;
@@ -851,6 +856,8 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
     }
     if (!normalFx.empty()) fxEvents_.push_back({normalFx, at, n});
     if (!reflectFx.empty()) fxEvents_.push_back({reflectFx, at, reflect});
+    if (type == 2)
+        if (const std::string mark = rifleMarkFallback(surface); !mark.empty()) fxEvents_.push_back({mark, at, n, -1, {}, false, true});
     ++stats.bulletImpacts;
 }
 

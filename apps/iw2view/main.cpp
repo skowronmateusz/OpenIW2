@@ -4031,8 +4031,10 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 fxSystem.noImmediateMarks = ev.noMarks;
+                fxSystem.onlyMarks = ev.marksOnly;
                 fxSystem.play(efx(ev.path), ev.origin, ev.forward, fxTime());
                 fxSystem.noImmediateMarks = false;
+                fxSystem.onlyMarks = false;
             }
             for (const auto& te : world->takeTracerEvents())
                 fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, fxTime(), 0);
