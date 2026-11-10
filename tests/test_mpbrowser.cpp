@@ -104,10 +104,11 @@ void testFilter() {
 // A UDP responder on a test port answers getinfo like a server.
 void testFavoritesSource() {
     UdpSocket srv;
-    CHECK(srv.open(0x7f000001, 28987));
+    CHECK(srv.open(0x7f000001, 0)); // ephemeral: parallel test runs must not collide
+    const std::string srvPort = std::to_string(srv.localPort());
     FavoriteList favs;
     CHECK(favs.add("unreachable", "127.0.0.1:28988", 28960) == 1);
-    CHECK(favs.add("mine", "localhost:28987", 28960) == 1);
+    CHECK(favs.add("mine", "localhost:" + srvPort, 28960) == 1);
     LanBrowser b;
     b.setSource(kSourceFavorites);
     b.setFavorites(favs.items());
@@ -157,10 +158,10 @@ void testFavoritesSource() {
 
 void testSort() {
     UdpSocket srv;
-    CHECK(srv.open(0x7f000001, 28989));
+    CHECK(srv.open(0x7f000001, 0));
     LanBrowser b;
     b.setSource(kSourceLocal);
-    CHECK(b.refresh(nowMs(), {NetAddress{0x7f000001, 28989}}));
+    CHECK(b.refresh(nowMs(), {NetAddress{0x7f000001, srv.localPort()}}));
     uint8_t buf[2048];
     NetAddress from;
     int n = 0;
@@ -168,7 +169,7 @@ void testSort() {
     CHECK(n > 0);
     if (n <= 0) return;
     UdpSocket srv2;
-    CHECK(srv2.open(0x7f000001, 28990));
+    CHECK(srv2.open(0x7f000001, 0));
     for (auto [sock, name] : {std::pair{&srv, "bravo"}, std::pair{&srv2, "alpha"}}) {
         const auto pkt = makeOutOfBand(std::string("infoResponse\n\\pure\\1\\hostname\\") + name);
         sock->sendTo(from, pkt.data(), int(pkt.size()));
