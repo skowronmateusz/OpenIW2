@@ -9,7 +9,8 @@
 //     draws himself (the prediction with the error decay) and as B draws him (interpolated between snapshots).
 // Default profiles: "wan" (40-45 ms each way, +-10 ms jitter, 1.5 % loss, 2 % reordered) and "wifiburst" (a LAN peer
 // on Wi-Fi: 2-25 ms each way, +-15 ms jitter, 1 % loss and stretches of 80-180 ms that lose every datagram). A snap
-// above kMaxSnap units fails the test. The server's NETTRACE counters (docs/debug-flags.md) are printed.
+// above kMaxSnap units fails the test. "radio" (a LAN peer whose radio leaves the channel: both directions held for 220 ms
+// out of every 520 ms) also fails when A's command clock stands or leaps in a frame. The server's NETTRACE counters (docs/debug-flags.md) are printed.
 //
 // Environment: IW2_MAIN (required), IW2_LAG_SERVER (the iw2server binary, set by CMake); docs/debug-flags.md lists the
 // IW2_LAG_* options.
@@ -161,6 +162,7 @@ struct Profile {
     double loss, reorder;      // probabilities per datagram
     double blackout = 0;       // per datagram: a stretch of 80-180 ms in this direction loses everything
     bool hold = false;         // the stretch holds the datagrams back instead (a radio that stops sending for a while)
+    int darkPeriodMs = 0, darkMs = 0; // both directions held for darkMs out of every darkPeriodMs (a radio off its channel)
 };
 
 struct Relay {
@@ -222,6 +224,7 @@ struct Relay {
         int64_t& fifo = lastAt[toServer ? 1 : 0][link & 7];
         int64_t at = std::max(now + delay(now), fifo);
         if (prof.hold) at = std::max(at, dark);
+        if (prof.darkPeriodMs > 0 && now % prof.darkPeriodMs < prof.darkMs) at = std::max(at, now - now % prof.darkPeriodMs + prof.darkMs);
         if (uni() < prof.reorder) {
             at += 15 + int(uni() * 20);
             ++reordered;
@@ -346,6 +349,12 @@ struct Stats {
     float walked = 0, lastX = 0;
     bool haveX = false;
     std::vector<float> serverBack;
+    // A as B receives him, snapshot by snapshot (the server's track of A): the distance per snapshot while A walks.
+    std::vector<float> obsStep;
+    int clockHolds = 0, clockLeaps = 0, clockFrames = 0; // A's frames whose command time stood (under half the frame) or leapt (over twice)
+    int64_t clockLastMs = 0;
+    int clockLastCmd = 0;
+    int obsStalls = 0, obsStallRun = 0; // runs of 2 or more snapshots in which A did not move
     float maxOf(const std::vector<float>& v) const { return v.empty() ? 0.0f : *std::max_element(v.begin(), v.end()); }
     int over(const std::vector<float>& v, float lim) const { return int(std::count_if(v.begin(), v.end(), [&](float x) { return x > lim; })); }
 };
@@ -361,6 +370,8 @@ struct Run {
     bool haveSelf = false, haveOther = false;
     game::Vec lastSelf{}, lastOther{};
     Retreat rSelf, rOther, rServer;
+    game::Vec obsLast{};
+    int64_t obsLegOk = -1;
 
     explicit Run(const fs::Vfs& v) : vfs(v) {}
 
@@ -440,6 +451,16 @@ struct Run {
             }
         static const bool bFire = std::getenv("IW2_LAG_BFIRE") != nullptr;
         const uint32_t btn = bFire && gFireOn && i == 1 && (netNow / 150) % 2 ? 1u : 0u;
+        if (i == 0 && measuring) {
+            const int dt = int(netNow - st.clockLastMs), dc = clientTime - st.clockLastCmd;
+            if (st.clockLastMs && dt >= 4 && dt < 60) {
+                ++st.clockFrames;
+                if (dc * 2 < dt && dt - dc > 6) ++st.clockHolds; // a burst of snapshots takes up to 6 ms by the slow rule
+                if (((dc * 2 < dt && dt - dc > 6) || dc > dt * 2 + 4) && std::getenv("IW2_LAG_TRACE")) std::printf("clock t=%lld frame %d ms, command time +%d (delta %d)\n", (long long)netNow, dt, dc, c.gc->timeDelta());
+                if (dc > dt * 2 + 4) ++st.clockLeaps;
+            }
+        }
+        if (i == 0) st.clockLastMs = netNow, st.clockLastCmd = clientTime;
         c.gc->sendCommand(netgame::makeUserCmd(clientTime, btn, fwd, 0, 0, c.yaw, weaponByte), netNow);
         if (!last) return;
         const netgame::PsFields f = netgame::readPs(last->ps);
@@ -493,7 +514,25 @@ struct Run {
             const net::ClientSnapshot *a = nullptr, *b = nullptr;
             float frac = 0;
             if (!c.gc->interpolation(c.gc->renderTime(netNow), a, b, frac)) return;
-            const int aNum = clients[0]->gc->clientNum;
+            const int aNum = netgame::RemoteView::worldSlot(clients[0]->gc->clientNum, c.gc->clientNum);
+            if (newSnap && measuring && now - dirChangeMs > 900 && clients[0]->menuStack.empty())
+                for (const auto& p : netgame::RemoteView::players(*last, *last, 0.0f, c.gc->clientNum, c.gc->configstrings)) {
+                    if (p.client != aNum || p.dead || p.hidden) continue;
+                    const float d = std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]);
+                    if (obsLegOk == dirChangeMs && d < 200.0f) {
+                        st.obsStep.push_back(d);
+                        if (d < 0.5f) {
+                            if (++st.obsStallRun == 2) ++st.obsStalls;
+                        } else {
+                            st.obsStallRun = 0;
+                        }
+                        if (std::getenv("IW2_LAG_TRACE") && (d < 0.5f || d > 20.0f)) std::printf("obs t=%lld snap %d A moved %.1f\n", (long long)(now - gStart), last->serverTime, double(d));
+                    } else {
+                        st.obsStallRun = 0;
+                    }
+                    obsLegOk = dirChangeMs;
+                    obsLast = {p.origin[0], p.origin[1], p.origin[2]};
+                }
             for (const auto& p : netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings)) {
                 if (p.client != aNum || p.dead || p.hidden) continue;
                 const game::Vec o{p.origin[0], p.origin[1], p.origin[2]};
@@ -615,6 +654,15 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
                 prof.name.c_str(), relay.sent, relay.lost, relay.reordered, s.predChecks, double(s.maxOf(s.predErr)), s.over(s.predErr, 1.0f),
                 double(kMaxSnap), s.over(s.predErr, kMaxSnap), double(s.maxOf(s.selfBack)), double(kMaxSnap), s.over(s.selfBack, kMaxSnap),
                 double(s.maxOf(s.otherBack)), double(kMaxSnap), s.over(s.otherBack, kMaxSnap));
+    std::printf("%s: A as B receives him: %zu snapshots, step max %.1f, over 20 units %d, stalls (2+ snapshots without a move) %d\n", prof.name.c_str(),
+                s.obsStep.size(), double(s.maxOf(s.obsStep)), s.over(s.obsStep, 20.0f), s.obsStalls);
+    std::printf("%s: A's command clock: %d frames, stood in %d, leapt in %d\n", prof.name.c_str(), s.clockFrames, s.clockHolds, s.clockLeaps);
+    // A path that is dark at regular times: the clock must settle and run evenly (docs/spec/net.md section 10
+    // "Client time on a bursty path").
+    if (prof.darkPeriodMs > 0 && (s.clockHolds > 0 || s.clockLeaps > 0)) {
+        std::printf("FAIL %s: the command clock stood or leapt\n", prof.name.c_str());
+        ok = false;
+    }
     if (s.predChecks < 50) {
         std::printf("FAIL %s: too few prediction checks\n", prof.name.c_str());
         ok = false;
@@ -640,7 +688,7 @@ int main() {
     vfs.mountDirectory(mainDir);
     gStart = nowMs();
     const double seconds = std::getenv("IW2_LAG_SECONDS") ? std::atof(std::getenv("IW2_LAG_SECONDS")) : 10.0;
-    const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}};
+    const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}, {"radio", 2, 6, 2, 0.0, 0.0, 0.0, false, 520, 220}};
     const char* only = std::getenv("IW2_LAG_PROFILE");
     // IW2_LAG_RELAY=<server port>: only the relay with the profile (default wifiburst), for real clients; prints its port.
     if (const char* rp = std::getenv("IW2_LAG_RELAY")) {
@@ -662,7 +710,7 @@ int main() {
     }
     bool ok = true;
     for (const Profile& p : profiles)
-        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst") ok = runProfile(vfs, mainDir, serverExe, p, seconds) && ok;
+        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst" || p.name == "radio") ok = runProfile(vfs, mainDir, serverExe, p, seconds) && ok;
     std::printf(ok ? "mplag: OK\n" : "mplag: FAILED\n");
     return ok ? 0 : 1;
 }

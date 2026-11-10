@@ -625,6 +625,51 @@ VAs in the patch 1.3 MP executable. The client keeps a server-time estimate for 
 - User commands carry that same clientTime as `serverTime` (never decreasing; equal times are possible), so the server's antilag rewind
   (docs/spec/mp-hud.md "Antilag") puts the other players where this client saw them when it fired.
 
+### Client time on a bursty path
+
+openiw2 (src/net/clientclock.h; no 1.3 counterpart). The rule above assumes snapshots that arrive evenly. Measured on a
+LAN game whose server host was on Wi-Fi: the client got no snapshot for 160 to 320 ms and then 4 to 6 at once, 183
+times in 96 s (about every 520 ms), and its commands reached the server the same way. A ping from the server host to
+its gateway showed the same rhythm (2 to 4 ms, rising to 70 to 200 ms every half second, no loss); what holds the
+packets back on that path was not established. With the plain rule the first snapshot of
+a burst is late by more than 100 ms, so the delta goes half way back and the clock stands until real time has caught
+up (no command runs: the own player stands still, on the client and on the server); a few bursts later the delta is
+more than 100 ms behind and goes half way forward (the player leaps); in between the clock runs past the newest
+snapshot, where the other players are held. In that trace the command time stood in 137 frames of 7536 and leapt 32
+times; the prediction itself was right (three corrections over 2 units, the largest 3.3, apart from two spawns).
+
+Two changes to the rule's input and output, the rule itself as above:
+- Delay window: the rule is given, as the receive time of a snapshot, the time it would have arrived with the largest
+  delay seen in the last 1500 ms of real time (delay = receive time - server time, compared between snapshots), but only
+  while that window holds two separate stretches (200 ms or more apart) of snapshots more than 100 ms later than
+  its least delayed one; 100 ms is the size at which the rule steps. Otherwise (ordinary jitter, one late burst, the
+  first snapshots of a level) the rule gets the snapshot's own receive time and the clock is the plain one: the
+  window would only keep it behind. On a path with regular dark stretches the target stays behind the
+  most delayed snapshots, so the delta is constant, the clock stays before the newest snapshot, and the commands carry
+  evenly spaced times. The price is a command time further behind the server (by the length of the dark stretch),
+  as on a slower path. A reset (over 500 ms) is decided and made with the snapshot's own receive time and empties
+  the window; a difference over 500 ms from the window's target alone is taken as a step without the floor.
+- Late reads: after a gap of more than 100 ms between two socket reads (a long frame of the client) the receive
+  times are the client's own delay. Those snapshots stay out of the window; one that looks more than 100 ms late
+  is not used, the others go through the plain rule. A frame of one second leaves the clock where it was (the plain
+  rule reset it a second back on the oldest waiting snapshot and came forward again on the newer ones).
+- Slew: a half-way step of the delta is not taken at once. The clock runs a quarter slower or faster than real time
+  until the step is made, so a single late burst slows the player for a moment instead of stopping it, and the way
+  back is not a leap. Resets and the 1 or 2 ms of the slow rule apply at once.
+
+`IW2_CLOCK_PLAIN=1` switches both off. Tests: tests/test_net_gameclient.cpp (`burstyClockTests`: 220 ms dark out of
+every 520 ms, the plain rule stands in 24 and leaps in 5 of 750 frames and is past the newest snapshot in 112;
+with the window and the slew none; one dark stretch; a client frame of one second) and tests/test_mplag.cpp
+profile `radio` (the same path between a real server and two clients; fails when the command clock stands or leaps
+in a frame). A real iw2view walking through that relay path for 35 s: plain rule 142 frames stood, 14 leapt, 625
+past the newest snapshot of 4266; with the window and the slew 5, 0 and 14 of 4100 (command time 229 ms behind the
+newest snapshot at the median, 127 ms before).
+
+Not changed by this: the server runs a client's commands when they arrive, so after a dark stretch it runs the
+commands of that stretch in one frame and the other clients see that player stand for the stretch and then move its
+whole distance in one snapshot (measured: no move in 3 or 4 snapshots, then 35 to 55 units, every 500 to 550 ms).
+`TODO(spec)`: whether the 1.3 server spreads such a backlog; nothing in the command loop 0x8091091..0x8091147 does.
+
 ### Frame clock
 
 The cgame reads one time per drawn frame, cg.time (0xf708dc): it lies between the two snapshots it interpolates (0x4a4c10, 0x4a4070).

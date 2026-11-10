@@ -218,6 +218,87 @@ void unitTests() {
     CHECK(out[1].origin[0] == 42);
 }
 
+// The client clock on a path that delivers in bursts (docs/spec/net.md section 10 "Client time on a bursty path"):
+// snapshots every 50 ms of server time, 5 ms on the way, but the path is dark for darkMs out of every periodMs and
+// delivers what it held at the end of the stretch (a radio that leaves its channel). Frames every 16 ms.
+struct ClockRun {
+    int holds = 0, leaps = 0, starved = 0, frames = 0; // frames the clock stood, leapt, lay past the newest snapshot
+    int lagMin = 1 << 30, lagMax = -(1 << 30);          // the newest sent snapshot's time minus the clock
+};
+ClockRun runClock(ClientClock clock, int periodMs, int darkMs, int fromMs, int toMs, int oneDarkAt = -1, int clientStallAt = -1) {
+    ClockRun r;
+    int nextSnap = 0, newest = -1, prevSnap = 0, prevT = 0, prevNow = 0;
+    bool first = true;
+    for (int now = 0; now < toMs; now += 16) {
+        if (clientStallAt >= 0 && now >= clientStallAt && now < clientStallAt + 16) now += 1000; // one frame of a second
+        const bool lateRead = now - prevNow > 100;
+        prevNow = now;
+        for (;; ++nextSnap) {
+            const int sent = nextSnap * 50 + 5; // real time the snapshot of server time 1000 + nextSnap * 50 leaves
+            int at = sent;
+            if (periodMs > 0 && sent % periodMs < darkMs) at = sent - sent % periodMs + darkMs;
+            if (oneDarkAt >= 0 && sent >= oneDarkAt && sent < oneDarkAt + darkMs) at = oneDarkAt + darkMs;
+            if (at > now) break;
+            const int st = 1000 + nextSnap * 50;
+            clock.snapshot(st, prevSnap, first, now, lateRead);
+            first = false;
+            prevSnap = newest = st;
+        }
+        if (newest < 0) continue;
+        const int t = clock.time(now, newest);
+        if (now >= fromMs) {
+            ++r.frames;
+            if (t - prevT < 8) ++r.holds;
+            if (t - prevT > 24) ++r.leaps;
+            if (t > newest) ++r.starved;
+            const int lag = 1000 + (now - 5) / 50 * 50 - t;
+            r.lagMin = std::min(r.lagMin, lag), r.lagMax = std::max(r.lagMax, lag);
+        }
+        prevT = t;
+    }
+    return r;
+}
+
+void burstyClockTests() {
+    // A steady path: both clocks sit one interval + 5 ms behind the newest snapshot and never stand or leap.
+    for (const ClientClock& c : {ClientClock{0, 0}, ClientClock{}}) {
+        const ClockRun r = runClock(c, 0, 0, 3000, 12000);
+        CHECK(r.frames > 500 && r.holds == 0 && r.leaps == 0 && r.starved == 0);
+        CHECK(r.lagMin >= 0 && r.lagMax <= 70);
+    }
+    // Dark for 220 ms out of every 520 ms (the measured case): the plain 1.3 rule stands and leaps with the bursts and
+    // runs past the newest snapshot; the windowed clock settles behind the most delayed snapshots and runs evenly.
+    const ClockRun plain = runClock(ClientClock{0, 0}, 520, 220, 4000, 16000);
+    std::printf("bursty path, plain 1.3 rule: %d frames, %d held, %d leaps, %d past the newest snapshot, lag %d..%d ms\n", plain.frames,
+                plain.holds, plain.leaps, plain.starved, plain.lagMin, plain.lagMax);
+    CHECK(plain.holds + plain.leaps > 10);
+    CHECK(plain.starved > 50);
+    const ClockRun ours = runClock(ClientClock{}, 520, 220, 4000, 16000);
+    std::printf("bursty path, openiw2 clock: %d frames, %d held, %d leaps, %d past the newest snapshot, lag %d..%d ms\n", ours.frames,
+                ours.holds, ours.leaps, ours.starved, ours.lagMin, ours.lagMax);
+    CHECK(ours.frames > 500 && ours.holds == 0 && ours.leaps == 0 && ours.starved == 0);
+    CHECK(ours.lagMax <= 220 + 50 + 70);
+    // One dark stretch of 300 ms on a steady path: the plain rule stands still (the half-way step), ours slows down
+    // and comes back without a frame that stands or leaps.
+    const ClockRun plainOne = runClock(ClientClock{0, 0}, 0, 300, 3000, 12000, 6000);
+    CHECK(plainOne.holds > 0);
+    const ClockRun oursOne = runClock(ClientClock{}, 0, 300, 3000, 12000, 6000);
+    std::printf("one dark stretch: plain %d held / %d leaps, openiw2 %d held / %d leaps, lag at the end of the run within %d..%d\n",
+                plainOne.holds, plainOne.leaps, oursOne.holds, oursOne.leaps, oursOne.lagMin, oursOne.lagMax);
+    CHECK(oursOne.holds == 0 && oursOne.leaps == 0);
+    // Back on the steady path the clock returns to one interval behind (measured over the last 2 s).
+    const ClockRun back = runClock(ClientClock{}, 0, 300, 18000, 20000, 6000);
+    CHECK(back.lagMin >= 0 && back.lagMax <= 75);
+    // A frame of the client that takes a second (bursty path or not): the snapshots it then reads at once are not a
+    // delay of the path. Half a second later the clock is where it was before, not a second behind.
+    const ClockRun stallSteady = runClock(ClientClock{}, 0, 0, 6500, 9000, -1, 5000);
+    CHECK(stallSteady.lagMin >= 0 && stallSteady.lagMax <= 75 && stallSteady.holds == 0 && stallSteady.leaps == 0);
+    const ClockRun stallBursty = runClock(ClientClock{}, 520, 220, 8000, 16000, -1, 5000);
+    std::printf("a client frame of 1 s on the bursty path: %d held, %d leaps, lag %d..%d ms\n", stallBursty.holds, stallBursty.leaps,
+                stallBursty.lagMin, stallBursty.lagMax);
+    CHECK(stallBursty.holds == 0 && stallBursty.leaps == 0 && stallBursty.lagMax <= 220 + 50 + 70);
+}
+
 // The time delta rule of the 1.3 client (docs/spec/net.md section 10 "Client time").
 void timeDeltaTests() {
     int delta = 0, floor = 0;
@@ -365,6 +446,7 @@ void smoothnessTest() {
 int main() {
     unitTests();
     timeDeltaTests();
+    burstyClockTests();
     smoothnessTest();
 
     // Connecting to a port nobody answers gives up after the timeout.

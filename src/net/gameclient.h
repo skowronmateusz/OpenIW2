@@ -14,6 +14,7 @@
 
 #include <utility>
 
+#include "net/clientclock.h"
 #include "net/delta.h"
 #include "net/msg.h"
 #include "net/netchan.h"
@@ -85,8 +86,8 @@ public:
     // the player saw. Marks the clock as extrapolating when it reaches the newest snapshot's time - 5 ms.
     int commandTime(int64_t nowMs) const;
     int renderTime(int64_t nowMs) const { return commandTime(nowMs); }
-    int timeDelta() const { return serverTimeDelta_; }
-    bool extrapolating() const { return extrapolated_; }
+    int timeDelta() const { return clock_.delta(); }
+    bool extrapolating() const { return clock_.extrapolating(); }
     // The time delta rule of the 1.3 client, applied once per received snapshot (docs/spec/net.md section 10):
     // the target delta puts the client time one snapshot interval + 5 ms behind the newest snapshot; a difference
     // over 500 ms resets, over 100 ms averages, otherwise 1 ms per snapshot (2 ms back when extrapolating).
@@ -149,9 +150,9 @@ private:
     std::array<ClientSnapshot, 32> frames_;
     ClientSnapshot latest_, prev_;
     bool haveDelta_ = false;
-    int serverTimeDelta_ = 0;
-    mutable int clientTimeFloor_ = 0;    // the last client time given out: the clock never goes backwards
-    mutable bool extrapolated_ = false;  // the client time reached the newest snapshot (consumed by the next adjust)
+    int64_t lastPollMs_ = 0;
+    bool lateRead_ = false;              // this poll follows a long gap
+    mutable ClientClock clock_;          // the client time (docs/spec/net.md section 10); IW2_CLOCK_PLAIN=1: the plain 1.3 rule
     std::array<UserCmd, 128> cmds_{};  // the last 128 commands (the prediction runs those after the snapshot)
     int cmdNumber_ = 0;  // commands stored so far
     int lastCmdTime_ = 0;

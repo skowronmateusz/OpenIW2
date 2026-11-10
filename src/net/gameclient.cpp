@@ -24,6 +24,7 @@ constexpr int kKeepAliveMs = 50;      // a packet at least every 50 ms once the 
 // "Command redundancy".
 constexpr int kCommandRepeatMs = 200;
 constexpr int kMaxPacketCommands = 32;
+constexpr int kLateReadMs = 100;       // a gap between two socket reads over this: the receive times are the client's own delay
 } // namespace
 
 const char* clientStateName(ClientState s) {
@@ -37,7 +38,10 @@ const char* clientStateName(ClientState s) {
     return "?";
 }
 
-GameClient::GameClient() = default;
+GameClient::GameClient() {
+    // Debug (docs/debug-flags.md): the plain 1.3 time delta rule, without the delay window and the slew.
+    if (std::getenv("IW2_CLOCK_PLAIN")) clock_ = ClientClock{0, 0};
+}
 GameClient::~GameClient() = default;
 
 void GameClient::fail(const std::string& why) {
@@ -89,51 +93,13 @@ int GameClient::commandTime(int64_t nowMs) const {
     // snapshot's time - 5 the clock is extrapolating (the next adjust pulls it back).
     // Before the first snapshot of a level there is no server time yet: the commands carry the floor (0 after a
     // gamestate), as the original client's cleared state does.
-    if (!latest_.valid) return clientTimeFloor_;
-    int t = static_cast<int>(nowMs) + serverTimeDelta_;
-    if (t < clientTimeFloor_) t = clientTimeFloor_;
-    clientTimeFloor_ = t;
-    if (latest_.valid && t >= latest_.serverTime - 5) extrapolated_ = true;
-    return t;
+    if (!latest_.valid) return clock_.floor();
+    return clock_.time(nowMs, latest_.serverTime);
 }
 
 void GameClient::adjustTimeDelta(int& delta, bool& extrapolated, int& clientTimeFloor, int snapTime, int oldSnapTime,
                                  int64_t nowMs) {
-    const int period = snapTime - oldSnapTime;
-    // openiw2: an interval over 500 ms (no valid snapshot for that long: lost or undecodable ones) counts as one
-    // snapshot interval of 50 ms; taken in full, the target fell back by the whole gap and the commands went out that
-    // far behind the level time. TODO(spec): whether the 1.3 parser's previous serverTime also advances on snapshots
-    // it does not keep.
-    const int interval = static_cast<unsigned>(period) <= 500 ? period : 50;
-    const int target = snapTime - static_cast<int>(nowMs) - interval - 5;
-    int diff = target - delta;
-    bool thresholds = true;
-    if (diff > 0) {
-        // Behind the target: the snapshot interval itself is not a drift (a late snapshot moves the target by it).
-        if (static_cast<unsigned>(period) <= 500) {
-            diff -= period;
-            if (diff < 0) thresholds = false;
-        }
-    } else {
-        diff = -diff;
-    }
-    if (thresholds && diff > 500) {  // a new map, a stall: start again from this snapshot
-        delta = target;
-        clientTimeFloor = snapTime;
-        return;
-    }
-    if (thresholds && diff > 100) {  // far off: half way
-        delta = (delta + target) >> 1;
-        return;
-    }
-    if (extrapolated) {  // the clock ran into the newest snapshot: back off
-        extrapolated = false;
-        delta -= 2;
-    } else if (delta < target) {
-        ++delta;
-    } else if (delta > target) {
-        --delta;
-    }
+    ClientClock::adjust(delta, extrapolated, clientTimeFloor, snapTime, oldSnapTime, nowMs);
 }
 
 void GameClient::sendCommand(UserCmd cmd, int64_t nowMs) {
@@ -213,6 +179,9 @@ void GameClient::poll(int64_t nowMs, int waitMs) {
         fail("connection timed out");
         return;
     }
+    // A long frame of the client: what it reads now may have waited in the socket (the clock's delay window).
+    lateRead_ = lastPollMs_ != 0 && nowMs - lastPollMs_ > kLateReadMs;
+    lastPollMs_ = nowMs;
     static uint8_t buf[0x20000 + 16];
     for (int i = 0; i < 4096; ++i) { // bounded: a flood of packets must not keep the caller here
         NetAddress from;
@@ -430,9 +399,7 @@ void GameClient::parseGamestate(Msg& msg) {
     // A new gamestate (connect, map change, map_restart) starts the server's time again: the client clock, the
     // command time and the prediction's command history start again with it. Kept, a command time
     // of the old level held every new command at "previous + 1 ms", so the server ran the player in slow motion.
-    serverTimeDelta_ = 0;
-    clientTimeFloor_ = 0;
-    extrapolated_ = false;
+    clock_.restart();
     lastCmdTime_ = 0;
     levelFirstCmd_ = cmdNumber_;
     latest_ = {};
@@ -504,18 +471,16 @@ void GameClient::parseSnapshot(Msg& msg, int64_t nowMs) {
     haveDelta_ = true;
     // Client clock (docs/spec/net.md section 10 "Client time"): the first snapshot sets the delta, every later one
     // adjusts it towards one snapshot interval + 5 ms behind the newest snapshot.
-    if (snapshots == 1 || !latest_.valid) {
-        serverTimeDelta_ = frame.serverTime - static_cast<int>(nowMs);
-        clientTimeFloor_ = frame.serverTime;
-        extrapolated_ = false;
-    } else {
-        // A reset of the clock (a stall of the server, a round restart that holds the server's frames: the client ran
-        // ahead of the snapshots) sets the client time back to the snapshot. The commands go on from there, as the
-        // original's carry the client time as it is; kept rising from the last command instead, every command of the next
-        // half second went out 1 ms after the previous one and the server ran the player in slow motion.
-        const int floorBefore = clientTimeFloor_;
-        adjustTimeDelta(serverTimeDelta_, extrapolated_, clientTimeFloor_, frame.serverTime, latest_.serverTime, nowMs);
-        if (clientTimeFloor_ < floorBefore && clientTimeFloor_ < lastCmdTime_) lastCmdTime_ = clientTimeFloor_;
+    // A reset of the clock (a stall of the server, a round restart that holds the server's frames: the client ran
+    // ahead of the snapshots) sets the client time back to the snapshot. The commands go on from there, as the
+    // original's carry the client time as it is; kept rising from the last command instead, every command of the next
+    // half second went out 1 ms after the previous one and the server ran the player in slow motion.
+    {
+        const bool first = snapshots == 1 || !latest_.valid;
+        const int floorBefore = clock_.floor();
+        if (clock_.snapshot(frame.serverTime, latest_.serverTime, first, nowMs, lateRead_) && !first && clock_.floor() < floorBefore &&
+            clock_.floor() < lastCmdTime_)
+            lastCmdTime_ = clock_.floor();
     }
 
     if (frame.serverTime > latest_.serverTime || !latest_.valid) {

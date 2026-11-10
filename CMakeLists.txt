@@ -814,6 +814,7 @@ add_library(iw2_net
   src/net/scramble.cpp
   src/net/client.cpp
   src/net/wiredump.cpp
+  src/net/clientclock.cpp
   src/net/gameclient.cpp
   src/net/netfields.cpp
   src/net/playerstate.cpp
