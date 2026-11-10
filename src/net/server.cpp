@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "net/huffman.h"
@@ -411,6 +412,9 @@ void Server::parseMove(int slot, Msg& msg, bool delta) {
     for (const UserCmd& cmd : cmds) {
         if (cmd.serverTime > cmds.back().serverTime) continue;
         if (cmd.serverTime <= c.lastUsercmdTime) {
+            static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
+            if (netTrace && cmd.serverTime < c.lastUsercmdTime - 60 && cmd.serverTime == cmds.back().serverTime)
+                std::printf("NETTRACE stale slot=%d cmd=%d last=%d\n", slot, cmd.serverTime, c.lastUsercmdTime);
             if (!c.clockResetAllowed || c.lastUsercmdTime - cmd.serverTime <= kClockResetMs) continue;
             c.clockResetAllowed = false;
         }

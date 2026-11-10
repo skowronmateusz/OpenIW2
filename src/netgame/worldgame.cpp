@@ -592,6 +592,9 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     // time"); the step to the previous command is clamped to 0 .. 200 ms by usercmdStep.
     net::UserCmd cmd = sent;
     cmd.serverTime = std::clamp(cmd.serverTime, serverTime() - 1000, serverTime() + 200);
+    static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
+    if (netTrace && cmd.serverTime != sent.serverTime)
+        std::printf("NETTRACE clamp slot=%d sent=%d level=%d\n", slot, sent.serverTime, serverTime());
     auto it = mp_.find(slot);
     if (it == mp_.end()) return;
     Move& m = moves_[slot];
@@ -599,6 +602,8 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     if (!e) return;
     const int prevTime = m.lastTime;
     m.lastTime = cmd.serverTime;
+    if (netTrace && prevTime && (cmd.serverTime - prevTime >= 100 || cmd.serverTime <= prevTime))
+        std::printf("NETTRACE step slot=%d %d ms\n", slot, cmd.serverTime - prevTime);
     const int spawns = w_->mpState().clients[size_t(it->second)].spawnCount;
     // Debug: IW2_MP_PLACE=[name=]x,y,z[;...] puts a network client (every one, or the one of that name) at that point
     // once per spawn (docs/debug-flags.md).
@@ -647,6 +652,8 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     if (!m.havePs || m.spawnCount != spawns ||
         std::fabs(o[0] - m.lastOrigin[0]) + std::fabs(o[1] - m.lastOrigin[1]) + std::fabs(o[2] - m.lastOrigin[2]) > 0.01f) {
         // A client spawn clears the player state (stance, view height, lean, aim; docs/spec/mp.md "Client spawn").
+        if (netTrace && m.havePs && m.spawnCount == spawns)
+            std::printf("NETTRACE reset slot=%d moved %.2f %.2f %.2f\n", slot, double(o[0] - m.lastOrigin[0]), double(o[1] - m.lastOrigin[1]), double(o[2] - m.lastOrigin[2]));
         m.spawnCount = spawns;
         m.ps = {};
         m.ps.origin = {o[0], o[1], o[2]};  // placed by the script (spawn): restart movement there

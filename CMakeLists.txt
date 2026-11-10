@@ -1037,6 +1037,16 @@ add_executable(test_clienttime tests/test_clienttime.cpp)
 target_link_libraries(test_clienttime PRIVATE iw2_netgame)
 add_test(NAME clienttime COMMAND test_clienttime)
 # Camera height of a network client around a landing, against the dedicated server.
+# Movement through an impaired network path (tests/test_mplag.cpp): iw2server as a child process, two network clients
+# through an in-process UDP relay with latency, jitter, loss and reordering from a fixed seed; no position snap.
+add_executable(test_mplag tests/test_mplag.cpp)
+target_link_libraries(test_mplag PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mplag COMMAND test_mplag)
+  set_tests_properties(mplag PROPERTIES TIMEOUT 240 ENVIRONMENT
+    "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache;IW2_LAG_SERVER=$<TARGET_FILE:iw2server>")
+endif()
+
 add_executable(test_mplanding tests/test_mplanding.cpp)
 target_link_libraries(test_mplanding PRIVATE iw2_dedicated iw2_netgame)
 add_test(NAME mplanding COMMAND test_mplanding)

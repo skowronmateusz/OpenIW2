@@ -19,7 +19,11 @@ namespace iw2::net {
 namespace {
 constexpr int kResendMs = 3000;       // the handshake resend interval (docs/spec/net.md section 10)
 constexpr int kKeepAliveMs = 50;      // a packet at least every 50 ms once the gamestate is in
-constexpr int kCommandsPerPacket = 4; // the newest commands go out again in the next packets (lost packets)
+// Every packet carries the commands of the last kCommandRepeatMs (at most kMaxPacketCommands, the server's limit): a
+// stretch of lost packets as long as the server's longest step (200 ms) loses no movement. docs/spec/net.md section 10
+// "Command redundancy".
+constexpr int kCommandRepeatMs = 200;
+constexpr int kMaxPacketCommands = 32;
 } // namespace
 
 const char* clientStateName(ClientState s) {
@@ -135,26 +139,28 @@ void GameClient::sendCommand(UserCmd cmd, int64_t nowMs) {
     // held and the server ran the player in slow motion.)
     if (cmd.serverTime < lastCmdTime_) cmd.serverTime = lastCmdTime_;
     lastCmdTime_ = cmd.serverTime;
-    cmds_[static_cast<size_t>(cmdNumber_ & 63)] = cmd;
+    cmds_[static_cast<size_t>(cmdNumber_ & 127)] = cmd;
     ++cmdNumber_;
     std::vector<UserCmd> out;
     // Only this level's commands: one of the old level would set the server's last command time to the old clock.
-    for (int n = std::max(levelFirstCmd_, cmdNumber_ - kCommandsPerPacket); n < cmdNumber_; ++n)
-        out.push_back(cmds_[static_cast<size_t>(n & 63)]);
+    for (int n = std::max(levelFirstCmd_, cmdNumber_ - kMaxPacketCommands); n < cmdNumber_; ++n) {
+        const UserCmd& c = cmds_[static_cast<size_t>(n & 127)];
+        if (n == cmdNumber_ - 1 || c.serverTime >= cmd.serverTime - kCommandRepeatMs) out.push_back(c);
+    }
     transmit(out, nowMs);
 }
 
 std::vector<UserCmd> GameClient::commandsAfter(int time) const {
     std::vector<UserCmd> out;
-    for (int n = std::max(levelFirstCmd_, cmdNumber_ - 64); n < cmdNumber_; ++n) {
-        const UserCmd& c = cmds_[static_cast<size_t>(n & 63)];
+    for (int n = std::max(levelFirstCmd_, cmdNumber_ - 128); n < cmdNumber_; ++n) {
+        const UserCmd& c = cmds_[static_cast<size_t>(n & 127)];
         if (c.serverTime > time) out.push_back(c);
     }
     return out;
 }
 
 const UserCmd* GameClient::lastCommand() const {
-    return cmdNumber_ > levelFirstCmd_ ? &cmds_[static_cast<size_t>((cmdNumber_ - 1) & 63)] : nullptr;
+    return cmdNumber_ > levelFirstCmd_ ? &cmds_[static_cast<size_t>((cmdNumber_ - 1) & 127)] : nullptr;
 }
 
 void GameClient::transmit(const std::vector<UserCmd>& cmds, int64_t nowMs) {

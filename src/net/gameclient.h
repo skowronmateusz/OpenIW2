@@ -151,7 +151,7 @@ private:
     int serverTimeDelta_ = 0;
     mutable int clientTimeFloor_ = 0;    // the last client time given out: the clock never goes backwards
     mutable bool extrapolated_ = false;  // the client time reached the newest snapshot (consumed by the next adjust)
-    std::array<UserCmd, 64> cmds_{};
+    std::array<UserCmd, 128> cmds_{};  // the last 128 commands (the prediction runs those after the snapshot)
     int cmdNumber_ = 0;  // commands stored so far
     int lastCmdTime_ = 0;
     int levelFirstCmd_ = 0; // the first command of the current gamestate (older ones carry the old level's times)

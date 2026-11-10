@@ -265,7 +265,12 @@ text starts with `team `, `score ` or `mr ` (those never count); commands that d
 
 **Ping** (0x80963c8). Non-active client: 999. Otherwise the mean of `ack - sent` over those of the 32 frames with an ack
 time > 0 (cleared to -1 when sent); no such frame → 999; above 999 → 999. The ack time of a frame is stored by every
-user-command packet naming it (0x8091021), so a later packet that repeats the same acknowledgement raises it.
+user-command packet naming it (0x8091021), so a later packet that repeats the same acknowledgement raises it. The stamp
+is the server's frame time (0x8091043 stores the value that the frame loop advances by the frame length at 0x8096dc3),
+not a wall clock; openiw2 stamps the real receive time. A client sending more often than snapshots arrive keeps
+acknowledging the last snapshot until the next one lands, so the ping reads about one snapshot interval above the round
+trip (about 50 ms on loopback at sv_fps 20). TODO(spec): whether the frame-time stamp makes the original read lower
+in practice.
 
 **Source port** (0x8094bf4, 0x80961eb): a packet whose IP and qport match a client but whose source port differs moves
 that client to the new port (and replies go there).
@@ -642,6 +647,23 @@ would make a stamp saw by up to one frame.
 The client does not assume the server's frame length: the time delta rule works on the observed snapshot spacing, snapshots are
 interpolated by their own times, and the search for a re-based trajectory spans the two snapshots of the pair. Its own world
 ticks locally at 50 ms; only the offset above ties it to the server's times.
+
+### Command redundancy
+
+The client builds one user command per frame and sends a packet when its send gate opens (VA 0x408c72..0x408ce8 in the
+patch 1.3 MP executable): to a LAN or loopback server (the address test at 0x467100) at once, otherwise only when
+`1000 / cl_maxpackets` ms have passed since the previous packet. `cl_maxpackets` defaults to 30 (10..100, 0x410c50) and
+`cl_packetdup` to 1 (0..5, 0x410c9b). A packet carries every command made since the packet sent `cl_packetdup + 1`
+packets earlier (0x408fd7: the command number now minus the one recorded with that older outgoing packet), capped at 32
+with a warning. So a lost packet is covered by the next one, but a longer stretch of losses loses commands; the server
+then runs the next command it gets with one step over the gap (at most 200 ms, `usercmdStep`). The client keeps the last
+128 commands.
+
+openiw2: one packet per frame on every address, carrying the commands of the last 200 ms (at most 32, the server's
+limit). At a high frame rate the original's two-packet window covers only a few milliseconds; measured through a relay
+with Wi-Fi-like burst losses (tests/test_mplag.cpp, profile `wifiburst`), commands lost in a burst moved the server's
+player differently from the prediction (corrections up to 29 units, drawn as a snap back); with the 200 ms window the
+largest correction was 3.4 units. The server already skips commands it has run, so the repeats cost only bytes.
 
 ### Server cadence
 
