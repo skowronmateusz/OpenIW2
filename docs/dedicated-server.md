@@ -235,8 +235,15 @@ when a map loads, so they apply from the next map or `map_restart`.
 - Players on the same network see the server in **Join game** of the multiplayer menu; the list refreshes with a LAN
   broadcast. Otherwise add the server under **Favorites** in that screen (a numeric address or a DNS name, the port can be left out
   when it is 28960), or start the client with the address, for example from Terminal
-  `open /Applications/OpenIW2.app --args +connect cod.example.com:28960`; the console command `connect` takes the same form.
+  `/Applications/OpenIW2.app/Contents/MacOS/OpenIW2 <path to main> +connect cod.example.com:28960`; the console
+  command `connect` takes the same form.
   For a password-protected server set the password with the **Password** button of the join screen first; a wrong one shows an error.
 - Start several servers on one computer with different `--port` values.
+- A server computer on two networks at once (for example cable and Wi-Fi) answers from the interface its route to
+  the player goes through. Players must connect to the server's address on that same network: if they use its other
+  address, the server list still shows it, but joining times out, because the answers come from an address the game did
+  not connect to.
+- On Wi-Fi, see "Smooth play over Wi-Fi" in the README: a Mac's AirDrop and Handoff radio pauses make players stand
+  and jump. A server on a cable avoids it.
 - No CD key, no PunkBuster and no master server: the server is never listed on the internet, and nothing is
   reported anywhere.
