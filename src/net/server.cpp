@@ -28,7 +28,9 @@ constexpr int kClcCommand = 2;
 constexpr int kClcEnd = 3;
 } // namespace
 
-Server::Server(ServerGame& game, uint32_t seed) : game_(game), oob_(seed) {}
+Server::Server(ServerGame& game, uint32_t seed) : game_(game), oob_(seed) {
+    if (std::getenv("IW2_CMD_PLAIN")) commandPlayout = false;
+}
 
 bool Server::open(uint16_t port) {
     clients_.clear();
@@ -144,6 +146,7 @@ void Server::newMap(int newServerId) {
         c.deltaMessage = -1;
         c.lastUsercmdTime = 0;
         c.clockResetAllowed = false;
+        c.playout.clear();
         c.currentPs.clear();
         c.lastSnapshotServerTime = -1;
         for (auto& f : c.frames) f = Client::Frame{};
@@ -169,7 +172,9 @@ void Server::poll(int64_t nowMs, int waitMs) {
     // A long frame (a fast restart rebuilds the level, a map load) leaves the server behind its frame schedule.
     bool timeJump = nowMs - nextFrameMs_ > kTimeJumpMs;
     bool framesRan = false;
+    if (timeJump) flushCommands();
     while (nowMs >= nextFrameMs_) {
+        runDueCommands(nextFrameMs_);
         game_.runFrame(frameMs);
         nextFrameMs_ += frameMs;
         framesRan = true;
@@ -181,6 +186,7 @@ void Server::poll(int64_t nowMs, int waitMs) {
     // After such a jump the clients' clocks are reset back (docs/spec/net.md section 10 "Client time"): each client
     // may run one older command within the window (parseMove).
     if (timeJump) {
+        flushCommands();
         for (Client& c : clients_) c.clockResetAllowed = true;
         clockResetUntilMs_ = nowMs + kClockResetWindowMs;
     } else if (clockResetUntilMs_ >= 0 && nowMs >= clockResetUntilMs_) {
@@ -379,7 +385,7 @@ void Server::parseClientMessage(int slot, Msg& msg, int64_t nowMs) {
             }
             if (clientOk) game_.clientCommand(slot, text);
         } else if (op == kClcMoveDelta || op == kClcMoveNoDelta) {
-            parseMove(slot, body, op == kClcMoveDelta);
+            parseMove(slot, body, op == kClcMoveDelta, nowMs);
             if (clients_[static_cast<size_t>(slot)].state == ServerClientState::Free) return;
         } else {
             std::fprintf(stderr, "WARNING: bad command byte %i for client %i\n", op, slot);
@@ -388,7 +394,7 @@ void Server::parseClientMessage(int slot, Msg& msg, int64_t nowMs) {
     }
 }
 
-void Server::parseMove(int slot, Msg& msg, bool delta) {
+void Server::parseMove(int slot, Msg& msg, bool delta, int64_t nowMs) {
     Client& c = clients_[static_cast<size_t>(slot)];
     c.deltaMessage = delta ? c.messageAcknowledge : -1;
     int count = msg.readByte();
@@ -415,6 +421,13 @@ void Server::parseMove(int slot, Msg& msg, bool delta) {
     // "Client time") the client's clock is reset back and its commands fall behind the last one run. The first command
     // more than kClockResetMs older than the last one runs then, once per client and jump; otherwise the 1.3 rule holds,
     // so old commands sent again never run twice.
+    // openiw2: on a bursty path the accepted commands wait for their turn (runDueCommands) instead of running now.
+    bool hold = false;
+    if (commandPlayout) {
+        // A packet read after a pause of the server's own socket reads (a long frame) says nothing about the path.
+        if (lastNowMs_ > 0 && nowMs - lastNowMs_ <= kLateReadMs) c.playout.packet(nowMs, cmds.back().serverTime);
+        hold = c.playout.holding();
+    }
     for (const UserCmd& cmd : cmds) {
         if (cmd.serverTime > cmds.back().serverTime) continue;
         if (cmd.serverTime <= c.lastUsercmdTime) {
@@ -425,7 +438,35 @@ void Server::parseMove(int slot, Msg& msg, bool delta) {
             c.clockResetAllowed = false;
         }
         c.lastUsercmdTime = cmd.serverTime;
-        game_.clientThink(slot, cmd);
+        if (hold) c.playout.push(cmd);
+        else game_.clientThink(slot, cmd);
+    }
+}
+
+void Server::runDueCommands(int64_t frameMs) {
+    static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
+    for (size_t n = 0; n < clients_.size(); ++n) {
+        Client& c = clients_[n];
+        const int i = static_cast<int>(n);
+        if (c.state != ServerClientState::Active) continue;
+        const int before = c.playout.holdMs();
+        for (const UserCmd& cmd : c.playout.due(frameMs)) {
+            if (c.state != ServerClientState::Active) break;  // dropped by one of its own commands
+            game_.clientThink(i, cmd);
+        }
+        if (netTrace && (before == 0) != (c.playout.holdMs() == 0))
+            std::printf("NETTRACE %s slot=%d\n", before == 0 ? "hold" : "release", i);
+    }
+}
+
+void Server::flushCommands() {
+    for (size_t n = 0; n < clients_.size(); ++n) {
+        Client& c = clients_[n];
+        for (const UserCmd& cmd : c.playout.flush()) {
+            if (c.state != ServerClientState::Active) break;
+            game_.clientThink(static_cast<int>(n), cmd);
+        }
+        c.playout.reset();
     }
 }
 

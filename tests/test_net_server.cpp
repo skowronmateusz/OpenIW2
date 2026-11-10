@@ -4,9 +4,13 @@
 // Single-threaded on an in-memory network with an injected clock: the server and the clients advance one millisecond at
 // a time, so every time limit below is exact and the result does not depend on how loaded the machine is.
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <utility>
+#include <vector>
 
 #include "net/client.h"
 #include "net/netfields.h"
@@ -83,7 +87,117 @@ struct StubGame : ServerGame {
 
 } // namespace
 
+// docs/spec/net.md section 10 "Commands on a bursty path": a client sends a command every 8 ms (command time = real
+// time - 60); the path holds everything for darkMs out of every periodMs until `evenFromMs`, then it is even. The
+// server reads its socket every 5 ms and runs a game frame every 50 ms. Per frame: how far the last command run
+// moved on (what the other clients see the player move).
+struct PlayoutRun {
+    int minStep = 1 << 30, maxStep = 0; // per frame, from fromMs on
+    int held = 0, maxHold = 0;          // frames with a hold; the largest hold
+    bool holdingAtEnd = false;
+    size_t waitingAtEnd = 0;
+    int ran = 0, sent = 0;
+};
+PlayoutRun runPlayout(bool playout, int periodMs, int darkMs, int fromMs, int toMs, int evenFromMs = 1 << 30) {
+    PlayoutRun r;
+    CommandPlayout p;
+    std::vector<std::pair<int, int>> path; // (arrival, command time), in order
+    for (int t = 0; t < toMs; t += 8) {
+        int at = t + 2;
+        if (periodMs > 0 && t < evenFromMs && at % periodMs < darkMs) at = at - at % periodMs + darkMs;
+        path.emplace_back(at, t - 60);
+    }
+    r.sent = int(path.size());
+    size_t next = 0;
+    int lastRun = -61, lastAtFrame = -61;
+    auto think = [&](const UserCmd& c) {
+        CHECK(c.serverTime > lastRun); // in order, each once
+        lastRun = c.serverTime;
+        ++r.ran;
+    };
+    for (int now = 0; now < toMs; now += 5) {
+        size_t end = next;
+        while (end < path.size() && path[end].first <= now) ++end;
+        for (; next < end; ++next) { // one packet per command, read in order
+            UserCmd c;
+            c.serverTime = path[next].second;
+            if (playout) p.packet(now, c.serverTime);
+            if (playout && p.holding()) p.push(c);
+            else think(c);
+        }
+        if (now % 50 == 0) {
+            if (playout)
+                for (const UserCmd& c : p.due(now)) think(c);
+            if (now >= fromMs) {
+                r.minStep = std::min(r.minStep, lastRun - lastAtFrame);
+                r.maxStep = std::max(r.maxStep, lastRun - lastAtFrame);
+                if (p.holdMs() > 0) ++r.held;
+                r.maxHold = std::max(r.maxHold, p.holdMs());
+            }
+            lastAtFrame = lastRun;
+        }
+    }
+    r.holdingAtEnd = p.holding();
+    r.waitingAtEnd = p.waiting();
+    for (const UserCmd& c : p.flush()) think(c);
+    return r;
+}
+
+void playoutTests() {
+    // An even path: the commands never wait, with the playout or without.
+    const PlayoutRun even = runPlayout(true, 0, 0, 1000, 8000);
+    CHECK(even.held == 0 && !even.holdingAtEnd && even.ran == even.sent);
+    CHECK(even.minStep >= 40 && even.maxStep <= 60);
+    // 85 ms dark out of every 500 ms: on arrival the player gets nothing in one frame and the backlog in the next;
+    // with the playout every frame moves him by a frame's worth, at the price of a hold of about the dark stretch.
+    const PlayoutRun plain = runPlayout(false, 500, 85, 4000, 16000);
+    const PlayoutRun ours = runPlayout(true, 500, 85, 4000, 16000);
+    std::printf("commands through 85 ms spikes: per frame %d..%d ms on arrival, %d..%d ms with the playout (hold up to %d ms)\n",
+                plain.minStep, plain.maxStep, ours.minStep, ours.maxStep, ours.maxHold);
+    CHECK(plain.minStep <= 16 && plain.maxStep >= 100);
+    CHECK(ours.minStep >= 40 && ours.maxStep <= 60);
+    CHECK(ours.maxHold >= 60 && ours.maxHold <= 100);
+    CHECK(ours.ran == ours.sent && plain.ran == plain.sent);
+    // 220 ms dark out of every 520 ms: the same, the hold near the dark stretch.
+    const PlayoutRun radio = runPlayout(true, 520, 220, 5000, 16000);
+    CHECK(radio.minStep >= 40 && radio.maxStep <= 60 && radio.maxHold <= 250);
+    // The path gets even again: the hold runs down (a tenth of real time: the player a tenth faster, never at once)
+    // and the commands run on arrival again.
+    const PlayoutRun back = runPlayout(true, 500, 85, 8000, 16000, 8000);
+    CHECK(!back.holdingAtEnd && back.waitingAtEnd == 0 && back.ran == back.sent);
+    CHECK(back.minStep >= 40 && back.maxStep <= 66);
+    // The client's clock sliding (its command times fall behind the real time by 60 ms over 2 s, as after the first
+    // snapshot of a level): not a bursty path.
+    {
+        CommandPlayout p;
+        bool held = false;
+        for (int now = 0; now < 6000; now += 5) {
+            if (now % 15 == 0) p.packet(now, now - 60 - (now > 2000 ? std::min((now - 2000) * 60 / 2000, 60) : 0));
+            if (now % 50 == 0) {
+                (void)p.due(now);
+                held = held || p.holding();
+            }
+        }
+        CHECK(!held);
+    }
+    // A queue that only grows (commands far in the future) is cut at maxQueue.
+    {
+        CommandPlayout p;
+        for (int i = 0; i < 4; ++i) p.packet(i * 300, i * 300 - (i % 2 ? 200 : 0)); // two late stretches: bursty
+        CHECK(!p.holding() && p.due(900).empty()); // the window is looked at once per frame
+        CHECK(p.holding());
+        UserCmd c;
+        for (int i = 0; i < 600; ++i) {
+            c.serverTime = 100000 + i;
+            p.push(c);
+        }
+        CHECK(p.due(950).size() == 600 - p.maxQueue);
+        CHECK(p.flush().size() == p.maxQueue && p.waiting() == 0);
+    }
+}
+
 int main() {
+    playoutTests();
     MemoryUdp network;
     StubGame game;
     Server server(game, 7);

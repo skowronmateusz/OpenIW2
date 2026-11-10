@@ -297,6 +297,36 @@ void burstyClockTests() {
     std::printf("a client frame of 1 s on the bursty path: %d held, %d leaps, lag %d..%d ms\n", stallBursty.holds, stallBursty.leaps,
                 stallBursty.lagMin, stallBursty.lagMax);
     CHECK(stallBursty.holds == 0 && stallBursty.leaps == 0 && stallBursty.lagMax <= 220 + 50 + 70);
+    // Spikes below the 100 ms at which the 1.3 rule steps (85 ms dark out of every 500 ms): the plain rule runs past
+    // the newest snapshot with every spike (the other players are held, then moved at once); with the 100 ms limit of
+    // the window the clock did the same. The window's 40 ms limit keeps the clock before the newest snapshot, at most
+    // the spike further behind.
+    const ClockRun plainSpike = runClock(ClientClock{0, 0}, 500, 85, 4000, 16000);
+    ClientClock limit100;
+    limit100.spreadMs = 100;
+    const ClockRun oldSpike = runClock(limit100, 500, 85, 4000, 16000);
+    const ClockRun oursSpike = runClock(ClientClock{}, 500, 85, 4000, 16000);
+    std::printf("spikes of 85 ms: past the newest snapshot in %d frames (plain), %d (100 ms limit), %d (openiw2) of %d; openiw2 %d held / %d leaps, lag %d..%d ms\n",
+                plainSpike.starved, oldSpike.starved, oursSpike.starved, oursSpike.frames, oursSpike.holds, oursSpike.leaps, oursSpike.lagMin, oursSpike.lagMax);
+    CHECK(plainSpike.starved > 20 && oldSpike.starved > 20);
+    CHECK(oursSpike.starved == 0 && oursSpike.holds == 0 && oursSpike.leaps == 0);
+    CHECK(oursSpike.lagMax <= 85 + 50 + 70);
+    // Jitter of a client's own frames (a snapshot is read up to one frame after it arrived) is not a bursty path: the
+    // window stays out and the clock is the plain one, tick for tick.
+    {
+        ClientClock a{0, 0}, b{};
+        bool same = true;
+        int prev = 0;
+        for (int now = 0, n = 0; now < 20000; now += 33) // 30 frames a second
+            for (; n * 50 + 5 <= now; ++n) {
+                const int st = 1000 + n * 50;
+                a.snapshot(st, prev, n == 0, now);
+                b.snapshot(st, prev, n == 0, now);
+                prev = st;
+                same = same && a.time(now, st) == b.time(now, st);
+            }
+        CHECK(same);
+    }
 }
 
 // The time delta rule of the 1.3 client (docs/spec/net.md section 10 "Client time").

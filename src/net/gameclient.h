@@ -153,7 +153,11 @@ private:
     int64_t lastPollMs_ = 0;
     bool lateRead_ = false;              // this poll follows a long gap
     mutable ClientClock clock_;          // the client time (docs/spec/net.md section 10); IW2_CLOCK_PLAIN=1: the plain 1.3 rule
-    std::array<UserCmd, 128> cmds_{};  // the last 128 commands (the prediction runs those after the snapshot)
+    // The last commands (the prediction runs those after the snapshot). The original keeps 128; openiw2 keeps more, so
+    // that a server which holds this client's commands (docs/spec/net.md section 10 "Commands on a bursty path") does
+    // not leave the prediction without the older ones at a high frame rate.
+    static constexpr int kCommandHistory = 512;
+    std::array<UserCmd, kCommandHistory> cmds_{};
     int cmdNumber_ = 0;  // commands stored so far
     int lastCmdTime_ = 0;
     int levelFirstCmd_ = 0; // the first command of the current gamestate (older ones carry the old level's times)

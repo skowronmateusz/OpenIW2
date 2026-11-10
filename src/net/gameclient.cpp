@@ -41,6 +41,7 @@ const char* clientStateName(ClientState s) {
 GameClient::GameClient() {
     // Debug (docs/debug-flags.md): the plain 1.3 time delta rule, without the delay window and the slew.
     if (std::getenv("IW2_CLOCK_PLAIN")) clock_ = ClientClock{0, 0};
+    if (const char* spread = std::getenv("IW2_CLOCK_SPREAD")) clock_.spreadMs = std::atoi(spread); // docs/debug-flags.md
 }
 GameClient::~GameClient() = default;
 
@@ -110,12 +111,12 @@ void GameClient::sendCommand(UserCmd cmd, int64_t nowMs) {
     // held and the server ran the player in slow motion.)
     if (cmd.serverTime < lastCmdTime_) cmd.serverTime = lastCmdTime_;
     lastCmdTime_ = cmd.serverTime;
-    cmds_[static_cast<size_t>(cmdNumber_ & 127)] = cmd;
+    cmds_[static_cast<size_t>(cmdNumber_ & (kCommandHistory - 1))] = cmd;
     ++cmdNumber_;
     std::vector<UserCmd> out;
     // Only this level's commands: one of the old level would set the server's last command time to the old clock.
     for (int n = std::max(levelFirstCmd_, cmdNumber_ - kMaxPacketCommands); n < cmdNumber_; ++n) {
-        const UserCmd& c = cmds_[static_cast<size_t>(n & 127)];
+        const UserCmd& c = cmds_[static_cast<size_t>(n & (kCommandHistory - 1))];
         if (n == cmdNumber_ - 1 || c.serverTime >= cmd.serverTime - kCommandRepeatMs) out.push_back(c);
     }
     transmit(out, nowMs);
@@ -123,15 +124,15 @@ void GameClient::sendCommand(UserCmd cmd, int64_t nowMs) {
 
 std::vector<UserCmd> GameClient::commandsAfter(int time) const {
     std::vector<UserCmd> out;
-    for (int n = std::max(levelFirstCmd_, cmdNumber_ - 128); n < cmdNumber_; ++n) {
-        const UserCmd& c = cmds_[static_cast<size_t>(n & 127)];
+    for (int n = std::max(levelFirstCmd_, cmdNumber_ - kCommandHistory); n < cmdNumber_; ++n) {
+        const UserCmd& c = cmds_[static_cast<size_t>(n & (kCommandHistory - 1))];
         if (c.serverTime > time) out.push_back(c);
     }
     return out;
 }
 
 const UserCmd* GameClient::lastCommand() const {
-    return cmdNumber_ > levelFirstCmd_ ? &cmds_[static_cast<size_t>((cmdNumber_ - 1) & 127)] : nullptr;
+    return cmdNumber_ > levelFirstCmd_ ? &cmds_[static_cast<size_t>((cmdNumber_ - 1) & (kCommandHistory - 1))] : nullptr;
 }
 
 void GameClient::transmit(const std::vector<UserCmd>& cmds, int64_t nowMs) {

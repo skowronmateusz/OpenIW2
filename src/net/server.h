@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "net/commandplayout.h"
 #include "net/delta.h"
 #include "net/netchan.h"
 #include "net/oob.h"
@@ -90,6 +91,9 @@ public:
     bool publicServer = false;   // dedicated 2: a LAN address does not lift the rate
     int maxRate = 0;             // sv_maxRate (0: no cap)
     bool floodProtect = true;    // sv_floodProtect
+    // Commands of a client on a bursty path run on an even schedule (docs/spec/net.md section 10 "Commands on a bursty
+    // path"); false (IW2_CMD_PLAIN=1): every command runs when its packet is read, as in the original.
+    bool commandPlayout = true;
     int checksumFeed = 0;
     int serverId = 0;            // low byte of sv_serverid in configstring 1
     // Snapshot flags: 4 on the first map (observed with the 1.3 server); flipped on every new map as the classic
@@ -118,6 +122,7 @@ public:
         int gamestateMessageNum = -1;
         int lastUsercmdTime = 0;
         bool clockResetAllowed = false;  // a server time jump: one older command may run (parseMove)
+        CommandPlayout playout;          // the commands of a bursty path wait here (docs/spec/net.md section 10)
         std::vector<uint8_t> currentPs;
         struct Frame {
             int messageNum = -1;
@@ -143,7 +148,9 @@ private:
     void handleOutOfBand(const NetAddress& from, const uint8_t* data, int len, int64_t nowMs);
     void handlePacket(const NetAddress& from, uint8_t* data, int len, int64_t nowMs);
     void parseClientMessage(int slot, Msg& msg, int64_t nowMs);
-    void parseMove(int slot, Msg& msg, bool delta);
+    void parseMove(int slot, Msg& msg, bool delta, int64_t nowMs);
+    void runDueCommands(int64_t frameMs);  // the held commands due before the game frame at frameMs
+    void flushCommands();                  // every held command runs now and the holds start again
     int transmit(int slot, Msg& ops);  // returns the sent size (compressed + 4)
     void applyUserinfo(Client& c);
     void updatePing(Client& c);
@@ -163,6 +170,7 @@ private:
     int64_t timeDriftBase_ = INT64_MAX;  // real time minus server time at the last jump (or its lowest since)
     static constexpr int kTimeJumpMs = 500;           // a server behind its frame schedule by more: a time jump
     static constexpr int kClockResetMs = 400;         // a command older than the last one run by more: a clock reset
+    static constexpr int kLateReadMs = 30;            // socket reads further apart: the receive time is the server's own delay
     static constexpr int kClockResetWindowMs = 3000;  // how long after a time jump that command is accepted
 };
 

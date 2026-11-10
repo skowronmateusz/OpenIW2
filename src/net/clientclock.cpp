@@ -52,11 +52,13 @@ bool ClientClock::snapshot(int snapTime, int oldSnapTime, bool first, int64_t no
         pending_ = 0;
         floor_ = snapTime;
         extrapolated_ = false;
-        offsets_.clear();
-        offsets_.emplace_back(nowMs, offset);
+        window_.clear();
+        window_.windowMs = windowMs, window_.spreadMs = spreadMs;
+        window_.add(nowMs, offset);
         return true;
     }
-    while (!offsets_.empty() && offsets_.front().first < nowMs - windowMs) offsets_.pop_front();
+    window_.windowMs = windowMs, window_.spreadMs = spreadMs;
+    window_.expire(nowMs);
     // A snapshot the client itself read late (a long frame; several wait in the socket) says nothing about the path:
     // it stays out of the window, and one that looks more than 100 ms late is not used at all (the older ones of the
     // batch). The others go through the plain rule, steps at once.
@@ -65,7 +67,7 @@ bool ClientClock::snapshot(int snapTime, int oldSnapTime, bool first, int64_t no
         if (offset - (static_cast<unsigned>(period) <= 500 ? period : 50) - 5 < delta_ - 100) return false;
         if (!adjust(delta_, extrapolated_, floor_, snapTime, oldSnapTime, nowMs)) return false;
         pending_ = 0;
-        offsets_.clear();
+        window_.clear();
         return true;
     }
     // A reset is decided and made with this snapshot's own receive time, as the 1.3 rule does: the window is for the
@@ -76,35 +78,25 @@ bool ClientClock::snapshot(int snapTime, int oldSnapTime, bool first, int64_t no
         if (adjust(d, e, f, snapTime, oldSnapTime, nowMs)) {
             delta_ = d, floor_ = f, extrapolated_ = e;
             pending_ = 0;
-            offsets_.clear();
-            offsets_.emplace_back(nowMs, offset);
+            window_.clear();
+            window_.add(nowMs, offset);
             return true;
         }
     }
     // The most delayed snapshot of the window stands for this one: the rule sees the receive time this snapshot would
     // have had with that delay.
-    offsets_.emplace_back(nowMs, offset);
-    // Only for a path that keeps doing it: the window must hold two separate stretches (200 ms or more apart) of
-    // snapshots delayed by more than spreadMs against its least delayed one. Below that size the plain rule runs
-    // evenly by itself (it steps at 100 ms), and a single late burst (or the first snapshots of a level) is left to
-    // the plain rule and the slew: the window would only keep the clock behind for its whole length.
-    int worst = offset, best = offset;
-    for (const auto& o : offsets_) worst = std::min(worst, o.second), best = std::max(best, o.second);
-    int stretches = 0;
-    int64_t lastLate = INT64_MIN / 2;
-    for (const auto& o : offsets_)
-        if (o.second < best - spreadMs) {
-            if (o.first - lastLate >= 200) ++stretches;
-            lastLate = o.first;
-        }
-    if (windowMs <= 0 || stretches < 2) worst = offset;
+    window_.add(nowMs, offset);
+    // Only for a path that keeps doing it (DelayWindow::bursty): ordinary jitter runs evenly with the plain rule, and
+    // a single late burst (or the first snapshots of a level) is left to the plain rule and the slew: the window
+    // would only keep the clock behind for its whole length.
+    const int worst = window_.bursty() ? window_.worst() : offset;
     const int before = delta_;
     int keepFloor = floor_;
     if (adjust(delta_, extrapolated_, keepFloor, snapTime, oldSnapTime, static_cast<int64_t>(snapTime) - worst)) {
         // Over 500 ms from the window's target only (a path that got much better or worse within the window): the
         // delta goes there without the floor of a reset, the clock takes the step as a slew.
-        offsets_.clear();
-        offsets_.emplace_back(nowMs, offset);
+        window_.clear();
+        window_.add(nowMs, offset);
     }
     // A step (the half-way rule) is taken by the clock over time; the 1 or 2 ms of the slow rule at once.
     const int step = delta_ - before;

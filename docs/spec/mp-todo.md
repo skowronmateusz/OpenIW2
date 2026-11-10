@@ -22,8 +22,10 @@ at the source. The convention itself (docs/spec/net.md section 1) is not an entr
   (`docs/spec/net.md:513`, `src/game/mpgame.cpp:485`, `src/netgame/worldgame.cpp:1472`).
 - The exact chat command names on the wire (`docs/spec/net.md:521`).
 - Which dvar the client's time-scale value is (`docs/spec/net.md:539`).
-- The MP cgame's entity placement without a next snapshot (a trajectory evaluation stays at its base)
-  (`docs/spec/net.md:543`).
+- What the client does with `g_synchronousClients` (the prediction is assumed off) (`docs/spec/net.md`, section 10
+  "Commands on a bursty path").
+- Whether the 1.3 antilag positions include the 50 ms lead of a player's entity trajectory (`docs/spec/net.md`,
+  section 11 "Entities").
 - The 1.3 client's state machine during a map load (the exe's client states 5..7) (`docs/spec/net.md:597`).
 - What the table of 256 configstrings at 910 holds (`docs/spec/net.md:622`).
 - What the table of 32 configstrings at 110 holds (`docs/spec/net.md:626`).
@@ -44,7 +46,8 @@ at the source. The convention itself (docs/spec/net.md section 1) is not an entr
 - The give's clip fill (the 1.3 pistol has a loaded clip, openiw2 an empty one) (`docs/spec/net.md:738`).
 - Confirm the +0x1728 placement of non-archived HUD elements with a 1.3 server (`docs/spec/net.md:742`).
 - The 1.3 missile entity type (`docs/spec/net.md:750`).
-- The VAs of the 1.3 trajectory evaluator and the MP cgame's use of it (`docs/spec/net.md:753`).
+- The VA of the 1.3 server's trajectory evaluator and the MP cgame's use of the trajectories of entities other than
+  players (`docs/spec/net.md:753`).
 - The MP cgame's handling of a re-based trajectory at a bounce (the closest-point hold is openiw2's own rule)
   (`docs/spec/net.md:763`).
 - A grenade's new spin at a bounce before its snapshot time (`src/netgame/remoteview.cpp:482`).

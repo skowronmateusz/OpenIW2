@@ -881,11 +881,13 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
                 }
                 putF(es, 212, mv->second.ps.lean);
             }
-    // Velocity for the client's run animation: pos.trDelta (openiw2; the 1.3 server leaves it 0 for players).
+    // The velocity in pos.trDelta, as the 1.3 server's player entity carries it (0x80f56f8; the client's run animation
+    // reads it).
     for (int i = 0; i < 3; ++i) putF(es, 36 + 4 * i, e.velocity[size_t(i)]);
-    // Trajectory and bounds as the 1.3 server sends a player (observed, docs/spec/net.md section 11): pos.trType 3
-    // with trTime = the snapshot time and trDuration 50, apos.trType 1, the packed standing box (x/y 15, down 1, up
-    // 70) in solid, groundEntityNum 1022 (the world) on the ground.
+    // Trajectory and bounds as the 1.3 server sends a player (docs/spec/net.md section 11): pos.trType 3 with
+    // trDuration 50, apos.trType 1, the packed standing box (x/y 15, down 1, up 70) in solid, groundEntityNum 1022 (the
+    // world) on the ground. openiw2: trTime is the snapshot time, not the player's command time, so the trajectory
+    // evaluates to the origin (no 50 ms lead along the velocity).
     putI(es, 12, 3);
     putI(es, 16, serverTime());
     putI(es, 20, 50);

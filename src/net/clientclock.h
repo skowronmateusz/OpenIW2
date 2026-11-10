@@ -3,8 +3,8 @@
 #pragma once
 
 #include <cstdint>
-#include <deque>
-#include <utility>
+
+#include "net/delaywindow.h"
 
 namespace iw2::net {
 
@@ -17,16 +17,21 @@ public:
 
     // openiw2 (both can be switched off for the plain 1.3 rule; IW2_CLOCK_PLAIN=1 does so in the game client):
     // - the rule measures against the most delayed snapshot of the last windowMs of real time, so that a path which
-    //   delivers the snapshots in bursts again and again does not pull the clock back and forth with every burst
-    //   (only while the window holds two stretches of snapshots over spreadMs late: otherwise the plain rule);
+    //   delivers the snapshots in bursts again and again does not pull the clock back and forth with every burst and
+    //   the clock stays before the newest snapshot (only while the window holds two stretches of snapshots over
+    //   spreadMs late: otherwise the plain rule);
     // - a step of the delta other than a reset is spread over time: the clock runs up to 1 / slewDivisor slower or
     //   faster until the step is made, instead of standing still or leaping.
     int windowMs = 1500;
-    int spreadMs = 100; // a snapshot this much later than the window's least delayed one is late (the rule steps at 100 ms)
+    int spreadMs = 40; // a snapshot this much later than the window's least delayed one is late (above a frame's read delay)
     int slewDivisor = 4;
 
     // A gamestate: no server time yet.
-    void restart() { *this = ClientClock{windowMs, slewDivisor}; }
+    void restart() {
+        const int spread = spreadMs;
+        *this = ClientClock{windowMs, slewDivisor};
+        spreadMs = spread;
+    }
     ClientClock() = default;
     ClientClock(int window, int slew) : windowMs(window), slewDivisor(slew) {}
 
@@ -49,7 +54,7 @@ private:
     int slewRest_ = 0;          // real ms not yet turned into slew
     int floor_ = 0;             // the last client time given out
     bool extrapolated_ = false; // the client time reached the newest snapshot (consumed by the next adjust)
-    std::deque<std::pair<int64_t, int>> offsets_; // (real time, snapshot time - real time) of the window
+    DelayWindow window_;        // snapshot time - receive time of the last windowMs
 };
 
 } // namespace iw2::net

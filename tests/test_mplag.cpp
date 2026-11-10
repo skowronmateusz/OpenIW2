@@ -10,7 +10,12 @@
 // Default profiles: "wan" (40-45 ms each way, +-10 ms jitter, 1.5 % loss, 2 % reordered) and "wifiburst" (a LAN peer
 // on Wi-Fi: 2-25 ms each way, +-15 ms jitter, 1 % loss and stretches of 80-180 ms that lose every datagram). A snap
 // above kMaxSnap units fails the test. "radio" (a LAN peer whose radio leaves the channel: both directions held for 220 ms
-// out of every 520 ms) also fails when A's command clock stands or leaps in a frame. The server's NETTRACE counters (docs/debug-flags.md) are printed.
+// out of every 520 ms) also fails when A's command clock stands or leaps in a frame. "spike" (a LAN peer on a radio path
+// with short spikes: both directions held for 85 ms out of every 500 ms, below the 100 ms at which the 1.3 clock rule
+// steps) fails when B draws the walking A held and then moved at once (A walks about one unit per frame here: more than
+// kMaxDrawnJumps frames with a step over kDrawnJump units, or more than one frame in a hundred without a move;
+// IW2_CLOCK_PLAIN=1 and IW2_CMD_PLAIN=1 give the original's behaviour, which fails). The server's NETTRACE
+// counters (docs/debug-flags.md) are printed.
 //
 // Environment: IW2_MAIN (required), IW2_LAG_SERVER (the iw2server binary, set by CMake); docs/debug-flags.md lists the
 // IW2_LAG_* options.
@@ -55,6 +60,8 @@ namespace {
 using namespace iw2;
 
 constexpr float kMaxSnap = 4.0f;
+constexpr float kDrawnJump = 2.5f; // B draws A moved by more than this in one frame of 8 ms (twice the walk)
+constexpr int kMaxDrawnJumps = 3;  // profile spike, per 10 s
 
 int64_t gStart = 0;
 bool gFireOn = false; // IW2_LAG_BFIRE: B fires once the measurement runs
@@ -197,7 +204,7 @@ struct Relay {
     uint16_t addLink() {
         auto l = std::make_unique<Link>();
         l->front.open(0x7f000001, 0);
-        l->back.open(0x7f000001, 0);
+        l->back.open(server.ip == 0x7f000001 ? 0x7f000001 : 0, 0);
         links.push_back(std::move(l));
         return links.back()->front.localPort();
     }
@@ -355,6 +362,10 @@ struct Stats {
     int64_t clockLastMs = 0;
     int clockLastCmd = 0;
     int obsStalls = 0, obsStallRun = 0; // runs of 2 or more snapshots in which A did not move
+    // A as B draws him, frame by frame, while A walks: frames without a move and frames with a step over kDrawnJump.
+    int drawnFrames = 0, drawnStands = 0, drawnJumps = 0;
+    float drawnMax = 0;
+    std::vector<int> drawnLead; // the newest snapshot's time minus B's drawn time
     float maxOf(const std::vector<float>& v) const { return v.empty() ? 0.0f : *std::max_element(v.begin(), v.end()); }
     int over(const std::vector<float>& v, float lim) const { return int(std::count_if(v.begin(), v.end(), [&](float x) { return x > lim; })); }
 };
@@ -370,6 +381,7 @@ struct Run {
     bool haveSelf = false, haveOther = false;
     game::Vec lastSelf{}, lastOther{};
     Retreat rSelf, rOther, rServer;
+    int64_t drawnLastMs = 0;
     game::Vec obsLast{};
     int64_t obsLegOk = -1;
 
@@ -540,7 +552,21 @@ struct Run {
                 if (haveOther && measuring && now - dirChangeMs > 900) {
                     const float back = rOther.add(o[0] * walkDir, dirChangeMs);
                     if (back > 0.01f) st.otherBack.push_back(back);
+                    // Frame to frame (frames of a usual length only; A must be walking: no menu, not just turned, not blocked).
+                    const int dt = int(now - drawnLastMs);
+                    // The server has A moving (his velocity in the newest snapshot): not against a wall.
+                    const bool moving = std::hypot(p.velocity[0], p.velocity[1]) > 40.0f;
+                    if (clients[0]->menuStack.empty() && dt >= 4 && dt < 13 && moving) {
+                        const float step = std::hypot(o[0] - lastOther[0], o[1] - lastOther[1]);
+                        ++st.drawnFrames;
+                        if (step < 0.05f) ++st.drawnStands;
+                        if (step > kDrawnJump && step < 200.0f) ++st.drawnJumps;
+                        if (step < 200.0f) st.drawnMax = std::max(st.drawnMax, step);
+                        st.drawnLead.push_back(last->serverTime - c.gc->renderTime(netNow));
+                        if (std::getenv("IW2_LAG_TRACE") && step > kDrawnJump) std::printf("drawn t=%lld A moved %.1f in a frame of %d ms\n", (long long)netNow, double(step), dt);
+                    }
                 }
+                drawnLastMs = now;
                 lastOther = o;
                 haveOther = true;
             }
@@ -657,6 +683,20 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     std::printf("%s: A as B receives him: %zu snapshots, step max %.1f, over 20 units %d, stalls (2+ snapshots without a move) %d\n", prof.name.c_str(),
                 s.obsStep.size(), double(s.maxOf(s.obsStep)), s.over(s.obsStep, 20.0f), s.obsStalls);
     std::printf("%s: A's command clock: %d frames, stood in %d, leapt in %d\n", prof.name.c_str(), s.clockFrames, s.clockHolds, s.clockLeaps);
+    {
+        std::vector<int> lead = s.drawnLead;
+        std::sort(lead.begin(), lead.end());
+        std::printf("%s: A as B draws him: %d frames, without a move %d, step over %.1f units %d (max %.1f); drawn time %d ms before the newest snapshot (median)\n",
+                    prof.name.c_str(), s.drawnFrames, s.drawnStands, double(kDrawnJump), s.drawnJumps, double(s.drawnMax), lead.empty() ? 0 : lead[lead.size() / 2]);
+    }
+    if (prof.name == "spike" && s.drawnFrames < int(150 * seconds / 10.0)) {
+        std::printf("FAIL %s: too few frames in which B draws the walking A\n", prof.name.c_str());
+        ok = false;
+    }
+    if (prof.name == "spike" && (s.drawnJumps > int(kMaxDrawnJumps * seconds / 10.0) || s.drawnStands * 100 > s.drawnFrames)) {
+        std::printf("FAIL %s: B draws A held and then moved at once\n", prof.name.c_str());
+        ok = false;
+    }
     // A path that is dark at regular times: the clock must settle and run evenly (docs/spec/net.md section 10
     // "Client time on a bursty path").
     if (prof.darkPeriodMs > 0 && (s.clockHolds > 0 || s.clockLeaps > 0)) {
@@ -688,14 +728,18 @@ int main() {
     vfs.mountDirectory(mainDir);
     gStart = nowMs();
     const double seconds = std::getenv("IW2_LAG_SECONDS") ? std::atof(std::getenv("IW2_LAG_SECONDS")) : 10.0;
-    const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}, {"radio", 2, 6, 2, 0.0, 0.0, 0.0, false, 520, 220}};
+    const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}, {"radio", 2, 6, 2, 0.0, 0.0, 0.0, false, 520, 220}, {"spike", 2, 4, 2, 0.0, 0.0, 0.0, false, 500, 85}};
     const char* only = std::getenv("IW2_LAG_PROFILE");
-    // IW2_LAG_RELAY=<server port>: only the relay with the profile (default wifiburst), for real clients; prints its port.
+    // IW2_LAG_RELAY=[<server address>:]<server port>: only the relay with the profile (default wifiburst), for real
+    // clients (they connect to 127.0.0.1 and the printed port); the server is local unless an address is given.
     if (const char* rp = std::getenv("IW2_LAG_RELAY")) {
         const std::string want = only ? only : "wifiburst";
         for (const Profile& p : profiles)
             if (p.name == want) {
-                Relay relay(p, 12345u, uint16_t(std::atoi(rp)));
+                net::NetAddress target;
+                const bool remote = std::strchr(rp, ':') != nullptr && net::NetAddress::parse(rp, target, 28960);
+                Relay relay(p, 12345u, uint16_t(remote ? target.port : std::atoi(rp)));
+                if (remote) relay.server = target;
                 std::printf("relay %s port %u\n", p.name.c_str(), unsigned(relay.addLink()));
                 std::fflush(stdout);
                 const int64_t end = nowMs() + int64_t(seconds * 1000);
@@ -710,7 +754,7 @@ int main() {
     }
     bool ok = true;
     for (const Profile& p : profiles)
-        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst" || p.name == "radio") ok = runProfile(vfs, mainDir, serverExe, p, seconds) && ok;
+        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst" || p.name == "radio" || p.name == "spike") ok = runProfile(vfs, mainDir, serverExe, p, seconds) && ok;
     std::printf(ok ? "mplag: OK\n" : "mplag: FAILED\n");
     return ok ? 0 : 1;
 }
