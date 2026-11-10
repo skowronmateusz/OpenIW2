@@ -9693,7 +9693,7 @@ int main(int argc, char** argv) {
                               pweapon.stock(), int(pweapon.offhandActive()), int(pweapon.cooking()), pweapon.fuseMs() > 0 ? 1 : 0, int(pweapon.adsHeld()),
                               unsigned(buttons), int(controlsBlocked));
                 if (lastWt != line) {
-                    std::printf("weapontrace rt=%llu t=%lld %s\n", (unsigned long long)(SDL_GetTicksNS() / 1000000), (long long)(world ? world->timeMs() : -1), line);
+                    std::printf("weapontrace rt=%llu t=%lld %s\n", (unsigned long long)(SDL_GetTicksNS() / 1000000), (long long)(world ? world->timeMs() : -1), line); // [server time]
                     lastWt = line;
                 }
             }
