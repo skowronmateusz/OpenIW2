@@ -674,8 +674,9 @@ A second table follows at 0x570800 with `threatbias` (0x8, int), `node` (0x2c, r
 
 Sentient fields: `threatbias` and `ignoreme` are native fields of the sentient, so a read always gives an integer, on
 every sentient including the player's (the client spawn 0x4e9010 links the player's sentient, gentity +0x104), and never
-undefined. Here both start at 0. TODO(spec): the sentient allocation's clear and any spawn-time store were not read; 0 is
-the value a zero-filled struct gives. Scripts save and restore them (decoytown.gsc:2055-2087 stores the player's and two
+undefined. Both start at 0: the sentient allocation 0x514ce0 (33 slots of 0x44 bytes from the array at 0x1c60518, in-use byte
++0x3e, "Sentient allocation failed" when none is free) zeroes the slot; the actor spawn 0x4fc640 then stores the entity, team 3
+and threatbias 0 (+8) explicitly, and the client begin 0x4e8f40 the entity and team 2 (allies). Neither writes +0xc. Scripts save and restore them (decoytown.gsc:2055-2087 stores the player's and two
 actors' `threatbias` in script variables and asserts the copies exist before writing them back; an undefined read of an ally's
 field failed the assert at decoytown.gsc:2079 when the player left the roof), so a read must give an integer.
 
