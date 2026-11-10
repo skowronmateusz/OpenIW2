@@ -193,15 +193,19 @@ public:
                     fail("unknown directive #" + d.text);
                 }
             } else if (isPunct("/#") || isPunct("#/")) {
-                next(); // stray developer markers at file scope
+                devRegion_ = isPunct("/#"); // functions between the markers exist only with developer_script
+                next();
             } else {
-                f->add(function());
+                auto fn = function();
+                fn->devOnly = devRegion_;
+                f->add(std::move(fn));
             }
         }
         return f;
     }
 
 private:
+    bool devRegion_ = false;
     // --- token helpers
     const Token& peek(size_t k = 0) const { return t_[std::min(p_ + k, t_.size() - 1)]; }
     Token next() { return t_[std::min(p_++, t_.size() - 1)]; }

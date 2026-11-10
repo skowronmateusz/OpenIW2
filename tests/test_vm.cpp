@@ -26,8 +26,10 @@ struct Harness {
         if (it == files.end()) return std::nullopt;
         return it->second;
     }};
+    bool developerScript = true; // the other cases print with println, so they compile with developer_script on
     Harness() {
         vm.print = [this](const std::string& s) { out.push_back(s); };
+        vm.setDeveloperScript([this] { return developerScript; });
     }
     std::string joined() const {
         std::string s;
@@ -538,6 +540,101 @@ firstonly()
         OriginWatch::depth[3] = 0;
         OriginWatch::object[3] = nullptr;
         OriginWatch::enabled = false;
+    }
+
+    {
+        // developer_script 0 (the retail default): developer-only built-ins outside a /# #/ block, and the block itself, compile to
+        // nothing. println prints nothing, a failing assert / assertex / assertmsg does not end the thread, arguments are not run.
+        Harness h;
+        h.developerScript = false;
+        h.files["test/dev.gsc"] = R"(
+main()
+{
+    level.hits = 0;
+    println("hidden");
+    assert(false);
+    assertex(false, "msg");
+    assertmsg("never");
+    println(count());
+    /# println("in block"); assert(false); #/
+    if (level.hits == 0)
+        assert(false);
+    iprintln("shown");
+    level.reached = 1;
+}
+count()
+{
+    level.hits++;
+    return 1;
+}
+)";
+        h.vm.start("test/dev", "main");
+        h.vm.runFrame(0);
+        CHECK(h.joined() == "shown|");
+        CHECK(h.vm.level()->get("reached").asInt() == 1);
+        CHECK(h.vm.level()->get("hits").asInt() == 0); // the argument of the skipped println never ran
+    }
+    {
+        // developer_script 1: everything runs; a failed assert ends the thread with an error.
+        Harness h;
+        h.files["test/dev.gsc"] = R"(
+main()
+{
+    println("printed");
+    /# println("in block"); #/
+    level.before = 1;
+    assert(false);
+    level.after = 1;
+}
+)";
+        h.vm.start("test/dev", "main");
+        h.vm.runFrame(0);
+        CHECK(h.joined().find("printed|in block|") == 0);
+        CHECK(h.vm.level()->get("before").asInt() == 1);
+        CHECK(!h.vm.level()->get("after").isDefined());
+        CHECK(h.vm.errors().size() == 1);
+    }
+    for (const bool dev : {false, true}) {
+        // A function between a file-scope /# and #/ exists only with developer_script (its body may use developer-only values).
+        Harness h;
+        h.developerScript = dev;
+        h.vm.registerBuiltin("getdebugcvarint", [](iw2::script::CallContext&) { return iw2::script::Value(int32_t(3)); });
+        h.files["test/devfn.gsc"] = R"(
+main()
+{
+    /# level.value = dbg(); #/
+    level.done = 1;
+}
+/#
+dbg()
+{
+    return getdebugcvarint("x") + 1;
+}
+#/
+)";
+        h.vm.start("test/devfn", "main");
+        h.vm.runFrame(0);
+        CHECK(h.vm.level()->get("done").asInt() == 1);
+        CHECK(h.vm.findFunction("test/devfn", "dbg").has_value() == dev);
+        CHECK(h.vm.level()->get("value").isDefined() == dev);
+        if (dev) CHECK(h.vm.level()->get("value").asInt() == 4);
+    }
+    {
+        // A developer-only call used for its value outside a block (the original rejects the file; openiw2 gives undefined, see vm.cpp).
+        Harness h;
+        h.developerScript = false;
+        h.vm.registerBuiltin("getdebugcvar", [](iw2::script::CallContext&) { return iw2::script::Value(std::string("x")); });
+        h.files["test/devval.gsc"] = R"(
+main()
+{
+    level.x = getdebugcvar("a");
+    level.done = 1;
+}
+)";
+        h.vm.start("test/devval", "main");
+        h.vm.runFrame(0);
+        CHECK(h.vm.level()->get("done").asInt() == 1);
+        CHECK(!h.vm.level()->get("x").isDefined());
     }
 
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }

@@ -607,8 +607,8 @@ void World::loadState(StateReader& r) {
             for (auto& ch : l) ch = char(std::tolower(static_cast<unsigned char>(ch)));
             // sv_cheats belongs to the running session (command line / devmap), not to the save: its register calls (0x433190, 0x4d8c04)
             // carry flags 0x1018 / 0x1000, without bit 0x400.
-            // ai_corpseCount (flags 0x1003) and ui_autoContinue: outside the 0x400 set.
-            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile" || l == "sv_cheats" || l == "ai_corpsecount" ||
+            // ai_corpseCount (flags 0x1003) and ui_autoContinue: outside the 0x400 set; developer / developer_script (flags 0x1000).
+            return l.rfind("mis_", 0) == 0 || l == "sv_lastsavegame" || l == "com_playerprofile" || l == "sv_cheats" || l == "ai_corpsecount" || l == "developer" || l == "developer_script" ||
                    l == "ui_autocontinue"; // flags 0x1000 (0x4c32c4)
         };
         std::map<std::string, std::string, CvarNameLess> live;

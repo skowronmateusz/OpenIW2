@@ -101,6 +101,26 @@ described in the code that reads them.
 | `IW2_SHOT_MP_KILL=t:victim:attacker[:mod],...` | iw2view `--shot` (MP) | At sim time t damages client `victim` by 1000 from client `attacker` (-1 the world) through the MP damage path, default `MOD_RIFLE_BULLET` (kill feed and centre print shots, docs/spec/mp-hud.md). |
 | `IW2_SHOT_MP_THROW=t:client[:weapon[:view]],...` | iw2view `--shot` (MP) | At sim time t client `client` throws a grenade (default `frag_grenade_german_mp`, an empty weapon too) from its eye toward the local client (`view`: along its own facing), pitch -25 (killcam grenade shots, docs/spec/mp-hud.md). |
 
+## Developer mode (`developer`, `developer_script`)
+
+The original gates its developer-only script code on two dvars, both default 0 (docs/spec/gsc.md "Developer-only built-ins"). openiw2
+registers them with the original defaults, so a normal run behaves like the retail game: `println`, `print`, `print3d`, `line` do
+nothing, `assert` / `assertex` / `assertmsg` never fail (so a script assert can no longer end a thread), and the `/# ... #/` blocks
+of the shipped scripts are not compiled.
+
+| Switch | Effect |
+|---|---|
+| `--cvar developer_script=1` | The scripts' developer code is compiled and runs: `println` prints (as `[script] ...`), a failing assert ends the failing thread and is reported as a script runtime error, `/# #/` blocks and the functions between a file-scope `/#` and `#/` exist. It is read whenever a script file is compiled, so it has to be set before the level starts (every tool applies `--cvar` before that). |
+| `--cvar developer=1` | The original's integer dvar (0..2). openiw2 stores it (no script reads it); the sweep sets it together with developer_script. |
+
+Headless tools: `tools/script_sweep.sh` runs every iw2game with `--cvar developer=1 --cvar developer_script=1` by default
+(`--retail` or `IW2_SWEEP_DEV=0` for the retail defaults), because the sweep and `--autoplay` exist to find script errors and the
+shipped asserts are the sharpest detector of a broken contract (a failing assert shows up as a runtime error in the report; the
+`--smoke` subset passes in both modes). A finding that only appears with developer on is a script contract the original never
+checks, so it is not by itself a game bug. `iw2game` and `iw2view` themselves default to retail (developer 0). `iw2script <main>
+compile --dev` compiles the shipped scripts with developer_script on. The ctest suites run at the retail defaults except test_vm
+and test_savestate, whose scripts print with `println` and set developer_script on in the harness.
+
 ## Command-line options
 - iw2view: `--menu` (front end without a level), `--cvar name=value`, `--ride F,R` / `--ride-after S` / `--ride-fire`
   (drive/fire a vehicle headlessly), `--follow-vehicle N`, `--follow-dist`, `--follow-yaw`, `--follow-pitch`,

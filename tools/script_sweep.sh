@@ -7,6 +7,7 @@
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --reload --maps "a b" [--seconds 600]  (reload every autosave, compare with the unbroken run)
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --carry [--maps "a b"] [--seconds 200]    (autoplay each map, end it with the mission-complete call, then start the next map with the carried player and compare the inventory)
 #   IW2_MAIN=<main dir> tools/script_sweep.sh --make-firerate-baseline --out DIR      (print tools/firerate-baseline.txt lines from the autoplay reports in DIR)
+#   --retail runs with the game's defaults (developer 0) instead of developer mode; --dev forces developer mode (the default, see below).
 #   --full also writes the fire-rate flags (AI shots per combat minute, silent shooters) and the inventory checks of the maps whose autoplay run ended in a
 #   persistent level change into summary.md; see docs/debug-flags.md "Fire rate" and "Inventory across level changes".
 #
@@ -17,6 +18,11 @@
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 bin="$here/build/iw2game"
+# Developer mode for every run (--cvar developer=1 --cvar developer_script=1): the shipped asserts, println and /# #/ blocks run, so a
+# broken script contract shows up as a runtime error. The retail default (developer 0) skips them, see docs/debug-flags.md.
+# `--retail` (or IW2_SWEEP_DEV=0) runs with the game's defaults instead.
+dev_opts="--cvar developer=1 --cvar developer_script=1"
+[ "${IW2_SWEEP_DEV:-1}" = "0" ] && dev_opts=""
 mode=""
 seeds="1"
 seconds=900
@@ -36,6 +42,8 @@ while [ $# -gt 0 ]; do
     --out) out="$2"; shift ;;
     --maps) maps="$2"; shift ;;
     --force) force="--autoplay-force" ;;
+    --retail) dev_opts="" ;;
+    --dev) dev_opts="--cvar developer=1 --cvar developer_script=1" ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
     esac
     shift
@@ -72,7 +80,7 @@ run() {
     local base="$out/$map-s$seed-$tag"
     # Autoplay runs keep the player state a persistent level change would hand over (checked by carry_checks).
     [ "$tag" = auto ] && set -- "$@" --carry-out "$base.carry"
-    IW2_SCRIPT_SEED=$seed "$bin" "$IW2_MAIN" "$map" "$secs" --god --answer-menus "$answers" --report "$base.txt" $targets_opt "$@" > "$base.log" 2>&1
+    IW2_SCRIPT_SEED=$seed "$bin" "$IW2_MAIN" "$map" "$secs" --god --answer-menus "$answers" --report "$base.txt" $dev_opts $targets_opt "$@" > "$base.log" 2>&1
     local rc=$?
     [ $rc -eq 0 ] || echo "exit $rc" >> "$base.txt"
     return $rc

@@ -23,7 +23,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "usage: iw2script <main-dir> check | dump <path.gsc>\n";
+        std::cerr << "usage: iw2script <main-dir> check | dump <path.gsc> | compile [--dev] | builtins\n";
         return 2;
     }
     try {
@@ -45,6 +45,8 @@ int main(int argc, char** argv) {
                 if (!d) return std::nullopt;
                 return std::string(d->begin(), d->end());
             });
+            const bool dev = argc > 3 && std::string(argv[3]) == "--dev"; // developer_script on: compile /# #/ blocks and developer-only calls
+            vm.setDeveloperScript([dev] { return dev; });
             int ok = 0, failed = 0;
             for (const auto& name : vfs.list()) {
                 if (name.size() < 4 || name.substr(name.size() - 4) != ".gsc") continue;

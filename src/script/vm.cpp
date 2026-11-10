@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace iw2::script {
 namespace {
@@ -62,6 +63,7 @@ public:
         cf.name = lower(fn.text);
         cf.file = file_;
         f_ = &cf;
+        inDev_ = fn.devOnly ? 1 : 0;
         locals_.clear();
         for (const auto& p : fn.children[0]->children) slot(p->text);
         cf.paramCount = int(locals_.size());
@@ -104,6 +106,11 @@ private:
             for (const auto& c : n.children) statement(*c);
             break;
         case NodeKind::DevBlock: // compiled only with developer_script, a bool dvar defaulting to 0 (0x42df9d; lexer 0x457820)
+            if (vm_.developerScript()) {
+                ++inDev_;
+                for (const auto& c : n.children) statement(*c);
+                --inDev_;
+            }
             break;
         case NodeKind::Empty:
         case NodeKind::Breakpoint:
@@ -375,6 +382,32 @@ private:
         const size_t argc = n.children.size() - argBegin;
         const std::string name = n.isPointerCall ? std::string() : lower(n.children[1]->text);
 
+        bool implicitDev = false;
+        // A call of a developer-only built-in outside a /# #/ block is compiled as if it stood in one (0x457810 opens an implicit
+        // block at the name): with developer_script off the whole statement is dropped. Its value cannot be used there (0x457acd).
+        if (!n.isPointerCall && !inDev_ && VM::isDeveloperBuiltin(name)) {
+            bool builtin = false;
+            vm_.resolve(file_, n.children[1]->text, &builtin);
+            if (builtin) {
+                // The original rejects a used return value here (0x457acd, "return value of developer command can not be accessed if not
+                // in a /# ... #/ comment"); openiw2 is lenient: with developer_script off the value is undefined. Needed because the
+                // parser accepts a missing ';' at a line end, so animscripts/traverse/stairs_down.gsc:15 reads `assert(...)` as a method
+                // call on the previous expression's value; that file must keep loading.
+                if (!vm_.developerScript()) {
+                    if (!discard) emit(Op::PushUndef, 0, 0, n.line);
+                    return;
+                }
+                // Compiled: the implicit block spans the object and the arguments, which may call developer-only built-ins for their value.
+                ++inDev_;
+                implicitDev = true;
+            }
+        }
+        struct DevGuard {
+            int& depth;
+            bool on;
+            ~DevGuard() { if (on) --depth; }
+        } devGuard{inDev_, implicitDev};
+
         // Event primitives compile to dedicated instructions.
         if (!n.isPointerCall && method && !n.isThread &&
             (name == "notify" || name == "waittill" || name == "waittillmatch" || name == "endon")) {
@@ -427,6 +460,7 @@ private:
     VM& vm_;
     std::string file_;
     CompiledFunction* f_ = nullptr;
+    int inDev_ = 0; // inside a compiled /# #/ block
     std::unordered_map<std::string, int> locals_;
     std::vector<std::vector<size_t>> breaks_, continues_;
 };
@@ -488,6 +522,15 @@ VM::VM(SourceLoader loader) : loader_(std::move(loader)) {
     });
 }
 
+// The developer-only rows of the built-in tables (SP function table 0x5a5c08, method table in docs/spec/builtins.md; the MP function
+// table at 0x8187040 has the same flag on print, println, print3d, line, assert, assertex, assertmsg and getentbynum).
+bool VM::isDeveloperBuiltin(const std::string& n) {
+    static const std::unordered_set<std::string> names = {"print", "println", "print3d", "line", "assert", "assertex", "assertmsg",
+                                                          "getdebugcvar", "getdebugcvarint", "getdebugcvarfloat", "getentbynum",
+                                                          "setdebugorigin", "setdebugangles", "getdebugeye", "getentnum"};
+    return names.count(n) != 0;
+}
+
 ObjectPtr VM::newObject(std::string kind) {
     auto o = std::make_shared<Object>();
     o->kind = std::move(kind);
@@ -539,9 +582,11 @@ void VM::loadFile(const std::string& path) {
 
     File& file = files_[key];
     file.path = key;
-    // Declare functions first so calls within the file resolve.
+    // Declare functions first so calls within the file resolve. Functions inside a file-scope /# #/ exist only with developer_script.
+    const bool dev = developerScript();
     for (const auto& c : tree->children) {
         if (c->kind == NodeKind::Function) {
+            if (c->devOnly && !dev) continue;
             const std::string fname = lower(c->text);
             if (!file.functions.count(fname)) {
                 file.functions[fname] = int(functions_.size());
@@ -562,7 +607,7 @@ void VM::loadFile(const std::string& path) {
     files_[key].animtree.clear();
     for (const auto& c : tree->children) {
         if (c->kind == NodeKind::UsingAnimtree) files_[key].animtree = c->text;
-        if (c->kind != NodeKind::Function) continue;
+        if (c->kind != NodeKind::Function || (c->devOnly && !dev)) continue;
         Compiler comp(*this, key);
         try {
             comp.function(*c);

@@ -118,6 +118,15 @@ public:
     void loadFile(const std::string& path);
 
     void registerBuiltin(const std::string& name, Builtin fn);
+
+    // The developer_script switch (a bool dvar, default 0; docs/spec/gsc.md "Developer-only built-ins"). It is read when a script
+    // file is compiled: with it off a `/# ... #/` block and every statement that calls a developer-only built-in (println, assert,
+    // assertex, assertmsg, print, print3d, line, getdebugcvar*, ...) outside such a block compile to nothing, so the call and its
+    // arguments never run; with it on they are compiled and run. Files compiled before a change keep what they got. The source is
+    // asked at each compile, so the owner can set the dvar after constructing the VM and before the first script starts.
+    void setDeveloperScript(std::function<bool()> source) { developerScript_ = std::move(source); }
+    bool developerScript() const { return developerScript_ && developerScript_(); }
+    static bool isDeveloperBuiltin(const std::string& lowerName);
     bool hasBuiltin(const std::string& name) const;
     // The registered built-in (an empty function when there is none), so a mode can wrap it.
     Builtin builtin(const std::string& name) const;
@@ -253,6 +262,7 @@ private:
     size_t backwardJumps_ = 0;       // backward jumps of the running script since its run started
     std::unordered_map<std::string, int> builtinIndex_;
     std::unordered_map<std::string, int> builtinRegistrations_;
+    std::function<bool()> developerScript_;
     std::vector<Builtin> builtins_;
     std::vector<std::string> builtinNames_;
     std::deque<std::unique_ptr<Thread>> threads_;

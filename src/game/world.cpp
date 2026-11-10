@@ -116,6 +116,14 @@ World::World(const fs::Vfs& vfs, std::string mapName, bool multiplayer, std::sha
     // Mission-progress dvars the exe registers at start (archived; docs/spec/savegame.md): mis_01..mis_10 int 0, mis_difficulty string of 50 '0'.
     for (int i = 1; i <= 10; ++i) cvars.emplace(std::string("mis_") + (i < 10 ? "0" : "") + std::to_string(i), "0");
     cvars.emplace("mis_difficulty", std::string(50, '0'));
+    // developer (int 0..2) and developer_script (bool), both default 0, flags 0x1000: SP 0x42df7b / 0x42df9d, MP 0x8061e1f / 0x8061e40
+    // (docs/spec/gsc.md "Developer-only built-ins"). developer_script is read whenever a script file is compiled.
+    cvars.emplace("developer", "0");
+    cvars.emplace("developer_script", "0");
+    vm_.setDeveloperScript([this] {
+        const auto it = cvars.find("developer_script");
+        return it != cvars.end() && std::atoi(it->second.c_str()) != 0;
+    });
     auto d = vfs_.read((mp_ ? "maps/mp/" : "maps/") + mapName_ + ".d3dbsp"); // MP: maps/mp/<mapname> (docs/spec/mp.md)
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);

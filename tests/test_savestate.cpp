@@ -96,6 +96,7 @@ struct Harness {
         return std::nullopt;
     }};
     Harness() {
+        vm.setDeveloperScript([] { return true; }); // the test scripts print with println (developer_script is off by default)
         vm.print = [this](const std::string& s) { out.push_back(s); };
         vm.registerBuiltin("print", [this](CallContext& c) {
             out.push_back(c.arg(0).toString());

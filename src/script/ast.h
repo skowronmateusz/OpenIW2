@@ -33,6 +33,7 @@ struct Node {
     int line = 0;
     bool isThread = false;       // Call: "thread"
     bool isPointerCall = false;  // Call: [[ expr ]](...)
+    bool devOnly = false;        // Function: declared between a file-scope /# and #/ (exists only with developer_script)
     std::vector<std::unique_ptr<Node>> children;
 
     Node(NodeKind k, std::string t, int l) : kind(k), text(std::move(t)), line(l) {}
