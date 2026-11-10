@@ -102,6 +102,9 @@ struct MpState {
     // Other reliable server commands to one client, as sent (setClientCvar: v <name> "<value>", docs/spec/net.md
     // section 10).
     std::vector<std::pair<int, std::string>> clientCommands;
+    // playLocalSound on a client that is not this process's own (client, alias), in call order: a network server sends it
+    // to that client as the sound command s <sound index> (docs/spec/mp-hud.md "Sounds from the gametype scripts").
+    std::vector<std::pair<int, std::string>> localSounds;
     // Cvars made server info by makeCvarServerInfo (docs/spec/net.md section 11), in call order.
     std::vector<std::string> serverInfoCvars;
     int bodyQueueNext = 0;  // cloneplayer's body queue counter (slot = counter % 8)

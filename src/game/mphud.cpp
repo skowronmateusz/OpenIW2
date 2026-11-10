@@ -228,6 +228,7 @@ void World::registerMpHudBuiltins() {
         const int cl = e ? mpClientOf(*e) : -1;
         if (cl < 0) throw std::runtime_error("entity " + std::to_string(e ? e->number : -1) + " is not a player");
         if (cl == mp_->localClient) startSound(c.arg(0).toString(), nullptr);
+        else if (c.argc() > 0) mp_->localSounds.push_back({cl, c.arg(0).toString()});
         return Value();
     });
     // objective_add(index, state [, origin [, icon]]) (0x811299c): MP has no text argument; states empty / invisible / current.

@@ -9326,6 +9326,10 @@ int main(int argc, char** argv) {
                     }
                     else if (letter == 'u') menuCommand("popupclose", ""); // TODO(spec): the close-menu letter
                     else if (letter == 'v' && tok.size() >= 3) menuEnv.setCvar(tok[1], tok[2]);
+                    else if (letter == 's' && tok.size() >= 2) { // playLocalSound: sound index, configstring 590 + index
+                        const auto cs = netClient->configstrings.find(netgame::kSoundConfigstrings - 1 + std::atoi(tok[1].c_str()));
+                        if (cs != netClient->configstrings.end()) world->mpRemoteLocalSound(cs->second);
+                    }
                     else if (letter == 'b') mpSb.netScores = sc; // scores (0x4d02b0, docs/spec/mp-scoreboard.md)
                     else if ((letter == 'h' || letter == 'i') && tok.size() >= 2) chatCommand(std::string(1, letter), tok[1]); // chat lines (docs/spec/mp-chat.md)
                     else if ((letter == 'e' || letter == 'f' || letter == 'c' || letter == 'g') && tok.size() >= 2) {

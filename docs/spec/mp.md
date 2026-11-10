@@ -478,8 +478,9 @@ hint. Network clients give the search their weapon state, grenade fuse and mantl
 ### Triggers for every client
 In the MP game every client entity touches triggers each server frame and can use `trigger_use` / `trigger_use_touch`
 (the SP code does this for the single player only). Implemented for the non-local clients in `World::mpClientTriggers`:
-the standing box (no stance yet) against trigger_multiple, trigger_radius, trigger_once, trigger_hurt (damage per client)
-like the SP player, and a press of use (the use bit set this frame, clear the previous one) fires the use trigger the
+the client's stance box (origin + (-15,-15,0)..(15,15,h), h 70 standing, 50 crouched, 30 prone, the same box as the
+local player's) against trigger_multiple, trigger_radius, trigger_once (freed after its notify, as for the local
+player), trigger_hurt (damage per client) like the SP player, and a press of use (the use bit set this frame, clear the previous one) fires the use trigger the
 client's last use search picked (above). CTF flags (`ctf.gsc:1093`) and the SD bomb zones (`sd.gsc:1638`) wait for
 this "trigger".
 

@@ -203,7 +203,15 @@ void World::mpClientTriggers() {
         if (p->obj->get("sessionstate").toString() != "playing") continue;
         mpClientItems(*p, press ? picked : -1); // weapon items (src/game/mpdrop.cpp)
         const Vec3 o = p->obj->get("origin").asVector();
-        const Vec3 pmin{o[0] - 15, o[1] - 15, o[2]}, pmax{o[0] + 15, o[1] + 15, o[2] + 70};
+        // The touch box is the client's stance box as for the local player (playerBoxHeight): 70 standing, 50 crouched,
+        // 30 prone (docs/spec/mp.md "Touch triggers of every client").
+        float boxHeight = 70.0f;
+        if (const MpPlayerInput* pi = mpPlayerInput(int(ci)); pi && pi->valid)
+            boxHeight = pi->move.viewHeightTarget <= 11 ? 30.0f : pi->move.viewHeightTarget <= 40 ? 50.0f : 70.0f;
+        if (bots_)
+            for (const MpBot& b : bots_->bots)
+                if (b.client == int(ci) && b.psValid) boxHeight = b.ps.stance == Stance::Prone ? 30.0f : b.ps.stance == Stance::Crouch ? 50.0f : 70.0f;
+        const Vec3 pmin{o[0] - 15, o[1] - 15, o[2]}, pmax{o[0] + 15, o[1] + 15, o[2] + boxHeight};
         const std::string team = p->obj->get("sessionteam").toString();
         std::vector<Entity*> fired;
         for (const auto& e : entities_) {
@@ -236,7 +244,7 @@ void World::mpClientTriggers() {
         for (Entity* e : fired) {
             if (e->obj->removed) continue;
             vm_.notify(e->obj, "trigger", {Value(p->obj)});
-            if (e->classname == "trigger_once") e->obj->removed = true;
+            if (e->classname == "trigger_once") freeEntity(*e); // as for the local player (G_FreeEntity with its script part)
         }
         if (!p->obj->removed && isAlive(*p) && p->obj->get("sessionstate").toString() == "playing") mpClientUseSearch(ci);
     }

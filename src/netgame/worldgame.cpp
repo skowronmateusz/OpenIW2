@@ -1661,6 +1661,7 @@ void WorldGame::forwardToClients() {
     if (st.prints.size() < printsSent_) printsSent_ = 0;
     if (st.chat.size() < chatSent_) chatSent_ = 0;
     if (st.clientCommands.size() < clientCommandsSent_) clientCommandsSent_ = 0;
+    if (st.localSounds.size() < localSoundsSent_) localSoundsSent_ = 0;
     if (st.obituaryLog.size() < obituariesSeen_) obituariesSeen_ = 0;
     for (; obituariesSeen_ < st.obituaryLog.size(); ++obituariesSeen_) pushObituary(st.obituaryLog[obituariesSeen_]);
     if (st.explosionLog.size() < explosionsSeen_) explosionsSeen_ = 0;
@@ -1669,6 +1670,7 @@ void WorldGame::forwardToClients() {
         printsSent_ = st.prints.size();
         chatSent_ = st.chat.size();
         clientCommandsSent_ = st.clientCommands.size();
+        localSoundsSent_ = st.localSounds.size();
         return;
     }
     // Script menus (t / u) go out with the client commands below, in the order the scripts called openMenu / closeMenu.
@@ -1697,6 +1699,15 @@ void WorldGame::forwardToClients() {
         const auto& [client, command] = st.clientCommands[clientCommandsSent_];
         for (const auto& [slot, n] : mp_)
             if (n == client) sendCommand(slot, command);
+    }
+    // playLocalSound (0x80fd990): the sound command s with the alias's sound index (configstring 590 + index) to that
+    // client only, reliable.
+    for (; localSoundsSent_ < st.localSounds.size(); ++localSoundsSent_) {
+        const auto& [client, alias] = st.localSounds[localSoundsSent_];
+        const int i = sounds_.index(alias);
+        if (i < 0) continue;
+        for (const auto& [slot, n] : mp_)
+            if (n == client) sendCommand(slot, "s " + std::to_string(i + 1));
     }
     // Chat server commands ("h <text>" / "i <text>", docs/spec/mp-chat.md) to the receiving clients.
     for (; chatSent_ < st.chat.size(); ++chatSent_) {

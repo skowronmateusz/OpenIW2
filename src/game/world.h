@@ -571,6 +571,10 @@ public:
     void mpRemotePlayerEvent(int client, int event, const std::string& weapon, float pitch);
     // Another event of the followed client in a network killcam (reload, melee swipe, throw): its sound as the own view's.
     void mpRemoteFollowEvent(int event, const std::string& weapon);
+    // A network client's sound command s (playLocalSound on the server): the alias without a position.
+    void mpRemoteLocalSound(const std::string& alias) {
+        if (mp_ && mpRemote_ && !alias.empty()) startSound(alias, nullptr);
+    }
     // The sound of a followed client's event in a killcam (local or network): the weapon file's reload, melee swipe,
     // pull-back or throw sound, played as the own view's (no position).
     void mpFollowEventSound(int event, const std::string& weapon);

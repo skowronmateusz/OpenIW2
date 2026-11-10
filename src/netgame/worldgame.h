@@ -245,7 +245,7 @@ private:
     int wireNumber(int key, int mapIndex);
     std::map<int, int> sentOffhand_;  // network slot -> offhand weapon number last announced
     std::vector<assets::BspEntity> worldspawn_;
-    size_t printsSent_ = 0, chatSent_ = 0, obituariesSeen_ = 0, explosionsSeen_ = 0, clientCommandsSent_ = 0;
+    size_t printsSent_ = 0, chatSent_ = 0, obituariesSeen_ = 0, explosionsSeen_ = 0, clientCommandsSent_ = 0, localSoundsSent_ = 0;
     ConfigstringRange weapons_{kWeaponListConfigstring, kWeaponConfigstringCount, true};
     ConfigstringRange materials_{kMaterialConfigstrings, kMaterialConfigstringCount, false, true};
     ConfigstringRange strings_{kStringConfigstrings, kStringConfigstringCount};
