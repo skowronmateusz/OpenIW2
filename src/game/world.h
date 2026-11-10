@@ -1771,6 +1771,9 @@ private:
     void radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                       const std::string& mod, Entity* inflictor = nullptr);
     bool canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at = nullptr);
+    // The linked absolute box (ent+0xc4 / +0xd0) of a brush-model entity (ent+0xa1: a "*N" model, or a vehicle or its corpse with a
+    // collmap brush, set by 0x447780): origin + brush bounds, a rotated brush widened as SV_LinkEntity 0x44b2d0 does. False otherwise.
+    bool brushAbsBounds(Entity& t, Vec3& absmin, Vec3& absmax);
     void mpRadiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                         const std::string& mod, Entity* inflictor);
     Vec3 mpRadiusCentre(Entity& t);

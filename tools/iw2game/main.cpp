@@ -667,6 +667,13 @@ int main(int argc, char** argv) {
         bool shootBarrels = false; // --shoot-barrels: from 1 s the player's bullet hits each explodable barrel from 60 units, twice a second
         bool drive = false;
         bool controls = false;
+        // --binoc-strike T target: the artillery request through the binoculars (docs/debug-flags.md): from T the player stands next
+        // to level.artillery["radioman"], holds +binoculars aimed at the target vehicle (entity number, or "axis" = the nearest live axis
+        // script_vehicle) and presses use at T+1.5 s (binocular_fire); the target's health is printed every 0.5 s and at its death.
+        float binocStrikeAt = -1.0f;
+        std::string binocStrikeTarget;
+        int strikeImpacts = 0, strikeKillShell = 0; // "artillery shell impact" level notifies; the impact count when the target died
+        std::string strikeDenial;                   // the last "artillery_denial" reason
         int turretTest = -1; // --turret N: stand behind the N-th usable turret, F at 1 s, aim + fire 2–3 s, F at 4 s
         iw2::game::Entity* testTurret = nullptr;
         bool pmove = false;
@@ -753,6 +760,10 @@ int main(int argc, char** argv) {
                 spawnAll = true;
             } else if (a == "--player-throw" && i + 1 < argc) {
                 throwClass = argv[++i]; // frag | smoke: +frag / +smoke held 1 s .. 2 s through PM_Weapon (implies --controls)
+                controls = true;
+            } else if (a == "--binoc-strike" && i + 2 < argc) {
+                binocStrikeAt = std::stof(argv[++i]);
+                binocStrikeTarget = argv[++i];
                 controls = true;
             } else if (a == "--controls") {
                 controls = true; // default.cfg keys through the client commands and PM_Weapon: 1, SHIFT, G, C, SPACE
@@ -899,6 +910,7 @@ int main(int argc, char** argv) {
         std::array<int, 16> objStates{};
         world.vm().notifyHook = [&](const iw2::script::ObjectPtr& o, const std::string& ev) {
             if (o->kind != "level") return;
+            if (ev == "artillery shell impact") ++strikeImpacts;
             if (seenNotifies.insert(ev).second) {
                 char buf[64];
                 std::snprintf(buf, sizeof buf, "%.2f ", world.timeMs() / 1000.0f);
@@ -970,7 +982,10 @@ int main(int argc, char** argv) {
             if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
             pweapon.lookup = [&](const std::string& n) { return world.weapon(n); };
             pweapon.findOffhand = [&](const std::string& cls) { return world.playerOffhandFor(cls); };
+            pweapon.binocularDef = [&]() { return world.binocularWeapon(); };
         }
+        const iw2::game::Entity* strikeTarget = nullptr;
+        bool strikeTargetDead = false;
         iw2::game::Vec3 playerLookAngles{};
         std::optional<iw2::game::LevelChange> lastChange; // the last level change that fell due
         for (int f = 0; f < seconds * 20; ++f) {
@@ -993,7 +1008,9 @@ int main(int argc, char** argv) {
                     {20, {"1", true}},     {21, {"1", false}},    {60, {"SHIFT", true}}, {62, {"SHIFT", false}},
                     {100, {"G", true}},    {120, {"G", false}},   {160, {"C", true}},    {161, {"C", false}},
                     {180, {"SPACE", true}}, {181, {"SPACE", false}}};
-                if (!throwClass.empty()) {
+                if (binocStrikeAt >= 0) {
+                    // --binoc-strike: no key script
+                } else if (!throwClass.empty()) {
                     const char* key = throwClass == "smoke" ? "4" : "G";
                     if (f == 20) input.key(key, true);
                     if (f == 40) input.key(key, false);
@@ -1016,6 +1033,59 @@ int main(int argc, char** argv) {
                 wi.frag = b & iw2::game::Button::Frag;
                 wi.smoke = b & iw2::game::Button::Smoke;
                 wi.weapon = weaponSelect;
+                if (binocStrikeAt >= 0 && f * 0.05f >= binocStrikeAt) {
+                    const float t = f * 0.05f;
+                    if (!strikeTarget) {
+                        float best = 1e30f;
+                        const auto po = world.player()->obj->get("origin").asVector();
+                        for (const auto& e : world.entities()) {
+                            if (e->obj->removed || !e->vehicle) continue;
+                            if (binocStrikeTarget == "axis") {
+                                if (e->obj->get("script_team").toString() != "axis" || e->obj->get("health").asFloat() <= 0) continue;
+                            } else if (e->number != std::stoi(binocStrikeTarget)) continue;
+                            const auto o = e->obj->get("origin").asVector();
+                            const float d = (o[0] - po[0]) * (o[0] - po[0]) + (o[1] - po[1]) * (o[1] - po[1]);
+                            if (d < best) best = d, strikeTarget = e.get();
+                        }
+                        const auto art = world.vm().level()->get("artillery");
+                        iw2::script::Value radio;
+                        if (art.isArray()) {
+                            iw2::script::ArrayKey k;
+                            k.isString = true;
+                            k.s = "radioman";
+                            if (const auto* v = std::get<iw2::script::ArrayPtr>(art.v)->get(k)) radio = *v;
+                        }
+                        if (radio.isObject()) {
+                            const auto ro = radio.asObject()->get("origin").asVector();
+                            world.setPlayerOrigin({ro[0] + 64.0f, ro[1], ro[2] + 8.0f}, world.player()->obj->get("angles").asVector());
+                        }
+                        std::printf("binoc-strike t=%.2f target %d (%s) radioman %s\n", t, strikeTarget ? strikeTarget->number : -1,
+                                    strikeTarget ? strikeTarget->classname.c_str() : "-", radio.isObject() ? "placed" : "undefined");
+                    }
+                    if (strikeTarget && !strikeTarget->obj->removed) {
+                        const auto o = world.player()->obj->get("origin").asVector();
+                        const auto to = strikeTarget->obj->get("origin").asVector();
+                        const float dx = to[0] - o[0], dy = to[1] - o[1], dz = to[2] + 40.0f - (o[2] + 60.0f);
+                        const float yaw = std::atan2(dy, dx) * 180.0f / 3.14159265f;
+                        const float pitch = -std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * 180.0f / 3.14159265f;
+                        if (t < binocStrikeAt + 4.0f) {
+                            playerLookAngles = {pitch, yaw, 0};
+                            world.player()->obj->set("angles", iw2::script::Value(iw2::script::Vec3{pitch, yaw, 0}));
+                            iw2::game::World::PlayerCommand pc;
+                            pc.viewAngles = playerLookAngles;
+                            pc.buttons = iw2::game::Button::Binoculars;
+                            world.setPlayerCommand(pc);
+                        }
+                        if (f % 10 == 0 || (!strikeTargetDead && strikeTarget->obj->get("health").asFloat() <= 0)) {
+                            std::printf("binoc-strike t=%.2f target health %s origin %.0f,%.0f,%.0f classname %s\n", t,
+                                        strikeTarget->obj->get("health").toString().c_str(), to[0], to[1], to[2], strikeTarget->classname.c_str());
+                            if (strikeTarget->obj->get("health").asFloat() <= 0 && !strikeTargetDead) strikeKillShell = strikeImpacts;
+                            if (strikeTarget->obj->get("health").asFloat() <= 0) strikeTargetDead = true;
+                        }
+                    }
+                    wi.binoculars = t < binocStrikeAt + 4.0f;
+                    wi.use = t >= binocStrikeAt + 1.5f && t < binocStrikeAt + 1.6f;
+                }
                 // CONTROLS_SUBSTEPS=n: n weapon updates per 50 ms server frame, like iw2view's per-frame updates.
                 {
                     static const int sub = std::getenv("CONTROLS_SUBSTEPS") ? std::max(1, std::atoi(std::getenv("CONTROLS_SUBSTEPS"))) : 1;
@@ -1029,6 +1099,10 @@ int main(int argc, char** argv) {
                     if (e.kind == iw2::game::PlayerWeapon::Event::MeleeHit) world.playerMelee(eye, {0, 0, 0});
                     if (e.kind == iw2::game::PlayerWeapon::Event::OffhandThrow) world.playerThrowGrenade(e.weapon, eye, {-20, 0, 0}, {0, 0, 0}, pweapon.takeFuseMs());
                     if (e.kind == iw2::game::PlayerWeapon::Event::OffhandExplode) world.playerGrenadeInHand(eye, e.weapon);
+                    if (e.kind >= iw2::game::PlayerWeapon::Event::BinocularEnter && e.kind <= iw2::game::PlayerWeapon::Event::BinocularDrop) {
+                        static const char* const kN[] = {"binocular_enter", "binocular_exit", "binocular_fire", "binocular_release", "binocular_drop"};
+                        world.notifyPlayer(kN[e.kind - iw2::game::PlayerWeapon::Event::BinocularEnter]);
+                    }
                     std::printf("controls t=%.2f event %d %s (state %d, weapon %s, stance %d)\n", f * 0.05f, int(e.kind),
                                 e.weapon.c_str(), pweapon.stateNumber(), pweapon.name().c_str(), input.stance());
                 }
@@ -1381,7 +1455,10 @@ int main(int argc, char** argv) {
                         fn.resize(eq);
                         for (size_t b = 0; b <= rest.size();) {
                             const size_t c = std::min(rest.find(',', b), rest.size());
-                            callArgs.emplace_back(rest.substr(b, c - b));
+                            const std::string arg = rest.substr(b, c - b);
+                            // "@name": the level field of that name (e.g. maps/_artillery.gsc SetRadioMan=@macgregor)
+                            if (!arg.empty() && arg[0] == '@') callArgs.push_back(world.vm().level()->get(arg.substr(1)));
+                            else callArgs.emplace_back(arg);
                             b = c + 1;
                         }
                     }
@@ -2428,6 +2505,9 @@ int main(int argc, char** argv) {
             }
             std::cout << "barrels: " << broken << " exploded, " << whole << " whole\n";
         }
+        if (binocStrikeAt >= 0)
+            std::printf("binoc-strike: target #%d %s, %d shells landed\n", strikeTarget ? strikeTarget->number : -1,
+                        strikeTargetDead ? ("destroyed by shell " + std::to_string(strikeKillShell)).c_str() : "survived", strikeImpacts);
         if (controls) {
             std::cout << "controls: weapon " << pweapon.name() << ", events";
             for (const auto& [k, n] : weaponEvents) std::cout << " " << k << "x" << n;

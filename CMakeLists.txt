@@ -816,6 +816,15 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(mpdm_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # Artillery through the binoculars on decoytown (docs/spec/grenades.md "Radius damage"): the player holds +binoculars at the
+  # radio man, aims at a halted panzer and presses use; the maps/_artillery.gsc barrage must destroy it with its first shell
+  # (the shells' radius damage reaches the tank's origin from below the terrain, traced from the target to the explosion).
+  add_test(NAME artillery_binoculars COMMAND iw2game ${IW2_TEST_MAIN} decoytown 50 --god --spawn-all --answer-menus ok
+           --level-call 20 maps/_artillery.gsc SetRadioMan=@macgregor --level-call 20.1 maps/_artillery.gsc EnableUse --binoc-strike 41 axis)
+  set_tests_properties(artillery_binoculars PROPERTIES ENVIRONMENT "IW2_SCRIPT_SEED=1"
+    PASS_REGULAR_EXPRESSION "binoc-strike: target #[0-9]+ destroyed by shell 1,.*runtime errors 0" TIMEOUT 240)
+endif()
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   # iw2game multiplayer mode: two local clients, a kill and a respawn on mp_toujane DM without script errors.
   add_test(NAME mpdm_iw2game COMMAND iw2game ${IW2_TEST_MAIN} mp/mp_toujane dm 6 --mp-clients 2 --mp-kill 2:1:0 --mp-use 5:1)
   set_tests_properties(mpdm_iw2game PROPERTIES PASS_REGULAR_EXPRESSION "client 0 player: playing team [a-z]+ score 1 deaths 0.*client 1 client1: playing team [a-z]+ score 0 deaths 1.*runtime errors 0")

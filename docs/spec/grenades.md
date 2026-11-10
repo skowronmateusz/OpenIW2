@@ -31,7 +31,7 @@ and flies on from there. A bounce changing the velocity by more than 100 sends t
 goes off at its `tag_weapon_right` (string 0x1c7f154). Radius damage only when explosionInnerDamage (+0x37c) ≠ 0 (0x5267d3) (0x5289d0): entities with
 takedamage in a box of radius·√2, distance to the origin (brush models: to their bounds) < radius, reachable
 (0x5285b0, five traces), damage (1 − d/r)·(inner − outer) + outer, direction target − origin + (0, 0, 24), flags 9,
-the handler's mod. Actors forget it (0x520380); the explosion event follows projExplosionType (+0x390, enum table 0x5a7e1c grenade 0 / rocket 1 / none 2; 0x526763): 0xbf, 0xc0, else 0xc2 (the client plays no surface sound or impact for 0xc2, only projExplosionEffect / projExplosionSound), and the entity is freed. The moscow potato (weapons/sp/potato: projExplosionType none, explosionInnerDamage 0, no effect or sound, fuseTime 25; moscow.gsc throws it with MagicGrenade and a 20 s fuse) therefore vanishes silently at the fuse.
+the handler's mod. Details in "Radius damage" below. Actors forget it (0x520380); the explosion event follows projExplosionType (+0x390, enum table 0x5a7e1c grenade 0 / rocket 1 / none 2; 0x526763): 0xbf, 0xc0, else 0xc2 (the client plays no surface sound or impact for 0xc2, only projExplosionEffect / projExplosionSound), and the entity is freed. The moscow potato (weapons/sp/potato: projExplosionType none, explosionInnerDamage 0, no effect or sound, fuseTime 25; moscow.gsc throws it with MagicGrenade and a 20 s fuse) therefore vanishes silently at the fuse.
 
 **Landing prediction** (0x527270, through 0x51f7c0): on a copy, 50 ms steps until the fuse with the same
 bounce rules (0x527080); the rest point and its time, or the position at the fuse. Hitting the sky: no prediction (the
@@ -244,3 +244,60 @@ active; passEnt is the item itself (owner unset); only weapon items run.
   is not 0, *0x617b1c(lerp origin, radius, info +0x150, +0x154, +0x158). CG_RegisterWeapon zeroes the whole 0x1b8-byte info
   (0x4b2cd7) and writes only +0x14c; no register-relative access to weapon +0x460..+0x468 (projectileRed / Green / Blue; panzerfaust /
   panzerschreck 0.75, 0.3, 1) or stores to info +0x150..+0x158, so the light's colour is (0, 0, 0) and it adds nothing. Not ported.
+
+## Radius damage (0x5289d0, reach test 0x5285b0)
+
+Shared by grenades, rockets, the script `radiusdamage` (docs/spec/campaign.md) and the artillery of `maps/_artillery.gsc`.
+
+- **Candidates**: the entities in the box origin ± radius·√2 (constant 0x59236c; 0x419ea0, at most 0x800) that take damage (+0x111), are not the
+  ignored entity, and are not a client while 0x1c61054 is set (setplayerignoreradiusdamage).
+- **Distance d** (0x528ad2): to the origin (+0xdc), or for a brush-model entity (+0xa1 set) to its linked box +0xc4 / +0xd0
+  (0 inside). Vehicles are brush models: the collmap setup 0x50dc40 calls 0x447780, which copies the brush bounds into r.mins /
+  r.maxs (+0xa8 / +0xb4), sets +0xa1 and links. The link 0x44b2d0 builds the box from the angles +0xe8: none → origin + bounds;
+  yaw only → xy radius on x and y, z from the bounds; pitch or roll → the 3D radius on every axis; then widens it by 1 on every
+  side. A vehicle's entity angles carry the ground alignment's pitch and roll (the think 0x512b80 hands vehicle +0xd0, the
+  aligned angles, to 0x50d3e0, which stores them at +0xe8 and links), so a tank on uneven ground has a cube around its origin.
+- d < radius, then the reach test, then the damage (1 − d/r)·(inner − outer) + outer with the same d, pushed along
+  target origin − explosion + (0, 0, 24) (0x528ba3..0x528c71).
+- **Reach test** 0x5285b0(target, explosion, radius): unless the target's contents (+0xc0) have a bit of 0x405c0008, its
+  origin must be within the radius. Five sight traces (0x4db890, mask 0x802891, the target's number as the pass entity at trace
+  +0x18 and none (0x7ff) at +0x1c, so the target and the entities it owns are skipped, 0x44bc80); the first clear one passes.
+  - A sentient (+0x104 set; eye from 0x4e8b70 for a client, the actor's eye +0x174 after 0x500910): with the 4th argument set
+    (radius damage pushes 1, 0x528bb5) the centre is halfway between the eye and the tested position, else the position raised by
+    h; h is half the eye's height above the entity origin (0x5286c7). The other four points are the centre ± s along the
+    horizontal perpendicular of the direction position → explosion (normalized, 0x4210d0), each at centre z ± h; s = 15, or 8
+    for a client (+0xfc, 0x528654). Traced from the explosion to the point (0x528940). openiw2 uses this for radius damage; the
+    AI grenade checks (0x51f8b0, which pushes only three arguments, and 0x54bf10) keep the eye and ±15 in x and y at another
+    position (TODO(spec): their 4th argument).
+  - Anything else: the middle of the linked box ((+0xc4 + +0xd0) × 0.5, constant 0x591e10) and the four points ±15 (0x592114)
+    in x and y at the same height (0x52884f..0x528927); traced from the point **to** the explosion (0x528980: start = the
+    point, end = the explosion). A tilted tank's middle is its origin, which the ground alignment puts on the wheel plane and so
+    often a few units under the terrain at the hull's centre. Observed in openiw2 (decoytown, `IW2_RADIUS_LOG`): a trace that
+    starts there leaves the terrain from behind and is not stopped by it, while the old explosion-to-origin direction was stopped
+    by the ground for most close shells. Whether the original's terrain collision behaves the same was not checked.
+- openiw2 (`World::radiusDamage`, `World::canDamage`, `World::brushAbsBounds`): implemented as above. The box comes from the
+  collmap brush (a corpse's kept collmap) or any `*N` brush model's submodel bounds; `brushLinkBounds` widens a rotated one. The 1-unit
+  widening of the linked box is not applied (it does not change the middle and moves d by at most 1). Damage is applied after
+  the scan instead of inside it.
+- Before this, openiw2 measured every target to its origin and traced vehicles from the explosion to their origin with the
+  target's own collision in the way, so most close shells were blocked by the ground under the hull. On decoytown, a halted
+  panzer under the barrage (five script seeds) died to the 4th, 3rd, 6th, 1st and 5th shell; now to the 1st, 3rd, 1st, 1st and
+  2nd (test `artillery_binoculars`, seed 1).
+
+### Artillery through the binoculars (`maps/_artillery.gsc`)
+
+Script behaviour, described for reference (the engine only provides the inputs):
+- The binocular events of the player (0xa8..0xab, docs/spec/controls.md) become `binocular_enter` / `_exit` / `_fire` /
+  `_release` notifies; the script turns `binocular_fire` into its own "fire button down" (`_artillery.gsc:665-686`).
+- On that press the request is refused when the use is disabled, the player is outside the use regions, a barrage is in
+  progress, the radio man is missing or more than 512 units from the player (`_artillery.gsc:86-108`, `:477-485`), or the target
+  is missing, in a deny region or near friendlies (`:129-138`). The target point is a trace from the player's eye along the
+  view without entities (`:386-399`), taken at the press.
+- An accepted request locks 12 shells (`:124-126`), picks each impact within the shell deviance (384 by default, `:24`) of the
+  target point and drops it onto the ground or whatever is below without characters (`:403-428`), plays the radio dialogue and
+  then fires them with staggered delays (`:240-266`, `:272-290`). Each impact is `radiusdamage(point, 256, 1000, 900)`
+  (`:313-326`). The point is fixed when the button is pressed, so a tank that keeps driving through the dialogue (about 6 s on
+  decoytown) is usually out of reach by then; this is the script's design, not an engine difference.
+- A panzer II has a random 500..1499 health unless the map sets `script_startinghealth` (`_panzer2.gsc:74-80`), and the
+  friendly-fire shield of `_tank.gsc:916-966` adds 2000 and ends the tank when its health falls below that buffer, so any
+  shell that reaches it (900..1000) is usually enough.

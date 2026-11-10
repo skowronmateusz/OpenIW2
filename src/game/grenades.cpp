@@ -2,6 +2,7 @@
 // bounces and fuse (G_RunMissile 0x526c30, 0x525f30, 0x526600), the radius damage (0x5289d0), the landing prediction
 // (0x527270), the throw solvers behind checkGrenadeThrowPos (0x51f490) and throwGrenade / MagicGrenade(Manual) /
 // pickUpGrenade.
+#include "game/axis.h"
 #include "game/grenadeangles.h"
 #include "game/itemslide.h"
 #include "game/world.h"
@@ -183,9 +184,9 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
 }
 
 // Radius damage (0x5289d0): every entity that takes damage (ent+0x111) but `ignore` within `radius` of `origin` (distance to its origin;
-// brush models: to their bounds) that the explosion can reach (0x5285b0) takes inner + (outer − inner)·d/r, pushed
-// along (target − origin + (0, 0, 24)). Entities with a client (the player) are spared while the script radiusdamage
-// runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). Knockback: World::damage. TODO(spec): [stays: not read] the bounds of brush models.
+// a brush model (ent+0xa1): to its linked bounds, ent+0xc4 / +0xd0, 0 inside) that the explosion can reach (0x5285b0) takes
+// inner + (outer − inner)·d/r (the same d), pushed along (target − origin + (0, 0, 24)). Entities with a client (the player) are
+// spared while the script radiusdamage runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). Knockback: World::damage.
 void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
                          const std::string& mod, Entity* inflictor) {
     if (radius < 1.0f) radius = 1.0f;
@@ -194,17 +195,34 @@ void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, floa
         return;
     }
     std::vector<Entity*> hit;
+    std::vector<float> dists;
     for (const auto& ep : entities_) {
         Entity& t = *ep;
         if (&t == ignore || !takesDamage(t)) continue;
         if (t.isPlayer && sparePlayerRadiusDamage_) continue;
-        const float dist = len(sub(originOf(t.obj), origin));
-        if (dist >= radius) continue;
-        if (!canDamage(t, origin, radius)) continue;
+        float dist = len(sub(originOf(t.obj), origin));
+        Vec3 absmin{}, absmax{};
+        if (brushAbsBounds(t, absmin, absmax)) { // 0x528ad2: a brush model measures to its box, 0 inside
+            Vec3 d{};
+            for (size_t k = 0; k < 3; ++k)
+                d[k] = origin[k] < absmin[k] ? absmin[k] - origin[k] : origin[k] > absmax[k] ? origin[k] - absmax[k] : 0.0f;
+            dist = len(d);
+        }
+        dists.push_back(dist);
+        static const bool log = std::getenv("IW2_RADIUS_LOG") != nullptr; // docs/debug-flags.md
+        if (log && dist < radius * 2)
+            std::printf("radiusdamage t=%lld at %.0f,%.0f,%.0f r %.0f %s: #%d %s dist %.0f %s\n", (long long)timeMs_, origin[0], origin[1],
+                        origin[2], radius, mod.c_str(), t.number, t.classname.c_str(), dist,
+                        dist >= radius ? "out" : canDamage(t, origin, radius) ? "hit" : "blocked");
+        if (dist >= radius || !canDamage(t, origin, radius)) {
+            dists.pop_back();
+            continue;
+        }
         hit.push_back(&t);
     }
-    for (Entity* t : hit) {
-        const float dist = len(sub(originOf(t->obj), origin));
+    for (size_t i = 0; i < hit.size(); ++i) {
+        Entity* t = hit[i];
+        const float dist = dists[i];
         const int amount = int((1.0f - dist / radius) * (inner - outer) + outer);
         const Vec3 dir = add(sub(originOf(t->obj), origin), {0, 0, 24.0f});
         damage(*t, attacker, amount, dir, originOf(t->obj), mod, "none", 0, inflictor);
@@ -277,20 +295,66 @@ float World::mpRadiusVisibility(Entity& t, const Vec3& from) {
     return clear > 3 ? 1.0f : float(clear) / 3.0f;
 }
 
-// 0x5285b0: within `radius` of `from`, and a trace from `from` reaches the entity's eye (sentients) or origin, or one
-// of the four points offset ±15 horizontally from it (five tries). The offsets follow the five-try loop; the tested
-// points themselves are inferred (TODO(spec): [stays: 0x4db890 not read] 0x4db890's targets and mask).
+// 0x5285b0 (docs/spec/grenades.md "Radius damage"): the target's origin within `radius` of `from` (only for targets without any
+// of the contents 0x405c0008), then five sight traces 0x4db890 (mask 0x802891); the first clear one passes. Each trace passes the
+// target's own number (ent+8) as the pass entity (trace +0x18; +0x1c is 0x7ff, none), so the target and the entities it owns never
+// block it (0x44bc80).
+// - A sentient (ent+0x104), radius damage (4th argument 1): the centre between its eye and the tested position, and the four
+//   points centre ± 15 (8 for a client) along the horizontal perpendicular of the explosion direction, each ± half the eye height
+//   above the origin in z; traced from the explosion to the point (0x52864a..0x52884a, 0x528940).
+// - Any other entity: the middle of its linked box (ent+0xc4 / +0xd0; without a brush model the origin) and the four points ±15
+//   in x and y, traced from the point to the explosion (0x52884f, 0x528980). A tilted tank's middle is its origin on the wheel
+//   plane, often just under the terrain; openiw2's terrain does not stop a trace that leaves it from below.
+// `at` (the AI grenade checks 0x51f8b0 / 0x54bf10) tests a sentient at another position; those callers leave the 4th argument
+// unset, so their points stay the eye and ±15 in x and y (TODO(spec): [stays: not read] their 4th argument and centre).
+constexpr uint32_t kRadiusSightMask = 0x802891; // 0x52894c / 0x52898c
+
 bool World::canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at) {
     const Vec3 o = at ? *at : originOf(t.obj);
-    if (dot(sub(o, from), sub(o, from)) > radius * radius) return false;
-    Vec3 base = o;
-    if (t.isActor || t.isPlayer) base = add(o, sub(t.isActor ? sightEye(t, nullptr) : eyePosition(t), originOf(t.obj)));
-    static const float offs[5][2] = {{0, 0}, {15, 15}, {15, -15}, {-15, 15}, {-15, -15}};
-    for (const auto& of : offs) {
-        const Vec3 p{base[0] + of[0], base[1] + of[1], base[2]};
-        if (!collision_->sightBlocked(from, p, {0, 0, 0}, {0, 0, 0}, Contents::BulletMaskNoCharacters)) return true;
+    if (!(entityContents(t) & 0x405c0008u) && dot(sub(o, from), sub(o, from)) > radius * radius) return false;
+    const bool sentient = t.isActor || t.isPlayer;
+    Vec3 pts[5];
+    if (sentient && !at) {
+        const Vec3 eye = t.isActor ? sightEye(t, nullptr) : eyePosition(t);
+        const float h = (eye[2] - originOf(t.obj)[2]) * 0.5f;
+        float dx = from[0] - o[0], dy = from[1] - o[1];
+        const float l = std::sqrt(dx * dx + dy * dy);
+        if (l > 0) dx /= l, dy /= l;
+        const float s = t.isPlayer ? 8.0f : 15.0f;
+        const Vec3 c{(eye[0] + o[0]) * 0.5f, (eye[1] + o[1]) * 0.5f, (eye[2] + o[2]) * 0.5f};
+        const Vec3 side{-dy * s, dx * s, 0.0f};
+        pts[0] = c;
+        pts[1] = {c[0] + side[0], c[1] + side[1], c[2] + h};
+        pts[2] = {c[0] + side[0], c[1] + side[1], c[2] - h};
+        pts[3] = {c[0] - side[0], c[1] - side[1], c[2] + h};
+        pts[4] = {c[0] - side[0], c[1] - side[1], c[2] - h};
+    } else {
+        Vec3 base = o;
+        Vec3 absmin{}, absmax{};
+        if (sentient) base = add(o, sub(t.isActor ? sightEye(t, nullptr) : eyePosition(t), originOf(t.obj)));
+        else if (brushAbsBounds(t, absmin, absmax))
+            base = {(absmin[0] + absmax[0]) * 0.5f, (absmin[1] + absmax[1]) * 0.5f, (absmin[2] + absmax[2]) * 0.5f};
+        static const float offs[5][2] = {{0, 0}, {15, 15}, {15, -15}, {-15, 15}, {-15, -15}};
+        for (int i = 0; i < 5; ++i) pts[i] = {base[0] + offs[i][0], base[1] + offs[i][1], base[2]};
     }
+    for (const Vec3& p : pts)
+        if (!collision_->sightBlocked(sentient ? from : p, sentient ? p : from, {0, 0, 0}, {0, 0, 0}, kRadiusSightMask, t.number))
+            return true;
     return false;
+}
+
+bool World::brushAbsBounds(Entity& t, Vec3& absmin, Vec3& absmax) {
+    std::string brush;
+    const Value model = t.obj->get("model");
+    if (t.vehicle) brush = vehicleCollmap(t);
+    else if (t.classname == "script_vehicle_corpse") brush = corpseCollmap(t);
+    else if (model.isString()) brush = model.asString(); // a brush model entity has a "*N" model
+    if (brush.empty() || brush[0] != '*' || !submodelBounds(brush, absmin, absmax)) return false;
+    brushLinkBounds(t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0}, absmin, absmax);
+    const Vec3 o = originOf(t.obj);
+    absmin = add(absmin, o);
+    absmax = add(absmax, o);
+    return true;
 }
 
 // Explode (think 0x526600 → 0x526200): a grenade held in an actor's hand goes off at its tag_weapon_right; a smoke
