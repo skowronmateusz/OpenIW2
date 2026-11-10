@@ -103,6 +103,14 @@ uint16_t UdpSocket::localPort() const {
     return ntohs(sa.sin_port);
 }
 
+uint32_t UdpSocket::localIp() const {
+    if (memoryPort_) return 0;
+    sockaddr_in sa{};
+    socklen_t len = sizeof sa;
+    if (fd_ < 0 || getsockname(fd_, reinterpret_cast<sockaddr*>(&sa), &len) != 0) return 0xffffffffu;
+    return ntohl(sa.sin_addr.s_addr);
+}
+
 bool UdpSocket::sendTo(const NetAddress& to, const void* data, int len) {
     if (memoryPort_) {
         auto q = gMemoryUdp->queues_->byPort.find(to.port);

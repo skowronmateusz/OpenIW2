@@ -9252,8 +9252,11 @@ int main(int argc, char** argv) {
                     const int port = lp ? std::atoi(lp) : !np.empty() ? std::atoi(np.c_str()) : 28960;
                     const std::string mc = world->cvars["sv_maxclients"];
                     listenServer->maxClients = mc.empty() ? 8 : std::clamp(std::atoi(mc.c_str()), 1, 64);
-                    if (!listenServer->open(uint16_t(port))) std::cerr << "listen server: cannot open UDP port " << port << "\n";
-                    else std::cout << "listen server on UDP port " << listenServer->port() << "\n";
+                    // NET_OpenIP (docs/spec/net.md section 11, "Server socket"): the next free port of ten, written back to net_port.
+                    if (const uint16_t got = listenServer->openFirstFree(uint16_t(port))) {
+                        menuEnv.setCvar("net_port", std::to_string(got));
+                        std::cout << "listen server on UDP port " << got << "\n";
+                    } else std::cerr << "listen server: cannot open UDP ports " << port << ".." << port + 9 << "\n";
                 }
                 // A new map: the clients get its gamestate. Compared by generation, not by address: the next level's
                 // World can be allocated where the previous one was, and then the clients never got the new map.

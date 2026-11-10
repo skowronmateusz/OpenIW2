@@ -54,7 +54,11 @@ public:
     explicit Server(ServerGame& game, uint32_t seed = 1);
 
     bool open(uint16_t port);
+    // NET_OpenIP's port rule (docs/spec/net.md section 11, "Server socket"): every interface, port .. port + tries - 1, the
+    // first one free. Returns the port bound, 0 when none was free (port 0 binds any free port).
+    uint16_t openFirstFree(uint16_t port, int tries = 10);
     uint16_t port() const { return sock_.localPort(); }
+    uint32_t boundIp() const { return sock_.localIp(); }
 
     // Receives and handles packets for up to waitMs, then runs the game frames that are due and sends snapshots.
     // nowMs is a monotonic clock in milliseconds supplied by the caller.

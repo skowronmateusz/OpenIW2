@@ -37,6 +37,12 @@ bool Server::open(uint16_t port) {
     return sock_.open(0, port);
 }
 
+uint16_t Server::openFirstFree(uint16_t port, int tries) {
+    for (int i = 0; i < tries && int(port) + i <= 65535; ++i)
+        if (open(uint16_t(port + i))) return this->port();
+    return 0;
+}
+
 void Server::sendServerCommand(int slot, const std::string& text) {
     for (int i = 0; i < maxClients; ++i) {
         if (slot >= 0 && i != slot) continue;

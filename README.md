@@ -79,7 +79,13 @@ change applies at the next start.
   their skill (easy to veteran) and which weapon classes are allowed: rifle, bolt, sniper, smg, mg, shotgun and
   grenades, in any combination that leaves every nation a primary weapon (one that does not is refused with a
   message). **Start** loads the map and hosts a listen server that always accepts players from your local network;
-  there is no extra switch to turn on.
+  there is no extra switch to turn on. It uses UDP port 28960, or the next free one (up to 28969) when another
+  server on the same Mac already has it; the server list on the other computers looks at ports 28960 to 28963.
+  If the macOS firewall is on, the first start asks whether OpenIW2 may accept incoming network connections:
+  choose **Allow**. Until that is answered, and after **Deny**, the other computers do not see the server at all.
+  OpenIW2 is not signed by a registered developer, so macOS may ask again after an update; if friends cannot see
+  your server, open System Settings, Network, Firewall, Options and check that OpenIW2 is set to allow incoming
+  connections (remove it with **-** and start a server again to get the question back).
 - **Dedicated server**: with **Dedicated** set to LAN or Internet (both are the same here, there is no master
   server), **Start** closes the game window and opens a server console window instead: the server runs with the
   chosen map, gametype, settings, bots and weapon classes, but without a player of its own. The window shows the

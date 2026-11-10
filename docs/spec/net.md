@@ -1091,6 +1091,13 @@ flips it on a new map and on a map_restart.
   0x4b8860). Both a listen server and a dedicated one take LAN clients. openiw2: a game started from the menu always
   takes network clients; with the dedicated choice the window closes and the process becomes the server with a
   console window (docs/spec/mp-ui.md "Dedicated start").
+- Server socket (NET_OpenIP, MP 0x4678c0): the UDP socket is bound to the address of `net_ip` (default: every
+  interface) and to `net_port`; when that port is taken it tries the next one, up to ten ports in all (net_port + 0
+  .. + 9, loop at 0x467953..0x467971), and writes the port it got back into `net_port` (0x4679d1). With none free
+  it prints a warning and the game runs without a network socket. A second server on the same machine therefore
+  lands on 28961, which the LAN browser still asks (section 12, ports 28960..28963). openiw2's listen server
+  (iw2view, and so the app) follows this rule; it binds every interface, answers `getinfo` / `getstatus` to the
+  broadcast and to its LAN address alike, from the same socket. Tested: tests/test_listenbind.cpp.
 
 ## 12. LAN server browser
 

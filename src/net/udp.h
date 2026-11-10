@@ -45,6 +45,7 @@ public:
     bool enableBroadcast();
     bool isOpen() const { return fd_ >= 0 || memoryPort_ != 0; }
     uint16_t localPort() const;
+    uint32_t localIp() const; // the bound address (0: every interface)
 
     bool sendTo(const NetAddress& to, const void* data, int len);
     // Waits up to timeoutMs (0 = poll) for a datagram. Returns its length, 0 when none, -1 on error.
