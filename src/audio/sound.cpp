@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -361,6 +362,14 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     int handle;
     {
         std::lock_guard lock(mutex_);
+        if (logPlays && logPositions && v.origin) {
+            const Vec3& o = *v.origin;
+            const float dx = o[0] - listener_[0], dy = o[1] - listener_[1], dz = o[2] - listener_[2];
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            std::printf("[snd-pos] %s at %.0f,%.0f,%.0f listener %.0f,%.0f,%.0f dist %.0f gain %.3f (dist_min %.0f dist_max %.0f)\n", name.c_str(),
+                        double(o[0]), double(o[1]), double(o[2]), double(listener_[0]), double(listener_[1]), double(listener_[2]), double(dist),
+                        double(falloff(v, dist)), double(v.distMin), double(v.distMax));
+        }
         // Channel exclusivity (0x44250a..0x442531): outside auto / auto2d / menu, an alias without a secondary first stops the owner's
         // running sounds of the same channel.
         if (opt.owner >= 0 && exch > 2 && a->secondary.empty())

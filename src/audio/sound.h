@@ -128,6 +128,7 @@ public:
     int play(const std::string& alias, std::optional<Vec3> origin = std::nullopt, float* duration = nullptr, PlayOptions opt = {});
     // Debug (iw2view IW2_SOUND_LOG=1): prints `[snd] <alias>` for every play() request (`(unknown)` / `(culled)` when nothing starts).
     bool logPlays = false;
+    bool logPositions = false; // with logPlays: a [snd-pos] line with the origin, listener distance and distance gain of each 3D start
     // Frame sweep (0x443510..0x4436bc, called once per client frame; not while paused): stops every refresh-mode loop whose stamp is not the
     // previous sweep's time, then makes `soundTimeMs` (0x793db4) the stamp new/refreshed loops get (0x793db8).
     void sweepLoops(int soundTimeMs);

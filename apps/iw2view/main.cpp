@@ -3925,7 +3925,8 @@ int main(int argc, char** argv) {
         else aliases.loadLevel(vfs, args[1]); // plus the interface rows: the pause menu's music and clicks work on a direct level start
         constexpr int kAudioRate = 48000;
         audio::Mixer mixer(vfs, aliases, kAudioRate);
-        mixer.logPlays = std::getenv("IW2_SOUND_LOG") != nullptr; // debug: one [snd] line per sound request (docs/debug-flags.md)
+        mixer.logPlays = std::getenv("IW2_SOUND_LOG") != nullptr;
+        mixer.logPositions = std::getenv("IW2_SOUND_LOG") && std::atoi(std::getenv("IW2_SOUND_LOG")) >= 2; // [snd-pos] lines // debug: one [snd] line per sound request (docs/debug-flags.md)
         SDL_AudioStream* audioStream = nullptr;
         if (shot.empty() && audioOn) {
             const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kAudioRate};
@@ -9684,6 +9685,18 @@ int main(int argc, char** argv) {
             // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
             const bool controlsBlocked = !frontStack.empty() || netControlsFrozen || (world && world->controlsFrozen());
             uint32_t buttons = controlsBlocked ? input.stanceButtons() : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
+            if (static const bool wt = std::getenv("IW2_WEAPON_TRACE") != nullptr; wt) { // debug: own weapon state changes (docs/debug-flags.md)
+                static std::string lastWt;
+                char line[512];
+                std::snprintf(line, sizeof line, "weapon=%s view=%s state=%d anim=%s clip=%d stock=%d offhand=%d cook=%d fuse=%d ads=%d buttons=%x blocked=%d",
+                              pweapon.name().c_str(), pweapon.viewWeaponName().c_str(), pweapon.stateNumber(), pweapon.anim().c_str(), pweapon.clip(),
+                              pweapon.stock(), int(pweapon.offhandActive()), int(pweapon.cooking()), pweapon.fuseMs() > 0 ? 1 : 0, int(pweapon.adsHeld()),
+                              unsigned(buttons), int(controlsBlocked));
+                if (lastWt != line) {
+                    std::printf("weapontrace rt=%llu t=%lld %s\n", (unsigned long long)(SDL_GetTicksNS() / 1000000), (long long)(world ? world->timeMs() : -1), line);
+                    lastWt = line;
+                }
+            }
             // IW2_DEBUG_THROW=<seconds>[,<seconds>...]: holds the frag key for 150 ms from each real time (docs/debug-flags.md).
             if (static const char* dt = std::getenv("IW2_DEBUG_THROW"); dt && !controlsBlocked) {
                 const double realS = double(SDL_GetTicksNS()) * 1e-9;
@@ -10014,13 +10027,14 @@ int main(int argc, char** argv) {
                         const bool interp = netClient->interpolation(rtime, ia, ib, ifrac);
                         const std::vector<net::UserCmd> replay = netClient->commandsAfter(sf.commandTime);
                         std::printf("predtrace rt=%lld dt=%lld now=%lld cmd=%d snap=%d msg=%d ack=%d srv=%.2f,%.2f,%.2f pred=%.2f,%.2f,%.2f "
-                                    "miss=%.2f draw=%.2f,%.2f,%.2f render=%d frac=%.2f replay=%d first=%d fwd=%d snaps=%d dropped=%d%s\n",
+                                    "miss=%.2f draw=%.2f,%.2f,%.2f render=%d frac=%.2f replay=%d first=%d fwd=%d snaps=%d dropped=%d yaw=%.1f pitch=%.1f%s\n",
                                     (long long)realMs, (long long)(lastRealMs ? realMs - lastRealMs : 0), (long long)netDrawNowMs,
                                     lc ? lc->serverTime : 0, sn.serverTime, sn.messageNum, sf.commandTime, double(sf.origin[0]),
                                     double(sf.origin[1]), double(sf.origin[2]), double(ps.origin[0]), double(ps.origin[1]),
                                     double(ps.origin[2]), double(netPredictor.lastMiss()), double(o[0]), double(o[1]), double(o[2]),
                                     rtime, double(ifrac), int(replay.size()), replay.empty() ? 0 : replay.front().serverTime,
                                     lc ? int(lc->forwardmove) : 0, netClient->snapshots, netClient->droppedSnapshots,
+                                    double(cam.yaw), double(cam.pitch),
                                     interp ? "" : " nointerp");
                         lastRealMs = realMs;
                     }
@@ -10900,6 +10914,8 @@ int main(int argc, char** argv) {
                         pendingShotPng = k.substr(5);
                     } else if (k.rfind("turn:", 0) == 0) { // turn:<deg> turns the view yaw by deg (scripted walks in live play)
                         cam.yaw += float(std::atof(k.c_str() + 5));
+                    } else if (k.rfind("yaw:", 0) == 0) { // yaw:<deg> sets the view yaw (absolute, e.g. to face a placed player)
+                        cam.yaw = float(std::atof(k.c_str() + 4));
                     } else if (k.rfind("pitch:", 0) == 0) { // pitch:<deg> sets the view pitch (positive looks down)
                         cam.pitch = std::clamp(float(std::atof(k.c_str() + 6)), -89.0f, 89.0f);
                     } else if (k.rfind("cmd:", 0) == 0) { // cmd:+forward / cmd:-forward / cmd:weapnext: a bound command as if from a key

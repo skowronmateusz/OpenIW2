@@ -2,6 +2,7 @@
 // hooks for rcon, live getstatus, private slots and the game password over UDP loopback. Headless, no game data.
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -59,6 +60,11 @@ struct FakeHost : ConsoleHost {
     }
     void quit() override { quitCalled = true; }
     bool addTestClient() override { return ++bots <= 2; }
+    std::vector<std::string> damages;
+    bool debugDamage(int victim, int attacker, int amount) override {
+        damages.push_back(std::to_string(victim) + " " + std::to_string(attacker) + " " + std::to_string(amount));
+        return victim >= 0;
+    }
 };
 
 void testRotation() {
@@ -338,8 +344,28 @@ void testServerHooks() {
 
 } // namespace
 
+// debugdamage (docs/debug-flags.md, IW2_DEBUG_DAMAGE): only with the env variable; victim and attacker by number or name.
+void testDebugDamage() {
+    FakeHost host;
+    ServerConsole con(host);
+    host.console = &con;
+    ConsoleClient a, b;
+    a.num = 0, a.name = "alpha^7", b.num = 3, b.name = "bravo";
+    host.list = {a, b};
+    unsetenv("IW2_DEBUG_DAMAGE");
+    con.execute("debugdamage 0 3 50");
+    CHECK(host.damages.empty());
+    setenv("IW2_DEBUG_DAMAGE", "1", 1);
+    CHECK(has(con.capture("debugdamage alpha bravo 300"), "debugdamage alpha bravo 300"));
+    con.execute("debugdamage 3 -1 20");
+    CHECK(has(con.capture("debugdamage -5 0 1"), "no such client"));
+    CHECK(host.damages.size() == 3 && host.damages[0] == "0 3 300" && host.damages[1] == "3 -1 20");
+    unsetenv("IW2_DEBUG_DAMAGE");
+}
+
 int main() {
     testRotation();
+    testDebugDamage();
     testConsole();
     testRcon();
     testServerHooks();

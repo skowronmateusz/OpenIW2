@@ -108,6 +108,9 @@ void World::mpRemotePlayerEvent(int client, int event, const std::string& weapon
     if (!wn.empty()) e->obj->set("$weapon", Value(wn));
     MpPlayerInput* pi = mpPlayerInput(client);
     const Vec3 o = e->obj->get("origin").asVector();
+    if (static const bool rt = std::getenv("IW2_REMOTE_TRACE") != nullptr; rt) // debug: other players' events (docs/debug-flags.md)
+        std::printf("remotetrace t=%lld client=%d event=0x%x weapon=%s at %.0f,%.0f,%.0f\n", (long long)timeMs(), client, unsigned(event), wn.c_str(),
+                    double(o[0]), double(o[1]), double(o[2]));
     auto play = [&](std::initializer_list<const char*> keys) {
         for (const char* k : keys) {
             const std::string alias = weaponField(wn, k);

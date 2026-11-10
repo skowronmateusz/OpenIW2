@@ -380,6 +380,16 @@ void ServerConsole::command(const std::vector<std::string>& a, const std::string
             for (const auto& c : host_.clients())
                 if (c.num == n && c.state == ConsoleClient::State::Active) host_.serverCommand(n, msg);
         }
+    } else if (cmd == "debugdamage" && std::getenv("IW2_DEBUG_DAMAGE")) {
+        // Debug only (docs/debug-flags.md): debugdamage <victim> <attacker> <amount>, attacker -1 = the world.
+        if (a.size() != 4 || !running) return;
+        auto clientNum = [&](const std::string& t) { // a client number or a player name
+            for (const ConsoleClient& c : host_.clients())
+                if (ieq(c.name, t) || ieq(stripColors(c.name), t)) return c.num;
+            return std::atoi(t.c_str());
+        };
+        if (!host_.debugDamage(clientNum(a[1]), a[2] == "-1" ? -1 : clientNum(a[2]), std::atoi(a[3].c_str()))) out("debugdamage: no such client\n");
+        else out("debugdamage " + a[1] + " " + a[2] + " " + a[3] + "\n");
     } else if (cmd == "addtestclient") {
         if (!running) {
             out("Server is not running.\n");

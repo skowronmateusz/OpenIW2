@@ -192,6 +192,11 @@ public:
         world_->frame();  // one connect per frame (as iw2game --mp-bots)
         return true;
     }
+    bool debugDamage(int victim, int attacker, int amount) override {
+        if (!world_ || victim < 0 || size_t(victim) >= world_->mpState().clients.size() || !world_->mpState().clients[size_t(victim)].ent) return false;
+        world_->mpDebugDamage(victim, attacker, amount, "MOD_RIFLE_BULLET");
+        return true;
+    }
     void cvarChanged(const std::string& name, const std::string& value) override {
         if (world_) world_->cvars[name] = value;
         if (iequals(name, "sv_hostname")) {
