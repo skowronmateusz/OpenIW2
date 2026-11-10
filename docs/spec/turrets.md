@@ -343,6 +343,10 @@ use press (+activate or +usereload) on a usable turret mounts it, the server the
 gun, aims the turret from the client's usercmd angles, fires with attack every fireTime, and releases it on a second
 press, on death and on disconnect. While the client is on a turret, its usercmds move nothing and fire no hand weapon.
 The turret is the inflictor of its bullets (`World::fireBullet`, `World::damageWeapon`). Test `tests/test_mpturretdamage.cpp`.
+The per-client pass runs the turret think only for a client that is the turret's owner and has the turret bits; any other
+kept use state is cleared, so the turret code never places or turns a client who is not behind the gun. The server's
+movement takes the position the turret code gave a mounted (or just released) client as its own, without clearing the
+player state (tests/test_mpnetcombat.cpp).
 
 What the client learns (VAs in the 1.3 Linux dedicated server; player-state offsets are the wire offsets of net.md):
 - Getting on (0x810c3de): viewLockMode (ps+0x590) is set to 1 and viewLockEntity (ps+0x594) to the turret's entity

@@ -4,6 +4,8 @@
 
 #include "game/world.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 namespace iw2::game {
@@ -58,6 +60,14 @@ bool World::mpClientTurret(size_t client, bool usePressed) {
     MpClient& cl = mp_->clients[client];
     MpClient::TurretUse& u = cl.turretUse;
     if (u.turret && (u.turret->obj->removed || !u.turret->turret)) u = {};
+    // A use state that is not this client's mount (no turret bits, or the turret has another or no owner) is no turret
+    // use: the turret code would place and turn the client as if he sat behind the gun.
+    if (u.turret && (!(u.eFlags & 0x300u) || !cl.ent || u.turret->turret->owner != cl.ent->obj)) {
+        if (std::getenv("IW2_NET_TRACE"))
+            std::printf("NETTRACE turret client=%zu stale use state cleared (bits %x, owner %s)\n", client, u.eFlags & 0x300u,
+                        u.turret->turret->owner ? "other" : "none");
+        u = {};
+    }
     if (!u.turret && !usePressed) return false;
     // Swap the client in for the local player's use fields; they come back even when a script notify throws.
     UseSwap saved;

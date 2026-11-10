@@ -191,6 +191,9 @@ public:
     void forwardToClients();
 
 private:
+public:
+    int stateClears = 0; // player states cleared outside a spawn (the NETTRACE reset case), for tests
+private:
     struct Move {
         game::PlayerState ps;
         bool havePs = false;
@@ -200,6 +203,7 @@ private:
         std::array<float, 3> lastOrigin{};
         int lastTime = 0;
         int lastServerTime = 0;  // the antilag time (0x80f5614)
+        bool turretMoved = false; // on a map turret at the last think, or the turret code moved the client since
         float viewPitch = 0, viewYaw = 0;
         std::shared_ptr<NetCombat> combat = std::make_shared<NetCombat>();  // the weapon side (netcombat.h)
     };

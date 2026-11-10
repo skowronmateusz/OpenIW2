@@ -809,6 +809,26 @@ void dmHints(fs::Vfs& vfs) {
         const auto h = g.hintOf(0);
         std::cout << "on turret " << g.host.mpClientOnTurret(a) << " hint " << h.first << " '" << h.second << "'\n";
         if (d && dh != d->end() && !dh->second.empty()) CHECK(h.first > 4 && h.second == dh->second);
+        // The turret holds the client behind the gun while he turns, and puts him down on release: his movement
+        // state goes on from there (no cleared player state outside a spawn).
+        const int clears = g.game.stateClears;
+        const game::Vec3 before = origin(g.host.mpClientEntity(a));
+        for (int i = 0; i < 20; ++i) {
+            g.cmds[0].buttons = 0;
+            g.cmds[0].angles[1] = int32_t(std::lround((10.0f + float(i)) * 65536.0f / 360.0f)) & 0xffff;
+            g.frame();
+        }
+        const game::Vec3 after = origin(g.host.mpClientEntity(a));
+        std::cout << "turret turn moved " << std::fabs(after[0] - before[0]) + std::fabs(after[1] - before[1]) << " clears " << g.game.stateClears - clears << "\n";
+        CHECK(g.game.stateClears == clears);
+        for (int i = 0; i < 40 && g.host.mpClientOnTurret(a); ++i) {
+            g.cmds[0].buttons = int32_t((i % 2) ? game::Button::Activate : 0);
+            g.frame();
+        }
+        g.cmds[0].buttons = 0;
+        for (int i = 0; i < 5; ++i) g.frame();
+        CHECK(!g.host.mpClientOnTurret(a));
+        CHECK(g.game.stateClears == clears);
     }
     for (const auto& e : g.host.vm().errors()) std::cerr << "dm hints script error: " << e << "\n";
 }

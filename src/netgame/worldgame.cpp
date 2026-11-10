@@ -655,9 +655,19 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         }
     }
     const auto o = e->obj->get("origin").asVector();
+    // A map turret holds its user behind the gun every server frame and puts him down on release (thinkPlayerTurret,
+    // releasePlayerTurret through mpClientTurret): the movement goes on from there with its state kept, as the
+    // original's turret code moves the player state itself.
+    const bool onTurretNow = w_->mpClientOnTurret(it->second);
+    if (m.havePs && m.spawnCount == spawns && (onTurretNow || m.turretMoved)) {
+        m.ps.origin = {o[0], o[1], o[2]};
+        m.lastOrigin = {o[0], o[1], o[2]};
+    }
+    m.turretMoved = onTurretNow;
     if (!m.havePs || m.spawnCount != spawns ||
         std::fabs(o[0] - m.lastOrigin[0]) + std::fabs(o[1] - m.lastOrigin[1]) + std::fabs(o[2] - m.lastOrigin[2]) > 0.01f) {
         // A client spawn clears the player state (stance, view height, lean, aim; docs/spec/mp.md "Client spawn").
+        if (m.havePs && m.spawnCount == spawns) ++stateClears;
         if (netTrace && m.havePs && m.spawnCount == spawns)
         {
             std::printf("NETTRACE reset slot=%d moved %.2f %.2f %.2f level=%d cmd=%d; last other write of the origin:\n", slot,
