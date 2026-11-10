@@ -659,6 +659,12 @@ add_test(NAME deathplant COMMAND test_deathplant)
 add_executable(test_deadtank tests/test_deadtank.cpp)
 target_link_libraries(test_deadtank PRIVATE iw2_game)
 add_test(NAME deadtank COMMAND test_deadtank)
+add_executable(test_armoredcar tests/test_armoredcar.cpp)
+target_link_libraries(test_armoredcar PRIVATE iw2_game)
+add_test(NAME armoredcar COMMAND test_armoredcar)
+add_executable(test_playertank tests/test_playertank.cpp)
+target_link_libraries(test_playertank PRIVATE iw2_game)
+add_test(NAME playertank COMMAND test_playertank)
 
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   # The shipped ui_mp menus: createserver -> gametype -> map -> extension panel -> StartServer (docs/spec/mp-ui.md).

@@ -1140,6 +1140,10 @@ public:
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
     }
     void debugDamage(Entity& e, int amount);
+    // Tests: an explosion at a point (the splash of a rocket that went off there).
+    void debugRadiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, const std::string& mod) {
+        radiusDamage(origin, attacker, inner, outer, radius, nullptr, mod);
+    }
     // Tests: pushing a state on an actor's stack at once (request applied); the precacheshellshock names are shellShockNames() above.
     void debugPushAiState(Entity& e, int state) { aiPushState(e, state); aiApplyRequests(e); }
     void debugDamageAt(Entity& e, Entity* attacker, int amount, const Vec3& dir, const std::string& location) {

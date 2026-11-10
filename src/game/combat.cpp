@@ -465,6 +465,12 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         target.obj->set("health", Value(int32_t(health)));
         vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
         if (health < 1) vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
+        // The die callback of the vehicle handlers 9 / 10 (0x512f30): a lethal hit lets the owner out before anything else
+        // (VEH_UnlinkPlayer 0x511780 — exit position, rider's using-vehicle word and pm_flags 0xe0000 cleared, vehicle owner
+        // cleared). The player-vehicle death scripts kill the rider with dodamage after the "death" notify, which only lands
+        // because this ran first (the rider filter 0x512390 would drop it otherwise); docs/spec/vehicles.md.
+        if (health < 1 && target.vehicle && target.vehicle->owner >= 0)
+            if (Entity* rider = entityByNumber(target.vehicle->owner)) unlinkPlayerFromVehicle(target, *rider);
         if (target.classname == "trigger_damage") triggerDamageHit(target, attacker, amount, mod); // entity type 8 pain / die
         return;
     }

@@ -7,7 +7,7 @@ case-insensitively (`World::weapon()` lower-cases them). Fields used by the engi
 
 | Field | Use |
 |---|---|
-| `damage`, `minDamage`, `minDamageRange`, `maxDamageRange` | bullet damage (only `damage` is applied yet) |
+| `damage`, `minDamage`, `minDamageRange`, `maxDamageRange` | bullet damage by distance (`World::fireBullet` → `bulletDamageAtDistance`) |
 | `fireTime` | seconds between shots |
 | `semiAuto`, `boltAction` | `semiAuto 0` fires while the trigger is held; `boltAction 1` rechambers after each shot |
 | `rechamberTime`, `reloadTime`, `reloadEmptyTime`, `raiseTime` | state durations in seconds |
@@ -19,6 +19,17 @@ case-insensitively (`World::weapon()` lower-cases them). Fields used by the engi
 
 The firing, rechamber and reload state machine in `src/game/playerweapon.cpp` is **inferred** from these fields;
 it is not taken from the executable. Weapon changes, melee and offhand grenades follow PM_Weapon (docs/spec/controls.md).
+
+### Damage range defaults (checked)
+
+After a weapon file is parsed the executable normalises the two range fields (0x507630): a `maxDamageRange` that is
+missing or `<= 0` becomes 999999.0 (float bits 0x497423f0), a `minDamageRange` missing or `<= 0` becomes 999999.25
+(0x497423f2). `bulletDamageAtDistance` (0x531090) then returns the full `damage` for every distance below that, so a
+weapon file that names only `damage` deals full damage at any range. The shipped `armoredcar_turret` (the toujane_ride
+armored car gun, `damage 350` and no range keys) is such a file; without the default its bullets fell past
+`maxDamageRange 0` and dealt `minDamage 0` to everything (tests/test_armoredcar.cpp). The player and AI weapons all
+carry explicit range keys, so the default only shows in vehicle turret guns. Implemented in `World::weapon()`, which
+fills the two keys after parsing.
 
 ## View model placement
 

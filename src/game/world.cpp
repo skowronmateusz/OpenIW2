@@ -870,6 +870,15 @@ const std::map<std::string, std::string>* World::weapon(const std::string& name)
             if (!parts.empty() && parts[0] == "WEAPONFILE") {
                 def.emplace();
                 for (size_t i = 1; i + 1 < parts.size(); i += 2) (*def)[lower(parts[i])] = parts[i + 1];
+                // The parsed def is normalised (0x507630): a maxDamageRange missing or <= 0 becomes 999999.0 (0x497423f0),
+                // a minDamageRange missing or <= 0 becomes 999999.25 (0x497423f2), so a weapon that names only `damage`
+                // deals full damage at any distance (docs/spec/weapons.md "Damage range defaults"; the armoredcar turret gun).
+                for (const auto& [key, dflt] : std::initializer_list<std::pair<const char*, const char*>>{
+                         {"maxdamagerange", "999999.0"}, {"mindamagerange", "999999.25"}}) {
+                    const auto it = def->find(key);
+                    const float f = it == def->end() ? 0.0f : float(std::atof(it->second.c_str()));
+                    if (f <= 0.0f) (*def)[key] = dflt;
+                }
             }
         }
         it = weapons_.emplace(key, std::move(def)).first;

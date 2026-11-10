@@ -422,8 +422,18 @@ step at 20 Hz.
   `radiusdamage` (0x4f3e70) passes 0x1c13b08 as the attacker of 0x5289d0. The "damage" / "death" callbacks therefore get an entity, never
   undefined (`_tank.gsc friendlyfire_shield` reads attacker.origin). TODO(spec): the world entity's other fields (origin zero here).
 - freevehicle (0x511c80..0x511d83) has no rider handling: health 0, think sounds silenced (0x510be0), the two sound entities (+0x1f0 / +0x1f4)
-  freed, +0x116 = 0xb, take-damage (+0x111) and +0x112 cleared, trajectories (+0x10 / +0x14 / +0x38) zeroed, vehicle data detached (+0x108 = 0); it writes neither the contents (+0xc0) nor the brush model (+0xe), see "Collision after destruction". Riders on death are script behaviour only
+  freed, +0x116 = 0xb, take-damage (+0x111) and +0x112 cleared, trajectories (+0x10 / +0x14 / +0x38) zeroed, vehicle data detached (+0x108 = 0); it writes neither the contents (+0xc0) nor the brush model (+0xe), see "Collision after destruction". AI riders leaving on death are script behaviour
   (_tankai.gsc endon("death") on the tank). Running level (libya, IW2_KILL_VEHICLES): 13 of 14 vehicles become script_vehicle_corpse.
+- The rider is not freed by freevehicle because the player is already out by then: G_Damage (0x528050) with health below 1 notifies "death"
+  (0x52848f) and then runs the handler's die callback (0x5284e0, table 0x5a5748), and the vehicle handlers 9 / 10 use 0x512f30, whose first act
+  is to let the owner out: with the vehicle's owner word (+0xf4) not 0x7ff it calls VEH_UnlinkPlayer (0x511780), which places the rider at the
+  exit point, clears the rider's using-vehicle word and pm_flags 0xe0000, clears the vehicle's owner word and the occupied bit (vehicle info
+  +0x174 bit 0), then (for a team 1 / 2 sentient attacker) applies the body jolt. This is what makes the shipped player-vehicle death scripts
+  work: `maps/_vehicledrive.gsc` `vehicle_kill_player_ondeath` waits for the vehicle's "death" and kills the player with repeated `dodamage`,
+  and `maps/toujane_ride.gsc` `armored_car_death` does the same once — a `dodamage` on a client still flagged as riding would be dropped by
+  the G_Damage rider filter (0x5280a5 → 0x512390, docs/spec/weapons.md "G_Damage order"), so without the engine-side unlink the player survives
+  the wreck and keeps driving it (88ridge crusader_player; tests/test_playertank.cpp). Implemented in `World::damage`: the non-actor death
+  branch unlinks the rider after the "death" notify, before the trigger die handling.
 - Vehicle weapons end to end (libya, IW2_FIRE_VEHICLES): "turret_fire" makes _tank.gsc shoot() call fireturret: 14 rockets, 0 errors.
 - Touch callbacks and script movers (eType 5) in 0x50ff00: implemented, see "Touch scan 0x50ff00" below.
 

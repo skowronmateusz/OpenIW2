@@ -394,7 +394,7 @@ rows start at 0x5a5c20; the method tables are read the same way.
 | `getweaponslotclipammo` | 0x53a4d0 | 0 | yes |
 | `setweaponslotclipammo` | 0x53a620 | 0 | yes |
 | `setweaponclipammo` | 0x53a830 | 0 | yes |
-| `enablehealthshield` | 0x53a940 | 0 | yes |
+| `enablehealthshield` | 0x53a940 | 0 | yes (no-op) |
 | `setclientdvar` | 0x53a9f0 | 0 |  |
 | `getenemysqdist` | 0x53c230 | 0 |  |
 | `getclosestenemysqdist` | 0x53c290 | 0 | yes |
@@ -485,6 +485,17 @@ Read from the executable bytes (`c3 cc cc cc` at each address): `playrumble` 0x4
 `giveachievement` 0x4f8b50. `bullettracer` (0x4ee830) allocates a temp entity of event 0xb2 (type 0xc1) holding a vector at +0x64, but the
 client event switch (0x4cbea9, event - 9, byte table 0x4cc04c, jump table 0x4cc02c) sends index 0xb8 (byte 7) to the default exit 0x4cc023, so
 nothing reads it. All five are registered as empty built-ins.
+
+## Accepted but not modelled: `enablehealthshield` (0x53a940)
+
+The original writes its boolean argument to playerState +0x86b5 of the entity's client; the flag starts as 1 at client spawn (0x4e9289)
+and G_Damage reads it after subtracting the health (0x528404), then calls 0x527f00, which compares the playerState words +0x86b0 / +0x86b4
+against the level time (0x1c60534) and can hold a lethal hit at 1 health (0x527fb9) for the means of death it selects
+(TODO(spec): the meaning of the two words and the rest of 0x527f00 — the near-death "shield" of the campaign). openiw2 accepts the
+call and does nothing: no engine code reads a shield flag, so player death itself works without it. The shipped vehicle death scripts
+(`maps/_vehicledrive.gsc` `vehicle_kill_player_ondeath`, `maps/toujane_ride.gsc` `armored_car_death`) wrap their `dodamage` in
+`enablehealthshield(false)` / `(true)`; what actually lets that `dodamage` kill the rider is the engine-side unlink on the vehicle's
+death (docs/spec/vehicles.md "Damage attacker, death and corpse"), not this flag.
 
 ## Implementation audit (counting stubs)
 
