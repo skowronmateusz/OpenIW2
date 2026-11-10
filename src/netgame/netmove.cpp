@@ -100,6 +100,16 @@ net::UserCmd makeUserCmd(int serverTime, uint32_t buttons, float forward, float 
     return uc;
 }
 
+int viewAngleDelta(float angle, int32_t cmdAngle) {
+    return ((int32_t(angle * (65536.0f / 360.0f)) & 0xffff) - cmdAngle) & 0xffff;
+}
+
+net::UserCmd withDeltaAngles(const net::UserCmd& cmd, const int (&delta)[3]) {
+    net::UserCmd c = cmd;
+    for (int i = 0; i < 3; ++i) c.angles[i] = (cmd.angles[i] + delta[i]) & 0xffff;
+    return c;
+}
+
 PsFields readPs(const std::vector<uint8_t>& ps) {
     PsFields f;
     if (ps.size() < static_cast<size_t>(net::kPlayerStateSize)) return f;
@@ -121,6 +131,7 @@ PsFields readPs(const std::vector<uint8_t>& ps) {
     f.weapon = getI(ps, 212);
     f.eventSequence = getI(ps, 164) & 0xff;
     for (int i = 0; i < 4; ++i) f.events[i] = getI(ps, 168 + 4 * i);
+    for (int i = 0; i < 3; ++i) f.deltaAngles[i] = getI(ps, 84 + 4 * i) & 0xffff;
     return f;
 }
 
@@ -140,6 +151,7 @@ void writePs(std::vector<uint8_t>& ps, const PsFields& f) {
     putI(ps, 1428, f.viewLockEntity);
     putI(ps, 52, f.weaponTime);
     putI(ps, 216, f.weaponState);
+    for (int i = 0; i < 3; ++i) putI(ps, 84 + 4 * i, f.deltaAngles[i] & 0xffff);
 }
 
 game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsFields& server,
@@ -161,7 +173,7 @@ game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsField
     }
     for (const net::UserCmd& c : commands) {
         if (c.serverTime <= server.commandTime) continue;
-        runUsercmd(world, ps, c, prev, weapon, passEntity, (server.pmFlags & 0x8000) != 0);
+        runUsercmd(world, ps, withDeltaAngles(c, server.deltaAngles), prev, weapon, passEntity, (server.pmFlags & 0x8000) != 0);
         prev = c.serverTime;
     }
     return ps;
@@ -191,7 +203,7 @@ const game::PlayerState& Predictor::predict(const game::CollisionWorld& world, c
     const bool held = (server.eFlags & 0x300) != 0;
     for (const net::UserCmd& c : commands) {
         if (c.serverTime <= server.commandTime) continue;
-        if (!held) runUsercmd(world, ps, c, prev, weapon, passEntity, (server.pmFlags & 0x8000) != 0);
+        if (!held) runUsercmd(world, ps, withDeltaAngles(c, server.deltaAngles), prev, weapon, passEntity, (server.pmFlags & 0x8000) != 0);
         prev = c.serverTime;
         history_[c.serverTime] = ps;
         // The prediction for the command the last frame ended on: a difference is a correction, drawn away over

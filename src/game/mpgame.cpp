@@ -414,6 +414,8 @@ void World::registerMpBuiltins() {
         cl.knockbacks.clear();
         cl.damageTimerMs = cl.damageDurationMs = 0;
         ++cl.spawnCount;
+        cl.setViewAngles = {a[0], a[1], a[2]};  // ClientSpawn sets the view (0x80f940e -> SetClientViewAngle)
+        ++cl.viewAngleSets;
         if (e == player_) {
             playerTeleport_ = o;
             playerViewAngles_ = a;
@@ -716,6 +718,11 @@ void World::registerMpBuiltins() {
             clientCommands_.resize(std::min(commands, clientCommands_.size()));
             MpClient& m = mp_->clients[size_t(cl)];
             if (n == "freezecontrols") m.controlsFrozen = c.arg(0).truthy(); // 0x80fd204: the client field +0x27b4
+            if (n == "setplayerangles" && c.arg(0).isVector()) { // 0x80fa964 -> SetClientViewAngle: the client's delta_angles
+                const Vec3 a = c.arg(0).asVector();
+                m.setViewAngles = {a[0], a[1], a[2]};
+                ++m.viewAngleSets;
+            }
             if (n == "setplayerangles" && bots_)
                 for (MpBot& b : bots_->bots)
                     if (b.client == cl) {

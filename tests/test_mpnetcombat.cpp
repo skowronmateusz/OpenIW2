@@ -19,6 +19,7 @@
 #include "net/gameclient.h"
 #include "net/server.h"
 #include "netgame/netcombat.h"
+#include "netgame/netmove.h"
 #include "netgame/remoteview.h"
 #include "netgame/worldgame.h"
 
@@ -110,6 +111,11 @@ struct Game {
         const float dx = at[0] - o[0], dy = at[1] - o[1], dz = at[2] - (o[2] + 60.0f);
         cmds[i].angles[1] = angleShort(std::atan2(dy, dx) * 180.0f / float(M_PI));
         cmds[i].angles[0] = angleShort(-std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * 180.0f / float(M_PI));
+        // The server adds the client's delta_angles to the command (as a real client, send the view minus it).
+        if (const net::ClientSnapshot* s = clients[i]->latest()) {
+            const netgame::PsFields f = netgame::readPs(s->ps);
+            for (int k = 0; k < 2; ++k) cmds[i].angles[k] = (cmds[i].angles[k] - f.deltaAngles[k]) & 0xffff;
+        }
     }
     // Moves a player next to `target` where the line between them is clear (the movement restarts there).
     bool placeNear(Entity* p, Entity* target, float dist) {
@@ -204,9 +210,48 @@ void dm(fs::Vfs& vfs) {
         CHECK(sl != dv.end() && !sl->second.empty());
         CHECK(tl != dv.end() && !tl->second.empty());
     }
+    // The clients look somewhere else than the spawn points face: the spawn turns their view by delta_angles.
+    g.cmds[0].angles[1] = angleShort(123.0f);
+    g.cmds[1].angles[1] = angleShort(-40.0f);
     g.host.mpAutoJoin(a);
     g.host.mpAutoJoin(b);
     for (int i = 0; i < 100; ++i) g.frame();
+    // View angles set by the server (docs/spec/net.md section 10 "View angles"): after the spawn the player state's view
+    // is the spawn point's yaw, delta_angles carries the difference to the client's command angles, and the commands
+    // keep their angles (the client's view is command + delta).
+    auto viewOf = [&](size_t ci, float& yaw, float& viaDelta) {
+        const net::ClientSnapshot* snap = g.clients[ci]->latest();
+        if (!snap) return false;
+        const netgame::PsFields f = netgame::readPs(snap->ps);
+        yaw = f.viewangles[1];
+        const net::UserCmd moved = netgame::withDeltaAngles(g.cmds[ci], f.deltaAngles);
+        viaDelta = float(moved.angles[1] & 0xffff) * 360.0f / 65536.0f;
+        return true;
+    };
+    auto sameAngle = [](float x, float y) { return std::fabs(std::remainder(x - y, 360.0f)) < 0.05f; };
+    {
+        float yaw = 0, viaDelta = 0;
+        const Value ea = g.host.mpClientEntity(a)->obj->get("angles");
+        const float spawnYaw = ea.isVector() ? ea.asVector()[1] : -999.0f;
+        CHECK(viewOf(0, yaw, viaDelta));
+        std::cout << "spawn view alpha: ps yaw " << yaw << " command+delta " << viaDelta << " entity " << spawnYaw << "\n";
+        CHECK(sameAngle(yaw, spawnYaw) && sameAngle(viaDelta, spawnYaw));
+        CHECK(!sameAngle(spawnYaw, 123.0f));
+        // setPlayerAngles on a network client: its view goes there the same way.
+        std::vector<Value> args{Value(script::Vec3{10.0f, 77.0f, 0.0f})};
+        script::Thread t;
+        script::CallContext cc{g.host.vm(), t, Value(g.host.mpClientEntity(b)->obj), std::span<Value>(args)};
+        g.host.vm().builtin("setplayerangles")(cc);
+        for (int i = 0; i < 6; ++i) g.frame();
+        CHECK(viewOf(1, yaw, viaDelta));
+        std::cout << "setplayerangles bravo: ps yaw " << yaw << " command+delta " << viaDelta << "\n";
+        CHECK(sameAngle(yaw, 77.0f) && sameAngle(viaDelta, 77.0f));
+        const netgame::PsFields fb = netgame::readPs(g.clients[1]->latest()->ps);
+        CHECK(std::fabs(fb.viewangles[0] - 10.0f) < 0.05f);
+        g.cmds[0].angles[1] = 0;
+        g.cmds[1].angles[1] = 0;
+        for (int i = 0; i < 4; ++i) g.frame();
+    }
     const netgame::NetCombat* ca = g.game.combat(g.slotOf(a));
     const netgame::NetCombat* cb = g.game.combat(g.slotOf(b));
     CHECK(ca && cb);

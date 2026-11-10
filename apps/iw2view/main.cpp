@@ -4724,6 +4724,7 @@ int main(int argc, char** argv) {
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
+        int netDeltaApplied[3] = {0, 0, 0}; // the server's delta_angles the view has turned by (ps+84)
         netgame::Predictor netPredictor; // network game: own-player prediction (docs/spec/net.md section 10)
         netgame::PredictedWeapon netPredictedWeapon; // network game: own weapon, counters and shots (docs/spec/net.md section 10)
         int netWeaponSnapshot = -1; // the snapshot message the predicted weapon was last compared with
@@ -9743,8 +9744,20 @@ int main(int argc, char** argv) {
                         weaponByte = wi;
                         break;
                     }
-                const net::UserCmd uc = netgame::makeUserCmd(netClient->commandTime(nowNet), buttons, forward, right, cam.pitch,
-                                                             cam.yaw, weaponByte);
+                // The view the server set (delta_angles, docs/spec/net.md section 10 "View angles"): the drawn view is
+                // the command's angles plus the delta, so a new delta turns the view by its change and the commands go
+                // out without it.
+                if (const net::ClientSnapshot* s0 = netClient->latest()) {
+                    const netgame::PsFields f0 = netgame::readPs(s0->ps);
+                    const int dp = int16_t((f0.deltaAngles[0] - netDeltaApplied[0]) & 0xffff);
+                    const int dy = int16_t((f0.deltaAngles[1] - netDeltaApplied[1]) & 0xffff);
+                    cam.pitch = std::clamp(cam.pitch + float(dp) * 360.0f / 65536.0f, -89.0f, 89.0f);
+                    cam.yaw += float(dy) * 360.0f / 65536.0f;
+                    for (int k = 0; k < 3; ++k) netDeltaApplied[k] = f0.deltaAngles[k];
+                }
+                net::UserCmd uc = netgame::makeUserCmd(netClient->commandTime(nowNet), buttons, forward, right, cam.pitch,
+                                                       cam.yaw, weaponByte);
+                for (int k = 0; k < 3; ++k) uc.angles[k] = (uc.angles[k] - netDeltaApplied[k]) & 0xffff;
                 netClient->sendCommand(uc, nowNet);
                 if (const net::ClientSnapshot* snap = netClient->latest()) {
                     const netgame::PsFields f = netgame::readPs(snap->ps);

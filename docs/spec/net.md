@@ -907,6 +907,22 @@ The local game (no commands) keeps its per-frame weapon step, at most 100 ms.
   death) is dropped by the dead weapon step, so the next life's view weapon is its own weapon. TODO(spec): the VA of
   the server spawn's player state clear.
 
+### View angles
+
+- SetClientViewAngle (0x80f85d8 in the 1.3 Linux dedicated server; callers: ClientSpawn 0x80f940e, which the `spawn`
+  method runs for a playing and for an intermission spawn, `setPlayerAngles` 0x80fa964, and the turret and
+  further game paths at 0x80ff47e, 0x810a78b, 0x811de41) sets, for each axis, delta_angles (ps+0x54, wire fields
+  `delta_angles[0..2]`, 16 bits) to the wanted angle as a 16-bit angle (times 65536 / 360, truncated, & 0xffff) minus
+  the angle of the client's last command (client +0x26d4), then the entity's angles and the player state's viewangles
+  (ps+0xe8) to the wanted angle. A prone player first gets its yaw limited (0x80f85f1..0x80f8866, TODO(spec)).
+- The movement adds delta_angles to every command's angles (16 bits) before it uses them, on the server and in the
+  client's prediction alike. The client keeps sending its own accumulated view (cl.viewangles) as the command angles;
+  its drawn view is those angles plus the player state's delta, so the view turns to the server's angle at once and
+  later mouse input continues from there. openiw2's front end keeps the drawn view in its camera: when the snapshot's
+  delta changes, the camera turns by the change, and the command angles sent are the camera minus the delta (the same
+  sum). Intermission (pm_type 5) ignores the view input (`viewInputIgnored`), so the view stays at the intermission
+  spawn's angles there.
+
 ### Predicted weapon
 
 In the original the weapon is part of the predicted player state: every frame starts from the snapshot's copy

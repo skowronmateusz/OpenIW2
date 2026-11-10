@@ -211,6 +211,11 @@ private:
         EventRing entityRing;
         int psEventsDone = 0;     // ps.eventSeq already copied
         int combatEventsDone = 0; // combat ring sequence already copied
+        // The view set by the server (docs/spec/net.md section 10 "View angles"): delta_angles (ps+84) and the raw
+        // angles of the last command, which SetClientViewAngle subtracts.
+        int deltaAngles[3] = {0, 0, 0};
+        int32_t lastCmdAngles[3] = {0, 0, 0};
+        int viewAngleSetsSeen = 0;
     };
     struct Event {
         int number = 0;

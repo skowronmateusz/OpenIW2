@@ -330,8 +330,10 @@ movement) must not reach the local player when `self` is another client (a bot o
   local player; frozen controls are kept per client and `setPlayerAngles` turns a bot. `getPlayerAngles` and
   `getStance` answer from that client's movement (a bot's controller, a network client's animation input),
   `playerADS` from its aim; `isFiring`, `isMeleeing`, `isThrowingGrenade` and `getNormalizedMovement` return 0.
-  TODO(spec): the effect of these on a network client (the original keeps them in that client's player state; this
-  port has no wire field for them yet) and the input queries of non-local clients.
+  `setPlayerAngles` on a network client and that client's spawn set its delta_angles (docs/spec/net.md section 10
+  "View angles"), so its own view turns there. TODO(spec): the effect of the others on a network client (the original
+  keeps them in that client's player state; this port has no wire field for them yet) and the input queries of
+  non-local clients.
 
 ## Local clients
 

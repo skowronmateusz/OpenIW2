@@ -58,6 +58,10 @@ struct MpClient {
     int shockDurationMs = 0;
     // Client spawns so far: ClientSpawn clears the whole player state, so the movement of the client restarts.
     int spawnCount = 0;
+    // SetClientViewAngle (0x80f85d8) requests of the spawn and setPlayerAngles for this client: the angles and a count
+    // of requests, which the network game turns into the client's delta_angles.
+    std::array<float, 3> setViewAngles{};
+    int viewAngleSets = 0;
     std::vector<KnockbackHit> knockbacks; // finishPlayerDamage's pushes not yet applied to the client's movement
     // The damage timer of finishPlayerDamage (ps+0x90 / +0x94 / +0x98; the third-person stumbles read it).
     int damageTimerMs = 0, damageDurationMs = 0;

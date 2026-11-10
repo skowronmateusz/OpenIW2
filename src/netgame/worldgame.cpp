@@ -698,6 +698,20 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     // playing client at 0 health is dead too (no weapon, no lean).
     m.ps.pmType = game::mpClientPmType(game::mpSessionStateNumber(e->obj->get("sessionstate").toString()));
     if (const Value hp = e->obj->get("health"); m.ps.pmType == 0 && hp.isNumber() && hp.asFloat() <= 0) m.ps.pmType = 6;
+    // The view the server sets (spawn, intermission spawn, setPlayerAngles: SetClientViewAngle 0x80f85d8): delta_angles
+    // = the wanted angle as a 16-bit angle minus the last command's angle; every command's angles get the delta added
+    // (PM_UpdateViewAngles), so the client's view turns there although its own angles do not jump.
+    {
+        const game::MpClient& vc = w_->mpState().clients[size_t(it->second)];
+        if (vc.viewAngleSets != m.viewAngleSetsSeen) {
+            m.viewAngleSetsSeen = vc.viewAngleSets;
+            for (int k = 0; k < 3; ++k) m.deltaAngles[k] = viewAngleDelta(vc.setViewAngles[size_t(k)], m.lastCmdAngles[k]);
+            m.viewPitch = vc.setViewAngles[0];
+            m.viewYaw = vc.setViewAngles[1];
+        }
+        for (int k = 0; k < 3; ++k) m.lastCmdAngles[k] = cmd.angles[k] & 0xffff;
+        cmd = withDeltaAngles(cmd, m.deltaAngles);
+    }
     // The movement shared with the client's prediction (src/netgame/netmove.cpp), with this client's weapon state.
     const game::PlayerInput in = inputFromUsercmd(cmd);
     const WeaponMove wm = m.combat->move();
@@ -759,12 +773,15 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         script::OriginWatch::enabled = true;
         script::OriginWatch::object[slot] = e->obj.get();
     }
-    e->obj->set("angles", Value(script::Vec3{0.0f, in.yaw, 0.0f}));
+    // Intermission ignores the view input (viewInputIgnored): the view stays where the server set it.
+    if (!viewInputIgnored(m.ps.pmType)) {
+        m.viewPitch = in.pitch;
+        m.viewYaw = in.yaw;
+    }
+    e->obj->set("angles", Value(script::Vec3{0.0f, m.viewYaw, 0.0f}));
     e->velocity = {m.ps.velocity[0], m.ps.velocity[1], m.ps.velocity[2]};
-    m.viewPitch = in.pitch;
-    m.viewYaw = in.yaw;
     w_->mpSetButtons(it->second, static_cast<uint32_t>(held.buttons));
-    w_->mpSetView(it->second, script::Vec3{in.pitch, in.yaw, 0.0f}, m.ps.viewHeight);
+    w_->mpSetView(it->second, script::Vec3{m.viewPitch, m.viewYaw, 0.0f}, m.ps.viewHeight);
     w_->mpSetViewState(it->second, game::mpViewStateOf(m.combat->weapon(), m.ps)); // the recorded view state (killcam)
     w_->mpSetClientGround(it->second, m.ps.onGround, m.combat->weapon().fuseMs(), m.combat->weapon().stateNumber(), m.ps.mantling);
     // The animation input of this client (src/game/mpplayers.cpp): stance and moves as for the local player.
@@ -1160,6 +1177,7 @@ net::SnapshotView WorldGame::snapshot(int slot) {
     }
     putF(v.ps, 232, m.viewPitch);  // viewangles
     putF(v.ps, 236, m.viewYaw);
+    for (int k = 0; k < 3; ++k) putI(v.ps, 84 + 4 * k, m.deltaAngles[k] & 0xffff);  // delta_angles
     putI(v.ps, 204, std::max(0, self));  // clientNum
     // groundEntityNum: 1022 (the world) on the ground, 1023 none (observed with the 1.3 server; standing on another
     // entity is not tracked, TODO(spec)).

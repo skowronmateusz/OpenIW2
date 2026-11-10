@@ -473,7 +473,14 @@ struct Run {
             }
         }
         if (i == 0) st.clockLastMs = netNow, st.clockLastCmd = clientTime;
-        c.gc->sendCommand(netgame::makeUserCmd(clientTime, btn, fwd, 0, 0, c.yaw, weaponByte), netNow);
+        // The client's view direction c.yaw is the command plus the server's delta_angles (docs/spec/net.md section 10
+        // "View angles"): the command carries the view minus the delta.
+        net::UserCmd uc = netgame::makeUserCmd(clientTime, btn, fwd, 0, 0, c.yaw, weaponByte);
+        if (const net::ClientSnapshot* ds = c.gc->latest()) {
+            const netgame::PsFields df = netgame::readPs(ds->ps);
+            for (int k = 0; k < 3; ++k) uc.angles[k] = (uc.angles[k] - df.deltaAngles[k]) & 0xffff;
+        }
+        c.gc->sendCommand(uc, netNow);
         if (!last) return;
         const netgame::PsFields f = netgame::readPs(last->ps);
         if (c.predictorGamestate != c.gc->gamestates) {
