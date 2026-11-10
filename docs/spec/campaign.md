@@ -34,6 +34,14 @@ appear as bare addresses, resolved with `read_bytes`.
   listed ones become `current`, others untouched.
 - `objective_ring(index)`: toggles the `ring` key (`ring` = 1 when it was 0/missing).
 - `objective_delete(index)`: clears the configstring.
+- Positions that come from `getorigin` (0x4ee250): an entity with the brush-model flag (ent +0xa1, set when the model is a
+  BSP submodel, 0x447808, and read by SV_LinkEntity 0x44b2d0) answers the centre of its linked world box (absmin +0xc4 and
+  absmax +0xd0, each half-summed); any other entity answers its current origin (+0xdc). A trigger or `script_brushmodel` has no
+  `origin` key, its origin stays zero and the box comes from the submodel bounds, so its `getorigin` is the bounds centre.
+  The compass skips a zero position, so a zero here would show no star. Eldaba (maps/eldaba.gsc:3057-3059) places the
+  "recover the documents" objective (index 3 when no `jumpto` is set) with `getorigin` of the origin-less `documents`
+  trigger_use; with the origin key read instead the star was missing. Implemented in the `getorigin` built-in
+  (`src/game/world.cpp`, box as in `brushLinkBounds`); test `getorigin_world`.
 
 ## Compass (hud.menu "Compass", ownerdraws 84–89)
 

@@ -1,4 +1,5 @@
 #include "game/world.h"
+#include "game/axis.h"
 #include "game/actorfields.h"
 #include "game/actorslide.h"
 #include "game/clientinput.h"
@@ -2060,7 +2061,21 @@ void World::registerBuiltins() {
     });
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
-    vm_.registerBuiltin("getorigin", [](CallContext& c) { return c.self.asObject()->get("origin"); });
+    // getorigin (0x4ee250): an entity with the brush-model flag (ent +0xa1, set by SV_SetBrushModel 0x447808, read by SV_LinkEntity
+    // 0x44b2d0) answers the centre of its linked world box (absmin +0xc4 / absmax +0xd0, each half-summed); every other entity its
+    // currentOrigin (+0xdc). A brush model's box is its model bounds moved by the origin (rotated ones: brushLinkBounds), so a
+    // trigger or script_brushmodel without an "origin" key answers its centre, not (0, 0, 0).
+    vm_.registerBuiltin("getorigin", [this](CallContext& c) {
+        const auto o = c.self.asObject();
+        const Value ov = o->get("origin");
+        const Value m = o->get("model");
+        Vec3 mn, mx;
+        if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) return ov;
+        const Vec3 org = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+        const Value av = o->get("angles");
+        brushLinkBounds(av.isVector() ? av.asVector() : Vec3{0, 0, 0}, mn, mx);
+        return Value(Vec3{org[0] + (mn[0] + mx[0]) * 0.5f, org[1] + (mn[1] + mx[1]) * 0.5f, org[2] + (mn[2] + mx[2]) * 0.5f});
+    });
     vm_.registerBuiltin("isalive", [this](CallContext& c) {
         Entity* e = entityOf(c.arg(0));
         return Value(e && !e->obj->removed && e->obj->get("health").isDefined() && e->obj->get("health").asInt() > 0);
