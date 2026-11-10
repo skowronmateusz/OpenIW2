@@ -206,6 +206,11 @@ private:
         bool turretMoved = false; // on a map turret at the last think, or the turret code moved the client since
         float viewPitch = 0, viewYaw = 0;
         std::shared_ptr<NetCombat> combat = std::make_shared<NetCombat>();  // the weapon side (netcombat.h)
+        // The client entity's event ring (docs/spec/net.md section 13): the new movement events of ps (footsteps,
+        // jumps, landings) and the weapon events of the combat ring, in the order the command produced them.
+        EventRing entityRing;
+        int psEventsDone = 0;     // ps.eventSeq already copied
+        int combatEventsDone = 0; // combat ring sequence already copied
     };
     struct Event {
         int number = 0;

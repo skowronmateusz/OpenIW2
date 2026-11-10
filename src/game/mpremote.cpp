@@ -2,6 +2,7 @@
 // shows the map, the local player and the other players as puppets placed from snapshots.
 #include "game/mpgame.h"
 #include "game/mpplayers.h"
+#include "game/playerevents.h"
 #include "game/world.h"
 
 #include <cmath>
@@ -138,7 +139,9 @@ void World::mpRemotePlayerEvent(int client, int event, const std::string& weapon
     case 0x97: play({"reloadEmptySound", "reloadSound"}); if (pi) pi->reloaded = true; break;  // EV_RELOAD_FROM_EMPTY
     case 0xa3: play({"meleeSwipeSound"}); break;                                                // EV_MELEE_SWIPE
     case 0xa6: play({"fireSound"}); break;                                                      // EV_USE_OFFHAND (the throw)
-    default: break;
+    default:  // footsteps, jumps, landings (1..0x8b): another player's movement sounds
+        otherPlayerMoveEventSound(*e, event);
+        break;
     }
 }
 
@@ -148,7 +151,14 @@ void World::mpRemoteFollowEvent(int event, const std::string& weapon) {
 }
 
 void World::mpFollowEventSound(int event, const std::string& weapon) {
-    if (!mp_ || weapon.empty() || !this->weapon(weapon)) return;
+    if (!mp_) return;
+    if (event >= 1 && event <= 0x8b) {  // the followed player's steps: its view is the camera, so the own "_plr" sounds
+        const auto it = cvars.find("cg_footsteps");
+        const bool footsteps = it == cvars.end() || it->second.empty() || std::atoi(it->second.c_str()) != 0;
+        for (const std::string& alias : playerEventSounds(event, footsteps, true)) startSound(alias, nullptr);
+        return;
+    }
+    if (weapon.empty() || !this->weapon(weapon)) return;
     auto play = [&](std::initializer_list<const char*> keys) {
         for (const char* k : keys) {
             const std::string a = weaponField(weapon, k);

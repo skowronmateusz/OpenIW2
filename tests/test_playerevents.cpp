@@ -86,6 +86,19 @@ int main() {
         CHECK(playerEventSounds(0x74 + 22, false) == (V{"land_plr_asphalt", "land_damage"}));
         CHECK(playerEventSounds(0x8c, true).empty());
         CHECK(playerEventSounds(0, true).empty());
+        // Another player's events (MP 0x4e0a64..0x4e0ca2): the same families without "_plr", gated alike.
+        CHECK(playerEventSounds(1 + 6, true, false) == (V{"step_run_dirt", "gear_rattle_run"}));
+        CHECK(playerEventSounds(1 + 6, false, false) == (V{"gear_rattle_run"}));
+        CHECK(playerEventSounds(0x18 + 21, true, false) == (V{"step_walk_wood", "gear_rattle_walk"}));
+        CHECK(playerEventSounds(0x2f + 10, true, false) == (V{"step_prone_grass", "gear_rattle_walk"}));
+        CHECK(playerEventSounds(0x46 + 5, false, false) == (V{"step_run_concrete", "gear_rattle_run"}));
+        CHECK(playerEventSounds(0x5d + 19, true, false) == (V{"land_snow"}));
+        CHECK(playerEventSounds(0x74 + 2, true, false) == (V{"land_brick", "land_damage"}));
+        CHECK(playerEventSounds(0x9e, true, false).empty());
+        // The player state to entity state copy skips the stance / mantle events and 0xb9 / 0xba only.
+        CHECK(playerStateEventSentToEntity(1 + 6) && playerStateEventSentToEntity(0x8b) && playerStateEventSentToEntity(0x9e));
+        CHECK(playerStateEventSentToEntity(0x90) && playerStateEventSentToEntity(0xb8) && playerStateEventSentToEntity(0xbb));
+        for (int ev : {0x8c, 0x8d, 0x8e, 0x8f, 0xb9, 0xba}) CHECK(!playerStateEventSentToEntity(ev));
     }
 
     // Fall damage: percent * 0.01f in single precision, 1.1 from 100 percent.

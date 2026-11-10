@@ -23,7 +23,16 @@ const char* bulletTraceSurfaceType(float fraction, unsigned surfaceFlags);
 //   0x5d..0x73 landings: land_plr_<surface>;
 //   0x74..0x8a hard landings: land_plr_<surface> and land_damage.
 // Other events give no sound. `footsteps` is the cg_footsteps dvar (default 1).
-std::vector<std::string> playerEventSounds(int ev, bool footsteps);
+// `local` is the cgame's own-player test of the event handler (MP 0x4e09c9: a first-person snapshot, flags 0xc00000,
+// and the event's entity is the player state's clientNum); any other player's event uses the same families without
+// "_plr" (step_run_<surface>, step_walk_, step_prone_, land_<surface>, gear_rattle_run / _walk, the land_damage of a hard
+// landing; tables registered at MP 0x4bf9f0..0x4bfaf6, chosen at MP 0x4e0a64..0x4e0ca2), started at that entity.
+std::vector<std::string> playerEventSounds(int ev, bool footsteps, bool local = true);
+
+// The player-state events the server copies into the player's entity event ring (MP server 0x80e00d2..0x80e01b7 in
+// the 1.3 Linux dedicated server: every new event of the player state's ring, with its parameter, except those of the
+// list at 0x815486c: 0x8c..0x8f and 0xb9 / 0xba).
+bool playerStateEventSentToEntity(int ev);
 
 // ClientEvents (0x4e75f0), events 0x74..0x8a with the damage percent as parameter: the damage is
 // trunc(maxHealth * factor), factor 1.1 from 100 percent up (0x56fe28), else percent * 0.01 (0x591ea0); 0 when the

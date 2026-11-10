@@ -902,6 +902,7 @@ public:
     // The fall damage of a landing event (0x74..0x8a) on a client entity: ClientEvents (SP 0x4e75f0, MP 0x80f52da) -> G_Damage with
     // MOD_FALLING; in multiplayer that goes to CodeCallback_PlayerDamage (docs/spec/mp-pmove.md).
     void clientFallEvent(Entity& client, int ev, int parm);
+    void otherPlayerMoveEventSound(const Entity& client, int ev);
     // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
     // name index (1-based, 0 = none), the start time and the duration; shellShockRecord() is the loaded record, null
     // without an active shock. The shock is over once timeMs() >= startMs + durationMs.

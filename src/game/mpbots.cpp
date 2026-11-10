@@ -2,6 +2,7 @@
 // here a controller produces their player input every server frame. Reused engine parts: pmove (docs/spec/pmove.md),
 // bullet fire and damage (FireWeapon / Bullet_Fire path, combat.cpp), the AI accuracy graphs (docs/spec/ai.md).
 #include "game/mpbots.h"
+#include "game/playerevents.h"
 #include "game/bulletdamage.h"
 #include "game/world.h"
 
@@ -1050,8 +1051,14 @@ void World::mpBotFrame(MpBot& b) {
     mpBotMeasureStall(b, !fighting && !traverse && (in.forward != 0 || in.right != 0), dist3(originBefore, b.ps.origin), moveDir);
     // The step's landing events give fall damage like any client's (ClientEvents, docs/spec/mp-pmove.md).
     if (b.ps.eventSeq - b.eventsDone > 4) b.eventsDone = b.ps.eventSeq - 4;
-    for (; b.eventsDone < b.ps.eventSeq; ++b.eventsDone)
-        clientFallEvent(*e, b.ps.events[b.eventsDone & 3], b.ps.eventParms[b.eventsDone & 3]);
+    // The same events go to the bot's entity event ring (the player state to entity state copy, docs/spec/net.md
+    // section 13) and are heard here as another player's steps.
+    for (; b.eventsDone < b.ps.eventSeq; ++b.eventsDone) {
+        const int ev = b.ps.events[b.eventsDone & 3];
+        clientFallEvent(*e, ev, b.ps.eventParms[b.eventsDone & 3]);
+        if (playerStateEventSentToEntity(ev)) mpPushClientEvent(b.client, ev, std::string());
+        otherPlayerMoveEventSound(*e, ev);
+    }
     e->obj->set("origin", Value(Vec3{b.ps.origin[0], b.ps.origin[1], b.ps.origin[2]}));
     e->obj->set("angles", Value(Vec3{0, b.yaw, 0}));
     e->velocity = {b.ps.velocity[0], b.ps.velocity[1], b.ps.velocity[2]};

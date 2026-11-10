@@ -20,25 +20,31 @@ const char* bulletTraceSurfaceType(float fraction, unsigned surfaceFlags) {
     return surface > 0 && surface < 23 ? kNames[surface] : "default";
 }
 
-std::vector<std::string> playerEventSounds(int ev, bool footsteps) {
+bool playerStateEventSentToEntity(int ev) {
+    return !(ev >= 0x8c && ev <= 0x8f) && ev != 0xb9 && ev != 0xba;
+}
+
+std::vector<std::string> playerEventSounds(int ev, bool footsteps, bool local) {
     std::vector<std::string> out;
-    auto with = [&](const char* family, int base) { out.push_back(std::string(family) + "_" + surfaceAliasName(ev - base)); };
+    const std::string plr = local ? "_plr" : "";
+    auto with = [&](const char* family, int base) { out.push_back(std::string(family) + plr + "_" + surfaceAliasName(ev - base)); };
+    const std::string gearRun = "gear_rattle" + plr + "_run", gearWalk = "gear_rattle" + plr + "_walk";
     if (ev >= 1 && ev < 0x18) {
-        if (footsteps) with("step_run_plr", 1);
-        out.push_back("gear_rattle_plr_run");
+        if (footsteps) with("step_run", 1);
+        out.push_back(gearRun);
     } else if (ev >= 0x18 && ev < 0x2f) {
-        if (footsteps) with("step_walk_plr", 0x18);
-        out.push_back("gear_rattle_plr_walk");
+        if (footsteps) with("step_walk", 0x18);
+        out.push_back(gearWalk);
     } else if (ev >= 0x2f && ev < 0x46) {
-        if (footsteps) with("step_prone_plr", 0x2f);
-        out.push_back("gear_rattle_plr_walk");
+        if (footsteps) with("step_prone", 0x2f);
+        out.push_back(gearWalk);
     } else if (ev >= 0x46 && ev < 0x5d) {
-        with("step_run_plr", 0x46);
-        out.push_back("gear_rattle_plr_run");
+        with("step_run", 0x46);
+        out.push_back(gearRun);
     } else if (ev >= 0x5d && ev < 0x74) {
-        with("land_plr", 0x5d);
+        with("land", 0x5d);
     } else if (ev >= 0x74 && ev < 0x8b) {
-        with("land_plr", 0x74);
+        with("land", 0x74);
         out.push_back("land_damage");
     } else if (ev == 0x8b) {
         // 0x4bac0b (jump table 0x4bb74c entry 0): only the alias loaded at 0x4a29f0 ("movement_foliage"), no footsteps gate.
@@ -63,6 +69,21 @@ void World::applyPlayerEvent(int ev, int parm) {
     const bool footsteps = it == cvars.end() || it->second.empty() || std::atoi(it->second.c_str()) != 0;
     for (const std::string& alias : playerEventSounds(ev, footsteps)) startSound(alias, nullptr);
     if (player_) clientFallEvent(*player_, ev, parm);
+    // The listen host's own player: its entity's event ring carries the movement events too, so network clients hear
+    // its steps (the player state to entity state copy, docs/spec/net.md section 13). A network client's push is a no-op.
+    if (mp_ && playerStateEventSentToEntity(ev)) mpPushLocalClientEvent(ev, std::string());
+}
+
+// Another player's movement event (footsteps, jumps, landings): the non-"_plr" sounds at that player
+// (playerEventSounds with local false).
+void World::otherPlayerMoveEventSound(const Entity& client, int ev) {
+    if (ev < 1 || ev > 0x8b) return;
+    const Value o = client.obj->get("origin");
+    if (!o.isVector()) return;
+    const auto it = cvars.find("cg_footsteps");
+    const bool footsteps = it == cvars.end() || it->second.empty() || std::atoi(it->second.c_str()) != 0;
+    const Vec3 at = o.asVector();
+    for (const std::string& alias : playerEventSounds(ev, footsteps, false)) startSound(alias, &at);
 }
 
 void World::clientFallEvent(Entity& client, int ev, int parm) {

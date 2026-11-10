@@ -11,6 +11,7 @@
 #include <set>
 
 #include "game/mphud.h"
+#include "game/playerevents.h"
 #include "game/mpkillcam.h"
 #include "game/mpspectate.h"
 #include "game/mpplayers.h"
@@ -680,6 +681,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.spawnCount = spawns;
         m.ps = {};
         m.ps.origin = {o[0], o[1], o[2]};  // placed by the script (spawn): restart movement there
+        m.psEventsDone = 0;
         m.havePs = true;
     }
     // freezecontrols (client +0x27b4, 0x80f5de9): ClientThink sets ps pm_flags 0x8000 and the move runs on a command with no move
@@ -709,6 +711,20 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         for (const game::KnockbackHit& hit : w_->mpTakeKnockbacks(it->second)) game::applyKnockback(m.ps, hit, w_->cvarFloat("g_knockback", 1000.0f));
         runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm, e->number, frozen);
     }
+    // The movement's player-state events (0x80e00d2): into the entity's ring for the other clients, the client's own
+    // ring of the killcam archive, the listen host's ears, and ClientEvents' fall damage (MP server 0x80f52da).
+    m.psEventsDone = game::resyncEventSeq(m.ps.eventSeq, m.psEventsDone);
+    for (; m.psEventsDone < m.ps.eventSeq; ++m.psEventsDone) {
+        const int ev = m.ps.events[m.psEventsDone & 3], parm = m.ps.eventParms[m.psEventsDone & 3];
+        if (game::playerStateEventSentToEntity(ev)) {
+            m.entityRing.push(ev, parm);
+            w_->mpPushClientEvent(it->second, ev, std::string());
+        }
+        w_->otherPlayerMoveEventSound(*e, ev);
+        w_->clientFallEvent(*e, ev, parm);
+        e = w_->mpClientEntity(it->second);
+        if (!e) return;
+    }
     // The weapon side: fire, aim, reload, weapon change, melee, grenades (src/netgame/netcombat.cpp).
     std::string cmdWeapon;
     if (cmd.weapon > 0 && size_t(cmd.weapon) <= weapons_.names().size()) cmdWeapon = weapons_.names()[size_t(cmd.weapon) - 1];
@@ -722,6 +738,14 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.combat->antilagTime = w_->cvarFloat("g_antilag", 1.0f) != 0 ? m.lastServerTime : now;
     }
     if (!onTurret) m.combat->think(*w_, it->second, cmd, m.ps, usercmdMsec(prevTime, cmd.serverTime), cmdWeapon);
+    {  // the weapon events of the command follow its movement events in the entity's ring
+        const EventRing& r = m.combat->ring();
+        int added = (r.sequence - m.combatEventsDone) & 0xff;
+        if (added > 128) added = 0;  // the ring started again
+        for (int s = (r.sequence - std::min(added, 4)) & 0xff; s != r.sequence; s = (s + 1) & 0xff)
+            m.entityRing.push(r.events[size_t(s & 3)], r.parms[size_t(s & 3)]);
+        m.combatEventsDone = r.sequence;
+    }
     if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d btn=%x state=%d clip=%d tm=%.4f\n", slot, cmd.serverTime, sent.serverTime, prevTime, unsigned(cmd.buttons), m.combat->weapon().stateNumber(), m.combat->weapon().clip(), double(m.combat->weapon().timer()));
     e = w_->mpClientEntity(it->second);
     if (!e) return;
@@ -885,7 +909,7 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     for (const auto& [s, n] : mp_)
         if (n == client)
             if (auto mv = moves_.find(s); mv != moves_.end()) {
-                const EventRing& r = mv->second.combat->ring();
+                const EventRing& r = mv->second.entityRing;
                 putI(es, 164, r.sequence);
                 for (int i = 0; i < 4; ++i) {
                     putI(es, 168 + 4 * i, r.events[size_t(i)]);

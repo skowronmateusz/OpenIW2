@@ -276,6 +276,49 @@ void dm(fs::Vfs& vfs) {
     CHECK(alphaKill);
     CHECK(bravoSaw);
 
+    // Alpha runs: its footsteps reach bravo in alpha's entity event ring and bravo's world plays the non-"_plr" step
+    // and gear sounds at alpha's puppet (MP 0x4e0a64); the listen host hears them too (docs/spec/net.md section 13).
+    {
+        std::vector<std::pair<std::string, bool>> viewSounds, hostSounds;
+        view.playSound = [&](const std::string& a, const game::Vec3* o, float*, int) { viewSounds.push_back({a, o != nullptr}); return 0; };
+        g.host.playSound = [&](const std::string& a, const game::Vec3* o, float*, int) { hostSounds.push_back({a, o != nullptr}); return 0; };
+        bool ringStep = false;
+        for (int i = 0; i < 80; ++i) {
+            g.cmds[0].forwardmove = 127;
+            if (i % 40 == 0) g.cmds[0].angles[1] = angleShort(float(i * 4.5f));
+            g.frame();
+            if (const net::ClientSnapshot* snap = g.clients[1]->latest()) {
+                if (auto it = snap->entities.find(a); it != snap->entities.end())
+                    for (int k = 0; k < 4; ++k) {
+                        int32_t ev = 0;
+                        std::memcpy(&ev, it->second.data() + 168 + 4 * k, 4);
+                        ringStep |= ev >= 1 && ev < 0x18;
+                    }
+                view.mpSetRemotePlayers(netgame::RemoteView::players(*snap, *snap, 1.0f, b));
+                rv.playerEvents(view, *snap, g.clients[1]->configstrings, b);
+            }
+        }
+        g.cmds[0].forwardmove = 0;
+        auto heard = [](const std::vector<std::pair<std::string, bool>>& v, const std::string& prefix) {
+            for (const auto& [a, positional] : v)
+                if (a.rfind(prefix, 0) == 0 && positional) return true;
+            return false;
+        };
+        auto plr = [](const std::vector<std::pair<std::string, bool>>& v) {
+            for (const auto& [a, positional] : v)
+                if (a.find("_plr") != std::string::npos && a.rfind("step", 0) == 0) return true;
+            return false;
+        };
+        std::cout << "alpha steps: in ring " << ringStep << " bravo heard " << heard(viewSounds, "step_run_") << " host heard "
+                  << heard(hostSounds, "step_run_") << "\n";
+        CHECK(ringStep);
+        CHECK(heard(viewSounds, "step_run_") && heard(viewSounds, "gear_rattle_run"));
+        CHECK(!plr(viewSounds));
+        CHECK(heard(hostSounds, "step_run_"));
+        view.playSound = [](const std::string&, const game::Vec3*, float*, int) { return 0; };
+        g.host.playSound = [](const std::string&, const game::Vec3*, float*, int) { return 0; };
+    }
+
     // bot2 kills bravo.
     g.host.mpBotSetCombat(bot2, true);
     bool botKill = false;

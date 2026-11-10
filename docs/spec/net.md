@@ -1250,6 +1250,21 @@ third-person fire animation, and it traces the shot from the shooter's eye along
 for the impact effect, without damage (the client's world never applies damage). `TODO(spec)`: the original sends
 the bullet impacts as their own events (0xb5..0xba).
 
+**Movement events.** The server's player state to entity state copy (0x80e00d2..0x80e01b7, called with the player
+state and the entity state) walks the player state's event ring from the last sequence it copied (ps +0xc8) to the
+current one (ps +0xa4) and appends each event with its parameter to the entity's ring, except the events of the list at
+0x815486c (0x8c..0x8f, the stance and mantle events, and 0xb9 / 0xba); then it stores the current sequence. So a player's
+footsteps (1..0x45), jumps (0x46..0x5c), landings (0x5d..0x8a) and foliage sound (0x8b) travel in its entity events
+like its weapon events. The cgame's event handler (MP 0x4e0980) tests whether the event belongs to the own player
+(a first-person snapshot, flags 0xc00000, and the entity is the player state's clientNum, MP 0x4e09c9): the own player
+gets the "_plr" sound families, any other entity the same families without "_plr" (step_run_ / step_walk_ /
+step_prone_ / land_ by surface, gear_rattle_run / _walk, land_damage), started at that entity (MP 0x4c0470), with the same
+cg_footsteps gate on the step sounds (game::playerEventSounds). openiw2: the server merges each command's movement events
+and then its weapon events into the network client's entity ring (the client's own player-state ring keeps the weapon
+events its prediction counts); the host's own player and the bots push theirs into their MP event ring; the listen
+host plays every other player's movement events at that player, and the network client plays those of the snapshot
+puppets. The same events run ClientEvents on the server (fall damage of a network client's hard landing).
+
 **Client side.** The client keeps predicting its own weapon (view model, sounds, its own shots' impacts) and the
 movement with that weapon's state (aim, speed scale, spread); ammunition and health come from the snapshots.
 
