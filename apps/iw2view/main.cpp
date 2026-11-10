@@ -3542,20 +3542,18 @@ static std::string keyName(SDL_Scancode sc) {
 // log is kept as .1), the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a folder dialog, and it is
 // checked before it is mounted (src/fs/gamedir.h). Returns false when the user quits.
 struct AppStart { std::string mainDir, language; std::filesystem::path pref; uint32_t width = 0, height = 0; };
-// The multiplayer player name for a connection: the "name" dvar of the active profile's config (`seta name`), else the
-// profile's own name (openiw2 choice, TODO(spec): the original's source of a default name), else "player". Read from the
-// files so it also works for a +connect start, which joins before the profile is loaded into the menu cvars.
-static std::string profilePlayerName(const std::filesystem::path& playersDir, const std::string& menuName) {
-    if (!menuName.empty()) return menuName;
-    std::string profile;
-    if (std::ifstream af(playersDir / "active.txt"); af) std::getline(af, profile);
-    while (!profile.empty() && (profile.back() == '\r' || profile.back() == ' ')) profile.pop_back();
-    if (profile.empty()) return "player";
-    if (std::ifstream cf(playersDir / profile / "config.cfg"); cf) {
-        const auto cv = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
-        if (const auto it = cv.find("name"); it != cv.end() && !it->second.empty()) return it->second;
+// Where profiles, saves and screenshots live for a start that gave the game folder on the command line: the app's preference
+// folder when the binary runs from inside an application bundle (so a Terminal start of the app sees the same profile as a
+// Finder start), else next to the game folder (a development build).
+static std::filesystem::path commandLineBase(const std::string& mainDir) {
+    if (const char* base = SDL_GetBasePath(); base && ui::runsInAppBundle(base)) {
+        if (char* pref = SDL_GetPrefPath("OpenIW2", "OpenIW2")) {
+            std::filesystem::path p = pref;
+            SDL_free(pref);
+            return p;
+        }
     }
-    return profile == "default" ? "player" : profile;
+    return std::filesystem::path(mainDir).parent_path();
 }
 static bool appStartup(AppStart& out) {
     if (const char* home = std::getenv("HOME")) {
@@ -3878,7 +3876,7 @@ int main(int argc, char** argv) {
         else {
         netClient = std::make_unique<net::GameClient>();
         ++netConnection;
-        netClient->name = profilePlayerName(app ? app->pref / "players" : std::filesystem::path(args[0]).parent_path() / "players", "");
+        netClient->name = ui::profilePlayerName((app ? app->pref : commandLineBase(args[0])) / "players", "");
         if (const char* n = std::getenv("IW2_NET_NAME")) netClient->name = n;
         for (const auto& [k, v] : extraCvars) if (k == "password") netClient->password = v; // --cvar password=...
         if (!netClient->connect(to, netNowMs())) {
@@ -3984,9 +3982,10 @@ int main(int argc, char** argv) {
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): [app folder is a deliberate choice, exe default not traced] the real base path
         // and the profile name when none is chosen, here "default").
         // The app start keeps profiles and saves in its preference folder, so the game folder may stay read-only.
-        const std::filesystem::path playersDir = app ? app->pref / "players" : std::filesystem::path(args[0]).parent_path() / "players";
+        const std::filesystem::path prefBase = app ? app->pref : commandLineBase(args[0]);
+        const std::filesystem::path playersDir = prefBase / "players";
         // Screenshots (screenshotJpeg / screenshot) go under the same writable base as profiles and saves, never into the game folder.
-        const std::filesystem::path shotBase = app ? app->pref : std::filesystem::path(args[0]).parent_path();
+        const std::filesystem::path shotBase = prefBase;
         std::string profileName = "default";
         if (std::ifstream af(playersDir / "active.txt"); af) { std::string n; std::getline(af, n); if (!n.empty()) profileName = n; }
         std::filesystem::path profileCfg = playersDir / profileName / "config.cfg";
@@ -5523,7 +5522,7 @@ int main(int argc, char** argv) {
         auto joinAddress = [&](const net::NetAddress& to) {
             std::cout << "joining " << to.toString() << "\n";
             auto nc = std::make_unique<net::GameClient>();
-            nc->name = profilePlayerName(playersDir, menuEnv.getCvar("name")); // the multiplayer options name, else the profile
+            nc->name = ui::profilePlayerName(playersDir, menuEnv.getCvar("name")); // the multiplayer options name, else the profile
             if (const char* n = std::getenv("IW2_NET_NAME")) nc->name = n;
             nc->password = menuEnv.getCvar("password"); // ui_mp/password.menu
             if (netClient) netClient->disconnect(); // a connection still held goes first

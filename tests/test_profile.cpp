@@ -1,3 +1,6 @@
+#include <unistd.h>
+#include <fstream>
+#include <filesystem>
 // Profile config text round trip.
 #include "ui/menurun.h"
 #include "ui/profile.h"
@@ -40,5 +43,24 @@ int main() {
     const auto tf = iw2::ui::parseConfig(iw2::ui::formatConfig({{"r_texturemode", "trilinear"}, {"r_anisotropy", "8"}, {"ui_r_texturemode", "trilinear"}}));
     check(tf.size() == 2 && tf.at("r_texturemode") == "trilinear" && tf.at("r_anisotropy") == "8", __LINE__);
     check(iw2::ui::immediateMenuDvar("ui_r_textureMode") == "r_texturemode" && iw2::ui::immediateMenuDvar("ui_r_picmip").empty(), __LINE__);
+    // The multiplayer name: the dvar, else the profile's `name` line, else the active profile's own name, else "player".
+    {
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / ("iw2_profname_" + std::to_string(::getpid()));
+        fs::create_directories(dir / "players" / "Mateusz");
+        check(iw2::ui::profilePlayerName(dir / "players", "") == "player", __LINE__); // no active.txt
+        std::ofstream(dir / "players" / "active.txt") << "Mateusz\n";
+        std::ofstream(dir / "players" / "Mateusz" / "config.cfg") << "seta cg_blood \"1\"\n";
+        check(iw2::ui::profilePlayerName(dir / "players", "") == "Mateusz", __LINE__);
+        check(iw2::ui::profilePlayerName(dir / "players", "Opt") == "Opt", __LINE__);
+        std::ofstream(dir / "players" / "Mateusz" / "config.cfg") << "seta name \"Nick\"\n";
+        check(iw2::ui::profilePlayerName(dir / "players", "") == "Nick", __LINE__);
+        std::ofstream(dir / "players" / "active.txt") << "default\n";
+        check(iw2::ui::profilePlayerName(dir / "players", "") == "player", __LINE__);
+        fs::remove_all(dir);
+        // A Terminal start of the packaged app has the same preference folder as a Finder start: decided by the executable's folder.
+        check(iw2::ui::runsInAppBundle("/Applications/OpenIW2.app/Contents/MacOS/"), __LINE__);
+        check(!iw2::ui::runsInAppBundle("/opt/x/build/"), __LINE__);
+    }
     return failures ? 1 : 0;
 }

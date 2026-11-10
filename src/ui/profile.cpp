@@ -1,5 +1,8 @@
 #include "ui/profile.h"
 
+#include <fstream>
+#include <iterator>
+
 #include <cctype>
 #include <sstream>
 
@@ -53,5 +56,20 @@ std::string formatConfig(const std::map<std::string, std::string>& cvars) {
         if (isArchivedCvar(k)) out += "seta " + k + " \"" + v + "\"\n";
     return out;
 }
+
+std::string profilePlayerName(const std::filesystem::path& playersDir, const std::string& menuName) {
+    if (!menuName.empty()) return menuName;
+    std::string profile;
+    if (std::ifstream af(playersDir / "active.txt"); af) std::getline(af, profile);
+    while (!profile.empty() && (profile.back() == '\r' || profile.back() == ' ')) profile.pop_back();
+    if (profile.empty()) return "player";
+    if (std::ifstream cf(playersDir / profile / "config.cfg"); cf) {
+        const auto cv = parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        if (const auto it = cv.find("name"); it != cv.end() && !it->second.empty()) return it->second;
+    }
+    return profile == "default" ? "player" : profile;
+}
+
+bool runsInAppBundle(std::string_view basePath) { return basePath.find(".app/Contents/") != std::string_view::npos; }
 
 } // namespace iw2::ui
