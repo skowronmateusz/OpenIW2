@@ -659,7 +659,12 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         std::fabs(o[0] - m.lastOrigin[0]) + std::fabs(o[1] - m.lastOrigin[1]) + std::fabs(o[2] - m.lastOrigin[2]) > 0.01f) {
         // A client spawn clears the player state (stance, view height, lean, aim; docs/spec/mp.md "Client spawn").
         if (netTrace && m.havePs && m.spawnCount == spawns)
-            std::printf("NETTRACE reset slot=%d moved %.2f %.2f %.2f\n", slot, double(o[0] - m.lastOrigin[0]), double(o[1] - m.lastOrigin[1]), double(o[2] - m.lastOrigin[2]));
+        {
+            std::printf("NETTRACE reset slot=%d moved %.2f %.2f %.2f level=%d cmd=%d; last other write of the origin:\n", slot,
+                        double(o[0] - m.lastOrigin[0]), double(o[1] - m.lastOrigin[1]), double(o[2] - m.lastOrigin[2]),
+                        serverTime(), cmd.serverTime);
+            script::OriginWatch::print(slot);
+        }
         m.spawnCount = spawns;
         m.ps = {};
         m.ps.origin = {o[0], o[1], o[2]};  // placed by the script (spawn): restart movement there
@@ -680,7 +685,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.ps.velocity = {0, 0, 0};
     } else {
         for (const game::KnockbackHit& hit : w_->mpTakeKnockbacks(it->second)) game::applyKnockback(m.ps, hit, w_->cvarFloat("g_knockback", 1000.0f));
-        runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm);
+        runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm, e->number);
     }
     // The weapon side: fire, aim, reload, weapon change, melee, grenades (src/netgame/netcombat.cpp).
     std::string cmdWeapon;
@@ -699,7 +704,13 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     e = w_->mpClientEntity(it->second);
     if (!e) return;
     m.lastOrigin = {m.ps.origin[0], m.ps.origin[1], m.ps.origin[2]};
+    script::OriginWatch::allowed = true;
     e->obj->set("origin", Value(script::Vec3{m.lastOrigin[0], m.lastOrigin[1], m.lastOrigin[2]}));
+    script::OriginWatch::allowed = false;
+    if (netTrace && slot >= 0 && slot < script::OriginWatch::kSlots) {
+        script::OriginWatch::enabled = true;
+        script::OriginWatch::object[slot] = e->obj.get();
+    }
     e->obj->set("angles", Value(script::Vec3{0.0f, in.yaw, 0.0f}));
     e->velocity = {m.ps.velocity[0], m.ps.velocity[1], m.ps.velocity[2]};
     m.viewPitch = in.pitch;
@@ -736,6 +747,7 @@ void WorldGame::clientDisconnect(int slot) {
     sentOffhand_.erase(slot);
     mp_.erase(it);
     moves_.erase(slot);
+    if (slot >= 0 && slot < script::OriginWatch::kSlots) script::OriginWatch::object[slot] = nullptr;
 }
 
 void WorldGame::runFrame(int) {

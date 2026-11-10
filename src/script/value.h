@@ -89,6 +89,18 @@ struct Array {
     size_t size() const { return items.size(); }
 };
 
+// Debug (IW2_NET_TRACE on a server): the last call stack that wrote the origin of a watched object (an MP client's
+// entity), kept per watch slot so a cleared player state can name the writer (docs/debug-flags.md).
+struct OriginWatch {
+    static constexpr int kSlots = 64;
+    static bool enabled;
+    static bool allowed;              // the movement's own write: not recorded
+    static const struct Object* object[kSlots];
+    static void* stack[kSlots][24];
+    static int depth[kSlots];
+    static void print(int slot);     // the recorded stack of slot (symbols), then forgets it
+};
+
 struct Object {
     std::string kind;   // "level", "game", "anim", "struct", or an entity class
     uint64_t id = 0;

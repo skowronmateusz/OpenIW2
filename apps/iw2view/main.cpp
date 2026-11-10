@@ -9749,7 +9749,7 @@ int main(int argc, char** argv) {
                     ps = netPredictor.predict(world->collision(), f,
                                               netgame::RemoteView::following(*snap) ? std::vector<net::UserCmd>{}
                                                                                     : netClient->commandsAfter(f.commandTime),
-                                              &wm, nowNet);
+                                              &wm, nowNet, world->player() ? world->player()->number : -1);
                     if (netgame::viewInputIgnored(f.pmType)) cam.pitch = f.viewangles[0], cam.yaw = f.viewangles[1]; // the server's angles
                 }
             };
@@ -9991,6 +9991,29 @@ int main(int argc, char** argv) {
                 if (netClient && netClient->latest()) { // the remaining part of a prediction correction (cg_errorDecay)
                     const game::Vec o = netPredictor.drawOrigin(netDrawNowMs);
                     cam.pos = {o[0], o[1], o[2] + ps.viewHeight};
+                    // IW2_PRED_TRACE=1: the own player's prediction per rendered frame (docs/debug-flags.md).
+                    if (static const bool predTrace = std::getenv("IW2_PRED_TRACE") != nullptr; predTrace) {
+                        static int64_t lastRealMs = 0;
+                        const int64_t realMs = int64_t(SDL_GetTicksNS() / 1000000);
+                        const net::ClientSnapshot& sn = *netClient->latest();
+                        const netgame::PsFields sf = netgame::readPs(sn.ps);
+                        const net::UserCmd* lc = netClient->lastCommand();
+                        const net::ClientSnapshot *ia = nullptr, *ib = nullptr;
+                        float ifrac = 0;
+                        const int rtime = netClient->renderTime(netDrawNowMs);
+                        const bool interp = netClient->interpolation(rtime, ia, ib, ifrac);
+                        const std::vector<net::UserCmd> replay = netClient->commandsAfter(sf.commandTime);
+                        std::printf("predtrace rt=%lld dt=%lld now=%lld cmd=%d snap=%d msg=%d ack=%d srv=%.2f,%.2f,%.2f pred=%.2f,%.2f,%.2f "
+                                    "miss=%.2f draw=%.2f,%.2f,%.2f render=%d frac=%.2f replay=%d first=%d fwd=%d snaps=%d dropped=%d%s\n",
+                                    (long long)realMs, (long long)(lastRealMs ? realMs - lastRealMs : 0), (long long)netDrawNowMs,
+                                    lc ? lc->serverTime : 0, sn.serverTime, sn.messageNum, sf.commandTime, double(sf.origin[0]),
+                                    double(sf.origin[1]), double(sf.origin[2]), double(ps.origin[0]), double(ps.origin[1]),
+                                    double(ps.origin[2]), double(netPredictor.lastMiss()), double(o[0]), double(o[1]), double(o[2]),
+                                    rtime, double(ifrac), int(replay.size()), replay.empty() ? 0 : replay.front().serverTime,
+                                    lc ? int(lc->forwardmove) : 0, netClient->snapshots, netClient->droppedSnapshots,
+                                    interp ? "" : " nointerp");
+                        lastRealMs = realMs;
+                    }
                 }
                 if (netFollow) { // network killcam: the followed client's view the server sent (0x80f6916)
                     cam.pos = {netFollowEye[0], netFollowEye[1], netFollowEye[2]};

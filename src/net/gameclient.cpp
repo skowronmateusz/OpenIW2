@@ -100,7 +100,12 @@ int GameClient::commandTime(int64_t nowMs) const {
 void GameClient::adjustTimeDelta(int& delta, bool& extrapolated, int& clientTimeFloor, int snapTime, int oldSnapTime,
                                  int64_t nowMs) {
     const int period = snapTime - oldSnapTime;
-    const int target = snapTime - static_cast<int>(nowMs) - period - 5;
+    // openiw2: an interval over 500 ms (no valid snapshot for that long: lost or undecodable ones) counts as one
+    // snapshot interval of 50 ms; taken in full, the target fell back by the whole gap and the commands went out that
+    // far behind the level time. TODO(spec): whether the 1.3 parser's previous serverTime also advances on snapshots
+    // it does not keep.
+    const int interval = static_cast<unsigned>(period) <= 500 ? period : 50;
+    const int target = snapTime - static_cast<int>(nowMs) - interval - 5;
     int diff = target - delta;
     bool thresholds = true;
     if (diff > 0) {

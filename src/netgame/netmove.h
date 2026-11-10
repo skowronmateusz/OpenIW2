@@ -47,9 +47,11 @@ template <class F> void forEachUsercmdPiece(int msec, F&& run) {
         msec -= piece;
     }
 }
-// Runs one command on ps.
+// Runs one command on ps. passEntity: the moving client's own entity, which its traces skip (pm->clientNum as the
+// pass entity of the player move): the client's body clip is linked where it stood, and a move that starts elsewhere
+// (the prediction from an older acknowledged origin) would otherwise run into it.
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
-                const WeaponMove* weapon = nullptr);
+                const WeaponMove* weapon = nullptr, int passEntity = -1);
 
 // The player-state fields the network game uses (byte offsets of docs/spec/net.md section 7.3).
 struct PsFields {
@@ -81,7 +83,7 @@ void writePs(std::vector<uint8_t>& ps, const PsFields& f);
 // on each frame. On a map turret (eFlags & 0x300) the server holds the player behind the gun: no command moves it.
 game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsFields& server,
                                 const std::vector<net::UserCmd>& commands, const game::PlayerState* carry = nullptr,
-                                const WeaponMove* weapon = nullptr);
+                                const WeaponMove* weapon = nullptr, int passEntity = -1);
 
 // Intermission (pm_type 5): the view input is ignored and the view keeps the angles the server set (the spawn's
 // mp_global_intermission angles), as for the dead pm_types (the command angles are not applied, SP 0x50b12b).
@@ -98,7 +100,8 @@ public:
     float decayMs = 100.0f;
     // Runs the prediction for this frame; nowMs is the client's time for the error decay.
     const game::PlayerState& predict(const game::CollisionWorld& world, const PsFields& server,
-                                     const std::vector<net::UserCmd>& commands, const WeaponMove* weapon, int64_t nowMs);
+                                     const std::vector<net::UserCmd>& commands, const WeaponMove* weapon, int64_t nowMs,
+                                     int passEntity = -1);
     const game::PlayerState& state() const { return ps_; }
     // The origin to draw: the prediction plus the remaining part of the last correction.
     game::Vec drawOrigin(int64_t nowMs) const;

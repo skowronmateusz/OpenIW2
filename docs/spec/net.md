@@ -597,7 +597,10 @@ VAs in the patch 1.3 MP executable. The client keeps a server-time estimate for 
   unless the interval is over 500 ms; a diff below that is handled by the slow rule. Then `|diff| > 500` resets
   (`timeDelta = target`, the clock floor and the frame time become the snapshot time), `|diff| > 100` averages
   (`timeDelta = (timeDelta + target) / 2`), otherwise the slow rule: an extrapolating frame since the last snapshot
-  takes 2 ms off the delta (and clears the mark), else the delta moves 1 ms towards the target. The slow rule runs
+  takes 2 ms off the delta (and clears the mark), else the delta moves 1 ms towards the target.
+  openiw2: an interval over 500 ms (or negative) counts as 50 ms in the target, so a long stretch without a valid
+  snapshot resets the clock to the new snapshot instead of putting it back by the whole stretch (`TODO(spec)`: whether
+  the 1.3 parser's previous serverTime also advances on snapshots it drops). The slow rule runs
   only while a time-scale value the client keeps equals 1 (`TODO(spec)`: which dvar).
 - The cgame (0x4dfda0) draws at that time between the newest snapshot at or before it and the next one, by the
   fraction of the interval; when the time lies before the current pair it is raised to the current snapshot. Past the

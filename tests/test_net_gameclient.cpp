@@ -246,6 +246,11 @@ void timeDeltaTests() {
     delta = 5000;  // a new map: reset
     GameClient::adjustTimeDelta(delta, ex, floor, 20050, 20000, 21050);
     CHECK(delta == -1055 && floor == 20050);
+    // 120 s without a valid snapshot, then one: the clock goes to one interval behind it, not 120 s behind.
+    delta = -1055;
+    GameClient::adjustTimeDelta(delta, ex, floor, 140050, 20050, 141050);
+    CHECK(delta == -1055);                 // one interval + 5 behind the new snapshot (before: -121005)
+    CHECK(141050 + delta >= 140050 - 60);  // the command time at that real time
 }
 
 // A game whose one other player walks along +x at a constant speed in server time.

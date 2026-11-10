@@ -56,6 +56,7 @@ using namespace iw2;
 constexpr float kMaxSnap = 4.0f;
 
 int64_t gStart = 0;
+bool gFireOn = false; // IW2_LAG_BFIRE: B fires once the measurement runs
 int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -115,6 +116,10 @@ struct ServerProcess {
             const std::string l = buffer.substr(0, p);
             buffer.erase(0, p + 1);
             if (collect) status.push_back(l);
+            if (static FILE* log = std::getenv("IW2_LAG_SERVERLOG") ? std::fopen(std::getenv("IW2_LAG_SERVERLOG"), "w") : nullptr; log) {
+                std::fprintf(log, "%s\n", l.c_str());
+                std::fflush(log);
+            }
             if (l.rfind("NETTRACE ", 0) == 0) {
                 const std::string kind = l.substr(9, l.find(' ', 9) - 9);
                 ++trace[kind];
@@ -433,7 +438,9 @@ struct Run {
                 weaponByte = wi;
                 break;
             }
-        c.gc->sendCommand(netgame::makeUserCmd(clientTime, 0, fwd, 0, 0, c.yaw, weaponByte), netNow);
+        static const bool bFire = std::getenv("IW2_LAG_BFIRE") != nullptr;
+        const uint32_t btn = bFire && gFireOn && i == 1 && (netNow / 150) % 2 ? 1u : 0u;
+        c.gc->sendCommand(netgame::makeUserCmd(clientTime, btn, fwd, 0, 0, c.yaw, weaponByte), netNow);
         if (!last) return;
         const netgame::PsFields f = netgame::readPs(last->ps);
         if (c.predictorGamestate != c.gc->gamestates) {
@@ -441,7 +448,13 @@ struct Run {
             c.predictor.reset();
         }
         const netgame::WeaponMove wm = netgame::weaponMoveOf(c.pweapon);
-        c.ps = c.predictor.predict(c.view->collision(), f, c.gc->commandsAfter(f.commandTime), &wm, netNow);
+        // As iw2view: the own player entity (and so its body clip) stands at the drawn origin, and the prediction skips it.
+        const int self = std::getenv("IW2_LAG_NOPASS") ? -1 : c.view->player() ? c.view->player()->number : -1;
+        c.ps = c.predictor.predict(c.view->collision(), f, c.gc->commandsAfter(f.commandTime), &wm, netNow, self);
+        {
+            const game::Vec d = c.predictor.drawOrigin(netNow);
+            c.view->setPlayerOrigin({d[0], d[1], d[2]}, {0.0f, c.yaw, 0.0f});
+        }
         if (const net::UserCmd* lc = c.gc->lastCommand()) c.predicted[lc->serverTime] = c.ps.origin;
         while (c.predicted.size() > 512) c.predicted.erase(c.predicted.begin());
         const bool newSnap = last->messageNum != c.lastSnapMsg;
@@ -499,7 +512,7 @@ struct Run {
 bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::string& serverExe, const Profile& prof, double seconds) {
     ServerProcess server;
     setenv("IW2_NET_TRACE", "1", 1);
-    if (!server.start(serverExe, {mainDir, "mp_toujane", "dm", "--port", "0", "--bots", "0", "+set", "scr_dm_timelimit", "0",
+    if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "scr_dm_timelimit", "0",
                                   "+set", "scr_dm_scorelimit", "0"})) {
         std::cerr << "cannot start the server\n";
         return false;
@@ -541,11 +554,20 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
             run.dirChangeMs = now;
         }
         const bool measuring = measureStart && now < measureEnd;
+        gFireOn = measuring;
         if (std::getenv("IW2_LAG_TRACE") && now / 1000 != (now - 8) / 1000)
             std::printf("t=%lld A state %d snaps %d gamestates %d\n", (long long)(now - t0), int(run.clients[0]->gc->state()), run.clients[0]->gc->snapshots, run.clients[0]->gc->gamestates);
         run.frame(0, measureStart ? 1.0f : 0.0f, measuring, now);
         relay.pump(nowMs());
-        if (run.clients.size() == 2) run.frame(1, 0.0f, measuring, now);
+        if (run.clients.size() == 2) {
+            static const bool bWalk = std::getenv("IW2_LAG_BWALK") != nullptr;
+            if (bWalk) run.clients[1]->yaw = float((now / 1500) % 4) * 90.0f;
+            if (std::getenv("IW2_LAG_BAIM") && run.haveOther) { // B faces A (and walks at it with IW2_LAG_BWALK)
+                const auto& me = run.clients[1]->ps.origin;
+                run.clients[1]->yaw = std::atan2(run.lastOther[1] - me[1], run.lastOther[0] - me[0]) * 180.0f / float(M_PI);
+            }
+            run.frame(1, bWalk && measureStart ? 1.0f : 0.0f, measuring, now);
+        }
         if (measureStart && now >= measureEnd) break;
         // The server's ping of both clients (status) half way through.
         if (measureStart && !server.collect && now > measureStart + int64_t(seconds * 500)) {
@@ -581,7 +603,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     for (int k = 0; k < 20; ++k) relay.pump(nowMs() + 1000);
     server.stop();
     if (!measureStart) {
-        std::cerr << prof.name << ": never walked\n";
+        std::cerr << prof.name << ": never walked (server " << (server.alive() ? "running" : "gone") << ")\n";
         return false;
     }
     const Stats& s = run.st;
@@ -620,6 +642,24 @@ int main() {
     const double seconds = std::getenv("IW2_LAG_SECONDS") ? std::atof(std::getenv("IW2_LAG_SECONDS")) : 10.0;
     const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}};
     const char* only = std::getenv("IW2_LAG_PROFILE");
+    // IW2_LAG_RELAY=<server port>: only the relay with the profile (default wifiburst), for real clients; prints its port.
+    if (const char* rp = std::getenv("IW2_LAG_RELAY")) {
+        const std::string want = only ? only : "wifiburst";
+        for (const Profile& p : profiles)
+            if (p.name == want) {
+                Relay relay(p, 12345u, uint16_t(std::atoi(rp)));
+                std::printf("relay %s port %u\n", p.name.c_str(), unsigned(relay.addLink()));
+                std::fflush(stdout);
+                const int64_t end = nowMs() + int64_t(seconds * 1000);
+                while (nowMs() < end) {
+                    relay.pump(nowMs());
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                std::printf("relay %d datagrams, %d lost, %d blackouts\n", relay.sent, relay.lost, relay.blackouts);
+                return 0;
+            }
+        return 1;
+    }
     bool ok = true;
     for (const Profile& p : profiles)
         if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst") ok = runProfile(vfs, mainDir, serverExe, p, seconds) && ok;

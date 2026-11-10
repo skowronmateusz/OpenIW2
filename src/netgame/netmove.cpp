@@ -52,7 +52,7 @@ int usercmdMsec(int prevTime, int time) {
 float usercmdStep(int prevTime, int time) { return static_cast<float>(usercmdMsec(prevTime, time)) * 0.001f; }
 
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
-                const WeaponMove* weapon) {
+                const WeaponMove* weapon, int passEntity) {
     const int msec = usercmdMsec(prevTime, cmd.serverTime);
     if (msec <= 0) return;
     // MP movement types (docs/spec/mp-spectate.md): 5 intermission does not move; 4 is the free spectator's fly move
@@ -61,6 +61,7 @@ void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const 
     if (ps.pmType == 5) return;
     // A network game is multiplayer: the MP dvar defaults (docs/spec/mp-pmove.md), on the server and in the prediction alike.
     game::MoveParams mp = game::multiplayerMoveParams();
+    mp.passEntity = passEntity;
     game::PlayerInput in = inputFromUsercmd(cmd);
     in.dead = ps.pmType == 6 || ps.pmType == 7; // MP dead types: no command moves, the dead view height
     if (ps.pmType == 4) {
@@ -137,7 +138,7 @@ void writePs(std::vector<uint8_t>& ps, const PsFields& f) {
 
 game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsFields& server,
                                 const std::vector<net::UserCmd>& commands, const game::PlayerState* carry,
-                                const WeaponMove* weapon) {
+                                const WeaponMove* weapon, int passEntity) {
     // A client spawn clears the player state (docs/spec/mp.md "Client spawn"); a client goes from dead or spectating
     // (pm_type != 0) to playing only through a spawn, so its own movement state (stance, view height, lean, aim)
     // starts afresh then.
@@ -154,7 +155,7 @@ game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsField
     }
     for (const net::UserCmd& c : commands) {
         if (c.serverTime <= server.commandTime) continue;
-        runUsercmd(world, ps, c, prev, weapon);
+        runUsercmd(world, ps, c, prev, weapon, passEntity);
         prev = c.serverTime;
     }
     return ps;
@@ -168,14 +169,14 @@ void Predictor::reset() {
 
 const game::PlayerState& Predictor::predict(const game::CollisionWorld& world, const PsFields& server,
                                             const std::vector<net::UserCmd>& commands, const WeaponMove* weapon,
-                                            int64_t nowMs) {
+                                            int64_t nowMs, int passEntity) {
     // The start: this client's own state after the acknowledged command, else the last prediction (first frame, a
     // command no longer kept). predictPlayer then puts the server's fields over it.
     auto acked = history_.upper_bound(server.commandTime);
     if (acked != history_.begin()) --acked;
     else acked = history_.end();
     const game::PlayerState* carry = acked != history_.end() ? &acked->second : have_ ? &ps_ : nullptr;
-    game::PlayerState ps = predictPlayer(world, server, {}, carry, weapon);
+    game::PlayerState ps = predictPlayer(world, server, {}, carry, weapon, passEntity);
     history_.erase(history_.begin(), acked != history_.end() ? acked : history_.lower_bound(server.commandTime));
     const game::Vec oldOrigin = ps_.origin;
     const int oldTime = psTime_;
@@ -184,7 +185,7 @@ const game::PlayerState& Predictor::predict(const game::CollisionWorld& world, c
     const bool held = (server.eFlags & 0x300) != 0;
     for (const net::UserCmd& c : commands) {
         if (c.serverTime <= server.commandTime) continue;
-        if (!held) runUsercmd(world, ps, c, prev, weapon);
+        if (!held) runUsercmd(world, ps, c, prev, weapon, passEntity);
         prev = c.serverTime;
         history_[c.serverTime] = ps;
         // The prediction for the command the last frame ended on: a difference is a correction, drawn away over

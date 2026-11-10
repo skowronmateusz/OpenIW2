@@ -1,5 +1,7 @@
 #include "script/value.h"
 
+#include <execinfo.h>
+
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -123,7 +125,25 @@ Value Object::get(const std::string& field) const {
     return it == fields.end() ? Value{} : it->second;
 }
 
+bool OriginWatch::enabled = false;
+bool OriginWatch::allowed = false;
+const Object* OriginWatch::object[OriginWatch::kSlots] = {};
+void* OriginWatch::stack[OriginWatch::kSlots][24] = {};
+int OriginWatch::depth[OriginWatch::kSlots] = {};
+
+void OriginWatch::print(int slot) {
+    if (slot < 0 || slot >= kSlots) return;
+    std::fflush(stdout);
+    if (depth[slot]) backtrace_symbols_fd(stack[slot], depth[slot], 1);
+    else std::printf("  (no other origin write recorded)\n");
+    std::fflush(stdout);
+    depth[slot] = 0;
+}
+
 void Object::set(const std::string& field, Value v) {
+    if (OriginWatch::enabled && !OriginWatch::allowed && field == "origin")
+        for (int k = 0; k < OriginWatch::kSlots; ++k)
+            if (OriginWatch::object[k] == this) OriginWatch::depth[k] = backtrace(OriginWatch::stack[k], 24);
     if (!v.isDefined()) fields.erase(field);
     else fields[field] = std::move(v);
 }

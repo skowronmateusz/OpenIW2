@@ -519,6 +519,27 @@ firstonly()
         CHECK(h.joined() == "");
     }
 
+    {
+      // OriginWatch (IW2_NET_TRACE): an origin write outside the movement's own one is recorded for the watched object only
+        using iw2::script::OriginWatch;
+        iw2::script::Object a, b;
+        OriginWatch::enabled = true;
+        OriginWatch::object[3] = &a;
+        OriginWatch::depth[3] = 0;
+        OriginWatch::allowed = true;
+        a.set("origin", iw2::script::Value(1.0f));
+        CHECK(OriginWatch::depth[3] == 0); // the movement's write
+        OriginWatch::allowed = false;
+        b.set("origin", iw2::script::Value(1.0f));
+        a.set("angles", iw2::script::Value(1.0f));
+        CHECK(OriginWatch::depth[3] == 0); // another object, another field
+        a.set("origin", iw2::script::Value(2.0f));
+        CHECK(OriginWatch::depth[3] > 0);
+        OriginWatch::depth[3] = 0;
+        OriginWatch::object[3] = nullptr;
+        OriginWatch::enabled = false;
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;
