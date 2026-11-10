@@ -1,6 +1,7 @@
 // Multiplayer location scaling of a client's damage (docs/spec/mp-pmove.md "Location scaling"): the inflictor's weapon table,
 // no helmet-piercing rule, the MP default table for weapons that are not bullets. Needs the game files (IW2_MAIN).
 
+#include "game/bulletdamage.h"
 #include "game/world.h"
 
 #include <cmath>
@@ -44,6 +45,25 @@ int main() {
     // A bolt-action rifle's helmet value stays the helmet value (no piercing in multiplayer).
     CHECK(std::fabs(w.debugLocMultiplier("kar98k_mp", "helmet") - num(w, "kar98k_mp", "lochelmet")) < 1e-5f);
     CHECK(std::fabs(w.debugLocMultiplier("thompson_mp", "torso_lower") - num(w, "thompson_mp", "loctorsolower")) < 1e-5f);
+    // A few complete bullet results (distance damage 0x811fb7c x the weapon's location value, truncated): the original's MP
+    // values. An MP40 round in the helmet or the head at close range does 45 x 3 = 135 and kills a full-health player.
+    {
+        struct Row { const char* weapon; const char* loc; float dist; int expect; };
+        const Row rows[] = {{"mp40_mp", "helmet", 200, 135}, {"mp40_mp", "head", 200, 135}, {"mp40_mp", "neck", 200, 67},
+                            {"mp40_mp", "torso_upper", 200, 45}, {"mp40_mp", "left_foot", 200, 45}, {"mp40_mp", "helmet", 2500, 30},
+                            {"thompson_mp", "helmet", 200, -1}, {"kar98k_mp", "helmet", 500, -1}, {"kar98k_mp", "torso_upper", 500, -1},
+                            {"colt_mp", "head", 200, -1}};
+        for (const Row& r : rows) {
+            const auto* def = w.weapon(r.weapon);
+            CHECK(def != nullptr);
+            if (!def) continue;
+            const int base = iw2::game::bulletDamageAtDistance(*def, true, r.dist);
+            const int dmg = int(float(base) * w.debugLocMultiplier(r.weapon, r.loc));
+            std::cout << r.weapon << " " << r.loc << " at " << r.dist << ": " << base << " x " << w.debugLocMultiplier(r.weapon, r.loc)
+                      << " = " << dmg << "\n";
+            if (r.expect >= 0) CHECK(dmg == r.expect);
+        }
+    }
     // No weapon: the MP default table (torso_lower 0.8 there, 1.0 is the initial value of the table).
     CHECK(std::fabs(w.debugHitLocationMultiplier("torso_lower") - 0.8f) < 1e-5f);
     // The teleport bit follows the spawn count.
