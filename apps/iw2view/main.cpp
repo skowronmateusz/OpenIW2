@@ -7516,10 +7516,10 @@ int main(int argc, char** argv) {
             // The weapon the weapon-info ownerdraws read (ammo 0x4a79b0 / 0x4a7760 / 0x4a76b0, name 0x4a7da0, firemode icon 0x4a8040): the selected weapon
             // cg.weaponSelect (0xf796e0) when the player owns it (bitset 0xf70e00, bounds-checked against the weapon count), else the player state's
             // weapon (0xf70998). So the display follows the key press at once instead of the end of the drop. While an offhand grenade is out the
-            // offhand definition is shown as before. In a killcam the followed client's archived weapon is the player state's (hudKillcam).
+            // primary stays shown (the offhand is not the player state's weapon). In a killcam the followed client's archived weapon is the player state's (hudKillcam).
             const std::map<std::string, std::string>* hwDef = hudKillcam && world ? world->weapon(hudKillcam->weapon) : nullptr;
             std::string selKey;
-            if (!hudKillcam && world && world->player() && !pweapon.offhandActive()) {
+            if (!hudKillcam && world && world->player()) {
                 auto lower = [](std::string v) {
                     for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                     return v;
@@ -7529,6 +7529,9 @@ int main(int argc, char** argv) {
                 selKey = game::hudShownWeapon(sel, cur, [&](const std::string& n) { return inv.owned.count(n) != 0; });
                 if (selKey != cur) hwDef = world->weapon(selKey);
                 else selKey.clear();
+                // A grenade being cooked or thrown is the offhand, not the player state's weapon: the ownerdraws keep
+                // showing the selected (primary) weapon's name and ammo (ps.weapon stays the primary, ps+208 is the offhand).
+                if (!hwDef && pweapon.offhandActive()) hwDef = world->weapon(cur);
             }
             auto hwField = [&](const char* k) -> std::string {
                 if (!hwDef) return pweapon.hudField(k);
