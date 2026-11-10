@@ -844,7 +844,7 @@ target_link_libraries(test_net_udp PRIVATE iw2_net)
 add_test(NAME net_udp COMMAND test_net_udp)
 
 add_executable(test_mpchat tests/test_mpchat.cpp)
-target_link_libraries(test_mpchat PRIVATE iw2_game)
+target_link_libraries(test_mpchat PRIVATE iw2_game iw2_netgame)
 add_test(NAME mpchat COMMAND test_mpchat)
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(mpchat PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")

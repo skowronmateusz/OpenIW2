@@ -96,7 +96,8 @@ public:
     // (SDL3 delivers no text events until it is started, and game keys must not open an input method).
     bool wantsTextInput() const { return !stack_.empty() && editItem() != nullptr; }
     // Characters typed (ASCII 0x20..0x7e), applied to the editing item.
-    void textInput(const std::string& text);
+    void textInput(const std::string& text); // UTF-8 from the keyboard, stored as bytes of textCodePage
+    void setTextCodePage(int cp) { textCodePage_ = cp; }
 
     // BIND items (type 14, exe 0x4ce100): Enter or a click starts the capture; the next key (captureKey) is bound to
     // the item's command. Escape cancels, Del clears, the grave key is ignored.
@@ -176,6 +177,7 @@ private:
     bool editing_ = false;
     const Item* editItem_ = nullptr;
     int editCursor_ = 0, editOffset_ = 0;
+    int textCodePage_ = 1252; // code page of typed characters
     bool overstrike_ = true;
     const Item* capture_ = nullptr;
     const Item* dragItem_ = nullptr;

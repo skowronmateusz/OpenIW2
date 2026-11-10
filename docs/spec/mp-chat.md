@@ -12,6 +12,18 @@ Evidence: VAs in the patch 1.3 MP executable (it contains both the client and th
 - `chatmodepublic` (0x4039d0) and `chatmodeteam` (0x403a20) clear the 256-byte message field, remember whether it is
   a team message (0 / 1) and toggle the message key catcher (bit 0x10). The two set different field draw widths
   (0x24c / 0x21f; TODO(spec): their exact use, the port draws the field after the label).
+- Characters (field handler 0x40a1b0, char branch at 0x40a25e): any character code from 0x20 up is accepted (signed
+  compare, the code comes from the Win32 char message as one ANSI code-page byte) and stored as one byte, up to 255
+  bytes; there is no 0x7e limit. The localized strings (.str files) and the fonts use the same single-byte code page:
+  Windows-1250 for Polish (e.g. a with ogonek 0xb9, l with stroke 0xb3, s acute 0x9c, z dot 0xbf, z acute 0x9f, o acute
+  0xf3, c acute 0xe6, e ogonek 0xea, n acute 0xf1; capitals 0xa5 0xa3 0x8c 0xaf 0x8f 0xd3 0xc6 0xca 0xd1), and the
+  glyph tables of `fonts/polish/*` are indexed by those bytes. The text travels as raw bytes: the network string
+  writers only map 0x92 to an apostrophe, the server's say function does not clean the text, the client only removes
+  0x19. The "outside 0x20..0x7e is dropped" filter (0x44a8d0, signed byte compares) is applied to the speaker's NAME
+  in the chat line and the log (0x502883), never to the text, so Polish letters in a name vanish from chat lines.
+  openiw2 converts the keyboard's UTF-8 text to the language's code page (`src/util/codepage.h`: 1250 Polish, Czech and
+  Hungarian, 1251 Russian, 1252 otherwise; characters the page lacks are dropped) in the message field and in the menu
+  text fields (name, address, password; a file-name field keeps its letters-and-digits filter).
 - Field keys (0x40ade0): Escape closes the field. Enter (and keypad Enter) sends, when the field is not empty and the
   client is active (state 8), the console text `say "\x15<text>"` or `say_team "\x15<text>"` (formats 0x5a240c /
   0x5a2418); the 0x15 marker keeps the typed text from being localized. Both keys then clear the field and the key

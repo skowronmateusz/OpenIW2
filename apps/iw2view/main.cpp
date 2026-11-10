@@ -5885,6 +5885,7 @@ int main(int argc, char** argv) {
         };
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
+        frontStack.setTextCodePage(logCodePage); // typed characters become bytes of the language's code page
         frontPtr = &frontStack;
         // Multiplayer / single player menu set (openiw2 extension, docs/spec/mp-ui.md), applied outside of any running menu script.
         auto applyFrontEnd = [&] {
@@ -9425,8 +9426,10 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 if (chatField.open && ev.type == SDL_EVENT_TEXT_INPUT) {
-                    for (const char* t = ev.text.text; *t; ++t)
-                        if (*t >= 0x20 && *t <= 0x7e && chatField.text.size() < 255) chatField.text += *t;
+                    // The field takes any character code >= 0x20 as one byte (0x40a25e, the buffer holds 255); the keyboard text is
+                    // converted from UTF-8 to the language's code page, as the localized strings and the fonts use it.
+                    for (const unsigned char t : util::utf8ToCodePage(ev.text.text, logCodePage))
+                        if (t >= 0x20 && t != 0x7f && chatField.text.size() < 255) chatField.text += char(t);
                     continue;
                 }
                 // A menu that leaves the input to the game (cl_bypassMouseInput 1: the quick-message menus) takes only its

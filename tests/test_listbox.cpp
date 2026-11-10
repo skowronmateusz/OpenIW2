@@ -278,6 +278,40 @@ int main() {
     CHECK(st.listState(lst).cursor == 4);
     st.key(Key::Left);
     CHECK(st.listState(lst).cursor == 3);
+    // A plain text field (type 4): typed UTF-8 becomes bytes of the language's code page (Windows-1250 for Polish), so the Polish
+    // letters are kept as the single bytes the localized strings and the fonts use; the file-name field above still refuses them.
+    std::ofstream(dir / "ui/p.menu") << R"({
+	menuDef
+	{
+		name pm
+		rect 0 0 640 480
+		visible 1
+		itemDef
+		{
+			name pfield
+			type 4
+			dvar "pname"
+			rect 100 50 200 20
+			maxchars 40
+			visible 1
+		}
+	}
+})";
+    iw2::fs::Vfs vfs3;
+    vfs3.mountDirectory(dir);
+    iw2::ui::MenuLibrary lib3(vfs3);
+    CHECK(lib3.loadFile("ui/p.menu"));
+    iw2::ui::MenuEnv env3;
+    std::map<std::string, std::string> cv3;
+    env3.getCvar = [&](const std::string& n) { return cv3[n]; };
+    env3.setCvar = [&](const std::string& n, const std::string& v) { cv3[n] = v; };
+    iw2::ui::MenuStack st3(lib3, env3);
+    st3.setTextCodePage(1250);
+    CHECK(st3.open("pm"));
+    CHECK(st3.click(150, 60) && st3.editItem());
+    st3.key(Key::Insert); // insert mode
+    st3.textInput("\xc4\x85\xc4\x99\xc5\x82\xc3\xb3\xc5\x9b\xc5\xbc\xc5\xba\xc4\x87\xc5\x84 \xc4\x84\xc4\x98\xc5\x81\xc3\x93\xc5\x9a\xc5\xbb\xc5\xb9\xc4\x86\xc5\x83 \xe2\x82\xac");
+    CHECK(cv3["pname"].rfind("\xb9\xea\xb3\xf3\x9c\xbf\x9f\xe6\xf1 \xa5\xca\xa3\xd3\x8c\xaf\x8f\xc6\xd1 ", 0) == 0);
     std::filesystem::remove_all(dir);
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;

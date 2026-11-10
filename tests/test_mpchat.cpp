@@ -6,6 +6,11 @@
 #include "game/clientinput.h"
 #include "game/mpchat.h"
 #include "game/world.h"
+#include "assets/font.h"
+#include "game/textmessage.h"
+#include "net/oob.h"
+#include "netgame/remoteview.h"
+#include "util/codepage.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -207,6 +212,48 @@ int main() {
     w.mpMenuResponse(c2, "quickstatements", "1");
     run(w, 1);
     CHECK(takeChat(w).empty());
+
+    // Polish letters (Windows-1250 single bytes, as in the localized strings and the fonts): typed, sent, delivered, drawn.
+    {
+        const std::string utf8 = "\xc4\x85\xc4\x99\xc5\x82\xc3\xb3\xc5\x9b\xc5\xbc\xc5\xba\xc4\x87\xc5\x84"
+                                 "\xc4\x84\xc4\x98\xc5\x81\xc3\x93\xc5\x9a\xc5\xbb\xc5\xb9\xc4\x86\xc5\x83";
+        const std::string cp = "\xb9\xea\xb3\xf3\x9c\xbf\x9f\xe6\xf1" "\xa5\xca\xa3\xd3\x8c\xaf\x8f\xc6\xd1";
+        CHECK(iw2::util::codePageForLanguage("polish") == 1250);
+        CHECK(iw2::util::utf8ToCodePage(utf8, 1250) == cp); // typing (UTF-8 from the keyboard to one byte each)
+        CHECK(iw2::util::codePageToUtf8(cp, 1250) == utf8);  // and back
+        CHECK(iw2::util::utf8ToCodePage("abc \xd0\x96 \xe4\xb8\xad", 1250) == "abc  ");  // characters not in the page are dropped
+        CHECK(iw2::util::utf8ToCodePage("\xc3\xa4", 1252) == "\xe4");
+        // Send: the client command carries the bytes unchanged (the server takes the rest of the line, worldgame.cpp).
+        const std::string cmd = iw2::netgame::sayCommand(false, "Za" + cp + "!");
+        CHECK(cmd == "say \x15" "Za" + cp + "!");
+        const auto tok = std::vector<std::string>{"say", cmd.substr(4)};
+        takeChat(w);
+        w.mpSay(c1, 0, tok[1]);
+        auto pl = takeChat(w);
+        CHECK(pl.size() == 3 && countFor(pl, c1) == 1);
+        CHECK(!pl.empty() && pl[0].second.find("Za" + cp + "!") != std::string::npos);
+        // Receive: the client localizes (0x15 segments stay), cuts and adds it to the chat lines with the bytes intact.
+        MpChatBuffer cb;
+        if (!pl.empty()) {
+            const std::string arg = pl[0].second.substr(2); // after "h "
+            const auto none = [](const std::string&) -> const std::string* { return nullptr; };
+            cb.add(iw2::game::mpChatReceived(iw2::game::localizeTextMessage(arg, none)), 1000, 8, 12000);
+            const auto lines = cb.frame(1000, 8, 12000);
+            CHECK(lines.size() == 1 && lines[0].text.find("Za" + cp + "!") != std::string::npos);
+        }
+        // A name with Polish letters: the user info keeps them, the chat line's name part loses them (0x44a8d0).
+        CHECK(iw2::game::mpCleanName("Zo" "\xb3" "\xe6") == "Zo" "\xb3" "\xe6");
+        CHECK(iw2::game::mpCleanString("Zo" "\xb3" "\xe6" "^1x") == "Zox");
+        // Drawing: the polish fonts have a glyph for each of these bytes.
+        for (const char* name : {"smallFont", "normalFont", "consoleFont"}) {
+            auto d = vfs.read(std::string("fonts/polish/") + name);
+            if (!d) d = vfs.read(std::string("Fonts/polish/") + name);
+            CHECK(d.has_value());
+            if (!d) continue;
+            const auto font = iw2::assets::parseFont(*d);
+            for (unsigned char c : cp) CHECK(font.find(c) != nullptr && font.find(c)->dx > 0);
+        }
+    }
     for (const auto& e : w.vm().errors()) std::cerr << "script error: " << e << "\n";
     CHECK(w.vm().errors().empty());
 

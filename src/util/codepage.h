@@ -16,8 +16,8 @@ inline int codePageForLanguage(std::string_view language) {
     return 1252;
 }
 
-// Converts single-byte code-page text to UTF-8; bytes below 0x80 stay as they are, undefined bytes become U+FFFD.
-inline std::string codePageToUtf8(std::string_view text, int codePage) {
+// The upper half (0x80..0xff) of the code page as Unicode values (0xfffd: undefined).
+inline const uint16_t* codePageTable(int codePage) {
     static const uint16_t k1250[128] = {
         0x20ac, 0xfffd, 0x201a, 0xfffd, 0x201e, 0x2026, 0x2020, 0x2021,
         0xfffd, 0x2030, 0x0160, 0x2039, 0x015a, 0x0164, 0x017d, 0x0179,
@@ -69,7 +69,12 @@ inline std::string codePageToUtf8(std::string_view text, int codePage) {
         0x00e8, 0x00e9, 0x00ea, 0x00eb, 0x00ec, 0x00ed, 0x00ee, 0x00ef,
         0x00f0, 0x00f1, 0x00f2, 0x00f3, 0x00f4, 0x00f5, 0x00f6, 0x00f7,
         0x00f8, 0x00f9, 0x00fa, 0x00fb, 0x00fc, 0x00fd, 0x00fe, 0x00ff};
-    const uint16_t* t = codePage == 1250 ? k1250 : codePage == 1251 ? k1251 : k1252;
+    return codePage == 1250 ? k1250 : codePage == 1251 ? k1251 : k1252;
+}
+
+// Converts single-byte code-page text to UTF-8; bytes below 0x80 stay as they are, undefined bytes become U+FFFD.
+inline std::string codePageToUtf8(std::string_view text, int codePage) {
+    const uint16_t* t = codePageTable(codePage);
     std::string out;
     out.reserve(text.size());
     for (unsigned char c : text) {
@@ -85,6 +90,37 @@ inline std::string codePageToUtf8(std::string_view text, int codePage) {
             out += static_cast<char>(0x80 | ((u >> 6) & 0x3f));
         }
         out += static_cast<char>(0x80 | (u & 0x3f));
+    }
+    return out;
+}
+
+// Converts UTF-8 typed text to single-byte code-page text, the form the game's keyboard input has (the original gets Win32
+// character messages in the ANSI code page; the localized strings and the fonts use the same bytes). Characters the code page
+// does not have are dropped; invalid UTF-8 bytes are dropped.
+inline std::string utf8ToCodePage(std::string_view text, int codePage) {
+    const uint16_t* t = codePageTable(codePage);
+    std::string out;
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        unsigned u = 0;
+        size_t n = 1;
+        if (c < 0x80) u = c;
+        else if ((c & 0xe0) == 0xc0) u = c & 0x1f, n = 2;
+        else if ((c & 0xf0) == 0xe0) u = c & 0x0f, n = 3;
+        else if ((c & 0xf8) == 0xf0) u = c & 0x07, n = 4;
+        else { ++i; continue; }
+        if (i + n > text.size()) break;
+        bool ok = true;
+        for (size_t k = 1; k < n; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(text[i + k]);
+            if ((cc & 0xc0) != 0x80) { ok = false; break; }
+            u = (u << 6) | (cc & 0x3f);
+        }
+        i += ok ? n : 1;
+        if (!ok) continue;
+        if (u < 0x80) { out += static_cast<char>(u); continue; }
+        for (unsigned b = 0; b < 128; ++b)
+            if (t[b] == u && u != 0xfffd) { out += static_cast<char>(0x80 + b); break; }
     }
     return out;
 }

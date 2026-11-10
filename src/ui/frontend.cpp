@@ -1,5 +1,7 @@
 #include "ui/frontend.h"
 
+#include "util/codepage.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -949,11 +951,12 @@ bool MenuStack::editKey(const Menu& m, Key k) {
 void MenuStack::textInput(const std::string& text) {
     if (!editItem()) return;
     const Item& it = *editItem_;
-    for (unsigned char c : text) {
-        // The exe accepts any character code >= 0x20 (0x4ca993) and stores its low byte (0x4caa5a). Characters above 0x7f are kept out
-        // here: the exe gets them as single code-page bytes from the Win32 char message and the port receives UTF-8 text, so
-        // copying the bytes would not reproduce it (the mapping of the Windows code page is not modelled).
-        if (c < 0x20 || c > 0x7f) continue;
+    // The exe accepts any character code >= 0x20 (0x4ca993) and stores its low byte (0x4caa5a): it gets the typed character
+    // as one byte of the ANSI code page (Win32 char message), the same bytes the localized strings and the fonts use. The port
+    // receives UTF-8 text and converts it to the language's code page first (util/codepage.h).
+    const std::string bytes = util::utf8ToCodePage(text, textCodePage_);
+    for (unsigned char c : bytes) {
+        if (c < 0x20 || c == 0x7f) continue;
         if (it.type == 16 && !(std::isalnum(c) || c == '_' || c == '-')) continue;
         if (it.type == 9 && !std::isdigit(c)) continue; // NUMERICFIELD: digits only (SP exe 0x4ca9aa -> 0x43f620)
         std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
