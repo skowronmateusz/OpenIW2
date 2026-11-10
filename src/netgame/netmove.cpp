@@ -110,6 +110,13 @@ net::UserCmd withDeltaAngles(const net::UserCmd& cmd, const int (&delta)[3]) {
     return c;
 }
 
+net::UserCmd viewCommand(const net::UserCmd& view, const std::vector<uint8_t>& ps) {
+    net::UserCmd c = view;
+    if (ps.size() < static_cast<size_t>(net::kPlayerStateSize)) return c;
+    for (int i = 0; i < 3; ++i) c.angles[i] = (view.angles[i] - getI(ps, 84 + 4 * i)) & 0xffff;
+    return c;
+}
+
 PsFields readPs(const std::vector<uint8_t>& ps) {
     PsFields f;
     if (ps.size() < static_cast<size_t>(net::kPlayerStateSize)) return f;

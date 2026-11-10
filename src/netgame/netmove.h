@@ -78,6 +78,9 @@ struct PsFields {
 int viewAngleDelta(float angle, int32_t cmdAngle);
 // The command's angles with the player state's delta_angles added (PM_UpdateViewAngles), kept to 16 bits.
 net::UserCmd withDeltaAngles(const net::UserCmd& cmd, const int (&delta)[3]);
+// A command whose angles hold the client's view (the drawn view = command + delta_angles): the angles to send, the
+// view minus the delta of the player state `ps` (empty or short: unchanged).
+net::UserCmd viewCommand(const net::UserCmd& view, const std::vector<uint8_t>& ps);
 PsFields readPs(const std::vector<uint8_t>& ps);
 // The user command a network client sends (iw2view's live play, also on a turret): buttons, the move fractions -1..1,
 // the view angles in degrees as 16-bit angles and the weapon number of the weapon list configstring (0 none).

@@ -17,6 +17,7 @@
 #include "net/gameclient.h"
 #include "net/server.h"
 #include "netgame/netcombat.h"
+#include "netgame/netmove.h"
 #include "netgame/worldgame.h"
 
 namespace {
@@ -84,7 +85,8 @@ struct Game {
         for (size_t i = 0; i < clients.size(); ++i) {
             // the command first (the snapshot time the client shows: lag ms back), so poll sends no idle command
             if (clients[i]->state() >= net::ClientState::Primed) {
-                net::UserCmd c = cmds[i];
+                const net::ClientSnapshot* ls = clients[i]->latest();
+                net::UserCmd c = ls ? netgame::viewCommand(cmds[i], ls->ps) : cmds[i]; // the angles of cmds are the client's view; the command carries the view minus delta_angles (docs/spec/net.md section 10)
                 c.serverTime = int(host.timeMs()) - lag[i] + (lag[i] ? 1 : 0);
                 clients[i]->sendCommand(c, now);
             }

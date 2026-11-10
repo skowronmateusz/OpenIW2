@@ -710,7 +710,10 @@ struct Soak {
             const uint32_t buttons = c.menuStack.empty() ? sc.buttons : 0u;
             const float fwd = c.menuStack.empty() ? sc.forward : 0.0f, rgt = c.menuStack.empty() ? sc.right : 0.0f;
             const int clientTime = c.gc->commandTime(netNow);
-            const net::UserCmd uc = netgame::makeUserCmd(clientTime, buttons, fwd, rgt, c.pitch, c.yaw, weaponByte);
+            // c.pitch / c.yaw are the view; the command carries the view minus delta_angles (docs/spec/net.md section 10).
+            const net::UserCmd uv = netgame::makeUserCmd(clientTime, buttons, fwd, rgt, c.pitch, c.yaw, weaponByte);
+            const net::ClientSnapshot* ls = c.gc->latest();
+            const net::UserCmd uc = ls ? netgame::viewCommand(uv, ls->ps) : uv;
             c.gc->sendCommand(uc, netNow);
             // The command's time is the client clock (sendCommand only keeps it rising): a command time far ahead of
             // the clock makes every command a 1 ms step on the server (slow walk, slow jumps).

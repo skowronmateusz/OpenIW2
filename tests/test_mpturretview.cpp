@@ -88,7 +88,11 @@ struct Game {
         for (Client& c : clients) {
             c.net->poll(now, 1);
             if (c.net->state() >= net::ClientState::Primed)
-                c.net->sendCommand(netgame::makeUserCmd(int(now), c.buttons, c.forward, 0.0f, c.pitch, c.yaw, 0), now);
+            {  // c.pitch / c.yaw are the view; the command carries the view minus delta_angles (docs/spec/net.md section 10)
+                const net::UserCmd v = netgame::makeUserCmd(int(now), c.buttons, c.forward, 0.0f, c.pitch, c.yaw, 0);
+                const net::ClientSnapshot* ls = c.net->latest();
+                c.net->sendCommand(ls ? netgame::viewCommand(v, ls->ps) : v, now);
+            }
             (void)c.net->takeServerCommands();
         }
         server.poll(now, 0);
