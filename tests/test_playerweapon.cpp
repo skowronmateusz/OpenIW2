@@ -2,6 +2,7 @@
 
 #include "game/playerweapon.h"
 
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -460,6 +461,72 @@ void reloadAddTiming() {
 }
 
 
+// The multiplayer Trench Gun (values of shotgun_mp; docs/spec/weapons.md "Multiplayer view-animation rates"): the reload state
+// sequence start -> loop per shell -> end with its sounds, the pump after a shot, and the MP anim rates that stretch each view
+// animation over its state (reloadEndAnim over reloadTime).
+void trenchGun() {
+    const Def a{{"clipsize", "6"}, {"startammo", "60"}, {"raisetime", "0.25"}, {"firetime", "0.283"}, {"segmentedreload", "1"},
+                {"boltaction", "1"}, {"semiauto", "1"}, {"reloadammoadd", "1"}, {"reloadstartadd", "1"}, {"reloadtime", "0.6"},
+                {"reloademptytime", "0.6"}, {"reloadstarttime", "0.8"}, {"reloadendtime", "0.8"}, {"reloadaddtime", "0.8"},
+                {"reloadstartaddtime", "1.3"}, {"rechambertime", "0.7333"}, {"rechamberbolttime", "0.55"}, {"weapontype", "bullet"},
+                {"idleanim", "idle"}, {"fireanim", "fire"}, {"rechamberanim", "rechamber"}, {"reloadanim", "loop"},
+                {"reloademptyanim", "loop"}, {"reloadstartanim", "start"}, {"reloadendanim", "end"}, {"raiseanim", "pullout"},
+                {"reloadstartsoundplayer", "weap_shotgun_reload_loop"}, {"reloadsoundplayer", "weap_shotgun_reload_loop"},
+                {"reloadendsoundplayer", "weap_shotgun_pump"}, {"rechambersoundplayer", "weap_shotgun_pump"}};
+    // The shipped view animation lengths (frames - 1) / 30.
+    const std::map<std::string, float> lengths{{"fire", 10 / 30.0f}, {"rechamber", 22 / 30.0f}, {"start", 55 / 30.0f},
+                                               {"loop", 39 / 30.0f}, {"end", 27 / 30.0f}, {"pullout", 12 / 30.0f}};
+    PlayerWeapon w;
+    w.animLength = [&](const std::string& n) { auto it = lengths.find(n); return it == lengths.end() ? 0.0f : it->second; };
+    w.mpAnimRates = true;
+    w.equip("shotgun_mp", a);
+    CHECK(w.anim() == "pullout" && std::abs(w.animRate() - 0.4f / 0.25f) < 1e-3f);
+    run(w, 0.3f, false);
+    // A shot, then the pump (rechamber at rate 1, its own sound).
+    w.takeSounds();
+    CHECK(w.update(0.01f, {true, false}) == 1 && w.anim() == "fire");
+    run(w, 0.3f, false);
+    CHECK(w.anim() == "rechamber" && w.animRate() == 1.0f);
+    CHECK(w.takeSounds() == std::vector<std::string>{"weap_shotgun_pump"});
+    run(w, 0.8f, false);
+    CHECK(w.clip() == 5);
+    w.update(0.01f, {true, false});
+    run(w, 1.1f, false);
+    CHECK(w.clip() == 4);
+    // Reload of two shells: start (0.8 s, adds one), one loop round (adds the other), then the end.
+    std::vector<std::pair<std::string, int>> seq; // anim, clip at each anim change
+    w.takeSounds();
+    w.update(0.01f, {false, true});
+    seq.push_back({w.anim(), w.clip()});
+    CHECK(w.anim() == "start" && std::abs(w.animRate() - 1833.0f / 800.0f) < 1e-3f);
+    for (int i = 0; i < 300; ++i) {
+        w.update(0.01f, {false, false});
+        if (w.anim() != seq.back().first) seq.push_back({w.anim(), w.clip()});
+        if (w.anim() == "loop") CHECK(std::abs(w.animRate() - 1300.0f / 600.0f) < 1e-3f);
+        if (w.anim() == "end") CHECK(std::abs(w.animRate() - 900.0f / 600.0f) < 1e-3f); // reloadEndAnim takes reloadTime
+    }
+    for (const auto& [n, c] : seq) std::cout << "trench gun reload: " << n << " clip " << c << "\n";
+    CHECK((seq == std::vector<std::pair<std::string, int>>{{"start", 4}, {"loop", 5}, {"end", 6}, {"idle", 6}}));
+    CHECK(w.clip() == 6 && w.stock() == 52);
+    CHECK((w.takeSounds() == std::vector<std::string>{"weap_shotgun_reload_loop", "weap_shotgun_reload_loop", "weap_shotgun_pump"}));
+    // Four shots, a reload, and a fire press during the second loop round: the reload ends after that round.
+    for (int k = 0; k < 4; ++k) {
+        w.update(0.01f, {true, false});
+        run(w, 1.1f, false);
+    }
+    CHECK(w.clip() == 2);
+    w.update(0.01f, {false, true});
+    run(w, 0.8f + 0.6f + 0.3f, false); // start, the first round, half of the second
+    w.update(0.01f, {true, false});
+    run(w, 0.4f, false);
+    CHECK(w.anim() == "end" && w.clip() == 5);
+    // Single player keeps rate 1.
+    PlayerWeapon sp;
+    sp.animLength = w.animLength;
+    sp.equip("shotgun_mp", a);
+    CHECK(sp.animRate() == 1.0f);
+}
+
 // Binoculars (0x4df9b0 + PM_Weapon 0x11-0x16): toggle press -> quick drop (0x12) -> up (0x13, event 0xa8, pm_flags 0x20000) ->
 // 0x14 (aim forced in); use press / release -> 0xaa / 0xab; press again -> 0x15 (event 0xac) -> 0x16 (event 0xa9, quick raise) -> 0.
 void binoculars() {
@@ -544,6 +611,43 @@ void binoculars() {
 
 // The ammunition comes from the player state (inventory) through readAmmo / writeAmmo: a picked-up weapon of the same type brings its
 // own clip (the counters are not remembered per weapon name), and firing writes back.
+void scriptedWeaponAfterRespawn() {
+    // The front end wrote m1garand_mp, the death cleared the weapon, the respawn gives m1garand_mp again.
+    std::string written = "m1garand_mp";
+    CHECK(!iw2::game::takeScriptedWeapon("m1garand_mp", written)); // own write: no change
+    CHECK(iw2::game::takeScriptedWeapon("", written));             // death: weapon 0
+    CHECK(iw2::game::takeScriptedWeapon("m1garand_mp", written));  // respawn: the same weapon is a change again
+    CHECK(!iw2::game::takeScriptedWeapon("m1garand_mp", written));
+}
+
+// A snapshot clears the weapon while the player is still alive in it (the pm_type follows with the next command): the
+// frame's write-back must not restore the old name, or the respawn with the same weapon is not seen and the hand stays empty.
+void respawnAfterWeaponClearedWhileAlive() {
+    PlayerWeapon held;
+    held.equip("mp40_mp", {{"firetime", "0.1"}, {"clipsize", "32"}, {"startammo", "64"}});
+    std::string written = "mp40_mp", selection = "mp40_mp", world = "mp40_mp";
+    auto frame = [&](const std::string& fromServer, bool dead) {
+        world = fromServer;
+        if (iw2::game::takeScriptedWeapon(world, written)) selection = world;
+        PlayerWeapon::Input in;
+        in.weapon = selection;
+        in.dead = dead;
+        held.update(0.02f, in);
+        if (iw2::game::writesHeldWeapon(held, selection)) {
+            world = held.name();
+            written = held.name();
+        }
+    };
+    frame("", false);  // weapon cleared, still alive: the hand still holds it
+    CHECK(selection.empty());
+    CHECK(written.empty());
+    CHECK(world.empty());
+    frame("", true);   // the death arrives
+    CHECK(!held.equipped());
+    frame("mp40_mp", false);  // the respawn with the same weapon is a change
+    CHECK(selection == "mp40_mp");
+}
+
 void inventoryAmmo() {
     std::map<std::string, std::pair<int, int>> inv; // owned weapon -> {clip, stock}
     PlayerWeapon w;
@@ -707,6 +811,7 @@ int main() {
     adsExitDelay();
     reloadAddTiming();
     segmentedReload();
+    trenchGun();
     weaponSounds();
     boltAction();
     boltBrass();
@@ -719,6 +824,8 @@ int main() {
     cooking();
     binoculars();
     inventoryAmmo();
+    scriptedWeaponAfterRespawn();
+    respawnAfterWeaponClearedWhileAlive();
     if (failures) return 1;
     std::cout << "playerweapon tests passed\n";
     return 0;

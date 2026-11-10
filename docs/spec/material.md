@@ -189,3 +189,13 @@ mtlCullFace = bits 14–15 of state word 0 (file 0x2c, mask 0xc000; values None 
 culls counter-clockwise (back) faces with D3D's clockwise front faces. 371 of the shipped materials sampled use Back.
 iw2view: pipelines per pass × polygon offset × cull, front face clockwise (the opposite winding renders the toujane
 houses inside out). The mark entry 0x10024320 only copies vertices into a type-1 draw record under the mark's material, so culling and polygon offset are the material's state.
+
+## Flag techniques
+
+Technique sets with `_flag` (for example the CTF flag materials, `phong_flag_alphatest_spec`) bend the cloth in the vertex
+shader (shaders/lib/flag.hlsl): the vertex colour alpha is the weight of a sum of three sine waves along the normal (0 on the
+rigid pole and base, rising towards the free edge of the cloth). The shader then outputs the vertex colour with green and blue
+swapped and alpha 1, so the vertex alpha never reaches the alpha test. The CTF base model `prop_flag_base` and the pole of
+`prop_flag_<nation>` have vertex alpha 0 and were cut away when the alpha was used as colour. openiw2:
+`assets::drawnVertexColor` (src/assets/material.h) for xmodel surfaces, test `tests/test_xmodel.cpp`. TODO(spec): the wave
+displacement is not animated.

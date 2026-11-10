@@ -187,8 +187,12 @@ bool World::bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs) {
 // along (target − origin + (0, 0, 24)). Entities with a client (the player) are spared while the script radiusdamage
 // runs with setplayerignoreradiusdamage(true) (0x528b8c: 0x1c61054). Knockback: World::damage. TODO(spec): [stays: not read] the bounds of brush models.
 void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
-                         const std::string& mod) {
+                         const std::string& mod, Entity* inflictor) {
     if (radius < 1.0f) radius = 1.0f;
+    if (mp_) {
+        mpRadiusDamage(origin, attacker, inner, outer, radius, ignore, mod, inflictor);
+        return;
+    }
     std::vector<Entity*> hit;
     for (const auto& ep : entities_) {
         Entity& t = *ep;
@@ -203,8 +207,74 @@ void World::radiusDamage(const Vec3& origin, Entity* attacker, float inner, floa
         const float dist = len(sub(originOf(t->obj), origin));
         const int amount = int((1.0f - dist / radius) * (inner - outer) + outer);
         const Vec3 dir = add(sub(originOf(t->obj), origin), {0, 0, 24.0f});
-        damage(*t, attacker, amount, dir, originOf(t->obj), mod);
+        damage(*t, attacker, amount, dir, originOf(t->obj), mod, "none", 0, inflictor);
     }
+}
+
+// The multiplayer radius damage (docs/spec/mp-pmove.md "Radius damage"): the amount is scaled by how much of the target the
+// explosion sees (mpRadiusVisibility); a target it cannot see at all takes a tenth when it is close behind the cover.
+void World::mpRadiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
+                           const std::string& mod, Entity* inflictor) {
+    std::vector<Entity*> targets;
+    for (const auto& ep : entities_) {
+        Entity& t = *ep;
+        if (&t != ignore && takesDamage(t)) targets.push_back(&t);
+    }
+    constexpr int kRadiusFlag = 1; // iDFLAGS_RADIUS
+    for (Entity* t : targets) {
+        const float dist = len(sub(originOf(t->obj), origin));
+        if (dist >= radius) continue;
+        if (t->isPlayer && sparePlayerRadiusDamage_) continue;
+        const float amount = (1.0f - dist / radius) * (inner - outer) + outer;
+        const float seen = mpRadiusVisibility(*t, origin);
+        const Vec3 dir = add(sub(originOf(t->obj), origin), {0, 0, 24.0f});
+        if (seen > 0.0f) {
+            damage(*t, attacker, int(amount * seen), dir, origin, mod, "none", kRadiusFlag, inflictor);
+            continue;
+        }
+        const Vec3 centre = mpRadiusCentre(*t);
+        const bool covered = collision_->trace(origin, centre, {0, 0, 0}, {0, 0, 0}, 0x811).fraction < 1.0f;
+        if (covered && len(sub(centre, origin)) < radius * 0.2f)
+            damage(*t, attacker, int(amount * 0.1f), dir, origin, mod, "none", kRadiusFlag, inflictor);
+    }
+}
+
+// The centre the near-cover test measures from: the middle of a client between its feet and eye, else the origin.
+Vec3 World::mpRadiusCentre(Entity& t) {
+    const Vec3 o = originOf(t.obj);
+    if (!t.isPlayer) return o;
+    const Vec3 eye = eyePosition(t);
+    return {(o[0] + eye[0]) * 0.5f, (o[1] + eye[1]) * 0.5f, (o[2] + eye[2]) * 0.5f};
+}
+
+float World::mpRadiusVisibility(Entity& t, const Vec3& from) {
+    const Vec3 mid = mpRadiusCentre(t);
+    Vec3 pts[5] = {mid, mid, mid, mid, mid};
+    if (t.isPlayer) {
+        const Vec3 o = originOf(t.obj);
+        const float halfHeight = (eyePosition(t)[2] - o[2]) * 0.5f;
+        float fx = from[0] - o[0], fy = from[1] - o[1];
+        const float l = std::sqrt(fx * fx + fy * fy);
+        if (l != 0.0f) fx /= l, fy /= l;
+        const float side[2] = {-fy * 15.0f, fx * 15.0f};
+        const float offs[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}; // side sign, height sign
+        for (int i = 0; i < 4; ++i) {
+            pts[i + 1][0] += side[0] * offs[i][0];
+            pts[i + 1][1] += side[1] * offs[i][0];
+            pts[i + 1][2] += halfHeight * offs[i][1];
+        }
+    } else {
+        const float offs[4][2] = {{15, 15}, {15, -15}, {-15, 15}, {-15, -15}};
+        for (int i = 0; i < 4; ++i) {
+            pts[i + 1][0] += offs[i][0];
+            pts[i + 1][1] += offs[i][1];
+        }
+    }
+    int clear = 0;
+    for (const Vec3& p : pts)
+        if (!collision_->sightBlocked(from, p, {0, 0, 0}, {0, 0, 0}, 0x802891, t.number)) ++clear;
+    if (clear == 0) return 0.0f;
+    return clear > 3 ? 1.0f : float(clear) / 3.0f;
 }
 
 // 0x5285b0: within `radius` of `from`, and a trace from `from` reaches the entity's eye (sentients) or origin, or one
@@ -246,7 +316,7 @@ void World::explodeGrenade(Entity& e) {
     const float radius = weaponFloat(g.weapon, "explosionRadius");
     if (weaponFloat(g.weapon, "explosionInnerDamage") != 0.0f)
         radiusDamage(at, g.parent, weaponFloat(g.weapon, "explosionInnerDamage"), weaponFloat(g.weapon, "explosionOuterDamage"),
-                     radius, nullptr, "MOD_GRENADE_SPLASH");
+                     radius, nullptr, "MOD_GRENADE_SPLASH", &e); // the grenade is the inflictor (its weapon)
     // The explode event (0x526700 → 0x4d8020, EV_GRENADE_EXPLODE 0xbf for projExplosionType grenade): a point trace
     // 16 down from the grenade (mask 0x811, skipping it) gives the direction (its normal, sent as a dir byte) and the
     // surface type (surface flags >> 20 & 0x1f; 20 = water when the point is in water, 0x44c840 mask 0x20). The client
@@ -260,28 +330,35 @@ void World::explodeGrenade(Entity& e) {
         const int surface = water ? 20 : int((tr.surfaceFlags >> 20) & 0x1f);
         Vec3 dir{tr.normal[0], tr.normal[1], tr.normal[2]};
         if (tr.fraction == 1.0f) dir = {-0.525731f, 0.0f, 0.850651f};
-        static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
-                                                    "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
-                                                    "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
-        // 0x526763: the event follows projExplosionType (+0x390, enum table 0x5a7e1c: grenade 0, rocket 1, none 2):
-        // 0 → 0xbf (grenade_explode_<surface> + impact type 9), 1 → 0xc0 (rocket_explode_<surface> + impact type 10),
-        // anything else → 0xc2 (no surface sound or impact; only projExplosionEffect / projExplosionSound below).
-        const int type = explosionType(lowerStr(weaponField(g.weapon, "projExplosionType")));
-        if (type < 2 && surface < 23) {
-            startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at, nullptr, {}, kWorldSoundOwner);
-            const std::string& impact = impactEffect(type == 0 ? 9 : 10, surface);
-            if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
-            if (std::getenv("IW2_GRENADE_DEBUG"))
-                std::printf("grenade %s explodes at (%g %g %g), surface %s, effect %s\n", g.weapon.c_str(), at[0], at[1], at[2],
-                            kSurfaceAlias[surface], impact.c_str());
-        }
+        if (!mpLiveEffectsHidden()) grenadeExplosionEffects(g.weapon, at, dir, surface);
+        mpLogExplosion(false, g.weapon, at, dir, surface);
     }
-    const std::string fx = weaponField(g.weapon, "projExplosionEffect");
-    if (!fx.empty()) fxEvents_.push_back({fx, at, Vec3{0, 0, 1}});
-    const std::string snd = weaponField(g.weapon, "projExplosionSound");
-    if (!snd.empty()) startSound(snd, &at);
     forgetGrenade(e);
     freeEntity(e);
+}
+
+// What the client does with a grenade's explode event (0x4ba8d0, see explodeGrenade): the surface sound and impact
+// effect by projExplosionType, then the weapon's projExplosionEffect and projExplosionSound.
+void World::grenadeExplosionEffects(const std::string& weapon, const Vec3& at, const Vec3& dir, int surface) {
+    static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                                "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                                "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+    // 0x526763: the event follows projExplosionType (+0x390, enum table 0x5a7e1c: grenade 0, rocket 1, none 2):
+    // 0 -> 0xbf (grenade_explode_<surface> + impact type 9), 1 -> 0xc0 (rocket_explode_<surface> + impact type 10),
+    // anything else -> 0xc2 (no surface sound or impact; only projExplosionEffect / projExplosionSound below).
+    const int type = explosionType(lowerStr(weaponField(weapon, "projExplosionType")));
+    if (type < 2 && surface >= 0 && surface < 23) {
+        startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at, nullptr, {}, kWorldSoundOwner);
+        const std::string& impact = impactEffect(type == 0 ? 9 : 10, surface);
+        if (!impact.empty()) fxEvents_.push_back({impact, at, dir});
+        if (std::getenv("IW2_GRENADE_DEBUG"))
+            std::printf("grenade %s explodes at (%g %g %g), surface %s, effect %s\n", weapon.c_str(), at[0], at[1], at[2],
+                        kSurfaceAlias[surface], impact.c_str());
+    }
+    const std::string fx = weaponField(weapon, "projExplosionEffect");
+    if (!fx.empty()) fxEvents_.push_back({fx, at, Vec3{0, 0, 1}});
+    const std::string snd = weaponField(weapon, "projExplosionSound");
+    if (!snd.empty()) startSound(snd, &at);
 }
 
 // 0x520380: actors that know this grenade forget it; nobody goes for it any more.
@@ -911,9 +988,14 @@ void World::launchItem(Entity& item, const Entity& dropper) {
 // starts stationary at its origin; unless suspended its ground is 0x7ff and a weapon item's roll gets +90 (0x5920bc)
 // (0x522dbf..0x522e8f), so the next G_RunItem re-bases it to gravity and it falls (scriptSpawnItem).
 void World::runItem(Entity& e) {
-    const Vec3 mins{-1, -1, -1}, maxs{1, 1, 1}; // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): [stays: the port launches only weapon items] other item types use z 0..2
+    // A body runs the same item step with the dead client's box and its own clip mask; it never settles (mp-players.md "The body").
+    const bool body = e.classname == "playercorpse";
+    const float bodyTop = body && e.obj->get("$bodyheight").isNumber() ? e.obj->get("$bodyheight").asFloat() : 70.0f;
+    const Vec3 mins = body ? Vec3{-15, -15, 0} : Vec3{-1, -1, -1}, maxs = body ? Vec3{15, 15, bodyTop} : Vec3{1, 1, 1};
+    const uint32_t itemMask = body ? 0x10001u : 0x491u;
+    // weapon items (item type 1, LaunchItem 0x521e5b..0x521eaa). TODO(spec): [stays: the port launches only weapon items] other item types use z 0..2
     {
-        if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) return;
+        if (e.obj->removed || (e.classname.rfind("weapon_", 0) != 0 && !body)) return;
         const Value sf = e.obj->get("spawnflags");
         const bool suspended = sf.isNumber() && (sf.asInt() & 1);
         if (!e.obj->get("$trtype").isNumber()) {
@@ -943,6 +1025,11 @@ void World::runItem(Entity& e) {
             if (d.isVector()) { const Vec3 v = d.asVector(); trj.delta = {v[0], v[1], v[2]}; }
         }
         Vec3 cur = e.obj->get("origin").asVector();
+        if (const Value rate = e.obj->get("$arate"); rate.isVector()) { // the spin of a multiplayer drop
+            const float dt = (float(timeMs_) - e.obj->get("$atime").asFloat()) / 1000.0f;
+            const Vec3 r = rate.asVector(), base = e.obj->get("$abase").asVector();
+            e.obj->set("angles", Value(Vec3{base[0] + r[0] * dt, base[1] + r[1] * dt, base[2] + r[2] * dt}));
+        }
         // 1. Re-base. A ground entity counts as moving while a mover channel of it is active (its trType is not 0).
         const int ground = e.obj->get("$groundent").isNumber() ? e.obj->get("$groundent").asInt() : kItemNoGround;
         bool groundStill = false;
@@ -971,7 +1058,7 @@ void World::runItem(Entity& e) {
             if (dx * dx + dy * dy + dz * dz < 0.1f) next[2] -= 1.0f;
         }
         // 4. The trace. TODO(spec): [stays: LaunchItem does not set the owner; what the trace then passes is not read] passEnt is the owner (+0xf4); LaunchItem does not set it, the port passes the item itself.
-        TraceResult tr = collision_->trace(cur, next, mins, maxs, 0x491, e.number);
+        TraceResult tr = collision_->trace(cur, next, mins, maxs, itemMask, e.number);
         Vec3 endpos = next;
         if (tr.fraction < 1.0f) {
             endpos = {cur[0] + (next[0] - cur[0]) * tr.fraction, cur[1] + (next[1] - cur[1]) * tr.fraction, cur[2] + (next[2] - cur[2]) * tr.fraction};
@@ -980,7 +1067,7 @@ void World::runItem(Entity& e) {
                 const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
                 const Vec3 end2 = itemSlideEnd(cur, next, n);
                 const Vec3 from = endpos;
-                tr = collision_->trace(from, end2, mins, maxs, 0x491, e.number);
+                tr = collision_->trace(from, end2, mins, maxs, itemMask, e.number);
                 const float f2 = tr.fraction;
                 endpos = {from[0] + (end2[0] - from[0]) * f2, from[1] + (end2[1] - from[1]) * f2, from[2] + (end2[2] - from[2]) * f2};
             }
@@ -998,7 +1085,7 @@ void World::runItem(Entity& e) {
         e.obj->set("$trbase", Value(Vec3{trj.base[0], trj.base[1], trj.base[2]}));
         e.obj->set("$trdelta", Value(Vec3{trj.delta[0], trj.delta[1], trj.delta[2]}));
         // 7. Settle.
-        if (!(tr.fraction < 0.01f)) return;
+        if (body || !(tr.fraction < 0.01f)) return;
         if (tr.normal[2] <= 0.0f) { freeEntity(e); return; }
         if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { freeEntity(e); return; }
         // 0x522ea0: the item's forward vector (its pitch and yaw) is projected onto the plane of the hit normal, (n x f) x n, and
@@ -1023,6 +1110,7 @@ void World::runItem(Entity& e) {
             }
             e.obj->set("angles", Value(Vec3{pitch, yaw, 90.0f}));
         }
+        e.obj->set("$arate", Value()); // landing clears the angular trajectory (0x522ea0)
         // G_SetOrigin(endpos) (0x4d8380) and groundEntityNum = tr.entityNum.
         e.obj->set("$trtype", Value(int32_t(0)));
         e.obj->set("$trbase", Value(cur));

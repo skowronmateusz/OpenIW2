@@ -139,6 +139,7 @@ struct PlayerState {
     int breathTimerMs = 0;       // ps+0x594: counts up while holding, down otherwise
     float breathScale = 0;       // ps+0x590: the scope sway scale (not initialised by the spawn in the exe)
     bool havePrevCmd = false;
+    std::array<float, 2> oldVelocity{}; // ps+0x2c: horizontal velocity smoothed by min(frametime, 1) per step (inertia check)
 };
 
 // Appends an event (PM_AddEvent 0x4fb3b0: nothing for event 0).
@@ -155,7 +156,13 @@ struct LandingOutcome {
     int eventParm = 0;
     bool landTimer = false; // pm_flags 0x200 set
 };
-LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead);
+// minHeight / maxHeight: bg_fallDamageMinHeight / bg_fallDamageMaxHeight (SP 200 / 350, MP 256 / 480; docs/spec/mp-pmove.md).
+LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead, float minHeight = 200.0f, float maxHeight = 350.0f);
+
+// The landing-slowdown factor of a jump that is still flagged (pm_flags 0x80000) with pm_time t (docs/spec/mp-pmove.md):
+// 1 without jump_slowdownEnable, else 2.5 above 1699 ms and 1 + t · 1.5 / 1700 below. Friction is multiplied by it and the
+// next jump's 2·g·jump_height divided by it.
+float jumpSlowdownScale(int pmTimeMs, bool slowdownEnabled);
 
 // Hip spread fields of the current weapon (weapon def +0x28c … +0x2b8).
 struct HipSpread {
@@ -217,13 +224,28 @@ struct MoveParams {
     float jumpSpreadAdd = 64.0f;      // jump_spreadAdd (0x541240)
     float moveThreshold = 10.0f;      // player_moveThreshhold (0x4fab25)
     // PM_FoliageSounds dvars (registered at 0x4fa6fd..0x4fa813)
+    // Multiplayer differences (docs/spec/mp-pmove.md); the defaults are the SP ones.
+    bool jumpSlowdown = false;        // jump_slowdownEnable (SP false, MP true)
+    float fallDamageMinHeight = 200.0f; // bg_fallDamageMinHeight (SP 200, MP 256)
+    float fallDamageMaxHeight = 350.0f; // bg_fallDamageMaxHeight (SP 350, MP 480)
+    float inertiaMax = 50.0f;         // inertiaMax (both 50)
+    float inertiaAngle = -1000.0f;    // inertiaAngle (SP -1000: never caps; MP 0)
     float foliageMinSpeed = 40.0f;    // bg_foliagesnd_minspeed
     float foliageMaxSpeed = 180.0f;   // bg_foliagesnd_maxspeed
     int foliageSlowInterval = 1500;   // bg_foliagesnd_slowinterval (ms)
     int foliageFastInterval = 500;    // bg_foliagesnd_fastinterval (ms)
     int foliageResetInterval = 500;   // bg_foliagesnd_resetinterval (ms)
     BreathParams breath;
+    // MP free spectator (pm_type 4 of the MP game, docs/spec/mp-spectate.md): the fly move with collision instead of
+    // the SP dead path. spectateSpeed is the ps speed (400 with free look, else 0); spectateSpeedScale is
+    // player_spectateSpeedScale.
+    bool mpSpectator = false;
+    float spectateSpeed = 400.0f;
+    float spectateSpeedScale = 2.0f;
 };
+
+// The movement settings of a multiplayer game: the MP dvar defaults (docs/spec/mp-pmove.md), everything else as SP.
+MoveParams multiplayerMoveParams();
 
 // A shot while holding the breath on a scoped weapon (0x4dd2b0, after the fire event at 0x4dee18): the timer gains
 // player_breath_fire_delay (capped at the hold time) and the hold ends. Only with the aim fraction 1 and a reticle weapon.
@@ -241,6 +263,7 @@ struct KnockbackHit {
     int amount = 0;          // after the hit-location multiplier
     std::array<float, 3> dir{};
     bool selfBlast = false;  // the player is his own attacker and the means of death is a grenade or projectile
+    bool mp = false;         // finishPlayerDamage's push (docs/spec/mp.md): its own stance scales, and a hit without a direction still slides
 };
 // Means of death 3..6: MOD_GRENADE, MOD_GRENADE_SPLASH, MOD_PROJECTILE, MOD_PROJECTILE_SPLASH (0x528256..0x528268).
 inline bool selfBlastMod(int mod) { return mod >= 3 && mod <= 6; }

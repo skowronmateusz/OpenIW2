@@ -41,7 +41,11 @@ void angleVectors(const Vec3& a, Vec3& f, Vec3& r, Vec3& u) {
 // weapon indices in load order; OpenIW2 walks the owned weapons by name (TODO(spec): [stays: the exe's weapon index order is not modelled] the load order).
 std::string World::playerOffhandFor(const std::string& offhandClass) {
     if (!player_) return {};
-    Inventory& inv = inventory(*player_);
+    return clientOffhandFor(*player_, offhandClass);
+}
+
+std::string World::clientOffhandFor(Entity& p, const std::string& offhandClass) {
+    Inventory& inv = inventory(p);
     for (const std::string& w : inv.owned) {
         if (lowerStr(weaponField(w, "offhandClass")) != lowerStr(offhandClass)) continue;
         if (inv.clip[weaponField(w, "clipName")] + inv.ammo[weaponField(w, "ammoName")] != 0) return w;
@@ -54,8 +58,14 @@ std::string World::playerOffhandFor(const std::string& offhandClass) {
 // weapon's fuseTime; the player's velocity along that direction is added (0x5319e5…0x531a2e).
 void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles, const Vec3& playerVelocity,
                               int cookedFuseMs) {
-    if (!player_ || !isAlive(*player_)) return;
-    Inventory& inv = inventory(*player_);
+    if (player_) clientThrowGrenade(*player_, weaponName, eye, viewAngles, playerVelocity, cookedFuseMs);
+}
+
+void World::clientThrowGrenade(Entity& p, const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles,
+                               const Vec3& playerVelocity, int cookedFuseMs) {
+    if (!isAlive(p) || mpRemote_) return; // a network client sees the server's grenade in the snapshots
+
+    Inventory& inv = inventory(p);
     int& clip = inv.clip[weaponField(weaponName, "clipName")];
     if (clip > 0) --clip;
     Vec3 f, r, u;
@@ -64,7 +74,7 @@ void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, c
     const Vec3 v{speed * f[0], speed * f[1], speed * f[2] + float(weaponInt(weaponName, "projectileSpeedUp"))};
     // 0x527605..0x52762c: a non-zero client fuse (ps+0x3c, the time cooked in the hand) replaces the weapon fuseTime.
     const int fuseMs = cookedFuseMs != 0 ? cookedFuseMs : int(std::lround(weaponFloat(weaponName, "fuseTime") * 1000.0f));
-    Entity& g = spawnGrenade(*player_, weaponName, eye, v, fuseMs);
+    Entity& g = spawnGrenade(p, weaponName, eye, v, fuseMs);
     const float l = len(v);
     if (l > 0) {
         const Vec3 n = scale(v, 1.0f / l);
@@ -78,11 +88,15 @@ void World::playerThrowGrenade(const std::string& weaponName, const Vec3& eye, c
 // the first trace that hits something other than sky damages the entity it hit: meleeDamage + rand() % 5,
 // MOD_MELEE, along the view.
 void World::playerMelee(const Vec3& eye, const Vec3& viewAngles) {
-    if (!player_ || !isAlive(*player_)) return;
+    if (player_) clientMelee(*player_, eye, viewAngles);
+}
+
+void World::clientMelee(Entity& p, const Vec3& eye, const Vec3& viewAngles) {
+    if (!isAlive(p)) return;
     Vec3 f, r, u;
     angleVectors(viewAngles, f, r, u);
-    const Value wn = player_->obj->get("$weapon");
-    meleeBlow(*player_, eye, f, r, u, wn.isString() ? wn.asString() : std::string());
+    const Value wn = p.obj->get("$weapon");
+    meleeBlow(p, eye, f, r, u, wn.isString() ? wn.asString() : std::string());
 }
 
 // The same blow for an AI (builtin melee: 0x53c690 -> 0x550c60 -> 0x530f80, range 64): from the actor's eye towards its enemy.
@@ -151,19 +165,23 @@ void World::aiMelee(Entity& a) {
 // openiw2 deviation (the option iw2_grenadeCook is itself one; the shipped game never cooks): the held grenade also does the
 // weapon's radius damage to everyone nearby from the hand, MOD_GRENADE_SPLASH, so cooked frags hurt the people around.
 void World::playerGrenadeInHand(const Vec3& eye, const std::string& weaponName) {
-    if (!player_ || !isAlive(*player_)) return;
-    const Value ov = player_->obj->get("origin");
+    if (player_) clientGrenadeInHand(*player_, eye, weaponName);
+}
+
+void World::clientGrenadeInHand(Entity& p, const Vec3& eye, const std::string& weaponName) {
+    if (!isAlive(p)) return;
+    const Value ov = p.obj->get("origin");
     const Vec3 at = ov.isVector() ? ov.asVector() : eye;
     startSound("grenade_explode_default", &at, nullptr, {}, kWorldSoundOwner);
     const std::string& impact = impactEffect(9, 0);
     if (!impact.empty()) fxEvents_.push_back({impact, at, Vec3{0, 0, 1}});
     ++stats.grenadeExplosions;
     if (!weaponName.empty() && weaponFloat(weaponName, "explosionInnerDamage") != 0.0f)
-        radiusDamage(eye, player_, weaponFloat(weaponName, "explosionInnerDamage"), weaponFloat(weaponName, "explosionOuterDamage"),
-                     weaponFloat(weaponName, "explosionRadius"), player_, "MOD_GRENADE_SPLASH");
+        radiusDamage(eye, &p, weaponFloat(weaponName, "explosionInnerDamage"), weaponFloat(weaponName, "explosionOuterDamage"),
+                     weaponFloat(weaponName, "explosionRadius"), &p, "MOD_GRENADE_SPLASH");
     // The kill is skipped with god / demigod; otherwise health and ps+0x108 become 0 and player_die runs (0x4e778b..0x4e7791).
-    if (isAlive(*player_) && !player_->obj->get("$godmode").truthy() && !player_->obj->get("$demigod").truthy())
-        damage(*player_, player_, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
+    if (isAlive(p) && !p.obj->get("$godmode").truthy() && !p.obj->get("$demigod").truthy())
+        damage(p, &p, 100000, {0, 0, 0}, eye, "MOD_SUICIDE");
 }
 
 void World::notifyPlayer(const std::string& name) {

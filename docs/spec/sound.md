@@ -57,11 +57,16 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   same name keeps playing. An alias with the same file, loop flag, min/max volume and bits 0x780 replaces the slot's alias in place and ramps its volume over the fade (0x4430d1..0x44314e);
   any other alias fades the old slot out (0x442fb0) and starts in the other one of the two ambient slots (0x443164..0x44318f). With no `n` key the lookup gives null and 0x443080 returns at once (0x44308e), so
   `ambientstop` does not stop the sound on the client; no shipped script calls it. Ours follows this, except that a same-file alias crossfades (TODO(spec): needs the alias table in the command handler).
+  A network client reads the same configstring: see "Ambient on a network client".
 - `snd_fade <vol> <ms>` is emitted by 0x4f3520 (soundfade-like builtin, format "snd_fade %f %i\n").
 - `setreverb` / `deactivatereverb` are called by the SP scripts `maps/_ambient.gsc` (line 50 / 53, the per-area ambient reverb table) and `maps/moscow.gsc` (the stone corridor, lines 377-387); the client side is the reverb state machine below, and the Miles DSP behind it stays TODO(spec). `setsoundblend` (0x4f7d10) is called by the rain loops of the shared effects script on `sound_blend` entities: the entity type check comes first (eType 6, else "Entity is not a sound_blend"), then the two aliases and the blend 0..1 are stored (+0x8c / +0x8e / +0x94); the client side is described under "Sound blend entities" below.
 - Alias loadspec (0x428f40): a row whose loadspec equals the mode tag `all_sp` loads in every single-player level
   (the fallback compare of the whole spec with the tag); "menu" and "!list" cases follow the same function.
   Effect: bullet_small_flesh (and every other `all_sp` row) was previously dropped.
+- Multiplayer: the MP client passes the mode tag `all_mp` instead (the only such tag string in it, VA 0x59b934 in the patch
+  1.3 MP executable, pushed for example at 0x431c08 before the alias-file call 0x431250). The shipped MP aliases (the
+  shotgun's fire, pump and reload sounds, 219 rows of iw_multiplayer2.csv) carry loadspec `all_mp`; with the SP tag they were
+  all dropped, so the Trench Gun fired silently.
 
 ## Round 2: ambient, soundfade, volumes, dvars (exe evidence)
 
@@ -226,7 +231,7 @@ fraction is not applied (the latest value is used; the scripts step it by 1/(20*
 
 ## Channel volume slots and level changes
 
-The sound system keeps five channel-volume slots (set 0x4431f0, clear 0x443390); the highest active slot applies. The stop-all routine 0x444730 clears slots 1..4 (unless its flag 0x10 is set) and runs on level load and disconnect, so the level-end `setchannelvol` (slot 1, victoryscreen.shock) never reaches the next level. The port keeps these in `audio::ChannelVolumeSlots`. VAs in the patch 1.3 SP executable.
+The sound system keeps five channel-volume slots (set 0x4431f0, clear 0x443390); the highest active slot applies. The stop-all routine 0x444730 clears slots 1..4 (unless its flag 0x10 is set) and runs on level load and disconnect, so the level-end `setchannelvol` (slot 1, victoryscreen.shock) never reaches the next level. The port keeps these in `audio::ChannelVolumeSlots`. VAs in the patch 1.3 SP executable. The MP executable's counterpart is 0x44f940 (called by its CL_Disconnect 0x40cd10 and by the map load with no keep flags, see `docs/spec/mp.md` "Leaving the game"); it also ends every sample and stream, the music and ambient ones included (`Mixer::stopAll`).
 
 Slot fades. Setting a slot (0x4431f0) stores, per channel, the target, the current output of the highest active slot as the start and a step of (target - start) / max(ms, 1); clearing the current slot (0x443390) starts the same kind of fade from its value to the next lower active slot. The per-frame advance (0x443750 / 0x4437a0) adds elapsed ms times the step and clamps at the target, so a fade is linear in time and ends exactly on the target. The victory-screen fade in iw2view runs over the same curve from full volume.
 
@@ -248,6 +253,20 @@ include them. Every level start therefore loads two sets: the level's rows and t
 This applies to the first map of a session as well as to restarts and level changes. Loading only the level's rows on a direct
 start (`iw2view <main> trainyard`) left the pause menu silent ("menu loop music_mainmenu not started" in the log) until the first
 restart reloaded the tables. Covered by `tests/test_sound.cpp` (needs IW2_MAIN).
+
+## Ambient on a network client
+
+A network client takes the level's track from configstring 3 of the server: first the value in the gamestate (the map's
+`ambienttrack` as `n\<alias>`, or what `ambientPlay` set), then its changes. `n\<alias>\t\<time>` plays the alias; the fade
+is the time minus the server time, 0 when that has passed (a client joining later hears the track at full volume), as the SP
+client's consumer 0x4a3380 computes it (see `ambientplay` above). The same alias keeps playing, another fades the old track
+out and itself in, as in the `ambient_play` handling above. The SP client ignores a value without `n` (0x44308e), so
+`ambientstop` stops nothing there; the network client stops the track on such a value (`t\<time>`). TODO(spec): the MP
+client's consumer of configstring 3 is not read; no shipped script calls `ambientstop`, so the two cannot be told apart in
+play. `netgame::AmbientConfigTracker` reads the value and `audio::ClientSoundHandles` keeps the voice; the voice ends with
+every other at a disconnect and a level load (`Mixer::stopAll`, docs/spec/mp.md "Leaving the game"), and the tracker is
+cleared there so the next level's value starts its track. A listen server's own player gets the same track from the ambient
+commands of its World, ended the same way.
 
 ## Stopping sounds (level load, disconnect, cinematics)
 

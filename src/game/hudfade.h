@@ -17,6 +17,21 @@ inline float hudFadeAlpha(int64_t startMs, int64_t nowMs, int64_t durationMs, in
     return rem < spanMs ? float(rem) / float(spanMs) : 1.0f;
 }
 
+// Default seconds of the hud_fade_* dvars. The SP values are the ones the SP HUD already used (docs/spec/ui.md); the MP client
+// registers ammodisplay, compass and offhand with 0 (never fade: the fade helper returns 1 for 0 s), healthbar 2 and
+// stance 1.7 (registration at 0x4c3430 in the patch 1.3 MP executable, docs/spec/mp-hud.md).
+enum class HudFadeDvar { AmmoDisplay, HealthBar, Compass, Stance, Offhand };
+inline float hudFadeDefaultSeconds(HudFadeDvar d, bool multiplayer) {
+    switch (d) {
+    case HudFadeDvar::AmmoDisplay: return multiplayer ? 0.0f : 3.0f;
+    case HudFadeDvar::HealthBar: return 2.0f;
+    case HudFadeDvar::Compass: return multiplayer ? 0.0f : 8.0f;
+    case HudFadeDvar::Stance: return 1.7f;
+    case HudFadeDvar::Offhand: return multiplayer ? 0.0f : 3.0f;
+    }
+    return 0.0f;
+}
+
 // Health fraction (0x4a8790): 0 when health or maxhealth is 0 (or pm_type 4), else health / maxhealth clamped to 1.
 inline float hudHealthFraction(int health, int maxHealth) {
     if (health <= 0 || maxHealth <= 0) return 0.0f;

@@ -287,6 +287,7 @@ void World::shootTurret(Entity& t) {
     TurretState& ts = *t.turret;
     const auto* w = weapon(ts.weapon);
     ts.fireCountdownMs = int(weaponNumber(w, "firetime") * 1000.0f) * 3;
+    ++ts.fireCount;
     Vec3 muzzle;
     if (!turretTag(t, "tag_flash", muzzle)) {
         print("turret " + t.obj->get("model").toString() + " has no tag_flash");

@@ -129,7 +129,7 @@ Otherwise the default table 0x1c91328 is used: 19 floats initialised to 1.0 (0x5
 Location order: none, helmet, head, neck, torso_upper, torso_lower, right_arm_upper, left_arm_upper, right_arm_lower,
 left_arm_lower, right_hand, left_hand, right_leg_upper, left_leg_upper, right_leg_lower, left_leg_lower, right_foot,
 left_foot, gun (name table 0x5a9538). OpenIW2 uses the attacker's `$weapon` since damage() has no inflictor argument.
-Deliberate deviation: a weapon with `rifleBullet` and `weaponClass` rifle uses its head multiplier on the helmet location too, because the shipped `locHelmet` of 0.5 lets a helmet stop a full-power rifle round. Shipped scripts still pick the helmet or head death.
+Deliberate deviation (single player only; multiplayer: docs/spec/mp-pmove.md): a weapon with `rifleBullet` and `weaponClass` rifle uses its head multiplier on the helmet location too, because the shipped `locHelmet` of 0.5 lets a helmet stop a full-power rifle round. Shipped scripts still pick the helmet or head death.
 ## Bolt-action brass (exe evidence)
 
 Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): `rechamberTime` +0x208, `rechamberBoltTime` +0x20c (type 7, ms), `boltAction` +0x328.
@@ -201,9 +201,11 @@ most 12 deep. Damage is the distance damage of the pass (measured from that pass
 - An actor's bullet does not stop at the entity the actor is linked to (a vehicle it rides): it goes on from the hit point, ignoring that entity.
 - An AI's bullet ignores sentients of its own team.
 - A hit on the player counts only within 8 units of the player's vertical axis, measured across the shot in the horizontal
-  plane. Farther out the bullet goes on from the hit point, ignoring the player.
+  plane. Farther out the bullet goes on from the hit point, ignoring the player. OpenIW2 applies this in single player only;
+  TODO(spec): whether the MP server's Bullet_Fire_Extended (docs/spec/mp-pmove.md "Bullets") has the same test is not read.
 - After a rifleBullet hit on an entity that still has a sentient, including an actor that just died, the bullet goes on from
-  the hit point, ignoring that entity, with half the factor.
+  the hit point, ignoring that entity, with half the factor. In multiplayer the same pass-through through a hit client stops
+  when scr_friendlyfire is 0 and the client is on the attacker's team (docs/spec/mp-pmove.md "Bullets").
 
 ### G_Damage order (0x528050)
 
@@ -238,3 +240,71 @@ The missile impact (0x526494..0x526504) sends EV_ROCKET_EXPLODE_NOMARKS (0xc1) i
 bone box or on an xmodel collision surface (actors, vehicles, script models), or when 0x531b50 holds (hit and parent both have clients, differ, and the hit is alive; impossible with one client). A grenade type always sends 0xbf.
 The fuse explosion (0x526779..0x526796) has no such variant. The client sets 0xf79778 only around the effect plays of those events (0x4bb45d, 0x4bb54c to 0x4bb5d8), so a Decal element spawned inside the play draws no mark;
 an element with a delay of 1 ms or more is queued (0x4853f0) and spawns later with the flag clear. OpenIW2: `TraceResult::partHit`, `FxEvent::noMarks`, `FxSystem::noImmediateMarks`.
+
+## Multiplayer view-animation rates (cgame weapon registration 0x4d3fbc..0x4d4322, MP client)
+
+VAs in this section are in the patch 1.3 MP executable. When the MP client registers a weapon it stores one playback rate per
+view-animation slot (the slot order of the "VIEWMODEL" tree above). All slots start at 1.0; then, for each slot below whose
+weapon time (an integer in ms) is positive, rate = trunc(frames / frameRate · 1000) / time, i.e. the animation is stretched or
+compressed to last exactly as long as the weapon state. The slot is played with this rate (0x4d3680 passes it to the goal-weight
+call 0x48d780).
+
+| slot | time field |
+|---|---|
+| holdFireAnim | holdFireTime |
+| meleeAnim | meleeTime |
+| reloadAnim | reloadTime |
+| reloadEmptyAnim | reloadEmptyTime |
+| reloadStartAnim | reloadStartTime |
+| reloadEndAnim | **reloadTime** (0x4d4152 reads +0x218, not reloadEndTime +0x22c) |
+| raiseAnim, dropAnim, altRaiseAnim, altDropAnim | raiseTime, dropTime, altRaiseTime, altDropTime |
+| quickRaiseAnim, quickDropAnim | quickRaiseTime, quickDropTime |
+
+idle, fire, lastShot, rechamber and the ADS slots keep 1.0. For most weapons the data matches the times (rate ≈ 1); the Trench
+Gun does not: reload_start is 1.83 s for reloadStartTime 0.8 s, reload_loop 1.3 s for reloadTime 0.6 s, reload_end 0.9 s,
+played over reloadTime 0.6 s. Without the rates the shotgun's view model was cut off in the middle of each reload phase.
+
+Segmented reload of the Trench Gun (the shared state machine above): reload start 0.8 s (adds reloadStartAdd 1 shell at
+min(reloadStartAddTime, reloadStartTime) = 0.8 s), then one loop round of 0.6 s per shell (added 1 ms before the round ends,
+as reloadAddTime 0.8 is longer than the round), then reload end 0.8 s; a new attack press ends the loop after the running
+round. Sounds: reloadStartSoundPlayer / reloadSoundPlayer (the load sound) per phase and the pump (reloadEndSoundPlayer) at the
+end; after a shot the rechamber (pump) of 0.7333 s with rechamberSoundPlayer.
+
+OpenIW2: `PlayerWeapon::mpAnimRates` (set for an MP world) and `animRate()`; iw2view samples the view animation at
+animTime · animRate. TODO(spec): the exe gives rate 0 to a slot whose time is not positive (here 1), and whether the parts'
+frame count is the file's frame count or one less (here the length (frames − 1) / frameRate).
+
+## Multiplayer gun bob and movement offsets (patch 1.3 MP executable)
+
+VAs in this section are in the patch 1.3 MP executable. The MP client has no `cg_bobWeapon*` dvars; its gun bob 0x4f60e0
+uses the same numbers as the SP cgame bob (0x4b4a90, `game::gunBob`) as constants: lag 0.25 (the cycle phase
+bobCycle / 255 · 2π + 2π + 0.25π + 2π), amplitude 0.16 per unit of speed, cap 10, the roll at the phase − 0.4712389 kept
+only when negative, aiming scaled by 1 − (1 − adsBobFactor) · adsFrac (weapon +0x284) and, for a weapon with an
+adsOverlayReticle (+0x278), by 1 − adsFrac. The stance amplitudes are the bg dvars registered by 0x5134e0 with the SP
+defaults (bg_bobAmplitudeStanding 0.007, Ducked 0.0075, Prone 0.03, bg_bobMax 8); the stance is the view height target
+(ps+0xf4: 11 prone, 40 crouched). The cycle is ps+8 and the speed the horizontal velocity, as in SP, so the port uses
+the SP functions for both games.
+
+The MP weapon files differ in the movement data the view weapon offsets read (`ViewWeaponMotion`): for example the
+kar98k and thompson have standMoveMinSpeed / standRotMinSpeed 80 and duckedMoveMinSpeed 20 (0 in SP), standMoveU −1
+(−2 in SP), standMoveR 0.6-1 (0 in SP) and posMoveRate 4 (6-8 in SP). So the gun moves less and only above 80 units/s
+when standing; this is the weapon data, not a different code path. The network client's bob cycle comes from the
+snapshot (docs/spec/net.md section 10).
+
+## Multiplayer hands model (patch 1.3 MP executable)
+
+VAs in this section are in the patch 1.3 MP executable. The script builtin `setviewmodel` (0x52ae80; the table entry
+next to its name) looks the model up in the model index table (0x50e310) and stores the index in the client's session
+data (+0x273c); `getviewmodel` (around 0x52afdc) returns the model configstring of that index. The client end-of-frame
+path (0x500f80, at 0x501084) copies it into the player state's `viewModel` (ps+0xe4, an 8-bit netfield), so the client
+gets the hands of the character the gametype gave the player. The MP character scripts set it per nationality and
+map (`character/mp_*.gsc`, through `maps/mp/_utility.gsc:176` after `spawn`): cloth for the Americans and the
+Afrika Korps, `viewmodel_hands_german` / `_german_winter`, British, British bare and Russian hands elsewhere, while
+every MP weapon file names `viewmodel_hands_cloth` as handModel.
+
+OpenIW2: an MP game draws the local player's hands from the model its script set (`game::viewHandsModel`, the
+`$viewmodel` the builtin stores), the weapon's handModel when none is set; single player keeps the weapon's handModel.
+TODO(spec): the exact MP cgame site that picks the hands model for the view weapon (the server side above is
+verified), the SP `setviewmodel` (0x538bb0 in the SP executable, `_loadout.gsc`), and the network client, which has no
+model configstrings yet and keeps the weapon's handModel.
+

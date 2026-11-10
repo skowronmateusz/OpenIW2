@@ -18,6 +18,11 @@ namespace iw2::game {
 // rifleBullet hit on a sentient (0x53195f), forwarded unchanged by the other recursive calls.
 int bulletDamageAtDistance(const std::map<std::string, std::string>& weaponDef, bool targetIsClient, float distance);
 
+// The damage flags of a bullet (SP 0x531379..0x5313a3, MP docs/spec/mp-pmove.md "Bullets"): rifleBullet gives 0x40 in SP and 0x20
+// in MP (the gametypes' iDFLAGS_PASSTHRU); armorPiercing adds 2.
+inline int bulletDamageFlags(bool rifleBullet, bool armorPiercing, bool multiplayer) {
+    return (rifleBullet ? (multiplayer ? 0x20 : 0x40) : 0) | (armorPiercing ? 2 : 0);
+}
 // 0x53187d..0x5318e9: true when a hit `offset` from the player's origin lies more than 8 units (0x592010) from the
 // player's vertical axis, measured along the horizontal perpendicular (dir.y, -dir.x, 0) of the shot direction `dir`.
 bool bulletMissesPlayerAxis(const std::array<float, 3>& dir, const std::array<float, 3>& offset);

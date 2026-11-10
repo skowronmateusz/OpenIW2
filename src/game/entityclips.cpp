@@ -114,7 +114,11 @@ void World::syncEntityClips() {
             c.maxs = {15, 15, e.isActor ? 72.0f : playerBoxHeight()};
             c.contents = e.isActor && e.ai.dyingContents ? e.ai.dyingContents : entityContents(e); // 0xc0: 0x4000 actor (0x4fc74f), 0x2000000 player (0x4e90e2), what setcontents stored, or the death think's 0x4002000 (0x548bc0)
             if (!c.contents) continue;      // 0x44b2d0 unlinks an entity without contents: no trace sees it
-            c.hitBoxes = e.isActor;
+            // Actors (0x4fc74f) and, in multiplayer, clients with a body model: Bullet_Fire's locational trace (VAs in the 1.3
+            // Linux dedicated server: 0x811ff02 / 0x811ff0e pick the priority maps 0x8187c1f / 0x8187c0c, mask 0x2802831
+            // with the client contents 0x2000000 set at 0x80f56eb) gives the gametype a hit location (dm.gsc:312 turns
+            // "head" into MOD_HEAD_SHOT). TODO(spec): the server's own site that marks a client for hit boxes.
+            c.hitBoxes = e.isActor || (mp_ && e.isPlayer && e.obj->get("model").isString() && !e.obj->get("model").asString().empty());
             clips.push_back(c);
             continue;
         }

@@ -111,6 +111,7 @@ void World::touchItems() {
     for (size_t i = 0; i < entities_.size(); ++i) {
         Entity& e = *entities_[i];
         if (e.obj->removed || e.classname.compare(0, 7, "weapon_") != 0 || !weapon(lower(e.classname.substr(7)))) continue;
+        if (e.obj->get("$notouch").truthy()) continue; // an MP dropped weapon without ammunition (docs/spec/mp.md "Dropped weapons")
         const Value io = e.obj->get("origin");
             if (!io.isVector() || !playerTouchesItem(po.asVector(), io.asVector())) continue;
         if (touchWeaponItem(e)) freeEntity(e);
@@ -120,6 +121,9 @@ void World::touchItems() {
 // Returns true when the item was used up. TODO(spec): the flag 0x9bef24 of the touch
 // notify and the AI-drop path of 0x521170; the offhand replacement rule of 0x531e30 (an offhand is only set when none).
 bool World::touchWeaponItem(Entity& item) {
+    if (mp_ && item.obj->get("$owner").isNumber() &&
+        mpDropperKeepsOff(item.obj->get("$owner").asInt(), item.obj->get("$ownerUntil").asInt(), player_->number, timeMs_))
+        return false;
     const std::string w = lower(item.classname.substr(7));
     Inventory& inv = inventory(*player_);
     const bool owned = inv.owned.count(w) != 0;
@@ -139,7 +143,7 @@ bool World::touchWeaponItem(Entity& item) {
     const bool clipOnly = weaponInt(w, "clipOnly") != 0;
     bool used = true;
     if (owned) {
-        const int total = ammo.stock + ammo.clip;
+        const int total = std::max(ammo.stock, 0) + std::max(ammo.clip, 0); // -1 = none (0x52117f..0x52133f: negative counts as none)
         const int added = std::min(room, total);
         if (added <= 0) return false;
         // The ammunition goes to the stock, or to the clip of a clip-only weapon.
@@ -153,7 +157,7 @@ bool World::touchWeaponItem(Entity& item) {
             item.obj->set("$ammoClip", Value(rest.clip));
         }
         clientCommands_.push_back({"gm", std::string(clipOnly ? "GAME_PICKUP_CLIPONLY_AMMO" : "GAME_PICKUP_AMMO") + "\x14" + display});
-        startSound(pickupSoundAlias(weaponField(w, "ammoPickupSound"), true, soundExists), nullptr); // event 0x91 on the player
+        if (!remotePickup_) startSound(pickupSoundAlias(weaponField(w, "ammoPickupSound"), true, soundExists), nullptr); // event 0x91 on the player
         raisePickupEvent(w, true);
     } else {
         giveWeapon(inv, w);
@@ -166,7 +170,7 @@ bool World::touchWeaponItem(Entity& item) {
         if (weaponInt(w, "clipOnly") == 0) inv.ammo[a] = std::min(inv.ammo[a], weaponInt(w, "maxAmmo"));
         inv.clip[c] = std::min(inv.clip[c], weaponInt(w, "clipSize"));
         trimSharedAmmo(inv, w);
-        startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player
+        if (!remotePickup_) startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player
         raisePickupEvent(w, false);
     }
     vm_.notify(item.obj, "trigger", {Value(player_->obj)});

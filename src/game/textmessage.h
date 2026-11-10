@@ -48,4 +48,18 @@ inline std::string localizeTextMessage(const std::string& msg, const std::functi
     return out;
 }
 
+// A hud element's label joined with its value (number, timer or text): the label's text up to "&&1", the value, then the
+// rest of the label after "&&1"; a label without "&&1" is followed directly by the value, with no separator added
+// (VAs in the patch 1.3 MP executable 0x4dd330, called from 0x4dd430 when both strings are non-empty; at most 255
+// characters). A space between them comes only from the localized label itself: the English MP_TIME_TILL_SPAWN ends
+// with one, the Polish text does not, so the original also shows the Polish respawn timer without a gap.
+inline std::string hudElemText(const std::string& label, const std::string& value) {
+    if (label.empty()) return value;
+    if (value.empty()) return label;
+    const size_t at = label.find("&&1");
+    std::string out = at == std::string::npos ? label + value : label.substr(0, at) + value + label.substr(at + 3);
+    if (out.size() > 255) out.resize(255);
+    return out;
+}
+
 } // namespace iw2::game

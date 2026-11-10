@@ -79,6 +79,7 @@ void World::registerSoundBuiltins() {
         char buf[160];
         std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", 0.0, 1.0, double(d), double(r), double(g), double(b), double(t * 1000.0f));
         clientCommands_.push_back({"fog", buf});
+        fogConfig_ = buf;
         // 0x4e96e0 on "0 1 <density> ...": only a density of 1 or more sets the AI sight limit ((1 - 0) * 0.828)^2; a valid density is < 1,
         // so the limit is always cleared here.
         fogSightSq_ = d >= 1.0f ? 0.828f * 0.828f : 3.4028235e38f;
@@ -124,13 +125,16 @@ void World::registerSoundBuiltins() {
         char buf[160];
         std::snprintf(buf, sizeof buf, "%g %g %g %g %g %g %.0f", double(nr), double(fr), 1.0, double(r), double(g), double(b), double(t * 1000.0f));
         clientCommands_.push_back({"fog", buf});
+        fogConfig_ = buf;
         const float lim = (fr - nr) * 0.828f + nr;
         fogSightSq_ = lim * lim; // 0x4e96e0: the AI sight limit of linear fog (0x1c61038)
         return Value();
     });
     vm_.registerBuiltin("playsound", [this, originOf](CallContext& c) {
+        if (c.argc() > 0) noteSound(c.arg(0).toString());
         const auto o = originOf(c);
-        const bool local = c.self.isObject() && entityOf(c.self) && entityOf(c.self)->isPlayer;
+        // MP: only the local client's own entity is heard without a position (docs/spec/mp-hud.md).
+        const bool local = c.self.isObject() && entityOf(c.self) && entityOf(c.self)->isPlayer && (!mp_ || entityOf(c.self) == player_);
         // 0x4ef2c0..0x4ef35b queues the alias on the entity itself (G_AddEvent 0x4d8020); the client plays it (0x4bb5ea..0x4bb69e -> 0x4a3610 /
         // 0x4a3660 -> 0x4423d0) with the entity number as the slot owner, so the entity's channel replaces its own previous sound.
         const Entity* self = entityOf(c.self);
@@ -139,6 +143,7 @@ void World::registerSoundBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("playsoundasmaster", [this, originOf](CallContext& c) {
+        if (c.argc() > 0) noteSound(c.arg(0).toString());
         const auto o = originOf(c);
         const Entity* self = entityOf(c.self);
         startSound(c.arg(0).toString(), o ? &*o : nullptr, c.self.isObject() ? c.self.asObject() : nullptr,
@@ -146,10 +151,12 @@ void World::registerSoundBuiltins() {
         return Value();
     });
     vm_.registerBuiltin("playlocalsound", [this](CallContext& c) {
+        if (c.argc() > 0) noteSound(c.arg(0).toString());
         startSound(c.arg(0).toString(), nullptr);
         return Value();
     });
     vm_.registerBuiltin("playloopsound", [this, originOf](CallContext& c) {
+        if (c.argc() > 0) noteSound(c.arg(0).toString());
         if (!c.self.isObject()) return Value();
         const auto obj = c.self.asObject();
         // 0x4ef3f0 only stores the alias' configstring index in the entity state (ent+6) and clears flag bit 0 of ent+0xa2; the
@@ -192,12 +199,15 @@ void World::registerSoundBuiltins() {
         if (c.args.size() == 2 && c.arg(1).asFloat() < 0) throw std::runtime_error("ambientPlay: fade time must be >= 0\n");
         if (!soundExists(alias)) throw std::runtime_error("unknown sound alias '" + alias + "'");
         clientCommands_.push_back({"ambient_play", alias + " " + std::to_string(fadeMs(c, 1))});
+        ambientConfig_ = "n\\" + alias + "\\t\\" + std::to_string(timeMs() + fadeMs(c, 1));
         return Value();
     });
-    // ambientstop([fade]) (0x4f3930): negative fade is an error; configstring 3 "t\<levelTime + fade ms>", which the client ignores (0x44308e).
-    vm_.registerBuiltin("ambientstop", [](CallContext& c) {
+    // ambientstop([fade]) (0x4f3930): negative fade is an error; configstring 3 "t\<levelTime + fade ms>", which the SP client ignores
+    // (0x44308e): no client command is sent. A network client reads the configstring (docs/spec/sound.md "Ambient on a network client").
+    vm_.registerBuiltin("ambientstop", [this, fadeMs](CallContext& c) {
         if (c.args.size() > 1) throw std::runtime_error("Incorrect number of parameters\n");
         if (c.args.size() == 1 && c.arg(0).asFloat() < 0) throw std::runtime_error("ambientStop: fade time must be >= 0\n");
+        ambientConfig_ = "t\\" + std::to_string(timeMs() + fadeMs(c, 0));
         return Value();
     });
     // musicplay(alias) (0x4f3400): unknown alias is a script error; sends the client "mu_play <alias>".

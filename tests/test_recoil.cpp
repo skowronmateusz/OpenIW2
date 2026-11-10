@@ -21,6 +21,17 @@ using namespace iw2::game;
 } // namespace
 
 int main() {
+    // CG_CalcFov on a turret (eFlags 0x300): the constant 55, also with the aim fraction of an aim held when mounting.
+    {
+        const float aimed = iw2::game::adsFov(80.0f, 30.0f, 0.5f, 0.3f, 1.0f, true);
+        CHECK(aimed == 30.0f);
+        CHECK(iw2::game::viewFov(aimed, true) == 55.0f);
+        CHECK(iw2::game::viewFov(80.0f, true) == 55.0f);
+        CHECK(iw2::game::viewFov(aimed, false) == 30.0f);
+        // Scope overlay: hidden on a turret, kept otherwise (0x4bd760 skips 0x4bcdd0 while eFlags & 0x300).
+        CHECK(iw2::game::scopeOverlayAlpha(1.0f, true) == 0.0f);
+        CHECK(iw2::game::scopeOverlayAlpha(0.75f, false) == 0.75f);
+    }
     // Values of the shipped enfield weapon file.
     const std::map<std::string, float> w = {
         {"aimDownSight", 1}, {"gunMaxPitch", 20}, {"gunMaxYaw", 20},

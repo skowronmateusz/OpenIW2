@@ -40,6 +40,7 @@ struct Pml {
     float prevOriginZ = 0, prevVelZ = 0; // pml+0x64 / +0x70: origin z and vertical speed at the start of the step
     float gravity = 800.0f;
     bool dead = false; // pm_type >= 4
+    float fallMinHeight = 200.0f, fallMaxHeight = 350.0f; // bg_fallDamageMinHeight / MaxHeight
 };
 
 } // namespace
@@ -54,9 +55,10 @@ static int surfaceTypeOf(uint32_t surfaceFlags) { return (surfaceFlags & 0x2000)
 // lethal or slick one scales it by 0.67; the event is 0x74 + surface with the damage as parameter. Without damage:
 // h <= 4 nothing; h < 8 the walk footstep (0x18 + surface); h < 12 the run footstep (1 + surface); otherwise the
 // velocity is scaled by 0.67 and the event is the landing 0x5d + surface with the view dip as parameter.
-LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead) {
+// The heights are the dvars bg_fallDamageMinHeight / MaxHeight (SP defaults 200 / 350 at 0x4fa818, 0x4fa83b; MP 256 / 480,
+// docs/spec/mp-pmove.md).
+LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead, float kMinH, float kMaxH) {
     LandingOutcome o;
-    constexpr float kMinH = 200.0f, kMaxH = 350.0f; // bg_fallDamageMinHeight / MaxHeight defaults (0x4fa818, 0x4fa83b)
     if (h > kMinH && !(surfaceFlags & 1) && !dead)
         o.damage = h >= kMaxH ? 100 : std::clamp(int((h - kMinH) / (kMaxH - kMinH) * 100.0f), 0, 100);
     if (h > 12.0f) o.dip = std::min(24, int(((h - 12.0f) * 0.03846153989434242f + 1.0f) * 4.0f));
@@ -90,6 +92,21 @@ LandingOutcome landingOutcome(float h, uint32_t surfaceFlags, bool dead) {
     return o;
 }
 
+float jumpSlowdownScale(int pmTimeMs, bool slowdownEnabled) {
+    if (!slowdownEnabled) return 1.0f;
+    if (pmTimeMs > 1699) return 2.5f;
+    return float(pmTimeMs) * 1.5f * (1.0f / 1700.0f) + 1.0f;
+}
+
+MoveParams multiplayerMoveParams() {
+    MoveParams mp;
+    mp.jumpSlowdown = true;
+    mp.fallDamageMinHeight = 256.0f;
+    mp.fallDamageMaxHeight = 480.0f;
+    mp.inertiaAngle = 0.0f;
+    return mp;
+}
+
 void addPlayerEvent(PlayerState& ps, int event, int parm) {
     if (event == 0) return;
     ps.events[ps.eventSeq & 3] = event & 0xff;
@@ -108,7 +125,7 @@ void crashLand(PlayerState& ps, const Pml& pml) {
     if (d < 0) return;
     const float s = std::sqrt(d);
     const float h = s * s / (2.0f * g);
-    const LandingOutcome o = landingOutcome(h, pml.groundTrace.surfaceFlags, pml.dead);
+    const LandingOutcome o = landingOutcome(h, pml.groundTrace.surfaceFlags, pml.dead, pml.fallMinHeight, pml.fallMaxHeight);
     ps.landSeq++;
     ps.landHeight = h;
     ps.landDamage = o.damage;
@@ -540,7 +557,22 @@ void applyFriction(PlayerState& ps, float dt, const MoveParams& mp) {
         return;
     }
     float drop = 0;
-    if (ps.onGround) drop = std::max(speed, mp.stopSpeed) * (ps.landTimer ? 0.3f : 1.0f) * mp.friction * dt; // 0x507d10: pm_flags 0x200 x0.3
+    if (ps.onGround) {
+        // 0x507d10: pm_flags 0x200 x0.3; else with the jump flag 0x80000 the landing-slowdown factor (docs/spec/mp-pmove.md: 1 in
+        // SP, where jump_slowdownEnable is false; a timer above 1800 ms drops the flag and gives 1).
+        float control = std::max(speed, mp.stopSpeed);
+        if (ps.landTimer) {
+            control *= 0.3f;
+        } else if (ps.jumping) {
+            if (ps.pmTimeMs > 1800) {
+                ps.jumping = false;
+                ps.jumpOriginZ = 0;
+            } else {
+                control *= jumpSlowdownScale(ps.pmTimeMs, mp.jumpSlowdown);
+            }
+        }
+        drop = control * mp.friction * dt;
+    }
     const float ns = std::max(0.0f, speed - drop) / speed;
     ps.velocity = scale(ps.velocity, ns);
 }
@@ -553,7 +585,17 @@ void applyFriction(PlayerState& ps, float dt, const MoveParams& mp) {
 void accelerate(PlayerState& ps, const Vec& wishDir, float wishSpeed, float accel, float dt, const MoveParams& mp) {
     const float add = wishSpeed - dot(ps.velocity, wishDir);
     if (add <= 0) return;
-    const float accelSpeed = std::min(add, std::max(wishSpeed, mp.stopSpeed) * dt * accel);
+    float accelSpeed = std::min(add, std::max(wishSpeed, mp.stopSpeed) * dt * accel);
+    // The inertia cap (docs/spec/mp-pmove.md): live only with an inertiaAngle above -1 (MP 0). Not for noclip (pm_type 2).
+    if (ps.pmType != 2 && accelSpeed > mp.inertiaMax) {
+        const float ox = ps.oldVelocity[0], oy = ps.oldVelocity[1];
+        if (ox * ox + oy * oy >= 0.0001f) {
+            float nx = ps.velocity[0] + wishDir[0] * accelSpeed, ny = ps.velocity[1] + wishDir[1] * accelSpeed;
+            const float ol = std::sqrt(ox * ox + oy * oy), nl = std::sqrt(nx * nx + ny * ny);
+            if (nl != 0) nx /= nl, ny /= nl;
+            if ((ox / ol) * nx + (oy / ol) * ny < mp.inertiaAngle) accelSpeed = mp.inertiaMax;
+        }
+    }
     ps.velocity = ::iw2::game::add(ps.velocity, scale(wishDir, accelSpeed));
 }
 
@@ -618,13 +660,19 @@ bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParam
     const bool jumpPressed = in.jump && !ps.jumpHeld;
     ps.jumpHeld = in.jump;
     if (!jumpPressed || ps.mantling || ps.stance != Stance::Stand || ps.viewHeightTarget != 60 || ps.timeMs - ps.lastJumpMs <= 499) return false;
+    const bool wasJumping = ps.jumping;
+    const int wasPmTime = ps.pmTimeMs;
     pml.groundPlane = pml.walking = false;
     ps.onGround = false;
     ps.lastJumpMs = ps.timeMs;
     ps.jumpOriginZ = ps.origin[2];
     ps.pmTimeMs = 0;
     ps.jumping = true;
-    ps.velocity[2] = std::sqrt(2.0f * mp.jumpHeight * mp.gravity);
+    // A jump while the previous landing's slowdown runs (flag 0x80000, pm_time <= 1800) divides 2·g·h by the slowdown factor
+    // (docs/spec/mp-pmove.md; 1 in SP). The flag and timer are tested before they are reset.
+    float v2 = 2.0f * mp.jumpHeight * mp.gravity;
+    if (wasJumping && wasPmTime <= 1800) v2 /= jumpSlowdownScale(wasPmTime, mp.jumpSlowdown);
+    ps.velocity[2] = std::sqrt(v2);
     // 0x541640: the jump event 0x46 + surface of the ground just left (none for surface 0); with pm_flags 0x20 (ladder) it
     // is 0x5b instead.
     if (ps.onLadder) addPlayerEvent(ps, 0x5b);
@@ -636,14 +684,20 @@ bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParam
 
 // Landing timer (0x541300, called by the walk move while pm_flags 0x80000 is set): 1200 ms after landing at least
 // 18 units above the jump's origin, else 1800 ms; the flag is dropped once the timer reads above 1800. The speed
-// factors (0.5, 0.65) only apply with jump_slowdownEnable, which defaults to false.
-void landingTimer(PlayerState& ps) {
+// factors only apply with jump_slowdownEnable (SP false, MP true; docs/spec/mp-pmove.md): 0.65 when the flag is dropped or the
+// timer starts at 1800, 0.5 when it starts at 1200.
+void landingTimer(PlayerState& ps, const MoveParams& mp) {
+    float f = 1.0f;
     if (ps.pmTimeMs > 1800) {
         ps.jumping = false;
         ps.jumpOriginZ = 0;
+        f = 0.65f;
     } else if (ps.pmTimeMs == 0) {
-        ps.pmTimeMs = ps.jumpOriginZ + 18.0f <= ps.origin[2] ? 1200 : 1800;
+        const bool high = ps.jumpOriginZ + 18.0f <= ps.origin[2];
+        ps.pmTimeMs = high ? 1200 : 1800;
+        f = high ? 0.5f : 0.65f;
     }
+    if (mp.jumpSlowdown && f != 1.0f) ps.velocity = scale(ps.velocity, f);
 }
 
 Vec wishVelocity(const Vec& fwd, const Vec& right, float f, float r) { return add(scale(fwd, f), scale(right, r)); }
@@ -663,7 +717,7 @@ void airMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, float f, float 
 void walkMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float f, float r, Vec fwd,
               Vec right, const MoveParams& mp) {
     // Walk move (0x5086f0).
-    if (ps.jumping) landingTimer(ps);
+    if (ps.jumping) landingTimer(ps, mp);
     if (checkJump(ps, pml, in, mp)) {
         airMove(w, ps, pml, f, r, fwd, right, mp);
         return;
@@ -1246,6 +1300,44 @@ void freeFlyMove(PlayerState& ps, const Pml& pml, const PlayerInput& in, float f
     ps.origin = add(ps.origin, scale(ps.velocity, pml.frametime));
 }
 
+// MP spectator move (pm_type 4, 0x51aad8 → 0x515e60). Friction (0x515490): with no ground the friction term is 0 and
+// pm_type 4 adds speed · frametime · 5; below speed 1 the velocity stops. The command scale is the 2-D one of forward and
+// right (0x5158e0) with the ps speed × player_spectateSpeedScale; the wish is forward · f + right · r along the full
+// view axes times that scale, plus a vertical part from the up / down buttons (0x80 / 0x40) with the 3-D scale of an up
+// command when the speed is not 0. Accelerate 8, then the slide move with collision (0x530ac0) and no gravity.
+// TODO(spec): the exact vertical term (0x515f20..0x515f4b).
+void spectatorMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, const PlayerInput& in, float f, float r, const MoveParams& mp) {
+    ps.viewHeightTarget = 60;
+    ps.viewHeight = 60; // TODO(spec): how the view height of a former dead state is restored for type 4
+    ps.stance = Stance::Stand;
+    const float speed = std::sqrt(dot(ps.velocity, ps.velocity));
+    if (speed < 1.0f) {
+        ps.velocity = {0, 0, 0};
+    } else {
+        const float drop = speed * pml.frametime * 5.0f;
+        ps.velocity = scale(ps.velocity, std::max(0.0f, speed - drop) / speed);
+    }
+    const float spd = mp.spectateSpeed * mp.spectateSpeedScale;
+    auto cmdScale = [&](float a, float b, float c) {
+        const float m = std::max({std::fabs(a), std::fabs(b), std::fabs(c)});
+        if (m == 0.0f) return 0.0f;
+        return spd * m / (std::sqrt(a * a + b * b + c * c) * 127.0f);
+    };
+    const float s2 = cmdScale(f, r, 0.0f);
+    const float pitch = in.pitch * float(M_PI) / 180.0f, yaw = in.yaw * float(M_PI) / 180.0f;
+    const float sp = std::sin(pitch), cp = std::cos(pitch), sy = std::sin(yaw), cy = std::cos(yaw);
+    const Vec fwd{cp * cy, cp * sy, -sp}, right{sy, -cy, 0.0f};
+    Vec wish = scale(add(scale(fwd, f), scale(right, r)), s2);
+    if (spd != 0.0f) {
+        const float up = cmdScale(0.0f, 0.0f, 127.0f);
+        if (in.leanRight) wish[2] += up;
+        if (in.leanLeft) wish[2] -= up;
+    }
+    const float len = normalize(wish);
+    accelerate(ps, wish, len, 8.0f, pml.frametime, mp);
+    slideMove(w, ps, pml, false, mp);
+}
+
 void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, int ms, const MoveParams& mp) {
     // pm_flags 0x8000 (freezecontrols, or an absolute playerlinkto): PmoveSingle (0x50c4a0) zeroes the velocity (ps+0x20..0x28) first of all,
     // before the step state is set up, and clears the command's forward / right moves (Pmove 0x50cc10 and 0x50c4bf also drop every button but
@@ -1261,6 +1353,8 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     pml.prevVelZ = ps.velocity[2];
     pml.gravity = mp.gravity;
     pml.dead = in.dead;
+    pml.fallMinHeight = mp.fallDamageMinHeight;
+    pml.fallMaxHeight = mp.fallDamageMaxHeight;
     // Aiming while prone (pm_flags 0x40 from the previous step, view height target 11) clears the command's forward
     // and right moves (0x50c5c7).
     // The frozen command is cleared at 0x50c4c8, before every other use of it (the previous-command compare 0x50c4f6 included).
@@ -1272,12 +1366,19 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     ps.prevCmdFwd = cmdFwd; // the next step's previous command (raw, before the zeroing above)
     ps.prevCmdRight = cmdRight;
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
+    if (mp.mpSpectator) {
+        clearLadder(ps);
+        spectatorMove(w, ps, pml, in, fwdMove * 127.0f, rightMove * 127.0f, mp);
+        return;
+    }
     if (ps.pmType == 1 || ps.pmType == 5) {
         // Linked by script (0x50c881; the jump table at 0x50cbfc sends pm_type 1 and 5 here): the ladder flag is dropped (0x20 gives
         // 0x40000), no ground entity (ps+0x60 = 0x7ff), the velocity and both move commands are zero, then the aim command (0x4dd020),
         // the stance change and view height (0x509d10), the pm_time countdown, the footsteps (0x50a850; nothing at zero speed) and
         // PM_Weapon (0x4dfc30, whose first step is the aim fraction 0x4dd0d0). The position is the link's (ClientEndFrame, playerlink.cpp):
         // nothing moves here. So a linked player can aim, change stance and lean (0x50ae01 allows the lean without ground for pm_type 1).
+        // The multiplayer intermission is pm_type 5 too (docs/spec/mp-spectate.md): it does not move either, as the network
+        // prediction's early return for pm_type 5 (netgame/netmove.cpp) has it.
         clearLadder(ps);
         ps.onGround = false;
         ps.velocity = {0, 0, 0};
@@ -1396,6 +1497,11 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     groundTrace(w, ps, pml);
     updateBobCycle(w, ps, pml, f, r, ms, mp);
     foliageSounds(w, ps, pml, mp);
+    // The end of the move (docs/spec/mp-pmove.md): the smoothed horizontal velocity the inertia check compares against moves
+    // towards the velocity by min(frametime, 1).
+    const float k = std::min(pml.frametime, 1.0f);
+    ps.oldVelocity[0] += (ps.velocity[0] - ps.oldVelocity[0]) * k;
+    ps.oldVelocity[1] += (ps.velocity[1] - ps.oldVelocity[1]) * k;
 }
 
 } // namespace
@@ -1480,12 +1586,15 @@ void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in,
 // G_Damage's knockback (0x528187..0x5282ac).
 void applyKnockback(PlayerState& ps, const KnockbackHit& hit, float gKnockback) {
     const float l = std::sqrt(hit.dir[0] * hit.dir[0] + hit.dir[1] * hit.dir[1] + hit.dir[2] * hit.dir[2]);
-    if (l == 0.0f) return;
-    const float scale = ps.stance == Stance::Prone ? 0.01f : ps.stance == Stance::Crouch ? 0.025f : 0.05f;
+    if (l == 0.0f && !hit.mp) return;
+    const float scale = hit.mp ? (ps.stance == Stance::Prone ? 0.02f : ps.stance == Stance::Crouch ? 0.15f : 0.3f)
+                               : (ps.stance == Stance::Prone ? 0.01f : ps.stance == Stance::Crouch ? 0.025f : 0.05f);
     const int knockback = std::min(int(float(hit.amount) * scale), 60);
     if (knockback == 0) return;
-    const float push = float(knockback) * gKnockback * 0.004f / l;
-    for (int i = 0; i < 3; ++i) ps.velocity[size_t(i)] += hit.dir[size_t(i)] * push;
+    if (l != 0.0f) {
+        const float push = float(knockback) * gKnockback * 0.004f / l;
+        for (int i = 0; i < 3; ++i) ps.velocity[size_t(i)] += hit.dir[size_t(i)] * push;
+    }
     if (hit.selfBlast) ps.velocity[2] *= 0.25f;
     if (ps.pmTimeMs == 0) {
         ps.pmTimeMs = std::clamp(knockback * 2, 50, 200);

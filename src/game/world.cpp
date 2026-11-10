@@ -106,8 +106,8 @@ ArrayPtr toArray(const std::vector<ObjectPtr>& objs) {
 
 } // namespace
 
-World::World(const fs::Vfs& vfs, std::string mapName)
-    : vfs_(vfs), mapName_(std::move(mapName)), animLib_(vfs), vm_([this](const std::string& p) -> std::optional<std::string> {
+World::World(const fs::Vfs& vfs, std::string mapName, bool multiplayer, std::shared_ptr<const ScriptNames> scriptNames)
+    : vfs_(vfs), mapName_(std::move(mapName)), mp_(multiplayer ? std::make_shared<MpState>() : nullptr), scriptNames_(std::move(scriptNames)), animLib_(vfs), vm_([this](const std::string& p) -> std::optional<std::string> {
           auto d = vfs_.read(p);
           if (!d) return std::nullopt;
           return std::string(d->begin(), d->end());
@@ -115,7 +115,7 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     // Mission-progress dvars the exe registers at start (archived; docs/spec/savegame.md): mis_01..mis_10 int 0, mis_difficulty string of 50 '0'.
     for (int i = 1; i <= 10; ++i) cvars.emplace(std::string("mis_") + (i < 10 ? "0" : "") + std::to_string(i), "0");
     cvars.emplace("mis_difficulty", std::string(50, '0'));
-    auto d = vfs_.read("maps/" + mapName_ + ".d3dbsp");
+    auto d = vfs_.read((mp_ ? "maps/mp/" : "maps/") + mapName_ + ".d3dbsp"); // MP: maps/mp/<mapname> (docs/spec/mp.md)
     if (!d) throw std::runtime_error("map not found: " + mapName_);
     bspData_ = std::move(*d);
     bsp_ = std::make_unique<assets::D3dBsp>(bspData_);
@@ -147,6 +147,14 @@ World::World(const fs::Vfs& vfs, std::string mapName)
     registerTurretBuiltins();
     registerActorStateBuiltins();
     registerSaveBuiltins();
+    if (mp_) {
+        const auto before = vm_.builtinRegistrations();
+        registerMpBuiltins();
+        for (const auto& [name, n] : vm_.builtinRegistrations()) {
+            const auto it = before.find(name);
+            if (n - (it == before.end() ? 0 : it->second) > 1) mpDuplicateBuiltins_.push_back(name);
+        }
+    }
     registerMissingStubs();
 }
 
@@ -180,7 +188,9 @@ void World::spawnMapEntities() {
     // codescripts/struct::createstruct() per struct, then sets the key/values on it (FUN_004fa5c0,
     // script names from FUN_004eb460).
     vm_.start("codescripts/struct.gsc", "initstructs");
+    int mapIndex = -1;
     for (const auto& be : bsp_->entities()) {
+        ++mapIndex;
         const std::string* clsp = be.get("classname");
         if (!clsp) continue;
         const std::string cls = *clsp;
@@ -248,6 +258,7 @@ void World::spawnMapEntities() {
             vehicleNodes_.push_back(o);
         } else if (startsWith(cls, "actor_")) {
             Entity& e = spawnEntity(cls);
+            e.mapIndex = mapIndex;
             e.isSpawner = true;
             fill(e.obj);
             bool hasCount = false;
@@ -255,8 +266,11 @@ void World::spawnMapEntities() {
             if (!hasCount) e.obj->set("count", Value(int32_t(1)));
             const Value flags = e.obj->get("spawnflags");
             if (!(flags.isInt() && (flags.asInt() & 1))) mapStartActors.push_back(&e);
-        } else if (kEntityClasses.count(cls)) {
+        } else if (kEntityClasses.count(cls) || (mp_ && startsWith(cls, "mp_"))) {
+            // MP: the spawn points (mp_dm_spawn, mp_tdm_spawn, mp_global_intermission, ...) stay entities the gametypes look
+            // up by classname (dm.gsc:107, docs/spec/mp.md). TODO(spec): the MP spawn table entries for them.
             Entity& e = spawnEntity(cls);
+            e.mapIndex = mapIndex;
             fill(e.obj);
             if (cls == "info_player_start") starts.push_back(e.obj);
             if (cls == "trigger_damage") spawnTriggerDamage(e);
@@ -271,6 +285,7 @@ void World::spawnMapEntities() {
             // Item spawn details: docs/spec/grenades.md "Item run" (map items think FinishSpawningItem at +100 ms and settle, touch 0x521a90
             // picks them up; World::runItem).
             Entity& e = spawnEntity(cls);
+            e.mapIndex = mapIndex;
             fill(e.obj);
         }
     }
@@ -617,6 +632,8 @@ void World::releaseEntityLinks(Entity& e) {
 
 void World::freeEntity(Entity& e) {
     if (e.obj->removed) return; // already freed
+    // Its own link and every link to it go, as in deleteEntityScripted (0x4d7c30, child list ent+0x1cc): a player linked to a
+    // deleted trigger (sd.gsc bombzone_think deletes the bomb zones after a plant without unlinking the planter) moves again.
     releaseEntityLinks(e);
     vm_.freeObject(e.obj);
 }
@@ -720,6 +737,7 @@ void World::frame(bool advanceTime) {
         }
     }
     ++frameNumber_; // level.framenum (0x44a6a0)
+    if (mp_) mpFrame();
     syncEntityClips();
     if (fxEvents_.size() > 4096) fxEvents_.erase(fxEvents_.begin(), fxEvents_.end() - 4096); // nobody draining
     if (playerKnockbacks_.size() > 64) playerKnockbacks_.clear(); // a host without a player state (iw2game) never drains them
@@ -800,6 +818,8 @@ void World::frame(bool advanceTime) {
     trimCorpses();      // 0x4db159
     runDeathScreen();
     processSaves(); // 0x44a230 at the server frame end (0x44a91f), after G_RunFrame and before the snapshot
+    if (mp_) mpKillcamEndFrame(); // spectator follow, archivetime trimming and the frame archive (src/game/mpkillcam.cpp)
+    if (mp_ && mp_->restartState == 1) mpFastRestart(); // the queued fast_restart (map_restart, src/game/mpgametypes.cpp)
 }
 
 // G_RunEntity (0x4da7e0): once per frame (+0x130 == level.framenum returns at once); a linked entity runs its parent
@@ -823,7 +843,7 @@ void World::runEntity(Entity& e) {
     if (e.turret && !e.obj->removed) thinkTurret(e);
     if (e.grenade && !e.obj->removed) runGrenade(e);
     else if (e.rocket && !e.obj->removed) runRocket(e);
-    if (e.classname.rfind("weapon_", 0) == 0) runItem(e);
+    if (e.classname.rfind("weapon_", 0) == 0 || e.classname == "playercorpse") runItem(e);
     if (e.scripted && !e.isActor && !e.obj->removed) updateScriptedAnim(e); // 0x52ccb0
     if (e.isActor) thinkActor(e);
     runEntityNumber_ = prevRunning;
@@ -841,7 +861,7 @@ const std::map<std::string, std::string>* World::weapon(const std::string& name)
     auto it = weapons_.find(key);
     if (it == weapons_.end()) {
         std::optional<std::map<std::string, std::string>> def;
-        if (auto d = vfs_.read("weapons/sp/" + key)) {
+        if (auto d = vfs_.read((mp_ ? "weapons/mp/" : "weapons/sp/") + key)) { // MP: the weapons/mp files (docs/spec/mp.md)
             std::string text(d->begin(), d->end());
             std::vector<std::string> parts;
             size_t start = 0;
@@ -1514,7 +1534,13 @@ void World::registerBuiltins() {
         if (r.size() > 1) throw std::runtime_error("getent used with more than one entity matching " + c.arg(0).toString());
         return r.empty() ? Value() : Value(r[0]);
     });
-    vm_.registerBuiltin("getentarray", [findEntities](CallContext& c) {
+    vm_.registerBuiltin("getentarray", [this, findEntities](CallContext& c) {
+        if (c.argc() == 0) { // getentarray() lists every entity (maps/mp/gametypes/_gameobjects.gsc:3)
+            std::vector<ObjectPtr> all;
+            for (const auto& e : entities_)
+                if (!e->obj->removed) all.push_back(e->obj);
+            return Value(toArray(all));
+        }
         if (!c.arg(0).isDefined()) throw std::runtime_error("getentarray without arguments is not supported");
         return Value(toArray(findEntities(c.arg(0), c.arg(1))));
     });
@@ -1837,10 +1863,32 @@ void World::registerBuiltins() {
         e.obj->set("$takedamage", Value(true)); // 0x50d8f4: ent+0x111 = 1 in the vehicle spawn (0x50d820..0x50d900)
         return Value(e.obj);
     });
-    // Load-time hints and profiling markers have no effect on the simulation.
-    for (const char* noop : {"precachemodel", "precacheshader", "precacheitem", "precacheturret",
-                             "precacherumble", "precachestring", "precachevehicle", "prof_begin", "prof_end"})
+    // Load-time hints and profiling markers have no effect on the simulation. Items, models, shaders and strings
+    // are remembered in call order: a network server lists them in the gamestate (docs/spec/net.md section 11).
+    for (const char* noop : {"precacheturret", "precacherumble", "precachevehicle", "prof_begin", "prof_end"})
         vm_.registerBuiltin(noop, [](CallContext&) { return Value(); });
+    for (const char* kind : {"precacheitem", "precachemodel", "precacheshader", "precachestring", "precacheheadicon"}) {
+        const std::string k = kind;
+        vm_.registerBuiltin(kind, [this, k](CallContext& c) {
+            if (c.argc() < 1) return Value();
+            const Value& v = c.arg(0);
+            std::string name = std::holds_alternative<script::LocalizedString>(v.v)
+                                   ? std::get<script::LocalizedString>(v.v).key
+                                   : v.toString();
+            auto add = [this](const std::string& kind, const std::string& n) {
+                auto& list = precached_[kind];
+                if (!n.empty() && std::find(list.begin(), list.end(), n) == list.end()) list.push_back(n);
+            };
+            add(k, name);
+            // A precached item registers its world model and its projectile model (in this order) at the time of
+            // the call (observed in the 1.3 gamestate).
+            if (k == "precacheitem")
+                if (const auto* def = weapon(name))
+                    for (const char* key : {"worldmodel", "projectilemodel"})
+                        if (auto it = def->find(key); it != def->end()) add("precachemodel", it->second);
+            return Value();
+        });
+    }
     // setviewmodel(model): the player's first-person hands model (read by the front end).
     vm_.registerBuiltin("setviewmodel", [](CallContext& c) {
         if (c.self.isObject()) c.self.asObject()->set("$viewmodel", c.arg(0));
@@ -1857,8 +1905,14 @@ void World::registerBuiltins() {
         deleteEntityScripted(*e);
         return Value();
     });
-    vm_.registerBuiltin("setmodel", [](CallContext& c) {
+    vm_.registerBuiltin("setmodel", [this](CallContext& c) {
         c.self.asObject()->set("model", c.arg(0));
+        // The model index is taken at this call (a network server lists the name, docs/spec/net.md section 11).
+        if (mp_) {
+            const std::string m = c.arg(0).toString();
+            auto& l = precached_["precachemodel"];
+            if (!m.empty() && m[0] != '*' && std::find(l.begin(), l.end(), m) == l.end()) l.push_back(m);
+        }
         return Value();
     });
     // makefakeai (0x4f82a0): the entity must be a script_model (eType 5, else "makeFakeAI must be applied to a script_model",
@@ -2037,6 +2091,8 @@ void World::registerBuiltins() {
     // shipped scripts' calls (id, origin[, forward]) and (id, repeat seconds, origin), not from the engine.
     vm_.registerBuiltin("loadfx", [this](CallContext& c) {
         fxNames_.push_back(c.arg(0).toString());
+        auto& fx = precached_["loadfx"];
+        if (std::find(fx.begin(), fx.end(), fxNames_.back()) == fx.end()) fx.push_back(fxNames_.back());
         return Value(nextFx_++);
     });
     auto fxPath = [this](const Value& id) -> std::string {
@@ -2088,23 +2144,29 @@ void World::registerBuiltins() {
 }
 
 void World::registerMissingStubs() {
-    std::set<std::string> defined, called;
-    for (const auto& name : vfs_.list()) {
-        if (name.size() < 4 || name.substr(name.size() - 4) != ".gsc") continue;
-        const auto data = vfs_.read(name);
-        try {
-            const auto tree = parseScript(std::string_view(reinterpret_cast<const char*>(data->data()), data->size()), name);
-            std::function<void(const Node&)> walk = [&](const Node& n) {
-                if (n.kind == NodeKind::Function) defined.insert(lower(n.text));
-                if (n.kind == NodeKind::Call && !n.isPointerCall && n.children.size() > 1 &&
-                    n.children[1]->text.find("::") == std::string::npos)
-                    called.insert(lower(n.children[1]->text));
-                for (const auto& c : n.children) walk(*c);
-            };
-            walk(*tree);
-        } catch (const std::exception&) {
+    if (!scriptNames_) {
+        auto names = std::make_shared<ScriptNames>();
+        auto& defined = names->defined;
+        auto& called = names->called;
+        for (const auto& name : vfs_.list()) {
+            if (name.size() < 4 || name.substr(name.size() - 4) != ".gsc") continue;
+            const auto data = vfs_.read(name);
+            try {
+                const auto tree = parseScript(std::string_view(reinterpret_cast<const char*>(data->data()), data->size()), name);
+                std::function<void(const Node&)> walk = [&](const Node& n) {
+                    if (n.kind == NodeKind::Function) defined.insert(lower(n.text));
+                    if (n.kind == NodeKind::Call && !n.isPointerCall && n.children.size() > 1 &&
+                        n.children[1]->text.find("::") == std::string::npos)
+                        called.insert(lower(n.children[1]->text));
+                    for (const auto& c : n.children) walk(*c);
+                };
+                walk(*tree);
+            } catch (const std::exception&) {
+            }
         }
+        scriptNames_ = names;
     }
+    const auto& [defined, called] = *scriptNames_;
     for (const auto& f : called)
         if (!defined.count(f) && !vm_.hasBuiltin(f)) {
             stubbed_.insert(f);

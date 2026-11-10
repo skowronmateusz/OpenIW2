@@ -85,4 +85,11 @@ LightmapParts splitLightmap(std::span<const uint8_t> block) {
             block.subspan(3 * coeff, sun)};
 }
 
+bool isFlagTechniqueSet(const std::string& techniqueSet) { return techniqueSet.find("_flag") != std::string::npos; }
+
+std::array<uint8_t, 4> drawnVertexColor(bool flagTechnique, const std::array<uint8_t, 4>& color) {
+    if (!flagTechnique) return color;
+    return {color[0], color[2], color[1], 255};
+}
+
 } // namespace iw2::assets

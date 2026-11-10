@@ -1,6 +1,8 @@
 // First-person weapon placement offsets that depend on stance, movement and aiming (docs/spec/weapons.md).
 #pragma once
 
+#include "game/clienttime.h"
+
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -118,11 +120,6 @@ private:
 // phase) * m * b * 16 and sin(T*12pi + phase) * m * b * 10 with T = time / 600 ms. The phase (rand * 2 - 1) * pi is
 // re-rolled on every frame without a shake. A new shake takes the first free slot (start in the future or already
 // ended), else the weakest slot when that one is weaker than the new out1, else it is dropped.
-// The client time of a rendered frame (cg.time 0xf708dc, read per drawn frame by the shake 0x4bf540 / 0x4bf700): the display time lags
-// the newest server frame by one 50 ms step and advances by the interpolation fraction between two steps, so it changes every rendered
-// frame, not once per server frame (the same expression drives the effect system's time).
-inline int64_t clientRenderTimeMs(int64_t serverMs, float lerpFrac) { return serverMs - 50 + int64_t(lerpFrac * 50.0f); }
-
 class ViewShake {
 public:
     void add(const V3& origin, float scale, int durationMs, float radius, int64_t nowMs, const V3& eye);
@@ -148,6 +145,11 @@ private:
 // player state's bob cycle (0..255), the horizontal speed and the view height target (11 prone, 40 crouched).
 // adsBobFactor: the weapon's; reticle: the weapon has an adsOverlayReticle (then also × (1 − adsFrac)).
 V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, float adsBobFactor, bool reticle);
+
+// The first-person hands model (docs/spec/weapons.md "Multiplayer hands model"): in a multiplayer game the model the
+// player's script set with setviewmodel (the player-state viewModel), when set; otherwise, and always in SP, the
+// weapon's handModel.
+std::string viewHandsModel(bool multiplayer, const std::string& scriptViewModel, const std::string& weaponHandModel);
 
 // Scoped view bob (cgame 0x4ae210, called by CG_OffsetFirstPersonView 0x4ae290 right after the scope sway): for a
 // weapon with an adsOverlayReticle the view angles (pitch, yaw, roll) get the gun bob angles × adsFrac. `rawBob` is
@@ -202,6 +204,15 @@ float shellShockRatio(int remainingMs, int fadeMs);
 // Field of view while aiming (0x4ae7d9): horizontal cg_fov towards min(adsZoomFov, cg_fov). `zoomingIn` is true
 // while the aim fraction rises (it becomes true at fraction 0 and false at 1).
 float adsFov(float cgFov, float adsZoomFov, float zoomInFrac, float zoomOutFrac, float adsFrac, bool zoomingIn);
+// CG_CalcFov's last step (0x4ae8a8..): while the player is on a turret (ps eFlags & 0x300) the field of view is the constant
+// 55 (0x592078) whatever the weapon's aim fraction, so an aim held when mounting gives no zoom on the turret.
+constexpr float kTurretFov = 55.0f;
+inline float viewFov(float weaponFov, bool onTurret) { return onTurret ? kTurretFov : weaponFov; }
+
+// Scope overlay on a turret: the overlay (0x4bcdd0 -> 0x4bca90) is drawn only from the crosshair draw 0x4bd760 on its
+// hand-weapon path, which is skipped while eFlags carry 0x300 (on a turret). The aim fraction is untouched, so the overlay
+// returns after dismounting if the player still aims. Returns the overlay alpha to use.
+inline float scopeOverlayAlpha(float handWeaponAlpha, bool onTurret) { return onTurret ? 0.0f : handWeaponAlpha; }
 
 // The view fov on a turret (end of 0x4ae7b0, 0x4ae8a8): with eFlags & 0x300 (the player is on a turret) the result is
 // replaced by 55, whatever cg_fov and the aim fraction. The aim state itself is kept (PM_Weapon returns early on a
@@ -226,11 +237,13 @@ public:
     void reset() { landTime_ = -1; landChange_ = 0; damageTime_ = 0; stepTime_ = 0; stepChange_ = 0; }
     // A damage event (cgame 0x4ba2a0 on a new ps damageEvent): kick = clamp(count * cg_viewKickScale (0.6), 5, cg_viewKickMax
     // (90)); `fwd` and `left` are the view axes rows 0 and 1 (left = +y for yaw 0). A world hit (both bytes 255) kicks
-    // the pitch back by the full amount. `timeMs` is the snapshot time (0x4ba53d).
+    // the pitch back by the full amount. `timeMs` is the client clock when the event is seen (the original stores the snapshot
+    // time, 0x4ba53d; here the world time would lie ahead of the clock and flip the kick. TODO(spec): the snapshot's time against cg.time then).
     void damage(int yawByte, int pitchByte, int count, const V3& fwd, const V3& left, int64_t timeMs);
     // The landing report of the player state (pmove crashLand): a heavy landing (fall height above 12, no damage) or the
     // fall damage dips the view; both end as a negative z change at `timeMs` (0x4babe2 / 0x4babe8).
-    void land(float fallHeight, int fallDamage, int64_t timeMs);
+    // minHeight / maxHeight: the fall damage dvars (SP 200 / 350, MP 256 / 480; docs/spec/mp-pmove.md).
+    void land(float fallHeight, int fallDamage, int64_t timeMs, float minHeight = 200.0f, float maxHeight = 350.0f);
     // Eye z added by the landing dip at `timeMs` (0x4ae6c7-0x4ae748): up to 150 ms in, then back out over 300 ms.
     float landOffset(int64_t timeMs);
     // {pitch, roll} added to the view at `timeMs` (0x4ae371-0x4ae4a9): 100 ms in, 400 ms out; aiming scales it by
@@ -249,7 +262,7 @@ public:
     static float minEyeZ(float originZ) { return originZ + 8.0f; }
     // The view dip of a landing: 0 up to fall height 12, else min(24, trunc(((h - 12) / 26 + 1) * 4)) (0x509107, 0x4bab9f).
     static int landDip(float fallHeight);
-    static int dipFromDamage(int damage); // the cgame rebuilds h from the damage (0x4bab6e) with the fall damage dvars
+    static int dipFromDamage(int damage, float minHeight = 200.0f, float maxHeight = 350.0f); // the cgame rebuilds h from the damage (0x4bab6e) with the fall damage dvars
 
 private:
     int64_t landTime_ = -1, damageTime_ = 0, stepTime_ = 0;

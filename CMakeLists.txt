@@ -60,7 +60,8 @@ if(APPLE)
   target_sources(iw2_audio PRIVATE src/audio/decode_apple.cpp)
   target_link_libraries(iw2_audio PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
 else()
-  message(FATAL_ERROR "mp3 decoding is only implemented with AudioToolbox (macOS)")
+  # No MP3 decoder elsewhere yet; enough for the headless tools (iw2server on Linux), which never decode music.
+  target_sources(iw2_audio PRIVATE src/audio/decode_none.cpp)
 endif()
 
 add_library(iw2_video
@@ -87,20 +88,22 @@ add_library(iw2_game
   src/game/animtree.cpp
   src/game/pathnodes.cpp
   src/game/actorfields.cpp
-  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/triggerdamage.cpp
+  src/game/combat.cpp src/game/bulletdamage.cpp src/game/playerweapon.cpp src/game/sounds.cpp src/game/menus.cpp src/game/hud.cpp src/game/inventory.cpp src/game/movers.cpp src/game/animscripted.cpp src/game/playerlink.cpp src/game/rockets.cpp src/game/viewweapon.cpp src/game/playerevents.cpp src/game/shellshock.cpp src/game/shellshockworld.cpp src/game/itempickup.cpp src/game/itempickupworld.cpp src/game/mpdrop.cpp src/game/mpturret.cpp src/game/triggerdamage.cpp
   src/game/vehicles.cpp src/game/vehicletriggers.cpp src/game/actortriggers.cpp src/game/vehicledrive.cpp src/game/campaign.cpp src/game/fx.cpp src/game/marks.cpp src/game/outdoor.cpp src/game/perception.cpp
   src/game/turrets.cpp src/game/turretthink.cpp src/game/entityclips.cpp src/game/actorturret.cpp src/game/hitboxes.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/spawnchecks.cpp src/game/softlock.cpp src/game/firemonitor.cpp src/game/inventorydiff.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
-  src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
-  src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
+  src/game/mpgame.cpp src/game/mpkillcam.cpp src/game/maprotation.cpp src/game/mphud.cpp src/game/mpchat.cpp src/game/mpscoreboard.cpp src/game/mpspectate.cpp src/game/mpgametypes.cpp src/game/mpbots.cpp src/game/mpbotcombat.cpp src/game/mpbotgoals.cpp src/game/mpplayers.cpp src/game/playeranimscript.cpp src/game/navgen.cpp src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
+  src/game/mpremote.cpp src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
 
 add_library(iw2_ui
   src/ui/menu.cpp
+  src/ui/menuhide.cpp
   src/ui/menurun.cpp
+  src/ui/mpserver.cpp
   src/ui/frontend.cpp
   src/ui/iw2options.cpp
   src/ui/profile.cpp
@@ -109,8 +112,11 @@ add_library(iw2_ui
 target_include_directories(iw2_ui PUBLIC src)
 target_link_libraries(iw2_ui PUBLIC iw2_fs)
 
-add_executable(iw2game tools/iw2game/main.cpp)
+add_executable(iw2game tools/iw2game/main.cpp tools/iw2game/mp.cpp)
 target_link_libraries(iw2game PRIVATE iw2_game iw2_audio)
+
+add_executable(iw2server tools/iw2server/main.cpp)
+target_link_libraries(iw2server PRIVATE iw2_dedicated)
 
 add_executable(iw2fs tools/iw2fs/main.cpp)
 target_link_libraries(iw2fs PRIVATE iw2_fs)
@@ -144,7 +150,7 @@ add_test(NAME d3dbsp COMMAND test_d3dbsp)
 find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp)
-  target_link_libraries(iw2view PRIVATE iw2_game iw2_audio iw2_ui iw2_video SDL3::SDL3)
+  target_link_libraries(iw2view PRIVATE iw2_dedicated iw2_netgame iw2_game iw2_audio iw2_ui iw2_video SDL3::SDL3)
   # The screenshotJpeg command encodes with ImageIO (apps/iw2view/jpeg.cpp).
   target_link_libraries(iw2view PRIVATE "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation")
   else()
@@ -252,6 +258,12 @@ add_test(NAME movers COMMAND test_movers)
 
 add_executable(test_builtinaudit tests/test_builtinaudit.cpp)
 target_link_libraries(test_builtinaudit PRIVATE iw2_game)
+add_executable(test_cursorhint tests/test_cursorhint.cpp)
+target_link_libraries(test_cursorhint PRIVATE iw2_game)
+add_test(NAME cursorhint COMMAND test_cursorhint)
+add_executable(test_clientsound tests/test_clientsound.cpp)
+target_link_libraries(test_clientsound PRIVATE iw2_audio)
+add_test(NAME clientsound COMMAND test_clientsound)
 add_executable(test_campaignflags tests/test_campaignflags.cpp)
 target_link_libraries(test_campaignflags PRIVATE iw2_game)
 add_executable(test_scripterrors tests/test_scripterrors.cpp)
@@ -296,6 +308,12 @@ add_test(NAME hitboxes COMMAND test_hitboxes)
 add_executable(test_pmove tests/test_pmove.cpp)
 target_link_libraries(test_pmove PRIVATE iw2_game)
 add_test(NAME pmove COMMAND test_pmove)
+add_executable(test_mppmove tests/test_mppmove.cpp)
+target_link_libraries(test_mppmove PRIVATE iw2_game)
+add_test(NAME mppmove COMMAND test_mppmove)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mppmove PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
 
 add_executable(test_vehicledrive tests/test_vehicledrive.cpp)
 target_link_libraries(test_vehicledrive PRIVATE iw2_game)
@@ -337,6 +355,24 @@ add_test(NAME menu_focus COMMAND test_menu_focus)
 add_executable(test_profilelist tests/test_profilelist.cpp)
 target_link_libraries(test_profilelist PRIVATE iw2_ui)
 add_test(NAME profilelist COMMAND test_profilelist)
+add_executable(test_menuexeckey tests/test_menuexeckey.cpp)
+target_link_libraries(test_menuexeckey PRIVATE iw2_ui)
+add_test(NAME menuexeckey COMMAND test_menuexeckey)
+
+add_executable(test_menuhide tests/test_menuhide.cpp)
+target_link_libraries(test_menuhide PRIVATE iw2_ui)
+add_test(NAME menuhide COMMAND test_menuhide)
+add_executable(test_mpui tests/test_mpui.cpp)
+target_link_libraries(test_mpui PRIVATE iw2_ui)
+add_test(NAME mpui COMMAND test_mpui)
+add_executable(test_mpfocuspreview tests/test_mpfocuspreview.cpp)
+target_link_libraries(test_mpfocuspreview PRIVATE iw2_ui)
+add_executable(test_mpbrowser tests/test_mpbrowser.cpp)
+target_link_libraries(test_mpbrowser PRIVATE iw2_net iw2_game)
+add_test(NAME mpbrowser COMMAND test_mpbrowser)
+add_executable(test_mpmenunav tests/test_mpmenunav.cpp)
+target_link_libraries(test_mpmenunav PRIVATE iw2_game)
+
 add_executable(test_listbox tests/test_listbox.cpp)
 target_link_libraries(test_listbox PRIVATE iw2_ui)
 add_test(NAME listbox COMMAND test_listbox)
@@ -557,6 +593,9 @@ add_test(NAME framescale COMMAND test_framescale)
 add_executable(test_hudfade tests/test_hudfade.cpp)
 target_link_libraries(test_hudfade PRIVATE iw2_game)
 add_test(NAME hudfade COMMAND test_hudfade)
+add_executable(test_thirdpersonview tests/test_thirdpersonview.cpp)
+target_link_libraries(test_thirdpersonview PRIVATE iw2_game)
+add_test(NAME thirdpersonview COMMAND test_thirdpersonview)
 add_executable(test_vehiclehit tests/test_vehiclehit.cpp)
 target_link_libraries(test_vehiclehit PRIVATE iw2_game)
 add_test(NAME vehiclehit COMMAND test_vehiclehit)
@@ -617,13 +656,397 @@ add_executable(test_deadtank tests/test_deadtank.cpp)
 target_link_libraries(test_deadtank PRIVATE iw2_game)
 add_test(NAME deadtank COMMAND test_deadtank)
 
-add_executable(test_flakcrew tests/test_flakcrew.cpp)
-target_link_libraries(test_flakcrew PRIVATE iw2_game)
-add_test(NAME flakcrew COMMAND test_flakcrew)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # The shipped ui_mp menus: createserver -> gametype -> map -> extension panel -> StartServer (docs/spec/mp-ui.md).
+  add_test(NAME menuhide_world COMMAND test_menuhide)
+  set_tests_properties(menuhide_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME mpui_world COMMAND test_mpui)
+  set_tests_properties(mpui_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  # ui_mp main menu: ESC and every sub-menu's back/ESC path leave only the original's menus open.
+  add_test(NAME mpfocuspreview COMMAND test_mpfocuspreview)
+  set_tests_properties(mpfocuspreview PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME mpmenunav COMMAND test_mpmenunav)
+  set_tests_properties(mpmenunav PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
 
+add_executable(test_mplisten tests/test_mplisten.cpp)
+target_link_libraries(test_mplisten PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mplisten_e2e COMMAND test_mplisten)
+  set_tests_properties(mplisten_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+add_executable(test_mpjoinmenus tests/test_mpjoinmenus.cpp)
+target_link_libraries(test_mpjoinmenus PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpjoinmenus_e2e COMMAND test_mpjoinmenus)
+  set_tests_properties(mpjoinmenus_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 600)
+endif()
+
+# The dedicated start of the create-server screen: settings, console window model, the shared server loop.
+add_executable(test_dedicatedstart tests/test_dedicatedstart.cpp)
+target_link_libraries(test_dedicatedstart PRIVATE iw2_dedicated)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME dedicatedstart COMMAND test_dedicatedstart)
+  set_tests_properties(dedicatedstart PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
+    PASS_REGULAR_EXPRESSION "dedicatedstart: ok" TIMEOUT 180)
+else()
+  add_test(NAME dedicatedstart COMMAND test_dedicatedstart)
+endif()
+# The options of iw2server: weapon lists, the command line, limits (tests/test_serveroptions.cpp).
+add_executable(test_serveroptions tests/test_serveroptions.cpp)
+target_link_libraries(test_serveroptions PRIVATE iw2_dedicated)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME serveroptions COMMAND test_serveroptions)
+  set_tests_properties(serveroptions PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
+    PASS_REGULAR_EXPRESSION "serveroptions: ok" TIMEOUT 600)
+else()
+  add_test(NAME serveroptions COMMAND test_serveroptions)
+endif()
+add_executable(test_mphands tests/test_mphands.cpp)
+target_link_libraries(test_mphands PRIVATE iw2_netgame)
+add_test(NAME mphands COMMAND test_mphands)
+if(IW2_TEST_MAIN)
+  set_tests_properties(mphands PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+add_executable(test_mpperclient tests/test_mpperclient.cpp)
+target_link_libraries(test_mpperclient PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpperclient_world COMMAND test_mpperclient)
+  set_tests_properties(mpperclient_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+else()
+  add_test(NAME mpperclient_world COMMAND test_mpperclient)
+endif()
+add_executable(test_mpnetdmview tests/test_mpnetdmview.cpp)
+target_link_libraries(test_mpnetdmview PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpnetdmview_e2e COMMAND test_mpnetdmview)
+  set_tests_properties(mpnetdmview_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+add_executable(test_predictedammo tests/test_predictedammo.cpp)
+target_link_libraries(test_predictedammo PRIVATE iw2_netgame)
+add_test(NAME predictedammo COMMAND test_predictedammo)
+add_executable(test_mpturretview tests/test_mpturretview.cpp)
+target_link_libraries(test_mpturretview PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpturretview_e2e COMMAND test_mpturretview)
+  set_tests_properties(mpturretview_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+
+add_executable(test_mpkillcam_grenade tests/test_mpkillcam_grenade.cpp)
+target_link_libraries(test_mpkillcam_grenade PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpkillcam_grenade_e2e COMMAND test_mpkillcam_grenade)
+  set_tests_properties(mpkillcam_grenade_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+# The recorded view state of the killcam (tests/test_mpkillcam_record.cpp): a bot's throw through the offhand states, and the
+# network killcam's view equal to the local one from the same archived frame.
+add_executable(test_mpkillcam_record tests/test_mpkillcam_record.cpp)
+target_link_libraries(test_mpkillcam_record PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpkillcam_record_e2e COMMAND test_mpkillcam_record)
+  set_tests_properties(mpkillcam_record_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+add_executable(test_mpnetgrenade tests/test_mpnetgrenade.cpp)
+target_link_libraries(test_mpnetgrenade PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpnetgrenade_e2e COMMAND test_mpnetgrenade)
+  set_tests_properties(mpnetgrenade_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+add_executable(test_mpdedicatedclient tests/test_mpdedicatedclient.cpp)
+target_link_libraries(test_mpdedicatedclient PRIVATE iw2_netgame)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME mpdedicatedclient_e2e COMMAND test_mpdedicatedclient)
+  set_tests_properties(mpdedicatedclient_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}" TIMEOUT 300)
+endif()
+add_executable(test_mpnetcombat tests/test_mpnetcombat.cpp)
+target_link_libraries(test_mpnetcombat PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpnetcombat_e2e COMMAND test_mpnetcombat)
+  set_tests_properties(mpnetcombat_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 600)
+endif()
+
+# Network soak with invariants (tests/test_mpnetsoak.cpp): iw2server as a child process with bots and a short map
+# rotation, two scripted network clients; violations listed in tests/mpnetsoak_known.txt are reported but do not fail.
+add_executable(test_mpnetsoak tests/test_mpnetsoak.cpp)
+target_link_libraries(test_mpnetsoak PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpnetsoak COMMAND test_mpnetsoak)
+  set_tests_properties(mpnetsoak PROPERTIES ENVIRONMENT
+    "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache;IW2_SOAK_SERVER=$<TARGET_FILE:iw2server>;IW2_SOAK_KNOWN=${CMAKE_SOURCE_DIR}/tests/mpnetsoak_known.txt;IW2_SOAK_REPORT=${CMAKE_BINARY_DIR}/mpnetsoak_report.txt"
+    TIMEOUT 1500)
+endif()
+
+add_executable(test_mpantilag tests/test_mpantilag.cpp)
+target_link_libraries(test_mpantilag PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpantilag_e2e COMMAND test_mpantilag)
+  set_tests_properties(mpantilag_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 600)
+endif()
+
+add_executable(test_mpremote tests/test_mpremote.cpp)
+target_link_libraries(test_mpremote PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME mpremote_world COMMAND test_mpremote)
+  set_tests_properties(mpremote_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+add_executable(test_mpdm tests/test_mpdm.cpp)
+target_link_libraries(test_mpdm PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME mpdm_world COMMAND test_mpdm)
+  set_tests_properties(mpdm_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # iw2game multiplayer mode: two local clients, a kill and a respawn on mp_toujane DM without script errors.
+  add_test(NAME mpdm_iw2game COMMAND iw2game ${IW2_TEST_MAIN} mp/mp_toujane dm 6 --mp-clients 2 --mp-kill 2:1:0 --mp-use 5:1)
+  set_tests_properties(mpdm_iw2game PROPERTIES PASS_REGULAR_EXPRESSION "client 0 player: playing team [a-z]+ score 1 deaths 0.*client 1 client1: playing team [a-z]+ score 0 deaths 1.*runtime errors 0")
+endif()
+
+add_library(iw2_net
+  src/net/msg.cpp
+  src/net/huffman.cpp
+  src/net/huffman_table.cpp
+  src/net/netchan.cpp
+  src/net/oob.cpp
+  src/net/delta.cpp
+  src/net/scramble.cpp
+  src/net/client.cpp
+  src/net/wiredump.cpp
+  src/net/gameclient.cpp
+  src/net/netfields.cpp
+  src/net/playerstate.cpp
+  src/net/server.cpp
+  src/net/svconsole.cpp
+  src/net/udp.cpp
+  src/net/lanbrowser.cpp
+  src/net/resolve.cpp)
+target_include_directories(iw2_net PUBLIC src)
+# Network game layer: shared movement for server and client prediction, snapshot interpolation (docs/spec/net.md 10).
+add_library(iw2_netgame src/netgame/netmove.cpp src/netgame/netcombat.cpp src/netgame/worldgame.cpp src/netgame/remoteview.cpp)
+target_link_libraries(iw2_netgame PUBLIC iw2_game iw2_net)
+# The dedicated server loop (tools/iw2server and the dedicated start of iw2view) and its console window's model.
+find_package(Threads REQUIRED)
+add_library(iw2_dedicated src/netgame/dedicated.cpp src/netgame/consoleview.cpp src/netgame/serverargs.cpp)
+target_link_libraries(iw2_dedicated PUBLIC iw2_netgame iw2_audio Threads::Threads)
+
+add_executable(iw2netinfo tools/iw2netinfo/main.cpp)
+target_link_libraries(iw2netinfo PRIVATE iw2_net)
+add_executable(iw2netclient tools/iw2netclient/main.cpp)
+target_link_libraries(iw2netclient PRIVATE iw2_net)
+
+add_executable(test_net tests/test_net.cpp)
+target_link_libraries(test_net PRIVATE iw2_net)
+add_test(NAME net COMMAND test_net)
+add_executable(test_svconsole tests/test_svconsole.cpp)
+target_link_libraries(test_svconsole PRIVATE iw2_net)
+add_test(NAME svconsole COMMAND test_svconsole)
+add_executable(test_net_udp tests/test_net_udp.cpp)
+target_link_libraries(test_net_udp PRIVATE iw2_net)
+add_test(NAME net_udp COMMAND test_net_udp)
+
+add_executable(test_mpchat tests/test_mpchat.cpp)
+target_link_libraries(test_mpchat PRIVATE iw2_game)
+add_test(NAME mpchat COMMAND test_mpchat)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mpchat PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpmenus tests/test_mpmenus.cpp)
+target_link_libraries(test_mpmenus PRIVATE iw2_game)
+add_test(NAME mpmenus COMMAND test_mpmenus)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mpmenus PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpgametypes tests/test_mpgametypes.cpp)
+target_link_libraries(test_mpgametypes PRIVATE iw2_game)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpgametypes_world COMMAND test_mpgametypes)
+  set_tests_properties(mpgametypes_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+  add_test(NAME mpgametypes_matrix COMMAND test_mpgametypes matrix)
+  set_tests_properties(mpgametypes_matrix PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 1500)
+endif()
+
+add_executable(test_mphud tests/test_mphud.cpp)
+target_link_libraries(test_mphud PRIVATE iw2_game)
+if(IW2_TEST_MAIN)
+  add_test(NAME mphud_world COMMAND test_mphud)
+  set_tests_properties(mphud_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+else()
+  add_test(NAME mphud_world COMMAND test_mphud)
+endif()
+
+add_executable(test_mpbots tests/test_mpbots.cpp)
+target_link_libraries(test_mpbots PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # Bots on mp_toujane: generated navigation graph (cached in the build tree), walking to a goal, DM fights and score.
+  add_test(NAME mpbots_world COMMAND test_mpbots)
+  set_tests_properties(mpbots_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+  # iw2game --mp-bots: two bots and the local player on mp_toujane DM for 60 s; somebody scores, no script errors.
+  add_test(NAME mpbots_iw2game COMMAND iw2game ${IW2_TEST_MAIN} mp/mp_toujane dm 60 --mp-bots 2 --mp-bot-skill 3)
+  set_tests_properties(mpbots_iw2game PROPERTIES ENVIRONMENT "IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
+    PASS_REGULAR_EXPRESSION "client 1 bot0: [a-z]+ team [a-z]+ score [0-9]+.*bot 1 skill veteran.*client 2 bot1:.*log K;.*runtime errors 0")
+  # iw2server end to end (docs/spec/dedicated.md): bot, client, rcon, getstatus, rotation by rcon, stdin console.
+  add_test(NAME iw2server_dedicated COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2server_dedicated.sh $<TARGET_FILE:iw2server>
+    $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})
+  set_tests_properties(iw2server_dedicated PROPERTIES ENVIRONMENT "IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
+    PASS_REGULAR_EXPRESSION "iw2server dedicated: ok" TIMEOUT 240)
+else()
+  add_test(NAME mpbots_world COMMAND test_mpbots)
+endif()
+
+add_executable(test_mpbotcombat tests/test_mpbotcombat.cpp)
+target_link_libraries(test_mpbotcombat PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # Bot combat (docs/spec/mp-bots.md "Combat behaviour"): fights per skill, pistol, hearing; 15 bots' cost on the
+  # largest map; the stuck watch on every map (IW2_BOT_SOAK_SECONDS, default 60).
+  set(_botenv "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+  add_test(NAME mpbotcombat COMMAND test_mpbotcombat)
+  set_tests_properties(mpbotcombat PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900)
+  add_test(NAME mpbotcombat_weapons COMMAND test_mpbotcombat weapons)
+  set_tests_properties(mpbotcombat_weapons PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900)
+  add_test(NAME mpbotcombat_perf COMMAND test_mpbotcombat perf mp_decoy)
+  set_tests_properties(mpbotcombat_perf PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900 RUN_SERIAL TRUE)
+  # Bots that want to walk do not stay on the spot (docs/spec/mp-bots.md "Stuck watch"): 8 bots for 600 game seconds.
+  add_test(NAME mpbotstall_carentan COMMAND test_mpbotcombat stall-check mp_carentan)
+  set_tests_properties(mpbotstall_carentan PROPERTIES ENVIRONMENT "${_botenv};IW2_BOT_SOAK_SECONDS=600" TIMEOUT 900)
+  foreach(_map breakout brecourt burgundy carentan dawnville decoy downtown farmhouse harbor leningrad matmata railyard rhine toujane trainstation)
+    add_test(NAME mpbotsoak_${_map} COMMAND test_mpbotcombat soak mp_${_map})
+    set_tests_properties(mpbotsoak_${_map} PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 1800)
+  endforeach()
+else()
+  add_test(NAME mpbotcombat COMMAND test_mpbotcombat)
+endif()
+
+add_executable(test_mpdrop tests/test_mpdrop.cpp)
+target_link_libraries(test_mpdrop PRIVATE iw2_game iw2_ui)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # MP dropped weapons (dropItem, g_maxDroppedWeapons, pickup by other clients) and the MP load screen text.
+  add_test(NAME mpdrop_world COMMAND test_mpdrop)
+  set_tests_properties(mpdrop_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mphitscale tests/test_mphitscale.cpp)
+target_link_libraries(test_mphitscale PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME mphitscale_world COMMAND test_mphitscale)
+  set_tests_properties(mphitscale_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpturretdamage tests/test_mpturretdamage.cpp)
+target_link_libraries(test_mpturretdamage PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # Multiplayer mounted MG kills with every weapon class configuration.
+  add_test(NAME mpturretdamage_world COMMAND test_mpturretdamage)
+  set_tests_properties(mpturretdamage_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpweaponcredit tests/test_mpweaponcredit.cpp)
+target_link_libraries(test_mpweaponcredit PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # The weapon of MP shots and damage: bot shotgun pellets through the shared fire path, grenade kills credited to the grenade.
+  add_test(NAME mpweaponcredit_world COMMAND test_mpweaponcredit)
+  set_tests_properties(mpweaponcredit_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_navmaps tests/test_navmaps.cpp)
+target_link_libraries(test_navmaps PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # Navigation graphs of the 15 MP maps: every spawn point on the graph (one report line per map).
+  add_test(NAME navmaps COMMAND test_navmaps)
+  set_tests_properties(navmaps PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+endif()
+
+add_executable(test_net_specdecoder tests/test_net_specdecoder.cpp tests/specdecoder.cpp)
+target_link_libraries(test_net_specdecoder PRIVATE iw2_net)
+add_test(NAME net_specdecoder COMMAND test_net_specdecoder $<TARGET_FILE:iw2server> "${IW2_TEST_MAIN}")
+set_tests_properties(net_specdecoder PROPERTIES TIMEOUT 120 ENVIRONMENT "IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+add_executable(test_net_wirediff tests/test_net_wirediff.cpp)
+target_link_libraries(test_net_wirediff PRIVATE iw2_net)
+add_test(NAME net_wirediff COMMAND test_net_wirediff $<TARGET_FILE:iw2server> ${IW2_TEST_MAIN})
+set_tests_properties(net_wirediff PROPERTIES TIMEOUT 120)
+add_executable(test_net_interop tests/test_net_interop.cpp)
+target_link_libraries(test_net_interop PRIVATE iw2_netgame)
+add_test(NAME net_interop COMMAND test_net_interop)
+add_executable(test_net_server tests/test_net_server.cpp)
+target_link_libraries(test_net_server PRIVATE iw2_net)
+add_test(NAME net_server COMMAND test_net_server)
+add_executable(test_mppredict tests/test_mppredict.cpp)
+target_link_libraries(test_mppredict PRIVATE iw2_dedicated iw2_netgame)
+add_test(NAME mppredict COMMAND test_mppredict)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mppredict PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_net_gameclient tests/test_net_gameclient.cpp)
+target_link_libraries(test_net_gameclient PRIVATE iw2_netgame)
+add_test(NAME net_gameclient COMMAND test_net_gameclient)
+add_executable(test_net_disconnect tests/test_net_disconnect.cpp)
+target_link_libraries(test_net_disconnect PRIVATE iw2_netgame)
+add_test(NAME net_disconnect COMMAND test_net_disconnect)
+
+add_executable(test_mpplayers tests/test_mpplayers.cpp)
+target_link_libraries(test_mpplayers PRIVATE iw2_game)
+add_test(NAME mpplayers_grammar COMMAND test_mpplayers)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpplayers_world COMMAND test_mpplayers)
+  set_tests_properties(mpplayers_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+endif()
+
+add_executable(test_mpflow tests/test_mpflow.cpp)
+target_link_libraries(test_mpflow PRIVATE iw2_game)
+add_test(NAME mpflow COMMAND test_mpflow)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpflow_world COMMAND test_mpflow)
+  set_tests_properties(mpflow_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+endif()
+
+add_executable(test_mpkillcam tests/test_mpkillcam.cpp)
+target_link_libraries(test_mpkillcam PRIVATE iw2_game)
+add_test(NAME mpkillcam COMMAND test_mpkillcam)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mpkillcam PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpkillcam_bots tests/test_mpkillcam_bots.cpp)
+target_link_libraries(test_mpkillcam_bots PRIVATE iw2_game)
+add_test(NAME mpkillcam_bots COMMAND test_mpkillcam_bots)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mpkillcam_bots PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpspectate tests/test_mpspectate.cpp)
+target_link_libraries(test_mpspectate PRIVATE iw2_game)
+add_test(NAME mpspectate COMMAND test_mpspectate)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mpspectate PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_mpteams tests/test_mpteams.cpp)
+target_link_libraries(test_mpteams PRIVATE iw2_game iw2_ui)
+# sd with five bots: autoassign splits them 3 / 2; a hand-picked bigger team is evened only with scr_teambalance 1.
+add_test(NAME mpteams_world COMMAND test_mpteams)
+set_tests_properties(mpteams_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 600)
+add_executable(test_mpkillcam_fidelity tests/test_mpkillcam_fidelity.cpp)
+target_link_libraries(test_mpkillcam_fidelity PRIVATE iw2_game)
+add_test(NAME mpkillcam_fidelity COMMAND test_mpkillcam_fidelity)
 add_executable(test_gammaramp tests/test_gammaramp.cpp)
 target_link_libraries(test_gammaramp PRIVATE iw2_game)
 add_test(NAME gammaramp COMMAND test_gammaramp)
+# The client's per-frame clock and the effects read on it.
+add_executable(test_clienttime tests/test_clienttime.cpp)
+target_link_libraries(test_clienttime PRIVATE iw2_netgame)
+add_test(NAME clienttime COMMAND test_clienttime)
+# Camera height of a network client around a landing, against the dedicated server.
+add_executable(test_mplanding tests/test_mplanding.cpp)
+target_link_libraries(test_mplanding PRIVATE iw2_dedicated iw2_netgame)
+add_test(NAME mplanding COMMAND test_mplanding)
+if(IW2_TEST_MAIN)
+  set_tests_properties(mplanding PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
+add_executable(test_flakcrew tests/test_flakcrew.cpp)
+target_link_libraries(test_flakcrew PRIVATE iw2_game)
+add_test(NAME flakcrew COMMAND test_flakcrew)
 
 add_executable(test_levelcarry tests/test_levelcarry.cpp)
 target_link_libraries(test_levelcarry PRIVATE iw2_game)

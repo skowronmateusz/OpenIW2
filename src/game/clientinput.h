@@ -7,6 +7,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iw2::game {
@@ -86,9 +87,13 @@ private:
     bool adsToggle_ = false;
     bool objectivesHeld_ = false; // +scores held (cgame 0xf791fc): shows the objectives screen
     int cycle_ = 0;
+    std::vector<std::string> console_;
 
 public:
     bool objectivesHeld() const { return objectivesHeld_; }
+    // Bound commands that are not input commands (togglemenu, openscriptmenu <menu> <response>, ...), in key order, for
+    // the front end to run; the call empties the list.
+    std::vector<std::string> takeConsoleCommands() { return std::exchange(console_, {}); }
     // Movement keys held (W/S/A/D): forward and right command values.
     // CL_KeyMove 0x409500: with +strafe held, +right / +left add +-127 to the side move (0x4095da); CL_MouseMove adds the mouse's
     // side / forward part; the command bytes are clamped to -128..127.

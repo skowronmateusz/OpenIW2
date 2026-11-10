@@ -1,6 +1,7 @@
 // Tests for the .menu preprocessor and parser using synthetic files. Set IW2_MAIN to a game main directory to
 // also load the shipped single-player menu lists.
 
+#include <algorithm>
 #include <unistd.h>
 #include <string>
 #include "ui/menu.h"
@@ -72,7 +73,8 @@ int main() {
 			elementheight 14
 			elementtype 0
 			feeder 16
-			columns 2  2 65 22  162 40 21
+			columns 2  2 65 22
+			           162 40 21
 			doubleclick { play "mouse_click"; open x; }
 			maxchars 14
 			maxPaintChars 9
@@ -120,16 +122,26 @@ int main() {
         CHECK(sp.loadList("ui/menus.txt"));
         CHECK(sp.loadList("ui/hud.txt"));
         CHECK(sp.loadList("ui/ingame.txt"));
-        // ui/menus.txt names ui/rec_restart.menu, which the game files do not contain.
-        int parseErrors = 0;
-        for (const auto& e : sp.errors())
-            if (e != "missing menu file ui/rec_restart.menu") {
-                std::cerr << "menu error: " << e << "\n";
-                ++parseErrors;
-            }
-        CHECK(parseErrors == 0);
+        // ui/menus.txt names ui/rec_restart.menu, which the game files do not contain: a warning, not an error.
+        for (const auto& e : sp.errors()) std::cerr << "menu error: " << e << "\n";
+        CHECK(sp.errors().empty());
+        CHECK(std::find(sp.warnings().begin(), sp.warnings().end(), "menu file not found: ui/rec_restart.menu") != sp.warnings().end());
         CHECK(sp.find("main") && sp.find("Compass") && sp.find("objectiveinfo") && sp.find("pregame"));
         std::cout << sp.menus().size() << " shipped menus\n";
+        // ui_mp/joinserver.menu writes one listbox column per line: all 11 must be read (server list text columns).
+        iw2::ui::MenuLibrary mp(game);
+        CHECK(mp.loadList("ui_mp/menus.txt"));
+        const iw2::ui::Menu* js = mp.find("joinserver");
+        CHECK(js != nullptr);
+        bool found = false;
+        if (js)
+            for (const auto& it : js->items)
+                if (it->type == 6 && it->feeder == 2) {
+                    found = true;
+                    CHECK(it->columns.size() == 11);
+                    CHECK(it->columns.size() == 11 && it->columns[2].pos == 41 && it->columns[2].maxChars == 22 && it->columns[10].pos == 566);
+                }
+        CHECK(found);
     }
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;

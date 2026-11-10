@@ -124,12 +124,20 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         if (cmd.empty()) continue;
         const std::string name = lowerStr(cmd[0]);
         if (name == "play" && cmd.size() > 1) { if (env.play) env.play(cmd[1]); }
-        else if (name == "ingameclose") { // UI_SetActiveMenu(0) 0x4c6520: clear the catcher and the paused state, close every menu
-            // The script handler 0x4c8320 does it only while the dvar cl_paused (name 0x57122c) is nonzero and a menu name token
-            // follows (0x4c7ef0); at the front end cl_paused is 0, so main_text's ESC (ingameclose main) does nothing there.
-            if (cmd.size() < 2 || !env.getCvar || std::atoi(env.getCvar("cl_paused").c_str()) == 0) continue;
-            env.setCvar("cl_paused", "0");
-            if (env.closeAll) env.closeAll();
+        else if (name == "ingameclose") {
+            // SP 0x4c8320 / MP 0x53b170: only in a game (SP: dvar cl_paused non-zero; MP: client connection state 8, the
+            // active state) and with a menu name token (0x4c7ef0); in the front end the command does nothing. The SP handler then
+            // runs UI_SetActiveMenu(0): cl_paused 0 and every menu closed (docs/spec/ui.md "ESC at the front end"); the MP handler
+            // closes the named menu (0x53acd0; docs/spec/mp-ui.md), and the game unpauses once no menu is left (the caller's job).
+            const bool inGame = env.ingameActive ? env.ingameActive()
+                                                 : std::atoi(env.getCvar ? env.getCvar("cl_paused").c_str() : "0") != 0;
+            if (!inGame || cmd.size() < 2) continue;
+            if (env.multiplayer && env.multiplayer()) {
+                if (env.close) env.close(cmd[1]);
+            } else {
+                env.setCvar("cl_paused", "0");
+                if (env.closeAll) env.closeAll();
+            }
         } else if (name == "ingameopen" && cmd.size() > 1) { // UI_SetActiveMenu(2): cl_paused 1, open the menu
             env.setCvar("cl_paused", "1");
             if (env.open) env.open(cmd[1]);
@@ -152,6 +160,15 @@ void runScript(const Script& script, const std::string& menuName, MenuEnv& env) 
         else if (name == "uiscript" && cmd.size() > 1) { if (env.uiScript) env.uiScript(lowerStr(cmd[1]), Command(cmd.begin() + 2, cmd.end())); }
         else if (name == "scriptmenuresponse" && cmd.size() > 1) { if (env.scriptMenuResponse) env.scriptMenuResponse(menuName, cmd[1]); }
         else if (name == "close" && cmd.size() > 1) { if (env.close) env.close(cmd[1]); }
+        // MP menu commands openForGameType / closeForGameType (MP exe 0x53af80 / 0x53b020): the argument is a format string filled
+        // with the value of the running item's dvar (e.g. "settings_%s" with ui_netGametypeName), then that menu is opened / closed.
+        else if ((name == "openforgametype" || name == "closeforgametype") && cmd.size() > 1) {
+            const std::string v = env.itemDvar.empty() || !env.getCvar ? std::string() : env.getCvar(env.itemDvar);
+            std::string menu = cmd[1];
+            if (const size_t p = menu.find("%s"); p != std::string::npos) menu.replace(p, 2, v);
+            if (name == "openforgametype") { if (env.open) env.open(menu); }
+            else if (env.close) env.close(menu);
+        }
         else if (name == "setdvar" && cmd.size() > 2) env.setCvar(cmd[1], cmd[2]);
         // Menu command table 0x5a4de8 (name, handler pairs): fadein 0x4c8150 / fadeout 0x4c81a0, setitemcolor 0x4c7ba0,
         // execOnDvarIntValue 0x4c8d00 (0x4c8bb0 with the int compare 0x4c8c70: the dvar's int value equal to the argument queues the

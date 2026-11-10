@@ -60,6 +60,8 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   since the previous jump, a standing view height; vertical speed = sqrt(2 · jump_height · gravity); sets the
   landing-slowdown flag (applied by 0x541300 only when `jump_slowdownEnable`).
 
+Multiplayer differences (fall damage heights, jump slowdown, inertia): docs/spec/mp-pmove.md.
+
 Implemented in `src/game/pmove.cpp`. Not implemented yet (TODO there): inertiaMax, landing damage/slowdown
 (0x508fe0), movement-direction yaw (0x508390). Ladders: see the Ladder section below.
 

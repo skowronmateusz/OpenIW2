@@ -1294,7 +1294,7 @@ The actor physics 0x501d00 has three outcomes for a frame (VAs in the patch 1.3 
    64, any type; the smallest 3D distance², the best replaced when best >= candidate, so the last on a tie). With dz = node z
    - origin z (0x592010 = 8, 0x591e00 = 0, 0x592390 = -18): dz > 8 gives +8, 0 < dz <= 8 gives dz, dz < -18 gives -8,
    otherwise 0; the block's vertical velocity (+0x238) is cleared; with no node found the block's partially moved origin
-   stays. Ported as `World::stuckRecovery` (used by `moveActorKind` and by the path walk only with movemode stop).
+   stays. Implemented as `World::stuckRecovery` (used by `moveActorKind` and by the path walk only with movemode stop).
 
 Why it matters (the demolition end scene, GitHub issue 1): Lt. Leonov (the barricade guy of maps/demolition.gsc, set up in
 `leftguy`, demolition.gsc:2321) is posed by the `shout` animation on the `end_left` node (node z 65.1). The animation's delta
@@ -1303,15 +1303,15 @@ track is an absolute offset from the node (the question guy's is a constant (-25
 units below the top of the AI-clip ramp over those stairs (one slanted brush, planes (+-0.5547, 0, +-0.8321) at 3736.18 /
 -3730.64, contents 0x8020000, bounds 6628..6830 x 496..592 x -63..65). The actor box (-15,-15,0)..(15,15,72), traced as a
 capsule (radius 15, half length 21; the slanted planes pushed out by |21 * nz| + 15, 0x416480), is start-solid there (upper
-plane -4.58), with mask 0x2820011 (0x500d13), in the exe as in the port; the scripted pose (0x53baf0, `normal` mode) and
+plane -4.58), with mask 0x2820011 (0x500d13), in the exe as in the implementation; the scripted pose (0x53baf0, `normal` mode) and
 `stopanimscripted` (0x4f60d0) do not re-place him. When `engineerThink` (demolition.gsc:2371) gives him a path, every
-move block fails (the ground probe 0x548290 is start-solid, so the slide 0x5475e0 returns 2 on its first bump). The port
+move block fails (the ground probe 0x548290 is start-solid, so the slide 0x5475e0 returns 2 on its first bump). The implementation
 used to apply the nudge of 3. here: the nearest node (6676, 518, 42.8) is 6.5 below him, the nudge is 0, and he ran in place
 for the rest of the level. The exe takes 1.: the raw delta (up to (6.4, 1.8, -3.5) per frame, shallower than the ramp)
 carries him out of the slab in a few frames and the normal physics resumes on top of the ramp. Verified headless: with the
 direct move he reaches his tnt node and the mission ends; the direct move fires for him alone (6 frames) in the whole
 ending. `World::moveActor` now models 1. (`pathSteepUnlifted`, `pathDirectBudget` in actorslide.h; the node re-query
-through `sentientNode`). The sidestep retries and the replan tail of 0x500de0 are in "The path mover with its sidestep" below. TODO(spec): the yield step's continuation into the path mover (the port keeps the origin instead) is not
+through `sentientNode`). The sidestep retries and the replan tail of 0x500de0 are in "The path mover with its sidestep" below. TODO(spec): the yield step's continuation into the path mover (the implementation keeps the origin instead) is not
 modelled. The trace flag bytes: +0x23 is start-solid (set at 0x4167b4 whenever the start is inside the brush), +0x22 all-solid (0x4167bf,
 the end is inside as well, with fraction 0); the slide's "stuck" tests at 0x5475e0 and the ground probe's retries at 0x548290
 read +0x23 and the step-up check at 0x547db0 reads +0x22; `SlideTrace` in `actorslide.h` names them so (`startSolid` +0x23,

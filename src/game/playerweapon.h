@@ -3,6 +3,7 @@
 // changes, melee and the offhand throw follow PM_Weapon (0x4dfc30); firing and reloading are still inferred.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <functional>
@@ -97,6 +98,9 @@ public:
     // the next weapon is raised without a putaway (PM_BeginWeaponChange with weapon 0 → state 2 with timer 0).
     void weaponTaken() { name_.clear(); holstered_ = true; }
     int clip() const { return clip_; }
+    // The state's time left in seconds (ps weaponTime), and a correction of it from the server's value for a network client.
+    float timer() const { return timer_; }
+    void adjustTimer(float seconds) { timer_ = std::max(0.0f, timer_ + seconds); }
     int stock() const { return stock_; }
     // PM_Weapon's weapon state number (0 ready, 1 raising, 2 dropping, 10/11 melee, 12–16 offhand, …).
     int stateNumber() const { return int(state_); }
@@ -120,6 +124,17 @@ public:
     std::string handModel() const;
     const std::string& anim() const { return anim_; }
     float animTime() const { return animTime_; }
+    // The weapon-file key of the current view animation in the view weapon's file ("idleAnim" when none matches): the
+    // recorded view state of the killcam names the animation by its key (docs/spec/mp-hud.md "The recorded view state").
+    std::string animKey() const;
+    // The weapon whose file the view model uses: the offhand grenade while its flag (ps+0xc 0x10) is set, else the weapon.
+    std::string viewWeaponName() const { return offhandActive_ ? offhand_ : name_; }
+    bool adsHeld() const { return adsHeld_; } // the aim command of the last update (pm_flags 0x40)
+    // Playback rate of the current view animation (1 in single player; multiplayer: docs/spec/weapons.md "Multiplayer
+    // view-animation rates"). The animation's own time is animTime() · animRate().
+    float animRate() const { return animRate_; }
+    // Multiplayer client: scale the action animations to their weapon times (set by the MP session).
+    bool mpAnimRates = false;
     // Sound aliases started by state changes since the last call (reload, rechamber, raise, putaway, melee swipe, empty click).
     std::vector<std::string> takeSounds() { return std::exchange(sounds_, {}); }
     std::vector<Event> takeEvents() { return std::exchange(events_, {}); }
@@ -176,6 +191,8 @@ private:
     void binocularCancel(bool attackHeld); // 0x4df0a0 (+ 0x4df6c0) from a binocular state
     std::string fieldValue(const char* key) const;
     void playFirst(std::initializer_list<const char*> keys);
+    float rateFor(const Def& d, const char* animKey) const;
+    void noteAnim(const Def& d, const char* animKey);
     float time(const char* key, float fallback) const;
     static std::string defValue(const Def& d, const char* key);
     static float defNumber(const Def& d, const char* key);
@@ -207,6 +224,7 @@ private:
     void startRestrictKick();
     std::string anim_;
     float animTime_ = 0;
+    float animRate_ = 1.0f;
     bool pendingIdle_ = false; // cgame 0x4b299d: idle waits until the running action anim has finished
     int clip_ = 0, stock_ = 0;
     std::map<std::string, std::pair<int, int>> ammo_; // clip and stock of weapons put away
@@ -243,5 +261,23 @@ private:
     bool adsHeld_ = false; // the last update's aim command
     bool zoomingIn_ = true;
 };
+
+// The weapon in the player state (`$weapon`, set by scripts or the spawn) against the one this front end wrote there
+// last: a different value is a scripted change and becomes the selection. The change is consumed (written = world), so
+// the same weapon handed out again after it was cleared (a death, then a respawn with the previous loadout) is seen as
+// a change too (docs/spec/mp.md "Client spawn and the killcam").
+inline bool takeScriptedWeapon(const std::string& world, std::string& written) {
+    if (world == written) return false;
+    written = world;
+    return true;
+}
+
+// Whether the front end writes the weapon in hand back to `$weapon` this frame. Not once the selection is empty: the
+// player state said "no weapon" while the hand still holds one (a network snapshot with the weapon cleared before its
+// pm_type shows the death). A write-back would restore the old name as this front end's own, and the same weapon at the
+// respawn would then not count as a change: the player would respawn with nothing in hand.
+inline bool writesHeldWeapon(const PlayerWeapon& held, const std::string& selection) {
+    return held.equipped() && !selection.empty();
+}
 
 } // namespace iw2::game

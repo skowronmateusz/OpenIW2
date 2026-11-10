@@ -1,5 +1,6 @@
 // Tests for xmodel math and a minimal synthetic model.
 
+#include "assets/material.h"
 #include "assets/xmodel.h"
 
 #include <cmath>
@@ -30,6 +31,15 @@ bool near(float a, float b) { return std::abs(a - b) < 1e-3f; }
 } // namespace
 
 int main() {
+    {
+        // Flag technique: the vertex alpha (wave weight, 0 on the pole and the base) does not hide the vertex.
+        using iw2::assets::drawnVertexColor;
+        CHECK(iw2::assets::isFlagTechniqueSet("phong_flag_alphatest_spec"));
+        CHECK(!iw2::assets::isFlagTechniqueSet("phong_alphatest_spec"));
+        const std::array<uint8_t, 4> pole{10, 20, 30, 0};
+        CHECK((drawnVertexColor(true, pole) == std::array<uint8_t, 4>{10, 30, 20, 255}));
+        CHECK((drawnVertexColor(false, pole) == pole));
+    }
     using namespace iw2::assets;
 
     // 90 degree rotation about Z maps +X to +Y.

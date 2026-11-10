@@ -1,4 +1,5 @@
 #include "ui/menu.h"
+#include "ui/menuhide.h"
 
 #include <algorithm>
 #include <cctype>
@@ -250,6 +251,12 @@ private:
             if (child(k)) continue;
             std::vector<std::string> args;
             while (pos_ < t_.size() && t_[pos_].line == key.line && !at("{") && !at("}")) args.push_back(t_[pos_++].text);
+            // `columns n` reads its 3 * n numbers as tokens, across line breaks (ui_mp/joinserver.menu puts one column per
+            // line; docs/spec/menus.md "columns").
+            if (k == "columns" && !args.empty())
+                for (size_t want = 1 + 3 * size_t(std::max(0, std::atoi(args[0].c_str())));
+                     args.size() < want && pos_ < t_.size() && !at("{") && !at("}");)
+                    args.push_back(t_[pos_++].text);
             if (at("{")) {
                 auto b = block();
                 args.push_back("{");
@@ -285,6 +292,7 @@ private:
             else if (k == "visible") w.visible = num(a, 0) != 0;
             else if (k == "decoration") w.decoration = true;
             else if (k == "ownerdraw") w.ownerDraw = int(num(a, 0));
+            else if (k == "ownerdrawflag") w.ownerDrawFlag |= int(num(a, 0));
             else if (k == "textsavegame") w.textSaveGame = true;
             else if (k == "forecolor") w.foreColor = color(a);
             else if (k == "backcolor") w.backColor = color(a);
@@ -398,18 +406,64 @@ const std::vector<std::string>* Window::prop(const std::string& key) const {
     return it == props.end() ? nullptr : &it->second;
 }
 
+namespace {
+// Tokens a script command takes after its name, for the commands whose argument count is fixed; -1 = unknown/variable.
+// The exe runs a script token by token (MP 0x53bd30, command table 0x5dcc70): ";" tokens are skipped and each command handler
+// reads only its own arguments, so a missing ";" (e.g. "uiScript closeJoin" followed by "close joinserver") still starts a
+// new command. docs/spec/ui.md "Script commands".
+int fixedArgs(const Command& c) {
+    const std::string n = lower(c[0]);
+    if (n == "open" || n == "close" || n == "show" || n == "hide" || n == "setfocus" || n == "setfocusbydvar" || n == "play" ||
+        n == "ingameclose" || n == "ingameopen" || n == "fadein" || n == "fadeout" || n == "exec" || n == "execnow")
+        return 1;
+    if (n == "setdvar") return 2;
+    if (n == "uiscript" && c.size() > 1) {
+        // uiScript names without arguments.
+        static const char* const none[] = {"closejoin", "stoprefresh", "updatefilter", "refreshservers", "refreshfilter",
+                                           "joinserver", "loadarenas", "startserver", "addplayerprofiles", "addfavorite",
+                                           "createfavorite", "deletefavorite", "serverstatus", "loadmods", "runmod", "votemap",
+                                           "votetypemap", "votetempban", "votekick", "muteplayer", "loadcontrols", "getcdkey",
+                                           "verifycdkey"};
+        const std::string s = lower(c[1]);
+        for (const char* x : none) if (s == x) return 1;
+    }
+    return -1;
+}
+
+bool isCommandName(const std::string& t) {
+    static const char* const names[] = {"open", "close", "show", "hide", "setfocus", "setfocusbydvar", "play", "ingameclose",
+                                        "ingameopen", "fadein", "fadeout", "exec", "execnow", "setdvar", "uiscript",
+                                        "setitemcolor", "setcolor", "setbackground", "transition", "orbit", "playlooped",
+                                        "scriptmenuresponse", "openforgametype", "closeforallgametypes", "setlocalvarbool",
+                                        "statclearperknew", "savegameshow", "savegamehide"};
+    const std::string l = lower(t);
+    for (const char* x : names) if (l == x) return true;
+    return false;
+}
+
+void pushCommand(Script& out, Command cur) {
+    while (!cur.empty()) {
+        const int n = fixedArgs(cur);
+        if (n < 0 || cur.size() <= size_t(n) + 1 || !isCommandName(cur[size_t(n) + 1])) break;
+        out.emplace_back(cur.begin(), cur.begin() + n + 1);
+        cur.erase(cur.begin(), cur.begin() + n + 1);
+    }
+    if (!cur.empty()) out.push_back(std::move(cur));
+}
+} // namespace
+
 Script parseScript(const std::vector<std::string>& tokens) {
     Script out;
     Command cur;
     for (const auto& t : tokens) {
         if (t == ";") {
-            if (!cur.empty()) out.push_back(std::move(cur));
+            if (!cur.empty()) pushCommand(out, std::move(cur));
             cur.clear();
         } else {
             cur.push_back(t);
         }
     }
-    if (!cur.empty()) out.push_back(std::move(cur));
+    if (!cur.empty()) pushCommand(out, std::move(cur));
     return out;
 }
 
@@ -420,6 +474,7 @@ void MenuLibrary::parseSource(const std::string& source, const std::string& file
     p.parseFile();
     warnings_.insert(warnings_.end(), p.warnings.begin(), p.warnings.end());
     for (auto& m : p.menus) {
+        if (!applyHideRules(*m, file, &hideTrace_)) continue; // a hidden menu is never registered
         std::erase_if(menus_, [&](const auto& old) { return lower(old->name) == lower(m->name); });
         menus_.push_back(std::move(m));
     }
@@ -429,7 +484,10 @@ void MenuLibrary::parseSource(const std::string& source, const std::string& file
 bool MenuLibrary::loadFile(const std::string& path) {
     const auto data = vfs_.read(path);
     if (!data) {
-        errors_.push_back("missing menu file " + path);
+        // A loadMenu entry whose file is missing is a warning, not an error: the original prints "WARNING: menu file not
+        // found: %s" and goes on (VAs in the patch 1.3 MP executable 0x546238 / 0x5463be); the menus that file would have
+        // defined simply do not exist, so "open <name>" finds nothing and does nothing (docs/spec/ui.md).
+        warnings_.push_back("menu file not found: " + path);
         return false;
     }
     parseSource(std::string(data->begin(), data->end()), path);

@@ -32,6 +32,10 @@ animation reference, animation tree.
   `_fx.gsc` relies on it: `ent = level thread createfx_showOrigin(...)`.
 - `wait s` suspends for `s` seconds of game time. `waittillframeend` resumes after the other threads of the current
   frame.
+- What a `waittillframeend` thread notifies runs before the next frame-end thread resumes (inferred: with several
+  threads of the form `waittillframeend; level notify("connecting", self)` (`maps/mp/gametypes/sd.gsc:318-324`, one
+  per client a map restart reconnects) every notify must reach the single handler that re-arms its `waittill` right after
+  (`_hud_teamscore.gsc:33`), or players miss their HUD elements). TODO(spec): the original's run order.
 - `obj waittill("e", a, b)` suspends until `obj notify("e", x, y)`; the notify arguments are stored in `a`, `b`.
   `waittillmatch("e", m)` also requires the first notify argument to equal `m`.
 - `obj endon("e")` ends the function call that registered it when `obj` is notified with `e`, together with the

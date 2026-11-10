@@ -1,3 +1,4 @@
+#include <vector>
 #include "game/screen_blur.h"
 #include <cstdio>
 using namespace iw2::game;
@@ -26,5 +27,12 @@ int main() {
     b.clear();
     check(b.cur == 0 && b.target == 0 && b.priority == 0, "clear");
     check(blurAlpha(0, 480) == 0 && std::abs(blurAlpha(1.5f, 480) - 0.5f) < 1e-6f && blurAlpha(32, 480) == 1.0f && std::abs(blurAlpha(0.75f, 960) - 0.5f) < 1e-6f, "alpha");
+    // blurWorld (docs/spec/ui.md): the painted menus add up as a root sum of squares, zero radii are skipped, and the
+    // UI radius composes with scr_blur the same way.
+    check(menuBlurRadius(std::vector<float>{}) == 0.0f && menuBlurRadius(std::vector<float>{0.0f, 0.0f}) == 0.0f, "no menu blur");
+    check(menuBlurRadius(std::vector<float>{5.0f}) == 5.0f && menuBlurRadius(std::vector<float>{0.0f, 5.0f, 0.0f}) == 5.0f, "one menu");
+    check(std::abs(menuBlurRadius(std::vector<float>{3.0f, 4.0f}) - 5.0f) < 1e-5f, "two menus");
+    check(composeSceneBlur(0, 0) == 0 && std::abs(composeSceneBlur(5.0f, 0) - 5.0f) < 1e-6f && std::abs(composeSceneBlur(3.0f, 4.0f) - 5.0f) < 1e-5f, "compose");
+    check(blurAlpha(composeSceneBlur(5.0f, 0), 480) == 1.0f, "blurWorld 5 at a 480 px height is the full blur");
     return fails;
 }

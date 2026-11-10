@@ -48,6 +48,13 @@ struct Material {
     const std::string& colorImage() const;
 };
 
+// Flag techniques (technique sets "*_flag*", shaders/lib/flag.hlsl): the vertex colour alpha is not a colour but the
+// weight of the cloth wave (0 on the rigid pole and base, up to 1 at the free edge); the shader outputs the vertex
+// colour with its green and blue channels swapped and alpha 1. Returns the colour a vertex is drawn with.
+// TODO(spec): the wave offset itself (three sine waves along the normal, scaled by that weight) is not modelled.
+bool isFlagTechniqueSet(const std::string& techniqueSet);
+std::array<uint8_t, 4> drawnVertexColor(bool flagTechnique, const std::array<uint8_t, 4>& color);
+
 // Throws std::runtime_error on malformed input.
 Material parseMaterial(std::span<const uint8_t> data);
 

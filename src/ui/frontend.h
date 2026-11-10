@@ -23,8 +23,12 @@ public:
 
     // Opens a menu on top of the stack (runs onOpen, applies initial focus). The limit is 16 ("Too many menus opened", frontend.cpp).
     bool open(const std::string& name);
+    // The next "open main" (the close of error_popmenu) keeps the screen below the popup (create-server refusal).
+    void errorKeepsScreen(bool on) { errorKeepsScreen_ = on; }
     void close(const std::string& name); // closes that menu (runs onClose)
     void closeAll();
+    // Drops every open menu and all per-item state without running onClose (the menu library is about to be replaced).
+    void reset();
     // Every sound ended (the stop-all of a cinematic, load or disconnect): the menu loop has no voice any more.
     void soundsStopped() { loopAlias_.clear(); }
     // Once per frame: starts the top open menu's soundLoop again when nothing plays it (the Menu_Paint re-submission, docs/spec/sound.md).
@@ -49,6 +53,12 @@ public:
     enum class Key { Up, Down, Enter, Escape, Left, Right, Backspace, Delete, Home, End, Insert, PageUp, PageDown, Tab, WheelUp, WheelDown };
     // Keyboard navigation: up/down move the focus between selectable items, enter runs its action, escape the top menu's onESC.
     void key(Key k);
+    // execKey (menu parse 0x544150: the key is the first byte of the string; key handler 0x53e900 runs a match before
+    // anything else): runs the top menu's script for the character key `ch`; true if one ran.
+    bool execKey(char ch);
+    // Whether the top menu takes the keys the game would otherwise get (0x5345b0): fullscreen menus take every key, the
+    // others only their execKey keys. TODO(spec): the UI flag 0x19a1c94 that makes the exe take every key.
+    bool takesAllKeys() const { return top() && top()->fullScreen; }
 
     // Time base in milliseconds: double-click timing and the scrollbar button auto-repeat. Call once per frame.
     void tick(int nowMs);
@@ -125,6 +135,7 @@ public:
 
 private:
     void setFocusItem(const Item* it);
+    void changeFocus(const Item* it); // user focus change: leaveFocus / onFocus scripts
     // Out-of-bounds mouse handling (0x4cb8e0): true when the click must be routed instead of tried on the focused menu.
     bool outOfBounds(float x, float y) const;
     bool routeOutOfBounds(float x, float y, bool back);
@@ -134,6 +145,7 @@ private:
     bool flagVisible(const Item& it) const;
     Menu* scriptMenu() const { return ctx_ ? ctx_ : focusMenu_; }
     void runItem(const Menu& m, const Script& s);
+    void runItemAction(const Menu& m, const Item& it);
     bool activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer);
     void dragTo(float x);
     float cvarValue(const Item& it) const;
@@ -146,7 +158,7 @@ private:
     void editStore(const Item& it, const std::string& v);
     static int editStep(const std::string& s, int cur, int n);
     void moveFocus(const Menu& m, int dir);
-    static bool isEditType(int type) { return type == 4 || type == 16; }
+    static bool isEditType(int type) { return type == 4 || type == 9 || type == 16; } // EDITFIELD, NUMERICFIELD, VALIDFILEFIELD
     struct ListDrag {
         const Item* item = nullptr;
         const Menu* menu = nullptr;
@@ -173,7 +185,9 @@ private:
     std::vector<Menu*> stack_;
     const Item* focus_ = nullptr;
     Menu* focusMenu_ = nullptr; // window flag 0x2 of 0x4cf4d0
-    Menu* ctx_ = nullptr;       // menu whose script runs
+    bool errorKeepsScreen_ = false;
+    Menu* ctx_ = nullptr;       // menu whose script runs (target of show/hide/fade/setitemcolor: createserver's buttons hide and
+                                // show items of their own menu while another menu is on top)
     bool routing_ = false;      // re-entry guard of the out-of-bounds redelivery (0x1cbaedc)
     std::string loopAlias_; // soundLoop currently playing
     std::vector<std::pair<const Item*, bool>> shownOverrides_; // "show"/"hide" commands

@@ -12,6 +12,7 @@
 #include "game/axis.h"
 #include "game/inventory.h"
 #include "game/movers.h"
+#include "game/mpgame.h"
 #include "game/campaign.h"
 #include "game/fx.h"
 #include "game/fog.h"
@@ -22,6 +23,7 @@
 #include "game/hitmarker.h"
 #include "game/grenadehint.h"
 #include "game/hitboxes.h"
+#include "game/navgen.h"
 #include "game/pathnodes.h"
 #include "game/perception.h"
 #include "game/pmove.h"
@@ -42,6 +44,11 @@
 #include <vector>
 
 namespace iw2::game {
+struct BotSystem; // src/game/mpbots.h
+struct MpBot;
+struct MpBotStats;
+struct BotStall;
+struct BotObjective;
 
 class ClientInput;
 
@@ -262,6 +269,7 @@ struct DangerPlane {
 struct Entity {
     ObjectPtr obj;
     int number = 0;
+    int mapIndex = -1;                // position in the map's entity list (worldspawn 0); -1 when spawned later
     uint32_t shadowHint = 0;          // entity state +0x10 bits 0x2000..0xe000 (setshadowhint 0x4ef700; render only)
     std::string classname;
     bool isPlayer = false;
@@ -358,7 +366,248 @@ struct PathNode {
 
 class World {
 public:
-    World(const fs::Vfs& vfs, std::string mapName);
+    // multiplayer: the map is maps/mp/<mapName>.d3dbsp and the game runs the MP layer (src/game/mpgame.cpp, docs/spec/mp.md);
+    // mapName is then the bare name (mp_toujane).
+    // The function names of all scripts (registerMissingStubs): they depend on the file system only, so a fast restart
+    // hands them on instead of parsing every script again.
+    struct ScriptNames {
+        std::set<std::string> defined, called;
+    };
+    World(const fs::Vfs& vfs, std::string mapName, bool multiplayer = false, std::shared_ptr<const ScriptNames> scriptNames = nullptr);
+
+    // Multiplayer (docs/spec/mp.md). mpStart replaces start(): map entities, then the gametype main, the level script main
+    // (optional) and CodeCallback_StartGameType, then the first frame. Clients: mpConnect returns the client number
+    // (client 0 is the local player entity, others get a new player entity) or -1 when the slots are full.
+    bool multiplayer() const { return mp_ != nullptr; }
+    void mpStart(const std::string& gametype);
+    int mpConnect(const std::string& name);
+    void mpBegin(int client);
+    void mpMenuResponse(int client, const std::string& menu, const std::string& response);
+    // Say (docs/spec/mp-chat.md): the say / say_team client commands (mode 0 / 1) with their joined arguments; a typed
+    // line arrives as "\x15<text>" (the client's say format).
+    void mpSay(int client, int mode, const std::string& text);
+    void mpDisconnect(int client);
+    void mpFreeClientHud(int client); // frees the HUD elements owned by the client (newClientHudElem)
+    void mpSetButtons(int client, uint32_t buttons);
+    // A non-local client's view angles and view height from its newest usercmd (the turret use and aim read them).
+    void mpSetView(int client, const Vec3& angles, float viewHeight);
+    // A non-local client on a map turret (src/game/mpturret.cpp): the server holds its origin and fires the turret.
+    bool mpClientOnTurret(int client) const;
+    // The map turret a client is on (nullptr: none), with the turret bits of its eFlags and its viewLockMode; the World's
+    // own player state for the client whose entity is the World's player, else the client's own (mpturret.cpp).
+    const Entity* mpClientTurretUse(int client, uint32_t& turretBits, int& viewLocked) const;
+    // A network client's ground and grenade fuse for its use search.
+    void mpSetClientGround(int client, bool onGround, int grenadeFuseMs, int weaponState = 0, bool mantling = false);
+    // Dropped weapons (src/game/mpdrop.cpp, docs/spec/mp.md "Dropped weapons"): dropItem's weapon drop from a client; the
+    // launched weapon_<name> item, or nullptr when nothing was dropped.
+    Entity* mpDropWeapon(Entity& client, const std::string& weapon, const std::string& tag = "tag_weapon_right");
+    static constexpr int kMpMaxDroppedWeaponsDefault = 16; // g_maxDroppedWeapons (1..32)
+    // openiw2 helper for headless runs and tests (the window uses the script menus): the menu responses a player would
+    // send to join, "autoassign" on the team menu and then a default weapon of the weapon menu the gametype opened
+    // (thompson_mp, mp40_mp for weapon_german, ppsh_mp for weapon_russian). Runs a frame after each response.
+    void mpAutoJoin(int client, const std::string& weapon = {}, const std::string& team = {}); // weapon / team: menu responses instead of the default and autoassign
+    // usercmd buttons of a non-local client (the listen server's own player uses setPlayerCommand)
+    // A dedicated server (before mpStart): no client is this process's local player, client 0 included.
+    void mpSetDedicated() { mpDedicated_ = true; }
+    // The local client (docs/spec/mp.md "Local client view"): the client whose screen this process shows. Its script
+    // menus, iprintln lines and client cvars reach the front end; other clients' do not.
+    int mpLocalClient() const { return mp_ ? mp_->localClient : -1; }
+    // A client cvar set by setClientCvar for the local client (nullptr when the script never set it).
+    const std::string* mpLocalCvar(const std::string& name) const;
+    // Client command `openscriptmenu <menu> <response>` of the local client (docs/spec/mp.md): the menu is looked up
+    // case-insensitively among the precached menus and the pair goes to the script as a menu response.
+    void mpOpenScriptMenu(const std::string& menu, const std::string& response);
+    // Whether a script HUD element is shown on the local client's screen (newclienthudelem / newteamhudelem owners).
+    bool mpHudElemVisible(const script::ObjectPtr& elem) const;
+    bool mpHudElemVisibleTo(const script::ObjectPtr& elem, int client) const; // the rule for client slot `client`
+    Entity* mpClientEntity(int client);
+    const MpState& mpState() const { return *mp_; }
+    int mpTeamScore(const std::string& team) const; // getTeamScore ("allies" / "axis")
+    // map_restart (fast restart, docs/spec/mp.md): runs at the end of the frame in which a script called it. The World is
+    // rebuilt in place (same object), so every Entity* taken before is invalid afterwards; mpRestarts() counts them.
+    // MP built-ins the MP layer registered more than once (each should have one implementation); empty when sound.
+    const std::vector<std::string>& mpDuplicateBuiltins() const { return mpDuplicateBuiltins_; }
+    int mpRestarts() const { return mp_ ? mp_->restarts : 0; }
+    // Debug / test: damage to a client's entity from another client (-1 = the world), through the MP damage path.
+    void mpDebugDamage(int victim, int attacker, int amount, const std::string& mod, const std::string& location = "torso_upper");
+    // MP HUD feedback (src/game/mphud.cpp, docs/spec/mp-hud.md). Obituary events for the local front end and their lines,
+    // the script head icons of the local view, the client under the crosshair, the team filter of objectives.
+    std::vector<MpObituary> takeMpObituaries();
+    ObituaryLine mpObituaryLine(const MpObituary& ev);
+    struct MpHeadIcon { Vec3 pos{}; std::string material; float size = 10; };
+    std::vector<MpHeadIcon> mpHeadIcons() const;
+    // Killcam (src/game/mpkillcam.cpp, docs/spec/mp-hud.md "Killcam"). The local client's killcam view: active while it is a
+    // spectator of a client with a positive archivetime; the followed client's archived eye, view angles and weapon at
+    // now - archivetime, interpolated by lerpFrac between the two archived frames around it.
+    struct MpKillcamView {
+        bool active = false;
+        Vec3 eye{}, angles{};
+        std::string weapon, hands; // weapon name; hands model ("" = the weapon's handModel)
+        int killer = -1;           // the followed client's entity number
+        int64_t frameTimeMs = 0;   // the archived frame's server time
+        int64_t frame = -1;        // the archived frame number
+        int client = -1;           // the followed client slot
+        int team = 0;              // its team number (mpTeamOf)
+        int clip = 0, stock = 0;   // its weapon's rounds (the HUD's ammo counter)
+        int health = 0, maxHealth = 0;
+        int fireCount = 0;
+        bool lastShot = false;
+        int fireAgeMs = -1;        // ms since its newest shot at the shown time (-1: none in the last 2 s)
+        bool ads = false;          // the archived aim flag (view.adsHeld)
+        float lerpFrac = 1.0f;     // the fraction between the frame before and this one the view is drawn at
+        MpViewState view;          // the recorded view state of the followed client (docs/spec/mp-hud.md "The recorded view state")
+        MpEventRing ring;          // its event ring at the shown frame
+    };
+    MpKillcamView mpKillcamView(float lerpFrac) const; // the local client's
+    // The killcam view of any spectating client (the network server builds that client's snapshot from it): inactive
+    // when the client is not a spectator following a client with a positive archivetime.
+    MpKillcamView mpKillcamViewFor(int spectator, float lerpFrac) const;
+    // The recorded view state of a client for this frame (whoever moves the client fills it: the bot controller, the
+    // network server; the host's front end through mpSetLocalViewState), and its entity events (fire events are added
+    // by the shared fire path itself).
+    void mpSetViewState(int client, const MpViewState& v);
+    void mpSetLocalViewState(const MpViewState& v);
+    void mpPushClientEvent(int client, int event, const std::string& weapon);
+    void mpPushLocalClientEvent(int event, const std::string& weapon);
+    const MpEventRing* mpClientEvents(int client) const;
+    // Puts the archived frame of the killcam view into the entities for drawing (origin, angles, model, attachments,
+    // animation, hidden; entities missing from the frame and the followed client are hidden; the local client's own
+    // body is drawn); mpKillcamRestore puts the live state back. No frame may run in between.
+    bool mpKillcamApply(float lerpFrac);
+    void mpKillcamRestore();
+    const AnimState* mpKillcamPrevAnim(int number) const; // between apply and restore: the entity's animation one frame earlier
+    // Antilag (docs/spec/mp-hud.md "Antilag"): moves the playing clients to their archived origins at `timeMs` (the
+    // shooter's last command time) for a bullet shot; mpAntilagRestore puts them back. Does nothing with g_antilag 0,
+    // the archive off or a time not more than one server frame back.
+    void mpAntilagRewind(int timeMs);
+    void mpAntilagRestore();
+    // The antilag time of the next clientFire calls (-1: none): a network client's last command time (0x80f546e passes
+    // it to the fire with g_antilag on); only bullets are rewound (0x8120484).
+    int fireAntilagTime = -1;
+    // The archived origin of an MP client at `timeMs`, interpolated between the two server frames around it (0x8099dac).
+    bool mpArchivedClientOrigin(int client, int timeMs, Vec3& out) const;
+    const MpArchive* mpArchive() const { return mp_ ? &mp_->archive : nullptr; }
+    int mpClientOfNumber(int entityNumber) const;       // spectator follow, archivetime trimming, the frame archive (end of the server frame)
+    int mpCrosshairClient(const Vec3& eye, const Vec3& forward);
+    bool mpObjectiveVisible(const Objective& o) const;
+    int mpTeamOf(const Entity* e) const; // client team number of an entity's sessionteam (0 none, 1 axis, 2 allies, 3 spectator)
+    int mpLocalTeam() const;
+    // Spectating (src/game/mpspectate.cpp, docs/spec/mp-spectate.md). Session state number (0 playing, 1 dead,
+    // 2 spectator, 3 intermission), the client a spectator follows (-1 none), the follow cycle (attack / 0x1000 press),
+    // stop following, whether the allowSpectateTeam bit (team number 0..2, 4 free look) allows, and a client's eye and
+    // view angles.
+    int mpSessionState(int client) const;
+    int mpFollowing(int client) const;
+    bool mpFollowCycle(int client, int dir);
+    void mpStopFollow(int client);
+    bool mpSpectateAllowed(int client, int bit) const;
+    bool mpClientView(int client, Vec3& eye, Vec3& angles);
+    // Scoreboard (docs/spec/mp-scoreboard.md): the server command "b ..." for the current clients.
+    std::string mpScoresCommand();
+    void mpSetClientPing(int client, int ms) {
+        if (mp_ && client >= 0 && size_t(client) < mp_->clients.size()) mp_->clients[size_t(client)].ping = ms;
+    }
+
+    // Multiplayer bots (docs/spec/mp-bots.md, src/game/mpbots.cpp; an OpenIW2 extension). mpAddBot connects a test client
+    // (addtestclient) driven by the bot controller; it begins, joins and plays through the gametype callbacks by itself.
+    // mpNav is the map's generated navigation graph (loaded from the cache or generated on first use).
+    int mpAddBot(const std::string& name = std::string());
+    bool mpIsBot(int client) const;
+    void mpKickBot(int client);                          // disconnects a bot and removes it from the controller
+    const NavGraph& mpNav();
+    void mpSetBotSkill(int skill);                       // 0 easy .. 3 veteran, for bots added afterwards
+    // Bot goals (docs/spec/mp-bots.md, "Objectives"): a point or an entity to reach within radius (holding use there when
+    // `use`), replacing the gametype objective until cleared; the role picks the objective (auto, attack, defend, hunt).
+    void mpBotSetGoal(int client, const Vec3& pos, float radius = 64.0f, bool use = false);
+    void mpBotSetGoalEntity(int client, int entity, float radius = 64.0f, bool use = false);
+    void mpBotClearGoal(int client);
+    void mpBotSetRole(int client, const std::string& role);
+    void mpBotSetWeaponClass(int client, const std::string& cls); // "" = the bot_weaponclass cvar
+    std::string mpBotObjectiveName(int client);
+    // Weapon classes (docs/spec/mp-bots.md, "Weapon classes"): rifle, smg, mg, sniper, shotgun from the weapon files;
+    // mpSetAllowedWeaponClasses sets the scr_allow_* cvar of every menu weapon (1 when its class is listed, else 0).
+    std::string mpWeaponClass(const std::string& weapon);
+    void mpSetAllowedWeaponClasses(const std::vector<std::string>& classes);
+    std::vector<std::string> mpAllowedWeapons(const std::string& menu); // the menu's weapons whose cvar is not 0
+    void mpBotSetCombat(int client, bool enabled);       // test / debug: false = never shoots
+    std::string mpBotDescribe(int client) const;
+    // Bot counters (shots, hits, grenades, ... docs/spec/mp-bots.md "Combat behaviour"); nullptr for a non-bot.
+    const MpBotStats* mpBotStats(int client) const;
+    const std::vector<BotStall>& mpBotStalls() const; // finished "wants to walk, stays on the spot" spells
+    int64_t mpBotWalkMs() const;                      // time all bots together wanted to walk
+    MpBot* mpBot(int client); // test / debug: the bot controller of a client, nullptr for a non-bot
+    void mpBotSetSkill(int client, int skill);
+    // The bot controller's cost of the last frame and the most A* plans run in one frame (docs/spec/mp-bots.md "Cost limits").
+    struct MpBotCost { double lastUs = 0, maxUs = 0, meanUs = 0; int maxPlans = 0; int64_t frames = 0; };
+    MpBotCost mpBotCost() const;
+
+    // Network client view (docs/spec/net.md section 10, src/game/mpremote.cpp): the map without the gametype; the server
+    // runs the game. mpStartRemote spawns the map entities and keeps the player entity as the local view. The other
+    // players are puppets placed from snapshots: mpSetRemotePlayers adds, moves and removes them (slot = the server's
+    // client number). mpSetMenuNames sets the precached menus from the configstrings (popupopen indexes them).
+    struct RemotePlayer {
+        int client = 0;
+        std::string name;
+        Vec3 origin{};
+        Vec3 velocity{};
+        float yaw = 0;
+        std::string team;      // sessionteam ("" keeps the current one)
+        int viewHeight = 60;   // stance for the animation: 60 stand, 40 crouch, 11 prone
+        bool dead = false;
+        bool hidden = false;   // not playing (spectator): not drawn
+        std::string model;                     // body model of the client state ("" keeps the current one)
+        std::vector<std::string> attachments;  // attached models of the client state (head, helmet), tag ""
+    };
+    void mpStartRemote();
+    void mpSetRemotePlayers(const std::vector<RemotePlayer>& players);
+    // An entity event of another player from the snapshots (docs/spec/net.md section 13): the weapon it holds, and for
+    // the fire events the shot's sound, compass ping and impact (traced here, no damage), reload and melee sounds, the
+    // third-person fire / reload animations. pitch: the player's view pitch.
+    void mpRemotePlayerEvent(int client, int event, const std::string& weapon, float pitch);
+    // Another event of the followed client in a network killcam (reload, melee swipe, throw): its sound as the own view's.
+    void mpRemoteFollowEvent(int event, const std::string& weapon);
+    // The sound of a followed client's event in a killcam (local or network): the weapon file's reload, melee swipe,
+    // pull-back or throw sound, played as the own view's (no position).
+    void mpFollowEventSound(int event, const std::string& weapon);
+    // A shot of the followed client in a network killcam: from its sent eye along its view, as the local view's shot
+    // (fire sound without a position, impact, tracer; no damage in the client's world).
+    void mpRemoteFollowShot(const std::string& weapon, const Vec3& eye, const Vec3& forward, bool lastShot);
+    void mpSetRemotePlayerWeapon(int client, const std::string& weapon, float lean);
+    // From the snapshots as well (src/netgame/remoteview.cpp): the HUD elements the server shows this client, the
+    // objectives, obituary events (taken by the front end as in a local game) and script entities with models
+    // (wire number -> puppet; mapNumber >= 0 moves the map entity of that number instead).
+    struct RemoteModel {
+        int wire = 0;
+        int mapNumber = -1;
+        std::string model;
+        Vec3 origin{}, angles{};
+        bool hidden = false;
+        int animNode = -1;                     // a body: its death animation (node of the multiplayer tree)
+        int animFlip = 0;                      // a body: eFlags bit 2; a new value is a new body in the slot
+        bool animDone = false;                 // a body seen after its death: the last frame, not the animation
+        std::vector<std::string> attachments;  // a body: the attached models of its client (tag "")
+        bool presentOnly = false;              // a map entity drawn as before (a turret): only marks it as sent
+        bool trajectory = false;               // placed per rendered frame from its trajectory (mpPlaceRemoteModel)
+    };
+    // A network client on a map turret (src/game/mpturret.cpp): the turret entity of this World the server put the
+    // player on (nullptr: none), the turret bits of the player state's eFlags and its viewLockMode. The local turret
+    // view, HUD and view clamp follow it; the server aims and fires the turret.
+    void mpSetRemoteTurret(Entity* turret, uint32_t turretBits, int viewLocked);
+    // A turret shot from the snapshots (EV_FIRE_WEAPON_MG42 on the turret entity): the flash at tag_flash, the shot's
+    // sound, view shake and impact as in the turret fire (traced here, no damage) and the fire loop sound.
+    void mpRemoteTurretFire(Entity& turret);
+    // A network client places a model with a trajectory (a grenade, a rocket, a falling weapon) at the time it draws
+    // (docs/spec/net.md section 11 "Trajectories"); such an entity carries $nettraj and is not lerped by the world tick.
+    void mpPlaceRemoteModel(int wire, const Vec3& origin, const Vec3* angles);
+    void mpSetRemoteHud(std::vector<ObjectPtr> elems);
+    void mpSetRemoteObjectives(const std::array<Objective, 16>& objectives);
+    void mpPushRemoteObituary(const MpObituary& ob);
+    // A network client plays an explosion event of the server (docs/spec/net.md section 13): the sounds and effects of
+    // the grenade or rocket explosion at the point, without damage.
+    void mpRemoteExplosion(bool rocket, const std::string& weapon, const Vec3& at, const Vec3& dir, int surface);
+    void mpSetRemoteModels(const std::vector<RemoteModel>& models);
+    void mpSetMenuNames(std::vector<std::string> names) { menus_ = std::move(names); }
+    bool mpRemote() const { return mpRemote_; }
 
     // Spawns map entities and the player, then runs maps/<map>.gsc::main().
     void start();
@@ -637,6 +886,9 @@ public:
     }
     // One player-state event of the own player (pmove): its cgame sounds and, for a hard landing, the fall damage.
     void applyPlayerEvent(int ev, int parm);
+    // The fall damage of a landing event (0x74..0x8a) on a client entity: ClientEvents (SP 0x4e75f0, MP 0x80f52da) -> G_Damage with
+    // MOD_FALLING; in multiplayer that goes to CodeCallback_PlayerDamage (docs/spec/mp-pmove.md).
+    void clientFallEvent(Entity& client, int ev, int parm);
     // Shell shock of the player (shellshock / stopshellshock builtins, src/game/shellshockworld.cpp): the precached
     // name index (1-based, 0 = none), the start time and the duration; shellShockRecord() is the loaded record, null
     // without an active shock. The shock is over once timeMs() >= startMs + durationMs.
@@ -645,8 +897,18 @@ public:
         int64_t startMs = 0;
         int durationMs = 0;
     };
-    const ShellShockState& shellShock() const { return shellShock_; }
+    // In multiplayer every client has its own shock (MpClient); this is the local client's.
+    ShellShockState shellShock() const;
     const ShockRecord* shellShockRecord() const;
+    // precacheshellshock names in precache order (index - 1); the network server publishes them as configstrings.
+    const std::vector<std::string>& shellShockNames() const { return shockNames_; }
+    // A network client's world: the local player's shock from the snapshot (name "" = none), loading the record by name.
+    void mpSetRemoteShellShock(const std::string& name, int64_t startMs, int durationMs);
+    // A network client's world: the cursor hint of the snapshot's player state (hint 0 = none, text "" = no string).
+    // hint: the player state's hintType; weapon: for a weapon hint (weapon number + 4, above 4) the weapon's name.
+    // The weapon of the newest snapshot's player state (ps weapon): the "current weapon" the pickup prompt compares with.
+    void mpSetRemoteWeapon(const std::string& weapon);
+    void mpSetRemoteUseHint(int hint, const std::string& text, const std::string& weapon = std::string());
     // earthquake (0x4f4330) sends event 0xc7 (scale in event param, duration ms, origin, radius) to the clients: kept as a log for the
     // front end (TODO(spec): [stays: cgame handler not read] the cgame handler's shake). viewkick (0x4f7a40) stores client +0x8658 (count) and +0x865c (player origin - arg).
     struct Earthquake { float scale; int durationMs; Vec3 origin; float radius; int64_t startMs; };
@@ -692,6 +954,9 @@ public:
     // 0x4e8890) and setplayerangles (0x538560 → 0x4e8940).
     std::optional<Vec3> takePlayerTeleport() { return std::exchange(playerTeleport_, std::nullopt); }
     std::optional<Vec3> takePlayerViewAngles() { return std::exchange(playerViewAngles_, std::nullopt); }
+    // A multiplayer client spawn of the local player (ClientSpawn clears the whole player state, docs/spec/mp.md): the front
+    // end restarts its movement state (stance, view height, lean, aim) at the spawn origin. Taken once.
+    std::optional<Vec3> takePlayerSpawn() { return std::exchange(playerSpawn_, std::nullopt); }
     // The view angles the player link (playerlinktodelta / playerlinktoabsolute) computed in the last server frame(s); `absolute`
     // for an absolute link (the angles are the tag's), else the view turned by the tag's rotation since the last frame.
     struct LinkView {
@@ -704,6 +969,7 @@ public:
     // playerlinktodelta / playerlinktoabsolute: the player is placed by the link (pm_type 1, no own movement);
     // absolute links also set pm_flags 0x8000 / 0x10000000 (src/game/playerlink.cpp).
     bool playerLinked() const { return playerLink_.has_value(); }
+    bool entityLinked(int number) const { return links_.count(number) != 0; } // has a linkto parent (ent+0x1c8)
     // Entity +0x1c8 (tagInfo) is set by every link to a parent (`linkto`, the vehicle seat, `playerlinkto*`): ClientThink 0x4e7c05 reads it for pm_type.
     bool playerHasLinkParent() const { return playerLink_.has_value() || (player_ && links_.count(player_->number) != 0); }
     // The cheat commands noclip / ufo (G_ClientCommand 0x4ea9b1 / 0x4ea9d8 -> 0x4ea170 / 0x4ea220): behind the cheat gate
@@ -752,6 +1018,13 @@ public:
 
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
+    // The bounds of the map's world model (model 0); false when the map has none.
+    bool worldBounds(Vec3& mins, Vec3& maxs) const {
+        if (submodels_.empty()) return false;
+        mins = submodels_[0].first;
+        maxs = submodels_[0].second;
+        return true;
+    }
     std::string vehicleCollmap(Entity& vehicle);
     std::string lookupVehicleCollmap(Entity& vehicle);
     static std::string corpseCollmap(const Entity& e); // the collmap brush ("*N") a freed vehicle keeps, else empty
@@ -854,8 +1127,7 @@ public:
         return hitLocationMultiplier(weapon.empty() ? nullptr : player_, location);
     }
     void debugDamage(Entity& e, int amount);
-    // Tests: the precacheshellshock names (index - 1), and pushing a state on an actor's stack at once (request applied).
-    const std::vector<std::string>& shellShockNames() const { return shockNames_; }
+    // Tests: pushing a state on an actor's stack at once (request applied); the precacheshellshock names are shellShockNames() above.
     void debugPushAiState(Entity& e, int state) { aiPushState(e, state); aiApplyRequests(e); }
     void debugDamageAt(Entity& e, Entity* attacker, int amount, const Vec3& dir, const std::string& location) {
         damage(e, attacker, amount, dir, e.obj->get("origin").asVector(), "MOD_UNKNOWN", location);
@@ -863,6 +1135,9 @@ public:
     float debugHitLocationMultiplier(const std::string& location) { return hitLocationMultiplier(nullptr, location); }
     void debugSetNoclip(bool noclip, bool ufo) { noclip_ = noclip; ufo_ = ufo; }
     size_t debugKnockbackCount() const { return playerKnockbacks_.size(); }
+    // Tests: the damage feedback fields a viewkick writes (client +0x8658 count, +0x865c direction).
+    int debugDamageBlood() const { return damageBlood_; }
+    Vec3 debugDamageFrom() const { return damageFrom_; }
     void debugActorDelayedDeath(Entity& e) { actorDelayedDeath(e); }
     void debugSetActorAnimScript(Entity& e, const std::string& name, int movemode, int animMode); // tests: the animscript switch 0x53ac90
     // Debug (iw2game --autoplay): a point where the player's standing box touches the trigger entity (triggerContact with the
@@ -883,6 +1158,29 @@ public:
     // "menuresponse" (menu name, response). menuNames() is the precached list (configstrings 0x4ad+index).
     void menuResponse(int menuIndex, const std::string& response);
     const std::vector<std::string>& menuNames() const { return menus_; }
+    // Names given to precacheItem / precacheModel / precacheShader / precacheString (key: the builtin name in lower
+    // case) in call order; localized strings by their key.
+    // The fog (setExpFog / setCullFog, "<near> <far> <density> <r> <g> <b> <ms>") and ambient ("n\<alias>\t\<time>",
+    // "t\<time>") as the configstrings of a network game carry them; empty until set.
+    const std::string& fogConfig() const { return fogConfig_; }
+    // A sound alias the scripts played: a network server registers it as a sound configstring (docs/spec/net.md
+    // section 11), in first-play order; precached("sound").
+    void noteSound(const std::string& alias) {
+        auto& l = precached_["sound"];
+        if (!alias.empty() && std::find(l.begin(), l.end(), alias) == l.end()) l.push_back(alias);
+    }
+    // playLoopedFx calls: (loadfx index, repeat delay in s, origin).
+    std::vector<std::tuple<int, float, Vec3>> loopedFxList() const {
+        std::vector<std::tuple<int, float, Vec3>> out;
+        for (const auto& l : loopedFx_) out.emplace_back(l.id, l.delayS, l.origin);
+        return out;
+    }
+    const std::string& ambientConfig() const { return ambientConfig_; }
+    const std::vector<std::string>& precached(const std::string& kind) const {
+        static const std::vector<std::string> none;
+        const auto it = precached_.find(kind);
+        return it == precached_.end() ? none : it->second;
+    }
     // freezecontrols(): client +0x8630 (0x5392e0); the front end ignores movement and button input while it is set.
     bool controlsFrozen() const { return controlsFrozen_; }
     // ClientThink 0x4e7bc0: pm_flags 0x8000 is set by freezecontrols (client +0x8630) or an absolute playerlinkto (+0x8698).
@@ -935,6 +1233,10 @@ public:
     bool entityTagOrientation(int number, const std::string& tag, Vec3& origin, std::array<Vec3, 3>& axes, bool& hasAxes);
     std::vector<FxEvent> takeFxEvents() { return std::exchange(fxEvents_, {}); }
     // Hits that push the player since the last call; the host applies them to its PlayerState (applyKnockback, pmove.h).
+    // The multiplayer pushes of one client since the last call (finishPlayerDamage; docs/spec/mp.md). The host's own client
+    // goes through takePlayerKnockbacks, the others are drained by their movement (bots, network clients).
+    std::vector<KnockbackHit> mpTakeKnockbacks(int client);
+    float debugMpRadiusVisibility(Entity& t, const Vec3& from) { return mpRadiusVisibility(t, from); }
     std::vector<KnockbackHit> takePlayerKnockbacks() { return std::exchange(playerKnockbacks_, {}); }
     // Screen-shake events for the front end (ViewShake, cgame 0x4bf5e0): MG42 fire (event 0xaf: 0.05, 100 ms, radius 100) and earthquake (0xc7).
     struct ShakeEvent { Vec3 origin; float scale; int durationMs; float radius; int64_t startMs; };
@@ -988,6 +1290,15 @@ public:
     // FireWeapon for the player (0x531c40). spreadDeg is the aim spread angle (fireSpreadDegrees, pmove.h), gunOffset the
     // usercmd gun offset added to the eye. Returns the velocity the shooter loses (a projectile weapon: forward * 64).
     Vec3 playerFire(const Vec3& eye, const Vec3& forward, bool lastShot = false, float spreadDeg = 0, const Vec3& gunOffset = {0, 0, 0});
+    // The same actions for any player entity (the local player's functions call these with the player; the network game
+    // calls them for its clients, src/netgame/netcombat.cpp). shooter must be a player entity.
+    Vec3 clientFire(Entity& shooter, const Vec3& eye, const Vec3& forward, bool lastShot = false, float spreadDeg = 0,
+                    const Vec3& gunOffset = {0, 0, 0});
+    void clientMelee(Entity& p, const Vec3& eye, const Vec3& viewAngles);
+    void clientThrowGrenade(Entity& p, const std::string& weaponName, const Vec3& eye, const Vec3& viewAngles,
+                            const Vec3& playerVelocity, int cookedFuseMs = 0);
+    void clientGrenadeInHand(Entity& p, const Vec3& eye, const std::string& weaponName);
+    std::string clientOffhandFor(Entity& p, const std::string& offhandClass);
     // Player weapon events (src/game/playeractions.cpp): the melee blow, the offhand throw and the offhand pick.
     void playerMelee(const Vec3& eye, const Vec3& viewAngles);
     void meleeBlow(Entity& attacker, const Vec3& eye, const Vec3& f, const Vec3& r, const Vec3& u, const std::string& weapon);
@@ -1049,6 +1360,9 @@ private:
     // loaded (0x448aab, after the entity spawn, the level script's start and the first G_RunFrame). Here: until the end
     // of runLevelMain() or loadState().
     bool levelInitializing_ = true;
+    bool mpRemote_ = false;
+    bool mpDedicated_ = false; // no local player: mp_->localClient is -1 (a dedicated server)
+    std::map<int, Entity*> remoteModels_; // wire number -> puppet entity (src/game/mpremote.cpp)
     // 0x1c61064: the entity number G_RunFrame's entity pass is running (0x4db022..0x4db0d3), -1 outside it. Here the
     // actor think loop sets it.
     int runEntityNumber_ = -1;
@@ -1095,13 +1409,25 @@ private:
                                 int& location);
     Vec3 eyePosition(Entity& e);
     void damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
-                const std::string& location = "none", int dflags = 0);
-    // attacker: the entity credited with the damage (nullptr = the world).
+                const std::string& location = "none", int dflags = 0, Entity* inflictor = nullptr);
+    // attacker: the entity credited with the damage (nullptr = the world). inflictor: the entity that did it (a grenade, a
+    // rocket; nullptr = the attacker itself); the damage's weapon is the inflictor's, else the attacker's (damageWeapon).
+    std::string damageWeapon(const Entity* inflictor, const Entity* attacker) const;
     bool playerLastShot_ = false;
-    void playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot);
+    bool suppressFireSound_ = false; // the later pellets of a spread weapon's shot (one fire event per shot)
+    void playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot,
+                             const std::string& weaponName = std::string());
+    // damageScale / ignore: the multiplayer pass-through of a rifle bullet (docs/spec/mp-pmove.md, "Bullets") continues with half
+    // the damage, skipping the client it went through.
+    // One weapon shot of a client (players, bots, network clients): bullet, spread (pellets) or projectile, along the
+    // axes of `forward` with the spread angle; `weaponName` empty = the shooter's $weapon. Returns the projectile kick.
+    Vec3 fireWeaponShot(Entity& shooter, const std::string& weaponName, const Vec3& origin, const Vec3& forward, bool lastShot,
+                        float spreadDeg);
     Entity* fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
                       const std::string& weaponName = std::string(), int depth = 0, float damageScale = 1.0f,
                       const Entity* passEntity = nullptr);
+    // Multiplayer OnSameTeam (docs/spec/mp-pmove.md): two clients with the same sessionteam other than "none".
+    bool mpSameTeam(const Entity& a, const Entity& b) const;
     int weaponDamage(const std::string& weaponName);
     // Accuracy graph of a weapon for the target kind (weapon fields aiVsPlayerAccuracyGraph / aiVsAiAccuracyGraph); null without one.
     const AccuracyGraph* accuracyGraph(const std::string& weaponName, bool targetClient);
@@ -1121,7 +1447,8 @@ private:
     void registerCombatBuiltins();
     void registerSoundBuiltins();
     void registerShellShockBuiltins();
-    void addShellShock(const std::string& name); // appends a precached shell shock (name + record from shock/<name>.shock)
+    int precacheShellShock(const std::string& name); // 1-based index of the (possibly new) slot, 0 when the 15 slots are full
+    void addShellShock(const std::string& name);     // appends a precached shell shock (name + record from shock/<name>.shock)
     void registerHudBuiltins();
     void registerInventoryBuiltins();
     void registerMoverBuiltins();
@@ -1195,6 +1522,8 @@ private:
     // Script menus (src/game/menus.cpp)
     void registerMenuBuiltins();
     std::vector<std::string> menus_;
+    std::map<std::string, std::vector<std::string>> precached_;
+    std::string fogConfig_, ambientConfig_;
     bool controlsFrozen_ = false;
     // Vehicles (src/game/vehicles.cpp)
     void registerVehicleBuiltins();
@@ -1422,11 +1751,16 @@ private:
     bool bounceGrenade(Entity& e, const TraceResult& tr, int64_t hitMs);
     int nextRand() { meleeSeed_ = meleeSeed_ * 0x343fd + 0x269ec3; return int(meleeSeed_ >> 0x11 & 0x7fff); } // rand() (0x5a56f4)
     void radiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
-                      const std::string& mod);
+                      const std::string& mod, Entity* inflictor = nullptr);
     bool canDamage(Entity& t, const Vec3& from, float radius, const Vec3* at = nullptr);
+    void mpRadiusDamage(const Vec3& origin, Entity* attacker, float inner, float outer, float radius, Entity* ignore,
+                        const std::string& mod, Entity* inflictor);
+    Vec3 mpRadiusCentre(Entity& t);
+    float mpRadiusVisibility(Entity& t, const Vec3& from);
     bool ignorePlayerRadiusDamage_ = false; // setplayerignoreradiusdamage (0x1c61058)
     bool sparePlayerRadiusDamage_ = false;  // in effect during radiusdamage (0x1c61054)
     void explodeGrenade(Entity& e);
+    void grenadeExplosionEffects(const std::string& weapon, const Vec3& at, const Vec3& dir, int surface);
     // Impact effects (cgame 0x4b9090): impact type (0 bullet_small_normal … 9 grenade_explode, 10 rocket_explode)
     // × surface type (0 default … 22 asphalt) → effect file, "" for none.
     const std::string& impactEffect(int type, int surface);
@@ -1564,6 +1898,7 @@ private:
     void pickUpWeaponItem(Entity& item);
     void usePlayerEntity(Entity& e);
     bool turretUsableByPlayer(Entity& t);
+    bool turretUsableBy(Entity& t, const Vec3& userOrigin, int grenadeFuseMs, bool onGround);
     void playerUseTurret(Entity& t);
     void thinkPlayerTurret();
     void setPlayerViewClamp(const Entity& t);
@@ -1590,8 +1925,11 @@ private:
     std::optional<float> playerDeadYaw_; // ps+0x10c from LookAtKiller
     HintStringTable hintStrings_;       // sethintstring configstrings 0x4cd..0x4ec (0x4f0da0)
     PlayerUseHint playerUseHint_;       // ps+0x578 / +0x57c
+    PlayerUseHint remoteUseHint_;       // network client: the server's hint (mpSetRemoteUseHint)
+    std::string remoteWeapon_;          // network client: the snapshot's ps weapon (lower case)
+    bool remoteHintPickupPrompt_ = false; // that hint is a weapon item without a hint string: the pickup prompt is chosen per tick
     std::optional<TurretRelease> turretRelease_;
-    std::optional<Vec3> playerTeleport_, playerViewAngles_;
+    std::optional<Vec3> playerTeleport_, playerViewAngles_, playerSpawn_;
     std::optional<LinkView> playerLinkView_;
     bool playerNoInterp_ = false;
     struct PlayerLink {
@@ -1620,6 +1958,102 @@ private:
     const fs::Vfs& vfs_;
     std::map<std::string, char> keyTypes_; // radiant/*.txt map key types
     std::string mapName_;
+    std::shared_ptr<MpState> mp_; // set in multiplayer mode (src/game/mpgame.cpp)
+    std::shared_ptr<BotSystem> bots_; // multiplayer bots (src/game/mpbots.cpp)
+    void registerBotBuiltins();
+    void registerBotGoalBuiltins(); // src/game/mpbotgoals.cpp
+    BotObjective mpBotObjective(const MpBot& b, Entity& self);
+    std::string mpBotPickWeapon(const MpBot& b, const std::string& menu);
+    Vec3 mpEntityCenter(const Entity& e) const;
+    void registerKillcamBuiltins(); // setarchive, archivetime / psoffsettime storage (src/game/mpkillcam.cpp)
+    void mpKillcamEndFrame();
+    void mpKillcamReplayEvents();
+public:
+    int64_t mpKillcamFrame() const; // the archived frame the local client's killcam shows, -1 when not in a killcam
+    bool mpLocalInKillcam() const;
+    bool mpKillcamSwapped() const { return killcamSwapped_; } // the archived frame is swapped in (mpKillcamApply)
+    void mpArchiveEvent(ArchivedEvent ev); // a client event of the running server frame (archived with it)
+    // A missile explosion of the server: logged for the network clients and archived for the killcam (not while the
+    // killcam replays one). mpLiveEffectsHidden: the local client is in the killcam, live explosions are not shown.
+    void mpLogExplosion(bool rocket, const std::string& weapon, const Vec3& at, const Vec3& dir, int surface);
+    bool mpKillcamShellShock(ShellShockState& out) const; // the followed client's archived shock (false: no killcam)
+    bool mpLiveEffectsHidden() const { return mp_ && !killcamReplay_ && mpLocalInKillcam(); }
+private:
+    float mpDeadYaw(const Entity& target, const Entity* inflictor, const Entity* attacker) const;
+    struct KillcamSaved {
+        Entity* e = nullptr;
+        Value origin, angles, model, hidden, sessionstate;
+        bool removed = false; // a freed entity drawn from the archive (its removed flag, restored)
+        std::vector<Attachment> attachments;
+        std::unique_ptr<AnimState> anim;
+        std::unique_ptr<AnimState> prevAnim; // the entity's animation in the frame before the shown one (nullptr: none)
+        bool swappedAnim = false;
+        std::string weaponModel;
+        int client = -1;
+    };
+    std::vector<KillcamSaved> killcamSaved_;
+    std::vector<std::pair<Entity*, Value>> antilagSaved_; // rewound client entities and their live origins
+    void antilagRelink();
+    bool killcamSwapped_ = false;
+    bool killcamReplay_ = false; // the killcam replays an archived explosion (not logged or archived again)
+    void registerChatBuiltins(); // sayAll / sayTeam / pingPlayer (src/game/mpchat.cpp)
+    void mpBotsFrame();
+    void mpBotFrame(MpBot& b); // one bot's controller step (src/game/mpbots.cpp)
+    void mpBotMeasureStall(MpBot& b, bool wantsWalk, float step, const std::array<float, 2>& dir);
+    // Combat helpers (src/game/mpbotcombat.cpp)
+    void mpBotOnDamage(Entity& target, Entity* attacker, const std::string& mod, bool died);
+    bool mpBotGrenade(MpBot& b, Entity& self, const Vec3& eye, bool smoke, const Vec3& target);
+    std::string mpBotGrenadeWeapon(Entity& self, bool smoke);
+    void mpBotThrowPending(MpBot& b, Entity& self, const Vec3& eye, int cookedFuseMs);
+    void registerMpBuiltins();
+    std::vector<std::string> mpDuplicateBuiltins_;
+    void registerMpGametypeBuiltins(); // src/game/mpgametypes.cpp
+    void mpClientTriggers();
+    void mpClientUseSearch(size_t client); // the use search of a non-local client (src/game/mpgametypes.cpp)
+    void registerMpDropBuiltins();                      // src/game/mpdrop.cpp
+    void mpClientItems(Entity& client, int pressedOn); // weapon item touch / use of a non-local client
+    void setTurretViewClamp(const TurretState& ts, const Vec3& base); // playeruse.cpp
+    bool mpClientTurret(size_t client, bool usePressed);   // turret use / think of a non-local client (mpturret.cpp); true: the press was taken
+    void mpClientTurretRelease(size_t client);             // gets a non-local client off its turret (disconnect)
+    size_t mpDroppedSlot();
+    float mpDropCvar(const std::string& name, float def) const;
+    std::vector<ObjectPtr> mpDropped_;                  // the dropped-weapon slots (0x864e0d8)
+    bool remotePickup_ = false;                         // mpClientItems: no pickup sound at the listener
+    void mpFastRestart();
+    int mpConnectSlot(int slot, const std::string& name, const script::Value& pers);
+    int mpClientOf(const Entity& e) const;
+    void mpFrame();
+    void mpHudFrame();
+    void registerMpHudBuiltins();
+    void registerSpectateBuiltins(); // allowSpectateTeam (src/game/mpspectate.cpp)
+    void mpSpectateFrame();
+    void mpStopFollowersOf(int target);
+    bool mpFollowTargetValid(int client, int target) const;
+    uint32_t mpClientButtons(int client) const;
+    // Third-person players (src/game/mpplayers.cpp, docs/spec/mp-players.md).
+    void mpPlayersFrame();
+    const PlayerAnimScript* mpAnimScript();
+    PaContext mpAnimContext(int client);
+    // Plays one command of an item on the entity's multiplayer tree; returns its duration in ms.
+    int mpPlayCommand(Entity& e, const PaItem& item, bool restart);
+    // The death event: chooses the body's death animation; its duration in ms, -1 when none (lnxded 0x80d96ee).
+    int mpDeathAnim(Entity& e);
+public:
+    // Whether a client entity is drawn in third person (a multiplayer client other than the local one, playing).
+    bool mpPlayerDrawn(const Entity& e) const;
+    // Debug / tests: the bullet's locational trace (default priority map) from `start` to `end` ignoring `pass`; the entity
+    // hit (-1 for none) and the hit location name.
+    std::pair<int, std::string> debugBulletLocation(const Vec3& start, const Vec3& end, const Entity* pass);
+    // The weapon world model a drawn client holds at tag_weapon_right ("" none).
+    std::string mpPlayerWeaponModel(const Entity& e) const;
+    // The animation input of a client, filled by whoever moves it (bots, the network server); nullptr if out of range.
+    MpPlayerInput* mpPlayerInput(int client);
+private:
+    void mpPlayerDamage(Entity& target, Entity* inflictor, Entity* attacker, int amount, int dflags, const std::string& mod,
+                        const std::string& weapon, const Vec3& point, const Vec3& dir, const std::string& location);
+    void mpPlayerDie(Entity& target, Entity* inflictor, Entity* attacker, int amount, const std::string& mod, const std::string& weapon,
+                     const Vec3& dir, const std::string& location);
+    std::shared_ptr<const ScriptNames> scriptNames_;
     std::vector<uint8_t> bspData_;
     std::unique_ptr<assets::D3dBsp> bsp_;
     AnimLibrary animLib_;
@@ -1665,7 +2099,7 @@ private:
     uint32_t entityContents(const Entity& e) const;          // gentity +0xc0 (setcontents 0x4efd70; spawn values 0x4fc74f / 0x4e90e2 / 0x533440 / 0x533480 / 0x5334d0)
     static bool isScriptMover(const Entity& e);              // eType 5 (0x5332b0): script_model, script_brushmodel, script_origin
     void vehicleTouchDamage(Entity& vehicle, Entity& other); // 0x512d40 (src/game/vehicles.cpp)
-    float hitLocationMultiplier(const Entity* attacker, const std::string& location); // 0x528100 (combat.cpp)
+    float hitLocationMultiplier(const Entity* attacker, const std::string& location, const Entity* inflictor = nullptr); // 0x528100 (combat.cpp)
     std::vector<float> locDmgTable_;
     bool locDmgTableLoaded_ = false;
     Value attackerValue(Entity* attacker); // 0x5280b8 / 0x5280c9: a null attacker becomes the world entity (combat.cpp)
@@ -1699,5 +2133,8 @@ private:
     void processSaves();
     std::map<std::string, std::optional<std::map<std::string, std::string>>> weapons_;
 };
+
+// Text of one iprintln / iprintlnbold argument (src/game/campaign.cpp): a player entity gives its name + "^7".
+std::string messageArgText(const script::Value& v);
 
 } // namespace iw2::game

@@ -30,6 +30,18 @@ std::string textOf(const Value& v) {
 
 } // namespace
 
+// An argument of iprintln / iprintlnbold (the message builder at VAs in the 1.3 Linux dedicated server 0x8110720): a
+// localized string gives its reference; an entity must be a player ("Entity is not a player" otherwise) and gives its
+// name followed by "^7" (format at 0x8110844); anything else its text.
+std::string messageArgText(const Value& v) {
+    if (v.isObject()) {
+        const auto& o = v.asObject();
+        if (o->get("classname").toString() != "player") throw std::runtime_error("Entity is not a player");
+        return o->get("name").toString() + "^7";
+    }
+    return textOf(v);
+}
+
 // State message (FUN_004f10b0): active/current → obj_update "<text>"; done → obj_complete
 // "GAME_OBJECTIVECOMPLETED"; failed → obj_update "GAME_OBJECTIVEFAILED". A current message within 100 ms of the
 // previous one is dropped.
@@ -146,14 +158,14 @@ void World::registerCampaignBuiltins() {
             for (size_t i = 0; i < c.args.size(); ++i) {
                 const Value& v = c.arg(i);
                 if (std::holds_alternative<script::LocalizedString>(v.v)) args.push_back({true, std::get<script::LocalizedString>(v.v).key});
-                else args.push_back({false, v.toString()});
+                else args.push_back({false, messageArgText(v), v.isObject()}); // a player entity gives its name (MP_CONNECTED &&1) without the letter check, other entities are an error
             }
             std::string warn;
             const std::string text = buildHintString(args, "Game Message", cvarFloat("loc_warnings", 0.0f) != 0.0f,
                                                      cvarFloat("loc_warningsAsErrors", 0.0f) != 0.0f, &warn);
             if (!warn.empty()) std::fprintf(stderr, "%s", warn.c_str());
             clientCommands_.push_back({command, text});
-            if (std::string(command) == "gm") c.vm.print(c.args.empty() ? std::string() : c.arg(0).toString());
+            // No print of the raw argument here: the client logs the localized message (iw2view, docs/spec/mp-hud.md).
             return Value();
         };
     };

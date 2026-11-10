@@ -21,6 +21,13 @@ int main() {
     CHECK(buildHintString({{false, "1\x01\xff"}}, "Hint String", false, false) == std::string("\x15" "1.."));
     std::string warn;
     CHECK(buildHintString({{false, "ab"}}, "Hint String", false, false, &warn) == std::string("\x15" "ab") && !warn.empty());
+    { // a player entity's name skips the letter and escape checks, keeps the 0x15 marker and the byte cleaning
+        std::string w;
+        CHECK(buildHintString({{true, "MP_CONNECTED"}, {false, "bot1^7", true}}, "Game Message", false, false, &w) == std::string("MP_CONNECTED\x15" "bot1^7") && w.empty());
+        CHECK(buildHintString({{false, "bot1^7", true}}, "Game Message", true, true, &w) == std::string("\x15" "bot1^7") && w.empty());
+        CHECK(buildHintString({{false, "a\x15" "b\xff", true}}, "Game Message", false, false, &w) == std::string("\x15" "a.b.") && w.empty());
+        CHECK(buildHintString({{false, "bot1^7", true}, {false, "ab"}}, "Game Message", false, false, &w) == std::string("\x15" "bot1^7ab") && !w.empty());
+    }
     CHECK(buildHintString({{false, "ab"}}, "Hint String", true, false) == std::string("\x15" "UNLOCALIZED: ab"));
     CHECK(throws({{false, "ab"}}, "are not allowed to have letters in them", true));
     CHECK(throws({{false, "1\x15"}}, "bad escape character (21)"));

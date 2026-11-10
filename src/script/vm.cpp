@@ -497,6 +497,7 @@ ObjectPtr VM::newObject(std::string kind) {
 
 void VM::registerBuiltin(const std::string& name, Builtin fn) {
     const std::string n = lower(name);
+    ++builtinRegistrations_[n];
     auto it = builtinIndex_.find(n);
     if (it != builtinIndex_.end()) {
         builtins_[size_t(it->second)] = std::move(fn);
@@ -508,6 +509,11 @@ void VM::registerBuiltin(const std::string& name, Builtin fn) {
 }
 
 bool VM::hasBuiltin(const std::string& name) const { return builtinIndex_.count(lower(name)) != 0; }
+
+Builtin VM::builtin(const std::string& name) const {
+    const auto it = builtinIndex_.find(lower(name));
+    return it == builtinIndex_.end() ? Builtin() : builtins_[size_t(it->second)];
+}
 
 std::string VM::normalizePath(const std::string& path) {
     std::string p = lower(path);
@@ -900,6 +906,7 @@ void VM::step(Thread& t, bool& suspended) {
                   (v.isObject() ? v.asObject()->kind + "#" + std::to_string(v.asObject()->id) : v.toString()) + " at " + f.file + ":" +
                   std::to_string(in.line));
         }
+        if (fieldStoreHook && t.refs.back().kind == Ref::Field) fieldStoreHook(t.refs.back().object, t.refs.back().field, v);
         writeRef(t, int(t.refs.size()) - 1, std::move(v));
         // Pop the whole reference chain.
         int i = int(t.refs.size()) - 1;

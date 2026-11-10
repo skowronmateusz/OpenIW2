@@ -119,6 +119,11 @@ public:
 
     void registerBuiltin(const std::string& name, Builtin fn);
     bool hasBuiltin(const std::string& name) const;
+    // The registered built-in (an empty function when there is none), so a mode can wrap it.
+    Builtin builtin(const std::string& name) const;
+    // How often each built-in name was registered (a later registration replaces the earlier one); lets a mode
+    // check that its own layer registers every name once.
+    const std::unordered_map<std::string, int>& builtinRegistrations() const { return builtinRegistrations_; }
 
     // Starts a thread running file::function with arguments; it runs until it first suspends.
     uint64_t start(const std::string& file, const std::string& function, std::vector<Value> args = {}, Value self = {});
@@ -144,6 +149,7 @@ public:
     // Frees an entity's script object (Scr_FreeEntityNum 0x4670b0, from G_FreeEntity 0x4d7c30): the object reads as
     // undefined at once; the threads registered on its notify list (waittill and endon) end when the freed-object list is
     // processed (0x467150 -> 0x46d1f0), which the exe does after a script run returns to the engine.
+    size_t threadCount() const { return threads_.size(); } // threads alive, ended ones excluded once reaped
     void freeObject(const ObjectPtr& object);
     void processFreedObjects();
     // Runs the queued woken threads (and those woken while running them) until none is left.
@@ -183,9 +189,14 @@ public:
     std::vector<ThreadInfo> threadInfos() const;
     // Debug hook: called at the start of every notify (object, event), before endons and waiters run. Empty by default.
     std::function<void(const ObjectPtr&, const std::string&)> notifyHook;
+    // Engine field setters: called before a script stores to a field of an object (object, lower-case field, value); throwing
+    // makes the store a script error. Empty by default.
+    std::function<void(const ObjectPtr&, const std::string&, const Value&)> fieldStoreHook;
     // Debug: with n > 0 the "potential infinite loop" guard kills a script after n backward jumps without suspending instead
     // of after 2500 ms of wall time (0x46aae9, the exe behaviour), so headless runs are deterministic (iw2game sets it).
     void setLoopGuardIterations(size_t n) { loopGuardIterations_ = n; }
+    size_t loopGuardIterations() const { return loopGuardIterations_; }
+    void restoreErrors(std::vector<std::string> e) { errors_ = std::move(e); } // carried over a level restart
     // Debug: " < file:line function" for each frame of a thread, outermost first.
     std::string backtrace(const Thread& t) const;
     const std::vector<std::string>& errors() const { return errors_; }
@@ -241,6 +252,7 @@ private:
     size_t loopGuardIterations_ = 0; // debug: > 0 replaces the 2500 ms wall-clock loop guard by a backward-jump count (deterministic)
     size_t backwardJumps_ = 0;       // backward jumps of the running script since its run started
     std::unordered_map<std::string, int> builtinIndex_;
+    std::unordered_map<std::string, int> builtinRegistrations_;
     std::vector<Builtin> builtins_;
     std::vector<std::string> builtinNames_;
     std::deque<std::unique_ptr<Thread>> threads_;

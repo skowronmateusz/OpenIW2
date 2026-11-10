@@ -52,6 +52,18 @@ struct ScreenBlur {
     float composed() const { return cur; }
 };
 
+// Menu blur (docs/spec/ui.md "blurWorld"): every painted menu with a non-zero blurWorld adds its radius as
+// R = sqrt(R^2 + blurWorld^2) (Menu_Paint, MP 0x5425c6..0x5425f4) to the UI context's radius, which is cleared before the
+// menus are painted; the client then composes sqrt(ui^2 + scr_blur^2) into the scene blur (MP 0x4cf900..0x4cf958).
+template <class Range>
+float menuBlurRadius(const Range& blurWorlds) {
+    float r = 0;
+    for (float b : blurWorlds)
+        if (b != 0.0f) r = std::sqrt(r * r + b * b);
+    return r;
+}
+inline float composeSceneBlur(float uiRadius, float scrRadius) { return std::sqrt(uiRadius * uiRadius + scrRadius * scrRadius); }
+
 // Renderer side: R = sqrt(r_blur^2 + radius^2) with r_blur = 0; the blurred copy is blended with alpha min(R / F, 1).
 inline float blurAlpha(float radius, float heightPx) {
     return radius <= 0 ? 0.0f : std::min(radius / blurFullRadius(heightPx), 1.0f);

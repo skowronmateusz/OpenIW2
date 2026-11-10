@@ -26,6 +26,15 @@ int main() {
     CHECK(hudHealthFraction(50, 0) == 0.0f);
     CHECK(hudHealthFraction(50, 100) == 0.5f);
     CHECK(hudHealthFraction(150, 100) == 1.0f);
+    // MP never fades the ammo display, compass or offhand by default; SP keeps its timed fades.
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::AmmoDisplay, true) == 0.0f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::Compass, true) == 0.0f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::Offhand, true) == 0.0f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::HealthBar, true) == 2.0f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::Stance, true) == 1.7f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::AmmoDisplay, false) == 3.0f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::Compass, false) == 8.0f);
+    CHECK(hudFadeDefaultSeconds(HudFadeDvar::Offhand, false) == 3.0f);
     {
         const std::string cur = "mp40", sel = "kar98k", none;
         auto owns = [](const std::string& w) { return w == "kar98k" || w == "mp40"; };

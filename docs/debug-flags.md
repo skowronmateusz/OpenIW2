@@ -22,6 +22,16 @@ described in the code that reads them.
 | `IW2_PROF=N` | iw2view | Prints average per-frame CPU timings every N frames and quits after two reports. |
 | `IW2_SHOT_SCRIPT=t:action,...` | iw2view `--shot` | Scripted weapon input before the shot (actions `reload+/-`, `fire+/-`, `ads+/-`, `frag+/-`, `smoke+/-`, `melee+/-`, `binoc+/-` (binoculars 0x4000), `use+/-` (0x28, binocular fire), `weapon=name`, `turn=<deg/s>` (view yaw change per 20 ms step from then on; a script with it also plays each shot's view flash / brass at its step and updates the effects every step like client frames, logging `turn flash yaw ... tag ...`, so firing while turning can be checked); times in seconds) for `IW2_SHOT_SECONDS` (default 3); logs `shot-script` lines (state, anim, clip, stock, ads every 0.26 s, events). Melee and throw events act on the world. |
 | `IW2_VM_TRACE=1` | iw2view | Prints the view model anim, frame, time and hand/gun models each time it is added. |
+| `IW2_CAPTURE=<dir>[,every[,div]]` | iw2view | Live play (local, MP or `+connect`): renders every `every`th presented frame once more off screen at the window size / `div` into `<dir>/frame_NNNNN.png` (HUD included) and logs `capture t=<world ms> anim=<view anim> weapon=<name>`. The capture slows the frame (judge motion from `IW2_BOB_TRACE` dt). External screen grabs of the window come out blank; use this or the `shot:` token. |
+| `IW2_MP_WEAPON=<name>` / `IW2_MP_TEAM=<allies\|axis\|spectator>` | iw2view `mp/<map>` with `IW2_MP_AUTOJOIN=1` | The weapon and team menu responses of the autojoin instead of the side's default weapon and autoassign. |
+| `IW2_SOAK_ROTATION`, `IW2_SOAK_MINUTES`, `IW2_SOAK_MAPS`, `IW2_SOAK_BOTS` | test_mpnetsoak | The network soak (ctest `mpnetsoak`): the server's sv_mapRotation (default sd mp_toujane, hq mp_carentan, dm mp_toujane after the first map tdm mp_carentan), each gametype's time limit / sd round length in minutes (default 1.25), the map changes to play before the end (default the rotation's length + 1) and the bots (default 3). For a long manual soak raise `IW2_SOAK_MAPS` (the rotation repeats). |
+| `IW2_SOAK_SERVER`, `IW2_SOAK_KNOWN`, `IW2_SOAK_REPORT` | test_mpnetsoak | The iw2server binary, the known-violations file (tests/mpnetsoak_known.txt: one invariant id per line; listed ids are reported as KNOWN and do not fail the test) and the report file (ctest: `mpnetsoak_report.txt` in the build directory, the server's output next to it as `.server.log`). Set by CMake for ctest. |
+| `IW2_SOAK_SHOTTRACE=1` | test_mpnetsoak, iw2server | Per-command weapon lines: `CLIT` on the soak client (command times, weapon step, fire, shots, state, clip, open menus) and `SRVT` in the server output (slot, the time run, the time sent, previous time, buttons, state, clip), for comparing shots command by command. |
+| `IW2_SOAK_TRACE=1` | test_mpnetsoak | Prints a `trace` line per frame of the first client while alive: time since its spawn, server command time, pm_type, origin z and velocities (server and predicted), jump flag, stance, weapon number, server clip, client weapon / HUD clip, events played. |
+| `IW2_NET_TRACE=1` | iw2view | Prints `nettrace rt=<real ms> t=<drawn time> client=<n> org=x,y,z` per rendered frame for every other player as drawn, and every projectile model (`client` = -2 - entity number) (local MP game or `+connect`), to measure the motion smoothness (per-frame speed from consecutive lines). |
+| `IW2_DEBUG_THROW=s[,s...]` | iw2view | Holds the frag key for 150 ms from each listed real time in seconds (live play, local or `+connect`): a grenade throw without a keyboard. |
+| `IW2_DEBUG_FORWARD=f[,yaw]` | iw2view | Holds the forward move `f` (-1..1) while the controls are free and turns the view by `yaw` degrees per second (live play, local or `+connect`), to check the walk without a keyboard. |
+| `IW2_BOB_TRACE=1` | iw2view | Prints every frame the bob cycle, horizontal speed, view height target, ground flag, gun bob angles, view weapon offsets (right, up), the view animation and the frame time. |
 | `IW2_DEBUG_ITEM=name[@seconds]` | iw2view `--shot` | Zeroes the player's ammo, then drops weapon_<name> on the player at that simulation time (default 0) and prints the inventory 1 s later (touch pickup check). |
 | `IW2_NO_HUD=1` | iw2view `--shot` | Draws no script HUD and no HUD fade. |
 | `IW2_FX_DEBUG=1` | iw2view | Prints effect sprite debug lines, including the view-model flash tag. |
@@ -58,12 +68,15 @@ described in the code that reads them.
 | `IW2_STATE_HASH=1` | iw2game | After every frame prints `statehash <ms> <hash> threads <n>`: a hash of each live entity's number, origin, angles and health, and the live script thread count. Two runs with the same seed must print the same lines; the first differing line is the first divergent frame (`diff` of the two `grep statehash` outputs). Found the autoplay kill-gate wave times inheriting a freed object's address (tools/iw2game/deathseen.h, tests/test_deathseen.cpp), which made hill400_defend and decoytown runs differ. |
 | `IW2_THREADS_PREFIX=<p>` | iw2game | Lists every live script thread whose wait site starts with `<p>`. |
 | `IW2_NOTIFY_LOG=level` or `all` | iw2game | Prints every script notify (`level`: only on the level object; `all`: every object) with its sim time and, when the first argument is a string, that argument in quotes (the notetrack name of an animation flag notify). For walking mission flows. |
+| `IW2_SOUND_LOG=1` | iw2view | Prints `[snd] <alias>` for every sound the front end asks the mixer for (local, MP, `+connect`), `(unknown)` for an alias that does not exist, `(culled)` when it is farther than its dist_max, ` 2d` when it has no position. For checking the sounds of a captured play. |
 | `IW2_SOUND_LOG=1` | iw2game | Prints every sound start (`[sound <ms>ms] alias`). Use with `--mixer` so scripts get the real sound lengths (dialogue timing). Also prints `NOT STARTED` lines for refused sounds (with a dump of the busy voices for refused grenade sounds) and a periodic voice dump. Under `--mixer` the mixer advances 50 ms per frame with the listener at the player. |
 | `IW2_MELEE_LOG=1` | iw2game, iw2view | Prints every player melee trace (`[melee] trace i from .. to ..: fraction, entity, classname, surface flags`). |
 | `IW2_ACTOR_DUMP=<team\|all>` | iw2game | At the end of the run prints `actor #N classname (origin) script_noteworthy` for every living actor of the team (`axis`, `allies`, ...) or of all. Used to aim `--player-fire-at`. |
 | `IW2_CHAIN_LOG=1` | iw2game | Prints a line whenever a `trigger_friendlychain` changes the player's friendly chain node (trigger entity number, node name, time). Also prints `setgoalentity at <ms> from <file:line function>` for every `setgoalentity` call. |
 | `IW2_TRIGGER_DUMP=<prefix>` | iw2game | At the end of the run prints the world bounds of the brush entities whose targetname or `target` starts with the prefix (printed as `targetname -> target`) (`trigger <classname> <name> mins .. maxs ..`), for routing `--player-at` through triggers. |
 | `IW2_GRENADE_HINT_DEBUG=1` | iw2game/iw2view | Logs the grenade hint node decisions (docs/spec/grenades.md "Grenade hint nodes"): `grenade hint: <method> blocked throw (start) -> (target) aims at hint (h)` / `..., no hint of N` for a 0x51f490 throw whose line of sight is blocked, `MagicGrenade lob over (h) lands (p)` (0x51f050) and `throw back from (landing) at hint (h)` (0x51f320). |
+| `IW2_MP_DROP=weapon@dx,dy,dz[;...]` | iw2server, iw2view listen server | Drops those weapon items at the offsets from a playing network client's origin, once per spawn (a weapon on the ground next to the client, for the pickup hint). Prints `IW2_MP_DROP <weapon> at x y z`. |
+| `IW2_MP_PLACE=[name=]x,y,z[;...]` | iw2server, iw2view listen server | Puts a network client at the point once per spawn (every network client, or with `name=` only the one with that player name; several entries separated by `;`), e.g. to put a `+connect` client behind a turret: `IW2_MP_PLACE="gunner=-139,-470,110;victim=-139,-300,110"` on mp_carentan. Prints `IW2_MP_PLACE <name> at x y z`. |
 | `IW2_MENU_KEYS=a,b,...` | iw2view `--menu` | Scripted menu keys (up/down/enter/esc, `pause`, `wait`, `set:name=value`, `call:file.gsc:function` runs a thread on level, `exec:console text`). |
 | `IW2_NO_DEPTH_HACK=1` | iw2view | Draws the view weapon without the depth hack (depth range 0..0.2, near plane 0.1): it clips through walls and the near plane again. |
 | `IW2_SHOT_HEALTH=<hp>[,<trail>[,<phase ms>]]` | iw2view `--shot` | Sets the player health (a value <= 1 is a fraction of maxhealth), the health-bar trail fraction and how far into its pulse period the low-health background is. |
@@ -71,6 +84,11 @@ described in the code that reads them.
 | `IW2_SHOT_OBJECTIVES=1` | iw2view `--shot` | Shows the objectives screen (menu objectiveinfo) as if +scores were held. |
 | `IW2_DEPTH_PROBE=1` | iw2view | Replaces the dynamic lights by one pass that paints every lit surface pure red through the l_point pipelines. A surface pixel left unpainted failed LessEqual against its own first pass: its vertex shaders disagree on depth. Use with `IW2_NO_HUD=1 IW2_NO_GLOW=1`. `=2` also leaves out the multiply surfaces, which otherwise darken the red. |
 | `IW2_BOLD_MESSAGE=<text>` | iw2view `--shot` | Shows a bold game message (iprintlnbold window). |
+| `IW2_KILLCAM_TRACE=1` | iw2view `mp/<map>` and `+connect`, tests | Logs every archived client state per server frame (`kctrace srv t=<ms> c=<client> ent= org= eye= ang= fire= clip= ss= hidden=`), the killcam view of every rendered frame (`kctrace view t= lerp= frame= ft= killer= eye= ang= fire= fireAge= clip= ads= state= anim=`) the player bodies reaching the draw while the archived frame is shown (`kctrace draw`) and, on a `+connect` client, one line per snapshot with the follow bit, the own puppet and the bodies held (`kctrace net t= follow= own= bodies=`), so what the killcam shows at `ft` can be compared with the client's state at that server time. |
+| `IW2_MP_BOT_COMBAT=0` | iw2view `mp/<map>` | The bots added by `IW2_MP_BOTS` never shoot or throw (controlled killcam shots with `IW2_SHOT_MP_KILL`). |
+| `IW2_MP_BOT_ADS=1` | iw2view `mp/<map>`, iw2server | Every bot holds its aim (aims down the sights) whenever it holds a weapon, whatever its weapon class and distance (scoped killcam shots with `--cvar bot_weaponclass=sniper` and `IW2_MP_BOT_COMBAT=0`). |
+| `IW2_SHOT_MP_KILL=t:victim:attacker[:mod],...` | iw2view `--shot` (MP) | At sim time t damages client `victim` by 1000 from client `attacker` (-1 the world) through the MP damage path, default `MOD_RIFLE_BULLET` (kill feed and centre print shots, docs/spec/mp-hud.md). |
+| `IW2_SHOT_MP_THROW=t:client[:weapon[:view]],...` | iw2view `--shot` (MP) | At sim time t client `client` throws a grenade (default `frag_grenade_german_mp`, an empty weapon too) from its eye toward the local client (`view`: along its own facing), pitch -25 (killcam grenade shots, docs/spec/mp-hud.md). |
 
 ## Command-line options
 - iw2view: `--menu` (front end without a level), `--cvar name=value`, `--ride F,R` / `--ride-after S` / `--ride-fire`
@@ -93,15 +111,90 @@ described in the code that reads them.
 - Env `IW2_LOOP_GUARD_ITERS=<n>` (iw2game, default 200000): the VM's "potential infinite loop" guard kills a script that spins without suspending after n backward jumps instead of after 2500 ms of wall time (the exe's rule 0x46aae9, which iw2view keeps). `0` restores the wall clock. The wall clock made toujane runs differ for a fixed `IW2_SCRIPT_SEED`.
 - iw2game: `--god` (the player takes no damage, as the `god` cheat), `--spawn-all`, `--cvar name=value`, `--answer-menus`, `--level-notify T name`, `--level-call T file.gsc function[=arg,arg]` (thread on level; the optional comma-separated strings are its arguments, e.g. `maps/_utility.gsc flag_set=move_out`), `--player-at T x,y,z`, `--player-look T yaw,pitch` (view angles from T on), `--player-use T yaw,pitch` (use key once), `--player-fire T yaw,pitch` (one bullet from the eye), `--player-fire-at T x,y,z`, `--player-weapon T name` (sets $weapon), `--player-ads T frac` (playerads value), `--player-melee T x,y,z`, `--lookat-test`.
 - iw2game `<main> <map> --item-test [weapon=N] weapon ...`: spawns weapon items at the player and prints stock / clip after the touch pickup (`weapon=N` first sets that weapon's clip, e.g. `mk1britishfrag=0 fraggrenade fraggrenade`).
+- iw2game `<main> mp/<map> <gametype> [seconds]`: offline multiplayer (docs/spec/mp.md; `src/game/mpgame.cpp`, `tools/iw2game/mp.cpp`).
+  Loads `maps/mp/<map>`, runs the gametype (`dm`, `tdm`, `sd`, `ctf`, `hq`), connects and begins the local clients and lets them join
+  (team menu `autoassign`, then a default weapon) unless `--mp-spectate`. Options: `--cvar name=value`, `--mp-clients N`
+  (local clients, default 1), `--mp-spectate`, `--mp-menu t:client:menu:response` (a menu response at t seconds),
+  `--mp-kill t:victim:attacker` (1000 damage through the MP damage path; attacker -1 = the world), `--mp-use t:client`
+  (use key for one frame, e.g. to respawn), `--mp-disconnect t:client`. Prints every client (sessionstate, team, score,
+  deaths, health, origin, open script menu, pers weapon), the team scores and the number of map restarts (sd rounds),
+  the `logPrint` lines, the script errors and the stubbed (unimplemented) builtins the run called; exit code 1 on
+  script errors. ctest `mpdm_iw2game` runs it on mp_toujane.
+- iw2view `<main> mp/<map>`: the same offline multiplayer game in the window with the MP key bindings
+  (`default_mp.cfg`): the gametype opens the server info, team and weapon menus for the local client; ESC opens the
+  script main menu (`g_scriptMainMenu`), x the weapon menu, TAB / F4 the scoreboard. Env `IW2_MP_GAMETYPE` (default `g_gametype`, else
+  `dm`) picks the gametype; `IW2_MP_AUTOJOIN=1` skips the menus (autoassign and a default weapon, as iw2game does; with `+connect` the client sends those menu responses to the server).
+  With `--shot` and `--sim-seconds S`, `IW2_SHOT_MP_RESPONSES=t:menu:response,...` sends the local client's menu
+  responses at sim time t (menu `-` runs the response as a bound command, e.g. `2:-:togglemenu`). Respawn after death
+  with the use key. Chat (docs/spec/mp-chat.md): t / y open the message field (`say` / `say_team`), v the quick-message
+  menu. Debug env: `IW2_MP_SAY="text|text..."` says each line from the local client at the start, `IW2_MP_QUICK="<menu>
+  <response>"` sends a quick-message response (e.g. `quickcommands 2`), and with `--shot` `IW2_SHOT_CHATFIELD="text"` shows
+  the open message field.
+  Spectating (docs/spec/mp-spectate.md): with `--shot`, `IW2_SHOT_MP_FOLLOW=t:dir,...` runs the local spectator's follow
+  cycle at sim time t (dir 1 / -1 as an attack / 0x1000 press, 0 stops following); a spectator joins with
+  `IW2_SHOT_MP_RESPONSES=2:team_<allies><axis>:spectator`. `IW2_SHOT_LEVEL_CALL=t:maps/mp/gametypes/<gametype>:endMap`
+  shows the intermission scoreboard. In the window: attack / aim cycle the followed player, melee stops following
+  when free look is allowed.
+- iw2view `--menu`: the SP main menu's multiplayer entry switches to the MP menus (docs/spec/mp-ui.md); "start new server"
+  starts the listen server with the chosen map and gametype. Extension cvars of its "Bots & weapons" panel:
+  `ui_iw2_bots` (bot count), `ui_iw2_botskill` (0..3), `ui_iw2_allow_<rifle|bolt|smg|sniper|mg|shotgun|grenades>` (0 turns the
+  class off). The start is refused with an error popup when the enabled classes have no primary class or leave a nation
+  without a weapon (`game::mpParseWeaponList`, the same check as `iw2server --weapons`). StartServer writes the enabled weapon classes to `iw2_weaponclasses` (the game
+  sets the `scr_allow_*` cvars from it, bots pick allowed weapons only) and grenades to `scr_allow_fraggrenades` /
+  `scr_allow_smokegrenades`. After `exitLevel` the map follows `sv_mapRotation` (e.g.
+  `set sv_mapRotation "gametype dm map mp_carentan map mp_toujane"`), the same map restarts without one. `IW2_MP_BOTS` / `IW2_MP_BOT_SKILL` override the panel. Menu debug token
+  `uiscript:startMultiplayer` switches at once (e.g. `IW2_SHOT_KEYS=uiscript:startMultiplayer,click:420/228`).
+- Bots (docs/spec/mp-bots.md, `src/game/mpbots.cpp`): iw2game `--mp-bots N` adds N bots after the local clients (one
+  per frame) and `--mp-bot-skill S` sets their skill (0 recruit .. 3 veteran, default 1); each bot's controller state is
+  printed under its client line. iw2view: env `IW2_MP_BOTS=N` and `IW2_MP_BOT_SKILL=S` with `mp/<map>`. Scripts can add
+  one with `addtestclient()`. The navigation graph is cached in `IW2_NAV_CACHE` (default `~/Library/Caches/openiw2/nav`
+  on macOS, `$XDG_CACHE_HOME/openiw2/nav` or `~/.cache/openiw2/nav` elsewhere; delete a `<map>.nav` to regenerate it).
+  ctest `mpbots_iw2game` runs two veteran bots on mp_toujane.
+- `test_mpbotcombat` (docs/spec/mp-bots.md "Combat behaviour"): without arguments the fights per skill on mp_toujane
+  (shots, hits, kills, grenades), the pistol switch and hearing; `perf <map>` runs 15 bots for 60 s and prints the
+  frame cost and the most A* plans in a frame; `soak <map>` runs 8 bots for `IW2_BOT_SOAK_SECONDS` game seconds (default
+  60; 300 for the five-minute check) and fails when a bot stood still for a minute (ctest `mpbotsoak_<map>` per map);
+  `probe <map> x y z x2 y2 z2` prints box traces between two points at four heights. Env `IW2_BOT_STUCKDBG=1` prints
+  each stuck spell of a bot (position, stance, path nodes) to stderr.
+- `test_navmaps` (ctest `navmaps`, needs `IW2_MAIN`): one line per MP map with the graph's nodes, links by kind
+  (ladder, mantle, leap), brush entities and the spawn points on the graph per spawn class. Env `IW2_NAVMAPS=a,b` limits
+  the maps; `IW2_NAVDIAG=1` also prints, for each spawn point off the graph, the unpruned graph around it (the node's
+  links, the way out, the nodes that reach it, what its edge columns hit, nearby entities); `IW2_NAVPROBE=x0,y0,x1,y1,z0,z1`
+  lists the ladder surfaces and mantle brushes in that box instead of generating graphs.
+- Bot objectives (docs/spec/mp-bots.md, "Objectives"; `src/game/mpbotgoals.cpp`): in tdm, sd, ctf and hq the bots
+  play the gametype (ctf: take / escort / capture, guard / return the flag; sd: plant and defuse by holding use in the
+  trigger, guard the zones; hq: take and hold the radio). The controller line of iw2game shows `objective <what>`.
+  GSC methods on a bot: `isBot()`, `botSetGoal(origin | entity, radius [, holdUse])`, `botClearGoal()`,
+  `botSetRole("auto" | "attack" | "defend" | "hunt")`, `botSetWeaponClass(class | "")`. C++: `World::mpBotSetGoal`,
+  `mpBotSetGoalEntity`, `mpBotClearGoal`, `mpBotSetRole`, `mpBotSetWeaponClass`, `mpBotObjectiveName`.
+- Weapon classes for a server (docs/spec/mp-bots.md, "Weapon classes"): the stock cvars `scr_allow_<weapon>` (1 / 0,
+  e.g. `scr_allow_kar98ksniper`, `scr_allow_shotgun`; `scr_allow_fraggrenades`, `scr_allow_smokegrenades` for the
+  grenades) decide what the weapon menus accept. OpenIW2 adds:
+  - cvar `iw2_weaponclasses` (list of `rifle` (semi-automatic), `bolt` (bolt-action, unscoped), `sniper`, `smg`, `mg`,
+    `shotgun`, comma separated), read when the
+    game starts: every menu weapon's `scr_allow_*` becomes 1 when its class is listed, else 0 (grenade cvars
+    untouched). C++: `World::mpSetAllowedWeaponClasses(classes)`, `mpWeaponClass(weapon)`,
+    `mpAllowedWeapons(menu)`; free functions `mpWeaponClassNames()`, `mpMenuWeapons(menu)`, `mpWeaponAllowCvar(weapon)`
+    (`src/game/mpbots.h`); `mpMenuWeaponClass(weapon)` is the table of every menu weapon's class (checked against the weapon
+    files by test `mpgametypes`) and `mpParseWeaponList(text, selection)` validates a list (unknown names, no primary
+    class, a nation without a weapon). Pistols are always given by `_weapons.gsc`.
+  - cvar `bot_weaponclass` (a class, `any` or empty): the class the bots pick from the allowed weapons (else any
+    allowed weapon); per bot `botSetWeaponClass`.
+  - iw2game `--mp-classes rifle,smg` sets `iw2_weaponclasses` (unchecked; iw2server `--weapons` validates).
 
 ## Menu debug helpers (iw2view --menu)
 
 | Flag | Effect |
 |---|---|
-| `IW2_SHOT_MENU=a,b` | Opens the named menus before a `--menu --shot`. |
+| `IW2_SHOT_MENU=a,b` | Opens the named menus before a `--menu --shot`. `connect` is the MP load screen of the `IW2_SHOT_ALIASES=mp/<map>` map with the gametype `IW2_MP_GAMETYPE` (default dm); it switches to the MP menu set first. |
 | `IW2_SHOT_SET=dvar=value,...` | Sets cvars before a `--menu --shot`. |
 | `IW2_MENU_KEYS` tokens | `open:name`, `click:X/Y`, `left`, `right` (besides the existing tokens, `quit`). |
 | `IW2_EXIT_AFTER=N` | Exits iw2view after N seconds. |
+| `IW2_MENU_KEYS` tokens (live play) | `cmd:+forward` / `cmd:-forward` (any bound command: `+back`, `+movedown`, `+moveup`, `+attack`, `+reload`, `weapnext`, ...) as if from a key, `turn:<deg>` turns the view yaw. |
+| `IW2_MENU_KEYS` token `pitch:<deg>` | Sets the view pitch (positive looks down); live play. |
+| `IW2_HINT_LOG=1` | iw2view | Prints `[hint] t=<ms> ...` whenever the drawn cursor hint (icon weapon and text key) changes, `none` when nothing is drawn. |
+| `IW2_MENU_KEY_MS=N` | Gap between two `IW2_MENU_KEYS` tokens in ms (default 2000). |
+| `IW2_MENU_KEYS` tokens (MP) | `shot:<file.png>` writes the next presented frame (menus and HUD included), `togglemenu` runs the MP ESC binding, `mpdamage:victim:attacker:amount` damages a client through the MP damage path (attacker -1 = the world). |
 | `IW2_START_TRACE=1` | iw2view | Prints `[start-trace]` lines for the level start: real ms and level ms of the world creation, every script sound start (handle and length), the end of the load, and the first presented frames (with the voices still held). |
 
 
@@ -190,6 +283,80 @@ localized through the loaded strings. The developer keys L and V have no origina
 "fullbright ON" / "fullbright OFF" and "walk mode ON" / "fly mode ON" through the same path. All of these need `sv_cheats` as before; without it
 the key shows the localized "cheats not enabled" message. TODO(spec): the original draws console text on screen only with con_minicon
 (default 0); the position and fade of that mini console are not proven, so the game-message window is used.
+
+## Network tools (docs/spec/net.md)
+
+- `iw2netclient host[:port] [seconds] [-v] [-f] [-s] [-c command] [--until-map map] [--dump file]`: protocol test client
+  (`--until-map` stops once the gamestate of that map arrived; `seconds` is then the upper bound, and connecting is
+  retried within it while the server is still loading). Connects to a patch 1.3 server
+  without authorisation (the server must allow LAN clients without a key and run with `sv_pure 0`), decodes the
+  gamestate and every snapshot, prints a summary (configstrings, baselines, snapshots, entities, player origin).
+  `-v` prints every packet and command, `-f` sends forward movement, `-c` queues a reliable client command
+  (repeatable), `-s` runs the standard scenario of the differential test (team and weapon by `mr`, walk, fire,
+  `score`), `--dump file` writes everything decoded as text (configstrings, baselines with every non-zero field, each
+  snapshot's flags, player state, entities and client states, server commands; times relative to the first
+  snapshot). Exit code 0 when a gamestate and snapshots were decoded without error.
+- `iw2server <main-dir> [<map> [gametype]] [--port N] [--maxclients N] [--seconds N] [--cvar name=value] [--bots N]
+  [--bot-skill N] [--weapons LIST] [--scorelimit N] [--timelimit MIN] [--roundlimit N] [--no-console] [--help]
+  [+command args ...]` (every option with its range: docs/dedicated-server.md; parser `src/netgame/serverargs.cpp`,
+  test `serveroptions`; a wrong value prints the error and the usage and exits 2): headless dedicated server (macOS / Linux) running the
+  multiplayer World behind the protocol core, with the console of docs/spec/dedicated.md. No authorisation, no master
+  server, no PunkBuster. `+command` runs console commands at start-up (`+set`, `+exec server.cfg`, `+map mp_toujane`,
+  `+map_rotate`); commands up to the first map command run before the socket opens, so `+set net_port`,
+  `+set sv_maxclients` work. Console commands (stdin and rcon): `map`, `map_restart`, `fast_restart`, `map_rotate`,
+  `status`, `serverinfo`, `kick <name>|all`, `clientkick <n>`, `say`, `tell <n>`, `set`/`seta`, `exec`, `quit`,
+  `addtestclient [n]`, `<cvar> [value]`. Cvars: `rcon_password`, `g_password`, `sv_privateClients`,
+  `sv_privatePassword`, `sv_mapRotation`, `sv_mapRotationCurrent`, `sv_hostname`. `--bots N` adds N bots on every
+  map; bots take slots of `sv_maxclients`. `--weapons LIST` (rifle, bolt, sniper, smg, mg, shotgun, grenades, all) sets
+  `iw2_weaponclasses` and the two grenade cvars after the `+exec` lines, so it wins over `server.cfg`; `--scorelimit`,
+  `--timelimit` (minutes, decimals allowed) and `--roundlimit` (sd only) set `scr_<gametype>_scorelimit` /
+  `_timelimit` / `scr_sd_roundlimit` of every map's gametype when the map loads. A map without a gametype runs dm. A gametype that calls exitLevel continues with `map_rotate`. stdin is read
+  until end of file; `--no-console` ignores it. The reliable command `mr <n> <menu index or name> <response>` becomes a menu
+  response; script menus go out as configstrings from 1246 and `t <index>` / `u` server commands, iprintln /
+  iprintlnbold as `f` / `g`. Builds on Linux (tested with clang on arm64 and x86_64; there is no
+  MP3 decoder there, which the server does not need).
+- `iw2netinfo serve [port] [seconds]`: answers `getinfo` / `getstatus` / `getchallenge` on that UDP port (default
+  28960) with a fixed server info, without a game and without authorisation, and prints every query it receives;
+  `seconds` 0 (the default) runs until killed.
+- `iw2netinfo query host[:port] getinfo|getstatus [challenge]`: sends the query and prints the reply.
+- `iw2netinfo rcon host[:port] <password> <command...>`: sends a remote console command and prints the replies.
+- iw2view `<main-dir> +connect host[:port]` (also `--connect`): joins a network game as a client (docs/spec/net.md
+  section 10). The handshake runs before the window opens (it gives up after 10 s); the map comes from the server's
+  gamestate. The server runs the gametype: its script menus open in the window and the responses go back as `mr`
+  commands; the own player is predicted from the snapshots, the other players are drawn interpolated 100 ms behind.
+  Menu / console text `say <text>` and `say_team <text>` is sent to the server. Env `IW2_NET_NAME` sets the player
+  name (default `player`).
+- iw2view listen server (docs/spec/net.md section 11): a local MP game started from the menu (createserver without the
+  dedicated choice) always takes network clients; a map started from the command line or console only with env
+  `IW2_LISTEN=1`, and `IW2_LISTEN=0` turns it off for menu starts too; UDP port from env `IW2_LISTEN_PORT`, else cvar `net_port`, else
+  28960; slots from `sv_maxclients` (default 8). The dedicated choice uses the same port for its server.
+- `IW2_CONSOLE_SHOT=<file.bmp>` (iw2view dedicated start, docs/spec/mp-ui.md "Dedicated start"): writes the server
+  console window once, 3 s after it opened.
+- iw2view join-server list (net.md section 12): `RefreshServers` broadcasts getinfo; env `IW2_LAN_EXTRA=host:port`
+  also asks that address directly (networks without broadcast, tests).
+- ctest `mpturretview_e2e` (tests/test_mpturretview.cpp): a network client over UDP gets on the mp_carentan 30cal with use,
+  its front end (RemoteView, commands from netgame::makeUserCmd as in iw2view) shows the turret view from the player state,
+  the prediction holds it, the turret aim arrives, attack kills a second client with the turret weapon, use gets off;
+  on a listen server and with the gunner as a dedicated server's client 0.
+- ctest `mpnetdmview_e2e` (tests/test_mpnetdmview.cpp): headless dm listen server on mp_carentan with bots and a
+  network client whose front end shows the snapshots: kills of bots of both sides give the plain centre print with the
+  victim's name (team 0 in dm), the dropped weapons are drawn and fall, the client's frag grenade flies and explodes
+  with its effect in the view.
+- ctest `mpnetcombat_e2e` (tests/test_mpnetcombat.cpp): headless listen server with two network clients and bots: a
+  client shoots a bot, a bot kills a client who respawns with use, the other client sees the shots as entity events;
+  sd plant by a network client and a round restart with the clients connected (docs/spec/net.md section 13).
+- ctest `mpjoinmenus_e2e` (tests/test_mpjoinmenus.cpp): a network client joins dm on mp_carentan with 15 bots and walks
+  serverinfo -> team -> weapon -> playing for each weapon class and for all; exactly one script menu open after each step.
+- ctest `mplisten_e2e` (tests/test_mplisten.cpp): headless listen server with bots, LAN browser, a network client that
+  must see the bots, its health and weapon, HUD elements, an obituary and a chat line.
+- Env `IW2_TEST_LNXDED=host:port` (ctest `net_interop`): runs the interoperability check of net.md section 9 against
+  that server (connect, delta snapshots, an acknowledged reliable command, movement, the weapon and model numbers of
+  the scenario read with the 1.3 layout), and ctest `net_wirediff` the differential test of section 9 (the same
+  scenario on that server, which must run mp_toujane dm with `sv_pure 0` and no other clients, and on iw2server).
+  Unset: both tests are skipped. With `IW2_TEST_ROUNDS=1` and an sd reference, `net_wirediff` checks round
+  restarts over 80 s instead (docs/spec/net.md section 9). `iw2netclient --at ms command` / `--buttons-at ms value`
+  add scenario steps.
+- iw2view `+connect host[:port]` sends the game password given with `--cvar password=<pw>` (the menu path uses the `password` dvar of ui_mp/password.menu). A refused or lost connection returns to the MP main menu with `error_popmenu` (docs/spec/net.md section 14).
 
 ## Brightness
 - Cvar `r_gamma` (`--cvar r_gamma=1.8` for iw2view, also the options slider; archived in the profile; 0.5 .. 3, default 1): the brightness ramp, applied to the whole frame by a final full-screen pass. `--cvar r_ignorehwgamma=1` turns the ramp off (the original's software path is not implemented). With `--shot`, `IW2_NO_HUD=1` avoids the level-start fade-in for brightness comparisons.

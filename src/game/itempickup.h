@@ -17,6 +17,12 @@ bool playerTouchesItem(const std::array<float, 3>& playerOrigin, const std::arra
 
 // BG_CanItemBeGrabbed (0x4fad50), weapon items: an offhand weapon (offhandClass set) or weaponClass "item" and an owned
 // weapon need room for more ammunition (0x4dcc00); any other weapon can only be taken by use (not by touch).
+// Multiplayer: a dropped weapon cannot be taken by the client that dropped it until its owner think (one second) clears the
+// owner (the grab test 0x80df421..0x80df42f compares the item's client number with the player state's).
+inline bool mpDropperKeepsOff(int ownerEntity, int ownerUntilMs, int clientEntity, int64_t nowMs) {
+    return ownerEntity == clientEntity && nowMs < ownerUntilMs;
+}
+
 bool canGrabWeaponItem(bool offhandOrItemClass, bool owned, bool touch, int room);
 
 // What an item carries (entity +0x148 stock / +0x154 clip: -1 = none, 0 = not set yet) once Pickup_Weapon has resolved it.

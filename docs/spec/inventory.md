@@ -43,7 +43,10 @@ stance `stand duck prone`; offhandClass `None, Frag Grenade, Smoke Grenade`.
   (error "Unknown weaponslot name %s. Valid weaponslots are "primary" and "primaryb""); setting checks the
   weapon's slot ("Weapon %s goes in the %s weaponslot, not the %s weaponslot.", primary and primaryb are
   interchangeable), removes the old weapon, gives the new one, and moves it to primaryb when it was placed in
-  primary by the give while primaryb was requested.
+  primary by the give while primaryb was requested Then, as giveweapon does, `startAmmo − stock` rounds (when
+  positive) go through *add ammo*, filling the clip when the weapon was not owned before (the 1.3 Linux dedicated
+  server's builtin 0x80fc088 calls add ammo 0x8104b94 after the give). The gametypes' pistol (`_weapons.gsc:318-319`,
+  setWeaponSlotWeapon then giveMaxAmmo) therefore spawns with a full clip.
 
 Not implemented from evidence yet (marked TODO in `src/game/inventory.cpp`): switching animations/timing for
 `switchtoweapon` / `switchtooffhand`, the slot-ammo setters' exact clamping, `getammocount`.

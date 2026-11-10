@@ -89,6 +89,8 @@ void MenuStack::settleFades() {
 
 std::vector<const Item*> MenuStack::matching(const std::string& n) const {
     std::vector<const Item*> out;
+    // The menu of the running script (0x4c7f6d, 0x4c7fef: createserver's buttons hide/show items of their own menu while another
+    // menu is on top), else the focused menu.
     if (const Menu* m = scriptMenu())
         for (const auto& it : m->items)
             if (lower(it->name) == lower(n) || (!it->group.empty() && lower(it->group) == lower(n))) out.push_back(it.get());
@@ -144,6 +146,8 @@ void MenuStack::paintFade(const Menu& m, const Item& it, bool back) {
 }
 
 bool MenuStack::open(const std::string& name) {
+    // The refused start (docs/spec/mp-ui.md) shows error_popmenu over the create-server screen; its "open main" is skipped once.
+    if (errorKeepsScreen_ && name == "main") { errorKeepsScreen_ = false; return true; }
     Menu* m = lib_.find(name);
     if (!m || stack_.size() >= kMaxOpenMenus) return false;
     std::erase(stack_, m);
@@ -217,6 +221,7 @@ bool MenuStack::flagVisible(const Item& it) const {
 }
 
 bool MenuStack::itemVisible(const Item& it) const {
+    if (it.ownerDrawFlag && env_.ownerDrawFlagShown && !env_.ownerDrawFlagShown(it.ownerDrawFlag)) return false;
     // show/hide commands set the item's visible flag; the dvarTest/showDvar/hideDvar gate still applies on top (the pause menu
     // has "newgame" and "restart" at the same rect, separated only by sv_running).
     if (!flagVisible(it)) return false;
@@ -235,7 +240,7 @@ bool MenuStack::itemVisible(const Item& it) const {
 std::vector<const Item*> MenuStack::selectable(const Menu& m) const {
     std::vector<const Item*> out;
     for (const auto& it : m.items)
-        if ((it->type == 1 || it->type == 4 || it->type == 6 || it->type == 16 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 13 || it->type == 14) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
+        if ((it->type == 1 || it->type == 4 || it->type == 6 || it->type == 9 || it->type == 16 || it->type == 10 || it->type == 11 || it->type == 12 || it->type == 13 || it->type == 14 || (it->type == 0 && it->ownerDraw && env_.ownerDrawKeyed && env_.ownerDrawKeyed(it->ownerDraw))) && !it->decoration && itemVisible(*it)) out.push_back(it.get());
     return out;
 }
 
@@ -257,6 +262,41 @@ const Item* MenuStack::itemAt(const Menu& m, float x, float y) const {
         if (x >= ix && x < ix + it->rect.w && y >= iy && y < iy + it->rect.h) return it;
     }
     return nullptr;
+}
+
+void MenuStack::reset() {
+    stack_.clear();
+    focus_ = nullptr;
+    focusMenu_ = nullptr;
+    ctx_ = nullptr;
+    routing_ = false;
+    lists_.clear();
+    listDrag_ = {};
+    repeat_ = {};
+    editing_ = false;
+    editItem_ = nullptr;
+    capture_ = nullptr;
+    dragItem_ = nullptr;
+    dragMenu_ = nullptr;
+    shownOverrides_.clear();
+    runtime_.clear();
+    if (!loopAlias_.empty() && env_.stopLoop) env_.stopLoop();
+    loopAlias_.clear();
+}
+
+// Focus moved by the pointer or the keys. Item_SetFocus (MP exe 0x53be40) marks the new item focused and runs its onFocus script
+// (item +0x2b8) on the menu that owns it; the weapon, team and quick-command menus show and hide their preview items this way.
+// The old item's leaveFocus runs first (the difficulty menu hides its description there). TODO(spec): the exact place where the
+// exe runs leaveFocus and whether the default focus on menu open also runs onFocus; the focus sound (item focusSound, else the
+// global itemFocusSound) is still the fixed "mouse_over" alias played by the callers.
+void MenuStack::changeFocus(const Item* it) {
+    const Item* old = focus_;
+    if (old == it) return;
+    if (old && !old->leaveFocus.empty())
+        if (const Menu* m = ownerOf(*old)) runItem(*m, old->leaveFocus);
+    setFocusItem(it);
+    if (it && !it->onFocus.empty())
+        if (const Menu* m = ownerOf(*it)) runItem(*m, it->onFocus);
 }
 
 const Item* MenuStack::hover(float x, float y, const Menu** owner) const {
@@ -338,6 +378,13 @@ void MenuStack::runItem(const Menu& m, const Script& s) {
     ctx_ = prev;
 }
 
+void MenuStack::runItemAction(const Menu& m, const Item& it) {
+    // openForGameType / closeForGameType read the dvar of the item whose action runs (MP exe 0x53af80: item +0x2c0).
+    const std::string saved = std::exchange(env_.itemDvar, it.dvar);
+    runItem(m, it.action);
+    env_.itemDvar = saved;
+}
+
 void MenuStack::mouseMove(float x, float y) {
     if (dragItem_) {
         dragTo(x);
@@ -355,7 +402,7 @@ void MenuStack::mouseMove(float x, float y) {
     const Menu* owner = nullptr;
     const Item* it = hover(x, y, &owner);
     if (it && it != focus_) {
-        setFocusItem(it);
+        changeFocus(it);
         if (env_.play) env_.play("mouse_over"); // alias name of the menu hover sound
     }
     if (it && it->type == 6 && owner) listHover(*owner, *it, x, y);
@@ -381,8 +428,15 @@ float MenuStack::sliderFraction(const Item& it) const {
 }
 
 float MenuStack::valueTextX(const Menu& m, const Item& it) const {
+    // The value starts 8 after the end of the label's text rect (SP 0x4cd29d: textRect.x + textRect.w + 8, 0 without a label).
+    // The text rect (0x4cc170) starts at textalignx for left alignment, textalignx - w for right (2) and textalignx - w / 2
+    // for center (1, 3), so a right-aligned label puts every value at the same column (serverinfo_dm.menu:71-104).
+    // TODO(spec): 0x4cc170 adds the dvar value's width to w for some centred edit items (0x4c3720); not modelled.
     const float x = m.rect.x + it.rect.x + it.textAlignX;
-    return it.text.empty() ? x : x + (env_.textWidth ? env_.textWidth(it) : 0.0f) + 8.0f;
+    if (it.text.empty()) return x;
+    const float w = env_.textWidth ? env_.textWidth(it) : 0.0f;
+    const float start = it.textAlign == 2 ? x - w : it.textAlign == 1 || it.textAlign == 3 ? x - w * 0.5f : x;
+    return start + w + 8.0f;
 }
 
 // Index of the dvar's string in the item's dvarStrList (exe 0x4ca370: case-insensitive compare 0x43f6d0, no match = 0).
@@ -396,6 +450,10 @@ size_t MenuStack::strIndex(const Item& it) const {
 }
 
 std::string MenuStack::valueLabel(const Item& it) const {
+    if (it.ownerDraw && env_.ownerDrawText) {
+        const std::string t = env_.ownerDrawText(it.ownerDraw);
+        if (!t.empty()) return t;
+    }
     if (it.type == 11) return cvarValue(it) == 0.0f ? "EXE_NO" : "EXE_YES";
     if (it.type == 17) { // exe 0x4cd0e0: a float dvar is printed with "%.*f", precision 2 (0x42f3e0)
         // 0x4cd0e0 formats only a dvar whose type byte (+6) is 1 (float); any other dvar type, or a missing dvar, leaves the label empty
@@ -452,6 +510,8 @@ void MenuStack::dragTo(float x) {
 
 // One activation of a widget: step +1/-1 for YESNO/MULTI, a pointer press for SLIDER (mouseX in virtual pixels).
 bool MenuStack::activate(const Menu& m, const Item& it, int step, float mouseX, bool pointer) {
+    // Ownerdraw items take their keys in the ownerdraw key handler (MP exe 0x533b70 for UI_NETGAMETYPE).
+    if (it.ownerDraw && env_.ownerDrawKey && env_.ownerDrawKey(it.ownerDraw, step)) return true;
     if (it.type == 11) { // exe 0x4ca270: dvar = (dvar == 0), written as "%i"
         if (env_.setCvar) env_.setCvar(it.dvar, cvarValue(it) == 0.0f ? "1" : "0");
         return true;
@@ -510,7 +570,7 @@ bool MenuStack::click(float x, float y) {
     const Menu* m = focusMenu_;
     const Item* it = m ? itemAt(*m, x, y) : nullptr;
     if (!it) return false;
-    if (focus_ != it) setFocusItem(it);
+    if (focus_ != it) changeFocus(it);
     if (m && it->type == 6) { // list: scrollbar zones or a row (sounds come from the item's own scripts)
         const int zone = listZone(*m, *it, x, y);
         if (zone) {
@@ -540,7 +600,7 @@ bool MenuStack::click(float x, float y) {
     }
     if (env_.play) env_.play("mouse_click");
     if (m) {
-        if (it->type == 1) runItem(*m, it->action);
+        if (it->type == 1) runItemAction(*m, *it);
         else activate(*m, *it, 1, x, true);
     }
     return true;
@@ -568,6 +628,18 @@ void MenuStack::captureKey(const std::string& name) {
     }
     if (env_.bindKey) env_.bindKey(capture_->dvar, name == "DEL" ? std::string() : name);
     capture_ = nullptr;
+}
+
+bool MenuStack::execKey(char ch) {
+    Menu* m = top();
+    if (!m || capture_) return false;
+    const char lc = char(std::tolower(static_cast<unsigned char>(ch)));
+    for (const auto& [k, script] : m->execKeys)
+        if (!k.empty() && char(std::tolower(static_cast<unsigned char>(k[0]))) == lc) {
+            runItem(*m, script);
+            return true;
+        }
+    return false;
 }
 
 void MenuStack::key(Key k) {
@@ -598,7 +670,7 @@ void MenuStack::key(Key k) {
         if (at == sel.end()) return;
         const Item& it = **at;
         if (it.type == 1) {
-            if (k == Key::Enter) runItem(*m, it.action);
+            if (k == Key::Enter) runItemAction(*m, it);
         } else if (it.type == 10) {
             if (k != Key::Enter) activate(*m, it, k == Key::Right ? 1 : -1, 0, false);
         } else {
@@ -608,7 +680,7 @@ void MenuStack::key(Key k) {
     }
     size_t i = 0;
     if (at != sel.end()) i = k == Key::Down || k == Key::Tab ? size_t(at - sel.begin() + 1) % sel.size() : (size_t(at - sel.begin()) + sel.size() - 1) % sel.size();
-    setFocusItem(sel[i]);
+    changeFocus(sel[i]);
     if (env_.play) env_.play("mouse_over");
 }
 
@@ -831,7 +903,7 @@ void MenuStack::moveFocus(const Menu& m, int dir) {
     const auto at = std::find(sel.begin(), sel.end(), focus_);
     size_t i = 0;
     if (at != sel.end()) i = dir > 0 ? size_t(at - sel.begin() + 1) % sel.size() : (size_t(at - sel.begin()) + sel.size() - 1) % sel.size();
-    setFocusItem(sel[i]);
+    changeFocus(sel[i]);
     if (env_.play) env_.play("mouse_over");
 }
 
@@ -883,6 +955,7 @@ void MenuStack::textInput(const std::string& text) {
         // copying the bytes would not reproduce it (the mapping of the Windows code page is not modelled).
         if (c < 0x20 || c > 0x7f) continue;
         if (it.type == 16 && !(std::isalnum(c) || c == '_' || c == '-')) continue;
+        if (it.type == 9 && !std::isdigit(c)) continue; // NUMERICFIELD: digits only (SP exe 0x4ca9aa -> 0x43f620)
         std::string s = env_.getCvar ? env_.getCvar(it.dvar) : std::string();
         const int len = int(s.size());
         editCursor_ = std::clamp(editCursor_, 0, len);

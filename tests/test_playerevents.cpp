@@ -107,6 +107,12 @@ int main() {
         CHECK(iw2::game::localizeTextMessage("GAME_PICKUP_AMMO\x14WEAPON_GERMANGRENADE", find) == "Picked up ammo for the Stielhandgranate");
         CHECK(iw2::game::localizeTextMessage("GAME_PICKUP_AMMO\x15WEAPON_GERMANGRENADE", find) == "Picked up ammo for the WEAPON_GERMANGRENADE");
         CHECK(iw2::game::localizeTextMessage("^2\x14OBJ\x1f" "5", find) == "^2Objective: 5");
+        // Hud label + value (0x4dd330): no separator is added; "&&1" takes the value in place.
+        CHECK(iw2::game::hudElemText("Left ", "0:08") == "Left 0:08");
+        CHECK(iw2::game::hudElemText("Count", "0:08") == "Count0:08");
+        CHECK(iw2::game::hudElemText("a &&1 b", "7") == "a 7 b");
+        CHECK(iw2::game::hudElemText("", "7") == "7");
+        CHECK(iw2::game::hudElemText("x &&1", "") == "x &&1");
         CHECK(iw2::game::localizeTextMessage("plain text", find) == "plain text");
     }
     return failures == 0 ? 0 : 1;

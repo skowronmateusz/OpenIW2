@@ -1,0 +1,98 @@
+// The client side of src/netgame/worldgame.cpp (docs/spec/net.md section 11): applies snapshots and server commands
+// to a remote World (World::mpStartRemote) so the front end draws the HUD, kill feed, chat and the other entities
+// exactly as in a local game.
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "game/world.h"
+#include "net/gameclient.h"
+#include "netgame/netmove.h"
+
+namespace iw2::netgame {
+
+class RemoteView {
+public:
+    // The remote world keeps the local view in client slot 0; the server's client 0 takes our own number's slot.
+    static int worldSlot(int client, int self) { return client == self ? 0 : client == 0 ? self : client; }
+    // The world slot of the local client's own body in a killcam replay (the server sends it as an entity then; slot 0
+    // stays the local view): one past the 64 wire client numbers.
+    static constexpr int kOwnBodySlot = 64;
+
+    // The view weapon is not drawn for pm_type 4 (spectator) and 5 (intermission): the MP view weapon function returns
+    // first thing on them (VAs in the patch 1.3 MP executable 0x4d6390..0x4d63ad), before cg_drawGun and the turret test.
+    static bool viewWeaponHidden(int pmType) { return pmType == 4 || pmType == 5; }
+    // Name and team number (0 none, 1 axis, 2 allies, 3 spectator) of server client `client` from the snapshot's client
+    // states, which list every connected client whether or not its entity is in the snapshot (scoreboard).
+    // False when the snapshot has no state for it.
+    static bool clientInfo(const net::ClientSnapshot& snap, int client, std::string& name, int& team);
+    // The other players between two snapshots (frac 0..1), for World::mpSetRemotePlayers.
+    static std::vector<game::World::RemotePlayer> players(const net::ClientSnapshot& a, const net::ClientSnapshot& b,
+                                                         float frac, int self, const std::map<int, std::string>& cs = {});
+    // Everything else of the newest snapshot: the local player's health, weapon, ammo and team, HUD elements,
+    // objectives, new obituary events and script models. worldTimeMs: the time the HUD and shell shock times are
+    // read on, at the moment of snap.serverTime (they are shifted from server time by the difference).
+    // Models with a trajectory (docs/spec/net.md section 11 "Trajectories") placed at time t, per rendered frame
+    // (after apply placed them at the snapshot time), from the older snapshot a of the pair around t; when the newer
+    // snapshot b carries a re-based trajectory (a bounce, a stop), a's trajectory ends where it reaches b's base and
+    // the model waits there until b's start time, as it did on the server.
+    static void placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t);
+    // The position of such a model at time t from the pair's two entity states (exposed for the tests). spanMs: the time
+    // between the two snapshots, the span in which the server may have re-based the path.
+    static void trajectoryAt(const std::vector<uint8_t>& ea, const std::vector<uint8_t>* eb, int t, float out[3], int spanMs);
+    void apply(game::World& w, const net::ClientSnapshot& snap, const std::map<int, std::string>& configstrings,
+               int self, int64_t worldTimeMs, PredictedAmmo* predicted = nullptr);
+    // Other players' weapons and their entity events (docs/spec/net.md section 13): each new event of a player's event ring
+    // is played once (World::mpRemotePlayerEvent). Call once per received snapshot.
+    void playerEvents(game::World& w, const net::ClientSnapshot& snap, const std::map<int, std::string>& configstrings, int self);
+    // The followed client's view (killcam, docs/spec/mp-hud.md "Killcam"): when the snapshot's player state has the
+    // follow bit (pm_flags 0x100000) the server sent another client's player state; the camera is its eye and view
+    // angles as sent (no prediction), interpolated between two such snapshots; when only one has the bit the view stays
+    // on that one's state (the first and last drawn frames of a replay). False without the bit in both.
+    static bool followView(const net::ClientSnapshot& a, const net::ClientSnapshot& b, float frac, float eye[3],
+                           float angles[3]);
+    static bool following(const net::ClientSnapshot& snap);
+    // The followed client's shots in a network killcam: each new fire event of the player state's event ring (+164..)
+    // is played once from the sent eye along the sent view (fire sound without a position, impacts, tracers;
+    // World::mpRemoteFollowShot) and counted for the view model's fire animation. nowMs: the client clock of the drawn frame.
+    // Call once per received snapshot.
+    void followEvents(game::World& w, const net::ClientSnapshot& snap, const std::map<int, std::string>& configstrings,
+                      int64_t nowMs);
+    // The killcam view of a network client for the view model and the HUD (the local killcam's World::MpKillcamView
+    // filled from the followed player state between a and b): eye, angles, weapon, hands, clip, stock, health, the
+    // recorded view state and event ring (docs/spec/mp-hud.md "The recorded view state"), the followed client's server
+    // client number in `client` (the copied player state's clientNum), and the shots counted by followEvents (since the
+    // killcam started). nowMs: the client clock of the drawn frame. inactive without the follow bit in a and b.
+    game::World::MpKillcamView killcamView(const net::ClientSnapshot& a, const net::ClientSnapshot& b, float frac,
+                                           const std::map<int, std::string>& configstrings, int64_t nowMs) const;
+    // The synced dvars of the gamestate (configstrings 142..237 names, values 96 later, docs/spec/net.md section 11):
+    // name -> value ("" when the value has no configstring). The client sets them as its dvars (the serverinfo menu
+    // reads ui_<gt>_scorelimit / ui_<gt>_timelimit from them).
+    static std::map<std::string, std::string> syncedDvars(const std::map<int, std::string>& configstrings);
+    // The local player's stance from the player state (pm_flags): 0 stand, 1 crouch, 2 prone.
+    static int stance(const net::ClientSnapshot& snap);
+
+private:
+    std::set<std::pair<int, int>> seenEvents_;  // (entity number, server time) of the events already played
+    int lastSnapshot_ = -1;
+    int lastEventSnapshot_ = -1;
+    bool lastEventsFollowing_ = false; // the follow bit of the last snapshot playerEvents saw
+    std::map<int, int> eventSeq_;  // client -> last event sequence played
+    std::map<int, int> turretSeq_; // turret wire number -> last event sequence played
+    int lastFollowSnapshot_ = -1;
+    int followSeq_ = -1;            // the followed player state's last event sequence played (-1: not following)
+    int followFires_ = 0;           // shots played since the killcam started
+    bool followLastShot_ = false;
+    int64_t followFireMs_ = -1;     // world time of the newest shot played
+};
+
+// The client command of a line typed into the message field (0x40ade0): `say` / `say_team` followed by 0x15 and the
+// text (docs/spec/net.md section 10).
+std::string sayCommand(bool team, const std::string& text);
+
+} // namespace iw2::netgame

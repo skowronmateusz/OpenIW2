@@ -354,7 +354,7 @@ Value World::attackerValue(Entity* attacker) {
 // otherwise, and with no weapon, the default table loaded from info/ai_lochit_dmgtable (0x527b30..0x527ba1:
 // "LOCDMGTABLE\name\value\..." for the 19 locations, initialised to 1.0 at 0x527a08). A key a weapon file leaves out
 // is taken as 1.0 (TODO(spec): [stays: the parser's default is not found; the 12 turret files omit the keys] the descriptor default).
-float World::hitLocationMultiplier(const Entity* attacker, const std::string& location) {
+float World::hitLocationMultiplier(const Entity* attacker, const std::string& location, const Entity* inflictor) {
     static const char* const kLocKeys[19] = {"none", "helmet", "head", "neck", "torso_upper", "torso_lower", "right_arm_upper",
                                              "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand", "left_hand",
                                              "right_leg_upper", "left_leg_upper", "right_leg_lower", "left_leg_lower",
@@ -363,15 +363,17 @@ float World::hitLocationMultiplier(const Entity* attacker, const std::string& lo
     for (int i = 0; i < 19; ++i)
         if (location == kLocKeys[i]) idx = i;
     if (attacker) {
-        const std::string w = lowerStr(attacker->obj->get("$weapon").toString());
+        // Multiplayer (0x8101bc9, 0x8101ae2): the weapon is the inflictor's, else the attacker's (a grenade's, a turret's).
+        const std::string w = lowerStr(mp_ ? damageWeapon(inflictor, attacker) : attacker->obj->get("$weapon").toString());
         const auto* def = w.empty() || w == "none" ? nullptr : weapon(w);
         if (def) {
             auto type = def->find("weapontype");
             if (type == def->end() || type->second.empty() || lowerStr(type->second) == "bullet") {
-                // Deliberate deviation (docs/spec/weapons.md): a helmet does not stop rifle ammunition, the head value applies.
+                // Deliberate deviation (docs/spec/weapons.md), single player only: a helmet does not stop rifle ammunition, the head
+                // value applies. The MP server reads the weapon's table as it is (docs/spec/mp-pmove.md "Bullets").
                 const auto rifleRound = def->find("riflebullet");
                 const auto cls = def->find("weaponclass");
-                const bool piercesHelmet = rifleRound != def->end() && std::atoi(rifleRound->second.c_str()) != 0 && cls != def->end() && lowerStr(cls->second) == "rifle";
+                const bool piercesHelmet = !mp_ && rifleRound != def->end() && std::atoi(rifleRound->second.c_str()) != 0 && cls != def->end() && lowerStr(cls->second) == "rifle";
                 if (idx == 1 && piercesHelmet) idx = 2;
                 std::string key = "loc";
                 for (const char c : std::string(kLocKeys[idx]))
@@ -384,7 +386,7 @@ float World::hitLocationMultiplier(const Entity* attacker, const std::string& lo
     if (!locDmgTableLoaded_) {
         locDmgTableLoaded_ = true;
         locDmgTable_.assign(19, 1.0f);
-        if (auto d = vfs_.read("info/ai_lochit_dmgtable")) {
+        if (auto d = vfs_.read(mp_ ? "info/mp_lochit_dmgtable" : "info/ai_lochit_dmgtable")) {
             const std::string text(d->begin(), d->end());
             std::vector<std::string> tok;
             size_t p = 0;
@@ -404,7 +406,9 @@ float World::hitLocationMultiplier(const Entity* attacker, const std::string& lo
 }
 
 void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir, const Vec3& point, const std::string& mod,
-                   const std::string& location, int dflags) {
+                   const std::string& location, int dflags, Entity* inflictor) {
+    // A network client's world only shows the game: the server applies all damage (docs/spec/net.md section 11).
+    if (mpRemote_) return;
     if (!takesDamage(target)) return;
     // 0x528050: an entity with vehicle info (ent+0x108) first asks the vehicle filter (0x5122f0) and leaves when it ignores
     // the means of death. The info is attached when a script_vehicle is initialised (0x50da80).
@@ -424,11 +428,12 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         amount = int(float(amount) * hitLocationMultiplier(attacker, location));
         if (amount <= 0) return;
     }
-    // 0x52814d / 0x52815b: a client in noclip (+0x8628) or ufo (+0x862c) leaves here, before the knockback.
-    if (target.isPlayer && (noclip_ || ufo_)) return;
+    // 0x52814d / 0x52815b: a client in noclip (+0x8628) or ufo (+0x862c) leaves here, before the knockback. The cheat flags and the
+    // knockback queue below belong to the host's own player; the other clients of a multiplayer game are not pushed here.
+    if (&target == player_ && (noclip_ || ufo_)) return;
     // Knockback (0x528187..0x5282ac, docs/spec/weapons.md "Damage knockback"): it runs before the god check, so a god player is
     // still pushed. The player state belongs to the host, which applies the queued hit before its next move (applyKnockback).
-    if (target.isPlayer && isAlive(target) && !playerOnTurret() && (dir[0] != 0 || dir[1] != 0 || dir[2] != 0))
+    if (!mp_ && &target == player_ && isAlive(target) && !playerOnTurret() && (dir[0] != 0 || dir[1] != 0 || dir[2] != 0))
         playerKnockbacks_.push_back({amount, dir, attacker == &target && selfBlastMod(modNumber(mod))});
     // FL_GODMODE (entity flags +0x128 bit 1, toggled by the "god" cheat 0x4e9f90): G_Damage skips the damage (0x5282b3), on any entity.
     if (target.obj->get("$godmode").truthy()) return;
@@ -461,6 +466,16 @@ void World::damage(Entity& target, Entity* attacker, int amount, const Vec3& dir
         vm_.notify(target.obj, "damage", {Value(int32_t(amount)), attackerValue(attacker), Value(dir), Value(point), Value(mod)});
         if (health < 1) vm_.notify(target.obj, "death", {attackerValue(attacker), Value(mod)});
         if (target.classname == "trigger_damage") triggerDamageHit(target, attacker, amount, mod); // entity type 8 pain / die
+        return;
+    }
+    // Multiplayer: a client's damage goes to CodeCallback_PlayerDamage (0x8101b40 -> 0x81183b8, docs/spec/mp.md); the gametype
+    // applies it with finishPlayerDamage. The amount is scaled by the location multiplier of the inflictor's weapon, truncated, and
+    // a result of 0 or less does nothing (0x8101bc9..0x8101c02).
+    if (mp_ && target.isPlayer) {
+        Entity* inf = inflictor ? inflictor : attacker;
+        const int scaled = int(float(amount) * hitLocationMultiplier(attacker ? attacker : inf, location, inf));
+        if (scaled <= 0) return;
+        mpPlayerDamage(target, inf, attacker, scaled, dflags, mod, damageWeapon(inf, attacker), point, dir, location);
         return;
     }
     // 0x5282e7 -> 0x4ff360: an actor held by the animscripted or negotiation state survives a lethal hit at 1 health. The
@@ -685,13 +700,38 @@ TraceResult World::locationalTrace(const Vec3& start, const Vec3& end, uint32_t 
 
 // Fires a weapon bullet from `start` towards `end`: world geometry blocks, the first sentient hit takes damage.
 // `damageAmount` is the fallback when the weapon (weaponName, else the shooter's own) has no definition.
+bool World::mpSameTeam(const Entity& a, const Entity& b) const {
+    if (!a.isPlayer || !b.isPlayer) return false;
+    const std::string ta = a.obj->get("sessionteam").toString();
+    return !ta.empty() && ta != "none" && ta == b.obj->get("sessionteam").toString();
+}
+
+// The weapon of a damage (MP player damage 0x8101b40): the inflictor's entity weapon, else the attacker's, else none. A
+// grenade or rocket entity carries the weapon it was fired as, a turret its turret weapon, a client the weapon it holds
+// (docs/spec/mp.md).
+std::string World::damageWeapon(const Entity* inflictor, const Entity* attacker) const {
+    for (const Entity* e : {inflictor, attacker}) {
+        if (!e) continue;
+        if (e->grenade) return e->grenade->weapon;
+        if (e->rocket) return e->rocket->weapon;
+        if (e->turret) return e->turret->weapon; // a turret's bullets (the turret is the inflictor, 0x810a982)
+        const Value w = e->obj->get("$weapon");
+        return w.isString() && !w.asString().empty() ? w.asString() : std::string("none");
+    }
+    return "none";
+}
+
 Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, int damageAmount, Entity* attacker,
                           const std::string& weaponName, int depth, float damageScale, const Entity* passEntity) {
     // More than 12 passes: the exe prints an error and fires nothing (0x531343 / 0x531356).
     if (depth > 12) return nullptr;
+    const int baseDamage = damageAmount;
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
     const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
     const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
+    // Multiplayer turret fire (0x810a982 -> 0x8120484 in the 1.3 Linux dedicated server): the bullet uses the turret's weapon
+    // (its rifleBullet / armorPiercing, means of death and pass-through). TODO(spec): the same for the SP turret shot.
+    if (mp_ && shooter.turret && !weaponName.empty()) def = weapon(weaponName);
     bool rifle = false;
     if (def) {
         auto it = def->find("riflebullet");
@@ -703,7 +743,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     TraceResult tr;
     Entity* hit = nullptr;
     Vec3 from = start;
-    const Entity* pass = passEntity ? passEntity : &shooter;
+    const Entity* pass = passEntity ? passEntity : &shooter; // a pass-through skips the entity it went through
     for (int teammates = 0; teammates <= 12; ++teammates) {
         tr = locationalTrace(from, end, Contents::BulletMask, pass, rifle ? kHitPriorityRifle : kHitPriorityDefault, location);
         hit = tr.entity >= 0 ? entityByNumber(tr.entity) : nullptr;
@@ -727,10 +767,10 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     // 0x5314ac: the trigger_damage brushes the shot crosses (start -> impact) are hit with the weapon's damage.
     triggerDamageSegment(attacker ? attacker : &shooter, start, tr.endPos, damageAmount, rifle ? 2 : 1);
     bulletImpact(shooter, def, start, end, tr, hit);
-    if (depth == 0) {
+    if (depth == 0) { // a pass-through or penetration continuation is the same shot
         ++stats.shots;
         noteAiShot(shooter, attacker);
-        if (def) playWeaponFireSound(shooter, *def, start, playerLastShot_);
+        if (def && !suppressFireSound_) playWeaponFireSound(shooter, *def, start, playerLastShot_, weaponName);
     }
     // Penetration (0x531665): a hit on contents 0x10 goes on from just behind the hit point towards the same end with the
     // next depth and applies no damage here: start = hit + dir · t, t = 0.25 / cosθ (cosθ = −dir·normal) when cosθ >= 0.125,
@@ -757,14 +797,15 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
         if (shooter.isActor && link != links_.end() && link->second.parent == hit->number)
             return fireBullet(shooter, hitPoint, end, damageAmount, attacker, weaponName, depth + 1, damageScale, hit);
         // 0x53186f: a hit on the player counts only within 8 units of the player's vertical axis, measured across the
-        // shot in the horizontal plane; farther out the bullet goes on from the hit point ignoring the player.
-        if (hit->isPlayer && bulletMissesPlayerAxis(dir, sub(hitPoint, hit->obj->get("origin").asVector())))
+        // shot in the horizontal plane; farther out the bullet goes on from the hit point ignoring the player. Single player
+        // only: the MP server has no such test (docs/spec/mp-pmove.md "Bullets").
+        if (!mp_ && hit->isPlayer && bulletMissesPlayerAxis(dir, sub(hitPoint, hit->obj->get("origin").asVector())))
             return fireBullet(shooter, hitPoint, end, damageAmount, attacker, weaponName, depth + 1, damageScale, hit);
         ++stats.hits;
         // Damage by weapon, target and distance start → impact (0x531090, called at 0x531787).
         const auto* dmgDef = weaponName.empty() ? def : weapon(weaponName);
         if (dmgDef) damageAmount = bulletDamageAtDistance(*dmgDef, hit->isPlayer, len(sub(tr.endPos, start)));
-        const int scaled = int(float(damageAmount) * damageScale); // the pass's scale, truncated (0x531797)
+        const int scaled = int(float(damageAmount) * damageScale); // the pass's scale (1 for a fresh shot), truncated (0x531797)
         // Bullet_Fire_Extended (0x531379..0x5313a3): rifleBullet (weapon +0x31c) gives MOD_RIFLE_BULLET and dflags 0x40, else
         // MOD_PISTOL_BULLET and 0; armorPiercing (+0x320) adds dflags 2.
         bool ap = false;
@@ -772,11 +813,23 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
             auto apIt = def->find("armorpiercing");
             ap = apIt != def->end() && std::atoi(apIt->second.c_str()) != 0;
         }
+        // Multiplayer (docs/spec/mp-pmove.md, "Bullets"): rifleBullet gives dflags 0x20 (the gametypes' iDFLAGS_PASSTHRU) instead
+        // of 0x40. A turret's bullet names the turret as the inflictor.
         damage(*hit, attacker, scaled, dir, tr.endPos, rifle ? "MOD_RIFLE_BULLET" : "MOD_PISTOL_BULLET", hitLocationName(location),
-               (rifle ? 0x40 : 0) | (ap ? 2 : 0));
+               bulletDamageFlags(rifle, ap, mp_ != nullptr), shooter.turret ? &shooter : nullptr);
         // 0x531938: a rifleBullet hit on an entity that still has a sentient (a dying actor keeps it) goes on from the hit
-        // point ignoring that entity with half the damage scale.
-        if (rifle && isSentient(*hit)) fireBullet(shooter, hitPoint, end, damageAmount, attacker, weaponName, depth + 1, damageScale * 0.5f, hit);
+        // point ignoring that entity with half the damage scale; each pass measures its distance damage from its own start.
+        // Multiplayer pass-through (the same rule for a hit client): not when scr_friendlyfire is 0 and the client is on the
+        // attacker's team.
+        if (rifle && (isSentient(*hit) || (mp_ && hit->isPlayer))) { // every MP client, alive or not (docs/spec/mp-pmove.md)
+            bool passThrough = true;
+            if (mp_ && hit->isPlayer) {
+                const auto ff = cvars.find("scr_friendlyfire");
+                const bool ffOff = ff == cvars.end() || std::atoi(ff->second.c_str()) == 0;
+                passThrough = !(ffOff && attacker && mpSameTeam(*hit, *attacker));
+            }
+            if (passThrough) fireBullet(shooter, hitPoint, end, baseDamage, attacker, weaponName, depth + 1, damageScale * 0.5f, hit);
+        }
     }
     return hit;
 }
@@ -797,6 +850,7 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
 void World::bulletImpact(Entity& shooter, const std::map<std::string, std::string>* def, const Vec3& start,
                          const Vec3& end, const TraceResult& tr, Entity* hit) {
     if (!(tr.fraction < 1.0f) || (tr.surfaceFlags & 4)) return;
+    const bool killcam = mp_ && mpLocalInKillcam();
     if (hit && isSentient(*hit) && shooter.isActor && hit->obj->get("team").toString() == shooter.obj->get("team").toString()) return;
     int surface = int((tr.surfaceFlags >> 20) & 0x1f);
     if (hit && isSentient(*hit) && surface == 0) surface = 7;
@@ -823,7 +877,10 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
         }
         // No tracer for eType 1 (players, above) nor eType 0xc (live vehicles: the vehicle spawn 0x50d863 stores 0xc, the
         // dead vehicle is 0xb); actors are 9 and draw tracers (after the cg_tracerchance roll in the viewer).
-        if (!shooter.vehicle) tracerEvents_.push_back({from, at});
+        if (!shooter.vehicle) {
+            mpArchiveEvent({ArchivedEvent::Tracer, {}, {}, from, at});
+            if (!killcam) tracerEvents_.push_back({from, at});
+        }
         // 0x4b79f0 (always called from 0x4b8140, also for eType 1 / 0xc): the "whizby" alias (0xf5bc64) plays, with entity
         // number 0x7fe, 16 units back along the path from the closest point to the view origin when that point is at
         // least 64 units from both the start and the end of the path and within 140 units of the view.
@@ -840,18 +897,24 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
                     const Vec3 q = add(from, scale(dir, t));
                     if (len(sub(q, view)) <= 140.0f) {
                         const Vec3 at16 = sub(q, scale(dir, 16.0f));
-                        startSound("whizby", &at16);
+                        if (!killcam) startSound("whizby", &at16);
                     }
                 }
             }
         }
     }
+    // The killcam (docs/spec/mp-hud.md "Killcam"): the events are archived with the server frame and replayed from the
+    // archive; a client in the killcam does not see the live ones.
+    auto impactSound = [&](const std::string& alias) {
+        mpArchiveEvent({ArchivedEvent::Sound, alias, {}, at, {}, -1, -1});
+        if (!killcam) startSound(alias, &at);
+    };
     if (hit && hit->isPlayer) {
-        startSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
+        impactSound(std::string(rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface]);
         return;
     }
     const int type = ap ? 6 : rifle ? 2 : 0;
-    startSound(std::string(ap ? "bullet_ap_" : rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface], &at);
+    impactSound(std::string(ap ? "bullet_ap_" : rifle ? "bullet_large_" : "bullet_small_") + kSurfaceAlias[surface]);
     const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
     Vec3 d = sub(end, start);
     const float l = len(d);
@@ -873,9 +936,13 @@ void World::bulletImpact(Entity& shooter, const std::map<std::string, std::strin
             lastBloodMs_ = timeMs_;
         }
     }
-    if (!normalFx.empty()) fxEvents_.push_back({normalFx, at, n});
-    if (!reflectFx.empty()) fxEvents_.push_back({reflectFx, at, reflect});
-    if (const std::string mark = impactMarkFallback(type, surface); !mark.empty()) fxEvents_.push_back({mark, at, n, -1, {}, false, true});
+    for (const auto& [fx, dirv] : {std::pair<const std::string&, Vec3>{normalFx, n}, {reflectFx, reflect}}) {
+        if (fx.empty()) continue;
+        mpArchiveEvent({ArchivedEvent::Fx, fx, {}, at, dirv});
+        if (!killcam) fxEvents_.push_back({fx, at, dirv});
+    }
+    // The mark the effect data omits (docs/spec/material.md, impactMarkFallback): a mark-only event, not part of the killcam archive.
+    if (const std::string mark = impactMarkFallback(type, surface); !mark.empty() && !killcam) fxEvents_.push_back({mark, at, n, -1, {}, false, true});
     ++stats.bulletImpacts;
 }
 
@@ -908,7 +975,17 @@ int World::weaponDamage(const std::string& weaponName) {
 // is the base, the player's fireSoundPlayer (0xf48e64) replaces it only when set, and on the last round of the clip
 // lastShotSoundPlayer (0xf48e6c, player) or lastShotSound (0xf48e68) replaces that when set. A weapon without a player variant
 // (panzerschreck, panzerfaust) therefore plays its fireSound for the player too.
-void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot) {
+void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std::string>& def, const Vec3& start, bool lastShot,
+                                const std::string& weaponName) {
+    // The fire event of an MP player (EV_FIRE_WEAPON / _LASTSHOT): counted for the network game's entity events.
+    if (mp_ && !mpRemote_ && shooter.isPlayer)
+        if (const int c = mpClientOf(shooter); c >= 0) {
+            ++mp_->clients[size_t(c)].fireCount;
+            mp_->clients[size_t(c)].lastShot = lastShot;
+            mp_->clients[size_t(c)].animInput.fired = true; // the third-person fire animation (the local client's body in the killcam)
+            mp_->clients[size_t(c)].events.push(lastShot ? mpev::kFireWeaponLastShot : mpev::kFireWeapon,
+                                                weaponName.empty() ? shooter.obj->get("$weapon").toString() : weaponName);
+        }
     const auto field = [&](const char* k) -> const std::string* {
         auto it = def.find(k);
         return it != def.end() && !it->second.empty() ? &it->second : nullptr;
@@ -925,21 +1002,45 @@ void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std
     float seconds = 0;
     // The owner is the shooter's entity number (0x4b7800 pushes word [es+8] as the owner of 0x4a35c0 -> 0x4423d0): the weapon channel then
     // replaces the shooter's previous shot (0x44250a -> 0x441b50), so a burst holds one sample slot.
-    playSound(*snd, shooter.isPlayer ? nullptr : &start, &seconds, shooter.number);
+    // Multiplayer: only the local client's own shots are its "player" sound without a position; another client's shot is a
+    // positional entity sound (docs/spec/mp-hud.md).
+    const bool localShooter = shooter.isPlayer && (!mp_ || &shooter == player_);
+    if (mp_ && shooter.isPlayer) // heard by the bots (docs/spec/mp-bots.md "Memory and hearing")
+        if (const int cl = mpClientOf(shooter); cl >= 0) {
+            mp_->clients[size_t(cl)].lastShotMs = timeMs_;
+            mp_->clients[size_t(cl)].lastShotPos = start;
+        }
+    // Archived for the killcam (the replay plays the followed client's own shots without a position).
+    if (mp_ && shooter.isPlayer) mpArchiveEvent({ArchivedEvent::Sound, *snd, {}, start, {}, mpClientOf(shooter), shooter.number});
+    if (!(mp_ && mpLocalInKillcam())) playSound(*snd, localShooter ? nullptr : &start, &seconds, shooter.number);
     // EV_FIRE_WEAPON (0x4b7800): for an actor (entity type 9, 0x4b79ac) whose fire alias resolved (0x4b792a), 0x4c0e20 pings
     // the compass with the length of the started sound (0x4a35c0 -> 0x4423d0, ms) at the sound position (0x4b79b7).
     if (!shooter.isPlayer && shooter.obj->kind == "actor") compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
+    // MP (0x4d72a3 -> 0x4daed0): a player entity's fire sound pings the compass too, except for the local client.
+    else if (mp_ && shooter.isPlayer && !localShooter) compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
 }
 
 Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, float spreadDeg, const Vec3& gunOffset) {
-    if (!player_ || !isAlive(*player_)) return {0, 0, 0};
+    if (!player_) return {0, 0, 0};
+    return clientFire(*player_, eye, forward, lastShot, spreadDeg, gunOffset);
+}
+
+Vec3 World::clientFire(Entity& shooter, const Vec3& eye, const Vec3& forward, bool lastShot, float spreadDeg, const Vec3& gunOffset) {
+    // The muzzle point is the eye (0x4e8b70) plus the usercmd gun offset (0x531bff, client +0x864c..0x8654). The caller supplies the
+    // forward and offset of the command's gun pose (computeGunAim, docs/spec/weapons.md); a network client's or bot's command carries
+    // the view angles and no offset.
+    return fireWeaponShot(shooter, std::string(), add(eye, gunOffset), forward, lastShot, spreadDeg);
+}
+
+Vec3 World::fireWeaponShot(Entity& shooter, const std::string& weaponName, const Vec3& origin, const Vec3& forward, bool lastShot,
+                           float spreadDeg) {
+    if (!isAlive(shooter)) return {0, 0, 0};
     playerLastShot_ = lastShot;
-    const Value w = player_->obj->get("$weapon");
+    const Value held = shooter.obj->get("$weapon");
+    const Value w = weaponName.empty() ? held : Value(weaponName);
+    const std::string wn = w.isString() ? w.asString() : std::string();
     // FireWeapon (0x531c40) dispatches on weaponType (+0x78): 0 bullet (0x5312b0), 1 grenade (0x531990), 2 projectile
-    // (0x531a40 -> G_FireRocket 0x527810). The muzzle point is the eye (0x4e8b70) plus the usercmd gun offset (0x531bff,
-    // client +0x864c..0x8654), the axes come from AngleVectors of the gun angles (0x531b90): forward, right, up. The caller
-    // supplies the forward and offset of the command's gun pose (computeGunAim, docs/spec/weapons.md).
-    const Vec3 origin = add(eye, gunOffset);
+    // (0x531a40 -> G_FireRocket 0x527810). The axes come from AngleVectors of the gun angles (0x531b90): forward, right, up.
     const float pitch = -std::asin(std::clamp(forward[2], -1.0f, 1.0f)) * 180.0f / float(M_PI);
     const float yaw = std::atan2(forward[1], forward[0]) * 180.0f / float(M_PI);
     const Axis axes = anglesAxis({pitch, yaw, 0});
@@ -951,18 +1052,46 @@ Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, floa
     const float dx = std::cos(ang) * rad, dy = std::sin(ang) * rad;
     const float t = std::tan(spreadDeg * 0.01745329238474369f);
     const auto offset = [&](float k) { return spreadDiscOffset(axes, dx * t * k, dy * t * k); };
-    if (w.isString() && weaponField(w.asString(), "weaponType") == "projectile") {
+    if (!wn.empty() && weaponField(wn, "weaponType") == "projectile") {
         Vec3 dir = add(axes[0], offset(1.0f));
         const float l = len(dir);
         if (l > 0) dir = scale(dir, 1.0f / l);
-        spawnRocket(*player_, w.asString(), origin, dir);
-        if (const auto* wd = weapon(w.asString())) playWeaponFireSound(*player_, *wd, origin, lastShot); // EV_FIRE_WEAPON also for projectiles
+        spawnRocket(shooter, wn, origin, dir);
+        if (const auto* wd = weapon(wn)) playWeaponFireSound(shooter, *wd, origin, lastShot, wn); // EV_FIRE_WEAPON also for projectiles
         playerLastShot_ = false;
         // 0x531b1b: the shooter's velocity loses the unperturbed forward * 64 (0x56f6e0); the caller owns the velocity.
         return scale(axes[0], 64.0f);
     }
-    const int dmg = weaponDamage(w.isString() ? w.asString() : "kar98k");
-    fireBullet(*player_, origin, add(add(origin, scale(axes[0], 8192.0f)), offset(8192.0f)), dmg, player_);
+    const int dmg = weaponDamage(!wn.empty() ? wn : "kar98k");
+    // The antilag rewind around the bullet traces (0x8120484 -> 0x811fc76 / 0x811fdec; docs/spec/mp-hud.md "Antilag").
+    struct AntilagScope {
+        World& w;
+        explicit AntilagScope(World& w_) : w(w_) { if (w.fireAntilagTime >= 0) w.mpAntilagRewind(w.fireAntilagTime); }
+        ~AntilagScope() { w.mpAntilagRestore(); }
+    } antilag(*this);
+    // weaponClass "spread" (weapondef +0x7c == 3; the multiplayer shotgun, docs/spec/mp-pmove.md "Spread weapons"): shotCount
+    // (+0x1dc) pellets, each with its own disc offset of the same spread angle and a range of minDamageRange (+0x59c) instead
+    // of 8192; every pellet is a full bullet with the distance damage. The shot sends one fire event (one sound).
+    if (!wn.empty() && lowerStr(weaponField(wn, "weaponClass")) == "spread") {
+        const int count = std::atoi(weaponField(wn, "shotCount").c_str());
+        const float range = float(std::atof(weaponField(wn, "minDamageRange").c_str()));
+        for (int i = 0; i < count; ++i) {
+            if (i > 0) { // the first pellet uses the disc drawn above; later ones draw their own (angle, then radius)
+                const float a2 = float(nextRand()) * 0.010986328125f * 0.01745329238474369f;
+                const float r2 = float(nextRand()) * 3.0517578125e-05f;
+                const float px = std::cos(a2) * r2 * t * range, py = std::sin(a2) * r2 * t * range;
+                suppressFireSound_ = true;
+                fireBullet(shooter, origin, add(add(origin, scale(axes[0], range)), add(scale(axes[1], px), scale(axes[2], py))), dmg,
+                           &shooter, wn);
+                suppressFireSound_ = false;
+            } else {
+                fireBullet(shooter, origin, add(add(origin, scale(axes[0], range)), offset(range)), dmg, &shooter, wn);
+            }
+        }
+        playerLastShot_ = false;
+        return {0, 0, 0};
+    }
+    fireBullet(shooter, origin, add(add(origin, scale(axes[0], 8192.0f)), offset(8192.0f)), dmg, &shooter, wn);
     playerLastShot_ = false;
     return {0, 0, 0};
 }
@@ -1217,8 +1346,8 @@ void World::registerCombatBuiltins() {
     // (events 0x8c..0x8e, 0x509eea / 0x50a2f3) in the front end's pmove.
     const std::pair<const char*, uint32_t> allows[] = {{"allowstand", 0x400000u}, {"allowcrouch", 0x800000u}, {"allowprone", 0x1000000u},
                                                       {"allowleanleft", 0x2000000u}, {"allowleanright", 0x4000000u}};
-    for (const auto& [name, bit] : allows)
-        vm_.registerBuiltin(name, [this, playerSelf, bit](CallContext& c) {
+    for (const auto& allow : allows)
+        vm_.registerBuiltin(allow.first, [this, playerSelf, bit = allow.second](CallContext& c) {
             playerSelf(c);
             if (c.arg(0).isNumber() && c.arg(0).asInt() != 0) pmFlags_ &= ~bit;
             else pmFlags_ |= bit;
@@ -1697,4 +1826,13 @@ void World::damageFeedback() {
     damageBlood_ = 0;
 }
 
+} // namespace iw2::game
+
+namespace iw2::game {
+std::pair<int, std::string> World::debugBulletLocation(const Vec3& start, const Vec3& end, const Entity* pass) {
+    syncEntityClips();
+    int loc = 0;
+    const TraceResult tr = locationalTrace(start, end, Contents::BulletMask, pass, kHitPriorityDefault, loc);
+    return {tr.entity, hitLocationName(loc)};
+}
 } // namespace iw2::game

@@ -273,6 +273,14 @@ impulse of the player weapon is zero for them.
   0x14 / 0x15 / 0x16 inside plain text is the error "bad escape character (%i) present in string" (checked before the first
   letter, 0x4eb860). Plain text with letters warns (error with dvar `loc_warningsAsErrors`; both default 0) and with dvar
   `loc_warnings` gets the prefix "UNLOCALIZED: ". Bytes outside 0x1f..0x7f are copied as `.`.
+- Entity arguments (iprintln / iprintlnbold, e.g. the connected message; MP builder 0x504700 in the patch 1.3 MP executable): a
+  value of type entity (type 1) must be a player (class check 0x483490 == 0x15, otherwise a script error; the player-less
+  case reports the message at 0x5bb5dc) and contributes its name followed by `^7` (format 0x5abf38, client name at +0x2784). That branch only
+  runs the length check and the 0x15 introducer (0x5048c7) and then jumps straight to the byte copy (0x5049f1 / 0x5049fa): it
+  skips the bad-escape check, the letter check with its warning (0x504905..0x504998) and the UNLOCALIZED prefix, so a player
+  name never warns. The copy still replaces 0x14 / 0x15 / 0x16 with `.`. Only plain string values go through the letter
+  check. `HintArg::entityName` marks such an argument; sethintstring (turrets) passes plain script values, an entity there is not a
+  string and is not given this treatment.
 - The text goes into one of 32 configstrings (0x4cd + slot, 0x4f0da0): the first empty slot, or the slot already holding the
   same text; when all 32 differ the error "Too many different hintstring values. Max allowed is 32 different strings" is raised and
   the index stays -1. The table is shared with the weapons' useHintString / dropHintString that G_RegisterWeapon (0x522ba0)
@@ -297,6 +305,77 @@ The shake (0x4bf540 elapsed time, 0x4bf700 sine phase T) reads the client time 0
 evaluates ViewShake at the render time of each frame (`clientRenderTimeMs`: server time - 50 + interpolation fraction * 50), not at the 20 Hz
 server time; the offset then changes smoothly between server steps (tested in test_recoil).
 
+## Field of view on a turret
+
+CG_CalcFov (0x4ae7b0) first computes the weapon's aim zoom and then, while the player's eFlags carry 0x300 (on a turret,
+0xf70964), replaces the result by the constant 55 (0x592078). Mounting a turret while aiming therefore drops the aim zoom,
+and every turret view uses 55. The aim fraction itself is untouched (PM_Weapon does not run on a turret) and resumes after
+dismounting. openiw2: `game::viewFov` (src/game/viewweapon.h), used by iw2view in single-player and multiplayer; test
+`tests/test_recoil.cpp`.
+
+## Scope overlay on a turret
+
+The scope overlay (0x4bcdd0, drawing through 0x4bca90) has only callers inside the crosshair draw 0x4bd760 (and its helpers
+0x4bd000 / 0x4bd520). 0x4bd760 takes the hand-weapon path, which is the only one that reaches the overlay for a hand weapon,
+only while eFlags (0xf70964) carry none of 0x300; on a turret it draws the turret reticle (0x4bcef0) instead. The aim fraction
+is not reset (see above), so a sniper overlay disappears on mounting and comes back on dismounting while the player still aims.
+openiw2: `game::scopeOverlayAlpha` (src/game/viewweapon.h), applied to every overlay-alpha use in iw2view (SP and MP);
+test `tests/test_recoil.cpp`. TODO(spec): in a vehicle 0x4bd000 draws the overlay only for a value of 0xf7099c in 17..22,
+not modelled.
+
+## Multiplayer
+
+VAs in the 1.3 Linux dedicated server. Every client can be on a map turret: the server keeps the turret use state per
+client (the player-state fields that the SP game keeps for its single player). The positioning of a client behind the gun
+(0x810aa50, which warns when `tag_weapon` is missing) reads the client of the turret's owner through the client array.
+
+Turret shot (0x810a982): the attacker is the turret's user, or the world entity when nobody is on it. The bullet
+(0x8120484 -> 0x811fe90, `Bullet_Fire_Extended`) takes the turret's weapon definition (rifleBullet, armorPiercing, damage,
+range) and gets the turret entity itself as the inflictor. Event 0xaf (EV_FIRE_WEAPON_MG42) is sent on the turret. The
+player damage (0x8101b40) takes the weapon from the inflictor's entity weapon (+200), so `CodeCallback_PlayerDamage`, the
+death and the obituary name the turret weapon (for example `mg42_bipod_stand_mp`), not the gunner's weapon in hand, and
+the means of death follows the turret weapon's rifleBullet (`MOD_RIFLE_BULLET` for the shipped MP turrets). The weapon
+class settings (`scr_allow_*`) only control the menu weapons; they do not touch turrets.
+
+openiw2: the local player uses the turret code of the SP game; a non-local client (network client) uses the same use,
+think and release with its own state (`MpClient::turretUse`) swapped in once per server frame (src/game/mpturret.cpp): a
+use press (+activate or +usereload) on a usable turret mounts it, the server then holds the client 34 units behind the
+gun, aims the turret from the client's usercmd angles, fires with attack every fireTime, and releases it on a second
+press, on death and on disconnect. While the client is on a turret, its usercmds move nothing and fire no hand weapon.
+The turret is the inflictor of its bullets (`World::fireBullet`, `World::damageWeapon`). Test `tests/test_mpturretdamage.cpp`.
+
+What the client learns (VAs in the 1.3 Linux dedicated server; player-state offsets are the wire offsets of net.md):
+- Getting on (0x810c3de): viewLockMode (ps+0x590) is set to 1 and viewLockEntity (ps+0x594) to the turret's entity
+  number; the eFlags (ps+0xa0) get 0x100 for a prone turret stance, 0x200 for crouch and 0x300 for stand. Each think
+  sets viewLockMode back to 1 (0x810b8a3) and to 2 right after a shot (0x810b83f). Getting off (0x810ba83..0x810bac2)
+  clears the 0x300 bits, viewLockMode to 0 and viewLockEntity to 1023.
+- The turret's aim (pitch and yaw relative to its angles, after the arc clamp) is kept in the turret entity's angles2
+  [0] and [1] (written by the turret code at 0x810b729..0x810b79d and 0x810c562..0x810c5d6), so it reaches every client.
+- A shot (0x810a982, at 0x810aa3a) adds the event 0xaf (EV_FIRE_WEAPON_MG42) to the turret entity, its parm the gunner's
+  entity number. The bullet's damage is the server's. The 1.3 MP client's fire event handler (VAs in the patch 1.3 MP
+  executable, 0x4d7143..0x4d7197) takes an eType 9 entity as a turret, marks it as its own when the player state has a
+  0x300 bit and viewLockEntity is that entity, and plays the muzzle flash (0x4d5c50) with that flag. openiw2: the
+  server keeps a four-event ring per turret in the turret's entity state (eventSequence, events, eventParms); the
+  front end runs each new 0xaf as the turret's shot without damage (`World::mpRemoteTurretFire`: flash bolted on
+  tag_flash, view shake, impact of its own trace from tag_flash, fire countdown), and the fire loop / cooldown sounds
+  follow for its own turret (player sounds) and other turrets. TODO(spec): the own-turret flag's effect inside
+  0x4d5c50, the original's bullet hit events (the client traces instead), the event parm without a gunner (1022 sent).
+  The ammo counter keeps the hand weapon: the server does not change ps.weapon on a turret (no write in 0x810a708..
+  0x810c5f0); TODO(spec): whether the client ammo ownerdraw hides itself on a turret.
+- The player state to entity state copy (0x80dfe64) copies eFlags, and with any 0x300 bit set puts viewLockEntity in
+  the entity's otherEntityNum: the other clients see who is on which turret.
+
+openiw2 sends these fields from the per-client turret state (for a dedicated server's client 0, whose player state is
+the World's own, from the World's player fields). The network front end (src/netgame/remoteview.cpp) maps
+viewLockEntity to its copy of the map turret and calls `World::mpSetRemoteTurret`: the local turret view, eye, HUD,
+view clamp (the arcs as when getting on) and jitter follow, the hand weapon is hidden, and the client World runs no
+turret think of its own. The prediction runs no command while the eFlags have a 0x300 bit (the server holds the
+player behind the gun), and iw2view keeps sending its commands on the turret (angles and buttons only). A client on a
+dedicated server whose MP client is 0 runs its use through the World's player use with its usercmd. Test
+`tests/test_mpturretview.cpp` (listen and dedicated, UDP).
+TODO(spec): the client's own movement code for the 0x300 bits (it is not read; openiw2 skips the move); the third-person
+animation of another client on a turret (otherEntityNum is sent, not used). The SP turret shot still uses the
+shooter's own weapon definition for the bullet type (the same Bullet_Fire_Extended arguments are expected but were not compared).
 The first-person camera impulses use the same client time: the landing stamp (0x4babdb) and the dip curve (0x4ae62f), the
 step offset (0x4baca5, 0x4addb1) and the damage kick (0x4ba2a7, 0x4ae3ce). OpenIW2 stamps and evaluates all three at
 `clientRenderTimeMs`, so the landing dip moves every drawn frame instead of in 50 ms steps (tested in test_viewimpulses).

@@ -55,10 +55,14 @@ public:
     // Loads every soundaliases/*.csv; rows whose loadspec excludes `level` (or names other levels) are skipped.
     // Adds the aliases allowed for `level`. With `menuOnly` only rows whose loadspec names "menu" are taken (the front-end and
     // pause-menu sounds).
-    void load(const fs::Vfs& vfs, const std::string& level, bool menuOnly = false);
+    // modeTag: the whole-mode loadspec ("all_sp" in single player, "all_mp" in multiplayer; docs/spec/sound.md).
+    void load(const fs::Vfs& vfs, const std::string& level, bool menuOnly = false, const std::string& modeTag = "all_sp");
     // The aliases of a level start: the level's own rows plus the interface rows (loadspec "menu") that the pause menu plays
     // in game. Every level start (first map, restart, level change) must go through this, see docs/spec/sound.md.
-    void loadLevel(const fs::Vfs& vfs, const std::string& level) { load(vfs, level); load(vfs, "menu", true); }
+    void loadLevel(const fs::Vfs& vfs, const std::string& level, const std::string& modeTag = "all_sp") {
+        load(vfs, level, false, modeTag);
+        load(vfs, "menu", true, modeTag);
+    }
     void clear() { aliases_.clear(); }
     // One of the variants with this name (random), nullptr if unknown.
     const SoundAlias* pick(const std::string& name, std::mt19937& rng) const;
@@ -122,6 +126,8 @@ public:
 
     // Starts an alias; `origin` empty plays it at full volume without panning. Returns a handle (0 = nothing).
     int play(const std::string& alias, std::optional<Vec3> origin = std::nullopt, float* duration = nullptr, PlayOptions opt = {});
+    // Debug (iw2view IW2_SOUND_LOG=1): prints `[snd] <alias>` for every play() request (`(unknown)` / `(culled)` when nothing starts).
+    bool logPlays = false;
     // Frame sweep (0x443510..0x4436bc, called once per client frame; not while paused): stops every refresh-mode loop whose stamp is not the
     // previous sweep's time, then makes `soundTimeMs` (0x793db4) the stamp new/refreshed loops get (0x793db8).
     void sweepLoops(int soundTimeMs);
@@ -134,7 +140,9 @@ public:
     // Stop-all (0x444730): ends every voice except the groups named in `flags` (StopAllFlags), at once and without a fade, and
     // deactivates the reverb layers 1 and 2 unless kKeepReverb. The volume slots are the caller's (ChannelVolumeSlots::clearAll).
     // Runs on every level load (0x40c9c0 at the start of the map load, the cgame init 0x4a5c10), on disconnect and when a cinematic
-    // starts or ends, with flags 0.
+    // starts or ends, with flags 0. The MP client's CL_Disconnect (0x40cd10 in the patch 1.3 MP executable) calls its stop-all
+    // (0x44f940) with no keep flags as well: the dedicated music and ambient streams and the loops go with the rest. `fade`
+    // (snd_fade) and the channel scales are the client's per-level state and are reset by its owner.
     void stopAll(unsigned flags = 0);
     void fadeOut(int handle, int ms);
     void fadeIn(int handle, int ms);

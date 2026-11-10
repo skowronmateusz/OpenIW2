@@ -45,6 +45,19 @@ the window; `left`/`right` are the edges of the centred 4:3 area, `center` the m
 window edges. `alignx`/`aligny` choose the anchor point of the element. A fade, move or scale interpolates
 from the values at the time of the call to the values the script assigns afterwards.
 
+Label and value (VAs in the patch 1.3 MP executable 0x4dd430 / 0x4dd330): a number (`setvalue`), timer or text
+value is joined to the localized `label` when both are non-empty: the label up to `&&1`, the value, then the rest of
+the label; a label without `&&1` is followed directly by the value. The engine adds no separator, so a space comes
+only from the label text (the English `MP_TIME_TILL_SPAWN` text ends with a space, the Polish one does not, so the Polish ctf
+respawn timer reads without a gap in the original too). The joined text is at most 255 characters.
+
+Missing menu files: a `loadMenu` entry whose file is not in the game data prints "WARNING: menu file not found: %s"
+and is skipped (MP 0x546238 / 0x5463be); its menus do not exist and `open <name>` of one does nothing. The shipped
+`ui_mp/menus.txt` names five such files (`ui/options_view.menu`, `ui/options_defaults.menu`,
+`ui/options_credits.menu`, `ui/rec_restart.menu`, `ui_mp/in_rec_restart.menu`); the options menu's buttons that open
+`options_view` / `options_defaults` (`ui_mp/options.menu:723`, `:810`) therefore do nothing, and the credits button is
+commented out (`:768`).
+
 Draw order (inferred): elements are sorted by `sort`. Elements with `foreground` false are drawn first, then the
 engine's own HUD (crosshair, ammo counter), then elements with `foreground` true, so the intro screen's black
 backdrop hides the crosshair and ammo counter.
@@ -124,12 +137,62 @@ is no alias name (the lookup 0x428320 only hashes and compares names, and no sou
 Headless check: `iw2game <main> <map> --answer-menus try_invert,accept_normal` answers the menus that open; `IW2_OVERLAY=<dir>`
 mounts loose test scripts over the game files.
 
+## Background menu (`bg`) and what script menus draw over
+
+The main-menu backdrop (the `ui_background` image, the gradient strip, the Call of Duty 2 logo, the version text) is the ordinary
+menu `bg`: SP `ui/background.menu`, MP `ui_mp/background.menu` (both non-fullscreen, items only). Nothing in the engine opens it
+by name (the patch 1.3 MP executable has no `bg` menu name string); the menu `main` opens it in its own onOpen (after closing it
+and `main_text`) and closes it in its onClose (`ui/main.menu:50-62`, `ui_mp/main.menu:46-58`). `bg` is listed only in the front-end
+lists (`ui/menus.txt`, `ui_mp/menus.txt`), not in `ui_mp/ingame.txt`. `ui_background` itself is set by the main, options,
+createserver and joinserver menus (`ui_mp/main.menu:78`, `ui_mp/options.menu:21`, ...).
+
+So the backdrop shows exactly while `main` is open (the front end, and in SP the in-level pause menu, which is `main`). The MP
+script menus never get it: serverinfo_*, team_*, weapon_* and ingame are non-fullscreen menus of style EMPTY with `blurWorld 5`
+and a first item of style SHADER, material `gradient`, rect 0 0 640 480 with full-screen alignment
+(`ui_mp/scriptmenus/team_americangerman.menu:17-37`, `weapon_german.menu:27-54`, `serverinfo_dm.menu:17-29`, `ingame.menu:16-29`),
+plus the shared black bars (`ui/bars.menu`). They draw over the running game's view. quickcommands (and quickstatements,
+quickresponses) is `fullscreen 0` with only a FILLED window box (`ui_mp/scriptmenus/quickcommands.menu:10-40`).
+
+Implementation: iw2view draws the menu stack in stack order with no forced `bg` underneath.
+### blurWorld
+VAs in the patch 1.3 MP executable. The menu keyword `blurWorld` (keyword table entry 0x5dd328, handler 0x544240)
+reads a float into the menu (+0x240) and warns "blur must be >= 0; %g is invalid" for a negative value. Menu_Paint
+(0x542550) adds a painted menu's non-zero blurWorld to the UI context's radius (UI context +0x28, the context pointer
+0x5dcb10): R = sqrt(R^2 + blurWorld^2) (0x5425c6..0x5425f4); the radius is cleared before the menus are painted
+(0x53330f). The client's view setup (0x4cf900) clears the refdef and stores sqrt(ui^2 + b^2) as its blur radius
+(0x4cf958), b being the scr_blur radius (0x14b5968) and ui the UI radius when the UI key catcher bit (0x96b654 & 8) is
+set, 0x68a518 is non-zero and the connection state (0x609fe0) is not 1, else 0. That radius drives the same scene
+blur pass as scr_blur (src/game/screen_blur.h): only the 3D view is blurred, the HUD and the menus are drawn over it.
+Only MP script menus set it (`blurWorld 5.0` in 15 of `ui_mp/scriptmenus/*.menu`, e.g. `ingame.menu`,
+`weapon_german.menu`); no SP menu does.
+
+Implementation: iw2view composes the root sum of squares of the open menus' blurWorld with the scr_blur radius while a
+world is running (`game::menuBlurRadius`, `game::composeSceneBlur`). TODO(spec): the meaning of 0x68a518 (the front end
+without a running game is never blurred here).
+
+## Focus scripts (onFocus / leaveFocus)
+
+Item_SetFocus (VAs in the patch 1.3 MP executable: 0x53be40; item keyword handler for `onFocus` 0x544ee0 stores the script at
+item +0x2b8). For a visible item that does not have the focus yet it sets the focus flag (window flags +0xe8 bit 0x2), runs the
+item's onFocus script and plays the item's `focusSound` (+0x2d4), else the global `itemFocusSound`. An item that already has the
+focus is left alone, so its script does not run again.
+
+- Pointer hover, click and the keys (Up/Down/Tab, also out of an edit field) move the focus this way. The MP weapon menus
+  (`ui_mp/scriptmenus/weapon_*.menu`, e.g. weapon_american.menu:103-114) and team menus (team_americangerman.menu:82-89)
+  hide every other preview group and show the focused entry's group (weapon image, grenade icons, accuracy / damage /
+  mobility bars, team image) from onFocus; the SP difficulty menu shows its description there (ui/difficulty.menu:121-128).
+- `leaveFocus` of the item losing the focus runs before the new item's onFocus (difficulty.menu hides its description there).
+  TODO(spec): the exact exe place of leaveFocus, whether the default focus a menu gets on open runs onFocus (the weapon menus
+  show the first entry from onOpen, weapon_american.menu:35-39) and the `setfocus` command path; the focus sound is still
+  the fixed `mouse_over` alias.
+- The shipped team menus show a group `spectator_info` that no item has (team_americangerman.menu:248); nothing appears.
+
 ## LISTBOX (type 6) and EDITFIELD / VALIDFILEFIELD (types 4, 16)
 
 Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.cpp`. Exe addresses: paint 0x4ce280, keys 0x4c9c60, hover
 0x4c9880, mouse 0x4cb100, selection 0x4cf5b0 (`Menu_SetFeederSelection`), feeder text 0x4c5f60, feeder select 0x4c6050.
 
-- Menu item keys: `elementwidth`, `elementheight`, `elementtype`, `feeder`, `doubleclick`, `columns n pos width maxChars ...`, `maxchars`, `maxpaintchars`.
+- Menu item keys: `elementwidth`, `elementheight`, `elementtype`, `feeder`, `doubleclick`, `columns n pos width maxChars ...` (the 3 * n numbers are read as tokens, across line breaks: `ui_mp/joinserver.menu` puts each of its 11 server-list columns on its own line), `maxchars`, `maxpaintchars`.
 - Geometry: scrollbar column at `x + w - 17`, 16 wide: up arrow (y+1), track (y+16, h-31), down arrow (y+h-16), thumb 16x16 at
   `min(thumbY, y+h-17)`; images `ui/assets/scrollbar_arrow_up_a`, `scrollbar`, `scrollbar_arrow_dwn_a`, `scrollbar_thumb` (materials end in `.tga`).
   Rows start at `y+1`, `ftol(h/eh)` fit; text x = `x + 1 + col.pos + 4`, baseline = row top + `eh`, cut to `col.maxChars`; the selected row is a
@@ -156,11 +219,11 @@ Implemented in `src/ui/frontend.cpp` (`MenuStack`), drawn in `apps/iw2view/main.
   selection 0x4c6050. 0xc8/0xc9 are the mouse buttons (double click), not the wheel. Left (0x9a/0xb7/0xce) and Right (0x9b/0xbd/0xcd) share the code of Up and Down.
   `notselectable` (0x4d1eb0, def +0x108 = 1) makes the keys move startPos only: Up/Left/wheel up -1 (min 0), Down/wheel down +1 (max count-1),
   Right +1 (max maxScroll), PgUp/PgDn +-rows (0 / maxScroll), Home 0, End maxScroll. `horizontalscroll` (0x4d1fb0, item flag 0x200000) runs the same
-  code with rows = ftol(w / elementWidth); no shipped menu uses it (the only two listboxes are text listboxes, none sets `horizontalscroll`), so its drawing is not implemented.
+  code with rows = ftol(w / elementWidth); no shipped SP menu uses it (the only two SP listboxes are text listboxes, none sets `horizontalscroll`), so its drawing is not implemented.
 - Not implemented, unused by shipped menus: image columns, horizontal listbox drawing. TODO(spec): drawing of UI_SAVEGAMENAME / UI_SAVEGAME_SHOT /
   textsavegame (see savegame.md), the 64-profile cap on the add loop, the restart of sound/video on profile load.
-- No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items); MP server/map lists are
-  out of scope.
+- No other SP listboxes exist: the mission list and controls list of the shipped menus are not listboxes (buttons / BIND items). The MP map list
+  (FEEDER_ALLMAPS), the pointer routing over several open menus and NUMERICFIELD items are in docs/spec/mp-ui.md.
 
 ## Menu focus and mouse routing (open-menu stack)
 

@@ -398,6 +398,17 @@ int main() {
         CHECK(m.active() == 0);
         m.setPaused(false);
         m.resetPausable();
+        // Multiplayer mode tag (docs/spec/sound.md): rows with loadspec all_mp (the Trench Gun's fire and pump sounds) load only
+        // with the MP tag; the SP tag drops them and keeps all_sp rows.
+        {
+            iw2::audio::SoundAliases mpA, spA;
+            mpA.load(vfs, "toujane", false, "all_mp");
+            spA.load(vfs, "toujane");
+            CHECK(mpA.exists("weap_shotgun_fire_pump_plr") && mpA.exists("weap_shotgun_pump") && mpA.exists("weap_shotgun_reload_loop"));
+            CHECK(!spA.exists("weap_shotgun_fire_pump_plr"));
+            iw2::audio::Mixer mm(vfs, mpA, 48000);
+            CHECK(mm.play("weap_shotgun_fire_pump_plr") != 0);
+        }
         // The level-end theme (music channel) under the victory screen: pausable flags as openvictoryscreen leaves them, cl_paused set.
         iw2::audio::SoundAliases ra;
         ra.load(vfs, "88ridge");

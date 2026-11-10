@@ -36,6 +36,8 @@ public:
     // Loads every localizedstrings/*.str; `language` like "POLISH" or "ENGLISH" (falls back to English).
     void load(const fs::Vfs& vfs, const std::string& language);
     const std::string* find(const std::string& key) const;
+    // Adds a string under `key` (upper-cased) unless the loaded files already have that key (openiw2's own strings).
+    void add(const std::string& key, const std::string& text);
     size_t size() const { return strings_.size(); }
 
 private:

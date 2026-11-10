@@ -37,6 +37,7 @@ struct Window {
     bool visible = false;
     bool decoration = false;
     int ownerDraw = 0;
+    int ownerDrawFlag = 0; // menu keyword ownerdrawFlag: UI_SHOW_* condition
     bool textSaveGame = false; // "textsavegame": the item shows the selected savegame's detail text (UI state +0x41e)
     Color foreColor{1, 1, 1, 1}, backColor{0, 0, 0, 0}, borderColor{0, 0, 0, 0}, outlineColor{0, 0, 0, 0};
     std::string background;
@@ -72,7 +73,7 @@ struct Item : Window {
     bool notSelectable = false; // `notselectable` (0x4d1eb0: listbox def +0x108 = 1): the keys scroll instead of moving the cursor
     int elementType = 0; // LISTBOX_TEXT 0, LISTBOX_IMAGE 1
     int feeder = 0;      // FEEDER_*
-    struct Column { int pos = 0, width = 0, maxChars = 0; };
+    struct Column { int pos = 0, width = 0, maxChars = 0; bool hidden = false; }; // hidden: not drawn (menuhide.h)
     std::vector<Column> columns; // `columns n  pos width maxChars ...`
     Script doubleClick;
     // EDITFIELD family (types 4, 9, 16, 17): `maxchars n`, `maxPaintChars n` (0 = unlimited / default).
@@ -109,9 +110,13 @@ public:
     bool loadFile(const std::string& path);
 
     Menu* find(const std::string& name);
+    // Drops every loaded menu (the front end swaps its menu set); pointers into the old menus become invalid.
+    void clear() { menus_.clear(); errors_.clear(); warnings_.clear(); hideTrace_.clear(); fade_ = {}; }
     const std::vector<std::unique_ptr<Menu>>& menus() const { return menus_; }
     const std::vector<std::string>& errors() const { return errors_; }
     const std::vector<std::string>& warnings() const { return warnings_; }
+    // One line per item or menu the hide table removed (menuhide.h); for tests and diagnostics.
+    const std::vector<std::string>& hideTrace() const { return hideTrace_; }
 
     // Parses menu source text (with #include resolved through the VFS); exposed for tests.
     void parseSource(const std::string& source, const std::string& file);
@@ -123,7 +128,7 @@ private:
     const fs::Vfs& vfs_;
     FadeAssets fade_;
     std::vector<std::unique_ptr<Menu>> menus_;
-    std::vector<std::string> errors_, warnings_;
+    std::vector<std::string> errors_, warnings_, hideTrace_;
 };
 
 // Decodes an event script from raw tokens (commands separated by ';').

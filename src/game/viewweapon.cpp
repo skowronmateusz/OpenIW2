@@ -87,6 +87,10 @@ void ViewWeaponMotion::update(const Field& w, int ms, float xySpeed, float maxSp
 // a = min(speed · amplitude · stance amplitude, max): pitch = −(sin 2c + sin(4c + π/2) · 0.2) · a · 0.75 (0x4adf90),
 // yaw = −sin c · a, roll = min(0, sin(c − 0.4712389) · min(speed · amplitude · 1.5 · stance amplitude, max)).
 // Aiming scales all by 1 − (1 − adsBobFactor) · adsFrac.
+std::string viewHandsModel(bool multiplayer, const std::string& scriptViewModel, const std::string& weaponHandModel) {
+    return multiplayer && !scriptViewModel.empty() ? scriptViewModel : weaponHandModel;
+}
+
 V3 gunBob(int bobCycle, float xySpeed, int viewHeightTarget, float adsFrac, float adsBobFactor, bool reticle) {
     constexpr float kPi = 3.1415927410125732f, kTwoPi = 6.2831854820251465f;
     const float cyc = float(bobCycle & 0xff) / 255.0f * kTwoPi + kTwoPi;
@@ -194,13 +198,12 @@ int ViewImpulses::landDip(float h) {
     return std::min(24, int(((h - 12.0f) * 0.03846153989434242f + 1.0f) * 4.0f));
 }
 
-int ViewImpulses::dipFromDamage(int damage) {
-    constexpr float kMinH = 200.0f, kMaxH = 350.0f; // bg_fallDamageMinHeight / MaxHeight
+int ViewImpulses::dipFromDamage(int damage, float kMinH, float kMaxH) { // bg_fallDamageMinHeight / MaxHeight
     return landDip((kMaxH - kMinH) * float(damage) * 0.01f + kMinH);
 }
 
-void ViewImpulses::land(float fallHeight, int fallDamage, int64_t timeMs) {
-    const int dip = fallDamage > 0 ? dipFromDamage(fallDamage) : landDip(fallHeight);
+void ViewImpulses::land(float fallHeight, int fallDamage, int64_t timeMs, float minHeight, float maxHeight) {
+    const int dip = fallDamage > 0 ? dipFromDamage(fallDamage, minHeight, maxHeight) : landDip(fallHeight);
     if (dip <= 0) return;
     landChange_ = -float(dip);
     landTime_ = timeMs;

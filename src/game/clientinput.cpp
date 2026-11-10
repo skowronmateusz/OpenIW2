@@ -212,6 +212,11 @@ void ClientInput::command(const std::string& cmdIn, bool down, const std::string
         return;
     }
     if (!down) return;
+    // Menu commands are console commands, not input: the front end runs them (MP client togglemenu 0x4107b0,
+    // openscriptmenu 0x410920).
+    if (name.rfind("togglemenu", 0) == 0 || name.rfind("openscriptmenu", 0) == 0) { console_.push_back(cmdIn); return; }
+    // MP chat and quick messages (default_mp.cfg:54-56; client 0x4039d0 / 0x403a20, cgame 0x4c1680), run by the front end.
+    if (name == "chatmodepublic" || name == "chatmodeteam" || name == "mp_quickmessage") { console_.push_back(name); return; }
     if (name == "toggleads") adsToggle_ = !adsToggle_; // 0x409260
     else if (name == "leaveads") adsToggle_ = false; // 0x409270
     else if (stanceLocked()) return;                 // the stance commands below do nothing while +prone / +movedown

@@ -14,6 +14,7 @@ inline float turretArcWrapped(float deg) { return float(uint32_t(int(deg * 182.0
 // Turret info of a turret entity (entity +0x10c). Arcs are in degrees; right and top arcs are stored negated.
 struct TurretState {
     std::string weapon;          // weaponinfo
+    int fireCount = 0;           // shots so far (openiw2: the network server's fire events, EV_FIRE_WEAPON_MG42)
     unsigned flags = 0x1003;     // +0x08: 1 AI, 2 automatic, 4 script firing, 8 missed first, 0x40 engaged target,
                                  // 0x1000 usable by the player, 0x2000 ignore goals (setup sets 0x1003, 0x51dd80)
     script::ObjectPtr target;    // +0x10 settargetentity

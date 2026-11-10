@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <string>
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 
@@ -36,7 +38,7 @@ int main() {
         return 0;
     }
     namespace fsys = std::filesystem;
-    const fsys::path dir = fsys::temp_directory_path() / "iw2_test_frameorder";
+    const fsys::path dir = fsys::temp_directory_path() / ("iw2_test_frameorder_" + std::to_string(::getpid()));
     fsys::remove_all(dir);
     fsys::create_directories(dir / "maps");
     std::ofstream(dir / "maps" / "iw2test_frameorder.gsc") << R"(

@@ -4,8 +4,8 @@
 
 # OpenIW2
 
-OpenIW2 is a native engine for macOS on Apple Silicon (C++20, SDL3, Metal) that runs the **Call of Duty 2**
-single-player campaign from the game files of **your own retail copy**. It was written from scratch, without the
+OpenIW2 is a native engine for macOS on Apple Silicon (C++20, SDL3, Metal) that runs the **Call of Duty 2** campaign
+and multiplayer from the game files of **your own retail copy**. It was written from scratch, without the
 original source code. The behavior of the original game was studied, written down as specs in plain English, and then
 reimplemented from those specs.
 
@@ -69,6 +69,56 @@ keeps its size; resize it yourself). **Sync every frame** is on by default in Op
 frame limit). **Anti-aliasing** works and defaults to 4x (the original defaults to off); it also smooths alpha-tested textures, and a
 change applies at the next start.
 
+### Multiplayer
+
+**Multiplayer** in the main menu switches to the multiplayer menus inside the same app; `Esc` there does nothing
+outside a game, as in the original.
+
+- **Start new server**: pick the gametype (Deathmatch, Team Deathmatch, Search and Destroy, Capture the Flag,
+  Headquarters) and the map; the gametype's settings page sets its score and time limits. The extra
+  **Bots & weapons** page (an OpenIW2 addition; the original game has no bots) sets the number of bots (0–15),
+  their skill (easy to veteran) and which weapon classes are allowed: rifle, bolt, sniper, smg, mg, shotgun and
+  grenades, in any combination that leaves every nation a primary weapon (one that does not is refused with a
+  message). **Start** loads the map and hosts a listen server that always accepts players from your local network;
+  there is no extra switch to turn on.
+- **Dedicated server**: with **Dedicated** set to LAN or Internet (both are the same here, there is no master
+  server), **Start** closes the game window and opens a server console window instead: the server runs with the
+  chosen map, gametype, settings, bots and weapon classes, but without a player of its own. The window shows the
+  server log and has a command line for the server console (`status`, `map <name>`, `map_rotate`, `kick <name>`,
+  `say <text>`, `set <cvar> <value>`, `quit`, ...); the up and down arrows recall earlier commands, Page Up / Page
+  Down and the mouse wheel scroll the log. Closing the window (or `quit`) stops the server and the app. rcon works
+  once `rcon_password` is set (for example `set rcon_password <password>` in the console window). Started from
+  Terminal, the log also goes to the terminal and the terminal takes console commands too; started from Finder it
+  goes to `~/Library/Logs/OpenIW2/openiw2.log`.
+- **Join game** lists the servers on your local network (the list refreshes with a LAN broadcast) and joins the
+  selected one; a password can be entered for protected servers. A connection the server refuses, or one lost during
+  the game, shows its message in a popup and returns to the multiplayer main menu.
+- In the game the server info, team and weapon menus open as in the original: choose a team (or auto-assign) and
+  a weapon; a weapon chosen while alive is given at your next spawn. `Esc` opens the game menu (change team or
+  weapon, leave the game), `Tab` shows the scoreboard, `T` / `Y` open chat (all / team), `V` the quick messages,
+  and the use key (`F`) respawns after death.
+- When a map ends the next one comes from the map rotation (`sv_mapRotation`), otherwise the map restarts.
+
+There is no CD key check, no PunkBuster and no connection to the Activision master server: play is on your local
+network or by address. **Join game** lists the servers on your network; add any other server to **Favorites** by its
+IP address or DNS name, optionally with a port (default 28960). Voting, voice chat, muting players, mods, the CD key,
+PunkBuster and automatic updates are not available, so their menu entries are hidden. The server speaks the 1.3 network protocol and is checked against a reference 1.3 server;
+joining it with the original 1.3 game (with `sv_pure 0`) has not been tried yet.
+
+### Run a dedicated server
+
+The app also contains a dedicated server without a window, `iw2server`. Run it from Terminal:
+
+```bash
+/Applications/OpenIW2.app/Contents/MacOS/iw2server ~/Documents/main mp_toujane tdm --bots 6 --bot-skill 1 --maxclients 20 --weapons bolt,sniper,grenades --scorelimit 50
+```
+
+The path to your `main` folder must be given (the folder with the `iw_*.iwd` files); then come the map and the
+gametype. The server listens on UDP port 28960. If the macOS firewall is on, it asks whether the server may accept incoming network connections; choose **Allow**,
+otherwise other computers cannot reach it (the choice can be changed later in System Settings, Network, Firewall). The first load of each map is slower, because the graph the bots walk on is
+generated once per map and cached. Every option — limits, the port, `server.cfg`, the map rotation, console and rcon
+commands — is described in [docs/dedicated-server.md](docs/dedicated-server.md).
+
 ### Cheats and developer keys
 
 Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:
@@ -77,7 +127,7 @@ Cheats are off by default, as in the original game. To turn them on, start the a
 open /Applications/OpenIW2.app --args --cvar sv_cheats=1
 ```
 
-With cheats on, `F10` cycles god mode → demigod → off, `V` toggles walking and free flight (noclip camera), and `L`
+With cheats on, `F10` cycles god mode → demigod → off, `N` toggles walking and free flight (noclip camera), and `L`
 toggles fullbright. Without `sv_cheats` these keys do nothing (F10 prints that cheats are not enabled).
 
 ### Reporting a bug
@@ -118,6 +168,7 @@ the specs and in the code.
 | M6 | AI | Pathnodes, animscripts (GSC), cover, squads, grenades, vehicles | Some squad and escort behaviors differ from the original |
 | M7 | Audio, UI, cinematics | Sound aliases and mixing, subtitles, `.menu` UI, main menu and mission select, RoQ cinematics (`iw2roq`) | Reverb and some audio details |
 | M8 | Save/load, objectives, campaign | Objectives, HUD, compass, level changes, save games, difficulty | No human has played the full campaign through yet; the scripted bot (`iw2game --autoplay`) reaches mission success on 7 of 28 maps |
+| M9 | Multiplayer | Menus, create/join server, listen and dedicated server (windowed from the menu or headless), all five gametypes on the 15 maps, bots (an OpenIW2 addition), HUD, scoreboard, killcam, spectating, chat, LAN play | Joining with the original 1.3 game has not been tried; some HUD details |
 
 ## Build from source
 
@@ -159,7 +210,7 @@ The language is detected from the `localized_<language>_*.iwd` packs in your `ma
 overrides it.
 
 The controls are the game's own bindings from `default.cfg`. `Esc` opens the pause menu. `P` prints the camera
-position. The cheat keys (`F10`, `V`, `L`) need `--cvar sv_cheats=1`, for example:
+position. The cheat keys (`F10`, `N`, `L`) need `--cvar sv_cheats=1`, for example:
 
 ```bash
 ./build/iw2view /path/to/main moscow --cvar sv_cheats=1
@@ -175,6 +226,9 @@ position. The cheat keys (`F10`, `V`, `L`) need `--cvar sv_cheats=1`, for exampl
 | `iw2asset` | Decodes assets into open formats: `.iwi` → PNG, `.d3dbsp` → OBJ, material/model info |
 | `iw2script` | Parses and compiles every `.gsc` script; lists the engine built-ins the scripts call |
 | `iw2roq` | Inspects and decodes RoQ cinematics |
+| `iw2server` | Multiplayer dedicated server without a window (console, rcon, `server.cfg`, map rotation, bots); also builds on Linux |
+| `iw2netclient` | Multiplayer protocol test client: connects to a server, decodes the gamestate and snapshots, runs a scripted scenario (`--dump` writes the decoded stream) |
+| `iw2netinfo` | Sends or answers multiplayer server queries: `query` (`getinfo`, `getstatus`), `rcon`, and `serve` (answers queries without a game) |
 | `tools/script_sweep.sh` | Headless mission-script sweep over the campaign maps (smoke, full, determinism) |
 
 Debug switches and environment variables are listed in [docs/debug-flags.md](docs/debug-flags.md).

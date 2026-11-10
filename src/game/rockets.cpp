@@ -85,6 +85,8 @@ void World::missileExplosionEvent(const std::string& weaponName, const Vec3& at,
     static const char* const kSurfaceAlias[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
                                                 "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
                                                 "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+    mpLogExplosion(true, weaponName, at, dir, surface);
+    if (mpLiveEffectsHidden()) return;
     const int type = explosionType(lowerStr(weaponField(weaponName, "projExplosionType")));
     if (type < 2 && surface >= 0 && surface < 23) {
         startSound(std::string(type == 0 ? "grenade_explode_" : "rocket_explode_") + kSurfaceAlias[surface], &at, nullptr, {}, kWorldSoundOwner);
@@ -118,7 +120,7 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
         Vec3 dir = r.trDelta;
         const float l = vlen(dir);
         dir = l != 0.0f ? Vec3{dir[0] / l, dir[1] / l, dir[2] / l} : Vec3{0, 0, 1};
-        World::damage(*hit, r.parent, damage, dir, tr.endPos, "MOD_PROJECTILE", "none");
+        World::damage(*hit, r.parent, damage, dir, tr.endPos, "MOD_PROJECTILE", "none", 0, &e);
     }
     // 0x526484: with a direct damage the impact also runs the trigger_damage segment test (0x5295f0) from the missile
     // origin (the trace end point was stored there at 0x526e7b), MOD_PROJECTILE, for the parent.
@@ -140,7 +142,7 @@ void World::rocketImpact(Entity& e, const TraceResult& tr) {
     const float inner = weaponFloat(r.weapon, "explosionInnerDamage");
     if (inner != 0.0f)
         radiusDamage(at, r.parent, inner, weaponFloat(r.weapon, "explosionOuterDamage"), weaponFloat(r.weapon, "explosionRadius"),
-                     hit, "MOD_PROJECTILE_SPLASH");
+                     hit, "MOD_PROJECTILE_SPLASH", &e);
     freeEntity(e);
 }
 
@@ -189,7 +191,7 @@ void World::runRocket(Entity& e) {
                     const float inner = weaponFloat(r.weapon, "explosionInnerDamage");
                     if (inner != 0.0f)
                         radiusDamage(tr.endPos, r.parent, inner, weaponFloat(r.weapon, "explosionOuterDamage"),
-                                     weaponFloat(r.weapon, "explosionRadius"), nullptr, "MOD_PROJECTILE_SPLASH");
+                                     weaponFloat(r.weapon, "explosionRadius"), nullptr, "MOD_PROJECTILE_SPLASH", &e);
                     freeEntity(e);
                 }
             }

@@ -176,7 +176,11 @@ void World::registerInventoryBuiltins() {
         if (cls != "item" && (oc.empty() || oc == "none") && (slot == "primary" || slot == "primaryb") && !had &&
             !inv.slot[1].empty() && !inv.slot[2].empty())
             throw std::runtime_error("Can not give player weapon without having an empty weapon slot");
-        giveWeapon(inv, w);
+        const bool added = giveWeapon(inv, w);
+        // MP (VAs in the 1.3 Linux dedicated server: giveweapon 0x80f9b8c, 0x80f9cf5): a newly owned weapon sends the
+        // client the reliable command I "1".
+        if (added && mp_)
+            if (const int cl = mpClientOf(p); cl >= 0) mp_->clientCommands.push_back({cl, "I \"1\""});
         const int missing = weaponInt(w, "startAmmo") - inv.ammo[weaponField(w, "ammoName")];
         if (missing > 0) addAmmo(inv, w, missing, !had);
         if (p.obj->get("$weapon").toString().empty() && inv.offhand != w) p.obj->set("$weapon", Value(w));
@@ -274,8 +278,19 @@ void World::registerInventoryBuiltins() {
             // With primary filled and primaryb empty, a weapon for primaryb is first placed in primary by the
             // give; the engine then moves it to primaryb.
             const bool moveToB = s == 2 && inv.slot[1].empty() == false && inv.slot[2].empty();
-            giveWeapon(inv, w);
+            // MP (VAs in the 1.3 Linux dedicated server, 0x80fc285..0x80fc30d): for primaryb with primary empty the
+            // give lands in primary, then the primary byte moves to primaryb and primary is cleared.
+            const bool mpMoveToB = mp_ && s == 2 && inv.slot[1].empty();
+            const bool given = giveWeapon(inv, w);
             if (moveToB && inv.slot[2] != w) inv.slot[2] = w;
+            if (mpMoveToB && inv.slot[1] == w) {
+                inv.slot[2] = w;
+                inv.slot[1].clear();
+            }
+            // Then, like giveweapon, startAmmo - stock rounds (when positive) through add ammo, filling the clip when the
+            // weapon was not owned before.
+            const int missing = weaponInt(w, "startAmmo") - inv.ammo[weaponField(w, "ammoName")];
+            if (missing > 0) addAmmo(inv, w, missing, given);
         }
         return Value();
     });

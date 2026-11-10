@@ -19,7 +19,13 @@ struct MenuEnv {
     // Front-end hooks (optional; set by MenuStack, src/ui/frontend.h). Names are the menu/item names of the commands.
     std::function<void(const std::string& alias)> startLoop; // Menu_Open: the menu's soundLoop alias (0x4cb803..0x4cb835)
     std::function<void()> stopLoop;
-    std::function<void()> closeAll;                                    // "ingameclose" (UI_SetActiveMenu(0): close all, unpause)
+    std::function<void()> closeAll;                                    // close every menu (front-end helper)
+    // "ingameclose <menu>" acts only in a game (docs/spec/ui.md "ingameclose"): SP when cl_paused is non-zero, MP when the client
+    // connection is active. Unset = the SP rule on cl_paused.
+    std::function<bool()> ingameActive;
+    // A multiplayer game: "ingameclose <menu>" closes the named menu only (MP handler 0x53b170 -> 0x53acd0). Unset or false: the SP
+    // handler (0x4c8320) runs UI_SetActiveMenu(0), which clears cl_paused and closes every menu.
+    std::function<bool()> multiplayer;
     std::function<void(const std::string& menu)> open;                 // "open"
     std::function<void(const std::string& item)> setFocus;             // "setfocus"
     std::function<void(const std::string& dvar)> setFocusByDvar;       // "setfocusbydvar"
@@ -42,6 +48,15 @@ struct MenuEnv {
     std::function<int(int feeder)> feederCount;
     std::function<std::string(int feeder, int row, int column)> feederText;
     std::function<void(int feeder, int row)> feederSelect;
+    // Ownerdraw items (MP UI_NETGAMETYPE 245): a key or click step (+1 next, -1 previous); true if the ownerdraw took it.
+    std::function<bool(int ownerDraw, int step)> ownerDrawKey;
+    // Whether a type-0 ownerdraw item is keyed (UI_NETSOURCE and UI_JOINGAMETYPE) and whether an ownerdrawFlag condition holds.
+    std::function<bool(int ownerDraw)> ownerDrawKeyed;
+    std::function<bool(int flag)> ownerDrawFlagShown;
+    // The value text key of an ownerdraw item (empty: the item's normal value text).
+    std::function<std::string(int ownerDraw)> ownerDrawText;
+    // The dvar of the item whose action is running (set by MenuStack; "openForGameType" formats its argument with its value).
+    std::string itemDvar;
 };
 
 // Runs the commands of `script` for a menu named `menuName` (the target of its scriptMenuResponse commands).

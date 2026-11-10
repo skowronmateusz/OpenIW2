@@ -19,6 +19,29 @@ bool near(float a, float b) { return std::fabs(a - b) < 1e-3f; }
 } // namespace
 
 int main() {
+    { // finishPlayerDamage's scales: 0.3, crouched 0.15, prone 0.02; capped at 60; no reduction of a self blast
+        KnockbackHit h{100, {1, 0, 0}, false, true};
+        PlayerState ps;
+        applyKnockback(ps, h);
+        CHECK(near(ps.velocity[0], 120.0f)); // 30 * 1000 / 250
+        CHECK(ps.pmTimeMs == 60);
+        PlayerState cr;
+        cr.stance = Stance::Crouch;
+        applyKnockback(cr, h);
+        CHECK(near(cr.velocity[0], 60.0f));
+        PlayerState pr;
+        pr.stance = Stance::Prone;
+        applyKnockback(pr, h);
+        CHECK(near(pr.velocity[0], 8.0f));
+        PlayerState big;
+        applyKnockback(big, {100000, {0, 2, 0}, false, true});
+        CHECK(near(big.velocity[1], 240.0f));
+        CHECK(big.pmTimeMs == 120);
+        // A hit without a direction does not push but still starts the slide.
+        PlayerState none;
+        applyKnockback(none, {100, {0, 0, 0}, false, true});
+        CHECK(near(none.velocity[0], 0.0f) && none.pmTimeMs == 60 && none.spawnSlide);
+    }
     { // standing: trunc(100 * 0.05) = 5, 5 * 1000 * 0.004 = 20 along the unit direction
         PlayerState ps;
         applyKnockback(ps, {100, {3, 0, 4}, false});

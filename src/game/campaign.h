@@ -15,6 +15,8 @@ struct Objective {
     std::string icon;
     bool ring = false;
     int64_t ringStartMs = -1;              // pointer +0x464: pulse start (cg time), -1 none
+    std::string team;                      // MP objective_team: "" / "none" for everyone, else allies / axis
+    int entity = -1;                       // MP objective_onEntity: the entity the position follows
 };
 
 struct LevelChange {

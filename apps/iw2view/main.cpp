@@ -20,6 +20,8 @@
 #include "fs/gamedir.h"
 #include "audio/sound.h"
 #include "game/itempickup.h"
+#include "game/mpbots.h"
+#include "game/clienttime.h"
 #include "game/linkview.h"
 #include "game/screenfade.h"
 #include "video/roq.h"
@@ -28,7 +30,14 @@
 #include "game/grenadeindicator.h"
 #include "game/framescale.h"
 #include "game/hudfade.h"
+#include "game/thirdpersonview.h"
 #include "game/textmessage.h"
+#include "game/mpchat.h"
+#include "game/mphud.h"
+#include "game/mpscoreboard.h"
+#include "audio/clientsound.h"
+#include "game/cursorhint.h"
+#include "game/mpspectate.h"
 #include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/playerweapon.h"
@@ -53,21 +62,39 @@
 #include "game/pmoverecord.h"
 #include "game/turrets.h"
 #include "game/world.h"
+#include "net/gameclient.h"
+#include "netgame/clienterror.h"
+#include "netgame/ambientconfig.h"
+#include "netgame/consoleview.h"
+#include "netgame/dedicated.h"
+#include "netgame/remoteview.h"
+#include "netgame/worldgame.h"
+#include "net/server.h"
+#include "net/lanbrowser.h"
+#include "net/resolve.h"
+#include "net/oob.h"
+#include "netgame/netmove.h"
 #include "ui/menu.h"
 #include "ui/iw2options.h"
 #include "ui/menurun.h"
+#include "game/maprotation.h"
+#include "ui/mpserver.h"
 #include "ui/frontend.h"
+#include "ui/menuhide.h"
+#include "ui/esckey.h"
 #include "ui/profile.h"
 #include "ui/profilelist.h"
 #include "game/savestate.h"
 #include "ui/savegame.h"
 #include <filesystem>
 #include <fstream>
+#include "util/codepage.h"
 #include "util/png.h"
 #include "util/screenshot.h"
 #include "jpeg.h"
 
 #include <SDL3/SDL.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <iomanip>
@@ -81,6 +108,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -355,6 +383,8 @@ struct Lightmap {
 struct MatInfo {
     Pass pass;
     int texture;
+    // Flag technique set: vertex alpha is the wave weight, drawn opaque (assets::drawnVertexColor).
+    bool flag = false;
     // mtlPolygonOffset: bits 4–5 of the material's second state word (file offset 0x30; statemap variable table of
     // the 1.3 renderer at 0x1018fe20: mask 0x30 of loadBits[1], values "0" / "1" / "2" = 0 / 0x10 / 0x20).
     int polygonOffset = 0;
@@ -598,6 +628,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
         try {
             const auto m = assets::parseMaterial(*md);
             mi.pass = classify(m.techniqueSet);
+            mi.flag = assets::isFlagTechniqueSet(m.techniqueSet);
             mi.sort = md->size() > 0x0d ? (*md)[0x0d] : 0;
             mi.materialOrder = assets::materialOrder(scene.techsetRanks.try_emplace(m.techniqueSet, int(scene.techsetRanks.size())).first->second, scene.materialsSeen++);
             if (const auto ts = vfs.read("materials/techniquesets/" + m.techniqueSet + ".techset")) {
@@ -732,7 +763,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
                 std::memcpy(g.normal, v.normal.data(), 12);
                 std::memcpy(g.tangent, v.tangent.data(), 12);
                 std::memcpy(g.binormal, v.binormal.data(), 12);
-                std::memcpy(g.color, v.color.data(), 4);
+                { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
                 g.uv[0] = v.uv[0];
                 g.uv[1] = v.uv[1];
                 g.light[0] = g.light[1] = g.light[2] = 1.0f;
@@ -823,7 +854,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
             assets::skinTangents(v, pose, tangent, binormal);
             std::memcpy(g.tangent, tangent.data(), 12);
             std::memcpy(g.binormal, binormal.data(), 12);
-            std::memcpy(g.color, v.color.data(), 4);
+            { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
             g.uv[0] = v.uv[0];
             g.uv[1] = v.uv[1];
             verts.push_back(g);
@@ -1569,7 +1600,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 const Vec3 tangent = normalize(xf(v.tangent, 1.0f, false)), binormal = normalize(xf(v.binormal, 1.0f, false));
                 g.tangent[0] = tangent.x; g.tangent[1] = tangent.y; g.tangent[2] = tangent.z;
                 g.binormal[0] = binormal.x; g.binormal[1] = binormal.y; g.binormal[2] = binormal.z;
-                std::memcpy(g.color, v.color.data(), 4);
+                { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
                 const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
                 std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
@@ -3589,6 +3620,113 @@ static bool appStartup(AppStart& out) {
     return true;
 }
 
+// The dedicated server's console window (docs/spec/mp-ui.md "Dedicated start"): the original shows its Win32 console
+// (log above, command line below) once the client is down; openiw2 draws a window of its own with SDL's renderer: the
+// log (standard output, which still goes to the terminal too), the command line with history (up / down), page up /
+// down and the wheel to scroll. Closing the window queues "quit" (as the console window's close does while
+// "dedicated" is set, MP 0x468532). Without a display the server runs on without it.
+static int runDedicatedConsole(iw2::fs::Vfs& vfs, iw2::netgame::DedicatedSettings settings) {
+    settings.readStdin = isatty(0) != 0; // the stdin console only from a terminal (a Finder start has /dev/null)
+    iw2::netgame::StdoutTee tee;
+    iw2::netgame::ConsoleView view;
+    SDL_Window* win = nullptr;
+    SDL_Renderer* ren = nullptr;
+    if (SDL_Init(SDL_INIT_VIDEO)) {
+        win = SDL_CreateWindow("OpenIW2 Dedicated Server", 900, 560, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        if (win) ren = SDL_CreateRenderer(win, nullptr);
+        if (!ren) {
+            if (win) SDL_DestroyWindow(win);
+            win = nullptr;
+            SDL_Quit();
+        }
+    }
+    if (!win) std::cerr << "dedicated server: no console window (" << SDL_GetError() << "), log on stdout only\n";
+    else {
+        SDL_StartTextInput(win);
+        tee.start();
+    }
+    uint64_t lastDraw = 0;
+    settings.frontEnd = [&]() {
+        std::vector<std::string> out;
+        if (!win) return out;
+        view.append(tee.take());
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) out.push_back("quit");
+            else if (e.type == SDL_EVENT_TEXT_INPUT) view.insert(e.text.text);
+            else if (e.type == SDL_EVENT_MOUSE_WHEEL) view.scroll(int(e.wheel.y * 3));
+            else if (e.type == SDL_EVENT_KEY_DOWN) {
+                switch (e.key.key) {
+                case SDLK_RETURN: case SDLK_KP_ENTER: if (auto c = view.enter()) out.push_back(*c); break;
+                case SDLK_BACKSPACE: view.backspace(); break;
+                case SDLK_DELETE: view.del(); break;
+                case SDLK_LEFT: view.left(); break;
+                case SDLK_RIGHT: view.right(); break;
+                case SDLK_HOME: view.home(); break;
+                case SDLK_END: view.end(); break;
+                case SDLK_UP: view.historyUp(); break;
+                case SDLK_DOWN: view.historyDown(); break;
+                case SDLK_PAGEUP: view.scroll(10); break;
+                case SDLK_PAGEDOWN: view.scroll(-10); break;
+                default: break;
+                }
+            }
+        }
+        const uint64_t now = SDL_GetTicks();
+        if (now - lastDraw < 33) return out;
+        lastDraw = now;
+        int pw = 0, ph = 0;
+        SDL_GetCurrentRenderOutputSize(ren, &pw, &ph);
+        const float scale = std::max(2.0f, std::round(SDL_GetWindowPixelDensity(win) * 1.5f));
+        SDL_SetRenderScale(ren, scale, scale);
+        const float w = float(pw) / scale, h = float(ph) / scale, lineH = 10.0f, pad = 4.0f;
+        SDL_SetRenderDrawColor(ren, 16, 16, 16, 255);
+        SDL_RenderClear(ren);
+        const float inputY = h - lineH - pad;
+        const size_t rows = size_t(std::max(1.0f, (inputY - 2 * pad) / lineH));
+        auto plain = [](const std::string& t) { // without ^N colour codes
+            std::string r;
+            for (size_t i = 0; i < t.size(); ++i) {
+                if (t[i] == '^' && i + 1 < t.size() && t[i + 1] >= '0' && t[i + 1] <= '9') { ++i; continue; }
+                r += t[i];
+            }
+            return r;
+        };
+        SDL_SetRenderDrawColor(ren, 210, 210, 210, 255);
+        float y = pad;
+        for (const auto& l : view.visible(rows)) {
+            SDL_RenderDebugText(ren, pad, y, plain(l).c_str());
+            y += lineH;
+        }
+        SDL_SetRenderDrawColor(ren, 70, 70, 70, 255);
+        SDL_RenderLine(ren, 0, inputY - pad / 2, w, inputY - pad / 2);
+        SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
+        SDL_RenderDebugText(ren, pad, inputY, ("]" + view.input()).c_str());
+        if ((now / 500) % 2 == 0) SDL_RenderDebugText(ren, pad + 8.0f * float(view.cursor() + 1), inputY + 1, "_");
+        // debug: IW2_CONSOLE_SHOT=<file.bmp> writes the console window once, 3 s after it opened (docs/debug-flags.md)
+        static const char* shotFile = std::getenv("IW2_CONSOLE_SHOT");
+        static const uint64_t opened = now;
+        if (shotFile && now - opened > 3000) {
+            if (SDL_Surface* sf = SDL_RenderReadPixels(ren, nullptr)) {
+                SDL_SaveBMP(sf, shotFile);
+                SDL_DestroySurface(sf);
+            }
+            shotFile = nullptr;
+        }
+        SDL_RenderPresent(ren);
+        return out;
+    };
+    const int rc = iw2::netgame::runDedicated(vfs, settings);
+    tee.stop();
+    if (win) {
+        SDL_StopTextInput(win);
+        SDL_DestroyRenderer(ren);
+        SDL_DestroyWindow(win);
+        SDL_Quit();
+    }
+    return rc;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // line-buffered, so a log written to a file is current while playing
     std::vector<std::string> args;
@@ -3614,6 +3752,7 @@ int main(int argc, char** argv) {
     bool shotUse = false; // --shot: press F (+activate) after the simulated seconds
     std::string language; // empty: detected from the localized_<language>_*.iwd packs in the game directory (see below)
     bool scripts = true;
+    std::string connectAddr; // +connect host[:port]: join a network game (docs/spec/net.md section 10)
     bool spawnAll = false;
     std::vector<std::pair<std::string, std::string>> extraCvars; // --cvar name=value (e.g. start=ride)
     const auto cheatsOn = [&extraCvars]() {
@@ -3682,6 +3821,7 @@ int main(int argc, char** argv) {
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--menu") menuMode = true;
+            else if (a == "+connect" || a == "--connect") connectAddr = next();
             else if (a == "--no-intro") skipIntro = true;
             else if (a == "--spawn-all") spawnAll = true;
             else if (a == "--lm-weights") { auto v = parseFloats(next()); for (int k = 0; k < 4; ++k) renderer.lmWeights[k] = v.at(size_t(k)); }
@@ -3691,9 +3831,55 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (args.size() < (menuMode ? 1u : 2u)) {
+    if (args.size() < (menuMode || !connectAddr.empty() ? 1u : 2u)) {
         std::cerr << "usage: iw2view <main-dir> <map-name> [--shot out.png] [--pos x,y,z] [--yaw d] [--pitch d] [--size WxH]\n";
         return 2;
+    }
+
+    // Network client (docs/spec/net.md section 10): the handshake runs before the level loads; the gamestate names the map.
+    std::unique_ptr<net::GameClient> netClient;
+    netgame::RemoteView remoteView;
+    // Network killcam: the followed client's view between the drawn snapshots (RemoteView::killcamView), for the view
+    // model and the HUD as in the local killcam.
+    game::World::MpKillcamView netKillcam;
+    net::LanBrowser lanBrowser;
+    auto netNowMs = [] { return int64_t(SDL_GetTicksNS() / 1000000ull); };
+    // A refused or lost connection (docs/spec/net.md section 14): back to the MP main menu with error_popmenu.
+    std::optional<netgame::ErrorDialog> netError;
+    int netConnection = 0; // counts the connections: per-connection state is keyed by it, not by the client's address
+    if (!connectAddr.empty()) {
+        net::NetAddress to;
+        const bool resolved = net::resolveBlocking(connectAddr, to, net::kDefaultPort, net::Resolver::kTimeoutMs); // docs/spec/mp-ui.md "Addresses and name lookup"
+        if (!resolved) {
+            std::cerr << "error: bad address " << connectAddr << "\n";
+            netError = netgame::errorDialog(false, "\x14" "EXE_BADSERVERADDRESS");
+            menuMode = true;
+        }
+        else {
+        netClient = std::make_unique<net::GameClient>();
+        ++netConnection;
+        if (const char* n = std::getenv("IW2_NET_NAME")) netClient->name = n;
+        for (const auto& [k, v] : extraCvars) if (k == "password") netClient->password = v; // --cvar password=...
+        if (!netClient->connect(to, netNowMs())) {
+            std::cerr << "error: " << netClient->error << "\n";
+            return 1;
+        }
+        std::cout << "connecting to " << connectAddr << "\n";
+        netClient->waitForHandshake(netNowMs, 20);
+        if (netClient->state() == net::ClientState::Disconnected) {
+            std::cerr << "error: " << netClient->error << "\n";
+            netError = netgame::errorDialog(netClient->dropFromServer, netClient->dropReason);
+            netClient.reset();
+            menuMode = true;
+        }
+        }
+    }
+    if (netClient) {
+        const std::string map = net::infoValueForKey(netClient->configstrings[0], "mapname");
+        std::cout << "connected as client " << netClient->clientNum << ", map " << map << "\n";
+        args.resize(1);
+        args.push_back("mp/" + map);
+        menuMode = false;
     }
 
     try {
@@ -3716,9 +3902,11 @@ int main(int argc, char** argv) {
         // Sound: aliases for this level, a software mixer and an SDL audio stream that pulls from it.
         audio::SoundAliases aliases;
         if (menuMode) aliases.load(vfs, "menu"); // front-end sounds (loadspec "menu")
+        else if (args[1].rfind("mp/", 0) == 0) aliases.loadLevel(vfs, args[1].substr(3), "all_mp"); // MP: the bare map name, mode tag all_mp (docs/spec/mp.md, sound.md)
         else aliases.loadLevel(vfs, args[1]); // plus the interface rows: the pause menu's music and clicks work on a direct level start
         constexpr int kAudioRate = 48000;
         audio::Mixer mixer(vfs, aliases, kAudioRate);
+        mixer.logPlays = std::getenv("IW2_SOUND_LOG") != nullptr; // debug: one [snd] line per sound request (docs/debug-flags.md)
         SDL_AudioStream* audioStream = nullptr;
         if (shot.empty() && audioOn) {
             const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kAudioRate};
@@ -3743,6 +3931,7 @@ int main(int argc, char** argv) {
         game::ClientInput input;
         if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
         else std::cerr << "warning: default.cfg not found, no key bindings\n";
+        std::optional<std::string> spBindings; // the SP key table while an MP world has the default_mp.cfg one
         // The shipped default.cfg binds F12 to screenshotJpeg, but OpenIW2's F12 is the frame-rate counter (see the event
         // loop), so as a deliberate, documented deviation (README Play; docs/spec/controls.md, Screenshots) the screenshot
         // key moves to F11 whenever the loaded bindings keep it on F12. The user can rebind it in the controls menu
@@ -3763,7 +3952,13 @@ int main(int argc, char** argv) {
         // compass 0xf79a38 (touched by 0x4a6130 / 0x4be5f0 / weapon changes 0x4b76f2, 0x4b8391), and the weapon change time 0xf796e4.
         game::CompassSpring compassSpring; // angle spring of the compass face (0x4b09a0)
         game::CompassSpring pointerSpring; // springy pointer yaw (0x4b0ce0, cg_hudCompassSpringyPointers)
-        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; int64_t hintStart = 0; bool hintHeldValid = false; struct { int hint = 0; std::string weapon, text; } hintHeld; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
+        game::CursorHintFade cursorHint; // the held cursor hint and its fade; one state for the icon and the text
+        struct HudFade { int64_t compass = 0, ammo = 0, weaponChange = 0, flashStart = 0, stance = 0, offhand = 0, stanceChange = 0, health = 0, objectives = 0, healthTrailTimer = 0, healthPulse = 0, lastHudMs = 0; float healthTrail = 0; uint32_t stanceState = 0; std::string weapon; float pitch = 0, yaw = 0; uint32_t buttons = 0; bool objectivesHeld = false; } hudFade;
+        // MP scoreboard state (docs/spec/mp-scoreboard.md): scroll line, the team block drawn first on equal scores (0x5ddad0,
+        // initially allies), the release time for the 100 ms fade, the last "b" command of a network server and the time of
+        // the last "score" request (sent at most every 2000 ms while shown, 0x4dabf0).
+        struct MpScoreboardState { int scroll = 0, firstTeam = 2; bool shown = false; int64_t hiddenAt = -1000000; std::string netScores; game::MpScoreRequest request; } mpSb;
+        bool mpIntermissionView = false; // the local client's session state is intermission (pm_type 5)
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): [app folder is a deliberate choice, exe default not traced] the real base path
         // and the profile name when none is chosen, here "default").
@@ -3794,10 +3989,20 @@ int main(int argc, char** argv) {
         auto trace = [&](const std::string& what, int64_t levelMs) {
             if (startTrace) std::cout << "[start-trace] real " << (SDL_GetTicksNS() - traceT0) / 1000000ull << " ms, level " << levelMs << " ms: " << what << "\n";
         };
+        // Bots of a listen server started from the multiplayer create-server screen (openiw2 extension, docs/spec/mp-ui.md):
+        // {count, skill}; IW2_MP_BOTS / IW2_MP_BOT_SKILL take precedence.
+        std::optional<std::pair<int, int>> mpMenuBots;
+        // Dedicated start (docs/spec/mp-ui.md "Dedicated start"): StartServer with the dedicated choice ends the client; the
+        // process goes on as the server with this console window after the window, renderer and audio are gone.
+        std::optional<netgame::DedicatedSettings> dedicatedStart;
+        int worldGeneration = 0; // counts the levels built; a new level may reuse the old World's address
         auto makeWorld = [&](const std::string& map, const script::ObjectPtr& carriedGame, const game::LoadedSave* save = nullptr,
                              std::optional<game::World::CarriedPlayer> carriedPlayer = std::nullopt) {
+            ++worldGeneration;
             mixer.setLoading(true); // the level's sounds wait for the end of the load (see Mixer::setLoading)
-            auto w = std::make_unique<game::World>(vfs, map);
+            // mp/<map>: offline multiplayer (docs/spec/mp.md), gametype from IW2_MP_GAMETYPE (default dm).
+            const bool mp = map.rfind("mp/", 0) == 0;
+            auto w = std::make_unique<game::World>(vfs, mp ? map.substr(3) : map, mp);
             trace("world created", 0);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
@@ -3838,7 +4043,72 @@ int main(int argc, char** argv) {
             if (save) { // savegame load: map entities, then the saved state instead of the level script (docs/spec/savegame.md 5)
                 w->prepareStart();
                 game::restoreSave(*w, *save);
+            } else if (mp) {
+                if (netClient) { // network client: the server runs the gametype (docs/spec/net.md section 10)
+                    w->mpStartRemote();
+                    std::vector<std::string> menus;
+                    for (int i = netgame::kMenuConfigstrings; netClient->configstrings.count(i); ++i) menus.push_back(netClient->configstrings[i]);
+                    w->mpSetMenuNames(std::move(menus));
+                } else {
+                // Gametype: IW2_MP_GAMETYPE, else g_gametype (set by the create-server StartServer), else "dm" (its registered default).
+                const auto gtc = uiCvars.find("g_gametype");
+                w->mpStart(std::getenv("IW2_MP_GAMETYPE") ? std::getenv("IW2_MP_GAMETYPE")
+                           : gtc != uiCvars.end() && !gtc->second.empty() ? gtc->second.c_str() : "dm");
+                }
+                // MP key bindings (default_mp.cfg: x = "openscriptmenu ingame changeweapon", TAB = +scores, ESC = togglemenu).
+                // TODO(spec): the MP profile's own saved config.
+                if (const auto cfg = vfs.read("default_mp.cfg")) {
+                    if (!spBindings) spBindings = input.formatBindings();
+                    input.loadConfig(std::string(cfg->begin(), cfg->end()));
+                    w->keyBindings.clear();
+                    for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
+                }
+                if (!netClient) {
+                const int c = w->mpConnect("player"); // the local client
+                w->mpBegin(c);
+                w->frame();
+                // The gametype opens its menus (serverinfo, team, weapon) for the local client; IW2_MP_AUTOJOIN=1 skips them.
+                if (std::getenv("IW2_MP_AUTOJOIN") && std::atoi(std::getenv("IW2_MP_AUTOJOIN")) != 0)
+                    w->mpAutoJoin(c, std::getenv("IW2_MP_WEAPON") ? std::getenv("IW2_MP_WEAPON") : "", // debug: IW2_MP_WEAPON=kar98k_mp,
+                                  std::getenv("IW2_MP_TEAM") ? std::getenv("IW2_MP_TEAM") : "");              // IW2_MP_TEAM=allies
+                // IW2_MP_BOTS=N adds N bots (docs/spec/mp-bots.md), IW2_MP_BOT_SKILL 0..3 their skill; one connect per frame.
+                const char* nb = std::getenv("IW2_MP_BOTS");
+                if (nb || mpMenuBots) {
+                    if (const char* sk = std::getenv("IW2_MP_BOT_SKILL")) w->mpSetBotSkill(std::atoi(sk));
+                    else if (!nb && mpMenuBots) w->mpSetBotSkill(mpMenuBots->second);
+                    for (int i = 0, n = nb ? std::atoi(nb) : mpMenuBots->first; i < n; ++i) {
+                        const int bot = w->mpAddBot();
+                        if (bot < 0) break;
+                        // Debug: IW2_MP_BOT_COMBAT=0 bots never shoot (controlled kill / killcam shots with IW2_SHOT_MP_KILL).
+                        if (const char* bc = std::getenv("IW2_MP_BOT_COMBAT"); bc && std::atoi(bc) == 0) w->mpBotSetCombat(bot, false);
+                        w->frame();
+                    }
+                }
+                // Debug: IW2_MP_SAY="text|text..." says each line from the local client (as typed: 0x15 + text); IW2_MP_QUICK=
+                // "<menu> <response>" sends a quick-message menu response (docs/spec/mp-chat.md, docs/debug-flags.md).
+                if (const char* say = std::getenv("IW2_MP_SAY")) {
+                    const std::string all = say;
+                    for (size_t p = 0; p <= all.size();) {
+                        const size_t q = std::min(all.find('|', p), all.size());
+                        if (q > p) w->mpSay(c, 0, "\x15" + all.substr(p, q - p));
+                        p = q + 1;
+                    }
+                }
+                if (const char* qm = std::getenv("IW2_MP_QUICK")) {
+                    std::istringstream in(qm);
+                    std::string menu, response;
+                    in >> menu >> response;
+                    w->mpMenuResponse(c, menu, response);
+                    w->frame();
+                }
+                }
             } else {
+                if (spBindings) { // back from MP: the SP key table again
+                    input.loadConfig(*spBindings);
+                    spBindings.reset();
+                    w->keyBindings.clear();
+                    for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
+                }
                 w->start();
             }
             trace("world started", w->timeMs()); // [server time]
@@ -3846,6 +4116,12 @@ int main(int argc, char** argv) {
         };
         std::string currentMap = menuMode ? std::string() : args[1];
         std::unique_ptr<game::World> world;
+        // Listen server (docs/spec/net.md section 11): a local MP game started from the menu (createserver) takes network clients,
+        // a map started otherwise only with IW2_LISTEN=1; port net_port / IW2_LISTEN_PORT, default 28960.
+        bool listenWanted = std::getenv("IW2_LISTEN") && std::atoi(std::getenv("IW2_LISTEN")) != 0;
+        std::unique_ptr<netgame::WorldGame> listenGame;
+        std::unique_ptr<net::Server> listenServer;
+        int listenWorldGeneration = -1; // the level the listen server serves
         if (scripts && !menuMode) {
             world = makeWorld(currentMap, nullptr);
             if (spawnAll) std::cout << "spawned " << world->spawnAllActors() << " actors\n";
@@ -3854,12 +4130,20 @@ int main(int argc, char** argv) {
         // Objective and other on-screen messages from the level script (client commands obj_update/obj_complete).
         using game::ScreenMessage;
         std::vector<ScreenMessage> screenMessages;
+        // MP centre print (0x4c8020 / 0x4c8360, docs/spec/mp-hud.md): text (with 0x14 / 0x15 segments) and its start (world ms).
+        std::string mpCenterText;
+        int64_t mpCenterStartMs = -1;
+        // MP crosshair name (0x4c97c0): the client the crosshair trace last hit and when (world ms).
+        int mpCrossClient = -1;
+        int64_t mpCrossMs = -1;
+        // MP chat (docs/spec/mp-chat.md): the chat lines (client 0x4d0e10) and the message field (chatmodepublic / chatmodeteam).
+        game::MpChatBuffer chatBuffer;
+        struct ChatField { bool open = false, team = false; std::string text; } chatField;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
         int64_t deadScreenMs = 0;
         uint64_t slowStartNs = 0, slowEndNs = 0;
-        int musicHandle = 0, ambientHandle = 0; // mu_play voice (cgame music slot 0); ambient voice (slots 1/2, 0x443080)
-        std::string ambientAlias;
+        audio::ClientSoundHandles clientSnd; // mu_play voice (cgame music slot 0); ambient voice (slots 1/2, 0x443080); shell shock and heartbeat loops
         float slowFrom = 1, slowTo = 1, slowmo = 1;
         game::ScreenFade screenFade; // scr_fade (0x4bec70, 0x4bda70)
         // The "fog" server command (client 0x4a5770) goes to World::clientFog: the renderer fog state that a savegame carries.
@@ -3923,6 +4207,17 @@ int main(int argc, char** argv) {
         std::map<int, std::pair<float, float>> prevTurret; // turret pitch/yaw before the last server frame (drawn interpolated)
         std::map<int, int> prevTexScroll; // vehicle tread accumulator (entityState +0x5c) before the last server frame
         float lerpFrac = 1.0f;
+        // The client's per-frame clock (cg.time 0xf708dc, docs/spec/net.md section 10 "Frame clock"): everything drawn that moves
+        // continuously reads it. It always pairs the world time with the fraction stored by the same frame's tick loop, so it gives
+        // the same value before the loop (the camera reads last frame's pair) as at the end of the previous frame and never goes
+        // back across a tick. It runs up to one server frame behind the world time: stamp on this clock whatever is read on it; a
+        // stamp from the game (level time) is read through game::elapsedMs. Everything the client draws reads it: the view impulses
+        // (0x4ae3ce, 0x4ae62f, 0x4addb1), the HUD fades and hudelems (0x4a9bd0, 0x4c1f30), fog (0x4a5770), screen fade (0x4bda70),
+        // shellshock (0x4b24a0) and the refdef time the renderer uses (0x4afc99). It advances every drawn frame, so a visual evaluated
+        // at the 20 Hz server time moves in 50 ms steps. Read the server time in this file only for simulation and debug output,
+        // marked "[server time]" on the line (checked by test_renderclock).
+        auto cgNowMs = [&]() -> int64_t { return world ? game::clientRenderTimeMs(world->timeMs(), lerpFrac) : 0; };
+        std::optional<int64_t> netClockOffset; // network client: server time to this clock (game::heldClockOffset)
         // The effect system's time of this rendered frame: cg.time (0xf708dc) fed to the system each frame by 0x486b30 (system +0x0,
         // advanced copy +0x4 that plays read, e.g. 0x4855e4) before the view weapon is added (0x4afd17, then 0x4b026f). Both the view
         // flash play (0x4b6c37 -> 0x4853f0, no time argument) and the particle draw use it. The shot-script turn steps override it.
@@ -3932,14 +4227,8 @@ int main(int argc, char** argv) {
         bool presentModeDirty = true;
         auto fxTime = [&]() -> int64_t {
             if (fxTimeOverride) return *fxTimeOverride;
-            return world ? world->timeMs() - 50 + int64_t(lerpFrac * 50.0f) : 0; // [server time]
+            return cgNowMs();
         };
-        // cg.time (0xf708dc) of this rendered frame. Everything the client draws reads it: the view impulses (0x4ae3ce, 0x4ae62f,
-        // 0x4addb1), the HUD fades and hudelems (0x4a9bd0, 0x4c1f30), fog (0x4a5770), screen fade (0x4bda70), shellshock
-        // (0x4b24a0) and the refdef time the renderer uses (0x4afc99). It advances every drawn frame, so a visual evaluated at
-        // the 20 Hz server time moves in 50 ms steps. Read the server time in this file only for simulation and debug output,
-        // marked "[server time]" on the line (checked by test_renderclock).
-        auto cgNowMs = [&]() -> int64_t { return world ? game::clientRenderTimeMs(world->timeMs(), lerpFrac) : 0; };
         // The player's turret pose of this rendered frame (pitch, yaw), from the pre-kick view; the gun is drawn with it and
         // the eye (tag_player) is taken at the same pair.
         std::optional<std::pair<float, float>> playerTurretPose;
@@ -4071,7 +4360,8 @@ int main(int argc, char** argv) {
             Uploader up(dev, false);
             ++renderStamp;
             for (const auto& e : world->entities()) {
-                if (e->obj->removed || e->isSpawner || e->isPlayer || e->obj->get("$hidden").truthy()) continue;
+                // Multiplayer clients other than the local one are drawn in third person (docs/spec/mp-players.md).
+                if (e->obj->removed || e->isSpawner || (e->isPlayer && !world->mpPlayerDrawn(*e)) || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");
                 if (m.isString() && e->classname == "script_brushmodel" && m.asString().size() > 1 && m.asString()[0] == '*') {
                     // Brush model at the entity's interpolated origin/angles (vertices are model-local; loadScene).
@@ -4122,6 +4412,13 @@ int main(int argc, char** argv) {
                         av[size_t(k)] = pv->second.second[size_t(k)] + d * lerpFrac;
                     }
                 }
+                // IW2_NET_TRACE: the drawn (post-lerp) origin of every other player per rendered frame (docs/debug-flags.md).
+                if (static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
+                    netTrace && (e->isPlayer || m.asString().rfind("xmodel/projectile_", 0) == 0))
+                    std::printf("nettrace rt=%lld t=%lld client=%d org=%.2f,%.2f,%.2f ang=%.1f,%.1f,%.1f ent=%d\n", static_cast<long long>(SDL_GetTicksNS() / 1000000ull),
+                                static_cast<long long>(netClient ? netClient->renderTime(netNowMs()) : cgNowMs()),
+                                e->obj->get("$client").isInt() ? e->obj->get("$client").asInt() : e->isPlayer ? -1 : -2 - e->number, double(ov[0]), double(ov[1]), double(ov[2]),
+                                double(av[0]), double(av[1]), double(av[2]), e->number);
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                 // gameTime.z of the *_scroll techniques (texscroll.hlsl subtracts it from V): frac(t), t = scene time - the refEntity
@@ -4131,7 +4428,7 @@ int main(int argc, char** argv) {
                 // t = (cur + trunc((next - cur) * frac)) * 0.001. Otherwise the material time stays 0 (memset 0x4ac7b0) and t is
                 // the scene time.
                 {
-                    const double sceneMs = double(world->timeMs()) - 50.0 + double(lerpFrac) * 50.0; // [server time] the same render time, kept in double
+                    const double sceneMs = double(cgNowMs());
                     double t = sceneMs * 0.001;
                     if (e->vehicle) {
                         const int next = e->vehicle->texScroll;
@@ -4202,8 +4499,13 @@ int main(int argc, char** argv) {
                 // skinned with the blended pose and carry their attachments.
                 if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
-                    if (!noCull && !sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f)) continue; // anim state already stepped
-                    const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
+                    static const bool kcTrace = std::getenv("IW2_KILLCAM_TRACE") != nullptr;
+                    const bool vis = noCull || sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f);
+                    const Scene::CpuModel* body = vis ? sceneCpuModel(scene, dev, vfs, m.asString()) : nullptr;
+                    if (kcTrace && ((e->isPlayer && world->mpKillcamSwapped()) || (netKillcam.active && e->obj->get("$deathanim").isDefined())))
+                        std::printf("kctrace draw t=%lld ent=%d org=%.1f,%.1f,%.1f vis=%d body=%d anim=%d model=%s\n", static_cast<long long>(world->timeMs()), e->number, // [server time]
+                                    double(ov[0]), double(ov[1]), double(ov[2]), int(vis), int(body != nullptr), int(e->anim != nullptr), m.asString().c_str());
+                    if (!vis) continue; // anim state already stepped
                     if (!body) continue;
                     assets::XPose pose;
                     const game::AnimState* animNow = e->anim.get();
@@ -4248,6 +4550,15 @@ int main(int argc, char** argv) {
                         ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
                         if (ai.model) items.push_back(ai);
                     }
+                    // The weapon world model in a multiplayer client's hands (tag_weapon_right, docs/spec/mp-players.md).
+                    if (const std::string wm = world->mpPlayerWeaponModel(*e); !wm.empty())
+                        if (const Scene::CpuModel* wmodel = sceneCpuModel(scene, dev, vfs, wm)) {
+                            const assets::XPose wp = attachmentPose(bones, wmodel->parts, "tag_weapon_right");
+                            addBones(bones, wmodel->parts, wp);
+                            DrawItem wi = base;
+                            wi.model = skinModel(scene, dev, up, e->number, wm + "@tag_weapon_right", *wmodel, wp);
+                            if (wi.model) items.push_back(wi);
+                        }
                     recordDrawnTags(e->number, bones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                     continue;
                 }
@@ -4383,6 +4694,7 @@ int main(int argc, char** argv) {
         };
         game::ViewWeaponMotion vmMotion;
         game::RecoilKick recoil;
+        int hostWeaponStatePrev = 0; // the host's weapon state of the previous frame (its offhand prepare event)
         unsigned turretJitterSeed = 12345; // turret view jitter RNG
         game::ViewShake viewShake; // cgame 0x4bf5e0 / 0x4bf700: MG42 fire and earthquake shake
         game::AimBlend aimBlend; // the view model aim layers' cross-fade (0x4b25e0)
@@ -4390,15 +4702,22 @@ int main(int argc, char** argv) {
         game::ViewImpulses viewImp; // damage kick, landing dip
         int lastLandSeq = 0;
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
+        netgame::Predictor netPredictor; // network game: own-player prediction (docs/spec/net.md section 10)
+        netgame::PredictedWeaponTime netPredictedWeaponTime;
+        netgame::PredictedAmmo netPredictedAmmo; // network game: own ammunition prediction (docs/spec/net.md section 10)
+        std::pair<const net::GameClient*, int> netPredictorFor{nullptr, -1}; // the connection and gamestate it belongs to
+        int64_t netDrawNowMs = 0; // the client time of the last prediction (correction decay)
         bool breathWeapon = false; // the equipped weapon has a scope reticle and is not an item (hold-breath weapons, 0x4dd350)
         game::V3 gunBobAngles{0, 0, 0}; // cgame 0x4b4a90
         game::V3 rawGunBob{0, 0, 0}, rawGunBobPrev{0, 0, 0}; // 0xf79940..48 as stored by 0x4b4a90 (no reticle factor); 0x4ae210 sees last frame's
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
+        uint64_t netSelectUntilMs = 0; // network client: own weapon change not yet in the snapshots (syncWeapon)
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
+            pweapon.mpAnimRates = world->multiplayer(); // the MP client scales action anims to their weapon times (weapons.md)
             pweapon.animLength = [&](const std::string& n) {
                 const assets::XAnim* an = n.empty() ? nullptr : viewAnim(vfs, n);
                 return an && !an->looping ? an->length() : 0.0f;
@@ -4438,12 +4757,16 @@ int main(int argc, char** argv) {
             // No weapon ("none", ps weapon 0) means nothing in hand, as at the start of moscow (only the potato).
             std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : std::string();
             if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
-            if (name != weaponWritten) weaponSelect = name;
+            // A network client: the snapshots carry the server's $weapon, which lags behind this client's own weapon change; until
+            // the server shows the selected weapon (or 2 s pass) an older one is not a scripted change.
+            const bool netLag = netClient && !weaponSelect.empty() && name != weaponSelect && SDL_GetTicks() < netSelectUntilMs;
+            if (name == weaponSelect) netSelectUntilMs = 0;
+            if (!netLag && game::takeScriptedWeapon(name, weaponWritten)) weaponSelect = name; // a respawn's same weapon too
             if (!pweapon.equipped() && !pweapon.holstered()) // the first weapon is in hand at once
                 if (const auto* def = world->weapon(weaponSelect)) pweapon.equip(weaponSelect, *def);
         };
         auto writeWeapon = [&]() {
-            if (!world || !world->player() || !pweapon.equipped()) return;
+            if (!world || !world->player() || !game::writesHeldWeapon(pweapon, weaponSelect)) return;
             world->player()->obj->set("$weapon", script::Value(pweapon.name()));
             weaponWritten = pweapon.name();
         };
@@ -4454,46 +4777,47 @@ int main(int argc, char** argv) {
             for (size_t k = 0; k < 3; ++k) rt[k] += gunBobAngles[k] + gk[k];
             return rt;
         };
-        auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c, bool drawn = true) { // drawn = 0x4b69b0's third argument (0 under the scope overlay)
-            if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
-            const Scene::CpuModel* hands = sceneCpuModel(scene, dev, vfs, pweapon.handModel());
-            const Scene::CpuModel* gun = sceneCpuModel(scene, dev, vfs, pweapon.gunModel());
-            const assets::XAnim* an = viewAnim(vfs, pweapon.anim());
-            float frame = 0;
-            if (an) {
-                const float last = float(std::max(0, an->numFrames - 1));
-                const float f = pweapon.animTime() * float(an->frameRate);
-                frame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
-            }
-            if (std::getenv("IW2_VM_TRACE")) std::cout << "vm anim " << pweapon.anim() << " frame " << frame << "/" << (an ? an->numFrames : -1) << " t " << pweapon.animTime() << " hands '" << pweapon.handModel() << "' gun '" << pweapon.gunModel() << "'\n";
-            if (const char* forced = std::getenv("IW2_VM_ANIM")) { // debug: "anim,frame"
-                std::string spec = forced;
-                const auto comma = spec.find(',');
-                if (const assets::XAnim* fa = viewAnim(vfs, spec.substr(0, comma))) {
-                    an = fa;
-                    frame = comma == std::string::npos ? 0.0f : std::stof(spec.substr(comma + 1));
-                }
-            }
+        // One source for the first-person weapon poser (docs/spec/mp-hud.md "The recorded view state"): the client's own
+        // weapon (pweapon with its motion, aim-blend, bob and recoil state) or the killcam's followed weapon (the recorded view
+        // state with the killcam rig's own motion, aim-blend, bob and recoil state). Both are posed by poseViewWeapon.
+        struct ViewWeaponSource {
+            std::function<std::string(const char*)> field; // the view weapon's file fields (the offhand's during a throw)
+            std::string handsName, gunName;               // xmodel paths
+            std::string animName;                          // the action animation ("" bind pose)
+            float animFrame = 0;                           // its frame (looping already applied)
+            float adsFrac = 0;
+            float aimUp = 0, aimDown = 0;                  // the aim layers' weights (game::AimBlend)
+            game::V3 move{}, rot{};                        // the placement offsets: motion, plus gun bob and gun kick in rot
+            std::shared_ptr<ViewFlash> flash;              // the muzzle flash and brass tags and their pending plays
+            int skinKey = -1;                              // the skinned-model cache key (-1 the own weapon, -2 the killcam's)
+        };
+        // The first-person weapon pass (0x4b69b0): hands and gun posed from the action animation and the two aim animations,
+        // placed with the movement, sway, bob and kick offsets; the muzzle flash and the brass bolted to the gun's tags.
+        auto poseViewWeapon = [&](std::vector<DrawItem>& items, const Camera& c, const ViewWeaponSource& s, bool drawn) { // drawn = 0x4b69b0's third argument (0 under the scope overlay)
+            const Scene::CpuModel* hands = s.handsName.empty() ? nullptr : sceneCpuModel(scene, dev, vfs, s.handsName);
+            const Scene::CpuModel* gun = s.gunName.empty() ? nullptr : sceneCpuModel(scene, dev, vfs, s.gunName);
+            const assets::XAnim* an = s.animName.empty() ? nullptr : viewAnim(vfs, s.animName);
             // The view model's anim tree (0x4b2c90, 0x4b25e0): the current action animation (idle, fire, reload...) with
             // weight 1 and both aim animations: adsUpAnim at time = aim fraction, adsDownAnim at time = 1 - aim fraction,
             // their weights cross-fading over 0.5 s (game::AimBlend); all are children of the root, so the engine's calc
             // adds them and divides by the weight sum (docs/spec/xanim.md, "Blending").
             std::vector<assets::PoseLayer> layers;
-            if (an) layers.push_back({an, frame, 1.0f});
+            if (an) layers.push_back({an, s.animFrame, 1.0f});
             if (!std::getenv("IW2_VM_NOADS")) {
                 for (const bool up : {true, false}) {
-                    const float wgt = up ? aimBlend.up() : aimBlend.down();
+                    const float wgt = up ? s.aimUp : s.aimDown;
                     if (wgt <= 0) continue;
-                    const float t = up ? pweapon.adsFrac() : 1.0f - pweapon.adsFrac();
-                    if (const assets::XAnim* ads = viewAnim(vfs, pweapon.field(up ? "adsUpAnim" : "adsDownAnim")))
+                    const float t = up ? s.adsFrac : 1.0f - s.adsFrac;
+                    if (const assets::XAnim* ads = viewAnim(vfs, s.field(up ? "adsUpAnim" : "adsDownAnim")))
                         layers.push_back({ads, t * float(std::max(0, ads->numFrames - 1)), wgt});
                 }
             }
             DrawItem base;
             if (!std::getenv("IW2_NO_DEPTH_HACK")) { base.depthMax = 0.2f; base.zNear = 0.1f; } // TODO(spec): [flag writer not found] the cgame side that sets the 0x8 group flag for the view model; the projection _43 swap (0x1003e6a0)
-            // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion.
-            const auto mv = vmMotion.move();
-            const auto rt = gunRelativeAngles();
+            // Stance, movement and aiming offsets (forward, right, up; pitch, yaw, roll) from ViewWeaponMotion, the gun bob (0x4b4d10)
+            // and the gun kick (0x4b5d10) already in the source's rotation; the position in camera-relative space (relTransform).
+            const game::V3& mv = s.move;
+            const game::V3& rt = s.rot;
             const Vec3 vmFwd = c.forward(), vmRight = c.right(), vmUp = cross(vmRight, vmFwd);
             const auto vmOff = game::viewModelOffset({vmFwd.x, vmFwd.y, vmFwd.z}, {vmRight.x, vmRight.y, vmRight.z}, {vmUp.x, vmUp.y, vmUp.z},
                                                      {mv[0], mv[1], mv[2]});
@@ -4520,7 +4844,7 @@ int main(int argc, char** argv) {
                 const assets::XPose hp = an ? assets::blendPose(hands->parts, layers) : assets::bindPose(hands->parts);
                 addBones(bones, hands->parts, hp);
                 DrawItem it = base;
-                it.model = skinModel(scene, dev, up, -1, pweapon.handModel(), *hands, hp);
+                it.model = skinModel(scene, dev, up, s.skinKey, s.handsName, *hands, hp);
                 if (it.model) items.push_back(it);
             }
             if (gun) {
@@ -4533,17 +4857,18 @@ int main(int argc, char** argv) {
                     }
                 }
                 DrawItem it = base;
-                it.model = skinModel(scene, dev, up, -1, pweapon.gunModel(), *gun, gp);
+                it.model = skinModel(scene, dev, up, s.skinKey, s.gunName, *gun, gp);
                 if (it.model) items.push_back(it);
-                {
+                if (s.flash) {
+                    const std::shared_ptr<ViewFlash>& vf = s.flash;
                     BoneMap gunBones;
                     addBones(gunBones, gun->parts, gp);
                     const auto tf = gunBones.find("tag_flash");
-                    viewFlash->valid = tf != gunBones.end();
-                    if (viewFlash->valid) {
+                    vf->valid = tf != gunBones.end();
+                    if (vf->valid) {
                         const auto& m = base.transform; // columns: forward, left, up, origin (entityTransform)
                         const auto& q = tf->second.first;
-                        for (int k = 0; k < 3; ++k) viewFlash->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                        for (int k = 0; k < 3; ++k) vf->pos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
                         // The tag's own axes (0x48abb0 gives the attachment's origin AND axis rows, used as the effect axes by 0x485479):
                         // the bone rotation applied to x / y / z, then the view model's rotation.
                         auto tagAxes = [&](const assets::Quat& rq) {
@@ -4556,40 +4881,38 @@ int main(int argc, char** argv) {
                             }
                             return ax;
                         };
-                        viewFlash->axes = tagAxes(tf->second.second);
+                        vf->axes = tagAxes(tf->second.second);
                         if (std::getenv("IW2_FX_DEBUG"))
-                            std::cerr << "view flash tag axes f " << viewFlash->axes[0][0] << "," << viewFlash->axes[0][1] << "," << viewFlash->axes[0][2]
+                            std::cerr << "view flash tag axes f " << vf->axes[0][0] << "," << vf->axes[0][1] << "," << vf->axes[0][2]
                                       << " model f " << m[0] << "," << m[1] << "," << m[2] << "\n";
-                        if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << viewFlash->pos[0] << "," << viewFlash->pos[1] << "," << viewFlash->pos[2] << " pending " << viewFlash->pending << " fx \"" << pweapon.field("viewFlashEffect") << "\"\n";
+                        if (std::getenv("IW2_FX_DEBUG")) std::cerr << "view flash tag " << vf->pos[0] << "," << vf->pos[1] << "," << vf->pos[2] << " pending " << vf->pending << " fx \"" << s.field("viewFlashEffect") << "\"\n";
                         // CG_EjectWeaponBrass (0x4b7730) for the local client: shellEjectEffect bolted on the view weapon's tag_brass.
                         const auto tb = gunBones.find("tag_brass");
-                        viewFlash->brassValid = tb != gunBones.end();
-                        if (viewFlash->brassValid) {
-                            const auto& m = base.transform;
-                            const auto& q = tb->second.first;
-                            for (int k = 0; k < 3; ++k) viewFlash->brassPos[size_t(k)] = q[0] * m[size_t(k)] + q[1] * m[size_t(4 + k)] + q[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
-                            viewFlash->brassAxes = tagAxes(tb->second.second);
+                        vf->brassValid = tb != gunBones.end();
+                        if (vf->brassValid) {
+                            const auto& qb = tb->second.first;
+                            for (int k = 0; k < 3; ++k) vf->brassPos[size_t(k)] = qb[0] * m[size_t(k)] + qb[1] * m[size_t(4 + k)] + qb[2] * m[size_t(8 + k)] + m[size_t(12 + k)];
+                            vf->brassAxes = tagAxes(tb->second.second);
                         }
-                        if (viewFlash->brassPending && world) {
-                            viewFlash->brassPending = false;
-                            const std::string path = pweapon.field("shellEjectEffect");
-                            if (viewFlash->brassValid && !path.empty() && path != "none") {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // tag_brass origin + axes (0x48abb0)
+                        if (vf->brassPending && world) {
+                            vf->brassPending = false;
+                            const std::string path = s.field("shellEjectEffect");
+                            if (vf->brassValid && !path.empty() && path != "none") {
+                                auto bolt = std::make_shared<game::FxBolt>([vf](game::FxTag& o) { // tag_brass origin + axes (0x48abb0)
                                     o.origin = vf->brassPos;
                                     o.axes = vf->brassAxes;
                                     o.hasAxes = true;
                                     return vf->brassValid;
                                 });
-                                const auto& m = base.transform;
                                 const game::FVec f{m[0], m[1], m[2]}, l{m[4], m[5], m[6]}, u{m[8], m[9], m[10]};
                                 fxSystem.playBolted(efx(path), bolt, game::FxAxes{f, l, u}, fxTime() - (std::getenv("IW2_FX_MS") ? std::atoi(std::getenv("IW2_FX_MS")) : 0));
                             }
                         }
-                        if (viewFlash->pending && world) {
-                            const bool play = game::consumeViewFlash(viewFlash->pending, drawn); // cleared in every posed frame (0x4b6c13), played only when drawn (0x4b6c37)
-                            const std::string path = pweapon.field("viewFlashEffect");
+                        if (vf->pending && world) {
+                            const bool play = game::consumeViewFlash(vf->pending, drawn); // cleared in every posed frame (0x4b6c13), played only when drawn (0x4b6c37)
+                            const std::string path = s.field("viewFlashEffect");
                             if (play && !path.empty()) {
-                                auto bolt = std::make_shared<game::FxBolt>([vf = viewFlash](game::FxTag& o) { // tag_flash origin + axes (0x48abb0)
+                                auto bolt = std::make_shared<game::FxBolt>([vf](game::FxTag& o) { // tag_flash origin + axes (0x48abb0)
                                     o.origin = vf->pos;
                                     o.axes = vf->axes;
                                     o.hasAxes = true;
@@ -4604,11 +4927,257 @@ int main(int argc, char** argv) {
             }
             up.flush();
         };
+        // The client's own view weapon through the shared poser.
+        auto addViewModel = [&](std::vector<DrawItem>& items, const Camera& c, bool drawn = true) {
+            if (!pweapon.equipped() && !pweapon.binocularsUp()) return; // binoculars also with the hand weapon holstered (vehicle)
+            ViewWeaponSource s;
+            s.field = [&](const char* k) { return pweapon.field(k); };
+            // MP: the hands the player's character script set (setviewmodel, docs/spec/weapons.md "Multiplayer hands model").
+            s.handsName = pweapon.handModel();
+            if (world && world->multiplayer() && !pweapon.binocularsUp() && world->player())
+                if (const script::Value vmv = world->player()->obj->get("$viewmodel"); vmv.isString())
+                    s.handsName = game::viewHandsModel(true, vmv.asString(), s.handsName);
+            s.gunName = pweapon.gunModel();
+            s.animName = pweapon.anim();
+            if (const assets::XAnim* an = viewAnim(vfs, s.animName)) {
+                const float last = float(std::max(0, an->numFrames - 1));
+                const float f = pweapon.animTime() * pweapon.animRate() * float(an->frameRate); // MP: the slot rate (weapons.md)
+                s.animFrame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
+                if (std::getenv("IW2_VM_TRACE")) std::cout << "vm anim " << s.animName << " frame " << s.animFrame << "/" << an->numFrames << " t " << pweapon.animTime() << " hands '" << s.handsName << "' gun '" << s.gunName << "'\n";
+            }
+            if (const char* forced = std::getenv("IW2_VM_ANIM")) { // debug: "anim,frame"
+                std::string spec = forced;
+                const auto comma = spec.find(',');
+                if (viewAnim(vfs, spec.substr(0, comma))) {
+                    s.animName = spec.substr(0, comma);
+                    s.animFrame = comma == std::string::npos ? 0.0f : std::stof(spec.substr(comma + 1));
+                }
+            }
+            s.adsFrac = pweapon.adsFrac();
+            s.aimUp = aimBlend.up();
+            s.aimDown = aimBlend.down();
+            s.move = vmMotion.move();
+            s.rot = vmMotion.rot();
+            for (int k = 0; k < 3; ++k) s.rot[size_t(k)] += gunBobAngles[size_t(k)]; // 0x4b4d10
+            {
+                const auto gk = recoil.gunKick(); // 0x4b5d10
+                for (int k = 0; k < 3; ++k) s.rot[size_t(k)] += gk[size_t(k)];
+            }
+            s.flash = viewFlash;
+            s.skinKey = -1;
+            poseViewWeapon(items, c, s, drawn);
+        };
+        // Killcam (docs/spec/mp-hud.md "Killcam", "The recorded view state"): the local killcam reads the followed client's
+        // recorded view state from the archived frame, the network killcam from the followed player state the server sent;
+        // both feed the killcam rig, the killcam's own copy of the first-person state the own view keeps (movement and sway
+        // offsets, aim cross-fade, gun bob, recoil springs, muzzle flash), stepped once per rendered frame, and the shared
+        // poser draws the killer's weapon from it. The camera takes the recorded eye and angles plus the rig's view kick,
+        // view bob and the aim zoom, as the own view does.
+        struct KillcamRig {
+            bool active = false;
+            game::World::MpKillcamView view;      // this frame's killcam view (the HUD, scope overlay and crosshair read it)
+            game::ViewWeaponMotion motion;
+            game::RecoilKick recoil;
+            game::AimBlend aim;
+            game::V3 gunBob{}, rawGunBob{}, rawGunBobPrev{};
+            std::array<float, 2> bobAngles{0, 0};
+            std::shared_ptr<ViewFlash> flash = std::make_shared<ViewFlash>();
+            std::string weapon, viewWeapon, animKey; // the record last seen: a change restarts the animation clock
+            int animMsSeen = -1;                      // the record's animation time last seen
+            float animMs = 0;                         // the animation clock (advanced by the frame time between records)
+            int fireCount = -1;                       // the followed client's shots already kicked and flashed
+            int64_t lastTicks = -1;                   // SDL ticks of the last step
+        } killcamRig;
+        auto killcamField = [&](const std::string& weapon, const char* key) -> std::string {
+            const auto* def = world ? world->weapon(weapon) : nullptr;
+            if (!def) return std::string();
+            std::string k = key; // weapon file keys are stored lower case
+            for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            const auto it = def->find(k);
+            return it == def->end() ? std::string() : it->second;
+        };
+        auto killcamNumber = [&](const std::string& weapon, const char* key) { return float(std::atof(killcamField(weapon, key).c_str())); };
+        // Steps the rig to this frame's view (the record of the followed client) at the camera it is drawn from.
+        auto killcamRigStep = [&](const game::World::MpKillcamView& v) {
+            KillcamRig& r = killcamRig;
+            const int64_t ticks = int64_t(SDL_GetTicks());
+            const int dtMs = r.active && r.lastTicks >= 0 ? int(std::clamp<int64_t>(ticks - r.lastTicks, 0, 100)) : 16;
+            r.lastTicks = ticks;
+            const game::MpViewState& vs = v.view;
+            const std::string& vw = vs.viewWeapon.empty() ? v.weapon : vs.viewWeapon;
+            auto num = [&](const char* k) { return killcamNumber(vw, k); };
+            const std::string ret = killcamField(vw, "adsOverlayReticle");
+            const bool reticle = !ret.empty() && ret != "none";
+            if (!r.active || r.weapon != v.weapon || r.viewWeapon != vw) { // a new killcam or another weapon in hand
+                r.aim.reset();
+                r.recoil.reset();
+                r.motion = game::ViewWeaponMotion{};
+                r.weapon = v.weapon;
+                r.viewWeapon = vw;
+                r.fireCount = r.active ? r.fireCount : v.fireCount; // the shots before this killcam are not kicked
+                r.animKey.clear();
+            }
+            // The animation clock: the record's time when it changes (a new frame or snapshot), the frame time in between,
+            // and a restart when the record names another animation or started it again.
+            if (vs.animKey != r.animKey || vs.animMs < r.animMsSeen - 100) {
+                r.animKey = vs.animKey;
+                r.animMs = float(vs.animMs);
+            } else if (vs.animMs != r.animMsSeen) {
+                r.animMs = float(vs.animMs);
+            } else {
+                r.animMs += float(dtMs);
+            }
+            r.animMsSeen = vs.animMs;
+            // Aiming for the aim layers (0x4b2918-0x4b2969): the aim flag, not in the offhand states or a reload.
+            const bool offhand = vs.weaponState >= 12 && vs.weaponState <= 16;
+            const bool aiming = vs.adsHeld && !offhand && vs.weaponState != 5 && vs.weaponState != 7;
+            r.aim.update(aiming, float(dtMs) * 0.001f);
+            const float xySpeed = std::sqrt(vs.velocity[0] * vs.velocity[0] + vs.velocity[1] * vs.velocity[1]);
+            const int stance = vs.viewHeightTarget <= 11 ? 2 : vs.viewHeightTarget <= 40 ? 1 : 0;
+            r.motion.update(num, dtMs, xySpeed, 190.0f, vs.viewHeight, vs.adsFrac, vs.lean);
+            r.motion.sway(num, dtMs, v.angles[0], v.angles[1], vs.adsFrac, stance, reticle, 0.0f);
+            r.gunBob = game::gunBob(vs.bobCycle, xySpeed, vs.viewHeightTarget, vs.adsFrac, num("adsBobFactor"), reticle);
+            r.rawGunBobPrev = r.rawGunBob;
+            r.rawGunBob = game::gunBob(vs.bobCycle, xySpeed, vs.viewHeightTarget, vs.adsFrac, num("adsBobFactor"), false);
+            const auto vb = game::viewBob(vs.bobCycle, xySpeed, vs.viewHeightTarget, vs.adsFrac, num("adsViewBobMult"));
+            r.bobAngles = {vb[2], vb[3]};
+            // The recoil (0x4dfea0 per fire event, the springs 0x4ade00 / 0x4b5d10) and the muzzle flash of each new shot.
+            if (r.fireCount >= 0 && v.fireCount > r.fireCount) {
+                for (int i = r.fireCount; i < v.fireCount; ++i) r.recoil.fire(num, vs.adsFrac, false);
+                r.flash->pending = true;
+                if (num("boltAction") == 0) r.flash->brassPending = true;
+            }
+            r.fireCount = v.fireCount;
+            r.recoil.update(num, dtMs, !v.weapon.empty(), vs.adsFrac);
+            r.view = v;
+            r.active = true;
+            return std::array<float, 4>{vb[0], vb[1], vb[2], vb[3]};
+        };
+        auto killcamCamera = [&](Camera& c, float frac) -> std::optional<game::World::MpKillcamView> {
+            if (!world || !world->multiplayer()) { killcamRig.active = false; return std::nullopt; }
+            const auto v = world->mpKillcamView(frac).active ? world->mpKillcamView(frac) : netKillcam;
+            if (!v.active) {
+                killcamRig.active = false;
+                killcamRig.flash->valid = false; // the bolted flash particles of an ended killcam end with it
+                return std::nullopt;
+            }
+            const auto vb = killcamRigStep(v);
+            const KillcamRig& r = killcamRig;
+            const game::MpViewState& vs = v.view;
+            const std::string& vw = vs.viewWeapon.empty() ? v.weapon : vs.viewWeapon;
+            auto num = [&](const char* k) { return killcamNumber(vw, k); };
+            c.pos = {v.eye[0], v.eye[1], v.eye[2]};
+            c.pitch = v.angles[0];
+            c.yaw = v.angles[1];
+            c.roll = 0;
+            // The view bob (0x4ae290): up by the bob wave, sideways along the right vector; the aim bob turns the view.
+            {
+                const Vec3 rgt = c.right();
+                c.pos = c.pos + Vec3{0, 0, vb[0]} + rgt * vb[1];
+            }
+            c.pitch += r.recoil.viewKick()[0]; // the view kick spring (0x4ae327)
+            c.yaw += r.recoil.viewKick()[1];
+            const std::string ret = killcamField(vw, "adsOverlayReticle");
+            const bool reticle = !ret.empty() && ret != "none";
+            if (vs.adsFrac != 0) { // scoped view bob (0x4ae210)
+                const game::V3 svb = game::scopedViewBob(r.rawGunBobPrev, vs.adsFrac, reticle);
+                c.pitch += svb[0];
+                c.yaw += svb[1];
+                c.roll += svb[2];
+            }
+            c.pitch += r.bobAngles[0]; // ADS view bob (0x4ae4a9)
+            c.yaw += r.bobAngles[1];
+            // The aim zoom (0x4ae7d9) from the recorded aim fraction and its direction.
+            c.fovX43 = game::adsFov(80.0f, num("adsZoomFov") > 0 ? num("adsZoomFov") : 80.0f, num("adsZoomInFrac"), num("adsZoomOutFrac"),
+                                    vs.adsFrac, vs.adsHeld);
+            static const bool trace = std::getenv("IW2_KILLCAM_TRACE") != nullptr;
+            if (trace)
+                std::printf("kctrace view t=%lld lerp=%.2f frame=%lld ft=%lld killer=%d eye=%.1f,%.1f,%.1f ang=%.1f,%.1f fire=%d fireAge=%d clip=%d ads=%.2f state=%d anim=%s/%d\n",
+                            static_cast<long long>(world->timeMs()), double(frac), static_cast<long long>(v.frame), static_cast<long long>(v.frameTimeMs), // [server time]
+                            v.killer, double(v.eye[0]), double(v.eye[1]), double(v.eye[2]), double(v.angles[0]), double(v.angles[1]), v.fireCount,
+                            v.fireAgeMs, v.clip, double(vs.adsFrac), vs.weaponState, vs.animKey.c_str(), vs.animMs);
+            return v;
+        };
+        // The killcam's scope overlay alpha (0x4bc8a0 on the copied player state): the followed weapon's overlay at the
+        // recorded aim fraction; 0 without a killcam.
+        auto killcamScopeAlpha = [&]() -> float {
+            if (!killcamRig.active) return 0.0f;
+            const game::MpViewState& vs = killcamRig.view.view;
+            const std::string& vw = vs.viewWeapon.empty() ? killcamRig.view.weapon : vs.viewWeapon;
+            const std::string shader = killcamField(vw, "adsOverlayShader"), reticle = killcamField(vw, "adsOverlayReticle");
+            if (shader.empty() && (reticle.empty() || reticle == "none")) return 0.0f;
+            return game::scopeOverlayAlpha(true, vs.adsFrac, killcamNumber(vw, vs.adsHeld ? "adsZoomInFrac" : "adsZoomOutFrac"));
+        };
+        // The followed client's view weapon through the shared poser: the recorded animation at the rig's clock (the
+        // idle loops), the recorded aim fraction with the rig's aim cross-fade, the rig's offsets, bob, kick and flash.
+        auto addKillcamViewModel = [&](std::vector<DrawItem>& items, const Camera& c, const game::World::MpKillcamView& v) {
+            const game::MpViewState& vs = v.view;
+            const std::string& vw = vs.viewWeapon.empty() ? v.weapon : vs.viewWeapon;
+            if (!world->weapon(vw)) return;
+            KillcamRig& r = killcamRig;
+            ViewWeaponSource s;
+            s.field = [&, vw](const char* k) { return killcamField(vw, k); };
+            auto xm = [](std::string m) { return m.empty() || m.rfind("xmodel/", 0) == 0 ? m : "xmodel/" + m; };
+            // The hands: the client's setviewmodel hands (as the own view, the character's hands also during a throw).
+            s.handsName = xm(!v.hands.empty() ? v.hands : killcamField(vw, "handModel"));
+            s.gunName = xm(killcamField(vw, "gunModel"));
+            s.animName = killcamField(vw, vs.animKey.empty() ? "idleAnim" : vs.animKey.c_str());
+            if (s.animName.empty()) s.animName = killcamField(vw, "idleAnim");
+            if (const assets::XAnim* an = viewAnim(vfs, s.animName)) {
+                const float last = float(std::max(0, an->numFrames - 1));
+                const float f = r.animMs * 0.001f * float(an->frameRate);
+                const bool loops = vs.weaponState == 0 || vs.animKey.empty() || vs.animKey == "idleAnim" || vs.animKey == "emptyIdleAnim";
+                s.animFrame = loops && last > 0 ? std::fmod(f, last) : std::min(f, last);
+            }
+            if (std::getenv("IW2_VM_TRACE")) std::cout << "killcam vm hands '" << s.handsName << "' gun '" << s.gunName << "' anim " << s.animName << " frame " << s.animFrame << " ads " << vs.adsFrac << "\n";
+            s.adsFrac = vs.adsFrac;
+            s.aimUp = r.aim.up();
+            s.aimDown = r.aim.down();
+            s.move = r.motion.move();
+            s.rot = r.motion.rot();
+            for (int k = 0; k < 3; ++k) s.rot[size_t(k)] += r.gunBob[size_t(k)];
+            {
+                const auto gk = r.recoil.gunKick();
+                for (int k = 0; k < 3; ++k) s.rot[size_t(k)] += gk[size_t(k)];
+            }
+            s.flash = r.flash;
+            s.skinKey = -2;
+            // Under the scope overlay the gun is posed but not drawn, as the own view's (0x4b6d7c).
+            if (killcamScopeAlpha() > 0) {
+                std::vector<DrawItem> scratch;
+                poseViewWeapon(scratch, c, s, false);
+            } else {
+                poseViewWeapon(items, c, s, true);
+            }
+        };
+        // gatherItems with the archived frame swapped into the entities; the live interpolation state does not apply to it.
+        auto gatherKillcamItems = [&](const Camera& c, float frac) {
+            if (!world->mpKillcamView(frac).active) return gatherItems(c); // network killcam: the server sent the archived frame
+            world->mpKillcamApply(frac);
+            std::map<int, std::pair<script::Vec3, script::Vec3>> savedLerp;
+            std::map<int, game::AnimState> savedAnim;
+            savedLerp.swap(lerpPrev);
+            savedAnim.swap(prevAnim);
+            // The archived frame before the shown one is the "before the server frame" state the bodies are advanced from.
+            for (const auto& e : world->entities())
+                if (const game::AnimState* pa = world->mpKillcamPrevAnim(e->number)) prevAnim.emplace(e->number, *pa);
+            auto items = gatherItems(c);
+            savedLerp.swap(lerpPrev);
+            savedAnim.swap(prevAnim);
+            world->mpKillcamRestore();
+            return items;
+        };
 
         // HUD: script elements, crosshair and ammo counter, laid out on a 640x480 virtual screen
         // (alignment rules are inferred; see docs/spec/ui.md).
         assets::Localization loc;
         loc.load(vfs, language);
+        for (const auto& [k, t] : ui::mpext::localizedStrings(language)) loc.add(k, t); // the extension panel's texts (docs/spec/mp-ui.md)
+        // Log lines of server texts: localized as the message window shows them, in UTF-8 (the strings are code-page text).
+        const int logCodePage = util::codePageForLanguage(language);
+        const auto logText = [&](const std::string& msg) {
+            return util::codePageToUtf8(game::localizeTextMessage(msg, [&](const std::string& k) { return loc.find(k); }), logCodePage);
+        };
         std::map<std::string, std::optional<assets::Font>> fonts;
         auto font = [&](const std::string& name) -> const assets::Font* {
             auto [it, inserted] = fonts.try_emplace(name);
@@ -4697,12 +5266,14 @@ int main(int argc, char** argv) {
         ui::MenuLibrary scriptMenus(vfs);
         float menuMx = 320.0f, menuMy = 240.0f; // cursor in the 640x480 virtual screen
         // Client-side cvars of the menus (persist across levels; the running world's cvars take precedence while it exists).
+        std::string pendingShotPng; // debug token shot:<file.png> of IW2_MENU_KEYS (docs/debug-flags.md)
         bool pendingDisconnect = false; // "disconnect" (player_profile_ingame_warning "yes"): leave the level, back to the front end
         std::optional<std::pair<std::string, bool>> pendingLevel; // map to load (from "map X" or a level change), failed flag
         // The pending load comes from a persistent changelevel (0x1c60ff0): game[] and the player's weapons survive it (0x4d9d3c ->
         // 0x46e1c0 frees the game object 0x9bef30 otherwise; 0x4d9dd1 -> 0x4e6c20 writes the client into a memory save).
         bool pendingPersistent = false;
         std::string deferredExec; // console text after a `wait`, run on the next frame
+        std::optional<ui::MpLoadScreenText> mpLoadText; // the MP load screen's two lines while "connect" is up
         int loadScreenPhase = 0; // 1: the briefing load screen is up for one frame before the synchronous load (UI_SetActiveMenu(13))
         std::optional<std::string> pendingLoad;                   // savegame to load ("loadgame X", loadgame_continue)
         // The save reload after a death (loadgame_continue from the dead screen): no briefing frame and no pregame prompt, the
@@ -4716,14 +5287,45 @@ int main(int argc, char** argv) {
         bool continueRestart = false;
         // Script menu environment (src/ui/menurun.h): the menu's commands act on the game cvars and send responses back.
         ui::MenuEnv menuEnv;
+        // MP obituary (0x4e03f0, docs/spec/mp-hud.md): a game-message row with the kill icon between the team-coloured names, and
+        // the local client's centre print. startNs / atMs: when the event arrived (front-end clock / world time).
+        auto pushObituary = [&](const game::MpObituary& ev, uint64_t startNs, int64_t atMs) {
+            const game::ObituaryLine l = world->mpObituaryLine(ev);
+            auto ob = std::make_shared<ScreenMessage::Obit>();
+            ob->attacker = l.attacker;
+            ob->victim = l.victim;
+            ob->icon = l.icon;
+            ob->iconW = l.iconW;
+            ob->iconH = l.iconH;
+            ob->flip = l.flip;
+            const auto ac = game::mpTeamColor(l.attackerTeam, menuEnv.getCvar("g_TeamColor_Axis"), menuEnv.getCvar("g_TeamColor_Allies"));
+            const auto vc = game::mpTeamColor(l.victimTeam, menuEnv.getCvar("g_TeamColor_Axis"), menuEnv.getCvar("g_TeamColor_Allies"));
+            for (int k = 0; k < 3; ++k) ob->attackerRgb[k] = ac[size_t(k)], ob->victimRgb[k] = vc[size_t(k)];
+            screenMessages.push_back({"", startNs + game::kGameMessageNs, false, startNs, startNs + game::kGameMessageNs, ob});
+            if (!l.centerText.empty()) {
+                mpCenterText = l.centerText;
+                mpCenterStartMs = atMs;
+            }
+        };
+        // Multiplayer front end (openiw2 extension, docs/spec/mp-ui.md): the original game starts a separate multiplayer executable
+        // from the SP menu (uiScript startMultiplayer); iw2view swaps its menu set to ui_mp/menus.txt instead and runs the
+        // create-server screen in the same process. The switch waits for the next frame (the running menu script owns the items).
+        bool mpFrontEnd = false;
+        std::optional<bool> pendingFrontEnd; // true: to multiplayer, false: back to single player
+        ui::MpServerSetup mpSetup;
         menuEnv.getCvar = [&](const std::string& n) {
             if (n == "sv_running") return std::string(world ? "1" : "0"); // dvar registered at 0x42df10 (default 0, flags 0x1040); the writers are not traced
+            if (n == "cl_ingame") return std::string(world ? "1" : "0");  // MP menus: connected to a running game. TODO(spec): exe cvar
             if (world) {
+                if (const std::string* v = world->mpLocalCvar(n)) return *v; // setClientCvar of the local client (docs/spec/mp.md)
                 const auto it = world->cvars.find(n);
                 if (it != world->cvars.end()) return it->second;
             }
             const auto u = uiCvars.find(n);
-            return u == uiCvars.end() ? ui::registeredDefault(n) : u->second;
+            if (u != uiCvars.end()) return u->second;
+            if (mpFrontEnd || (world && world->multiplayer())) // the MP executable's registered defaults (docs/spec/mp-ui.md)
+                if (std::string d = ui::mpRegisteredDefault(n); !d.empty()) return d;
+            return ui::registeredDefault(n);
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
             const auto store = [&](const std::string& name) {
@@ -4734,9 +5336,29 @@ int main(int argc, char** argv) {
             store(n);
             if (const std::string direct = ui::immediateMenuDvar(n); !direct.empty()) store(direct);
         };
+        menuEnv.ingameActive = [&] {
+            return ui::ingameCloseActive(world && world->multiplayer(), world != nullptr, std::atoi(menuEnv.getCvar("cl_paused").c_str()) != 0);
+        };
+        menuEnv.multiplayer = [&] { return world && world->multiplayer(); };
         menuEnv.scriptMenuResponse = [&](const std::string& menu, const std::string& response) {
             // "cmd mr <menu index> <response>" (0x4c8e20); the index is the menu's precache slot.
             if (!world) return;
+            if (world->multiplayer()) { // MP: "cmd mr <serverId> <index> <response>" -> the client's menuresponse (docs/spec/mp.md)
+                if (netClient) { // network game: to the server (docs/spec/net.md section 10)
+                    // The index is the server's precache slot, read from its menu configstrings: the client's own world
+                    // precaches its menus with its own cvars, so its order can differ from the server's.
+                    for (int i = 0; i < 32; ++i) {
+                        const auto cs = netClient->configstrings.find(netgame::kMenuConfigstrings + i);
+                        if (cs != netClient->configstrings.end() && cs->second == menu) {
+                            netClient->addReliableCommand("mr " + std::to_string(netClient->serverId) + " " + std::to_string(i) + " " + response);
+                            break;
+                        }
+                    }
+                    return;
+                }
+                world->mpMenuResponse(world->mpLocalClient(), menu, response);
+                return;
+            }
             const auto& names = world->menuNames();
             for (size_t i = 0; i < names.size(); ++i)
                 if (names[i] == menu) world->menuResponse(int(i), response);
@@ -4746,6 +5368,7 @@ int main(int argc, char** argv) {
             mixer.play(alias, std::nullopt, &duration); // interface sounds are 2D
         };
         // Console text run by menu "exec" (src/ui/frontend_exec.h): set, vstr, map, difficulty*, ';' separated.
+        std::function<void(const std::string&)> connectText; // set below, with the join code
         std::function<void(const std::string&)> execText = [&](const std::string& text) {
             size_t start = 0;
             while (start <= text.size()) {
@@ -4759,6 +5382,9 @@ int main(int argc, char** argv) {
                 for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                 while (!a2.empty() && std::isspace(static_cast<unsigned char>(a2.back()))) a2.pop_back();
                 if (c == "vstr") execText(menuEnv.getCvar(a1));
+                // Chat in a network game: "say" / "say_team" go to the server as client commands (docs/spec/net.md section 10).
+                else if (c == "cmd" && netClient) netClient->addReliableCommand(a1 + (a2.empty() ? "" : " " + a2)); // forwarded to the server (MP console command "cmd")
+                else if ((c == "say" || c == "say_team") && netClient) netClient->addReliableCommand(c + " " + a1 + (a2.empty() ? "" : " " + a2));
                 // "setfromdvar dst src" (console command, ui/options_graphics.cfg) copies the value of src (registered default if unset).
                 // TODO(spec): [command not located] exe address of the command and its behaviour for an unknown src.
                 else if (c == "setfromdvar") menuEnv.setCvar(a1, menuEnv.getCvar(a2));
@@ -4783,6 +5409,10 @@ int main(int argc, char** argv) {
                     }
                 }
                 else if (c == "set" || c == "seta" || c == "sets") menuEnv.setCvar(a1, a2);
+                // In the multiplayer front end (openiw2 extension, docs/spec/mp-ui.md) "map X" / "devmap X" start the listen server
+                // on mp/X, the iw2view multiplayer mode.
+                else if ((c == "map" || c == "devmap") && mpFrontEnd && a1.rfind("mp/", 0) != 0)
+                    pendingLevel = std::make_pair("mp/" + a1, false), pendingPersistent = false;
                 else if (c == "map" || c == "spmap" || c == "devmap" || c == "spdevmap") pendingLevel = std::make_pair(a1, false), pendingPersistent = false;
                 // nextlevel (console 0x446fa0 / menu command 0x4c8e10 -> 0x4d9f00): `spmap <stored map>` (`spdevmap` with sv_cheats) or,
                 // without a stored map, `disconnect`.
@@ -4803,6 +5433,7 @@ int main(int argc, char** argv) {
                 else if (c == "difficultyhard") menuEnv.setCvar("g_gameskill", "2");
                 else if (c == "difficultyfu") menuEnv.setCvar("g_gameskill", "3");
                 else if (c == "disconnect") pendingDisconnect = world != nullptr;
+                else if (c == "connect" && !a1.empty()) connectText(a1); // docs/spec/mp-ui.md "Addresses and name lookup"
                 else if (c == "quit") std::exit(0);
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
@@ -4839,6 +5470,7 @@ int main(int argc, char** argv) {
         menuEnv.exec = execText;
         // uiScript dispatcher (0x4c5b9b..): "Quit" (string 0x580e60) runs the console command "quit" (0x41b0a0 with 0x571858).
         // TODO(spec): [remaining names not walked in 0x4c5b9b] the other uiScripts (loadControls, openMenuOnDvar, loadMissionDifficultyOffset, Loadgame, profiles ...).
+        std::array<std::time_t, 4> lastServerRefresh{};
         ui::MenuStack* frontPtr = nullptr; // set once frontStack exists (the scripts select list rows through it)
         auto saveProfileCfg = [&] {
             if (!profileDirty) return;
@@ -4865,8 +5497,167 @@ int main(int argc, char** argv) {
         const std::filesystem::path saveDir = std::getenv("IW2_SAVE_DIR") ? std::filesystem::path(std::getenv("IW2_SAVE_DIR"))
                                               : app                       ? app->pref / "save"
                                                                           : std::filesystem::path(args[0]) / "save";
-        menuEnv.uiScript = [&](const std::string& name, const ui::Command&) {
+        // Join a server: from the join list, a favorite, "connect" and +connect (name lookup first, docs/spec/mp-ui.md).
+        net::Resolver pendingConnect;
+        auto joinAddress = [&](const net::NetAddress& to) {
+            std::cout << "joining " << to.toString() << "\n";
+            auto nc = std::make_unique<net::GameClient>();
+            if (const std::string pn = menuEnv.getCvar("name"); !pn.empty()) nc->name = pn; // the player name of the multiplayer options
+            if (const char* n = std::getenv("IW2_NET_NAME")) nc->name = n;
+            nc->password = menuEnv.getCvar("password"); // ui_mp/password.menu
+            if (netClient) netClient->disconnect(); // a connection still held goes first
+            if (!nc->connect(to, netNowMs())) { std::cerr << "error: " << nc->error << "\n"; return; }
+            nc->waitForHandshake(netNowMs, 20, [&] { if (listenServer) listenServer->poll(netNowMs(), 0); });
+            if (nc->state() == net::ClientState::Disconnected) {
+                std::cerr << "error: " << nc->error << "\n";
+                netError = netgame::errorDialog(nc->dropFromServer, nc->dropReason);
+                return;
+            }
+            const std::string map = net::infoValueForKey(nc->configstrings[0], "mapname");
+            std::cout << "connected as client " << nc->clientNum << ", map " << map << "\n";
+            netClient = std::move(nc);
+            ++netConnection;
+            if (frontPtr) frontPtr->closeAll();
+            execText("map " + map);
+        };
+        connectText = [&](const std::string& text) { pendingConnect.start(text, net::kDefaultPort, netNowMs()); };
+        // Once per frame: a lookup that finished joins, one that failed shows the error popup.
+        auto pumpConnect = [&] {
+            const auto st = pendingConnect.poll(netNowMs());
+            if (st == net::Resolver::Status::Done) { const auto to = pendingConnect.address(); pendingConnect.reset(); joinAddress(to); }
+            else if (st == net::Resolver::Status::Failed) {
+                std::cerr << "error: bad address " << pendingConnect.text() << "\n";
+                pendingConnect.reset();
+                netError = netgame::errorDialog(false, "\x14" "EXE_BADSERVERADDRESS");
+            }
+        };
+        net::FavoriteList favorites; // per profile, next to its config.cfg
+        auto favoritesFile = [&] { return profileCfg.parent_path() / "favorites.txt"; };
+        auto loadFavorites = [&] {
+            favorites.clear();
+            if (std::ifstream ff(favoritesFile()); ff) favorites.parse(std::string(std::istreambuf_iterator<char>(ff), {}), net::kDefaultPort);
+        };
+        loadFavorites();
+        auto saveFavorites = [&] {
+            std::error_code ec;
+            std::filesystem::create_directories(favoritesFile().parent_path(), ec);
+            if (std::ofstream of(favoritesFile()); of) of << favorites.format();
+        };
+        auto refreshBrowser = [&] {
+            const int source = std::atoi(menuEnv.getCvar("ui_netSource").c_str());
+            const char* extra = std::getenv("IW2_LAN_EXTRA"); // openiw2: also ask this host:port (tests, no broadcast)
+            std::vector<net::NetAddress> ex;
+            if (net::NetAddress a; extra && net::NetAddress::parse(extra, a, net::kDefaultPort)) ex.push_back(a);
+            lanBrowser.setSource(source);
+            lanBrowser.setFavorites(favorites.items());
+            lanBrowser.refresh(netNowMs(), ex);
+            lastServerRefresh[source & 3] = std::time(nullptr);
+            std::cout << "lan browser: refresh\n";
+        };
+        menuEnv.uiScript = [&](const std::string& name, const ui::Command& cmd) {
+            (void)cmd;
             if (name == "quit") execText("quit");
+            else if (name == "startmultiplayer") pendingFrontEnd = true;   // SP ui/main.menu (multi_popmenu): see mpFrontEnd
+            else if (name == "startsingleplayer") pendingFrontEnd = false; // MP ui_mp/single_player.menu
+            // loadArenas (MP exe 0x5352ce): arenas, gametype from g_gametype, the map filter, row 0 of FEEDER_ALLMAPS. The
+            // extension panel opens with it (createserver's onOpen runs loadArenas).
+            // Join-server list (ui_mp/joinserver.menu; uiScript dispatch MP 0x53588c): RefreshServers broadcasts getinfo
+            // (docs/spec/net.md section 12), JoinServer connects to the selected row and loads its map as a network client.
+            else if (name == "refreshservers" || name == "refreshfilter" || name == "updatefilter") {
+                // UpdateFilter (the join screen's onOpen) refreshes the local source; openiw2 also asks the favorites, which have no
+                // stored answers here (docs/spec/mp-ui.md "Join server").
+                const int source = std::atoi(menuEnv.getCvar("ui_netSource").c_str());
+                if (name != "updatefilter" || source == net::kSourceLocal || source == net::kSourceFavorites) refreshBrowser();
+                else lanBrowser.select(-1);
+            }
+            else if (name == "joinserver") {
+                const net::LanServer* row = lanBrowser.rowServer(lanBrowser.selected >= 0 ? lanBrowser.selected : 0);
+                if (!row) return;
+                if (row->favorite && row->address.ip == 0) connectText(row->addressText); // its name was not looked up yet
+                else joinAddress(row->address);
+            }
+            else if (name == "serversort") {
+                if (cmd.size() > 2) lanBrowser.sortBy(std::atoi(cmd[2].c_str()));
+            }
+            else if (name == "closejoin" || name == "stoprefresh") {} // the refresh is over within its timeout (kRefreshMs)
+            else if (name == "serverstatus") lanBrowser.queryStatus(netNowMs());
+            else if (name == "addfavorite" || name == "createfavorite") {
+                const bool create = name == "createfavorite";
+                const int source = std::atoi(menuEnv.getCvar("ui_netSource").c_str());
+                if (create != (source == net::kSourceFavorites)) return; // the dispatcher's source test (MP 0x534d60)
+                std::string nm, ad;
+                if (create) nm = menuEnv.getCvar("ui_favoriteName"), ad = menuEnv.getCvar("ui_favoriteAddress");
+                else if (const net::LanServer* r = lanBrowser.rowServer(lanBrowser.selected >= 0 ? lanBrowser.selected : 0)) nm = r->hostname(), ad = r->address.toString();
+                menuEnv.setCvar("ui_favorite_message", net::favoriteMessage(favorites, nm.substr(0, 31), ad.substr(0, 31), net::kDefaultPort));
+                saveFavorites();
+                if (create) refreshBrowser();
+            }
+            else if (name == "deletefavorite") {
+                if (std::atoi(menuEnv.getCvar("ui_netSource").c_str()) != net::kSourceFavorites) return;
+                if (const net::LanServer* r = lanBrowser.rowServer(lanBrowser.selected)) {
+                    const std::string ad = r->addressText;
+                    favorites.remove(ad);
+                    saveFavorites();
+                    refreshBrowser();
+                }
+            }
+            else if (name == "clearerror") menuEnv.setCvar("com_errorMessage", ""); // error_popmenu onClose (docs/spec/net.md section 14)
+            else if (name == "loadarenas") {
+                const auto get = menuEnv.getCvar;
+                const auto set = menuEnv.setCvar;
+                mpSetup.loadArenas(vfs, get, set);
+                if (frontPtr) frontPtr->setFeederSelection(ui::MpServerSetup::kFeederAllMaps, 0);
+                ui::mpext::initDefaults(get, set);
+                menuEnv.open("iw2_createserver_extbutton");
+            }
+            // StartServer (MP exe 0x534d93): cvars and "wait ; wait ; map <map>"; the extension adds the weapon classes and bots.
+            else if (name == "startserver") {
+                // The weapon panel's list must leave every nation a weapon to choose (a player without one cannot join): refused
+                // with a message instead of starting a server nobody can join (docs/spec/mp-ui.md "Weapon classes").
+                {
+                    game::MpWeaponSelection sel;
+                    const std::string list = ui::mpext::weaponList(menuEnv.getCvar);
+                    if (!game::mpParseWeaponList(list, sel).empty()) {
+                        const bool noClass = [&] {
+                            for (const auto& c : ui::mpext::weaponClasses())
+                                if (std::string(c.id) != "grenades" && list.find(c.id) != std::string::npos) return false;
+                            return true;
+                        }();
+                        const auto find = [&](const std::string& k) { return loc.find(k); };
+                        menuEnv.setCvar("com_errorTitle", game::localizeTextMessage("\x14MENU_ERROR", find));
+                        const std::string* msg = loc.find(noClass ? "IW2_ERR_NO_WEAPON" : "IW2_ERR_NATION_WEAPON");
+                        menuEnv.setCvar("com_errorMessage", msg ? *msg : list);
+                        std::cout << "start server refused: weapon classes '" << list << "'\n";
+                        if (frontPtr) frontPtr->errorKeepsScreen(true);
+                        menuEnv.open("error_popmenu");
+                        return;
+                    }
+                }
+                const std::string cmd = mpSetup.startServer(menuEnv.getCvar, menuEnv.setCvar);
+                if (cmd.empty()) return;
+                // A server started from the menu takes LAN clients, as the original's listen server does (docs/spec/net.md section 11);
+                // IW2_LISTEN=0 turns the listen server off.
+                listenWanted = ui::menuStartListens(std::getenv("IW2_LISTEN"));
+                ui::mpext::applyWeaponClasses(menuEnv.getCvar, menuEnv.setCvar);
+                // The dedicated choice (dvar "dedicated" 1 LAN / 2 internet; MP 0x434dc0 -> CL_Shutdown 0x4116d0): no local game;
+                // the window closes and the process becomes the server (docs/spec/mp-ui.md "Dedicated start").
+                if (netgame::menuStartIsDedicated(menuEnv.getCvar("dedicated"))) {
+                    auto menuCvars = uiCvars;
+                    for (const char* k : {"sv_hostname", "sv_maxclients", "g_password", "g_gametype"}) menuCvars[k] = menuEnv.getCvar(k);
+                    const char* lp = std::getenv("IW2_LISTEN_PORT");
+                    const std::string np = menuEnv.getCvar("net_port");
+                    dedicatedStart = netgame::dedicatedFromMenu(menuCvars, cmd, ui::mpext::botCount(menuEnv.getCvar),
+                                                                ui::mpext::botSkill(menuEnv.getCvar),
+                                                                lp ? std::atoi(lp) : !np.empty() ? std::atoi(np.c_str()) : 28960);
+                    std::cout << "dedicated server: " << dedicatedStart->gametype << ", " << dedicatedStart->map << "  bots "
+                              << dedicatedStart->bots << " skill " << dedicatedStart->botSkill << "\n";
+                    return; // the main loop ends at its next turn
+                }
+                mpMenuBots = std::make_pair(ui::mpext::botCount(menuEnv.getCvar), ui::mpext::botSkill(menuEnv.getCvar));
+                std::cout << "start server: " << menuEnv.getCvar("g_gametype") << ", " << cmd.substr(cmd.rfind(' ') + 1) << "  bots "
+                          << mpMenuBots->first << " skill " << mpMenuBots->second << "\n";
+                execText(cmd);
+            }
             // "playerstart" (0x4c5ab3 -> 0x4c54c0): cl_paused 0, console "fade 0 0 0 0 3" (0x581044), close every menu.
             else if (name == "playerstart") { menuEnv.setCvar("cl_paused", "0"); execText("fade 0 0 0 0 3"); if (frontPtr) frontPtr->closeAll(); }
             // "Loadgame" uiScript: "loadgame %s" of ui_savegame (0x580f98 / 0x580fa8).
@@ -4927,6 +5718,7 @@ int main(int argc, char** argv) {
                     fresh[keep] = uiCvars[keep];
                 fresh["com_playerProfile"] = profileName;
                 uiCvars = fresh;
+                loadFavorites();
             }
         };
         // Savegame list (FEEDER_SAVEGAMES 0x10): save/*.svg whose header is listable, newest first (0x4c44a0).
@@ -4959,13 +5751,44 @@ int main(int argc, char** argv) {
                 if (saveRows.size() >= ui::kSaveListMax) break;
             }
         };
+        auto readBrowserFilter = [&] {
+            net::BrowserFilter f;
+            const auto i = [&](const char* k) { return std::atoi(menuEnv.getCvar(k).c_str()); };
+            f.showFull = i("ui_browserShowFull"), f.showEmpty = i("ui_browserShowEmpty"), f.showPassword = i("ui_browserShowPassword");
+            f.showNoPassword = i("ui_browserShowNoPassword"), f.showPure = i("ui_browserShowPure"), f.showDedicated = i("ui_browserShowDedicated");
+            f.mod = i("ui_browserMod"), f.friendlyFire = i("ui_browserFriendlyfire"), f.killcam = i("ui_browserKillcam"), f.punkBuster = i("ui_browserShowPunkBuster");
+            const int g = i("ui_joinGametype");
+            if (g > 0 && size_t(g - 1) < mpSetup.gametypes().size()) f.gametype = mpSetup.gametypes()[size_t(g - 1)].name;
+            return f;
+        };
+        std::map<std::string, ui::MpLoadScreenText> browserTextCache;
+        auto browserText = [&](const std::string& gt, const std::string& map) {
+            const std::string k = gt + "/" + map;
+            auto it = browserTextCache.find(k);
+            if (it == browserTextCache.end()) it = browserTextCache.emplace(k, ui::mpLoadScreenText(vfs, gt, map)).first;
+            return it->second;
+        };
         menuEnv.feederCount = [&](int feeder) {
             if (feeder == 0x18) return profiles.count();
+            if (feeder == net::LanBrowser::kFeederServers) { lanBrowser.setFilter(readBrowserFilter()); lanBrowser.poll(netNowMs()); return lanBrowser.rowCount(); }
+            if (feeder == net::LanBrowser::kFeederServerStatus) { lanBrowser.poll(netNowMs()); return lanBrowser.statusCount(); }
+            if (feeder == ui::MpServerSetup::kFeederAllMaps && mpFrontEnd) return mpSetup.mapCount();
             if (feeder == 0x10) { refreshSaves(); return int(saveRows.size()); }
             return 0;
         };
         menuEnv.feederText = [&](int feeder, int row, int col) {
             if (feeder == 0x18 && col == 0) return profiles.name(row);
+            if (feeder == net::LanBrowser::kFeederServers) {
+                if (col == 3 || col == 5) { // the map's long name and the gametype's display string (MP 0x537640, 0x532cd0, 0x532d90)
+                    const net::LanServer* s = lanBrowser.rowServer(row);
+                    if (!s || s->info.empty()) return std::string();
+                    const auto t = browserText(s->gametype(), s->map());
+                    return col == 3 ? t.map : saveLoc(t.gametype);
+                }
+                return lanBrowser.column(row, col);
+            }
+            if (feeder == net::LanBrowser::kFeederServerStatus) return lanBrowser.statusColumn(row, col);
+            if (feeder == ui::MpServerSetup::kFeederAllMaps && mpFrontEnd) return mpSetup.mapText(row); // 0x537550: long name
             // exe 0x4c5f60: column 0 = entry +4 (the file name), column 1 = entry +0x14 (the date text)
             if (feeder == 0x10 && row >= 0 && size_t(row) < saveRows.size() && col <= 1) {
                 if (col == 0) return saveRows[size_t(row)].name;
@@ -4975,6 +5798,8 @@ int main(int argc, char** argv) {
         };
         menuEnv.feederSelect = [&](int feeder, int row) {
             if (feeder == 0x18) uiCvars["ui_playerProfileSelected"] = profiles.name(row); // 0x4c6050
+            if (feeder == net::LanBrowser::kFeederServers) lanBrowser.select(row);
+            if (feeder == ui::MpServerSetup::kFeederAllMaps && mpFrontEnd) mpSetup.selectMap(row, menuEnv.setCvar); // 0x537b00
             // 0x4c6050 for feeder 0x10: dvar ui_savegame = file name; the name and the detail text go to the UI state (0x59b724 +0x31e / +0x41e).
             if (feeder == 0x10 && row >= 0 && size_t(row) < saveRows.size()) {
                 uiCvars["ui_savegame"] = saveRows[size_t(row)].name;
@@ -4993,10 +5818,89 @@ int main(int argc, char** argv) {
             f.read(reinterpret_cast<char*>(hdr.data()), std::streamsize(hdr.size()));
             return size_t(f.gcount()) == hdr.size() && ui::saveHeaderLoadable(hdr);
         };
-        menuEnv.restartAvailable = [&] { return bool(world); }; // TODO(spec): [0x4c4xxx caller not located] the restart point (0x4c4xxx); front end has none
+        menuEnv.restartAvailable = [&] { return bool(world); };
+        // UI_NETGAMETYPE (245): the key handler (MP exe 0x533b70) cycles the gametype and refilters the maps; the text is the
+        // gametype's display name.
+        menuEnv.ownerDrawKeyed = [&](int od) { return mpFrontEnd && (od == ui::kOwnerDrawNetSource || od == ui::kOwnerDrawJoinGametype); };
+        menuEnv.ownerDrawFlagShown = [&](int flag) { return ui::mpOwnerDrawFlagShown(flag, std::atoi(menuEnv.getCvar("ui_netSource").c_str())); };
+        menuEnv.ownerDrawKey = [&](int od, int step) {
+            if (!mpFrontEnd) return false;
+            if (od == ui::kOwnerDrawNetSource) { // MP 0x533cb0: 0..2 wrapping; a refresh unless the new source is internet
+                const int v = ui::mpCycleNetSource(std::atoi(menuEnv.getCvar("ui_netSource").c_str()), step);
+                menuEnv.setCvar("ui_netSource", std::to_string(v));
+                if (v != net::kSourceInternet) refreshBrowser();
+                else { lanBrowser.setSource(v); lanBrowser.refresh(netNowMs()); }
+                return true;
+            }
+            if (od == ui::kOwnerDrawJoinGametype) { // "All" and the gametypes, wrapping
+                const int n = int(mpSetup.gametypes().size()) + 1;
+                const int v = (std::atoi(menuEnv.getCvar("ui_joinGametype").c_str()) + step + n) % n;
+                menuEnv.setCvar("ui_joinGametype", std::to_string(v));
+                return true;
+            }
+            if (od != ui::MpServerSetup::kOwnerDrawNetGametype) return false;
+            const int row = mpSetup.cycleGametype(step, menuEnv.getCvar, menuEnv.setCvar);
+            if (row >= 0 && frontPtr) frontPtr->setFeederSelection(ui::MpServerSetup::kFeederAllMaps, row);
+            return true;
+        };
+        menuEnv.ownerDrawText = [&](int od) {
+            if (!mpFrontEnd) return std::string();
+            if (od == ui::MpServerSetup::kOwnerDrawNetGametype) return mpSetup.gametypeLabel(menuEnv.getCvar);
+            if (od == ui::kOwnerDrawNetSource) return ui::mpNetSourceLabel(std::atoi(menuEnv.getCvar("ui_netSource").c_str()));
+            if (od == ui::kOwnerDrawJoinGametype) {
+                const int g = std::atoi(menuEnv.getCvar("ui_joinGametype").c_str());
+                return g > 0 && size_t(g - 1) < mpSetup.gametypes().size() ? mpSetup.gametypes()[size_t(g - 1)].display : std::string("EXE_ALL");
+            }
+            if (od == ui::kOwnerDrawServerRefreshDate) {
+                const std::time_t t = lastServerRefresh[std::atoi(menuEnv.getCvar("ui_netSource").c_str()) & 3];
+                if (!t) return std::string();
+                char buf[32];
+                std::strftime(buf, sizeof buf, "%d-%m-%Y %H:%M", std::localtime(&t));
+                std::string fmt = saveLoc("EXE_REFRESHTIME");
+                if (const size_t p = fmt.find("&&1"); p != std::string::npos) fmt.replace(p, 3, buf);
+                return fmt;
+            }
+            return std::string();
+        };
         ui::initUiCvars(menuEnv); // ui_mousePitch from m_pitch (0x4c30db)
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
         frontPtr = &frontStack;
+        // Multiplayer / single player menu set (openiw2 extension, docs/spec/mp-ui.md), applied outside of any running menu script.
+        auto applyFrontEnd = [&] {
+            if (!pendingFrontEnd) return;
+            mpFrontEnd = *pendingFrontEnd;
+            pendingFrontEnd.reset();
+            frontStack.reset();
+            scriptMenus.clear();
+            if (mpFrontEnd) {
+                scriptMenus.loadList("ui_mp/menus.txt"); // the MP UI's menu list (MP exe 0x538109)
+                scriptMenus.parseSource(ui::mpext::menuSource(), "openiw2/createserver_ext.menu");
+                for (const auto& e : mpSetup.loadGametypes(vfs)) std::cout << e << "\n";
+            } else {
+                scriptMenus.loadList("ui/menus.txt");
+                scriptMenus.loadList("ui/ingame.txt");
+            }
+            for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
+            for (const auto& e : scriptMenus.warnings()) if (e.rfind("menu file not found: ", 0) == 0) std::cerr << "WARNING: " << e << "\n";
+            menuEnv.setCvar("ui_multiplayer", mpFrontEnd ? "1" : "0");
+            frontStack.open("main");
+        };
+        // The error dialog of a network disconnect (docs/spec/net.md section 14, 0x4320d0): com_errorTitle /
+        // com_errorMessage, then error_popmenu over the MP main menu, once no level is up.
+        auto showNetError = [&] {
+            if (!netError || world || pendingLevel) return;
+            const auto find = [&](const std::string& k) { return loc.find(k); };
+            menuEnv.setCvar("com_errorTitle", game::localizeTextMessage("\x14" + netError->titleKey, find));
+            menuEnv.setCvar("com_errorMessage", game::localizeTextMessage(netError->message, find));
+            std::cout << "error dialog: " << menuEnv.getCvar("com_errorTitle") << ": " << menuEnv.getCvar("com_errorMessage") << "\n";
+            netError.reset();
+            if (!mpFrontEnd) pendingFrontEnd = true;
+            applyFrontEnd();
+            frontStack.errorKeepsScreen(false);
+            frontStack.closeAll();
+            frontStack.open("main");
+            frontStack.open("error_popmenu");
+        };
         // Extra debug tokens shared by IW2_MENU_KEYS / IW2_SHOT_KEYS (docs/debug-flags.md): text:abc, bs, del, home, end, ins, pgup, pgdn,
         // tab, wheelup, wheeldown, dbl:X/Y, ms:N (advance the UI clock), uiscript:name.
         auto menuExtraToken = [&](const std::string& k) {
@@ -5019,10 +5923,12 @@ int main(int argc, char** argv) {
             scriptMenus.loadList("ui/menus.txt");
             scriptMenus.loadList("ui/ingame.txt"); // pregame, victoryscreen (exe 0x581314 list)
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
+            for (const auto& e : scriptMenus.warnings()) if (e.rfind("menu file not found: ", 0) == 0) std::cerr << "WARNING: " << e << "\n";
             ui::addOpenIw2Options(scriptMenus); // the openiw2 option rows (hit marker) in the game options menu
         }
         // A level started from the command line ends its load the same way (0x449a2c): "pregame" unless ui_autoContinue (not for --shot).
-        if (world && shot.empty() && std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0) {
+        // Not in MP: the MP game has no pause and opens its own script menus.
+        if (world && !world->multiplayer() && shot.empty() && std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0) {
             menuEnv.setCvar("cl_paused", "1");
             frontStack.open("pregame");
         }
@@ -5040,17 +5946,81 @@ int main(int argc, char** argv) {
         // Server commands popupopen <index> [1] / popupclose (0x4a7094): the menu file is "ui/scriptmenus/<name>.menu" (0x4c3ad0).
         // The "1" (openmenunomouse) variant would keep the cursor hidden; here the cursor is always shown. No shipped script calls
         // openmenunomouse (every .gsc of the game files was searched), so that path is unreachable and left as is.
+        // Chat server commands (switch 0x4d1bb8): `h` unless cg_teamChatsOnly, `i` always; localized (0x4ab700), cut and cleaned
+        // (0x4d1550), added to the chat lines (0x4d0e10, cg_chatHeight / cg_chatTime) and printed to the console.
+        auto cvarInt = [&](const char* n, int def) { const std::string v = menuEnv.getCvar(n); return v.empty() ? def : std::atoi(v.c_str()); };
+        auto chatCommand = [&](const std::string& name, const std::string& arg) {
+            if (name == "h" && cvarInt("cg_teamChatsOnly", 0) != 0) return;
+            const std::string text = game::mpChatReceived(game::localizeTextMessage(arg, [&](const std::string& k) { return loc.find(k); }));
+            chatBuffer.add(text, cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
+            std::cout << "[chat] " << game::mpCleanString(text) << "\n";
+        };
         auto menuCommand = [&](const std::string& name, const std::string& arg) {
             if (name == "popupclose") {
                 if (const ui::Menu* t = frontStack.top()) frontStack.close(t->name);
                 return;
             }
             const int idx = std::atoi(arg.c_str());
-            if (!world || idx < 0 || size_t(idx) >= world->menuNames().size()) return;
-            const std::string& menuName = world->menuNames()[size_t(idx)];
-            if (!scriptMenus.find(menuName)) scriptMenus.loadFile("ui/scriptmenus/" + menuName + ".menu");
+            if (!world || idx < 0) return;
+            std::string menuName;
+            if (netClient) { // network game: the server's precache slot, from its menu configstrings (net.md section 10)
+                const auto cs = netClient->configstrings.find(netgame::kMenuConfigstrings + idx);
+                if (cs != netClient->configstrings.end()) menuName = cs->second;
+            } else if (size_t(idx) < world->menuNames().size()) menuName = world->menuNames()[size_t(idx)];
+            if (menuName.empty()) return;
+            if (world->multiplayer() && ui::menuIsHidden(menuName)) return; // a hidden entry (src/ui/menuhide.h): the server's request is ignored
+            // The MP client loads them from "ui_mp/scriptmenus/" (0x5326d0).
+            if (!scriptMenus.find(menuName)) scriptMenus.loadFile(std::string(world->multiplayer() ? "ui_mp" : "ui") + "/scriptmenus/" + menuName + ".menu");
             menuMx = 320.0f, menuMy = 240.0f;
             if (!frontStack.open(menuName)) std::cerr << "warning: script menu " << menuName << " not found\n";
+        };
+        // MP togglemenu (client 0x4107b0, also ESC in a running level): the script main menu the server named with
+        // setClientCvar g_scriptMainMenu (the client keeps it in its own buffer, 0x4d1b3e) opens; when it is not a loaded
+        // menu, "main". The MP game is not paused by it.
+        auto mpToggleMenu = [&]() {
+            if (!frontStack.empty()) {
+                if (const ui::Menu* t = frontStack.top()) frontStack.close(t->name);
+                return;
+            }
+            menuMx = 320.0f, menuMy = 240.0f;
+            // menuEnv.getCvar: the local server's setClientCvar, or on a network client the "v" server command (menuEnv.setCvar).
+            const std::string sm = menuEnv.getCvar("g_scriptMainMenu");
+            if (!sm.empty() && !scriptMenus.find(sm)) scriptMenus.loadFile("ui_mp/scriptmenus/" + sm + ".menu");
+            frontStack.open(ui::toggleMenuTarget(sm, !sm.empty() && scriptMenus.find(sm)));
+        };
+        // Bound console commands of the MP bindings (togglemenu, openscriptmenu <menu> <response>).
+        auto runConsoleCommands = [&]() {
+            for (const std::string& line : input.takeConsoleCommands()) {
+                std::istringstream in(line);
+                std::string c, menu, response;
+                in >> c >> menu >> response;
+                for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (!world || !world->multiplayer()) continue;
+                if (c == "togglemenu") mpToggleMenu();
+                // chatmodepublic / chatmodeteam (0x4039d0 / 0x403a20): clear the field, set its kind, toggle the message catcher.
+                else if (c == "chatmodepublic" || c == "chatmodeteam") {
+                    chatField.team = c == "chatmodeteam";
+                    chatField.text.clear();
+                    chatField.open = !chatField.open;
+                }
+                // mp_QuickMessage (0x4c1680): the UI menu "quickmessage" (ui_mp/wm_quickmessage.menu, listed in ui_mp/ingame.txt), only
+                // with the local player's pm_flags 0x800000 (playing or dead and not following, 0x501068). The port loads the menu
+                // and its three script menus on first use.
+                else if (c == "mp_quickmessage") {
+                    const game::Entity* lp = world->mpClientEntity(world->mpLocalClient());
+                    const std::string ss = lp ? lp->obj->get("sessionstate").toString() : std::string();
+                    if ((ss == "playing" || ss == "dead") && frontStack.empty()) {
+                        if (!scriptMenus.find("quickmessage")) scriptMenus.loadFile("ui_mp/wm_quickmessage.menu");
+                        for (const char* m : {"quickcommands", "quickstatements", "quickresponses"})
+                            if (!scriptMenus.find(m)) scriptMenus.loadFile(std::string("ui_mp/scriptmenus/") + m + ".menu");
+                        frontStack.open("quickmessage");
+                    }
+                }
+                else if (c == "openscriptmenu") {
+                    if (response.empty()) std::cout << "USAGE: openscriptmenu <parent menu name> <script menu response>\n";
+                    else world->mpOpenScriptMenu(menu, response);
+                }
+            }
         };
         bool mantleHint = false;
         float hudAimSpread = 255.0f, hudViewHeight = 60.0f; // ps+0x5b0 and the view height for the crosshair
@@ -5085,6 +6055,7 @@ int main(int argc, char** argv) {
         // is not 0; alpha = (fraction − (1 − adsZoomInFrac)) / adsZoomInFrac while zooming in (adsZoomOutFrac while
         // zooming out), shown above 0.01 and capped at 1.
         auto scopeAlpha = [&]() -> float {
+            if (killcamRig.active) return killcamScopeAlpha(); // the killcam: the followed weapon's overlay at its recorded aim
             if (!pweapon.equipped() && !pweapon.binocularsUp()) return 0;
             const std::string shader = pweapon.field("adsOverlayShader"), reticle = pweapon.field("adsOverlayReticle");
             if (shader.empty() && (reticle.empty() || reticle == "none")) return 0;
@@ -5127,6 +6098,12 @@ int main(int argc, char** argv) {
                         const int n = line[ci + 1] - '0';
                         if (n == 7) std::memcpy(cur, rgba, 4);
                         else if (n < 7) std::memcpy(cur, kCodes[n], 3);
+                        // MP: the client hands the renderer g_TeamColor_Allies / g_TeamColor_Axis for 8 / 9 (0x403441, defaults
+                        // 0.5 0.5 1 and 1 0.5 0.5; docs/spec/mp-chat.md).
+                        else if (world && world->multiplayer()) {
+                            static const uint8_t kTeam[2][3] = {{128, 128, 255}, {255, 128, 128}};
+                            std::memcpy(cur, kTeam[n - 8], 3);
+                        }
                         ++ci;
                         continue;
                     }
@@ -5215,6 +6192,143 @@ int main(int argc, char** argv) {
                 if (const auto* g = f->find(ch)) width += float(g->dx) * gs;
             return width;
         };
+        // MP scoreboard (0x4dabf0): layout from src/game/mpscoreboard.cpp, drawn on the 640x480 screen of the 4:3 area.
+        auto drawMpScoreboard = [&](std::vector<Quad2D>& out, uint32_t w, uint32_t h) {
+            if (!world || !world->multiplayer() || menuEnv.getCvar("cl_paused") == "1") return;
+            const int64_t nowMs = cgNowMs();
+            const bool held = hudFade.objectivesHeld || mpIntermissionView;
+            if (held && !mpSb.shown) mpSb.scroll = 0;
+            if (!held && mpSb.shown) mpSb.hiddenAt = nowMs;
+            mpSb.shown = held;
+            float alpha = 1.0f;
+            if (!held) {
+                const int64_t el = nowMs - mpSb.hiddenAt;
+                if (el < 0 || el >= 100) return;
+                alpha = float(100 - el) / 100.0f;
+            }
+            // A new level starts a new scoreboard: no list and no request time of the previous map.
+            bool newLevel = false;
+            if (netClient && mpSb.request.due(nowMs, worldGeneration, &newLevel)) netClient->addReliableCommand("score");
+            if (newLevel) mpSb.netScores.clear();
+            const float sc = float(h) / 480.0f, left43 = (float(w) - 640.0f * sc) * 0.5f;
+            auto pickFont = [&](float s) { const float fs = s * float(h) / 480.0f; return font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont"); };
+            auto tw = [&](const std::string& t, float s) {
+                const assets::Font* f = pickFont(s);
+                if (!f) return 0.0f;
+                float x = 0;
+                for (size_t i = 0; i < t.size(); ++i) {
+                    if (t[i] == '^' && i + 1 < t.size() && t[i + 1] >= '0' && t[i + 1] <= '9') { ++i; continue; }
+                    if (const auto* g = f->find((unsigned char)t[i])) x += float(g->dx) * s * 48.0f / float(f->pixelHeight);
+                }
+                return std::nearbyint(x);
+            };
+            auto locKey = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
+            const auto& mps = world->mpState();
+            // Listen server: the scores this server would send; network game: the last "b" command.
+            const std::string cmd = netClient ? mpSb.netScores : world->mpScoresCommand();
+            // Network game: the score lines carry the server's client numbers; names and teams come from the snapshot's
+            // client states (every client, also one whose entity is not in the snapshot), not from the remote world's slots.
+            const net::ClientSnapshot* sbSnap = netClient ? netClient->latest() : nullptr;
+            const auto teamOf = [&](int cl) {
+                std::string n;
+                int t = 0;
+                if (sbSnap && netgame::RemoteView::clientInfo(*sbSnap, cl, n, t)) return t;
+                game::Entity* e = world->mpClientEntity(netClient ? netgame::RemoteView::worldSlot(cl, netClient->clientNum) : cl);
+                return e ? world->mpTeamOf(e) : 0;
+            };
+            const game::MpScoreData data = game::mpParseScores(cmd.size() > 2 ? cmd.substr(2) : std::string(), teamOf);
+            game::MpScoreboardInput in;
+            in.data = &data;
+            in.localClient = netClient ? netClient->clientNum : world->mpLocalClient();
+            in.alpha = alpha;
+            in.nameOf = [&](int cl) {
+                std::string n;
+                int t = 0;
+                if (sbSnap && netgame::RemoteView::clientInfo(*sbSnap, cl, n, t)) return n;
+                game::Entity* e = world->mpClientEntity(netClient ? netgame::RemoteView::worldSlot(cl, netClient->clientNum) : cl);
+                return e ? e->obj->get("name").toString() : std::string();
+            };
+            in.clientValid = [&](int cl) { return netClient || (cl >= 0 && size_t(cl) < mps.clients.size() && mps.clients[size_t(cl)].state != game::MpClientState::Free); };
+            in.localize = [&](const std::string& k) {
+                std::string key = k;
+                if (key.size() > 1 && key[0] == '@') key = key.substr(1);
+                const std::string* t = loc.find(key);
+                return t ? *t : k;
+            };
+            in.textWidth = tw;
+            in.textHeight = [](float s) { return 48.0f * s; }; // TODO(spec): the renderer's font height query (0x68a318)
+            in.statusIconMaterial = [&](int i) { return i >= 1 && size_t(i) <= mps.statusIcons.size() ? mps.statusIcons[size_t(i) - 1] : std::string(); };
+            // Network game: the server info's g_gametype (configstring 0), as the load screen reads it.
+            const std::string gt = netClient ? net::infoValueForKey(netClient->configstrings[0], "g_gametype") : menuEnv.getCvar("g_gametype");
+            std::string gtName = gt;
+            if (const auto txt = vfs.read("maps/mp/gametypes/" + gt + ".txt")) {
+                std::istringstream gin(std::string(txt->begin(), txt->end()));
+                std::string tok;
+                if (gin >> tok) gtName = tok;
+                if (gtName.size() >= 2 && gtName.front() == '"' && gtName.back() == '"') gtName = gtName.substr(1, gtName.size() - 2);
+            }
+            in.gametypeName = locKey(gtName);
+            in.mapName = menuEnv.getCvar("mapname"); // TODO(spec): the display name lookup of 0x532cd0
+            in.hostName = menuEnv.getCvar("sv_hostname");
+            in.objectiveText = world->mpLocalCvar("cg_objectiveText") ? *world->mpLocalCvar("cg_objectiveText") : std::string();
+            {   // setClientCvar joins a localized string and its arguments with spaces ("KEY 100"): the key's text with &&1.. filled.
+                std::istringstream oin(in.objectiveText);
+                std::string key, arg;
+                oin >> key;
+                if (const std::string* t = loc.find(key)) {
+                    std::string txt = *t;
+                    for (int k = 1; oin >> arg; ++k) {
+                        const std::string mark = "&&" + std::to_string(k);
+                        if (const size_t at = txt.find(mark); at != std::string::npos) txt.replace(at, mark.size(), arg);
+                    }
+                    in.objectiveText = txt;
+                }
+            }
+            auto cv = [&](const char* n, const char* def) { const std::string v = menuEnv.getCvar(n); return v.empty() ? std::string(def) : v; };
+            in.teamNameAxis = cv("g_TeamName_Axis", "GAME_AXIS");
+            in.teamNameAllies = cv("g_TeamName_Allies", "GAME_ALLIES");
+            in.bannerNone = cv("g_ScoresBanner_None", "mpflag_none");
+            in.bannerAxis = cv("g_ScoresBanner_Axis", "mpflag_german");
+            in.bannerAllies = cv("g_ScoresBanner_Allies", "mpflag_american");
+            in.bannerSpectators = cv("g_ScoresBanner_Spectators", "mpflag_spectator");
+            in.colorAxis = game::mpTeamColor(1, menuEnv.getCvar("g_TeamColor_Axis"), menuEnv.getCvar("g_TeamColor_Allies"));
+            in.colorAllies = game::mpTeamColor(2, menuEnv.getCvar("g_TeamColor_Axis"), menuEnv.getCvar("g_TeamColor_Allies"));
+            in.bannerHeight = std::clamp(cvarInt("cg_scoreboardBannerHeight", 24), 1, 100);
+            in.scroll = mpSb.scroll;
+            in.firstTeam = mpSb.firstTeam;
+            const game::MpScoreboardOutput lay = game::mpScoreboardLayout(in);
+            mpSb.scroll = lay.scroll;
+            mpSb.firstTeam = lay.firstTeam;
+            auto col = [](const std::array<float, 4>& c, uint8_t o[4]) { for (int k = 0; k < 4; ++k) o[k] = uint8_t(std::clamp(c[size_t(k)], 0.0f, 1.0f) * 255.0f); };
+            for (const game::SbItem& it : lay.items) {
+                if (!it.isText) {
+                    const game::SbRect& r = it.rect;
+                    Quad2D q{left43 + r.x * sc, r.y * sc, left43 + (r.x + r.w) * sc, (r.y + r.h) * sc};
+                    col(r.rgba, q.rgba);
+                    if (r.material != "white") q.texture = materialTexture(r.material);
+                    if (r.material == "black") { q.rgba[0] = q.rgba[1] = q.rgba[2] = 0; q.texture = 0; }
+                    out.push_back(q);
+                    continue;
+                }
+                const game::SbText& t = it.text;
+                const assets::Font* f = pickFont(t.scale);
+                if (!f || t.text.empty()) continue;
+                uint8_t c[4];
+                col(t.rgba, c);
+                hudText(out, t.text, left43 + t.x * sc, t.y * sc, t.scale * 48.0f / float(f->pixelHeight) * sc, *f, c, 0.0f, 1.0f, t.style);
+            }
+        };
+        // Killcam (docs/spec/mp-hud.md "Killcam"): the followed client's archived player state is the HUD's player state, so
+        // the ammo counter, weapon name, firemode icon and health bar show the killer's (set before buildHud).
+        std::optional<game::World::MpKillcamView> hudKillcam;
+        // blurWorld of the open menus (docs/spec/ui.md "blurWorld"): only over a running game (the client gate at 0x4cf910
+        // needs the UI key catcher and a connection); the front end without a world is not blurred.
+        auto worldMenuBlur = [&]() {
+            if (!world) return 0.0f;
+            std::vector<float> b;
+            for (const ui::Menu* m : frontStack.menus()) b.push_back(m->blurWorld);
+            return game::menuBlurRadius(b);
+        };
         bool showFps = false; // F12, openiw2 feature: frame counter in the top right corner
         int fpsShown = 0;
         // The screenshotJpeg / screenshot commands (docs/spec/controls.md, Screenshots): set by a key event, taken after the
@@ -5241,6 +6355,7 @@ int main(int argc, char** argv) {
         };
         auto buildHud = [&](uint32_t w, uint32_t h, const Camera& c) {
             menuScreenH = float(h);
+            if (world && world->multiplayer() && !netClient) mpIntermissionView = world->mpSessionState(world->mpLocalClient()) == 3;
             std::vector<Quad2D> out, front; // front: foreground script elements, drawn last
             std::vector<Quad2D> scopeQuads; // scope / binocular overlay: drawn below the script HUD elements and subtitles (see below)
             size_t hudElemStart = 0;
@@ -5255,11 +6370,47 @@ int main(int argc, char** argv) {
                 if (!st.isNumber() || !tm.isNumber() || tm.asFloat() <= 0) return 1.0f;
                 return std::clamp((float(cgNowMs()) - st.asFloat()) / tm.asFloat(), 0.0f, 1.0f);
             };
+            // MP world sprites (docs/spec/mp-hud.md): script head icons (0x4dbcc0 -> 0x4dbba0) and waypoint HUD elements (type 13,
+            // 0x4ddd30 -> 0x4ddcb0) are sprites at a world point, radius in world units. Here they are projected and drawn over
+            // the scene. TODO(spec): the sprite's depth test, the screen unit of the constant size (× 0.0043) and of the head
+            // icon minimum screen radius (taken as fractions of the screen height).
+            if (world && world->multiplayer()) {
+                const Vec3 f = c.forward(), r = c.right(), u = cross(r, f);
+                const float t = 1.0f / std::tan(std::atan(std::tan(c.fovX43 * float(M_PI) / 360.0f) * 0.75f));
+                auto sprite = [&](const script::Vec3& p, float radius, bool constant, float minScreen, const std::string& mat, float alpha) {
+                    const Vec3 d{p[0] - c.pos.x, p[1] - c.pos.y, p[2] - c.pos.z};
+                    const float z = dot(d, f);
+                    if (z < 1.0f) return;
+                    const float k = t * float(h) * 0.5f / z;
+                    const float sx = float(w) * 0.5f + dot(d, r) * k, sy = float(h) * 0.5f - dot(d, u) * k;
+                    float rp = constant ? radius * 0.0043f * float(h) : radius * k;
+                    rp = std::max(rp, minScreen * float(h));
+                    Quad2D q{sx - rp, sy - rp, sx + rp, sy + rp};
+                    q.rgba[3] = uint8_t(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+                    q.texture = materialTexture(mat);
+                    out.push_back(q);
+                };
+                const std::string mr = menuEnv.getCvar("cg_headIconMinScreenRadius");
+                const float minR = mr.empty() ? 0.02f : float(std::atof(mr.c_str()));
+                const bool constHead = menuEnv.getCvar("cg_constantSizeHeadIcons") == "1";
+                for (const auto& hi : world->mpHeadIcons()) sprite(hi.pos, hi.size, constHead, minR, hi.material, 1.0f);
+                for (const auto& o : world->hudElems()) {
+                    if (!o->get("$waypoint").truthy() || !world->mpHudElemVisible(o) || !o->get("$shader").isString()) continue;
+                    const script::Value z = o->get("z");
+                    const script::Vec3 p{o->get("x").isNumber() ? o->get("x").asFloat() : 0.0f, o->get("y").isNumber() ? o->get("y").asFloat() : 0.0f,
+                                         z.isNumber() ? z.asFloat() : 0.0f};
+                    const float wd = o->get("$width").isNumber() ? o->get("$width").asFloat() : 0.0f;
+                    const float al = o->get("alpha").isNumber() ? o->get("alpha").asFloat() : 1.0f;
+                    if (wd != 0.0f && al > 0.0f) sprite(p, wd, o->get("$waypointconst").asInt() != 0, 0.0f, o->get("$shader").asString(), al);
+                }
+            }
             if (world) {
                 hudElemStart = out.size();
                 std::vector<script::ObjectPtr> elems = world->hudElems();
                 std::stable_sort(elems.begin(), elems.end(), [&](const auto& a, const auto& b) { return field(a, "sort", 0) < field(b, "sort", 0); });
                 for (const auto& o : elems) {
+                    if (!world->mpHudElemVisible(o)) continue; // another client's element (newclienthudelem / newteamhudelem)
+                    if (o->get("$waypoint").truthy()) continue; // a world sprite (setWayPoint), drawn above
                     // Elements with `foreground` set draw above the game's own HUD (crosshair, ammo); the intro
                     // screen's black backdrop uses it (inferred; docs/spec/ui.md).
                     std::vector<Quad2D>& dst = o->get("foreground").truthy() ? front : out;
@@ -5276,7 +6427,11 @@ int main(int argc, char** argv) {
                         x = field(o, "$movex", x) + (x - field(o, "$movex", x)) * t;
                         y = field(o, "$movey", y) + (y - field(o, "$movey", y)) * t;
                     }
-                    const std::string ha = o->get("horzalign").toString(), va = o->get("vertalign").toString();
+                    std::string ha = o->get("horzalign").toString(), va = o->get("vertalign").toString();
+                    // "center_safearea" (the MP scripts, e.g. _killcam.gsc:102) centres on the safe area; with no safe-area
+                    // inset on a PC screen it is the centre. TODO(spec): the safe-area margins.
+                    if (ha == "center_safearea") ha = "center";
+                    if (va == "center_safearea") va = "middle";
                     const std::string ax = o->get("alignx").toString(), ay = o->get("aligny").toString();
                     const bool fullX = ha == "fullscreen", fullY = va == "fullscreen";
                     const float sx = fullX ? float(w) / 640.0f : sc, sy = fullY ? float(h) / 480.0f : sc;
@@ -5336,11 +6491,7 @@ int main(int argc, char** argv) {
                         const script::Value v = o->get("$value");
                         text = v.isNumber() && v.asFloat() == float(int(v.asFloat())) ? std::to_string(int(v.asFloat())) : v.toString();
                     }
-                    const std::string label = str(o->get("label"));
-                    if (!label.empty()) {
-                        const auto at = label.find("&&1");
-                        text = at == std::string::npos ? label + text : label.substr(0, at) + text + label.substr(at + 3);
-                    }
+                    text = game::hudElemText(str(o->get("label")), text); // 0x4dd330 (MP), src/game/textmessage.h
                     // Key-name placeholders "[{command}]" (0x4a36b0, found by "[{" / "}]"): replaced by the key(s) bound
                     // to the command (0x4cdb30: up to two, joined by " <KEY_OR> "), shown by their key.str name (0x498a20);
                     // an unbound command shows KEY_UNBOUND. The surrounding "[" "]" of "[[{+x}]]" stay.
@@ -5398,12 +6549,16 @@ int main(int argc, char** argv) {
                 // at y − 12 and each older row 12 higher (0x4066e3 loop). Same font rule as subtitles (0x4062d0, flag 0).
                 // TODO(spec): [arguments of 0x404830 not read] the exact message text for
                 // obj_update when the objective has no string, the flag (4th) argument of 0x404830.
-                // Rows (oldest first) of the window of one message type.
-                struct WindowRow { std::string text; uint64_t startNs, endNs; };
+                // Rows (oldest first) of the window of one message type; "\x1f" separates the "&&N" arguments of iprintln.
+                struct WindowRow { std::string text; uint64_t startNs, endNs; const ScreenMessage::Obit* obit = nullptr; };
                 auto windowRows = [&](bool bold, size_t width, size_t lines) {
                     std::vector<WindowRow> rows;
                     for (const auto& m : screenMessages) {
                         if (m.bold != bold) continue;
+                        if (m.obit) { // one row: attacker, icon, victim (0x405530)
+                            rows.push_back({"", m.startNs, m.endNs, m.obit.get()});
+                            continue;
+                        }
                         // SEH_LocalizeTextMessage (0x496e80): 0x14 / 0x15 segments, localized references substituted into &&N.
                         const std::string text = game::localizeTextMessage(m.text, [&](const std::string& k) { return loc.find(k); });
                         std::string cur, code; // the last ^N colour code carries over to the next row (rows keep per-character colours)
@@ -5442,6 +6597,45 @@ int main(int argc, char** argv) {
                             else if (left < 500.0f) a = left / 500.0f;
                         }
                         const uint8_t col[4] = {base[0], base[1], base[2], uint8_t(base[3] * a)};
+                        if (const ScreenMessage::Obit* ob = it->obit) {
+                            // Obituary row: the attacker name and the victim name in their team colours with the kill icon between
+                            // them, iconH x iconW line heights, mirrored with flipKillIcon. TODO(spec): the exact gaps of the
+                            // console glyph run (0x405530).
+                            const float gs = charH * glyphScale / float(f.pixelHeight) * sc;
+                            auto textW = [&](const std::string& t) {
+                                float wsum = 0;
+                                for (size_t k = 0; k < t.size(); ++k) {
+                                    if (t[k] == '^' && k + 1 < t.size() && t[k + 1] >= '0' && t[k + 1] <= '9') { ++k; continue; }
+                                    if (const auto* g = f.find((unsigned char)t[k])) wsum += float(g->dx) * gs;
+                                }
+                                return wsum;
+                            };
+                            auto rgb = [&](const float c3[3], uint8_t o[4]) {
+                                for (int k = 0; k < 3; ++k) o[k] = uint8_t(std::clamp(c3[k], 0.0f, 1.0f) * float(base[k]));
+                                o[3] = col[3];
+                            };
+                            const float space = textW(" ");
+                            float px = x;
+                            if (!ob->attacker.empty()) {
+                                uint8_t ac[4];
+                                rgb(ob->attackerRgb, ac);
+                                hudText(out, ob->attacker, px, ry * sc, gs, f, ac, 0, 0, 3);
+                                px += textW(ob->attacker) + space;
+                            }
+                            const float ih = ob->iconH * charH * sc, iw = ob->iconW * charH * sc;
+                            const float iy = ry * sc + (charH * sc - ih) * 0.5f;
+                            Quad2D q{px, iy, px + iw, iy + ih};
+                            if (ob->flip) q.s0 = 1, q.s1 = 0;
+                            q.rgba[0] = q.rgba[1] = q.rgba[2] = 255;
+                            q.rgba[3] = col[3];
+                            q.texture = materialTexture(ob->icon);
+                            out.push_back(q);
+                            px += iw + space;
+                            uint8_t vc[4];
+                            rgb(ob->victimRgb, vc);
+                            hudText(out, ob->victim, px, ry * sc, gs, f, vc, 0, 0, 3);
+                            continue;
+                        }
                         hudText(out, it->text, x, ry * sc, charH * glyphScale / float(f.pixelHeight) * sc, f, col, alignX, 0, 3);
                     }
                 };
@@ -5463,7 +6657,15 @@ int main(int argc, char** argv) {
                 const uint8_t whiteMsg[4] = {255, 255, 255, uint8_t(std::clamp(msgAlpha, 0.0f, 1.0f) * 255.0f)};
                 const float msgScale = 12.0f / 48.0f * float(h) / 480.0f;
                 if (const assets::Font* f = font(msgScale <= 0.25f ? "smallFont" : msgScale >= 0.55f ? "extraBigFont" : msgScale < 0.4f ? "normalFont" : "bigFont")) {
-                    if (msgAlpha > 0) drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, 100.0f, 12.0f, *f, whiteMsg, 0);
+                    // MP: anchored above the compass (game::mpGameMessageWindowY), bottom-relative; SP: y 100.
+                    float msgY = 100.0f;
+                    if (world && world->multiplayer()) {
+                        const ui::Rect cr = compassMenu ? compassMenu->rect : ui::Rect{-20, -140, 160, 160};
+                        const auto cv = world->cvars.find("cg_hudCompassSize");
+                        const float csz = cv == world->cvars.end() || cv->second.empty() ? 1.0f : float(std::atof(cv->second.c_str()));
+                        msgY = 480.0f + game::mpGameMessageWindowY(cr.y, cr.h, csz);
+                    }
+                    if (msgAlpha > 0) drawWindow(windowRows(false, 70, 9), left43 + 6.0f * sc, msgY, 12.0f, *f, whiteMsg, 0);
                 }
                 // Bold messages (client command gmb = iprintlnbold, 0x4a6c3f → 0x4a2750 → window type 2 at 0x5cc2b0+0x6a0,
                 // 9 lines (struct 0x5cc954, +0x10 = 0x5cc964; corrected: 0x5ccff4 is the subtitle window), cg_gameBoldMessageWidth 60, con_boldgamemessagetime 8 s): drawn by 0x4bf210 →
@@ -5477,6 +6679,48 @@ int main(int argc, char** argv) {
                     const float scale = 12.0f / 48.0f * float(h) / 480.0f;
                     if (const assets::Font* f = font(scale <= 0.25f ? "smallFont" : scale < 0.4f ? "normalFont" : "boldFont")) {
                         if (msgAlpha > 0) drawWindow(windowRows(true, 60, 9), left43 + 320.0f * sc, 180.0f, 16.0f, *f, whiteMsg, 0);
+                    }
+                }
+                // MP centre print (0x4c8360): the text localized, at most 75 characters per row, scale ftol(9.6) / 32, shadowed,
+                // each row centred on the screen centre at y = cg_centerPrintY (default -60) - rows × row height × 1.2 below the
+                // centre; shown 2000 ms with the alpha of 0x4c2860 (100 ms fade). TODO(spec): the alignment codes of 0x5322c0
+                // and the start / fade arguments of 0x4c2860 here.
+                if (world && world->multiplayer() && mpCenterStartMs >= 0) {
+                    const int64_t el = cgNowMs() - mpCenterStartMs;
+                    if (el < 0 || el >= 2000) mpCenterStartMs = -1;
+                    else {
+                        const float a = 2000 - el < 100 ? float(2000 - el) / 100.0f : 1.0f;
+                        const std::string text = game::localizeTextMessage(mpCenterText, [&](const std::string& k) { return loc.find(k); });
+                        const float scale = 9.0f / 32.0f;
+                        const float vscale = scale * float(h) / 480.0f;
+                        if (const assets::Font* f = font(vscale <= 0.25f ? "smallFont" : vscale < 0.4f ? "normalFont" : "bigFont")) {
+                            const float gs = scale * 48.0f / float(f->pixelHeight) * sc;
+                            const float rowH = float(f->pixelHeight) * scale * 48.0f / float(f->pixelHeight) * 1.2f;
+                            const std::string cy = menuEnv.getCvar("cg_centerPrintY");
+                            const float y0 = 240.0f + (cy.empty() ? -60.0f : float(std::atof(cy.c_str()))) - rowH;
+                            const uint8_t col[4] = {255, 255, 255, uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f)};
+                            hudText(out, text.substr(0, 75), float(w) * 0.5f, y0 * sc, gs, *f, col, 0.5f, 0, 3);
+                        }
+                    }
+                }
+                // MP crosshair names (0x4c97c0 / 0x4c9700): the trace each frame, the teammate's name 150 ms after the last hit
+                // with a 100 ms fade, at (cg_drawCrosshairNamesPosX 300, cg_drawCrosshairNamesPosY 180 + 16), scale 1/3,
+                // shadowed, white. TODO(spec): the alignment codes of 0x5322c0 (here the left of the 4:3 area / top).
+                if (world && world->multiplayer() && menuEnv.getCvar("cg_drawCrosshairNames") != "0") {
+                    const Vec3 fw = c.forward();
+                    const int hit = world->mpCrosshairClient({c.pos.x, c.pos.y, c.pos.z}, {fw.x, fw.y, fw.z});
+                    if (hit >= 0 && hit != world->mpFollowing(world->mpLocalClient())) mpCrossClient = hit, mpCrossMs = cgNowMs();
+                    const float a = mpCrossMs >= 0 ? game::mpCrosshairNameAlpha(cgNowMs() - mpCrossMs) : -1.0f;
+                    game::Entity* te = a > 0 ? world->mpClientEntity(mpCrossClient) : nullptr;
+                    if (te && game::mpCrosshairNameVisible(world->mpLocalTeam(), world->mpTeamOf(te))) {
+                        const std::string nm = world->mpState().clients[size_t(mpCrossClient)].name;
+                        auto num = [&](const char* n, float def) { const std::string v = menuEnv.getCvar(n); return v.empty() ? def : float(std::atof(v.c_str())); };
+                        const float scale = 1.0f / 3.0f, vscale = scale * float(h) / 480.0f;
+                        if (const assets::Font* f = font(vscale <= 0.25f ? "smallFont" : vscale < 0.4f ? "normalFont" : "bigFont")) {
+                            const uint8_t col[4] = {255, 255, 255, uint8_t(std::clamp(a, 0.0f, 1.0f) * 255.0f)};
+                            hudText(out, nm, left43 + num("cg_drawCrosshairNamesPosX", 300.0f) * sc, (num("cg_drawCrosshairNamesPosY", 180.0f) + 16.0f) * sc,
+                                    scale * 48.0f / float(f->pixelHeight) * sc, *f, col, 0, 0, 3);
+                        }
                     }
                 }
                 // Subtitles (alias subtitle column, 0x4a3540 -> 0x401d60 -> 0x404830 into the third text window, struct
@@ -5529,10 +6773,16 @@ int main(int argc, char** argv) {
             // sway (0x4bc6e0 projects the weapon angles); adsOverlayReticle drawing.
             // On a turret 0x4bd760 draws only the turret reticle, so the overlay is not drawn (the aim state is kept).
             if (const float sa = world ? game::scopeOverlayDrawAlpha(scopeAlpha(), world->playerOnTurret()) : 0.0f; sa > 0) {
-                const std::string shader = pweapon.field("adsOverlayShader");
+                // The overlay's weapon: the client's own, or in a killcam the followed client's recorded view weapon.
+                auto overlayField = [&](const char* k) -> std::string {
+                    if (!killcamRig.active) return pweapon.field(k);
+                    const game::MpViewState& vs = killcamRig.view.view;
+                    return killcamField(vs.viewWeapon.empty() ? killcamRig.view.weapon : vs.viewWeapon, k);
+                };
+                const std::string shader = overlayField("adsOverlayShader");
                 const int tex = shader.empty() ? -1 : materialTexture(shader);
                 if (tex >= 0) {
-                    const float ow = pweapon.number("adsOverlayWidth"), oh = pweapon.number("adsOverlayHeight");
+                    const float ow = float(std::atof(overlayField("adsOverlayWidth").c_str())), oh = float(std::atof(overlayField("adsOverlayHeight").c_str()));
                     const float cx = left43 + 320.0f * sc, cy = 240.0f * sc;
                     const uint8_t col[4] = {255, 255, 255, uint8_t(sa * 255.0f)};
                     auto quad = [&](float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
@@ -5576,20 +6826,17 @@ int main(int argc, char** argv) {
             float hintFade = 1.0f;
             if (world) {
                 const auto& cur = world->playerUseHint();
-                const int64_t hnow = cgNowMs();
-                constexpr int64_t hintFadeTime = 100, hintFadeSpan = 100; // cg_hintFadeTime default; the 0x4b0900 argument
-                if (cur.hint != 0 || !cur.weapon.empty()) {
-                    hudFade.hintStart = hnow;
-                    hudFade.hintHeldValid = true;
-                    hudFade.hintHeld = {cur.hint, cur.weapon, cur.text};
-                } else if (hudFade.hintHeldValid) {
-                    const float a = game::hudFadeAlpha(hudFade.hintStart, hnow, hintFadeTime, hintFadeSpan);
-                    if (a < 0.0f) hudFade.hintHeldValid = false;
-                    else hintFade = a;
+                hintFade = cursorHint.update({cur.hint, cur.weapon, cur.text}, cgNowMs());
+                if (static const bool hintLog = std::getenv("IW2_HINT_LOG") != nullptr; hintLog) { // debug: one line per change of the drawn hint
+                    static std::string lastLine;
+                    const std::string line = hintFade < 0 ? std::string("none") : "hint " + std::to_string(cursorHint.held().hint) + " weapon '" + cursorHint.held().weapon +
+                                             "' text '" + cursorHint.held().text + "'" + (cur.hint != 0 || !cur.weapon.empty() ? "" : " (fading)");
+                    if (line != lastLine) std::cout << "[hint] t=" << cgNowMs() << " " << line << "\n";
+                    lastLine = line;
                 }
-            }
-            if (world && cursorHintItem && !world->playerOnTurret() && hudFade.hintHeldValid) {
-                const auto& uh = hudFade.hintHeld;
+            } else cursorHint.reset();
+            if (world && cursorHintItem && !world->playerOnTurret() && hintFade >= 0.0f) {
+                const auto& uh = cursorHint.held();
                 std::string icon;
                 bool wide = false;
                 std::string text = uh.text;
@@ -5767,8 +7014,73 @@ int main(int argc, char** argv) {
             // is held (cgame 0xf791fc, set by 0x4a4d40, cleared by 0x4a4d20; both stamp the touch time 0xf79200 = cg.time); after
             // the release the alpha is (300 - elapsed) / 300 (0x4b0900 with 300 ms), nothing once elapsed >= 300 or without a touch.
             // Both menu items are LEFT / TOP aligned (0x440e60 code 1: x * sx, y * sy). Both ownerdraws test the bool dvar
-            // cg_drawpaused (0x1040c4c, default 1) and draw nothing when it is 0. TODO(spec): [path not read] the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
-            if (world && objListItem && objHeaderItem && menuEnv.getCvar("cg_drawpaused") != "0") {
+            // cg_drawpaused (0x1040c4c, default 1) and draw nothing when it is 0. TODO(spec): the multi-byte (Asian) wrap path of 0x4bffb0 (cvar 0xc4d2f8).
+            // MP scoreboard (docs/spec/mp-scoreboard.md, src/game/mpscoreboard.cpp): drawn while +scores is held (TAB / F4 in
+            // default_mp.cfg) with a 100 ms fade after the release, and forced during intermission (pm_type 5, 0x4cbca0 ->
+            // 0x4cb810), where it is the only thing drawn (below, at the end of the HUD).
+            if (world && world->multiplayer() && !mpIntermissionView) drawMpScoreboard(out, w, h);
+            // Following another client (pm_flags 0x400000, 0x4cba90): CGAME_FOLLOWING at y 40 and the target's name at y 65,
+            // scale 1/3, centred, while the scoreboard is not shown. TODO(spec): the colour 0x59d038 (white here) and the
+            // flag 0x151ad94 that also hides it.
+            if (world && world->multiplayer() && !netClient && !mpSb.shown) {
+                const int fol = world->mpFollowing(world->mpLocalClient());
+                game::Entity* te = fol >= 0 ? world->mpClientEntity(fol) : nullptr;
+                const float s3 = 1.0f / 3.0f, fs = s3 * float(h) / 480.0f;
+                if (te) if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                    const std::string* lab = loc.find("CGAME_FOLLOWING");
+                    const uint8_t white[4] = {255, 255, 255, 255};
+                    const float gs = s3 * 48.0f / float(f->pixelHeight) * sc;
+                    hudText(out, lab ? *lab : std::string("CGAME_FOLLOWING"), float(w) * 0.5f, 40.0f * sc, gs, *f, white, 0.5f, 1.0f, 3);
+                    hudText(out, te->obj->get("name").toString(), float(w) * 0.5f, 65.0f * sc, gs, *f, white, 0.5f, 1.0f, 3);
+                }
+            }
+            // MP chat lines (0x4c7760) and the message field (0x406d2d), docs/spec/mp-chat.md. Positions are the vec2 dvars
+            // cg_hudChatPosition (5 150) and cg_hudSayPosition (5 126) in the 640x480 screen, text scale 0.2083.
+            if (world && world->multiplayer()) {
+                const float ts = 0.2083333f, fs = ts * float(h) / 480.0f;
+                if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
+                    const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
+                    auto vec2 = [&](const char* n, float dx, float dy) {
+                        std::istringstream in(menuEnv.getCvar(n));
+                        float x = dx, y = dy;
+                        if (!(in >> x >> y)) x = dx, y = dy;
+                        return std::array<float, 2>{x, y};
+                    };
+                    auto textW = [&](const std::string& t) { // virtual units
+                        float tw = 0;
+                        for (size_t i = 0; i < t.size(); ++i) {
+                            if (t[i] == '^' && i + 1 < t.size() && t[i + 1] >= '0' && t[i + 1] <= '9') { ++i; continue; }
+                            if (const auto* g = f->find((unsigned char)t[i])) tw += float(g->dx) * ts * 48.0f / float(f->pixelHeight);
+                        }
+                        return std::nearbyint(tw);
+                    };
+                    const auto cp = vec2("cg_hudChatPosition", 5.0f, 150.0f);
+                    const auto lines = chatBuffer.frame(cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
+                    for (size_t i = 0; i < lines.size(); ++i) {
+                        const auto& l = lines[i];
+                        const float y = cp[1] - 10.0f * float(i + 1);
+                        // Strip colour: the line's first ^N (0x4032e0: 8 g_TeamColor_Allies, 9 g_TeamColor_Axis), rgb x 0.25, alpha x 0.6.
+                        static const float kTab[10][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}, {0, 0, 1}, {0, 1, 1}, {1, 0, 1}, {1, 1, 1}, {0.5f, 0.5f, 1}, {1, 0.5f, 0.5f}};
+                        const float* col = l.code >= 0 ? kTab[l.code] : kTab[7];
+                        Quad2D bar{left43 + cp[0] * sc, y * sc, left43 + (cp[0] + textW(l.text) + 24.0f) * sc, (y + 10.0f) * sc};
+                        bar.texture = materialTexture("hudcolorbar");
+                        for (int k = 0; k < 3; ++k) bar.rgba[k] = uint8_t(std::clamp(col[k] * 0.25f, 0.0f, 1.0f) * 255.0f);
+                        bar.rgba[3] = uint8_t(std::clamp(l.alpha * 0.6f, 0.0f, 1.0f) * 255.0f);
+                        out.push_back(bar);
+                        const uint8_t white[4] = {255, 255, 255, uint8_t(std::clamp(l.alpha, 0.0f, 1.0f) * 255.0f)};
+                        hudText(out, l.text, left43 + cp[0] * sc, (y + 9.0f) * sc, gs, *f, white, 0.0f, 1.0f, 3);
+                    }
+                    // The field: "<EXE_SAY>: " or "<EXE_SAYTEAM>: " and the text. TODO(spec): the label colour, the cursor, the y origin.
+                    if (chatField.open) {
+                        const auto sp = vec2("cg_hudSayPosition", 5.0f, 126.0f);
+                        const std::string* lab = loc.find(chatField.team ? "EXE_SAYTEAM" : "EXE_SAY");
+                        const std::string label = (lab ? *lab : std::string(chatField.team ? "EXE_SAYTEAM" : "EXE_SAY")) + ": ";
+                        const uint8_t white[4] = {255, 255, 255, 255};
+                        hudText(out, label + chatField.text + "_", left43 + sp[0] * sc, sp[1] * sc, gs, *f, white, 0.0f, 1.0f, 3);
+                    }
+                }
+            }
+            if (world && !world->multiplayer() && objListItem && objHeaderItem && menuEnv.getCvar("cg_drawpaused") != "0") {
                 float objAlpha = 0.0f;
                 if (hudFade.objectivesHeld) objAlpha = 1.0f;
                 else if (hudFade.objectives != 0) {
@@ -5969,11 +7281,45 @@ int main(int argc, char** argv) {
                     out.push_back(q);
                 }
             }
-            const int wst = pweapon.stateNumber();
+            // The weapon the crosshair reads: the client's own, or in a killcam the followed client's recorded one (the copied
+            // player state's weapon, state and aim fraction; docs/spec/mp-hud.md "The recorded view state").
+            struct HudWeapon {
+                bool equipped = false;
+                std::string name;
+                int state = 0;
+                float adsFrac = 0, aimSpread = 255, viewHeight = 60;
+                bool zoomingIn = true, cooking = false;
+                int fuseMs = 0;
+                std::function<std::string(const char*)> field;
+            } hw;
+            if (killcamRig.active) {
+                const game::MpViewState& vs = killcamRig.view.view;
+                const std::string vw = vs.viewWeapon.empty() ? killcamRig.view.weapon : vs.viewWeapon;
+                hw.equipped = !vw.empty() && world && world->weapon(vw);
+                hw.name = vw;
+                hw.state = vs.weaponState;
+                hw.adsFrac = vs.adsFrac;
+                hw.aimSpread = vs.aimSpread;
+                hw.viewHeight = vs.viewHeight;
+                hw.zoomingIn = vs.adsHeld;
+                hw.field = [&, vw](const char* k) { return killcamField(vw, k); };
+            } else {
+                hw.equipped = pweapon.equipped();
+                hw.name = pweapon.name();
+                hw.state = pweapon.stateNumber();
+                hw.adsFrac = pweapon.adsFrac();
+                hw.aimSpread = hudAimSpread;
+                hw.viewHeight = hudViewHeight;
+                hw.zoomingIn = pweapon.adsZoomingIn();
+                hw.cooking = pweapon.cooking();
+                hw.fuseMs = pweapon.fuseMs();
+                hw.field = [&](const char* k) { return pweapon.field(k); };
+            }
+            const int wst = hw.state;
             const float crossAlpha = 1.0f - (world ? scopeAlpha() : 0.0f);
             // cg_drawCrosshair (bool, default 1; 0x4bd129) off: no hand crosshair (the turret and vehicle reticles do not test it).
             const bool crossOn = menuEnv.getCvar("cg_drawCrosshair") != "0" && menuEnv.getCvar("cg_drawcrosshair") != "0";
-            const bool drawCross = crossOn && !pausedHide && !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && pweapon.adsFrac() != 1.0f &&
+            const bool drawCross = crossOn && !pausedHide && !onTurretHud && !inVehicleHud && crossAlpha >= 0.01f && hw.adsFrac != 1.0f &&
                                    wst != 1 && wst != 2 && wst != 5 && wst != 10 && wst != 11;
             // Look (0x4bd760 → 0x4bd2c0 centre, 0x4bd520 sides). Aiming (0x4bd230, fraction past 1 − adsCrosshairInFrac
             // while zooming in, adsCrosshairOutFrac out): scale 1 − f/2 and the centre moved down by 480 / fov_y ·
@@ -5984,12 +7330,12 @@ int main(int argc, char** argv) {
             // tan(spread · scale) / tan(fov_y / 2) · 240) − hipReticleSidePos · size from the centre, spread = hip min
             // + (max − min) · aim spread / 255 (0x4bd3a0, 0x4dceb0); top 0°, right 90°, bottom 180°, left 270°, with
             // the 0.125 · size placement terms of 0x4bd4a0.
-            if (pweapon.equipped() && drawCross) {
-                auto num = [&](const char* k) { return pweapon.number(k); };
+            if (hw.equipped && drawCross) {
+                auto num = [&](const char* k) { return float(std::atof(hw.field(k).c_str())); };
                 float scale = 1.0f, offY = 0.0f;
                 const float fovY = 2.0f * std::atan(std::tan(c.fovX43 * 0.5f * float(M_PI) / 180.0f) * 0.75f) * 180.0f / float(M_PI);
-                if (const float af = pweapon.adsFrac(); af != 0) {
-                    const float cf = num(pweapon.adsZoomingIn() ? "adsCrosshairInFrac" : "adsCrosshairOutFrac");
+                if (const float af = hw.adsFrac; af != 0) {
+                    const float cf = num(hw.zoomingIn ? "adsCrosshairInFrac" : "adsCrosshairOutFrac");
                     float t = af - (1.0f - cf);
                     if (t > 0 && cf != 0) {
                         t /= cf;
@@ -5997,7 +7343,7 @@ int main(int argc, char** argv) {
                         offY = 480.0f / fovY * num("adsAimPitch") * t;
                     }
                 }
-                const float alpha = std::max((1.0f - hudAimSpread / 255.0f) * 1.0f * crossAlpha, 0.0f);
+                const float alpha = std::max((1.0f - hw.aimSpread / 255.0f) * 1.0f * crossAlpha, 0.0f);
                 const float cx = 320.0f, cy = 240.0f + offY;
                 // Colour (0x4bce70): pm_flags 0x100000 → (0.25, 1, 0.25); 0x200000 with cg_crosshairEnemyColor (1) →
                 // (1, 0.25, 0.25); else white.
@@ -6015,23 +7361,23 @@ int main(int argc, char** argv) {
                     q.rot = rot;
                     out.push_back(q);
                 };
-                const std::string center = pweapon.field("reticleCenter"), side = pweapon.field("reticleSide");
+                const std::string center = hw.field("reticleCenter"), side = hw.field("reticleSide");
                 if (!center.empty()) {
                     float cs = num("reticleCenterSize");
-                    if (pweapon.cooking() && pweapon.fuseMs() != 0)
-                        cs += float(pweapon.fuseMs() % 1000) * 0.01f;
+                    if (hw.cooking && hw.fuseMs != 0)
+                        cs += float(hw.fuseMs % 1000) * 0.01f;
                     cs *= scale;
                     pic(cx - cs * 0.5f, cy - cs * 0.5f, cs, center, 0);
                 }
                 if (!side.empty()) {
                     const float size = num("reticleSideSize") * scale;
-                    if (const auto* d = world ? world->weapon(pweapon.name()) : nullptr) {
+                    if (const auto* d = world ? world->weapon(hw.name) : nullptr) {
                         auto fld = [&](const char* k) { auto it = d->find(k); return it == d->end() ? 0.0f : float(std::atof(it->second.c_str())); };
                         game::HipSpread hs;
                         hs.standMin = fld("hipspreadstandmin"); hs.duckedMin = fld("hipspreadduckedmin"); hs.proneMin = fld("hipspreadpronemin");
                         hs.max = fld("hipspreadmax"); hs.duckedMax = fld("hipspreadduckedmax"); hs.proneMax = fld("hipspreadpronemax");
-                        const auto range = game::hipSpreadRange(hs, hudViewHeight);
-                        const float spread = range[0] + (range[1] - range[0]) * hudAimSpread / 255.0f;
+                        const auto range = game::hipSpreadRange(hs, hw.viewHeight);
+                        const float spread = range[0] + (range[1] - range[0]) * hw.aimSpread / 255.0f;
                         float px = std::tan(spread * scale * float(M_PI) / 180.0f) / std::tan(fovY * float(M_PI) / 180.0f * 0.5f) * 240.0f;
                         px = std::max(px, num("reticleMinOfs"));
                         const float sp = px - num("hipReticleSidePos") * size, k = size * 0.125f;
@@ -6134,7 +7480,10 @@ int main(int argc, char** argv) {
                 const int64_t rem = ticksMs - el;
                 return rem >= 700 ? 1.0f : float(rem) / 700.0f;
             };
-            const float ammoAlpha = fadeAlpha(hudFade.ammo, 3.0f, 3000) /* hud_fade_ammodisplay default 3.0 (0x4a728a) */;
+            // MP registers hud_fade_ammodisplay / compass / offhand with 0 s (0x4c3430 in the MP executable): those never fade there.
+            const bool mpHud = world && world->multiplayer();
+            const float ammoFadeSec = game::hudFadeDefaultSeconds(game::HudFadeDvar::AmmoDisplay, mpHud);
+            const float ammoAlpha = fadeAlpha(hudFade.ammo, ammoFadeSec, 3000) /* SP: hud_fade_ammodisplay default 3.0 (0x4a728a) */;
             const bool inVeh = world && (world->playerPmFlags() & 0x20000); // the ammo ownerdraws draw nothing in a vehicle (0x4a7818)
             // Low stock (0x4a76b0): stock <= 0.2 * maxAmmo (def +0x1d4, clamped to 999; 0 when negative); low clip (0x4a7760): clip <= 0.33 * clipSize
             // (def +0x1d8; false when clipSize <= 0). Both tint red (0.89 0.18 0.01).
@@ -6143,10 +7492,10 @@ int main(int argc, char** argv) {
             // The weapon the weapon-info ownerdraws read (ammo 0x4a79b0 / 0x4a7760 / 0x4a76b0, name 0x4a7da0, firemode icon 0x4a8040): the selected weapon
             // cg.weaponSelect (0xf796e0) when the player owns it (bitset 0xf70e00, bounds-checked against the weapon count), else the player state's
             // weapon (0xf70998). So the display follows the key press at once instead of the end of the drop. While an offhand grenade is out the
-            // offhand definition is shown as before.
-            const std::map<std::string, std::string>* selDef = nullptr;
+            // offhand definition is shown as before. In a killcam the followed client's archived weapon is the player state's (hudKillcam).
+            const std::map<std::string, std::string>* hwDef = hudKillcam && world ? world->weapon(hudKillcam->weapon) : nullptr;
             std::string selKey;
-            if (world && world->player() && !pweapon.offhandActive()) {
+            if (!hudKillcam && world && world->player() && !pweapon.offhandActive()) {
                 auto lower = [](std::string v) {
                     for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                     return v;
@@ -6154,37 +7503,40 @@ int main(int argc, char** argv) {
                 const std::string cur = lower(pweapon.name()), sel = lower(weaponSelect);
                 const game::Inventory& inv = world->inventory(*world->player());
                 selKey = game::hudShownWeapon(sel, cur, [&](const std::string& n) { return inv.owned.count(n) != 0; });
-                if (selKey != cur) selDef = world->weapon(selKey);
+                if (selKey != cur) hwDef = world->weapon(selKey);
+                else selKey.clear();
             }
-            auto hudStr = [&](const char* key) -> std::string {
-                if (!selDef) return pweapon.hudField(key);
-                std::string kk(key);
-                for (char& ch : kk) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                const auto it = selDef->find(kk);
-                return it == selDef->end() ? std::string() : it->second;
+            auto hwField = [&](const char* k) -> std::string {
+                if (!hwDef) return pweapon.hudField(k);
+                std::string key = k;
+                for (char& ch : key) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                const auto it = hwDef->find(key);
+                return it == hwDef->end() ? std::string() : it->second;
             };
-            auto hudNum = [&](const char* key) { return selDef ? float(std::atof(hudStr(key).c_str())) : pweapon.hudNumber(key); };
-            int hudClip = pweapon.clip(), hudStockRaw = pweapon.stock();
-            if (selDef) {
+            auto hwNum = [&](const char* k) { return hwDef ? float(std::atof(hwField(k).c_str())) : pweapon.hudNumber(k); };
+            const bool hwEquipped = hudKillcam ? hwDef != nullptr : pweapon.equipped();
+            const std::string hwName = hudKillcam ? hudKillcam->weapon : !selKey.empty() ? selKey : pweapon.name();
+            int hwClip = hudKillcam ? hudKillcam->clip : pweapon.clip(), hwStockRaw = hudKillcam ? hudKillcam->stock : pweapon.stock();
+            if (!hudKillcam && hwDef) { // the selected weapon's own clip and stock
                 game::Inventory& inv = world->inventory(*world->player());
-                hudClip = inv.clip[hudStr("clipName")];
-                hudStockRaw = inv.ammo[hudStr("ammoName")];
+                hwClip = inv.clip[hwField("clipName")];
+                hwStockRaw = inv.ammo[hwField("ammoName")];
             }
-            const float maxAmmo = std::min(hudNum("maxAmmo"), 999.0f), clipSize = std::min(hudNum("clipSize"), 999.0f);
+            const float maxAmmo = std::min(hwNum("maxAmmo"), 999.0f), clipSize = std::min(hwNum("clipSize"), 999.0f);
             // clipOnly weapons (def +0x340): the clip is "invalid" for the ownerdraw (0x4a7a13) and the displayed stock is the
             // clip count itself (0x4dcd60 without a shared-ammo group returns ps.ammoclip[clipIndex] for them, ps.ammo[ammoIndex]
             // otherwise); the shared-group sum (def +0x1e4 >= 0) is World::hudStock.
-            const bool clipOnly = hudNum("clipOnly") != 0.0f;
-            int dispStock = clipOnly ? hudClip : hudStockRaw;
+            const bool clipOnly = hwNum("clipOnly") != 0.0f;
+            int dispStock = clipOnly ? hwClip : hwStockRaw;
             // Shared cap group (def +0x1e4 >= 0, field sharedAmmoCapName): the stock shown is the group sum (0x4dcd60, World::hudStock).
-            if (world && !(selDef ? selKey : pweapon.name()).empty()) {
-                std::string k = selDef ? selKey : pweapon.name();
+            if (world && !hwName.empty() && !hudKillcam) { // TODO(spec): the killer's shared-group sum
+                std::string k = hwName;
                 for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                 if (const int g = world->hudGroupStock(k); g >= 0) dispStock = g;
             }
             const bool stockLow = maxAmmo >= 0 && float(std::min(dispStock, 999)) <= maxAmmo * 0.2f;
-            const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(hudClip, 999)) <= clipSize * 0.33f;
-            if (pweapon.equipped() && !inVeh && ammoAlpha > 0.0f) {
+            const bool clipLow = !clipOnly && clipSize > 0 && float(std::min(hwClip, 999)) <= clipSize * 0.33f;
+            if (hwEquipped && !inVeh && ammoAlpha > 0.0f) {
                 const float rightEdge = float(w), bottomEdge = float(h); // RIGHT / BOTTOM alignment, safe area 0
                 if (ammoBackItem && !ammoBackItem->background.empty()) {
                     const auto& r = ammoBackItem->rect;
@@ -6213,7 +7565,7 @@ int main(int argc, char** argv) {
                             return tw;
                         };
                         const float x0 = rightEdge + r.x * sc, y0 = bottomEdge + r.y * sc, w0 = r.w * sc;
-                        const std::string clip = fmt("%2i", hudClip), stock = fmt("%3i", dispStock);
+                        const std::string clip = fmt("%2i", hwClip), stock = fmt("%3i", dispStock);
                         const int st = ammoTextItem->textStyle;
                         // Colours (0x4a7930): alpha = the fade; the clip keeps the item colour, "|" and the stock turn red when the
                         // stock is low; a low clip is overdrawn in red with a sawtooth alpha (800 ms, 1 -> 0, restarting),
@@ -6245,14 +7597,14 @@ int main(int argc, char** argv) {
             // " / " + localized modeName (+0xb8, def +0x70) when the weapon has a modeName ("%s / %s" 0x57fb54, else "%s" 0x56ca4c).
             // Drawn at x = rect.x + rect.w - textWidth - 28 (0x592084), y = rect.y, item colour with the fade alpha, item text style,
             // font by the HUD rule.
-            if (weapNameItem && pweapon.equipped() && !inVeh) {
-                const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
+            if (weapNameItem && hwEquipped && !inVeh) {
+                const float a = fadeAlpha(hudFade.weaponChange, ammoFadeSec, 1800);
                 const float ts = weapNameItem->textScale, fs = ts * float(h) / 480.0f;
                 if (a > 0.0f)
                     if (const assets::Font* f = font(fs <= 0.25f ? "smallFont" : fs >= 0.55f ? "extraBigFont" : fs < 0.4f ? "normalFont" : "bigFont")) {
                         auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                        std::string text = name(hudStr("displayName"));
-                        const std::string mode = hudStr("modeName");
+                        std::string text = name(hwField("displayName"));
+                        const std::string mode = hwField("modeName");
                         if (!mode.empty()) text += " / " + name(mode);
                         const float gs = ts * 48.0f / float(f->pixelHeight) * sc;
                         float tw = 0;
@@ -6272,7 +7624,7 @@ int main(int argc, char** argv) {
             // (0x4b8690), red (0.89 0.18 0.01) at 0, else the item colour. Name = localized WEAPON_FRAGGRENADE / WEAPON_SMOKEGRENADE (table
             // 0x5a4d58). TODO(spec): [helpers not read] the [0xf708ec] < 4 test, 0x4dc740 (class owned without rounds is assumed), 0x4b8490, flash helper 0x4b8620.
             if (world && world->player() && !(world->playerPmFlags() & 0x20000 && !(world->playerPmFlags() & 0x80000))) {
-                const float oa = fadeAlpha(hudFade.offhand, 3.0f, 3000);
+                const float oa = fadeAlpha(hudFade.offhand, game::hudFadeDefaultSeconds(game::HudFadeDvar::Offhand, mpHud), 3000);
                 if (oa > 0.0f)
                     if (const ui::Menu* om = hudMenus.find("offhandinfo"))
                         for (const auto& itp : om->items) {
@@ -6327,9 +7679,9 @@ int main(int argc, char** argv) {
             // Firemode icon (ownerdraw 83, 0x4a8040): not in a vehicle; alpha = fade over a fixed 1800 ms (0x708) from the weapon
             // change time (0xf796e4); the material is the weapon's modeIcon (client weapon info +0x140; only weapons with a non-empty
             // modeIcon key draw one), item colour, rect from the item (RIGHT / BOTTOM aligned like the other weaponinfo items).
-            if (fireModeItem && pweapon.equipped() && !inVeh) {
-                const std::string icon = selDef ? hudStr("modeIcon") : pweapon.field("modeIcon");
-                const float a = fadeAlpha(hudFade.weaponChange, 2.0f, 1800);
+            if (fireModeItem && hwEquipped && !inVeh) {
+                const std::string icon = hwDef ? hwField("modeIcon") : pweapon.field("modeIcon");
+                const float a = fadeAlpha(hudFade.weaponChange, ammoFadeSec, 1800);
                 if (!icon.empty() && a > 0.0f) {
                     const auto& r = fireModeItem->rect;
                     Quad2D q{float(w) + r.x * sc, float(h) + r.y * sc, 0, 0};
@@ -6363,7 +7715,8 @@ int main(int argc, char** argv) {
                 const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;
                 hudFade.lastHudMs = now;
                 const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
-                const int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // entity maxhealth (+0x140)
+                int hp = hv.isNumber() ? hv.asInt() : 0, maxHp = mv.isNumber() ? mv.asInt() : 100; // entity maxhealth (+0x140)
+                if (hudKillcam) hp = hudKillcam->health, maxHp = hudKillcam->maxHealth; // the followed player state's copies
                 const float frac = game::hudHealthFraction(hp, maxHp); // 0x4a8790
                 if (frac < 1.0f) {
                     if (hudFade.health < now) hudFade.health = now;
@@ -6511,7 +7864,7 @@ int main(int argc, char** argv) {
             if (world)
                 for (const auto& ob : world->objectives())
                     if (ringElapsed(ob) >= 0 && ob.positions[0] != std::array<float, 3>{0, 0, 0}) hudFade.compass = cgNowMs();
-            const float compassAlpha = fadeAlpha(hudFade.compass, 8.0f, 8000);
+            const float compassAlpha = fadeAlpha(hudFade.compass, game::hudFadeDefaultSeconds(game::HudFadeDvar::Compass, mpHud), 8000);
             if (compassMenu && world && compassAlpha > 0.0f) {
                 // Compass dvars from the world's dvar table (maps set cg_hudCompassMaxRange with setsavedcvar: demolition 700/400,
                 // downtown_assault 1000, moscow 900, libya 7000), else the exe defaults: cg_hudCompassSize 1 (0x1040c38),
@@ -6547,7 +7900,7 @@ int main(int argc, char** argv) {
                         // compassRadius; placed at the compass centre - icon/2 - (sin, cos)(th) * R with th = yaw to the actor -
                         // view yaw; the arrow turns by (view yaw - actor yaw). 88 tanks (4c1700): the same formulas over the vehicles
                         // with addvehicletocompass, icon 16 (0x591e84). Entry age: an entry is drawn while its stamp >= now - 800 ms (0x4c10e8;
-                        // refreshed each frame for snapshot actors, so only a removed actor would linger 800 ms: not ported). The springy
+                        // refreshed each frame for snapshot actors, so only a removed actor would linger 800 ms: not implemented). The springy
                         // yaw (cg_hudCompassSpringyPointers, 0xf569ac, default 0) swaps the view yaw for the 0x4b0ce0 spring state 0xf79a30;
                         // implemented below as pyaw.
                         if (it.background.empty()) continue;
@@ -6693,7 +8046,8 @@ int main(int argc, char** argv) {
                 // TODO(spec): [generic Item_Paint order not walked] item/menu alignment, draw order (the font is menuFont, exe 0x4c38e0).
                 auto col8 = [](const ui::Color& c) { return std::array<uint8_t, 4>{uint8_t(std::clamp(c[0], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[1], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[2], 0.0f, 1.0f) * 255), uint8_t(std::clamp(c[3], 0.0f, 1.0f) * 255)}; };
                 std::vector<const ui::Menu*> order;
-                if (const ui::Menu* bg = scriptMenus.find("bg")) order.push_back(bg); // TODO(spec): [opener not located] how the background menu is shown
+                // No forced background: the menu "bg" is an ordinary menu that "main" opens and closes in its own onOpen / onClose
+                // (docs/spec/ui.md "Background menu"), so in-game script menus draw over the world only.
                 for (const ui::Menu* m : frontStack.menus()) order.push_back(m);
                 for (const ui::Menu* mp : order) {
                     const ui::Menu& menu = *mp;
@@ -6706,7 +8060,9 @@ int main(int argc, char** argv) {
                         q.texture = mat.empty() ? 0 : materialTexture(mat);
                         out.push_back(q);
                     };
-                    if (menu.style == 1) quad(menu.rect.x, menu.rect.y, menu.rect.w, menu.rect.h, col8(menu.backColor), "");
+                    // Window_Paint FILLED (MP 0x539f9c..0x53a081): with a background material that material is drawn in the back
+                    // colour (the MP load screen "connect": $levelBriefing), else the back colour fills the rect.
+                    if (menu.style == 1) quad(menu.rect.x, menu.rect.y, menu.rect.w, menu.rect.h, col8(menu.backColor), menu.background);
                     else if (menu.style == 3 && !menu.background.empty()) quad(menu.rect.x, menu.rect.y, menu.rect.w, menu.rect.h, col8(menu.foreColor), menu.background);
                     for (const auto& itp : menu.items) {
                         const ui::Item& it = *itp;
@@ -6756,7 +8112,7 @@ int main(int argc, char** argv) {
                                     const int maxc = it.columns.empty() ? 0 : it.columns[ci].maxChars;
                                     if (maxc > 0 && cell.size() > size_t(maxc)) cell.resize(size_t(maxc));
                                     const float cx = ix + 1.0f + (it.columns.empty() ? 0.0f : it.columns[ci].pos) + 4.0f;
-                                    if (!cell.empty())
+                                    if (!cell.empty() && !(ci < it.columns.size() && it.columns[ci].hidden))
                                         hudText(out, cell, x0 + cx * xs, (rowTop + it.elementHeight) * sc, lgs * sc, *lf, lc.data(), 0.0f, 1.0f, it.textStyle);
                                 }
                             }
@@ -6764,7 +8120,20 @@ int main(int argc, char** argv) {
                         }
                         // UI_SAVEGAME_SHOT (258, 0x4c3c00): the material named by the selected entry's image (+8 = header +0x320,
                         // script default "$default"); no selection, an empty name or a material that does not load -> "unknownsave".
-                        // Drawn over the item rect (0x4d4790). TODO(spec): [call site not read] the colour argument of the ownerdraw call (item fore colour here).
+                        // Drawn over the item rect (0x4d4790). TODO(spec): the colour argument of the ownerdraw call (item fore colour here).
+                        // UI_STARTMAPCINEMATIC (255) on the create-server screen: the selected map's load screen image (arena entry +8,
+                        // "loadscreen_<map>"). TODO(spec): the ownerdraw's cinematic path; only the still image is drawn.
+                        if (it.ownerDraw == ui::kOwnerDrawNetMapCinematic && mpFrontEnd) { // the selected server's map (MP UI_NETMAPCINEMATIC)
+                            const net::LanServer* srv = lanBrowser.rowServer(lanBrowser.selected);
+                            const std::string mat = srv && !srv->map().empty() ? "loadscreen_" + srv->map() : std::string();
+                            if (!mat.empty() && vfs.exists("materials/" + mat)) quad(ix, iy, it.rect.w, it.rect.h, std::array<uint8_t, 4>{255, 255, 255, 255}, mat);
+                            continue;
+                        }
+                        if (it.ownerDraw == ui::MpServerSetup::kOwnerDrawStartMapCinematic && mpFrontEnd) {
+                            const std::string mat = mpSetup.loadScreenOfCurrent(menuEnv.getCvar);
+                            if (!mat.empty() && vfs.exists("materials/" + mat)) quad(ix, iy, it.rect.w, it.rect.h, std::array<uint8_t, 4>{255, 255, 255, 255}, mat);
+                            continue;
+                        }
                         if (it.ownerDraw == 258) {
                             std::string mat = "unknownsave";
                             if (saveSel >= 0 && size_t(saveSel) < saveRows.size() && !saveRows[size_t(saveSel)].info.image.empty() &&
@@ -6779,11 +8148,13 @@ int main(int argc, char** argv) {
                         if (saveText && (it.ownerDraw == 262 ? saveSelName : saveDetail).empty()) continue;
                         // Item_Text_Paint (0x4ccf60): an item without text shows its dvar's value (0x2c0 -> 0x4314b0), localized when it
                         // starts with '@' (0x4c6a20); e.g. victoryscreen's "quote" (dvar ui_victoryquote).
-                        const bool dvarText = !saveText && it.text.empty() && !it.dvar.empty() && it.type != 4 && it.type != 16 && it.type != 11 &&
+                        const bool dvarText = !saveText && it.text.empty() && !it.dvar.empty() && it.type != 4 && it.type != 9 && it.type != 16 && it.type != 11 &&
                                               it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17;
-                        if (!saveText && !dvarText && it.text.empty() && it.type != 4 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
+                        const std::string ownerText = it.type == 0 && it.ownerDraw && mpFrontEnd ? menuEnv.ownerDrawText(it.ownerDraw) : std::string();
+                        if (!saveText && !dvarText && ownerText.empty() && it.text.empty() && it.type != 4 && it.type != 9 && it.type != 16 && it.type != 11 && it.type != 12 && it.type != 13 && it.type != 14 && it.type != 17) continue;
                         const std::string dv = dvarText ? menuEnv.getCvar(it.dvar) : std::string();
                         const std::string text = saveText ? (it.ownerDraw == 262 ? saveSelName : saveDetail)
+                                                 : !ownerText.empty() ? (it.text.empty() ? std::string() : menuLocalized(it.text) + " ") + menuLocalized(ownerText)
                                                  : dvarText ? (!dv.empty() && dv[0] == '@' ? menuLocalized(dv) : dv) : menuLocalized(it.text);
                         if (dvarText && text.empty()) continue;
                         frontStack.paintFade(menu, it, false); // text fade on the fore colour (0x4cd025 -> 0x4cc450)
@@ -6839,7 +8210,7 @@ int main(int argc, char** argv) {
                             }
                         } else
                         hudText(out, text, x0 + (ix + it.textAlignX) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), ax, 1.0f, it.textStyle);
-                        if (it.type == 4 || it.type == 16) { // edit field value (exe 0x4cd0e0, the item window is painted above); colour codes: hudText
+                        if (it.type == 4 || it.type == 9 || it.type == 16) { // edit field value (exe 0x4cd0e0, the item window is painted above); colour codes: hudText
                             const std::string val = menuEnv.getCvar(it.dvar);
                             const int off = frontStack.editItem() == &it ? frontStack.editOffset() : 0;
                             std::string shown = off < int(val.size()) ? val.substr(size_t(off)) : std::string();
@@ -6887,7 +8258,16 @@ int main(int argc, char** argv) {
                         quad(tx, ty, 96.0f, 16.0f, white, "ui/assets/slider2.tga");
                         quad(tx + 6.0f + frontStack.sliderFraction(it) * 84.0f - 5.0f, ty - 2.0f, 10.0f, 20.0f, white, "ui/assets/sliderbutt_1");
                     }
-                    (void)0;
+                    // MP load screen text (0x5390c0, docs/spec/mp-ui.md "Load screen"): the gametype's display string and the map's long
+                    // name, centred at x 320, scale 0.5, white, text style 6, over the connect menu.
+                    if (menu.name == "connect" && mpLoadText) {
+                        const auto white = std::array<uint8_t, 4>{255, 255, 255, 255};
+                        if (const assets::Font* f = menuFont(ui::kMpLoadScreenTextScale, 0)) {
+                            const float gs = ui::kMpLoadScreenTextScale * 48.0f / float(f->pixelHeight) * sc;
+                            hudText(front, menuLocalized(mpLoadText->gametype), left43 + 320.0f * sc, ui::kMpLoadScreenGametypeY * sc, gs, *f, white.data(), 0.5f, 1.0f, 6);
+                            hudText(front, mpLoadText->map, left43 + 320.0f * sc, ui::kMpLoadScreenMapY * sc, gs, *f, white.data(), 0.5f, 1.0f, 6);
+                        }
+                    }
                 }
                 {   // the cursor
                     Quad2D q{left43 + (menuMx - 8.0f) * sc, (menuMy - 8.0f) * sc, left43 + (menuMx + 8.0f) * sc, (menuMy + 8.0f) * sc};
@@ -6904,6 +8284,11 @@ int main(int argc, char** argv) {
             // Draw order of CG_DrawActive (0x4bfa70): damage icons, crosshair + scope overlay (0x4bd760 -> 0x4bcdd0), then the hud
             // elements of both layers (0x4c3030), the HUD menus, the subtitles and the rest: the overlay lies below all of them.
             game::insertBelow(out, hudElemStart, scopeQuads);
+            // Intermission (pm_type 5): the 2D pass draws only the forced scoreboard (0x4cbca0 -> 0x4cb810); open menus stay.
+            if (world && world->multiplayer() && mpIntermissionView) {
+                out.clear();
+                drawMpScoreboard(out, w, h);
+            }
             out.insert(out.end(), front.begin(), front.end());
             // Without menus the fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
             if (!fadeDrawn) drawScreenFade();
@@ -6926,6 +8311,7 @@ int main(int argc, char** argv) {
         if (!shot.empty() && (std::getenv("IW2_SHOT_ALIASES") || !currentMap.empty()))
             loadMapAliases(std::getenv("IW2_SHOT_ALIASES") ? std::string(std::getenv("IW2_SHOT_ALIASES")) : currentMap);
         else if (!currentMap.empty()) loadMapAliases(currentMap); // the first map's load (0x40ce90)
+        showNetError(); // a +connect that failed at start-up
         if (!shot.empty() && (menuMode || std::getenv("IW2_SHOT_MENU"))) { // debug: IW2_SHOT_MENU=name[,name...] opens menus (and IW2_SHOT_SET=dvar=value,... sets cvars) before the shot
             if (const char* sets = std::getenv("IW2_SHOT_SET")) {
                 std::string rest = sets;
@@ -6939,7 +8325,16 @@ int main(int argc, char** argv) {
             std::string rest = std::getenv("IW2_SHOT_MENU") ? std::getenv("IW2_SHOT_MENU") : "main";
             while (!rest.empty()) {
                 const size_t comma = rest.find(',');
-                frontStack.open(rest.substr(0, comma));
+                const std::string name = rest.substr(0, comma);
+                // "connect": the MP load screen of the IW2_SHOT_ALIASES map (mp/<map>) with IW2_MP_GAMETYPE (default dm).
+                if (name == "connect") {
+                    if (!mpFrontEnd) pendingFrontEnd = true, applyFrontEnd(); // the MP menu set (the SP set has its own "connect")
+                    frontStack.closeAll();
+                    frontStack.open(name);
+                    const std::string m = std::getenv("IW2_SHOT_ALIASES") ? std::getenv("IW2_SHOT_ALIASES") : "";
+                    mpLoadText = ui::mpLoadScreenText(vfs, std::getenv("IW2_MP_GAMETYPE") ? std::getenv("IW2_MP_GAMETYPE") : "dm",
+                                                      m.rfind("mp/", 0) == 0 ? m.substr(3) : m);
+                } else frontStack.open(name);
                 rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
             }
             menuMx = 320.0f, menuMy = 240.0f;
@@ -6950,7 +8345,7 @@ int main(int argc, char** argv) {
                     const std::string k = kr.substr(0, comma);
                     kr = comma == std::string::npos ? std::string() : kr.substr(comma + 1);
                     using K = ui::MenuStack::Key;
-                    if (menuExtraToken(k)) {}
+                    if (menuExtraToken(k)) applyFrontEnd();
                     else if (k.rfind("open:", 0) == 0) frontStack.open(k.substr(5));
                     else if (k.rfind("click:", 0) == 0) {
                         const size_t sl = k.find('/');
@@ -6958,6 +8353,7 @@ int main(int argc, char** argv) {
                         frontStack.mouseMove(menuMx, menuMy);
                         frontStack.click(menuMx, menuMy);
                         frontStack.release();
+                        applyFrontEnd();
                     } else if (k.rfind("hover:", 0) == 0) {
                         const size_t sl = k.find('/');
                         menuMx = float(std::atof(k.substr(6, sl - 6).c_str())), menuMy = float(std::atof(k.substr(sl + 1).c_str()));
@@ -6988,6 +8384,7 @@ int main(int argc, char** argv) {
                 bool rHave = false, rInit = false;
                 struct ShotMsg { std::string text; int64_t at; bool bold; };
                 std::vector<ShotMsg> shotMsgs; // game messages with their world time
+                std::vector<std::pair<game::MpObituary, int64_t>> shotObits; // MP obituaries with their world time
                 bool killedVehicles = false;
                 for (int f = 0; f < int(simSeconds * 20); ++f) {
                     // Debug: IW2_DEBUG_ITEM=name[@seconds] drops a weapon item on the player (touch pickup, owned or not).
@@ -7042,6 +8439,69 @@ int main(int argc, char** argv) {
                         // Debug: IW2_FIRE_TURRETS=N fires every turret entity in the last 3 frames and puts the camera 150 units
                         // beside and 60 above the Nth one (muzzle flashes in the shot).
                         world->debugFireTurrets();
+                    }
+                    // Debug: IW2_SHOT_MP_RESPONSES=t:menu:response,... sends the local client's menu responses at sim time t (MP);
+                    // a menu "-" runs the bound command text instead (e.g. 1:-:openscriptmenu ingame changeweapon, 2:-:togglemenu).
+                    if (const char* mr = std::getenv("IW2_SHOT_MP_RESPONSES"); mr && world->multiplayer()) {
+                        std::string rest = mr;
+                        while (!rest.empty()) {
+                            const size_t comma = rest.find(',');
+                            const std::string e = rest.substr(0, comma);
+                            rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+                            const size_t c1 = e.find(':'), c2 = c1 == std::string::npos ? c1 : e.find(':', c1 + 1);
+                            if (c2 == std::string::npos || f != int(std::atof(e.substr(0, c1).c_str()) * 20)) continue;
+                            const std::string menu = e.substr(c1 + 1, c2 - c1 - 1), resp = e.substr(c2 + 1);
+                            if (menu == "-") {
+                                input.command(resp);
+                                runConsoleCommands();
+                            } else world->mpMenuResponse(world->mpLocalClient(), menu, resp);
+                        }
+                    }
+                    // Debug: IW2_SHOT_MP_KILL=t:victim:attacker[:mod],... damages client victim by 1000 from client attacker (-1 the world)
+                    // through the MP damage path at sim time t (kill feed / centre print shots).
+                    if (const char* mk = std::getenv("IW2_SHOT_MP_KILL"); mk && world->multiplayer()) {
+                        std::istringstream all(mk);
+                        for (std::string e; std::getline(all, e, ',');) {
+                            std::vector<std::string> p;
+                            std::istringstream one(e);
+                            for (std::string x; std::getline(one, x, ':');) p.push_back(x);
+                            if (p.size() < 3 || f != int(std::atof(p[0].c_str()) * 20)) continue;
+                            world->mpDebugDamage(std::atoi(p[1].c_str()), std::atoi(p[2].c_str()), 1000, p.size() > 3 ? p[3] : "MOD_RIFLE_BULLET");
+                        }
+                    }
+                    // Debug: IW2_SHOT_MP_THROW=t:client[:weapon[:view]],... client throws a grenade (default frag_grenade_german_mp) from
+                    // its eye toward the local client (with view: along its own facing) at sim time t (killcam grenade shots, docs/spec/mp-hud.md).
+                    if (const char* mt = std::getenv("IW2_SHOT_MP_THROW"); mt && world->multiplayer()) {
+                        std::istringstream all(mt);
+                        for (std::string e; std::getline(all, e, ',');) {
+                            std::vector<std::string> p;
+                            std::istringstream one(e);
+                            for (std::string x; std::getline(one, x, ':');) p.push_back(x);
+                            if (p.size() < 2 || f != int(std::atof(p[0].c_str()) * 20)) continue;
+                            game::Entity* thrower = world->mpClientEntity(std::atoi(p[1].c_str()));
+                            game::Entity* target = world->mpClientEntity(world->mpLocalClient());
+                            if (!thrower || !target) continue;
+                            const auto o = thrower->obj->get("origin").asVector(), t = target->obj->get("origin").asVector();
+                            const game::Vec3 eye{o[0], o[1], o[2] + 60.0f};
+                            // "view": along the thrower's own facing (what its killcam view shows), else toward the local client.
+                            const bool view = p.size() > 3 && p[3] == "view";
+                            const auto ta = thrower->obj->get("angles");
+                            const float yaw = view && ta.isVector() ? ta.asVector()[1] : std::atan2(t[1] - o[1], t[0] - o[0]) * 57.29578f;
+                            world->clientThrowGrenade(*thrower, p.size() > 2 && !p[2].empty() ? p[2] : "frag_grenade_german_mp", eye, {-25.0f, yaw, 0.0f}, {0, 0, 0});
+                            std::cout << "shot: client " << p[1] << " throws a grenade at yaw " << yaw << "\n";
+                        }
+                    }
+                    // Debug: IW2_SHOT_MP_FOLLOW=t:dir,... runs the local spectator's follow cycle (dir 1 / -1, as an attack / 0x1000
+                    // press) at sim time t; dir 0 stops following (docs/spec/mp-spectate.md).
+                    if (const char* mf = std::getenv("IW2_SHOT_MP_FOLLOW"); mf && world->multiplayer()) {
+                        std::istringstream all(mf);
+                        for (std::string e; std::getline(all, e, ',');) {
+                            const size_t c1 = e.find(':');
+                            if (c1 == std::string::npos || f != int(std::atof(e.substr(0, c1).c_str()) * 20)) continue;
+                            const int dir = std::atoi(e.substr(c1 + 1).c_str());
+                            if (dir == 0) world->mpStopFollow(world->mpLocalClient());
+                            else std::cout << "shot: follow cycle " << dir << " -> " << (world->mpFollowCycle(world->mpLocalClient(), dir) ? world->mpFollowing(world->mpLocalClient()) : -1) << "\n";
+                        }
                     }
                     // Debug: IW2_SHOT_LEVEL_CALL=<s>:file.gsc:function starts that function as a thread on level at sim time <s>
                     // (e.g. 2:maps/_endmission.gsc:nextmission for the victory screen).
@@ -7102,6 +8562,8 @@ int main(int argc, char** argv) {
                             }
                         std::cout << "\n";
                     }
+                    if (world->multiplayer())
+                        for (const auto& ev : world->takeMpObituaries()) shotObits.push_back({ev, world->timeMs()}); // [server time]
                     for (const auto& cmd : world->takeClientCommands()) // --shot shows the death screen and script menus too
                         if (cmd.name == "opendeadscreen") deadScreenMs = cgNowMs();
                         else if (cmd.name == "popupopen" || cmd.name == "popupclose") menuCommand(cmd.name, cmd.arg);
@@ -7115,14 +8577,19 @@ int main(int argc, char** argv) {
                         else if (cmd.name == "obj_update" || cmd.name == "obj_complete" || cmd.name == "gm")
                             shotMsgs.push_back({cmd.name == "gm" ? cmd.arg : "^2\x14" + cmd.arg, cgNowMs(), false}); // obj_*: "^2%s" (0x57f6a0)
                         else if (cmd.name == "gmb") shotMsgs.push_back({cmd.arg, cgNowMs(), true});
+                        else if (cmd.name == "h" || cmd.name == "i") chatCommand(cmd.name, cmd.arg);
                 }
                 frontStack.settleFades(); // a single-frame shot shows the menus after their fades
                 // Messages still on screen (con_gamemessagetime 5 s, con_boldgamemessagetime 8 s) at the end of the simulation.
                 for (const auto& m : shotMsgs)
                     if (cgNowMs() - m.at < (m.bold ? 8000 : 5000)) { const uint64_t nowNs = SDL_GetTicksNS(), st = nowNs - uint64_t(cgNowMs() - m.at) * 1000000ull;
                         screenMessages.push_back({m.text, nowNs + 600000000000ull, m.bold, st, st + (m.bold ? 8000000000ull : 5000000000ull)}); }
+                for (const auto& [ev, at] : shotObits)
+                    if (world->timeMs() - at < 5000) pushObituary(ev, SDL_GetTicksNS() - uint64_t(world->timeMs() - at) * 1000000ull, at); // [server time]
                 // Debug: IW2_BOLD_MESSAGE="<text or localized key>" shows an iprintlnbold message in the shot.
                 if (const char* bm = std::getenv("IW2_BOLD_MESSAGE")) screenMessages.push_back({bm, SDL_GetTicksNS() + 600000000000ull, true, SDL_GetTicksNS() - 1000000000ull, SDL_GetTicksNS() + 600000000000ull});
+                // Debug: IW2_SHOT_CHATFIELD="<text>" shows the open message field with that text (docs/spec/mp-chat.md).
+                if (const char* cf = std::getenv("IW2_SHOT_CHATFIELD")) chatField = {true, false, cf};
                 // Debug: IW2_SHOT_HINT=<state> shows an invalid-command hint state 300 ms into its blink cycle.
                 if (const char* hs = std::getenv("IW2_SHOT_HINT")) setInvalidCmd(std::atoi(hs), cgNowMs() - 300);
                 // Debug: IW2_SHOT_OBJECTIVES=1 shows the objectives screen as if +scores were held.
@@ -7146,6 +8613,16 @@ int main(int argc, char** argv) {
                 if (world->playerLinked() && !std::getenv("IW2_SHOT_FREE_CAM")) {
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
+                }
+                // A following MP spectator (docs/spec/mp-spectate.md) sees the target's view.
+                if (world->multiplayer()) {
+                    script::Vec3 eye, ang;
+                    const int fol = world->mpFollowing(world->mpLocalClient());
+                    if (fol >= 0 && world->mpClientView(fol, eye, ang)) {
+                        cam.pos = {eye[0], eye[1], eye[2]};
+                        cam.pitch = ang[0];
+                        cam.yaw = ang[1];
+                    }
                 }
                 if (const char* ft = std::getenv("IW2_FIRE_TURRETS")) { // IW2_FIRE_TURRETS=N: camera beside the Nth turret
                         int n = 0;
@@ -7275,6 +8752,12 @@ int main(int argc, char** argv) {
                 game::PlayerWeapon::Input stepIn = shotIn;
                 if (pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14) stepIn.ads = true; // forced aim (0x409af0)
                 const int shotsFired = pweapon.update(0.02f, stepIn);
+                if (world && world->multiplayer()) { // the host's recorded view state of the shot (its view height, standing still)
+                    game::PlayerState shotPs;
+                    shotPs.viewHeight = shotViewHeight;
+                    shotPs.viewHeightTarget = int(shotViewHeight);
+                    world->mpSetLocalViewState(game::mpViewStateOf(pweapon, shotPs));
+                }
                 if (shotsFired > 0 && (shotScript.empty() || shotTurnSim || i >= shotSteps - 5)) viewShot();
                 if (!shotScript.empty()) {
                     for (const auto& e : pweapon.takeEvents()) {
@@ -7322,6 +8805,13 @@ int main(int argc, char** argv) {
             cam.fovX43 = game::playerViewFov(game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                       pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn()),
                                              world && world->playerOnTurret());
+            const auto killcamView = killcamCamera(cam, 1.0f); // killcam: the killer's archived view
+            if (killcamView && world->player())
+                std::cout << "shot killcam: follows entity " << killcamView->killer << " weapon " << killcamView->weapon << ", spectatorclient "
+                          << world->player()->obj->get("spectatorclient").toString() << ", last attacker "
+                          << (world->player()->lastAttacker ? world->player()->lastAttacker->number : -1) << ", state "
+                          << world->player()->obj->get("sessionstate").toString() << " archivetime " << world->player()->obj->get("archivetime").toString()
+                          << " eye " << killcamView->eye[0] << " " << killcamView->eye[1] << " " << killcamView->eye[2] << " cam " << cam.pos.x << " " << cam.pos.y << "\n";
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
             // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
@@ -7357,7 +8847,11 @@ int main(int argc, char** argv) {
                 std::vector<DrawItem> scratch;
                 addViewModel(scratch, cam, false);
             }
-            auto shotItems = gatherItems(cam);
+            if (killcamView) {
+                shotVmItems.clear();
+                addKillcamViewModel(shotVmItems, cam, *killcamView);
+            }
+            auto shotItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
             shotItems.insert(shotItems.end(), shotVmItems.begin(), shotVmItems.end());
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
@@ -7366,6 +8860,8 @@ int main(int argc, char** argv) {
             renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
             applyTextureFilter(renderer, uiCvars);
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
+            hudKillcam = killcamView;
+            forcedBlur = std::max(forcedBlur, worldMenuBlur());
             renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
@@ -7401,7 +8897,7 @@ int main(int argc, char** argv) {
         game::markSpawned(ps);
         bool wasDead = false;
         std::array<float, 2> bobAngles{0, 0};
-        float deadYaw = 0;
+        float deadYaw = 0, deadPitch = 0;
         game::MoveRecorder moveRecorder;
         bool fellOut = false;
         std::array<game::Vec3, 3> prevBody{};
@@ -7557,12 +9053,10 @@ int main(int argc, char** argv) {
             releaseScene(dev, movieScene);
             return running;
         };
-        int shockLoop = 0, shockSeenStart = -1;
         game::ShockEndSound shockEnd; // shellshock_end / shellshock_end_abort (0x4b1f90, 0x4b1e90)
         // Hold-breath sounds (0x4b6840) and the hold_breath channel volumes (cgame registration 0x4a3140 loads
         // shock/hold_breath.shock into record 16, 0xf5741c; its volumes drive sound volume slot 2 via 0x4b6700).
         game::BreathSounds breathSnd;
-        int heartbeatLoop = 0;
         game::ShockRecord holdBreathRec;
         // Sound volume slot 1 (setchannelvol, docs/spec/campaign.md "Victory screen"): the channel volumes of shock/victoryscreen.shock,
         // reached linearly over `ms` (slot fade 0x4431f0: a per-channel step of (target - current output) / max(ms, 1), advanced by the elapsed ms and clamped at the target; the start is the current output of the highest slot, which is full volume here).
@@ -7571,10 +9065,9 @@ int main(int argc, char** argv) {
         // 0x444730 with flags 0: every voice, the music and both ambient slots included, ends at once; reverb layers 1 and 2 and the
         // volume slots 1..4 are cleared. The handles the client code holds for those voices go with them.
         stopAllSounds = [&] {
-            mixer.stopAll(0);
+            clientSnd.stopAll(mixer); // Mixer::stopAll(0) and the handles of the music, ambient, shell shock and heartbeat voices
             volSlots.clearAll();
-            musicHandle = ambientHandle = menuLoopHandle = shockLoop = heartbeatLoop = 0;
-            ambientAlias.clear();
+            menuLoopHandle = 0;
             frontStack.soundsStopped();
         };
         if (const auto hb = vfs.read("shock/hold_breath.shock")) holdBreathRec = game::parseShockFile(std::string(hb->begin(), hb->end()));
@@ -7605,7 +9098,112 @@ int main(int argc, char** argv) {
         double profWater = 0, profDraw = 0, profFrame = 0, profWait = 0;
         int profFrames = 0, profReports = 0;
         uint64_t profT0 = SDL_GetTicksNS();
+        int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
+        // The client's state that belongs to one level or one connection, and its one reset. A disconnect (the player's own, a server
+        // drop or an error), a connect to another server and a level load all end the level the state was built in: cgame is shut down,
+        // the client state cleared and every sound stopped (CL_Disconnect 0x40cd10 and the map load both call the cgame shutdown 0x4b2490
+        // and the sound stop-all 0x44f940 with no keep flags; docs/spec/net.md section 14). Times in here are the old level's
+        // clock, which restarts with the next one: nothing may survive but what is kept across levels on purpose (the menu cvars, the
+        // profile, the loaded assets). The World itself is freed by the caller. Returns the number of voices it stopped.
+        netgame::AmbientConfigTracker netAmbient; // configstring 3 of the server (docs/spec/sound.md "Ambient on a network client")
+        auto resetClientState = [&](const char* why) {
+            const int voices = mixer.active();
+            // Sound: the stop-all (every voice: music, ambient, loops, the menu loop; the handles to them; the volume slots), then
+            // the rest of the per-level mixer state: the reverb, the pause flags (0x40cc80) and the channel scales.
+            stopAllSounds();
+            shockEnd = {};
+            mixer.reverb = audio::EnvReverb{};
+            mixer.resetPausable();
+            for (float& v : mixer.channelScale) v = 1;
+            mixer.fade(1.0f, 0);
+            victoryVol = {};
+            breathSnd.reset();
+            // Screen and HUD: the old level's fades, blur, messages and hint hold.
+            screenFade.clear();
+            screenBlur.clear();
+            cursorHint.reset();
+            hudFade = HudFade{};
+            compassSpring = {};
+            pointerSpring = {};
+            subtitles.clear();
+            screenMessages.clear();
+            mpCenterText.clear();
+            mpCenterStartMs = -1;
+            mpCrossClient = -1;
+            mpCrossMs = -1;
+            chatBuffer = {};
+            chatField = {};
+            mpSb = {};
+            mpIntermissionView = false;
+            invalidCmdState = 0;
+            invalidCmdStartMs = 0;
+            mantleHint = false;
+            hudAimSpread = 255.0f;
+            hudViewHeight = 60.0f;
+            damageIcons = {};
+            lastDamageEvent = 0;
+            lastLandSeq = 0;
+            lastEventSeq = 0;
+            binocDamageEvent = 0;
+            deadScreenMs = 0;
+            slowStartNs = slowEndNs = 0;
+            slowFrom = slowTo = slowmo = 1;
+            // The first-person view: weapon, motion, springs, impulses, effects. CG_Init (0x4a5c10) zeroes 0xf5bd00..0xf7eb4c on every
+            // map load: the last weapon cycle time 0xf796e4 among them (kept from the previous map, whose clock ran far ahead, it blocked
+            // weapnext / weapprev until the new map's clock caught up), the selected offhand 0xf79700, the HUD fade touches and the
+            // invalid-command hint (a touch time from the previous map would be "in the future" of the new map's clock).
+            pweapon = game::PlayerWeapon{};
+            weaponSelect.clear();
+            weaponWritten.clear();
+            prevSelect.clear();
+            lastWeaponCycleMs = 0;
+            cgOffhand.clear();
+            drawnGunAim = {};
+            gunAimDelay.reset();
+            netSelectUntilMs = 0;
+            hostWeaponStatePrev = 0;
+            vmMotion = game::ViewWeaponMotion{};
+            recoil.reset();
+            viewShake.reset();
+            aimBlend.reset();
+            aimBlendWeapon.clear();
+            viewImp.reset();
+            gunBobAngles = {0, 0, 0};
+            rawGunBob = rawGunBobPrev = {0, 0, 0};
+            breathWeapon = false;
+            *viewFlash = ViewFlash{};
+            killcamRig = KillcamRig{};
+            hudKillcam.reset();
+            input.clearAds(); // the toggled aim ends with the level (0x40e821)
+            input.setStance(0);
+            menuEnv.setCvar("cl_paused", "0");
+            menuEnv.setCvar("cl_bypassMouseInput", "0");
+            // The network client's view of the server it left.
+            netAmbient.reset(); // a level's track starts again from the configstring of the next level
+            netPredictor.reset();
+            netPredictedAmmo.clear();
+                        netPredictedWeaponTime.clear();
+            netPredictorFor = {nullptr, -1};
+            netClockOffset.reset();
+            netKillcam = {};
+            remoteView = netgame::RemoteView{};
+            // Effects and the interpolation caches of the old entities.
+            endWorldFx();
+            lerpPrev.clear();
+            prevAnim.clear();
+            prevTurret.clear();
+            prevTexScroll.clear();
+            gameClock = 0;
+            lerpFrac = 0.0f;
+            wasDead = false;
+            bobAngles = {0, 0};
+            havePrevBody = false;
+            camLinkLerp = false;
+            std::cout << "[reset] client state (" << why << "): " << voices << " voice(s) stopped\n";
+            return voices;
+        };
         while (running) {
+            if (dedicatedStart) break; // StartServer with the dedicated choice: the client ends here
             if (profEvery > 0 && ++profFrames > profEvery) {
                 const double n = double(profFrames - 1);
                 std::cout << "prof: frame " << profFrame / n << " ms, waterUpdate " << profWater / n << ", draw " << profDraw / n
@@ -7614,9 +9212,169 @@ int main(int argc, char** argv) {
                 if (++profReports >= 2) running = false;
             }
             const uint64_t profFrameStart = SDL_GetTicksNS();
+            // Network client (docs/spec/net.md section 10): packets, server commands, the other players from the snapshots.
+            if (listenWanted && world && world->multiplayer() && !world->mpRemote()) {
+                if (!listenServer) {
+                    listenGame = std::make_unique<netgame::WorldGame>(nullptr, "", "", 0, 64);
+                    listenGame->worldOwnedByHost = true;
+                    listenServer = std::make_unique<net::Server>(*listenGame, uint32_t(netNowMs()));
+                    listenGame->sendCommand = [s = listenServer.get()](int slot, const std::string& text) { s->sendServerCommand(slot, text); };
+                    listenGame->clientPing = [s = listenServer.get()](int slot) { return s->client(slot).ping; };
+                    listenGame->onRestart = [s = listenServer.get()] { s->snapFlags ^= 4; };
+                    // The game's password check (docs/spec/dedicated.md section 5) against the host's g_password.
+                    listenServer->connectFilter = [&](const std::string& userinfo) {
+                        return net::gamePasswordRejection(world ? world->cvars["g_password"] : std::string(), userinfo);
+                    };
+                    const char* lp = std::getenv("IW2_LISTEN_PORT");
+                    const std::string np = menuEnv.getCvar("net_port");
+                    const int port = lp ? std::atoi(lp) : !np.empty() ? std::atoi(np.c_str()) : 28960;
+                    const std::string mc = world->cvars["sv_maxclients"];
+                    listenServer->maxClients = mc.empty() ? 8 : std::clamp(std::atoi(mc.c_str()), 1, 64);
+                    if (!listenServer->open(uint16_t(port))) std::cerr << "listen server: cannot open UDP port " << port << "\n";
+                    else std::cout << "listen server on UDP port " << listenServer->port() << "\n";
+                }
+                // A new map: the clients get its gamestate. Compared by generation, not by address: the next level's
+                // World can be allocated where the previous one was, and then the clients never got the new map.
+                if (listenWorldGeneration != worldGeneration) {
+                    listenWorldGeneration = worldGeneration;
+                    game::World* const listenWorld = world.get();
+                    const std::string map = world->cvars["mapname"], gt = world->mpState().gametype;
+                    const int serverId = int((netNowMs() + 1 + listenServer->serverId) & 0xff);
+                    listenGame->setWorld(listenWorld, map, gt, serverId);
+                    listenGame->hostname = menuEnv.getCvar("sv_hostname").empty() ? "openiw2" : menuEnv.getCvar("sv_hostname");
+                    listenServer->info().mapname = map;
+                    listenServer->info().gametype = gt;
+                    listenServer->info().hostname = listenGame->hostname;
+                    listenServer->newMap(serverId);
+                    for (int s = 0; s < listenServer->maxClients; ++s)
+                        if (listenServer->client(s).state != net::ServerClientState::Free) listenGame->clientConnect(s, listenServer->client(s).userinfo);
+                }
+                listenServer->poll(netNowMs(), 0);
+            }
+            // Network killcam / follow: the followed client's eye and view angles the server sent (RemoteView::followView).
+            bool netFollow = false;
+            float netFollowEye[3] = {0, 0, 0}, netFollowAngles[3] = {0, 0, 0};
+            if (netClient && world) {
+                const int64_t nowNet = netNowMs();
+                netClient->poll(nowNet);
+                // A new gamestate after the one the level was loaded from (the server changed or restarted the map, e.g.
+                // map rotation): the client loads the map it names (docs/spec/net.md section 10, "Map change").
+                // A gamestate sent again for the same server id (the client was busy loading) is no new map.
+                static std::tuple<int, int, int> loadedGamestate{0, 0, 0};
+                if (std::get<0>(loadedGamestate) != netConnection)
+                    loadedGamestate = {netConnection, netClient->gamestates, netClient->serverId};
+                if (netClient->gamestates > std::get<1>(loadedGamestate) && netClient->serverId != std::get<2>(loadedGamestate) &&
+                    !pendingLevel) {
+                    loadedGamestate = {netConnection, netClient->gamestates, netClient->serverId};
+                    const std::string map = net::infoValueForKey(netClient->configstrings[0], "mapname");
+                    std::cout << "new gamestate, map " << map << "\n";
+                    if (!map.empty()) pendingLevel = std::make_pair("mp/" + map, false);
+                }
+                if (const char* aj = std::getenv("IW2_MP_AUTOJOIN"); aj && std::atoi(aj) != 0 && netClient->latest()) {
+                    // debug: the team menu's autoassign once per connection and gamestate, as the local autojoin does
+                    static std::pair<int, int> joinedFor{0, 0};
+                    bool joined = joinedFor == std::make_pair(netConnection, netClient->gamestates);
+                    for (int i = netgame::kMenuConfigstrings; !joined && netClient->configstrings.count(i); ++i)
+                        if (netClient->configstrings[i].rfind("team_", 0) == 0) {
+                            netClient->addReliableCommand("mr " + std::to_string(netClient->serverId) + " " +
+                                                          std::to_string(i - netgame::kMenuConfigstrings) + " autoassign");
+                            joined = true;
+                            joinedFor = {netConnection, netClient->gamestates};
+                        }
+                }
+                for (const std::string& sc : netClient->takeServerCommands()) {
+                    const auto tok = net::tokenize(sc);
+                    if (tok.empty() || tok[0].size() != 1) continue;
+                    const char letter = tok[0][0];
+                    if (letter == 't' && tok.size() >= 2) {
+                        // Debug: IW2_MP_AUTOJOIN=1 answers the server's team and weapon menus as the local autojoin does
+                        // (autoassign, the side's default weapon) instead of opening them.
+                        const char* aj = std::getenv("IW2_MP_AUTOJOIN");
+                        const auto cs = netClient->configstrings.find(netgame::kMenuConfigstrings + std::atoi(tok[1].c_str()));
+                        const std::string mn = cs != netClient->configstrings.end() ? cs->second : std::string();
+                        if (aj && std::atoi(aj) != 0 && (mn.rfind("team_", 0) == 0 || mn.rfind("weapon_", 0) == 0)) {
+                            const std::string resp = mn.rfind("team_", 0) == 0 ? "autoassign"
+                                                     : mn == "weapon_german" ? "mp40_mp" : mn == "weapon_russian" ? "ppsh_mp" : "thompson_mp";
+                            netClient->addReliableCommand("mr " + std::to_string(netClient->serverId) + " " + tok[1] + " " + resp);
+                        } else menuCommand("popupopen", tok[1]);
+                    }
+                    else if (letter == 'u') menuCommand("popupclose", ""); // TODO(spec): the close-menu letter
+                    else if (letter == 'v' && tok.size() >= 3) menuEnv.setCvar(tok[1], tok[2]);
+                    else if (letter == 'b') mpSb.netScores = sc; // scores (0x4d02b0, docs/spec/mp-scoreboard.md)
+                    else if ((letter == 'h' || letter == 'i') && tok.size() >= 2) chatCommand(std::string(1, letter), tok[1]); // chat lines (docs/spec/mp-chat.md)
+                    else if ((letter == 'e' || letter == 'f' || letter == 'c' || letter == 'g') && tok.size() >= 2) {
+                        std::cout << "[print] " << logText(game::printMessageText(tok[1])) << "\n";
+                        game::addScreenMessage(screenMessages, game::printMessageText(tok[1]), false, SDL_GetTicksNS());
+                    }
+                }
+                // The level ambient: configstring 3 (the gamestate's and its later changes), once the level is up.
+                if (const net::ClientSnapshot* amb = netClient->latest(); amb && world && !pendingLevel) {
+                    const auto it = netClient->configstrings.find(netgame::kAmbientConfigstring);
+                    if (const auto c = netAmbient.update(it != netClient->configstrings.end() ? it->second : std::string(), amb->serverTime)) {
+                        if (c->play) clientSnd.playAmbient(mixer, c->alias, c->fadeMs);
+                        else clientSnd.stopAmbient(mixer, c->fadeMs);
+                    }
+                }
+                if (netClient->state() == net::ClientState::Disconnected) {
+                    std::cerr << "disconnected: " << netClient->error << "\n";
+                    netError = netgame::errorDialog(netClient->dropFromServer, netClient->dropReason);
+                    pendingDisconnect = true; // the level ends below; netClient goes with it
+                }
+                // The synced dvars of the gamestate become the client's dvars when they change (docs/spec/net.md
+                // section 11): the serverinfo menu's score and time limits, the team names and colours.
+                {
+                    static std::map<std::string, std::string> appliedDvars;
+                    for (const auto& [n, val] : netgame::RemoteView::syncedDvars(netClient->configstrings)) {
+                        auto& last = appliedDvars[n];
+                        if (last == val && world->cvars.count(n)) continue;
+                        last = val;
+                        menuEnv.setCvar(n, val);
+                    }
+                }
+                const net::ClientSnapshot *snapA = nullptr, *snapB = nullptr;
+                float snapFrac = 0;
+                // Self: the client number of the gamestate (the server's MP client number, docs/spec/net.md section 11).
+                if (netClient->interpolation(netClient->renderTime(nowNet), snapA, snapB, snapFrac)) {
+                    world->mpSetRemotePlayers(netgame::RemoteView::players(*snapA, *snapB, snapFrac, netClient->clientNum, netClient->configstrings));
+                    netFollow = netgame::RemoteView::followView(*snapA, *snapB, snapFrac, netFollowEye, netFollowAngles);
+                    netKillcam = remoteView.killcamView(*snapA, *snapB, snapFrac, netClient->configstrings, cgNowMs());
+                } else {
+                    netKillcam = {};
+                }
+                if (const net::ClientSnapshot* last = netClient->latest()) {
+                    // The server times of the snapshot move to the client clock: clock at the snapshot's time.
+                    const int64_t clockOffset = game::heldClockOffset(netClockOffset, cgNowMs() - netClient->renderTime(nowNet));
+                    remoteView.apply(*world, *last, netClient->configstrings, netClient->clientNum, last->serverTime + clockOffset,
+                                     &netPredictedAmmo);
+                    // Grenades, rockets and falling weapons move along their trajectory in the drawn time (docs/spec/net.md
+                    // section 11 "Trajectories"); evaluated from the older snapshot of the pair, as the cgame does.
+                    if (snapA && snapB) netgame::RemoteView::placeTrajectories(*world, *snapA, *snapB, netClient->renderTime(nowNet));
+                    // Other players' shots, reloads and throws: sounds, impacts, animations (docs/spec/net.md section 13).
+                    remoteView.playerEvents(*world, *last, netClient->configstrings, netClient->clientNum);
+                    // The followed client's shots in a killcam (the player state's event ring).
+                    remoteView.followEvents(*world, *last, netClient->configstrings, cgNowMs());
+                    // Debug: IW2_KILLCAM_TRACE=1, one line per snapshot with the bodies and the own puppet a network client holds.
+                    static const bool netKcTrace = std::getenv("IW2_KILLCAM_TRACE") != nullptr;
+                    static int netKcSnapshot = -1;
+                    if (netKcTrace && last->messageNum != netKcSnapshot) {
+                        netKcSnapshot = last->messageNum;
+                        std::string bodies;
+                        for (const auto& e : world->entities())
+                            if (!e->obj->removed && e->obj->get("$deathanim").isDefined()) {
+                                const auto o = e->obj->get("origin").asVector();
+                                char b[96];
+                                std::snprintf(b, sizeof b, " %d@%.0f,%.0f,%.0f", e->number, double(o[0]), double(o[1]), double(o[2]));
+                                bodies += b;
+                            }
+                        const game::Entity* own = world->mpClientEntity(netgame::RemoteView::kOwnBodySlot);
+                        std::printf("kctrace net t=%d follow=%d own=%d bodies=%zu%s\n", last->serverTime, int(netgame::RemoteView::following(*last)),
+                                    own != nullptr, size_t(std::count(bodies.begin(), bodies.end(), '@')), bodies.c_str());
+                    }
+                }
+            }
             // Text events only while a menu edit field has the focus (both the app start and --menu run this loop).
-            if (frontStack.wantsTextInput() != SDL_TextInputActive(window)) {
-                if (frontStack.wantsTextInput()) SDL_StartTextInput(window);
+            if ((frontStack.wantsTextInput() || chatField.open) != SDL_TextInputActive(window)) {
+                if (frontStack.wantsTextInput() || chatField.open) SDL_StartTextInput(window);
                 else SDL_StopTextInput(window);
             }
             SDL_Event ev;
@@ -7626,7 +9384,37 @@ int main(int argc, char** argv) {
                     showFps = !showFps;
                     continue;
                 }
-                if (!frontStack.empty()) {
+                // The message field (0x40ade0) takes the keys: Escape closes it, Enter sends `say` / `say_team` "\x15<text>" when the
+                // field is not empty, both clear it; other keys edit it. Key releases still reach the bindings.
+                if (chatField.open && ev.type == SDL_EVENT_KEY_DOWN) {
+                    const auto sc2 = ev.key.scancode;
+                    if (sc2 == SDL_SCANCODE_ESCAPE || sc2 == SDL_SCANCODE_RETURN || sc2 == SDL_SCANCODE_KP_ENTER) {
+                        // A network client sends the line to the server (docs/spec/net.md section 10), a local game says it.
+                        if (sc2 != SDL_SCANCODE_ESCAPE && !chatField.text.empty() && netClient)
+                            netClient->addReliableCommand(netgame::sayCommand(chatField.team, chatField.text));
+                        else if (sc2 != SDL_SCANCODE_ESCAPE && !chatField.text.empty() && world && world->multiplayer())
+                            world->mpSay(world->mpLocalClient(), chatField.team ? 1 : 0, "\x15" + chatField.text);
+                        chatField.open = false;
+                        chatField.text.clear();
+                    } else if (sc2 == SDL_SCANCODE_BACKSPACE && !chatField.text.empty()) {
+                        chatField.text.pop_back();
+                    }
+                    continue;
+                }
+                if (chatField.open && ev.type == SDL_EVENT_TEXT_INPUT) {
+                    for (const char* t = ev.text.text; *t; ++t)
+                        if (*t >= 0x20 && *t <= 0x7e && chatField.text.size() < 255) chatField.text += *t;
+                    continue;
+                }
+                // A menu that leaves the input to the game (cl_bypassMouseInput 1: the quick-message menus) takes only its
+                // execKey keys and Escape (0x5345b0); everything else goes on to the bindings below.
+                if (!frontStack.empty() && !frontStack.takesAllKeys() && menuEnv.getCvar("cl_bypassMouseInput") == "1") {
+                    if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
+                        if (ev.key.scancode == SDL_SCANCODE_ESCAPE) { frontStack.key(ui::MenuStack::Key::Escape); continue; }
+                        if (ev.key.key < 0x80 && frontStack.execKey(char(ev.key.key))) continue;
+                    }
+                } else if (!frontStack.empty()) {
+                    if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key < 0x80 && frontStack.execKey(char(ev.key.key))) continue;
                     // The menus own the mouse (cursor), the keyboard navigation and ESC; key releases still reach the bindings.
                     if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                         const auto v = toVirtual(ev.motion.x, ev.motion.y);
@@ -7713,19 +9501,28 @@ int main(int argc, char** argv) {
                 }
                 if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) continue;
                 if (ev.key.scancode == SDL_SCANCODE_ESCAPE) {
-                    if (world && frontStack.empty()) { // CL_KeyEvent 0x40c216: ESC in a running level -> UI_SetActiveMenu(2)
+                    // ui::escRoute: in an MP level the ESCAPE binding (togglemenu, already queued by input.key above) is the only
+                    // toggle; toggling here as well opened and closed the menu on the same press.
+                    bool escBound = false;
+                    for (const std::string& k : input.keysFor("togglemenu")) escBound = escBound || k == "ESCAPE";
+                    switch (ui::escRoute(!frontStack.empty(), world != nullptr, world && world->multiplayer(), escBound)) {
+                    case ui::EscRoute::ToggleMenu: mpToggleMenu(); break;
+                    case ui::EscRoute::PauseMenu: // CL_KeyEvent 0x40c216: ESC in a running level -> UI_SetActiveMenu(2)
                         menuEnv.setCvar("cl_paused", "1");
                         menuMx = 320.0f, menuMy = 240.0f;
                         frontStack.open("main");
-                    } else if (!world && frontStack.empty()) {
+                        break;
+                    case ui::EscRoute::MainMenu:
                         // 0x40c2c7 -> 0x40e0b0: ESC with no level and no menu never quits; disconnected (state 0) it opens the main
                         // menu again (UI_SetActiveMenu(1)). The game is left only through the menu's Quit.
                         menuMx = 320.0f, menuMy = 240.0f;
                         frontStack.open("main");
+                        break;
+                    case ui::EscRoute::Menu: case ui::EscRoute::Binding: break;
                     }
                 }
                 // V (walk/fly) and L (fullbright) are openiw2 developer keys: like the cheat commands, they need sv_cheats.
-                else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_V) && !cheatsOn()) {}
+                else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_N) && !cheatsOn()) {}
                 else if (ev.key.scancode == SDL_SCANCODE_L) {
                     renderer.fullbright = !renderer.fullbright;
                     game::addScreenMessage(screenMessages, renderer.fullbright ? "fullbright ON" : "fullbright OFF", false, SDL_GetTicksNS()); // openiw2 text, no original string
@@ -7733,7 +9530,7 @@ int main(int argc, char** argv) {
                 else if (ev.key.scancode == SDL_SCANCODE_F10) {
                     pendingF10 = true; // cycle off -> god -> demigod -> off, each step a cheat command behind the sv_cheats / alive gate
                 }
-                else if (ev.key.scancode == SDL_SCANCODE_V) {
+                else if (ev.key.scancode == SDL_SCANCODE_N) {
                     walk = !walk;
                     game::addScreenMessage(screenMessages, walk ? "walk mode ON" : "fly mode ON", false, SDL_GetTicksNS()); // openiw2 text, no original string
                     if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
@@ -7794,13 +9591,15 @@ int main(int argc, char** argv) {
                     float pitchScale = 1.0f;
                     if (world)
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
-                    if (!(world && world->playerControlsFrozen())) { // pm_flags 0x8000 (freezecontrols or an absolute playerlinkto): the client mouse function returns before applying the delta (0x409871)
+                    // pm_flags 0x8000 (freezecontrols or an absolute playerlinkto): the client mouse function returns before applying the delta
+                    // (0x409871); the multiplayer intermission (pm_type 5) takes no look either.
+                    if (!(world && world->playerControlsFrozen()) && !mpIntermissionView) {
                         float dyaw = mx * 0.15f * lookSens * zoomSens, dpitch = my * 0.15f * lookSens * zoomSens * pitchScale;
                         // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
                         if (world)
                             if (const game::ShockRecord* rec = world->shellShockRecord(); rec && rec->mouse) {
                                 const auto& ss = world->shellShock();
-                                const game::ShockMouse m = game::shockMouse(*rec, int(cgNowMs() - ss.startMs), ss.durationMs);
+                                const game::ShockMouse m = game::shockMouse(*rec, game::elapsedMs(cgNowMs(), ss.startMs), ss.durationMs);
                                 dyaw *= m.sensitivityScale, dpitch *= m.sensitivityScale;
                                 if (m.maxYawSpeed > 0) dyaw = std::clamp(dyaw, -m.maxYawSpeed * frameDt, m.maxYawSpeed * frameDt);
                                 if (m.maxPitchSpeed > 0) dpitch = std::clamp(dpitch, -m.maxPitchSpeed * frameDt, m.maxPitchSpeed * frameDt);
@@ -7828,8 +9627,17 @@ int main(int argc, char** argv) {
             const float simDt = game::scaledFrameTime(dt, slowmo);
             last = now;
             const bool* keys = SDL_GetKeyboardState(nullptr);
+            // MP session state of the local client (docs/spec/mp-spectate.md): 2 spectator (pm_type 4), 3 intermission (pm_type 5);
+            // neither is dead, whatever the health of the entity.
+            const int mpSession = world && world->multiplayer() && !netClient ? world->mpSessionState(world->mpLocalClient()) : 0;
+            const int mpFollow = mpSession == 2 ? world->mpFollowing(world->mpLocalClient()) : -1;
+            mpIntermissionView = netClient ? ps.pmType == 5 : mpSession == 3; // network client: the server's pm_type (prediction keeps it)
             const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
-                                    world->player()->obj->get("health").asInt() <= 0;
+                                    world->player()->obj->get("health").asInt() <= 0 && mpSession != 2 && mpSession != 3;
+            // MP: a dead client's command asks for standing (docs/spec/mp.md "Client spawn"): the spawn clears the player
+            // state's stance, and a client stance still prone or crouched from the death would bring it back with the first
+            // command after the spawn. TODO(spec): where the MP cgame resets its client stance.
+            if (playerDead && world->multiplayer()) input.setStance(0);
             // In a vehicle (pm_flags 0x20000) the player does not move by itself; the command drives the vehicle.
             const bool inVehicle = world && (world->playerPmFlags() & 0x20000);
             // On a turret (eFlags & 0x300) PmoveSingle skips the movement and PM_Weapon (0x50c918) and the view stays
@@ -7839,7 +9647,18 @@ int main(int argc, char** argv) {
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
             // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
             const bool controlsBlocked = !frontStack.empty() || (world && world->controlsFrozen());
-            const uint32_t buttons = controlsBlocked ? 0u : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
+            uint32_t buttons = controlsBlocked ? 0u : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
+            // IW2_DEBUG_THROW=<seconds>[,<seconds>...]: holds the frag key for 150 ms from each real time (docs/debug-flags.md).
+            if (static const char* dt = std::getenv("IW2_DEBUG_THROW"); dt && !controlsBlocked) {
+                const double realS = double(SDL_GetTicksNS()) * 1e-9;
+                for (const char* c = dt; *c; ) {
+                    const double at = std::atof(c);
+                    if (realS >= at && realS < at + 0.15) buttons |= game::Button::Frag;
+                    c = std::strchr(c, ',');
+                    if (!c) break;
+                    ++c;
+                }
+            }
             const bool reloadPressed = (buttons & game::Button::Reload) && !(prevButtons & game::Button::Reload);
             prevButtons = buttons;
             if (world) {
@@ -7859,6 +9678,47 @@ int main(int argc, char** argv) {
                 pc.adsFrac = pweapon.adsFrac();
                 world->setPlayerCommand(pc);
             }
+            // Network game (docs/spec/net.md section 10): this frame's user command goes to the server; the view is the
+            // newest snapshot's player state with the unacknowledged commands run again (prediction). On a turret the
+            // command carries no move: the server aims and fires the turret from its angles and buttons.
+            auto sendNetCommand = [&](float forward, float right) {
+                if (!netClient || netClient->state() < net::ClientState::Primed) return;
+                const int64_t nowNet = netNowMs();
+                // The selected weapon as its number in the weapon list configstring (docs/spec/net.md section 13).
+                int weaponByte = 0;
+                for (int wi = 1; wi <= netgame::kWeaponConfigstringCount && !weaponSelect.empty(); ++wi)
+                    if (netgame::weaponNameFromList(netClient->configstrings, wi) == weaponSelect) {
+                        weaponByte = wi;
+                        break;
+                    }
+                const net::UserCmd uc = netgame::makeUserCmd(netClient->commandTime(nowNet), buttons, forward, right, cam.pitch,
+                                                             cam.yaw, weaponByte);
+                netClient->sendCommand(uc, nowNet);
+                if (const net::ClientSnapshot* snap = netClient->latest()) {
+                    const netgame::PsFields f = netgame::readPs(snap->ps);
+                    // The prediction runs the commands with this client's own weapon state, as the server does with its copy.
+                    const netgame::WeaponMove wm = netgame::weaponMoveOf(pweapon); // the same inputs the server uses
+                    // Following another client (killcam): its player state as sent, none of our commands run on it.
+                    // A new connection or gamestate (map change, restart): the prediction starts afresh with the new
+                    // level's commands, and so does the event sequence handled.
+                    if (netPredictorFor != std::make_pair<const net::GameClient*, int>(netClient.get(), int(netClient->gamestates))) {
+                        netPredictorFor = {netClient.get(), netClient->gamestates};
+                        netPredictor.reset();
+                        netPredictedAmmo.clear();
+                        netPredictedWeaponTime.clear();
+                        lastEventSeq = 0;
+                    }
+                    if (!netgame::RemoteView::following(*snap)) netPredictedWeaponTime.reconcile(f, pweapon);
+                    // Every frame from the newest snapshot again (CG_PredictPlayerState, 0x4deae0): the same commands give
+                    // the same states and event numbers, so an event is handled once; a correction is drawn away.
+                    netDrawNowMs = nowNet;
+                    ps = netPredictor.predict(world->collision(), f,
+                                              netgame::RemoteView::following(*snap) ? std::vector<net::UserCmd>{}
+                                                                                    : netClient->commandsAfter(f.commandTime),
+                                              &wm, nowNet);
+                    if (netgame::viewInputIgnored(f.pmType)) cam.pitch = f.viewangles[0], cam.yaw = f.viewangles[1]; // the server's angles
+                }
+            };
             aimSpreadBeforeCmd = ps.aimSpread; // ClientThink keeps ps+0x5b0 / 255 at client +0x8670 (0x4e7c7d) before Pmove; the shot's spread reads that (0x531c85)
             if (onTurret) {
                 // The eye is the turret's tag_player (0x4e8b70); the turret code places the player behind it.
@@ -7874,6 +9734,7 @@ int main(int argc, char** argv) {
                 }
                 ps.origin = {po[0], po[1], po[2]};
                 ps.velocity = {0, 0, 0};
+                if (netClient) sendNetCommand(0.0f, 0.0f);
             } else if (inVehicle) {
                 // The view turns with the vehicle's tag_body (cgame 0x4aeb60, cg_viewVehicleInfluence 1): the view axes
                 // times Bprevᵀ·Bcur; the pitch always follows, the yaw only while pm_flags 0x40000 is set.
@@ -7980,6 +9841,10 @@ int main(int argc, char** argv) {
                 havePrevBody = false;
                 game::PlayerInput in;
                 in.forward = controlsBlocked ? 0.0f : float(input.forwardMove()) / 127.0f;
+                if (const char* df = std::getenv("IW2_DEBUG_FORWARD"); df && !controlsBlocked) { // debug: "forward[,yaw deg/s]" holds forward and turns
+                    in.forward = float(std::atof(df));
+                    if (const char* c = std::strchr(df, ',')) cam.yaw += float(std::atof(c + 1)) * std::min(simDt, 0.1f);
+                }
                 in.right = controlsBlocked ? 0.0f : float(input.rightMove()) / 127.0f;
                 in.jump = (buttons & game::Button::Jump) != 0;
                 in.stanceHeld = (buttons & game::Button::StanceHeld) != 0; // 0x2000 (0x50a1f5)
@@ -8004,12 +9869,23 @@ int main(int argc, char** argv) {
                     in.breathWeapon = breathWeapon;
                 }
                 // Fixed 20 Hz-style substeps keep movement stable at any frame rate.
-                float remaining = std::min(simDt, 0.1f);
+                float remaining = netClient ? 0.0f : std::min(simDt, 0.1f); // network game: predicted below
+                // MP: intermission does not move; a following spectator shows the target's view (below); a free spectator flies with
+                // the spectator move (pm_type 4), speed 400 with free look allowed, else 0, times player_spectateSpeedScale.
+                if (mpSession == 3 || mpFollow >= 0) remaining = 0.0f;
                 // With a running level the player clips against the world and its solid entities (brush models,
                 // actors) like G_Trace in the original pmove (0x507b00 → 0x4db7f0 → 0x44bf00), skipping itself.
-                game::MoveParams pmp = mp;
+                // A multiplayer map moves with the MP dvar defaults (docs/spec/mp-pmove.md).
+                game::MoveParams pmp = world && world->multiplayer() ? game::multiplayerMoveParams() : mp;
                 if (world && world->player()) pmp.passEntity = world->player()->number;
                 pmp.mantle = &mantleAnims;
+                if (mpSession == 2) {
+                    pmp.mpSpectator = true;
+                    pmp.spectateSpeed = world->mpSpectateAllowed(world->mpLocalClient(), 4) ? 400.0f : 0.0f;
+                    const std::string sss = menuEnv.getCvar("player_spectateSpeedScale");
+                    pmp.spectateSpeedScale = sss.empty() ? 2.0f : std::clamp(float(std::atof(sss.c_str())), 0.0f, 20.0f);
+                    pmp.traceMask = 0x800811u;
+                }
                 // The weapon's moveSpeedScale (weapon def +0x264) scales the walk (0x508140).
                 if (pweapon.equipped()) pmp.weaponSpeedScale = pweapon.number("moveSpeedScale");
                 if (world && world->shellShockRecord()) { // usercmd 0x800 (0x409c82): cgame flag 0x621560 = shock running (0x4b24db)
@@ -8040,8 +9916,9 @@ int main(int argc, char** argv) {
                     moveRecorder.add(std::move(rec));
                     remaining -= step;
                 }
+                sendNetCommand(in.forward, in.right);
                 if (world) {
-                    for (const game::KnockbackHit& hit : world->takePlayerKnockbacks()) game::applyKnockback(ps, hit);
+                    for (const game::KnockbackHit& hit : world->takePlayerKnockbacks()) game::applyKnockback(ps, hit, world->cvarFloat("g_knockback", 1000.0f));
                     world->setPlayerPmFlag(0x4000, ps.holdingBreath); // hold breath, read by the HUD hint
                     // Stance bits the HUD stance icon reads (pm_flags & 3, 0x4a80f0): 1 prone, 2 ducked.
                     world->setPlayerPmFlag(1, ps.stance == game::Stance::Prone);
@@ -8077,14 +9954,39 @@ int main(int argc, char** argv) {
                     ps.aimSpread = 255.0f;
                 cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
+                if (netClient && netClient->latest()) { // the remaining part of a prediction correction (cg_errorDecay)
+                    const game::Vec o = netPredictor.drawOrigin(netDrawNowMs);
+                    cam.pos = {o[0], o[1], o[2] + ps.viewHeight};
+                }
+                if (netFollow) { // network killcam: the followed client's view the server sent (0x80f6916)
+                    cam.pos = {netFollowEye[0], netFollowEye[1], netFollowEye[2]};
+                    cam.pitch = netFollowAngles[0];
+                    cam.yaw = netFollowAngles[1];
+                }
+                if (mpFollow >= 0) { // following: the target's view (its player state is copied over the spectator's, 0x80f6916)
+                    script::Vec3 eye, ang;
+                    if (world->mpClientView(mpFollow, eye, ang)) {
+                        cam.pos = {eye[0], eye[1], eye[2]};
+                        cam.pitch = ang[0];
+                        cam.yaw = ang[1];
+                    }
+                }
                 // Dead view (cgame 0x4ae2f5: pm_type ≥ 4): pitch −15, roll 40, yaw the player state's dead yaw
                 // (ps+0x10c). TODO(spec): [writer of ps+0x10c not found] that yaw (set at death towards the killer); the current yaw is kept.
                 // The command's view angles are not applied while dead (0x50b12b), so the yaw stays where it was.
+                // MP instead: a dead movement type (6 / 7) turns the third-person view on (0x4cfcb0 in the MP executable) and the
+                // camera orbits behind the body (applied below, after the lean; docs/spec/mp-spectate.md "Dead view").
+                const bool mpDeadThirdPerson = playerDead && world && world->multiplayer();
                 if (playerDead) {
                     if (!wasDead) deadYaw = world->playerDeadYaw() ? *world->playerDeadYaw() : cam.yaw; // ps+0x10c (0x4ae314)
-                    cam.yaw = deadYaw;
-                    cam.pitch = -15.0f;
-                    cam.roll = 40.0f;
+                    if (!wasDead) deadPitch = cam.pitch; // the view angles stay those of the death (0x50b12b)
+                    if (!mpDeadThirdPerson) {
+                        cam.yaw = deadYaw;
+                        cam.pitch = -15.0f;
+                        cam.roll = 40.0f;
+                    } else {
+                        cam.roll = 0;
+                    }
                 } else {
                     cam.roll = 0;
                 }
@@ -8102,9 +10004,10 @@ int main(int argc, char** argv) {
                     if (world) {
                         if (ps.landSeq != lastLandSeq) { // a landing (cgame 0x4bab6e / 0x4bab15: the own client's fall event)
                             lastLandSeq = ps.landSeq;
-                            viewImp.land(ps.landHeight, ps.landDamage, cgNowMs());
+                            const game::MoveParams lp = world->multiplayer() ? game::multiplayerMoveParams() : game::MoveParams{};
+                            viewImp.land(ps.landHeight, ps.landDamage, cgNowMs(), lp.fallDamageMinHeight, lp.fallDamageMaxHeight);
                         }
-                        cam.pos.z += viewImp.landOffset(cgNowMs()); // 0x4ae6c7, at cg.time (render time), not the 20 Hz server time
+                        cam.pos.z += viewImp.landOffset(cgNowMs()); // 0x4ae6c7
                         cam.pos.z -= viewImp.stepOffset(cgNowMs()); // 0x4addb0 (step event 0x8f)
                     }
                 }
@@ -8112,6 +10015,16 @@ int main(int argc, char** argv) {
                 const game::Vec lo = game::leanOffset(cam.yaw, ps.lean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
                 if (!playerDead) cam.pos.z = std::max(cam.pos.z, game::ViewImpulses::minEyeZ(ps.origin[2])); // 0x4ae775
+                if (mpDeadThirdPerson) { // MP 0x4ce890: cg_thirdPersonRange 120, cg_thirdPersonAngle 0, box +-4, mask 0x811
+                    const int pass = pmp.passEntity;
+                    const game::ThirdPersonView tv = game::thirdPersonView(
+                        {cam.pos.x, cam.pos.y, cam.pos.z}, deadPitch, deadYaw, 0.0f, deadYaw, 120.0f, 0.0f,
+                        [&](const game::Vec& a, const game::Vec& b, const game::Vec& mn, const game::Vec& mx) {
+                            return pcw.trace(a, b, mn, mx, game::kThirdPersonMask, pass);
+                        });
+                    cam.pos = {tv.origin[0], tv.origin[1], tv.origin[2]};
+                    cam.pitch = tv.pitch, cam.yaw = tv.yaw, cam.roll = tv.roll;
+                }
             } else {
                 const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 1200.0f : 350.0f) * dt;
                 Vec3 move;
@@ -8144,6 +10057,7 @@ int main(int argc, char** argv) {
                 pendingNoclip = pendingUfo = false;
             }
             if (world) {
+                runConsoleCommands();
                 syncWeapon();
                 pweapon.grenadeCook = world->cvarFloat("iw2_grenadeCook", 1.0f) != 0; // openiw2 option (docs/debug-flags.md)
                 game::PlayerWeapon::Input wi;
@@ -8168,6 +10082,7 @@ int main(int argc, char** argv) {
                 wi.smoke = (buttons & game::Button::Smoke) != 0;
                 // A new selected weapon ends the toggled aim unless it is the current weapon's altWeapon (cgame 0x4b8360).
                 if (weaponSelect != prevSelect) {
+                    if (netClient) netSelectUntilMs = SDL_GetTicks() + 2000;
                     if (!prevSelect.empty() && !(pweapon.name() == prevSelect && pweapon.field("altWeapon") == weaponSelect))
                         input.clearAds();
                     // Selecting a weapon (0x4b8360) stamps the weapon-change time 0xf796e4 and touches the weapon-info fade (0xf79a40, via 0x4a6130 case 4)
@@ -8184,7 +10099,6 @@ int main(int argc, char** argv) {
                 wi.inVehicle = inVehicle;
                 wi.offhandBlocked = inVehicle; // eFlags 0x20300 (0x4df473); the turret skips PM_Weapon altogether (0x4dfc59)
                 {
-                    static int binocDamageEvent = 0; // ps+0x104 != 0 for the frame that took damage (0x4e711a)
                     wi.damaged = world->playerDamageFeedback().event != binocDamageEvent;
                     const auto sx = world->cvars.find("player_scopeExitOnDamage");
                     wi.scopeExitOnDamage = sx != world->cvars.end() && std::atoi(sx->second.c_str()) != 0;
@@ -8193,7 +10107,26 @@ int main(int argc, char** argv) {
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 if (onTurret) pweapon.blockOffhand();
-                const int shots = onTurret ? 0 : pweapon.update(std::min(simDt, 0.1f), wi);
+                // The weapon step of this frame's command (sent above): what it changes in the ammunition stays predicted
+                // until a snapshot has seen that command (docs/spec/net.md section 10).
+                netgame::PredictedAmmo::Counters ammoBefore;
+                if (netClient && world->player()) {
+                    const game::Inventory& inv = world->inventory(*world->player());
+                    ammoBefore = {inv.clip, inv.ammo};
+                }
+                float weaponDt = simDt;
+                if (netClient)
+                    if (const net::UserCmd* lc = netClient->lastCommand()) weaponDt = netPredictedAmmo.weaponStep(lc->serverTime, simDt);
+                const int shots = onTurret ? 0 : pweapon.update(std::min(weaponDt, 0.1f), wi);
+                // The host's recorded view state (docs/spec/mp-hud.md "The recorded view state"): what its killcam shows.
+                if (world->multiplayer() && !netClient) world->mpSetLocalViewState(game::mpViewStateOf(pweapon, ps));
+                if (netClient && world->player()) {
+                    if (const net::UserCmd* lc = netClient->lastCommand()) {
+                        const game::Inventory& inv = world->inventory(*world->player());
+                        netPredictedAmmo.record(lc->serverTime, ammoBefore, {inv.clip, inv.ammo});
+                        netPredictedWeaponTime.record(lc->serverTime, pweapon);
+                    }
+                }
                 if (shots > 0) game::breathOnFire(ps, mp, pweapon.adsFrac(), breathWeapon); // 0x4dee18 -> 0x4dd2b0
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
                 aimBlend.update(pweapon.viewAiming(), std::min(simDt, 0.1f));
@@ -8208,7 +10141,7 @@ int main(int argc, char** argv) {
                     //  - 0x4be440: a change of the buttons 0x2300 touches stance and the compass, held ones touch stance only;
                     //  - the offhand buttons 0x30000 touch offhandinfo and the compass;
                     //  - the compass also for view angle / other button (0xffffd4ff) changes and movement.
-                    // TODO(spec): [snapshot bit unidentified] the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
+                    // TODO(spec): the second reload condition (bit 2 of the dword at (0xf5bd24 -> previous snapshot) + 0x580, 0x4be545).
                     const int64_t nowMs = cgNowMs();
                     if (pweapon.name() != hudFade.weapon) {
                         if (!pweapon.name().empty()) hudFade.ammo = hudFade.weaponChange = hudFade.offhand = nowMs;
@@ -8249,9 +10182,20 @@ int main(int argc, char** argv) {
                     case game::PickupHudAction::None: break;
                     }
                 }
+                if (world->multiplayer() && !netClient) { // the host's offhand prepare event (entering state 13, 0x4df1b4)
+                    if (pweapon.stateNumber() == 13 && hostWeaponStatePrev != 13) world->mpPushLocalClientEvent(game::mpev::kPrepOffhand, pweapon.viewWeaponName());
+                    hostWeaponStatePrev = pweapon.stateNumber();
+                }
                 if (world->player()) cgOffhand = world->inventory(*world->player()).offhand;
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
+                    if (world->multiplayer() && !netClient) { // the host's entity events (its puppet and its killcam replay)
+                        if (e.kind == game::PlayerWeapon::Event::ReloadBegin && !e.weapon.empty())
+                            world->mpPushLocalClientEvent(pweapon.clip() == 0 ? game::mpev::kReloadFromEmpty : game::mpev::kReload, e.weapon);
+                        else if (e.kind == game::PlayerWeapon::Event::MeleeSwing) world->mpPushLocalClientEvent(game::mpev::kMeleeSwipe, e.weapon);
+                        else if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->mpPushLocalClientEvent(game::mpev::kFireMelee, e.weapon);
+                        else if (e.kind == game::PlayerWeapon::Event::OffhandThrow) world->mpPushLocalClientEvent(game::mpev::kUseOffhand, e.weapon);
+                    }
                     if (e.kind == game::PlayerWeapon::Event::ReloadBegin) { input.clearAds(); if (e.weapon.empty()) ps.ads = false; } // event 0x95 (0x4bafbc); 0x4dd090 (the empty-named ones) also clears pm_flags 0x40
                     else if (e.kind == game::PlayerWeapon::Event::EjectBrass) viewFlash->brassPending = true; // event 0xa2 (0x4bb113)
                     else if (e.kind == game::PlayerWeapon::Event::WeaponRaised) // aim spread on a weapon change (0x4dddd2 / 0x4ddecd / 0x4dde9f)
@@ -8286,9 +10230,9 @@ int main(int argc, char** argv) {
                 if (world) {
                     const game::ShockRecord* rec = world->shellShockRecord();
                     const auto& ss = world->shellShock();
-                    if (!rec || int(ss.startMs) != shockSeenStart) {
-                        if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
-                        shockSeenStart = rec ? int(ss.startMs) : -1;
+                    if (!rec || int(ss.startMs) != clientSnd.shockSeenStart) {
+                        if (clientSnd.shockLoop) mixer.stop(clientSnd.shockLoop), clientSnd.shockLoop = 0;
+                        clientSnd.shockSeenStart = rec ? int(ss.startMs) : -1;
                     }
                     switch (shockEnd.update(rec && rec->sound, int(cgNowMs()), int(ss.startMs), rec ? game::shockEndSoundMs(*rec, ss.durationMs) : 0)) {
                     case game::ShockEndSound::Action::PlayEnd: mixer.play("shellshock_end", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // TODO(spec): [mixer has no start offset] the start offset (shockEnd.offsetMs())
@@ -8323,26 +10267,26 @@ int main(int argc, char** argv) {
                         const int el = int(cgNowMs() - ss.startMs);
                         const float b = game::shockLoopBlend(*rec, el, ss.durationMs);
                         const audio::Vec3 at{cam.pos.x, cam.pos.y, cam.pos.z};
-                        if (b >= 0 && !shockLoop) shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
-                        else if (b >= 0) mixer.setBlend(shockLoop, b, at);
-                        else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                        if (b >= 0 && !clientSnd.shockLoop) clientSnd.shockLoop = mixer.playBlend("shellshock_loop", "shellshock_loop_silent", b, at);
+                        else if (b >= 0) mixer.setBlend(clientSnd.shockLoop, b, at);
+                        else if (clientSnd.shockLoop) mixer.stop(clientSnd.shockLoop), clientSnd.shockLoop = 0;
                     }
-                } else if (shockLoop) mixer.stop(shockLoop), shockLoop = 0;
+                } else if (clientSnd.shockLoop) mixer.stop(clientSnd.shockLoop), clientSnd.shockLoop = 0;
                 if (!onTurret && (pweapon.equipped() || pweapon.binocularsUp()) && (!inVehicle || (pweapon.stateNumber() >= 0x11 && pweapon.stateNumber() <= 0x16))) {
                     // Hold-breath sounds (0x4b6840 from the first-person weapon pass 0x4b69b0: a weapon, eFlags & 0x300 clear, in a
                     // vehicle only in weapon states 0x11-0x16). The heartbeat loop lives while it is played every frame.
                     const bool hb = breathSnd.update(ps.holdingBreath, int(std::min(simDt, 0.1f) * 1000.0f), game::BreathSoundParams{},
                                                      [&](const char* a) {
                                                          if (std::strcmp(a, "weap_sniper_heartbeat") == 0) {
-                                                             if (!heartbeatLoop) heartbeatLoop = mixer.play(a);
+                                                             if (!clientSnd.heartbeatLoop) clientSnd.heartbeatLoop = mixer.play(a);
                                                              return 0;
                                                          }
                                                          float len = 0;
                                                          mixer.play(a, std::nullopt, &len);
                                                          return int(len * 1000.0f);
                                                      });
-                    if (!hb && heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
-                } else if (heartbeatLoop) mixer.stop(heartbeatLoop), heartbeatLoop = 0;
+                    if (!hb && clientSnd.heartbeatLoop) mixer.stop(clientSnd.heartbeatLoop), clientSnd.heartbeatLoop = 0;
+                } else if (clientSnd.heartbeatLoop) mixer.stop(clientSnd.heartbeatLoop), clientSnd.heartbeatLoop = 0;
                 vmMotion.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f),
                                 std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), 190.0f,
                                 ps.viewHeight, pweapon.adsFrac(), ps.lean);
@@ -8361,6 +10305,10 @@ int main(int argc, char** argv) {
                     rawGunBob = game::gunBob(ps.bobCycle, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]),
                                              ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
+                if (std::getenv("IW2_BOB_TRACE")) // debug: the movement inputs of the gun bob and offsets
+                    std::cout << "bob cycle " << ps.bobCycle << " xy " << std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1])
+                              << " vht " << ps.viewHeightTarget << " ground " << ps.onGround << " gunBob " << gunBobAngles[0] << "," << gunBobAngles[1] << ","
+                              << gunBobAngles[2] << " move " << vmMotion.move()[1] << "," << vmMotion.move()[2] << " anim " << pweapon.anim() << " dt " << simDt << "\n";
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 // On a turret the view fov is 55 (0x4ae8a8); the aim fraction is kept for after getting off.
                 cam.fovX43 = game::playerViewFov(game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
@@ -8415,10 +10363,15 @@ int main(int argc, char** argv) {
                 world->setRealTimeMs(int64_t(SDL_GetTicksNS() / 1000000ull));
                 if (menuEnv.getCvar("cl_paused") != "1") gameClock += game::comFrameSeconds(dt, slowmo); // cl_paused freezes the simulation
                 mixer.setPaused(menuEnv.getCvar("cl_paused") == "1"); // the sound update pauses the non-menu channels (0x442dc0)
-                while (gameClock >= 0.05f) {
+                while (gameClock >= game::kServerFrameSeconds) {
                     // The previous server frame's entity placement, for the client interpolation below.
                     lerpPrev.clear();
+                    const bool remotePuppets = world->mpRemote(); // a network client's other players are placed per rendered frame
                     for (const auto& e : world->entities()) {
+                        // Network game: the puppets of the other players already stand at the drawn time (RemoteView::players
+                        // interpolates the snapshots per rendered frame); lerping them again against a 50 ms old origin would
+                        // move them in a sawtooth. TODO(spec): the models from the newest snapshot only (mpSetRemoteModels).
+                        if (remotePuppets && (e->isPlayer || e->obj->get("$nettraj").truthy())) continue;
                         const script::Value o = e->obj->get("origin"), a = e->obj->get("angles");
                         if (o.isVector())
                             lerpPrev[e->number] = {o.asVector(), a.isVector() ? a.asVector() : script::Vec3{0, 0, 0}};
@@ -8435,9 +10388,9 @@ int main(int argc, char** argv) {
                     haveTickBodyPrev = world->playerVehicleBodyAxis(tickBodyPrev);
                     world->frame();
                     if (startTrace && traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) trace("server frame run", world->timeMs()); // [server time]
-                    gameClock -= 0.05f;
+                    gameClock -= game::kServerFrameSeconds;
                 }
-                lerpFrac = std::clamp(gameClock / 0.05f, 0.0f, 1.0f);
+                lerpFrac = game::serverFrameLerp(gameClock);
                 if (world->takePlayerNoInterp() && world->player()) { // dontinterpolate: no interpolation from the previous snapshot (0x4b9940)
                     prevPlayerO = world->player()->obj->get("origin").asVector();
                     lerpPrev.erase(world->player()->number);
@@ -8469,6 +10422,13 @@ int main(int argc, char** argv) {
                         damageIcons[slot] = {cgNowMs(), 2000, float(sh) * (360.0f / 65536.0f)};
                     }
                 }
+                if (const auto sp = world->takePlayerSpawn()) { // MP client spawn: the whole player state restarts (stance, view height, lean, aim)
+                    const int64_t t = ps.timeMs;
+                    ps = game::PlayerState{};
+                    ps.origin = {(*sp)[0], (*sp)[1], (*sp)[2]};
+                    ps.timeMs = t;
+                    input.clearAds();
+                }
                 if (const auto tp = world->takePlayerTeleport()) { // setorigin
                     ps.origin = {(*tp)[0], (*tp)[1], (*tp)[2]};
                     ps.velocity = {0, 0, 0};
@@ -8487,14 +10447,22 @@ int main(int argc, char** argv) {
                     ps.velocity = {0, 0, 0};
                     if (rel->stance >= 0) input.setStance(rel->stance);
                 }
+                // MP obituaries (event 0xc6 -> 0x4e03f0, docs/spec/mp-hud.md).
+                if (world->multiplayer())
+                    for (const auto& ev : world->takeMpObituaries()) pushObituary(ev, SDL_GetTicksNS(), cgNowMs());
                 for (const auto& cmd : world->takeClientCommands()) {
                     std::istringstream a(cmd.arg);
+                    // iprintln / iprintlnbold: logged localized, as the message window shows it (0x496e80), not as the key.
+                    if (cmd.name == "gm" || cmd.name == "gmb")
+                        std::cout << "[" << cmd.name << "] " << logText(cmd.arg) << "\n";
                     if (cmd.name == "print") { // client command `print "%s"` (0x584038): console text, here stdout
-                        std::cout << "[print] " << cmd.arg << "\n";
+                        std::cout << "[print] " << logText(game::printMessageText(cmd.arg)) << "\n";
                         // openiw2: shown for con_gamemessagetime in the game-message window (cheat toggles etc.), see screenmessages.h.
                         game::addScreenMessage(screenMessages, game::printMessageText(cmd.arg), false, SDL_GetTicksNS());
                     } else if (cmd.name == "popupopen" || cmd.name == "popupclose") {
                         menuCommand(cmd.name, cmd.arg);
+                    } else if (cmd.name == "h" || cmd.name == "i") {
+                        chatCommand(cmd.name, cmd.arg);
                     } else if (cmd.name == "openvictoryscreen") {
                         // Client 0x4a6d6a: the channel pause flags become "all but menu and music" (0x4429e0 with the 11-byte block at
                         // 0x4a6d7f), sound volume slot 1 is cleared (0x443390(1)), then 0x4022b0("victoryscreen") -> UI_SetActiveMenu(15)
@@ -8527,24 +10495,22 @@ int main(int argc, char** argv) {
                         slowStartNs = SDL_GetTicksNS();
                         slowEndNs = slowStartNs + uint64_t(std::max(ms, 0)) * 1000000ull;
                     } else if (cmd.name == "mu_play") { // mu_play <alias> (0x4a6e2b -> 0x443030): the music slot; a new one replaces it
-                        if (musicHandle) mixer.stop(musicHandle);
-                        musicHandle = mixer.play(cmd.arg, std::nullopt, nullptr, {.dedicated = true, .music = true});
+                        if (clientSnd.music) mixer.stop(clientSnd.music);
+                        clientSnd.music = mixer.play(cmd.arg, std::nullopt, nullptr, {.dedicated = true, .music = true});
                     } else if (cmd.name == "ambient_play") { // ambient_play <alias> <fade ms> (client side of configstring 3, 0x443080)
                         std::string alias;
                         int ms = 0;
                         a >> alias >> ms;
-                        // The same alias keeps playing; a different one fades the old track out and its own in over the fade time.
-                        if (!(ambientHandle && alias == ambientAlias)) {
-                            if (ambientHandle) mixer.fadeOut(ambientHandle, ms);
-                            ambientHandle = mixer.play(alias, std::nullopt, nullptr, {.dedicated = true});
-                            ambientAlias = alias;
-                            if (ambientHandle) mixer.fadeIn(ambientHandle, ms);
-                        }
+                        clientSnd.playAmbient(mixer, alias, ms);
+                    } else if (cmd.name == "ambient_stop") { // ambient_stop <fade ms>
+                        int ms = 0;
+                        a >> ms;
+                        clientSnd.stopAmbient(mixer, ms);
                     } else if (cmd.name == "mu_stop") { // mu_stop <ms> (0x4a6e60 -> 0x442fb0): stop at once or fade out over ms
                         int ms = 0;
                         a >> ms;
-                        if (musicHandle) mixer.fadeOut(musicHandle, ms);
-                        musicHandle = 0;
+                        if (clientSnd.music) mixer.fadeOut(clientSnd.music, ms);
+                        clientSnd.music = 0;
                     } else if (cmd.name == "reverb") { // reverb <prio> "<room>" <dry> <wet> <fade s> (CG_ReverbCmd 0x4a6350)
                         int prio = 0;
                         std::string room;
@@ -8608,6 +10574,40 @@ int main(int argc, char** argv) {
                         }
                     saveRowsAt = 0;
                 }
+                // MP end of the map (docs/spec/mp.md "End of the map"): exitLevel queues the console command map_rotate, which
+                // runs on the next command-buffer pass: "map <next>" from sv_mapRotation, or a restart of this map without one.
+                // A fast restart (map_restart, sd rounds) rebuilds the level inside the same World: every entity is new, so the
+                // client-side caches keyed by entity number and the view weapon start over as after a load (docs/spec/mp.md).
+                static std::pair<int, int> seenRestarts{0, 0}; // (world generation, restart count): a new World may reuse the old one's address
+                if (world->multiplayer() && seenRestarts.first == worldGeneration && seenRestarts.second != world->mpRestarts()) {
+                    std::cout << "fast restart " << world->mpRestarts() << " of " << currentMap << "\n";
+                    lerpPrev.clear();
+                    prevAnim.clear();
+                    prevTurret.clear();
+                    prevTexScroll.clear();
+                    pweapon = game::PlayerWeapon{};
+                    weaponSelect.clear();
+                    weaponWritten.clear();
+                    prevSelect.clear();
+                    lastDamageEvent = 0;
+                    damageIcons = {};
+                    lastLandSeq = 0;
+                    lastEventSeq = 0;
+                    viewImp.reset();
+                }
+                seenRestarts = {worldGeneration, world->mpRestarts()};
+                static int rotatedGeneration = 0; // map_rotate runs once per exitLevel (per world generation: a new World may reuse the old one's address)
+                if (world->multiplayer() && world->mpState().exitRequested && rotatedGeneration != worldGeneration && !pendingLevel) {
+                    rotatedGeneration = worldGeneration;
+                    const game::MapRotateResult rot = game::mapRotate(menuEnv.getCvar, menuEnv.setCvar);
+                    for (const std::string& l : rot.console) std::cout << l;
+                    if (rot.kind == game::MapRotateResult::Kind::Restart)
+                        pendingLevel = std::make_pair(currentMap, false); // TODO(spec): fast_restart keeps the server running; here the map reloads
+                    else if (vfs.exists("maps/mp/" + rot.map + ".d3dbsp"))
+                        pendingLevel = std::make_pair("mp/" + rot.map, false);
+                    else
+                        std::cout << "Can't find map " << rot.map << "\n"; // the "map" command refuses; the server stays as it is
+                }
                 if (auto change = world->takeDueLevelChange()) {
                     const std::string last = menuEnv.getCvar("sv_lastSaveGame");
                     if (change->loadContinue && !last.empty() && std::filesystem::exists(saveDir / (last + ".svg")))
@@ -8617,22 +10617,49 @@ int main(int argc, char** argv) {
                 }
             }
             if (pendingDisconnect) { // CL_Disconnect: the level ends, UI_SetActiveMenu(MAIN) shows the main menu with sv_running 0
-                // Only the visible outcome of the exe's disconnect is needed: there is no server to tell.
+                // CL_Disconnect 0x40cd10 (patch 1.3 MP executable): tells the server, shuts cgame down (0x4b2490) and stops every sound
+                // (0x44f940, no keep flags: the music and ambient streams too), clears the client state and the connection. The player's
+                // own `disconnect`, a server drop and an error all end here; resetClientState is that clearing, shared with the level load.
                 pendingDisconnect = false;
-                stopAllSounds(); // CL_Disconnect ends with the stop-all (0x40e0f3), before the main menu starts its own music
+                const bool leftMultiplayer = netClient || listenServer || (world && world->multiplayer());
+                if (netClient) { // CL_Disconnect: tell the server (no-op after a drop) and forget the connection
+                    netClient->disconnect();
+                    netClient.reset();
+                }
+                if (listenServer) { // the host leaves: its listen server ends (docs/spec/net.md section 14)
+                    listenServer->shutdown("EXE_SERVERQUIT");
+                    listenServer.reset();
+                    listenGame.reset();
+                    listenWorldGeneration = -1;
+                }
+                mpMenuBots.reset(); // the bots belonged to that server; the next StartServer sets its own
                 pendingLevel.reset();
                 pendingPersistent = false;
                 loadScreenPhase = 0;
-                endWorldFx();
+                if (world && world->multiplayer()) ui::carryWorldCvars(world->cvars, uiCvars); // one dvar store (docs/spec/mp-ui.md)
+                endWorldFx(); // before the world goes: a bolted effect must not read it
                 world.reset();
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);
                 currentMap.clear();
-                menuEnv.setCvar("cl_paused", "0");
+                resetClientState("disconnect");
+                if (netgame::mpMenuAfterDisconnect(mpFrontEnd, leftMultiplayer)) pendingFrontEnd = true;
                 frontStack.closeAll();
                 frontStack.open("main");
-                mixer.resetPausable();
-                for (float& v : mixer.channelScale) v = 1;
+            }
+            applyFrontEnd();
+            pumpConnect();
+            showNetError();
+            // The extension menus belong to createserver: they close with it, and the panel gives way to the original settings column.
+            if (mpFrontEnd) {
+                bool cs = false, ext = false, settings = false;
+                for (const ui::Menu* m : frontStack.menus()) {
+                    cs = cs || m->name == "createserver";
+                    ext = ext || m->name == "iw2_createserver_ext";
+                    settings = settings || m->name == "createserver_serversettings" || m->name.rfind("settings_", 0) == 0;
+                }
+                if (ext && (!cs || settings)) frontStack.close("iw2_createserver_ext");
+                if (!cs) frontStack.close("iw2_createserver_extbutton");
             }
             if (!deferredExec.empty()) execText(std::exchange(deferredExec, std::string()));
             std::optional<game::LoadedSave> loadedSave;
@@ -8673,19 +10700,32 @@ int main(int argc, char** argv) {
                 if (world && pendingPersistent && !loadedSave) heldPlayer = world->carriedPlayerState();
                 heldSave = std::move(loadedSave);
                 loadedSave.reset();
-                endWorldFx();
+                if (world && world->multiplayer()) ui::carryWorldCvars(world->cvars, uiCvars); // one dvar store (docs/spec/mp-ui.md)
+                endWorldFx(); // before the world goes: a bolted effect must not read it
                 world.reset();
                 releaseScene(dev, scene);
                 scene = emptyScene(dev);
-                mixer.resetPausable(); // 0x40cc80: channel pause flags back to the defaults on the new connection
-                // The map load starts with the stop-all (0x449340 -> 0x40c9c0 -> 0x444730 flags 0; the cgame init 0x4a5cc7 repeats it): the
-                // previous level's music, ambient track, loops and queued voices end here, no fade. It also clears volume slots 1..4 (the
-                // previous level's victory-screen volume must not carry over). Voices the new level's script starts come later.
-                stopAllSounds();
-                for (float& v : mixer.channelScale) v = 1;
+                // The map load shuts cgame down and stops every sound like a disconnect does (0x4b2490, 0x44f940); the SP load starts
+                // with the stop-all (0x449340 -> 0x40c9c0 -> 0x444730 flags 0; the cgame init 0x4a5cc7 repeats it): the previous level's
+                // music, ambient track, loops and queued voices end here, no fade. The pause flags go back to the defaults (0x40cc80)
+                // and the volume slots 1..4 are cleared (the previous level's victory-screen volume must not carry over). Voices the
+                // new level's script starts come later.
+                resetClientState("level change");
                 loadMapAliases(pendingLevel->first);
                 frontStack.closeAll();
-                if (!quickReload) frontStack.open("briefing");
+                // MP (a map under mp/): the MP UI has no briefing menu; its load screen is the "connect" menu (ui_mp/connect.menu,
+                // drawn by the connect screen 0x5390c0 -> 0x4d3390 -> 0x5332c0 once the map name is known) with the gametype and
+                // the map's long name over it (docs/spec/mp-ui.md "Load screen"). TODO: an MP map started outside the MP front end
+                // (command line) has the SP menu set, whose "connect" is the SP one; it gets no load screen.
+                mpLoadText.reset();
+                if (!quickReload && pendingLevel->first.rfind("mp/", 0) == 0) {
+                    if (mpFrontEnd) frontStack.open("connect");
+                    std::string gt = netClient ? net::infoValueForKey(netClient->configstrings[0], "g_gametype")
+                                     : std::getenv("IW2_MP_GAMETYPE") ? std::string(std::getenv("IW2_MP_GAMETYPE"))
+                                                                      : menuEnv.getCvar("g_gametype");
+                    if (gt.empty()) gt = "dm";
+                    mpLoadText = ui::mpLoadScreenText(vfs, gt, pendingLevel->first.substr(3));
+                } else if (!quickReload) frontStack.open("briefing");
                 loadScreenPhase = 1;
                 if (quickReload) loadNow = true; // no load screen: load in the same pass
             }
@@ -8698,13 +10738,12 @@ int main(int argc, char** argv) {
                     currentMap = pendingLevel->first;
                     std::cout << (pendingLevel->second ? "mission failed, restarting " : loadedSave ? "loading save " + loadedSave->name + ": " : "changing level to ") << currentMap
                               << (pendingPersistent ? " (persistent)" : "") << "\n";
-                    screenFade.clear(); // the new level starts unfaded
-                    screenBlur.clear(); // a new level starts unblurred (the death blur stays until the level reloads)
                     const script::ObjectPtr carried = std::exchange(heldGame, script::ObjectPtr());
                     releaseScene(dev, scene);
                     // The level's sound aliases are loaded before its script runs (set_ambient checks them in main()).
                     aliases.clear();
-                    aliases.loadLevel(vfs, currentMap); // level rows + the pause menu's interface sounds
+                    if (currentMap.rfind("mp/", 0) == 0) aliases.loadLevel(vfs, currentMap.substr(3), "all_mp"); // MP: the bare map name, mode tag all_mp
+                    else aliases.loadLevel(vfs, currentMap); // level rows + the pause menu's interface sounds
                     try {
                         world = makeWorld(currentMap, loadedSave ? nullptr : carried, loadedSave ? &*loadedSave : nullptr,
                                           loadedSave ? std::nullopt : std::exchange(heldPlayer, std::nullopt));
@@ -8723,7 +10762,8 @@ int main(int argc, char** argv) {
                     // Load finished (0x449a2c, client state 4): with ui_autoContinue (bool, default 0, flags 0x1000, 0x4c32c4) or a
                     // timedemo (0x4c5530) the game starts at once (0x4c54c0); otherwise cl_paused 1, every menu closed and "pregame"
                     // ("click to start the mission") opened; its click runs uiScript playerstart.
-                    if (std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) == 0 && !wasQuick) {
+                    // MP maps never wait (ui::loadWaitsForClick): a map rotation would otherwise stop the listen server.
+                    if (ui::loadWaitsForClick(currentMap, std::atoi(menuEnv.getCvar("ui_autoContinue").c_str()) != 0, wasQuick)) {
                         menuEnv.setCvar("cl_paused", "1");
                         frontStack.open("pregame");
                     } else menuEnv.setCvar("cl_paused", "0");
@@ -8739,39 +10779,8 @@ int main(int argc, char** argv) {
                         if (an.isVector()) cam.yaw = an.asVector()[1];
                     }
                     game::markSpawned(ps);
-                    pweapon = game::PlayerWeapon{};
-                    weaponSelect.clear();
-                    weaponWritten.clear();
-                    prevSelect.clear();
-                    input.clearAds(); // the toggled aim ends with the level (0x40e821)
-                    // cgame's new-level reset (0x4ba570): the new world's damage event, the fresh player state's event and
-                    // landing counters start at 0; no damage icons, landing dip or damage kick carried over.
-                    lastDamageEvent = 0;
-                    damageIcons = {};
-                    lastLandSeq = 0;
-                    lastEventSeq = 0;
-                    viewImp.reset();
-                    drawnGunAim = {};
-                    gunAimDelay.reset();
-                    // CG_Init (0x4a5c10) zeroes 0xf5bd00..0xf7eb4c on every map load, the last weapon cycle time 0xf796e4 among them.
-                    // Kept from the previous map (whose clock ran far ahead), it blocked weapnext / weapprev until the new map's
-                    // clock caught up.
-                    lastWeaponCycleMs = 0;
-                    // The same block holds the HUD fade touches (0xf791fc..) and the invalid-command hint (0xf79694 / 0xf79698): a
-                    // touch time from the previous map would be "in the future" of the new map's clock and keep its block shown.
-                    hudFade = HudFade{};
-                    invalidCmdState = 0, invalidCmdStartMs = 0;
-                    lerpPrev.clear();
-                    prevAnim.clear();
-                    prevTurret.clear();
-                    prevTexScroll.clear();
-                    gameClock = 0;
-                    // The new level starts with a fresh client: no dead screen, normal speed and volume (inferred: the
-                    // original's reset on load is not read).
-                    deadScreenMs = 0;
-                    slowStartNs = slowEndNs = 0;
-                    slowmo = 1;
-                    mixer.fade(1.0f, 0);
+                    // The rest of cgame's new-level reset (0x4ba570; the fades, weapon, springs, caches and clock) was done by resetClientState
+                    // when the old level went; the new level starts with a fresh client.
                 pendingLevel.reset();
                 pendingPersistent = false;
             }
@@ -8806,6 +10815,21 @@ int main(int argc, char** argv) {
                         frontStack.mouseMove(menuMx, menuMy);
                         frontStack.click(menuMx, menuMy);
                         frontStack.release();
+                    } else if (k.rfind("mpdamage:", 0) == 0 && world && world->multiplayer()) { // mpdamage:victim:attacker:amount (MP damage path)
+                        int v = -1, a = -1, n = 0;
+                        if (std::sscanf(k.c_str() + 9, "%d:%d:%d", &v, &a, &n) == 3) world->mpDebugDamage(v, a, n, "MOD_RIFLE_BULLET");
+                    } else if (k == "togglemenu" && world && world->multiplayer()) { // the ESC binding of default_mp.cfg
+                        mpToggleMenu();
+                    } else if (k.rfind("shot:", 0) == 0) { // shot:<file.png>: writes the next presented frame
+                        pendingShotPng = k.substr(5);
+                    } else if (k.rfind("turn:", 0) == 0) { // turn:<deg> turns the view yaw by deg (scripted walks in live play)
+                        cam.yaw += float(std::atof(k.c_str() + 5));
+                    } else if (k.rfind("pitch:", 0) == 0) { // pitch:<deg> sets the view pitch (positive looks down)
+                        cam.pitch = std::clamp(float(std::atof(k.c_str() + 6)), -89.0f, 89.0f);
+                    } else if (k.rfind("cmd:", 0) == 0) { // cmd:+forward / cmd:-forward / cmd:weapnext: a bound command as if from a key
+                        const std::string c = k.substr(4);
+                        if (!c.empty() && c[0] == '-') input.command("+" + c.substr(1), false, "SCRIPTKEY");
+                        else input.command(c, true, "SCRIPTKEY");
                     } else if (k == "quit") {
                         running = false;
                     } else if (k == "wait") {
@@ -8815,7 +10839,8 @@ int main(int argc, char** argv) {
                     frontStack.key(k == "up" ? K::Up : k == "down" ? K::Down : k == "esc" ? K::Escape : k == "left" ? K::Left : k == "right" ? K::Right : K::Enter);
                     if (const ui::Item* f = frontStack.focus()) std::cout << "  focus " << f->name << ", menus " << frontStack.menus().size() << "\n";
                     std::cout << "  cl_paused=" << menuEnv.getCvar("cl_paused") << " clock=" << (world ? world->timeMs() : -1) << "\n"; // [server time]
-                    nextKey = SDL_GetTicksNS() + 2000000000ull;
+                    static const uint64_t keyGap = std::getenv("IW2_MENU_KEY_MS") ? uint64_t(std::max(1, std::atoi(std::getenv("IW2_MENU_KEY_MS")))) * 1000000ull : 2000000000ull;
+                    nextKey = SDL_GetTicksNS() + keyGap;
                 }
             }
             if (world) { // mission progress written by scripts (setmissioncvar, maps/_endmission.gsc) is archived: copy it to the profile
@@ -8859,7 +10884,7 @@ int main(int argc, char** argv) {
             if (world)
                 if (const game::ShockRecord* rec = world->shellShockRecord()) { // shell shock view kick (0x4b2380), render only
                     const auto& ss = world->shellShock();
-                    const game::ShockKick k = game::shockViewKick(*rec, int(cgNowMs() - ss.startMs), ss.durationMs);
+                    const game::ShockKick k = game::shockViewKick(*rec, game::elapsedMs(cgNowMs(), ss.startMs), ss.durationMs);
                     cam.yaw += std::atan(k.x) * 57.29578f;
                     cam.pitch -= std::atan(k.y) * 57.29578f;
                 }
@@ -8883,6 +10908,10 @@ int main(int argc, char** argv) {
                 cam.pitch += dk[0];
                 cam.roll += dk[1];
             }
+            // Killcam: the killer's archived view replaces the camera for this frame (restored with the live view at the end).
+            const Vec3 killcamLivePos = cam.pos;
+            const float killcamLiveFov = cam.fovX43;
+            const auto killcamView = killcamCamera(cam, lerpFrac);
             fxRight = cam.right();
             fxUp = cross(cam.right(), cam.forward());
             // The per-element spawnRange / cullrange gate (0x485300): view origin and tan(fovX / 2) / tan(40 deg) (0x486e00).
@@ -8890,6 +10919,7 @@ int main(int argc, char** argv) {
             fxSystem.viewScale = std::tan(cam.fovX43 * 0.5f * float(M_PI) / 180.0f) / std::tan(0.6981317f);
             fxSystem.viewValid = true;
             setFxFrustum(fxSystem, cam, float(width) / float(height));
+            setFxFar(fxSystem, cam, (world ? world->clientFog.current(cgNowMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
             setFxFar(fxSystem, cam, (world ? world->clientFog.current(cgNowMs()) : game::FogParams{}), world ? world->cullDist() : 0.0f);
             // The gun pose of this frame (cgame 0x4b6d40, after the view offsets), read by the next command. The pass stops, keeping the last
             // pose, with pm_type 2 or 3, on a turret, and in a vehicle outside the binocular weapon states (0x4b6d54..0x4b6db9).
@@ -8926,14 +10956,20 @@ int main(int argc, char** argv) {
             const int wstate = pweapon.stateNumber();
             if (!(world && world->playerOnTurret()) &&
                 !(world && (world->playerPmFlags() & 0x20000) && !(wstate >= 0x11 && wstate <= 0x16)))
-                if (!(world && world->playerDeadWeaponless())) { // dead: entity weapon 0 (0x4b6a0a)
+                // Network client: no view weapon for the server's pm_type 4 / 5 (spectator, intermission), whatever weapon
+                // the player state still carries (docs/spec/mp-spectate.md).
+                if (!(world && world->playerDeadWeaponless()) && !(netClient && netgame::RemoteView::viewWeaponHidden(ps.pmType))) { // dead: entity weapon 0 (0x4b6a0a)
                     if (!(world && scopeAlpha() > 0)) addViewModel(vmItems, cam);
                     else if (viewFlash->pending || viewFlash->brassPending) { // scope overlay (0x4b6d7c): posed, not drawn; the flash is consumed unplayed
                         std::vector<DrawItem> scratch;
                         addViewModel(scratch, cam, false);
                     }
                 }
-            auto items = gatherItems(cam);
+            if (killcamView) {
+                vmItems.clear();
+                addKillcamViewModel(vmItems, cam, *killcamView);
+            }
+            auto items = killcamView ? gatherKillcamItems(cam, lerpFrac) : gatherItems(cam);
             items.insert(items.end(), vmItems.begin(), vmItems.end());
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
@@ -8945,9 +10981,9 @@ int main(int argc, char** argv) {
             {
                 renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
                 applyTextureFilter(renderer, uiCvars);
-            renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
+                renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(cgNowMs(), int64_t(SDL_GetTicks()));
-                const float blur = std::max(screenBlur.composed(), forcedBlur);
+                const float blur = std::max(game::composeSceneBlur(worldMenuBlur(), screenBlur.composed()), forcedBlur);
                 { // shell shock screen blend (0x4b16b0): blendMs scaled by the remaining time; elapsed = real time since the last capture
                     static int64_t lastGhostTicks = 0;
                     const int64_t nowTicks = int64_t(SDL_GetTicks());
@@ -8968,9 +11004,33 @@ int main(int argc, char** argv) {
                 updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
                 renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
-                renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
+                hudKillcam = killcamView;
                 const std::vector<Quad2D> hud = buildHud(w, h, cam);
+                hudKillcam.reset();
+                renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
                 renderer.draw(cmd, swap, w, h, scene, cam, items, hud, blur);
+                // debug token shot:<file.png> (IW2_MENU_KEYS): the same frame rendered once more into a PNG
+                if (!pendingShotPng.empty()) screenshot(dev, renderer, scene, cam, w, h, std::exchange(pendingShotPng, std::string()), items, hud, blur);
+                // debug: IW2_CAPTURE=<dir>[,every[,div]] renders every Nth presented frame of live play (size / div) into <dir>/frame_NNNNN.png
+                if (const char* capEnv = std::getenv("IW2_CAPTURE"); capEnv && world) {
+                    static uint64_t capFrame = 0;
+                    std::string dir = capEnv;
+                    int every = 1, div = 1;
+                    if (const size_t cm = dir.find(','); cm != std::string::npos) {
+                        std::sscanf(dir.c_str() + cm + 1, "%d,%d", &every, &div);
+                        every = std::max(1, every), div = std::clamp(div, 1, 8);
+                        dir.resize(cm);
+                    }
+                    if (capFrame++ % uint64_t(every) == 0) {
+                        std::filesystem::create_directories(dir);
+                        char name[32];
+                        std::snprintf(name, sizeof name, "/frame_%05llu.png", static_cast<unsigned long long>(capFrame / uint64_t(every)));
+                        std::cout << "capture t=" << world->timeMs() << " anim=" << pweapon.anim() << " weapon=" << pweapon.name() << "\n"; // [server time]
+                        hudKillcam = killcamView; // the capture's HUD is the killcam HUD too (killer's weapon and ammo)
+                        screenshot(dev, renderer, scene, cam, w / uint32_t(div), h / uint32_t(div), dir + name, items, buildHud(w / uint32_t(div), h / uint32_t(div), cam), blur);
+                        hudKillcam.reset();
+                    }
+                }
                 profWater += double(profC - profB) * 1e-6;
                 profDraw += double(SDL_GetTicksNS() - profC) * 1e-6;
                 // screenshotJpeg / screenshot: the same frame drawn again into an offscreen target (the swapchain texture
@@ -8988,16 +11048,28 @@ int main(int argc, char** argv) {
                 trace(what, world ? world->timeMs() : 0); // [server time]
             }
             profFrame += double(SDL_GetTicksNS() - profFrameStart) * 1e-6;
+            if (killcamView) {
+                cam.pos = killcamLivePos;
+                cam.fovX43 = killcamLiveFov;
+            }
             cam.pitch = camBase.pitch; // the ADS bob turns only the drawn view
             cam.yaw = camBase.yaw;
             cam.roll = camBase.roll;
         }
+        if (netClient) netClient->disconnect();
         if (audioStream) SDL_DestroyAudioStream(audioStream);
         SDL_ReleaseWindowFromGPUDevice(dev, window);
         SDL_DestroyWindow(window);
         Uploader::releasePool(dev);
         SDL_DestroyGPUDevice(dev);
         SDL_Quit();
+        if (dedicatedStart) { // the client is down; the server runs on in this process (docs/spec/mp-ui.md "Dedicated start")
+            netClient.reset();
+            if (listenServer) listenServer->shutdown("EXE_SERVERQUIT");
+            listenServer.reset();
+            world.reset();
+            return runDedicatedConsole(vfs, *dedicatedStart);
+        }
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

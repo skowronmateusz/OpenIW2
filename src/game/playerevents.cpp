@@ -62,11 +62,21 @@ void World::applyPlayerEvent(int ev, int parm) {
     const auto it = cvars.find("cg_footsteps");
     const bool footsteps = it == cvars.end() || it->second.empty() || std::atoi(it->second.c_str()) != 0;
     for (const std::string& alias : playerEventSounds(ev, footsteps)) startSound(alias, nullptr);
-    if (ev >= 0x74 && ev < 0x8b && player_) {
-        const Value mh = player_->obj->get("maxhealth");
-        const int dmg = fallDamageAmount(mh.isNumber() ? mh.asInt() : 100, parm);
-        if (dmg > 0) damage(*player_, nullptr, dmg, {0, 0, 0}, {0, 0, 0}, "MOD_FALLING");
+    if (player_) clientFallEvent(*player_, ev, parm);
+}
+
+void World::clientFallEvent(Entity& client, int ev, int parm) {
+    if (ev < 0x74 || ev >= 0x8b) return;
+    const Value mh = client.obj->get("maxhealth");
+    const int maxHealth = mh.isNumber() ? mh.asInt() : 100;
+    // MP ClientEvents (0x80f5370..0x80f541c) stores the factor and the product as floats before truncating (50 % of 100 is 50);
+    // the SP amount keeps the double product (fallDamageAmount).
+    int dmg = fallDamageAmount(maxHealth, parm);
+    if (mp_) {
+        const float factor = parm > 99 ? 1.1f : float(parm) * 0.01f;
+        dmg = factor == 0.0f ? 0 : int(float(maxHealth) * factor);
     }
+    if (dmg > 0) damage(client, nullptr, dmg, {0, 0, 0}, {0, 0, 0}, "MOD_FALLING");
 }
 
 } // namespace iw2::game

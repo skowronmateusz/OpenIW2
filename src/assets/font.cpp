@@ -126,4 +126,6 @@ const std::string* Localization::find(const std::string& key) const {
     return it == strings_.end() ? nullptr : &it->second;
 }
 
+void Localization::add(const std::string& key, const std::string& text) { strings_.emplace(upper(key), text); }
+
 } // namespace iw2::assets

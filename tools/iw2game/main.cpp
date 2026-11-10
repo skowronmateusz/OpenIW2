@@ -8,6 +8,7 @@
 //   iw2game <main-dir> <map> --replay file      re-run moves recorded by iw2view (pmove_replay.bin)
 //   iw2game <main-dir> <map> --mantle-test [runs]   mantle from every path node in 16 directions
 //   iw2game <main-dir> <map> --spot x,y,z yaw   replay an iw2view `P` view position: walk from it in 72 directions
+//   iw2game <main-dir> mp/<map> <gametype> [seconds] [--mp-…]   offline multiplayer (tools/iw2game/mp.cpp)
 
 #include "assets/xanim.h"
 #include "audio/sound.h"
@@ -40,7 +41,17 @@
 #include <string>
 #include <vector>
 
+int runMultiplayer(int argc, char** argv); // tools/iw2game/mp.cpp
+
 int main(int argc, char** argv) {
+    if (argc >= 3 && std::string(argv[2]).rfind("mp/", 0) == 0) {
+        try {
+            return runMultiplayer(argc, argv);
+        } catch (const std::exception& e) {
+            std::cerr << "error: " << e.what() << "\n";
+            return 1;
+        }
+    }
     if (argc < 3) {
         std::cerr << "usage: iw2game <main-dir> <map> [seconds] [--cvar name=value ...]\n";
         return 2;

@@ -13,6 +13,7 @@ namespace iw2::game {
 struct HintArg {
     bool localized = false; // a localized string reference (value type 3) rather than a plain string
     std::string text;
+    bool entityName = false; // a player entity's name: skips the escape/letter checks (0x504700 entity branch), see docs/spec/turrets.md
 };
 
 constexpr int kHintStringSlots = 32;       // 0x815dba..0x815dfa, 2 bytes per slot
@@ -30,7 +31,13 @@ inline std::string buildHintString(const std::vector<HintArg>& args, const std::
     bool introduce = true;
     for (const HintArg& a : args) {
         const std::string& s = a.text;
-        if (a.localized) {
+        if (a.entityName) {
+            // Entity argument (MP 0x504700, branch at 0x50480f): the name text is length-checked and introduced by 0x15 like plain
+            // text, but neither the escape check nor the letter check (0x504905..0x504998) nor the UNLOCALIZED prefix applies.
+            if (out.size() + s.size() + 1 >= maxLen) throw std::runtime_error(tooLong());
+            if (introduce) out.push_back('\x15');
+            introduce = false;
+        } else if (a.localized) {
             // 0x4eb800: only for references longer than one character.
             if (s.size() > 1)
                 for (unsigned char ch : s)

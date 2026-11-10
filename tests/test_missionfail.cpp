@@ -7,6 +7,8 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <string>
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 
@@ -27,7 +29,7 @@ int failures = 0;
 int main() {
     // The save-file reader needs no game files.
     {
-        const auto dir = std::filesystem::temp_directory_path() / "iw2_missionfail_test";
+        const auto dir = std::filesystem::temp_directory_path() / ("iw2_missionfail_test_" + std::to_string(::getpid()));
         std::filesystem::create_directories(dir);
         const auto bad = dir / "bad.svg";
         std::ofstream(bad, std::ios::binary) << "not a save";

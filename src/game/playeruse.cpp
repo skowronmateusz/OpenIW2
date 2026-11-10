@@ -4,6 +4,7 @@
 // usable entity (0x534d40), the press (0x5343d0 → 0x5342b0 → 0x5341a0), and turrets used by the player (use
 // 0x51db50, think 0x51b5c0, release 0x51b3d0).
 #include "game/itempickup.h"
+#include "game/pickupprompt.h"
 #include "game/world.h"
 #include "game/pmove.h"
 
@@ -135,6 +136,14 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
         if (e.obj->removed || e.isSpawner || &e == player_) continue;
         Vec3 mn, mx;
         const bool trigUse = e.classname == "trigger_use", trigTouch = e.classname == "trigger_use_touch";
+        if ((trigUse || trigTouch) && mp_) { // setteamfortrigger (MP use scan 0x8121d88): another team skips it
+            const Value tt = e.obj->get("$triggerTeam");
+            const std::string team = player_->obj->get("sessionteam").toString();
+            const int code = team == "allies" ? 2 : team == "axis" ? 1 : 0;
+            if (tt.isNumber() && tt.asInt() != 0 && tt.asInt() != code) continue;
+            const Value claim = e.obj->get("$claimedBy"); // clientclaimtrigger by another client (0x8121db4)
+            if (claim.isNumber() && claim.asInt() != mpClientOf(*player_)) continue;
+        }
         if (e.turret) {
             const Vec3 o = e.obj->get("origin").asVector(); // turret bounds (−32, −32, 0)…(32, 32, 56) (0x51e650)
             mn = {o[0] - 32, o[1] - 32, o[2]};
@@ -224,9 +233,14 @@ std::vector<World::UseCandidate> World::scanUsables(const Vec3& eye, const Vec3&
 // the flat player → turret direction at most (|right| + |left|) / 2, so the player stands behind the gun), no
 // grenade being cooked (ps+0x3c) and on the ground.
 bool World::turretUsableByPlayer(Entity& t) {
+    return turretUsableBy(t, player_->obj->get("origin").asVector(), playerCmd_.grenadeFuseMs, playerCmd_.onGround);
+}
+
+// The same test for any user (MP 0x810c358 for every client: not in use, the arc test 0x810c1be, no fuse, a ground entity).
+bool World::turretUsableBy(Entity& t, const Vec3& po, int grenadeFuseMs, bool onGround) {
     const TurretState& ts = *t.turret;
     if (!(ts.flags & 0x1000u) || ts.inUse) return false;
-    const Vec3 to = t.obj->get("origin").asVector(), po = player_->obj->get("origin").asVector();
+    const Vec3 to = t.obj->get("origin").asVector();
     const Vec3 ta = t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0};
     // Arcs as the use sets them (+0x38 right, +0x40 left; the setup values are copied over at use).
     const float half = (std::fabs(ts.rightArc) + std::fabs(ts.leftArc)) * 0.5f;
@@ -240,29 +254,38 @@ bool World::turretUsableByPlayer(Entity& t) {
     float a = std::acos(std::clamp(dot(d, dir), -1.0f, 1.0f)); // 0x565d70
     if (a > 3.1415927f || a < -3.1415927f) a = 3.1415927f;
     if (!(a * 57.2957763671875f <= half)) return false;
-    if (playerCmd_.grenadeFuseMs != 0) return false;
-    return playerCmd_.onGround;
+    if (grenadeFuseMs != 0) return false;
+    return onGround;
 }
 
 // What the use key would use now (0x534d40): nothing while dead, in the binocular weapon states 0x11 … 0x16, in a
 // vehicle, on a turret or mantling. Otherwise the first scan candidate that is usable: a trigger_use(_touch) with a
 // cursor hint (+0x98, 2 at spawn 0x52cde0 unless the cursorhint key changes it; never 0 there) ends the search
 // either way, a turret (0x51dac0) or a vehicle (0x512200) only when usable, anything else is skipped.
-// The pickup prompt for a weapon item (cgame 0x4a99b0): PICKUPNEWWEAPON when the weapon is of class
+// The pickup prompt for a weapon item (cgame 0x4a99b0, game::pickupPrompt in pickupprompt.h): PICKUPNEWWEAPON when the weapon is of class
 // item, has an offhandClass, or a primary slot is free; otherwise SWAPWEAPONS unless the hinted weapon is the one in its slot.
 // Checked against 0x4a99b0: def+0x84 is offhandClass (weapon field table row at 0x5a800c), def+0x7c weaponClass (9 = item), def+0x80
 // weaponSlot, whose enum has only none / primary / primaryb, so there are no slots above 2. The slot byte table (0xf70e10 + class) is
 // indexed by the slot class. A weapon with slot none that is neither item class nor offhand class occurs in the shipped weapon files only as turret / non-player weapons, which are never pickup items, so that branch is not reached (it yields the swap text here).
+// The current weapon is the player state's: a network client's is the weapon of the newest snapshot (mpSetRemoteWeapon), not the view
+// weapon's animation state, which still holds the old weapon while it is lowered.
 std::string World::pickupHintText(const std::string& w) {
     const Inventory& inv = inventory(*player_);
-    const std::string cls = lowerStr(weaponField(w, "weaponClass")), off = lowerStr(weaponField(w, "offhandClass"));
-    const std::string slotName = lowerStr(weaponField(w, "weaponSlot"));
-    if (cls == "item" || (!off.empty() && off != "none")) return "PLATFORM_PICKUPNEWWEAPON";
-    if ((slotName == "primary" || slotName == "primaryb") && (inv.slot[1].empty() || inv.slot[2].empty())) return "PLATFORM_PICKUPNEWWEAPON";
-    const std::string cur = lowerStr(player_->obj->get("$weapon").toString());
-    if (!cur.empty() && lowerStr(weaponField(cur, "weaponSlot")) == slotName) return cur == w ? std::string() : "PLATFORM_SWAPWEAPONS";
-    const int idx = slotName == "primaryb" ? 2 : slotName == "primary" ? 1 : 0;
-    return !inv.slot[idx].empty() && inv.slot[idx] == w ? std::string() : "PLATFORM_SWAPWEAPONS";
+    auto slotOf = [&](const std::string& name) {
+        const std::string s = name.empty() ? std::string() : lowerStr(weaponField(name, "weaponSlot"));
+        return s == "primary" ? 1 : s == "primaryb" ? 2 : 0;
+    };
+    PickupPromptInput in;
+    in.weapon = w;
+    const std::string off = lowerStr(weaponField(w, "offhandClass"));
+    in.itemClass = lowerStr(weaponField(w, "weaponClass")) == "item";
+    in.hasOffhandClass = !off.empty() && off != "none";
+    in.slot = slotOf(w);
+    in.slotWeapon[1] = inv.slot[1];
+    in.slotWeapon[2] = inv.slot[2];
+    in.current = mpRemote_ ? remoteWeapon_ : lowerStr(player_->obj->get("$weapon").toString());
+    in.currentSlot = slotOf(in.current);
+    return pickupPrompt(in);
 }
 
 World::PlayerUseHint World::vehicleUseHint(const std::string& turretWeapon) {
@@ -283,6 +306,18 @@ float World::cvarFloat(const std::string& name, float def) const {
 void World::findPlayerUseEntity() {
     playerUseEntity_ = -1;
     playerUseHint_ = {};
+    // A network client does not search its own map copy: the hint comes from the server's player state.
+    if (mpRemote_) {
+        if (player_ && isAlive(*player_)) {
+            playerUseHint_ = remoteUseHint_;
+            // The pickup prompt of a weapon item is chosen when the hint is drawn, against the weapons the player holds now (cgame
+            // 0x4a99b0 reads the current player state each frame; VA 0x4c5a80 in the patch 1.3 MP executable): the hint of a snapshot
+            // and the inventory it came with must not be paired with an older inventory.
+            if (!playerUseHint_.weapon.empty() && playerUseHint_.text.empty() && remoteHintPickupPrompt_ && this->weapon(playerUseHint_.weapon))
+                playerUseHint_.text = pickupHintText(playerUseHint_.weapon);
+        }
+        return;
+    }
     if (!player_ || !isAlive(*player_)) return;
     // On a turret (0x534ce0): its weapon's hint with dropHintString when the weapon has one.
     if (playerOnTurret() && playerTurret_ && playerTurret_->turret) {
@@ -383,18 +418,22 @@ void World::playerUseTurret(Entity& t) {
     playerEFlags_ = ts.stance == 2 ? 0x100u : ts.stance == 1 ? 0x200u : 0x300u;
     const Vec3 base = t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0};
     turretAnglesFromView(ts, base, playerCmd_.viewAngles);
-    setPlayerViewClamp(t);
+    setTurretViewClamp(ts, base);
     vm_.notify(t.obj, "turretownerchange");
 }
 
-// The view clamp ps+0xe8..+0xf4 from the turret's base angles and current arcs (set when the player gets on).
-void World::setPlayerViewClamp(const Entity& t) {
-    const TurretState& ts = *t.turret;
-    const Vec3 base = t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0};
+// The view clamp ps+0xe8..+0xf4 of a player on a turret: the middle of its arcs and half their range (pitch, yaw), from the
+// turret's base angles and current arcs (set when the player gets on; the network clients' turret code passes its own state).
+void World::setTurretViewClamp(const TurretState& ts, const Vec3& base) {
     viewClampRange_[0] = angleDelta(ts.bottomArc, ts.topArc) * 0.5f;
     viewClampBase_[0] = angleNormalize360(base[0] + ts.bottomArc - viewClampRange_[0]);
     viewClampRange_[1] = angleDelta(ts.leftArc, ts.rightArc) * 0.5f;
     viewClampBase_[1] = angleNormalize360(base[1] + ts.leftArc - viewClampRange_[1]);
+}
+
+void World::setPlayerViewClamp(const Entity& t) {
+    const Vec3 base = t.obj->get("angles").isVector() ? t.obj->get("angles").asVector() : Vec3{0, 0, 0};
+    setTurretViewClamp(*t.turret, base);
 }
 
 // After a savegame load: the saved ps eFlags / use state say the player is on a turret, and the turret's saved owner names the
@@ -457,6 +496,13 @@ void World::releasePlayerTurret(Entity& t) {
 // and attack fires every fireTime (0x51b2b0: timer −50 per frame; at ≤ 0 with attack the timer restarts at
 // fireTime and 0x51b250 shoots); the fire countdown runs down (0x51b320). Otherwise the player gets off.
 void World::thinkPlayerTurret() {
+    // A network client's turret is run by the server; its state comes from the snapshots (mpSetRemoteTurret) and only
+    // the fire loop sound of its shots (mpRemoteTurretFire) runs here.
+    if (mpRemote_) {
+        if (playerOnTurret() && playerTurret_ && playerTurret_->turret && !playerTurret_->obj->removed)
+            turretFireSound(*playerTurret_, true);
+        return;
+    }
     if (!playerOnTurret() || !playerTurret_) return;
     Entity& t = *playerTurret_;
     if (t.obj->removed || !t.turret) { // 0x51da40: a freed turret releases its user
@@ -516,7 +562,7 @@ void World::runPlayerUse() {
         }
     }
     thinkPlayerTurret();
-    if (timeMs_ > 500) {
+    if (mpRemote_ || timeMs_ > 500) { // a network client's hint is the server's, from the first tick
         updateCrosshairTarget(); // 0x535070
         findPlayerUseEntity();
     }
@@ -632,7 +678,7 @@ void World::pickUpWeaponItem(Entity& item) {
         trimSharedAmmo(inv, w); // 0x520f3d..0x520ff5
     }
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
-    startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player (Touch_Item 0x521c41)
+    if (!remotePickup_) startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player (Touch_Item 0x521c41)
     raisePickupEvent(w, false);
     freeEntity(item);
 }
@@ -643,6 +689,23 @@ namespace iw2::game {
 
 std::vector<World::CompassMarker> World::compassFriendlies() const {
     std::vector<CompassMarker> out;
+    if (mp_) {
+        // MP compass (0x4dafe0): the local client's living teammates; nothing for team 0 (DM) or a spectator (3).
+        const int lt = mpLocalTeam();
+        if (lt == 0 || lt == 3) return out;
+        for (size_t i = 0; i < mp_->clients.size(); ++i) {
+            const MpClient& cl = mp_->clients[i];
+            if (int(i) == mp_->localClient || cl.state != MpClientState::Active || !cl.ent) continue;
+            if (cl.ent->obj->get("sessionstate").toString() != "playing" || mpTeamOf(cl.ent) != lt) continue;
+            CompassMarker m;
+            m.pos = cl.ent->obj->get("origin").asVector();
+            const Value ang = cl.ent->obj->get("angles");
+            if (ang.isVector()) m.yaw = ang.asVector()[1];
+            m.pingEndMs = compassPings_.endMs(cl.ent->number);
+            out.push_back(m);
+        }
+        return out;
+    }
     if (!drawCompassFriendlies_) return out;
     for (const auto& e : entities_) {
         if (e->obj->removed || e->obj->kind != "actor" || !isAlive(*e)) continue;
@@ -662,6 +725,14 @@ std::vector<World::CompassMarker> World::compassFriendlies() const {
 
 void World::compassPing(const Entity& actor, const Vec3& pos, int durationMs) {
     // 0x4c0e20: team = the actor's sentient team (0x1c6421c, copied from sentient +4 by the server pass 0x4db387).
+    if (mp_ && actor.isPlayer) {
+        // MP (0x4daed0): not the local client, not a spectator; an enemy when the local team is 0 or differs.
+        const int cl = mpClientOf(actor);
+        const int st = mpTeamOf(&actor), lt = mpLocalTeam();
+        if (cl < 0 || cl == mp_->localClient || st == 3) return;
+        compassPings_.ping(actor.number, lt == 0 || st != lt ? 1 : 2, pos[0], pos[1], timeMs_, durationMs);
+        return;
+    }
     const Value tv = actor.obj->get("team");
     const std::string t = tv.isString() ? tv.asString() : std::string();
     const int team = t == "axis" ? 1 : t == "allies" ? 2 : t == "neutral" ? 3 : 0;
@@ -901,6 +972,29 @@ void World::updateCrosshairTarget() {
                 crosshairWeaponLine_ = weaponField(lowerStr(wv.asString()), "displayName");
         }
     }
+}
+
+} // namespace iw2::game
+
+namespace iw2::game {
+
+void World::mpSetRemoteWeapon(const std::string& weapon) { remoteWeapon_ = lowerStr(weapon); }
+
+void World::mpSetRemoteUseHint(int hint, const std::string& text, const std::string& weapon) {
+    if (!mpRemote_) return;
+    remoteUseHint_ = {};
+    remoteHintPickupPrompt_ = false;
+    if (hint <= 0) return;
+    remoteUseHint_.text = text;
+    if (hint > 4 && !weapon.empty()) {
+        // A weapon hint: the weapon's icon; without a hint string a weapon item's pickup prompt (cgame 0x4a99b0), which
+        // findPlayerUseEntity chooses on each tick from the inventory of that moment (not for a turret weapon).
+        remoteUseHint_.weapon = lowerStr(weapon);
+        remoteHintPickupPrompt_ = text.empty() && this->weapon(remoteUseHint_.weapon) &&
+                                  lowerStr(weaponField(remoteUseHint_.weapon, "weaponClass")) != "turret";
+        return;
+    }
+    remoteUseHint_.hint = hint;
 }
 
 } // namespace iw2::game

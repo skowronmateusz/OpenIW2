@@ -1,7 +1,9 @@
 #include "game/playerweapon.h"
+#include "game/mpkillcam.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 
 namespace iw2::game {
@@ -37,6 +39,39 @@ std::string PlayerWeapon::handModel() const {
     return m.empty() ? m : "xmodel/" + m;
 }
 
+std::string PlayerWeapon::animKey() const {
+    const Def& d = binocActive_ ? binocDef_ : offhandActive_ ? offDef_ : def_;
+    if (anim_.empty()) return "idleAnim";
+    for (const char* key : kViewAnimKeys)
+        if (defValue(d, key) == anim_) return key;
+    return "idleAnim";
+}
+
+// Multiplayer view-animation rates (cgame weapon registration 0x4d3fbc..0x4d4322 in the patch 1.3 MP executable, docs/spec/weapons.md
+// "Multiplayer view-animation rates"): an action slot with a weapon time plays at (animation length in ms) / (time in ms), so
+// the animation fills the state; reloadEndAnim takes reloadTime. Every other slot plays at 1.
+float PlayerWeapon::rateFor(const Def& d, const char* animKey) const {
+    if (!mpAnimRates || !animKey) return 1.0f;
+    static const std::pair<const char*, const char*> kSlots[] = {
+        {"holdFireAnim", "holdFireTime"},     {"meleeAnim", "meleeTime"},         {"reloadAnim", "reloadTime"},
+        {"reloadEmptyAnim", "reloadEmptyTime"}, {"reloadStartAnim", "reloadStartTime"}, {"reloadEndAnim", "reloadTime"},
+        {"raiseAnim", "raiseTime"},           {"dropAnim", "dropTime"},           {"altRaiseAnim", "altRaiseTime"},
+        {"altDropAnim", "altDropTime"},       {"quickRaiseAnim", "quickRaiseTime"}, {"quickDropAnim", "quickDropTime"}};
+    for (const auto& [anim, timeKey] : kSlots) {
+        if (std::string(anim) != animKey) continue;
+        const std::string name = defValue(d, anim);
+        const float len = animLength && !name.empty() ? animLength(name) : 0.0f;
+        if (len <= 0) return 1.0f; // TODO(spec): a looping or missing animation (the exe reads the parts' frame count regardless)
+        const int ms = int(defNumber(d, timeKey) * 1000.0f);
+        // TODO(spec): a slot whose time is not positive gets rate 0 in the exe; here it keeps 1 (no state lasts 0 ms visibly).
+        if (ms <= 0) return 1.0f;
+        return float(int(len * 1000.0f)) / float(ms);
+    }
+    return 1.0f;
+}
+
+void PlayerWeapon::noteAnim(const Def& d, const char* animKey) { animRate_ = rateFor(d, animKey); }
+
 void PlayerWeapon::enter(State s, const char* animKey, float duration) {
     state_ = s;
     deferredFire_ = false;
@@ -46,13 +81,14 @@ void PlayerWeapon::enter(State s, const char* animKey, float duration) {
     pendingIdle_ = false;
     if (!animKey && animLength && anim_ != idle) {
         const float len = animLength(anim_);
-        if (len > 0 && animTime_ < len) { // keep the action anim playing, idle follows when it ends
+        if (len > 0 && animTime_ * animRate_ < len) { // keep the action anim playing, idle follows when it ends
             pendingIdle_ = true;
         }
     }
     if (!pendingIdle_) {
         anim_ = a.empty() ? idle : a;
         animTime_ = 0;
+        noteAnim(def_, a.empty() ? nullptr : animKey);
     }
     // The cgame events of the state change play one sound each: the first non-empty of a priority chain (0x4ba8d0).
     if (s == State::Reloading) {
@@ -89,6 +125,7 @@ void PlayerWeapon::enterWith(const Def& d, State s, const char* animKey, float d
     const std::string a = defValue(d, animKey);
     anim_ = a.empty() ? defValue(d, "idleAnim") : a;
     animTime_ = 0;
+    noteAnim(d, a.empty() ? nullptr : animKey);
     pendingIdle_ = false;
     // Entering state 13 adds event 0xa5 (0x4df1b4, param = the offhand weapon) and state 15 event 0xa6 (0x4df2a4); cgame plays
     // the weapon info's +0xdc / +0xe0 sound (0x4b8ae0, 0x4b8b10), which the loader fills from the def's pullbackSound (+0xa4)
@@ -202,6 +239,7 @@ void PlayerWeapon::binocularEnter() {
     events_.push_back({Event::BinocularEnter, std::string()});
     anim_ = defValue(binocDef_, "idleAnim");
     animTime_ = 0;
+    animRate_ = 1.0f;
     pendingIdle_ = false;
 }
 
@@ -219,6 +257,7 @@ void PlayerWeapon::binocularCancel(bool attackHeld) {
     delay_ = 0;
     anim_ = fieldValue("idleAnim");
     animTime_ = 0;
+    animRate_ = 1.0f;
     pendingIdle_ = false;
 }
 
@@ -269,6 +308,7 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
             const std::string a = fieldValue("quickDropAnim");
             anim_ = a.empty() ? fieldValue("idleAnim") : a;
             animTime_ = 0;
+            noteAnim(def_, "quickDropAnim");
             pendingIdle_ = false;
             goto sw;
         }
@@ -290,6 +330,7 @@ void PlayerWeapon::binocularStep(const Input& in, bool delayDone) {
                 const std::string a = fieldValue("quickRaiseAnim");
                 anim_ = a.empty() ? fieldValue("idleAnim") : a;
                 animTime_ = 0;
+                noteAnim(def_, "quickRaiseAnim");
                 pendingIdle_ = false;
             } else {
                 timer_ = 0;
@@ -314,6 +355,7 @@ sw:
         delay_ = 0;
         anim_ = fieldValue("quickDropAnim").empty() ? fieldValue("idleAnim") : fieldValue("quickDropAnim");
         animTime_ = 0;
+        noteAnim(def_, "quickDropAnim");
         pendingIdle_ = false;
         break;
     case State::BinocDrop:
@@ -334,6 +376,7 @@ sw:
             delay_ = 0;
             anim_ = fieldValue("quickRaiseAnim").empty() ? fieldValue("idleAnim") : fieldValue("quickRaiseAnim");
             animTime_ = 0;
+            noteAnim(def_, "quickRaiseAnim");
             pendingIdle_ = false;
         } else {
             timer_ = 0;
@@ -345,6 +388,7 @@ sw:
         timer_ = delay_ = 0;
         anim_ = fieldValue("idleAnim");
         animTime_ = 0;
+        animRate_ = 1.0f;
         pendingIdle_ = false;
         break;
     default:
@@ -470,9 +514,10 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
     animTime_ += dt;
     if (pendingIdle_) {
         const float len = animLength ? animLength(anim_) : 0.0f;
-        if (len <= 0 || animTime_ >= len) {
+        if (len <= 0 || animTime_ * animRate_ >= len) {
             anim_ = fieldValue("idleAnim");
             animTime_ = 0;
+            animRate_ = 1.0f;
             pendingIdle_ = false;
         }
     }
@@ -571,6 +616,7 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
                 pendingIdle_ = false;
                 anim_ = fieldValue("meleeAnim").empty() ? fieldValue("idleAnim") : fieldValue("meleeAnim");
                 animTime_ = 0;
+                noteAnim(def_, "meleeAnim");
                 events_.push_back({Event::MeleeSwing, name_});
                 playFirst({"meleeSwipeSound"}); // event 0xa3 (0x4df021)
                 if (time("meleeDelay", 0) == 0) {
