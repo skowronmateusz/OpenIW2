@@ -3,6 +3,8 @@
 //   iw2roq <main-dir> <movie> info                      size, fps, frame and audio counts
 //   iw2roq <main-dir> <movie> frames <out-dir> <n>...   writes frame_<n>.png for the listed frame numbers
 
+#include <cstdio>
+#include "fs/gamedir.h"
 #include "fs/vfs.h"
 #include "util/png.h"
 #include "video/roq.h"
@@ -18,6 +20,10 @@ int main(int argc, char** argv) {
     }
     try {
         iw2::fs::Vfs vfs;
+        if (const std::string e = iw2::fs::mainDirError(argv[1]); !e.empty()) {
+            std::fprintf(stderr, "iw2roq: error: %s\n", e.c_str());
+            return 1;
+        }
         vfs.mountDirectory(argv[1]);
         auto data = vfs.read(std::string("video/") + argv[2] + ".roq");
         if (!data) { std::cerr << "no such movie\n"; return 1; }

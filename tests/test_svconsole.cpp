@@ -106,7 +106,7 @@ void testConsole() {
     CHECK(has(con.capture("sv_hostname"), "\"sv_hostname\" is:\"My Server^7\""));
     con.execute("sv_hostname other");
     CHECK(con.cvar("sv_hostname") == "other");
-    CHECK(has(con.capture("nosuchcommand"), "Unknown command"));
+    CHECK(con.capture("nosuchcommand").empty()); // unknown commands are silent on the server console
 
     host.files["server.cfg"] = "// comment\nset g_password pw\nset sv_mapRotation \"map mp_a map mp_b\"\nexec more\n";
     host.files["more.cfg"] = "set rcon_password secret";
@@ -185,7 +185,8 @@ void testConsole() {
     CHECK(has(con.capture("banClient 7"), "is not active"));
     CHECK(has(con.capture("kick"), "Usage: kick <player name>"));
     CHECK(has(con.capture("onlykick"), "Usage: onlykick <player name>"));
-    CHECK(has(con.capture("bind x y"), "Unknown command"));
+    CHECK(con.capture("bind x y").empty());
+    CHECK(con.capture("unbindall").empty());
     CHECK(has(con.capture("map missing"), "Can't find map maps/mp/missing.d3dbsp"));
     CHECK(has(con.capture("dumpuser"), "Usage: info <userid>"));
 

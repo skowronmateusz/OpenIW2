@@ -10,9 +10,11 @@
 // obituaries. TODO(spec): acceptance by the original 1.3 client is untested.
 
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <vector>
 
+#include "fs/gamedir.h"
 #include "fs/vfs.h"
 #include "netgame/dedicated.h"
 #include "netgame/serverargs.h"
@@ -27,7 +29,16 @@ int main(int argc, char** argv) {
         std::fputs(iw2::netgame::serverUsage().c_str(), stdout);
         return 0;
     }
-    iw2::fs::Vfs vfs;
-    vfs.mountDirectory(args.mainDir);
-    return iw2::netgame::runDedicated(vfs, args.settings);
+    if (const std::string e = iw2::fs::mainDirError(args.mainDir); !e.empty()) {
+        std::fprintf(stderr, "iw2server: error: %s\n", e.c_str());
+        return 1;
+    }
+    try {
+        iw2::fs::Vfs vfs;
+        vfs.mountDirectory(args.mainDir);
+        return iw2::netgame::runDedicated(vfs, args.settings);
+    } catch (const std::exception& e) { // a clear message instead of an abort on any uncaught error
+        std::fprintf(stderr, "iw2server: error: %s\n", e.what());
+        return 1;
+    }
 }

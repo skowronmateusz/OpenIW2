@@ -8,6 +8,7 @@
 //
 // Options: --lang <language> keeps only localized packs for that language.
 
+#include "fs/gamedir.h"
 #include "fs/vfs.h"
 
 #include <cstdio>
@@ -31,6 +32,10 @@ int main(int argc, char** argv) {
 
     try {
         iw2::fs::Vfs vfs;
+        if (const std::string e = iw2::fs::mainDirError(args[0]); !e.empty()) {
+            std::fprintf(stderr, "iw2fs: error: %s\n", e.c_str());
+            return 1;
+        }
         vfs.mountDirectory(args[0], language);
         const std::string& cmd = args[1];
 

@@ -1,6 +1,7 @@
 // Game folder validation and app settings/log helpers (src/fs/gamedir.h), on a temp folder of empty files.
 #include <unistd.h>
 #include "fs/gamedir.h"
+#include "fs/vfs.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -35,6 +36,24 @@ static stdfs::path fullDir(const stdfs::path& root, const char* name) {
 int main() {
     using namespace iw2::fs;
     const stdfs::path root = stdfs::temp_directory_path() / ("iw2_test_gamedir_" + std::to_string(::getpid()));
+    { // mainDirError: the command-line check of a main folder never throws and names the problem
+        const stdfs::path missing = root / "no_such_main";
+        CHECK(mainDirError(missing).find("folder does not exist") != std::string::npos);
+        stdfs::create_directories(root);
+        const stdfs::path file = root / "plain_file";
+        touch(file);
+        CHECK(mainDirError(file).find("not a folder") != std::string::npos);
+        const stdfs::path empty = root / "empty_main";
+        stdfs::create_directories(empty);
+        touch(empty / "readme.txt");
+        CHECK(mainDirError(empty).find("no iw_*.iwd") != std::string::npos);
+        touch(empty / "IW_03.IWD"); // case-insensitive, one pack is enough
+        CHECK(mainDirError(empty).empty());
+        iw2::fs::Vfs vfs; // mounting a missing folder does not throw either
+        vfs.mountDirectory(missing);
+        CHECK(vfs.packs().empty());
+    }
+
     stdfs::remove_all(root);
 
     { // complete set

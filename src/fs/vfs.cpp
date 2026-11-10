@@ -46,8 +46,11 @@ void Vfs::mountDirectory(const std::filesystem::path& dir, std::string_view lang
     const std::string wantedLanguage = lower(language);
 
     std::vector<std::pair<std::string, stdfs::path>> packFiles;
-    for (const auto& item : stdfs::directory_iterator(dir)) {
-        if (!item.is_regular_file()) continue;
+    // Non-throwing: a missing or unreadable folder mounts nothing (callers check the folder first, fs/gamedir.h).
+    std::error_code ec;
+    for (const auto& item : stdfs::directory_iterator(dir, ec)) {
+        std::error_code fe;
+        if (!item.is_regular_file(fe)) continue;
         if (lower(item.path().extension().string()) != ".iwd") continue;
         packFiles.emplace_back(packSortKey(item.path().filename().string()), item.path());
     }
@@ -130,7 +133,8 @@ std::optional<std::vector<uint8_t>> Vfs::read(std::string_view path) const {
         const size_t slash = key.find('/', start);
         const std::string part = key.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
         start = slash == std::string::npos ? key.size() : slash + 1;
-        for (const auto& item : std::filesystem::directory_iterator(candidate)) {
+        std::error_code ec;
+        for (const auto& item : std::filesystem::directory_iterator(candidate, ec)) {
             if (lower(item.path().filename().string()) == part) { candidate = item.path(); break; }
         }
     }
@@ -153,9 +157,10 @@ std::vector<std::string> Vfs::list(std::string_view prefix) const {
         } else {
             std::error_code ec;
             for (auto it = std::filesystem::recursive_directory_iterator(src.looseDir, ec);
-                 it != std::filesystem::recursive_directory_iterator(); ++it) {
-                if (!it->is_regular_file() || lower(it->path().extension().string()) == ".iwd") continue;
-                const std::string name = normalize(std::filesystem::relative(it->path(), src.looseDir).generic_string());
+                 it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                std::error_code fe;
+                if (!it->is_regular_file(fe) || lower(it->path().extension().string()) == ".iwd") continue;
+                const std::string name = normalize(std::filesystem::relative(it->path(), src.looseDir, fe).generic_string());
                 if (name.rfind(p, 0) == 0) names.insert(name);
             }
         }

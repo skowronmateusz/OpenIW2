@@ -58,6 +58,23 @@ GameDirCheck checkGameDir(const std::filesystem::path& dir) {
     return r;
 }
 
+std::string mainDirError(const std::filesystem::path& dir) {
+    std::error_code ec;
+    const std::string shown = dir.string();
+    const auto st = std::filesystem::status(dir, ec);
+    if (ec || !std::filesystem::exists(st)) return shown + ": folder does not exist";
+    if (!std::filesystem::is_directory(st)) return shown + ": not a folder";
+    std::filesystem::directory_iterator it(dir, ec);
+    if (ec) return shown + ": cannot read the folder (" + ec.message() + ")";
+    for (; it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        const std::string n = lowerName(it->path().filename().string());
+        std::error_code fe;
+        if (n.rfind("iw_", 0) == 0 && n.size() > 7 && n.compare(n.size() - 4, 4, ".iwd") == 0 && it->is_regular_file(fe))
+            return {};
+    }
+    return shown + ": not a Call of Duty 2 main folder (no iw_*.iwd packs)";
+}
+
 std::optional<std::filesystem::path> readMainPath(const std::filesystem::path& settingsFile) {
     std::ifstream f(settingsFile);
     std::string line;

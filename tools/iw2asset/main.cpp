@@ -25,6 +25,8 @@
 #include "assets/material.h"
 #include "assets/xanim.h"
 #include "assets/xmodel.h"
+#include <cstdio>
+#include "fs/gamedir.h"
 #include "fs/vfs.h"
 #include "util/png.h"
 
@@ -122,6 +124,10 @@ int main(int argc, char** argv) {
 
     try {
         fs::Vfs vfs;
+        if (const std::string e = iw2::fs::mainDirError(args[0]); !e.empty()) {
+            std::fprintf(stderr, "iw2asset: error: %s\n", e.c_str());
+            return 1;
+        }
         vfs.mountDirectory(args[0]);
         const std::string& cmd = args[1];
 

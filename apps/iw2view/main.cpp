@@ -3835,6 +3835,11 @@ int main(int argc, char** argv) {
         std::cerr << "usage: iw2view <main-dir> <map-name> [--shot out.png] [--pos x,y,z] [--yaw d] [--pitch d] [--size WxH]\n";
         return 2;
     }
+    if (const std::string e = fs::mainDirError(args[0]); !e.empty()) { // a command-line path is not checked by the app start
+        std::cerr << "iw2view: error: " << e << "\n";
+        SDL_Quit();
+        return 1;
+    }
 
     // Network client (docs/spec/net.md section 10): the handshake runs before the level loads; the gamestate names the map.
     std::unique_ptr<net::GameClient> netClient;
@@ -11032,7 +11037,7 @@ int main(int argc, char** argv) {
                         dir.resize(cm);
                     }
                     if (capFrame++ % uint64_t(every) == 0) {
-                        std::filesystem::create_directories(dir);
+                        { std::error_code ec; std::filesystem::create_directories(dir, ec); }
                         char name[32];
                         std::snprintf(name, sizeof name, "/frame_%05llu.png", static_cast<unsigned long long>(capFrame / uint64_t(every)));
                         std::cout << "capture t=" << world->timeMs() << " anim=" << pweapon.anim() << " weapon=" << pweapon.name() << "\n"; // [server time]

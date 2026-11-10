@@ -20,6 +20,10 @@ struct GameDirCheck {
 // The file set is the only check: iw_15.iwd is part of it, the contents of the iwds are not compared with the patch level.
 GameDirCheck checkGameDir(const std::filesystem::path& dir);
 
+// Command-line check of a `main` folder given to a tool (iw2server, iw2view, iw2fs, ...): empty when the folder
+// exists and holds at least one iw_*.iwd pack, else a message for the user ("<dir>: ..."). Never throws.
+std::string mainDirError(const std::filesystem::path& dir);
+
 // settings.cfg in the app's preference folder: one `mainPath=<folder>` line (other lines are kept for later keys).
 std::optional<std::filesystem::path> readMainPath(const std::filesystem::path& settingsFile);
 bool writeMainPath(const std::filesystem::path& settingsFile, const std::filesystem::path& mainPath);

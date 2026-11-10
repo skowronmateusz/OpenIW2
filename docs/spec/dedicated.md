@@ -27,11 +27,19 @@ such check (0x808c132 goes straight to its prints), so `+exec server.cfg +map_ro
 the first map of the rotation. Its forced `map_restart` (below) is the console command and so prints `Server is not
 running.` when no map is loaded.
 
-At start the server runs its default configuration before the command line: `default_localize_mp.cfg` when that
-file exists, else `default_mp.cfg` (VAs in the 1.3 Linux dedicated server: the choice at 0x80a32d4, kept at 0x849fc28
-and executed at 0x806203c). Its game cvars (for example the deathmatch score limit 50) are therefore those of a 1.3
-server. The server console has no key-binding commands (the table at 0x808cca0 and the executable's strings hold no
-`bind`, `unbind` or `unbindall`): each such line of those files prints `Unknown command`.
+At start the server runs its start-up configuration before the command line (VAs in the 1.3 Linux dedicated
+server): `default_localize_mp.cfg` when that file exists, else `default_mp.cfg` (the choice at 0x80a32d4, kept at
+0x849fc28), then `language.cfg`, then `config_mp_server.cfg` (0x8062036, called once from the start-up at
+0x806214d). Each goes through the ordinary `exec` command, so a file that is found prints `execing <name>` and a
+missing one prints `couldn't exec <name>` (0x806006a). When the start runs in safe mode it also execs
+`safemode_mp_server.cfg` (0x8062090); openiw2 has no safe mode. The game cvars (for example the deathmatch score
+limit 50) are therefore those of a 1.3 server.
+
+The server console has no key-binding commands (the table at 0x808cca0 and the executable's strings hold no
+`bind`, `unbind` or `unbindall`). An unknown command prints nothing: the command executor (0x80608a6) tries the
+registered commands, then a dvar of that name (0x8063054), then, while a game runs, the game's console commands
+(0x80926d6), and has no message for a line none of them takes; the executable has no `Unknown command` string. So
+the `bind` and `unbindall` lines of the default configuration are skipped silently.
 
 say / tell: without an argument (`say`) or with fewer than two (`tell`) they do nothing. The text starts with
 `console: `, followed by the command's argument string; if that string starts with a double quote, the first and the

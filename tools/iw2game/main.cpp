@@ -1,3 +1,4 @@
+#include "fs/gamedir.h"
 #include <cctype>
 #include <array>
 // iw2game: run a level headless (scripts, entities, no rendering).
@@ -58,6 +59,10 @@ int main(int argc, char** argv) {
     }
     try {
         iw2::fs::Vfs vfs;
+        if (const std::string e = iw2::fs::mainDirError(argv[1]); !e.empty()) {
+            std::fprintf(stderr, "iw2game: error: %s\n", e.c_str());
+            return 1;
+        }
         vfs.mountDirectory(argv[1]);
         if (const char* overlay = std::getenv("IW2_OVERLAY")) vfs.mountDirectory(overlay); // debug: loose test scripts override the game files
         iw2::game::World world(vfs, argv[2]);

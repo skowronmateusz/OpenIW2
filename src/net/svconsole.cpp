@@ -395,9 +395,11 @@ void ServerConsole::command(const std::vector<std::string>& a, const std::string
     } else if (cmd == "unbanuser") {
         // Removes a name from ban.txt in the original; this port writes no ban file, so there is nothing to remove.
         if (a.size() != 2) out("Usage: unban <client name>\n");
-    } else {
-        out("Unknown command \"" + a[0] + "\"\n");
     }
+    // Anything else (for example the bind and unbindall lines of default_mp.cfg) is ignored without a message: the 1.3
+    // dedicated server's command executor (0x80608a6) falls through to the dvar and game-command checks and prints
+    // nothing (docs/spec/dedicated.md).
+
 }
 
 std::optional<std::vector<std::string>> ServerConsole::rcon(const std::string& line, const std::string& from,

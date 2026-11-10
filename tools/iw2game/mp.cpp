@@ -1,3 +1,4 @@
+#include "fs/gamedir.h"
 // iw2game multiplayer mode: an offline listen server (docs/spec/mp.md) run headless.
 //
 //   iw2game <main-dir> mp/<map> <gametype> [seconds] [options]
@@ -97,6 +98,10 @@ int runMultiplayer(int argc, char** argv) {
     }
 
     iw2::fs::Vfs vfs;
+    if (const std::string e = iw2::fs::mainDirError(argv[1]); !e.empty()) {
+        std::fprintf(stderr, "iw2game: error: %s\n", e.c_str());
+        return 1;
+    }
     vfs.mountDirectory(argv[1]);
     iw2::game::World world(vfs, map, true);
     world.print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };

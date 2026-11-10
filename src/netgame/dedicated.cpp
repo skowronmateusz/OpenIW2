@@ -341,14 +341,16 @@ int runDedicated(fs::Vfs& vfs, const DedicatedSettings& s) {
                                {"sv_floodProtect", "1"}, {"sv_maxPing", "0"}, {"sv_maxRate", "0"}, {"sv_minPing", "0"},
                                {"sv_punkbuster", "0"}, {"sv_pure", "0"}, {"sv_voice", "0"}})
         console.cvars[k] = v;
-    // The 1.3 dedicated server runs the default configuration first (VAs in the 1.3 Linux dedicated server: 0x80a32d4
-    // picks default_localize_mp.cfg when it exists, else default_mp.cfg; executed at start, 0x806203c), so its game
-    // cvars (score and time limits, ...) are those of a 1.3 server (docs/spec/dedicated.md); the command line comes
-    // after it.
+    // The 1.3 dedicated server runs its start-up configuration first (VAs in the 1.3 Linux dedicated server: 0x80a32d4
+    // picks default_localize_mp.cfg when it exists, else default_mp.cfg; 0x8062036 execs it, then language.cfg, then
+    // config_mp_server.cfg), so its game cvars (score and time limits, ...) are those of a 1.3 server
+    // (docs/spec/dedicated.md); the command line comes after it. A missing file prints `couldn't exec`, as there.
     {
         std::string text;
         console.execute(host.readFile("default_localize_mp.cfg", text) ? "exec default_localize_mp.cfg"
                                                                        : "exec default_mp.cfg");
+        console.execute("exec language.cfg");
+        console.execute("exec config_mp_server.cfg");
     }
     for (const auto& [k, v] : s.cvars) console.cvars[k] = v;
     if (!s.gametype.empty()) console.cvars["g_gametype"] = s.gametype;

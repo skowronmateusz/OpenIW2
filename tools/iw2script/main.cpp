@@ -6,6 +6,7 @@
 //   iw2script <main-dir> builtins           list called functions that no script defines (engine built-ins)
 
 #include "assets/d3dbsp.h"
+#include "fs/gamedir.h"
 #include "fs/vfs.h"
 #include "script/parser.h"
 #include "script/builtins_core.h"
@@ -27,6 +28,10 @@ int main(int argc, char** argv) {
     }
     try {
         iw2::fs::Vfs vfs;
+        if (const std::string e = iw2::fs::mainDirError(argv[1]); !e.empty()) {
+            std::fprintf(stderr, "iw2script: error: %s\n", e.c_str());
+            return 1;
+        }
         vfs.mountDirectory(argv[1]);
         const std::string cmd = argv[2];
         if (cmd == "dump" && argc > 3) {
