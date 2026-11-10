@@ -71,8 +71,7 @@ change applies at the next start.
 
 ### Multiplayer
 
-**Multiplayer** in the main menu switches to the multiplayer menus inside the same app; `Esc` there does nothing
-outside a game, as in the original.
+**Multiplayer** in the main menu switches to the multiplayer menus inside the same app.
 
 - **Start new server**: pick the gametype (Deathmatch, Team Deathmatch, Search and Destroy, Capture the Flag,
   Headquarters) and the map; the gametype's settings page sets its score and time limits. The extra
@@ -152,7 +151,7 @@ Weapon classes and the weapons in them:
 | `smg` | Thompson, Grease Gun | Sten, Thompson | PPS-42, PPSh-41 | MP40 |
 | `mg` | BAR | Bren | — | MP44 |
 | `shotgun` | Shotgun | Shotgun | Shotgun | Shotgun |
-| `grenades` | frag and smoke grenades | | | |
+| `grenades` | frag and smoke grenades | frag and smoke grenades | frag and smoke grenades | frag and smoke grenades |
 
 Because the Americans have no bolt-action rifle and the Russians no machine gun, `bolt` or `mg` alone is refused, and so
 is `grenades` alone; combine them with another class, e.g. `--weapons bolt,sniper,grenades`.
