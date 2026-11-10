@@ -4724,8 +4724,8 @@ int main(int argc, char** argv) {
         int lastLandSeq = 0;
         int lastEventSeq = 0; // player-state events handled so far (ps.eventSeq)
         netgame::Predictor netPredictor; // network game: own-player prediction (docs/spec/net.md section 10)
-        netgame::PredictedWeaponTime netPredictedWeaponTime;
-        netgame::PredictedAmmo netPredictedAmmo; // network game: own ammunition prediction (docs/spec/net.md section 10)
+        netgame::PredictedWeapon netPredictedWeapon; // network game: own weapon, counters and shots (docs/spec/net.md section 10)
+        int netWeaponSnapshot = -1; // the snapshot message the predicted weapon was last compared with
         std::pair<const net::GameClient*, int> netPredictorFor{nullptr, -1}; // the connection and gamestate it belongs to
         int64_t netDrawNowMs = 0; // the client time of the last prediction (correction decay)
         bool breathWeapon = false; // the equipped weapon has a scope reticle and is not an item (hold-breath weapons, 0x4dd350)
@@ -9204,8 +9204,8 @@ int main(int argc, char** argv) {
             // The network client's view of the server it left.
             netAmbient.reset(); // a level's track starts again from the configstring of the next level
             netPredictor.reset();
-            netPredictedAmmo.clear();
-                        netPredictedWeaponTime.clear();
+            netPredictedWeapon.clear();
+            netWeaponSnapshot = -1;
             netPredictorFor = {nullptr, -1};
             netClockOffset.reset();
             netKillcam = {};
@@ -9369,7 +9369,7 @@ int main(int argc, char** argv) {
                     // The server times of the snapshot move to the client clock: clock at the snapshot's time.
                     const int64_t clockOffset = game::heldClockOffset(netClockOffset, cgNowMs() - netClient->renderTime(nowNet));
                     remoteView.apply(*world, *last, netClient->configstrings, netClient->clientNum, last->serverTime + clockOffset,
-                                     &netPredictedAmmo);
+                                     &netPredictedWeapon.ammo);
                     // Grenades, rockets and falling weapons move along their trajectory in the drawn time (docs/spec/net.md
                     // section 11 "Trajectories"); evaluated from the older snapshot of the pair, as the cgame does.
                     if (snapA && snapB) netgame::RemoteView::placeTrajectories(*world, *snapA, *snapB, netClient->renderTime(nowNet));
@@ -9730,11 +9730,19 @@ int main(int argc, char** argv) {
                     if (netPredictorFor != std::make_pair<const net::GameClient*, int>(netClient.get(), int(netClient->gamestates))) {
                         netPredictorFor = {netClient.get(), netClient->gamestates};
                         netPredictor.reset();
-                        netPredictedAmmo.clear();
-                        netPredictedWeaponTime.clear();
+                        netPredictedWeapon.clear();
+                        netWeaponSnapshot = -1;
                         lastEventSeq = 0;
                     }
-                    if (!netgame::RemoteView::following(*snap)) netPredictedWeaponTime.reconcile(f, pweapon);
+                    // The weapon against the acknowledged player state, once per snapshot: rebuilt from the server's
+                    // state when the prediction differs (docs/spec/net.md section 10 "Predicted weapon").
+                    if (snap->messageNum != netWeaponSnapshot && world->player()) {
+                        netWeaponSnapshot = snap->messageNum;
+                        if (!netgame::RemoteView::following(*snap)) {
+                            game::Inventory& inv = world->inventory(*world->player());
+                            netPredictedWeapon.snapshot(f, netgame::weaponNameFromList(netClient->configstrings, f.weapon), pweapon, inv.clip, inv.ammo);
+                        }
+                    }
                     // Every frame from the newest snapshot again (CG_PredictPlayerState, 0x4deae0): the same commands give
                     // the same states and event numbers, so an event is handled once; a correction is drawn away.
                     netDrawNowMs = nowNet;
@@ -10133,26 +10141,21 @@ int main(int argc, char** argv) {
                 if (inVehicle) // the weapon fire mask excludes attack, melee, reload and the offhands in a vehicle (0x4df9b0: 0x30014)
                     wi.fire = wi.melee = wi.reload = wi.frag = wi.smoke = false;
                 if (onTurret) pweapon.blockOffhand();
-                // The weapon step of this frame's command (sent above): what it changes in the ammunition stays predicted
-                // until a snapshot has seen that command (docs/spec/net.md section 10).
-                netgame::PredictedAmmo::Counters ammoBefore;
-                if (netClient && world->player()) {
+                // The weapon step of this frame's command (sent above), in the command's own time and pieces, as the server
+                // runs it; the shots are the fire events to play (docs/spec/net.md section 10 "Predicted weapon"). The local
+                // game has no commands: one step per frame, at most 100 ms.
+                int shots = 0;
+                const net::UserCmd* weaponCmd = netClient && world->player() ? netClient->lastCommand() : nullptr;
+                if (onTurret) {
+                    if (weaponCmd) shots = netPredictedWeapon.idle(weaponCmd->serverTime);
+                } else if (weaponCmd) {
                     const game::Inventory& inv = world->inventory(*world->player());
-                    ammoBefore = {inv.clip, inv.ammo};
+                    shots = netPredictedWeapon.command(weaponCmd->serverTime, wi, pweapon, inv.clip, inv.ammo);
+                } else {
+                    shots = pweapon.update(std::min(simDt, 0.1f), wi);
                 }
-                float weaponDt = simDt;
-                if (netClient)
-                    if (const net::UserCmd* lc = netClient->lastCommand()) weaponDt = netPredictedAmmo.weaponStep(lc->serverTime, simDt);
-                const int shots = onTurret ? 0 : pweapon.update(std::min(weaponDt, 0.1f), wi);
                 // The host's recorded view state (docs/spec/mp-hud.md "The recorded view state"): what its killcam shows.
                 if (world->multiplayer() && !netClient) world->mpSetLocalViewState(game::mpViewStateOf(pweapon, ps));
-                if (netClient && world->player()) {
-                    if (const net::UserCmd* lc = netClient->lastCommand()) {
-                        const game::Inventory& inv = world->inventory(*world->player());
-                        netPredictedAmmo.record(lc->serverTime, ammoBefore, {inv.clip, inv.ammo});
-                        netPredictedWeaponTime.record(lc->serverTime, pweapon);
-                    }
-                }
                 if (shots > 0) game::breathOnFire(ps, mp, pweapon.adsFrac(), breathWeapon); // 0x4dee18 -> 0x4dd2b0
                 if (aimBlendWeapon != pweapon.name()) { aimBlendWeapon = pweapon.name(); aimBlend.reset(); }
                 aimBlend.update(pweapon.viewAiming(), std::min(simDt, 0.1f));

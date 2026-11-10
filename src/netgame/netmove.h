@@ -33,9 +33,20 @@ struct WeaponMove {
     bool breathWeapon = false;
     game::MoveParams params;
 };
-// The movement step of a command: the difference to the previous command's time, clamped to 0..200 ms;
-// 50 ms for the first command (prevTime 0).
+// The time a command runs (docs/spec/net.md section 10 "Command steps"): its time minus the previous command's in ms,
+// 50 for the first command (prevTime 0), at most 1000; 0 when it is not newer (the command is not run at all).
+int usercmdMsec(int prevTime, int time);
+// The same in seconds.
 float usercmdStep(int prevTime, int time);
+// The pieces a command's time is run in: at most 66 ms each (0x80e9464).
+constexpr int kUsercmdPieceMs = 66;
+template <class F> void forEachUsercmdPiece(int msec, F&& run) {
+    while (msec > 0) {
+        const int piece = msec < kUsercmdPieceMs ? msec : kUsercmdPieceMs;
+        run(static_cast<float>(piece) * 0.001f);
+        msec -= piece;
+    }
+}
 // Runs one command on ps.
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
                 const WeaponMove* weapon = nullptr);
@@ -54,6 +65,9 @@ struct PsFields {
     int viewLockEntity = 1023; // ps+1428: the turret's entity number, 1023 none
     int weaponTime = 0;      // ps+52: the time left in the weapon state, ms
     int weaponState = 0;     // ps+216
+    int weapon = 0;          // ps+212: the weapon number of the weapon list
+    int eventSequence = 0;   // ps+164, 8 bits
+    int events[4] = {0, 0, 0, 0};  // ps+168
 };
 PsFields readPs(const std::vector<uint8_t>& ps);
 // The user command a network client sends (iw2view's live play, also on a turret): buttons, the move fractions -1..1,
@@ -77,7 +91,7 @@ inline bool viewInputIgnored(int pmType) { return pmType == 5; }
 // the player state of the newest snapshot and runs the commands the server has not run yet, so the same commands give
 // the same states (and the same event sequence numbers) on every frame. The wire player state carries only part of the
 // movement state; the rest (ground, jump flag and origin, pm_time, stance, timers, the event ring) is taken from this
-// client's own result for the command the snapshot acknowledges, kept per command time.
+// client's own result for the newest command at or before the snapshot's commandTime, kept per command time.
 class Predictor {
 public:
     // decayMs: cg_errorDecay. Default 100 (docs/spec/net.md).
@@ -118,33 +132,15 @@ public:
     // Forgets the commands up to commandTime (the snapshot has seen them) and adds the newer ones' changes to the
     // snapshot's counters, in place. A counter the snapshot does not carry stays absent.
     void adjust(int commandTime, Counters& counters);
-    // The time step of the weapon update for the command with that time: the server's step for that command
-    // (usercmdStep), so both weapon simulations reach a shot at the same command. 0 for a time already stepped: while the client clock
-    // is held the commands repeat their time and the server does not run them, so its weapon stands still too.
-    float weaponStep(int commandTime, float frameDt);
+    // The counters of the last adjust() as the server sent them, and a restart of the kept changes (a rebuilt weapon
+    // records its commands again on top of those counters).
+    const Counters& server() const { return server_; }
+    void clearPending() { pending_.clear(); }
     void clear();
 
 private:
-    int stepTime_ = 0;  // the command of the last weapon step
+    Counters server_;
     std::map<int, Counters> pending_;  // what the weapon step changed, by command time
-};
-
-// The client's weapon timer against the acknowledged player state (docs/spec/net.md section 10). The server can run a
-// command with another step than the client (its time clamp after a stall), so the two timers drift apart and a shot
-// falls on different commands. The weapon's timer after each command is kept per command time; a snapshot's weaponTime
-// for that command, in the same weapon state, moves the timer by the difference, and the newer commands' values with it.
-class PredictedWeaponTime {
-public:
-    void record(int commandTime, const game::PlayerWeapon& weapon);
-    void reconcile(const PsFields& server, game::PlayerWeapon& weapon);
-    void clear() { pending_.clear(); }
-
-private:
-    struct Entry {
-        float timer = 0;
-        int state = 0;
-    };
-    std::map<int, Entry> pending_;
 };
 
 // Another entity at the render time, interpolated between two snapshots.

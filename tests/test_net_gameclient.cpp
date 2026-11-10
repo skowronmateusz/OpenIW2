@@ -176,7 +176,17 @@ void unitTests() {
     CHECK(netgame::usercmdStep(0, 1234) == 0.05f);
     CHECK(std::fabs(netgame::usercmdStep(1000, 1016) - 0.016f) < 1e-6f);
     CHECK(netgame::usercmdStep(1000, 990) == 0.0f);
-    CHECK(netgame::usercmdStep(1000, 5000) == 0.2f);
+    CHECK(netgame::usercmdStep(1000, 5000) == 1.0f);  // the whole gap, at most 1000 ms
+    {
+        int pieces = 0, longest = 0, sum = 0;
+        netgame::forEachUsercmdPiece(netgame::usercmdMsec(1000, 1200), [&](float dt) {
+            ++pieces;
+            const int ms = int(std::lround(dt * 1000.0f));
+            longest = std::max(longest, ms);
+            sum += ms;
+        });
+        CHECK(pieces == 4 && longest == 66 && sum == 200);  // pieces of at most 66 ms
+    }
 
     // Player-state fields round trip.
     std::vector<uint8_t> ps;

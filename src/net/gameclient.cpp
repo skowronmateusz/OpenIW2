@@ -443,7 +443,7 @@ void GameClient::parseSnapshot(Msg& msg, int64_t nowMs) {
     frame.serverTime = msg.readLong();
     frame.receivedMs = nowMs;
     const int deltaNum = msg.readByte();
-    msg.readByte();  // snapshot flags TODO(spec)
+    frame.snapFlags = msg.readByte();  // TODO(spec): the flags other than the restart bit 4
     const ClientSnapshot* old = nullptr;
     bool bad = false;
     if (deltaNum > 0) {

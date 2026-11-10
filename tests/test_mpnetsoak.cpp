@@ -225,8 +225,7 @@ struct NetClient {
     game::PlayerWeapon pweapon;
     game::PlayerState ps;
     netgame::Predictor predictor;
-    netgame::PredictedWeaponTime predictedWeaponTime;
-    netgame::PredictedAmmo predictedAmmo;
+    netgame::PredictedWeapon predictedWeapon;  // the weapon, counters and shots against the acknowledged player state
     int predictorGamestate = -1;  // the gamestate the prediction belongs to
     std::string weaponSelect, weaponWritten, prevSelect;
     int64_t netSelectUntilMs = 0;
@@ -345,8 +344,7 @@ void loadLevel(NetClient& c) {
     c.view->mpSetMenuNames(std::move(menus));
     c.rv = netgame::RemoteView{};
     c.ps = game::PlayerState{};
-    c.predictedAmmo.clear();
-    c.predictedWeaponTime.clear();
+    c.predictedWeapon.clear();
     c.weaponSelect.clear();
     c.weaponWritten.clear();
     c.prevSelect.clear();
@@ -369,6 +367,10 @@ struct Observer {
     int serverClip = -1;
     int pmType = -1;
     int health = 0;
+    int64_t lastDamageMs = -100000;  // the server's health fell (a hit also pushes the player: not predictable)
+    int teleportBit = -1;            // the player state's teleport bit (eFlags 2): it toggles with every spawn
+    int restartBit = -1;             // the snapshot flag 4: it flips with every map_restart (an sd round restart places the players again)
+    int64_t lastTeleportMs = -100000; // one of them changed: the server placed the player without a command
     bool following = false;
     int64_t lastSelectMs = -100000;  // the scenario changed the weapon select
     int64_t lastReloadMs = -100000;  // the scenario pressed reload (or the magazine ran empty: automatic reload)
@@ -417,6 +419,9 @@ struct Life {
     bool emptied = false;  // the server's magazine reached 0 in the fire step
 };
 
+// The killcam begins two seconds and a frame after the death (the gametype waits 2 s first, tdm.gsc:491-495; the soak's
+// notes measure 2093 .. 2139 ms at the client). A level that ends before that shows none.
+constexpr int64_t kKillcamStartMs = 2200;
 struct DeathWatch {
     bool active = false;
     int64_t atMs = 0;
@@ -430,6 +435,11 @@ struct DeathWatch {
     int kcBadView = 0;           // killcam frames whose recorded view state is out of range
     int kcOffhandFrames = 0, kcAimFrames = 0, kcMovingFrames = 0; // what the recorded view state carried (notes)
     std::string kcBadDetail;
+    int gamestate = -1;          // the client's gamestate count at the death
+    bool cut = false;            // the level ended during the watch (intermission, a new gamestate, the end of the run)
+    int64_t cutMs = -1;          // when it ended, after the death
+    int64_t kcStartMs = -1;      // when the killcam began, after the death
+    bool kcComplete = false;     // the killcam ran to its end before the level ended
     bool done = false;
 };
 
@@ -457,6 +467,10 @@ struct Soak {
     int stallFrames = 0, movingFrames = 0;
     int scoreRequests = 0, scoreAnswers = 0;
     int predChecks = 0, predBad = 0;
+    // The same checks within 500 ms after a hit (the server pushes the player, which the client cannot predict) and
+    // the largest difference there and elsewhere (differences of a teleport size left out).
+    int predAfterDamage = 0;
+    float predMaxAfterDamage = 0, predMaxOther = 0;
     // frame timing
     std::vector<int> frameDurations;
 
@@ -603,7 +617,7 @@ struct Soak {
         const net::ClientSnapshot* last = c.gc->latest();
         bool newSnap = false;
         if (last) {
-            c.rv.apply(*c.view, *last, c.gc->configstrings, c.gc->clientNum, c.view->timeMs(), &c.predictedAmmo);
+            c.rv.apply(*c.view, *last, c.gc->configstrings, c.gc->clientNum, c.view->timeMs(), &c.predictedWeapon.ammo);
             if (a && b) netgame::RemoteView::placeTrajectories(*c.view, *a, *b, c.gc->renderTime(netNow));
             c.rv.playerEvents(*c.view, *last, c.gc->configstrings, c.gc->clientNum);
             c.rv.followEvents(*c.view, *last, c.gc->configstrings, c.view->timeMs());
@@ -619,7 +633,6 @@ struct Soak {
         const float dt = c.lastFrameMs ? float(now - c.lastFrameMs) / 1000.0f : 0.016f;
         c.lastFrameMs = now;
         int shots = 0;
-        netgame::PredictedAmmo::Counters ammoBefore, ammoAfter;
         const bool dead = !last || netgame::readPs(last->ps).pmType != 0;
         if (c.view->player()) {
             game::Entity& pl = *c.view->player();
@@ -656,15 +669,24 @@ struct Soak {
             wi.proneMoving = c.ps.stance == game::Stance::Prone && (sc.forward != 0 || sc.right != 0);
             wi.use = (heldButtons & (game::Button::Activate | game::Button::UseReload)) != 0;
             wi.dead = dead;
-            ammoBefore = {c.view->inventory(pl).clip, c.view->inventory(pl).ammo};
-            if (last && !netgame::RemoteView::following(*last)) c.predictedWeaponTime.reconcile(netgame::readPs(last->ps), c.pweapon);
-            // This frame's command is sent below; its time is the client clock, kept rising by sendCommand.
-            float weaponDt = dt;
+            // The weapon against the acknowledged player state, then the weapon step of this frame's command (sent below;
+            // its time is the client clock, kept rising by sendCommand), as iw2view (docs/spec/net.md section 10).
+            game::Inventory& inv = c.view->inventory(pl);
+            const float timerBefore = c.pweapon.timer();
+            const int stateBefore = c.pweapon.stateNumber();
+            bool rebuilt = false;
+            if (newSnap && last && !netgame::RemoteView::following(*last)) {
+                const netgame::PsFields sf = netgame::readPs(last->ps);
+                rebuilt = c.predictedWeapon.snapshot(sf, netgame::weaponNameFromList(c.gc->configstrings, sf.weapon), c.pweapon, inv.clip, inv.ammo);
+                if (i == 0 && rebuilt && std::getenv("IW2_SOAK_SHOTTRACE"))
+                    std::printf("CLIT rebuild snapCt=%d snapWt=%d snapState=%d seq=%d state %d -> %d timer %.4f -> %.4f clip=%d\n", sf.commandTime, sf.weaponTime,
+                                sf.weaponState, sf.eventSequence, stateBefore, c.pweapon.stateNumber(), timerBefore, c.pweapon.timer(), c.pweapon.clip());
+            }
             if (const net::UserCmd* lc = c.gc->lastCommand())
-                weaponDt = c.predictedAmmo.weaponStep(std::max(c.gc->commandTime(netNow), lc->serverTime), dt);
-            shots = c.pweapon.update(weaponDt, wi);  // weaponStep already caps at the server's 200 ms (usercmdStep)
-            if (i == 0 && std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("CLIT net=%lld ct=%d last=%d dt=%.4f wdt=%.4f fire=%d shots=%d state=%d clip=%d menus=%zu dead=%d world=[%s] select=[%s] written=[%s] hand=[%s] hol=%d\n", (long long)netNow, c.gc->commandTime(netNow), c.gc->lastCommand() ? c.gc->lastCommand()->serverTime : 0, dt, weaponDt, wi.fire?1:0, shots, c.pweapon.stateNumber(), c.pweapon.clip(), c.menuStack.size(), dead?1:0, name.c_str(), c.weaponSelect.c_str(), c.weaponWritten.c_str(), c.pweapon.name().c_str(), c.pweapon.holstered()?1:0);
-            ammoAfter = {c.view->inventory(pl).clip, c.view->inventory(pl).ammo};
+                shots = c.predictedWeapon.command(std::max(c.gc->commandTime(netNow), lc->serverTime), wi, c.pweapon, inv.clip, inv.ammo);
+            else
+                shots = c.pweapon.update(std::min(dt, 0.1f), wi);  // no command yet: nothing to predict against
+            if (i == 0 && std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("CLIT net=%lld ct=%d last=%d dt=%.4f fire=%d shots=%d step=%d state=%d clip=%d menus=%zu dead=%d world=[%s] select=[%s] written=[%s] hand=[%s] hol=%d tm=%.4f\n", (long long)netNow, c.gc->commandTime(netNow), c.gc->lastCommand() ? c.gc->lastCommand()->serverTime : 0, dt, wi.fire?1:0, shots, c.predictedWeapon.lastStepShots(), c.pweapon.stateNumber(), c.pweapon.clip(), c.menuStack.size(), dead?1:0, name.c_str(), c.weaponSelect.c_str(), c.weaponWritten.c_str(), c.pweapon.name().c_str(), c.pweapon.holstered()?1:0, c.pweapon.timer());
             if (game::writesHeldWeapon(c.pweapon, c.weaponSelect)) {
                 pl.obj->set("$weapon", script::Value(c.pweapon.name()));
                 c.weaponWritten = c.pweapon.name();
@@ -690,11 +712,6 @@ struct Soak {
             const int clientTime = c.gc->commandTime(netNow);
             const net::UserCmd uc = netgame::makeUserCmd(clientTime, buttons, fwd, rgt, c.pitch, c.yaw, weaponByte);
             c.gc->sendCommand(uc, netNow);
-            // This frame's weapon step belongs to this command, as in iw2view's frame (docs/spec/net.md section 10).
-            if (const net::UserCmd* lc = c.gc->lastCommand()) {
-                c.predictedAmmo.record(lc->serverTime, ammoBefore, ammoAfter);
-                c.predictedWeaponTime.record(lc->serverTime, c.pweapon);
-            }
             // The command's time is the client clock (sendCommand only keeps it rising): a command time far ahead of
             // the clock makes every command a 1 ms step on the server (slow walk, slow jumps).
             if (const net::UserCmd* lc = c.gc->lastCommand(); lc && c.gc->state() == net::ClientState::Active && lc->serverTime - clientTime > 100)
@@ -707,7 +724,7 @@ struct Soak {
                 if (c.predictorGamestate != c.gc->gamestates) {
                     c.predictorGamestate = c.gc->gamestates;
                     c.predictor.reset();
-                    c.predictedWeaponTime.clear();
+                    c.predictedWeapon.clear();
                     c.lastEventSeq = 0;
                 }
                 c.ps = c.predictor.predict(c.view->collision(), f,
@@ -796,6 +813,16 @@ struct Soak {
         const int pmFlags = getI(last->ps, 12);
         const bool following = (uint32_t(pmFlags) & kFollowBit) != 0;
         const int health = getI(last->ps, 300);
+        if (!netgame::RemoteView::following(*last)) {
+            if (o.health > 0 && health < o.health) o.lastDamageMs = now;
+            o.health = health;
+            const int bit = getI(last->ps, 160) & 2;
+            if (o.teleportBit >= 0 && bit != o.teleportBit) o.lastTeleportMs = now;
+            o.teleportBit = bit;
+            const int restart = last->snapFlags & 4;
+            if (o.restartBit >= 0 && restart != o.restartBit) o.lastTeleportMs = now;
+            o.restartBit = restart;
+        }
         const int wn = getI(last->ps, 212);
         // Clip of the current weapon on the server (its clip slot in the player state, +836) and as the HUD shows it
         // (the view world's inventory after the client weapon's update).
@@ -823,14 +850,23 @@ struct Soak {
             o.lastSnapArrival = now;
             // Prediction: the predicted origin after the command the snapshot acknowledges.
             const auto it = c.predicted.find(f.commandTime);
-            if (it != c.predicted.end() && f.pmType == 0 && o.pmType == 0 && !following && now - o.lastSpawnMs > 1500) {
+            if (it != c.predicted.end() && f.pmType == 0 && o.pmType == 0 && !following && now - o.lastSpawnMs > 1500 &&
+                now - o.lastTeleportMs > 1500) {
                 const float dx = it->second[0] - f.origin[0], dy = it->second[1] - f.origin[1], dz = it->second[2] - f.origin[2];
                 const float err = std::sqrt(dx * dx + dy * dy + dz * dz);
                 ++predChecks;
-                if (err > 2.0f && err < 64.0f) {  // larger: a teleport (spawn, round restart), not a miss
+                if (err < 64.0f) {
+                    if (now - o.lastDamageMs < 500) ++predAfterDamage, predMaxAfterDamage = std::max(predMaxAfterDamage, err);
+                    else predMaxOther = std::max(predMaxOther, err);
+                }
+                // Larger: a teleport, not a miss. Within 500 ms after a hit: the server pushed the player (the hit's knockback is
+                // added to its velocity before the next command), which no client can predict; the note at the end of the
+                // run has the sizes (about 2 units). A difference over 16 units there is still reported.
+                if (err > (now - o.lastDamageMs < 500 ? 16.0f : 2.0f) && err < 64.0f) {
                     ++predBad;
-                    char b[160];
-                    std::snprintf(b, sizeof b, "predicted vs server origin at command %d: %.1f units", f.commandTime, err);
+                    char b[200];
+                    std::snprintf(b, sizeof b, "predicted vs server origin at command %d: %.1f units (%lld ms after the last damage)", f.commandTime, err,
+                                  (long long)(now - o.lastDamageMs));
                     gReport.add("predict.error", b);
                 }
             }
@@ -874,10 +910,17 @@ struct Soak {
                 death.killer = ob.attacker;
                 death.shotKill = !ob.modByte && ob.weapon.find("grenade") == std::string::npos;
                 death.cause = ob.modByte ? "mod " + std::to_string(ob.mod) : ob.weapon;
+                death.gamestate = int(c.gc->gamestates);
             }
         if (death.active && !death.done) {
+            if (!death.cut && (f.pmType == 5 || int(c.gc->gamestates) != death.gamestate)) {
+                death.cut = true;
+                death.cutMs = now - death.atMs;
+            }
             if (following) death.sawFollow = true;
+            if (death.sawKillcamActive && !kc.active && !death.cut) death.kcComplete = true;
             if (kc.active) {
+                if (!death.sawKillcamActive) death.kcStartMs = now - death.atMs;
                 death.sawKillcamActive = true;
                 death.kcShots = std::max(death.kcShots, kc.fireCount);
                 // The followed client: the copied player state's clientNum (docs/spec/mp-hud.md "The recorded view state"),
@@ -913,7 +956,9 @@ struct Soak {
         if (wn != o.serverWeapon) {
             if (o.serverWeapon > 0 && wn > 0) {
                 ++life.serverWeaponChanges;
-                const bool asked = now - o.lastSelectMs < 3000 || now - o.lastOutOfAmmoMs < 3000 || now - o.lastSpawnMs < 2000;
+                // A round restart spawns the live players again with their loadout (the placement seen in the snapshot flags).
+                const bool asked = now - o.lastSelectMs < 3000 || now - o.lastOutOfAmmoMs < 3000 || now - o.lastSpawnMs < 2000 ||
+                                   now - o.lastTeleportMs < 2000;
                 if (!asked)
                     gReport.add("weapon.selfchange", "server weapon " + netgame::weaponNameFromList(c.gc->configstrings, o.serverWeapon) +
                                                          " -> " + netgame::weaponNameFromList(c.gc->configstrings, wn) + " without a select");
@@ -962,13 +1007,19 @@ struct Soak {
         s << "killer " << death.killer << " follow " << death.sawFollow << " killcam " << death.sawKillcamActive << " shots "
           << death.kcShots << " own body " << death.sawOwnBody << " followed client " << death.kcClient << " killer followed "
           << death.sawKiller << " view frames offhand " << death.kcOffhandFrames << " aiming " << death.kcAimFrames << " moving "
-          << death.kcMovingFrames;
+          << death.kcMovingFrames << " killcam after " << death.kcStartMs << " ms";
+        if (death.cut) s << " (cut by the level's end after " << death.cutMs << " ms)";
         gReport.note("death " + gReport.map + "/" + gReport.gametype + " life " + std::to_string(gReport.life) + ": " + s.str());
         if (death.killer < 0 || death.killer == 0) return;  // suicide, world or a fall: no killcam
         if (gReport.gametype == "sd") return;            // TODO(spec): sd killcam after the round
-        if (!death.sawKillcamActive) gReport.add("killcam.missing", s.str());
-        else {
-            if (death.kcShots <= 0 && death.shotKill) gReport.add("killcam.noshots", s.str() + " killed by " + death.cause);
+        // The killcam begins about two seconds after the death (the notes carry the measured time): a level that ends
+        // before that shows none.
+        const bool endedFirst = death.cut && death.cutMs < kKillcamStartMs;
+        if (!death.sawKillcamActive) {
+            if (!endedFirst) gReport.add("killcam.missing", s.str());
+        } else {
+            // A replay the level's end cut short has not reached the killing shot yet.
+            if (death.kcShots <= 0 && death.shotKill && (!death.cut || death.kcComplete)) gReport.add("killcam.noshots", s.str() + " killed by " + death.cause);
             if (!death.sawOwnBody) gReport.add("killcam.novictim", s.str());
             // The killcam follows the killer the obituary named, and only it (the followed player state's clientNum).
             if (!death.sawKiller || death.kcClients.size() != 1) gReport.add("killcam.wrongkiller", s.str());
@@ -1472,6 +1523,10 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
         if (dropped) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
     }
+    if (soak.death.active && !soak.death.done && !soak.death.cut) {  // the run ends here
+        soak.death.cut = true;
+        soak.death.cutMs = nowMs() - soak.death.atMs;
+    }
     soak.finishDeath();
     if (soak.mapsPlayed < mapsWanted) gReport.add("rotation.stalled", "played " + std::to_string(soak.mapsPlayed) + " of " + std::to_string(mapsWanted) + " map changes");
 
@@ -1498,7 +1553,12 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
     }
     gReport.note("rejoins of the second client: " + std::to_string(soak.rejoins));
     if (soak.rejoins == 0) gReport.add("rejoin.none", "the second client never rejoined");
-    gReport.note("prediction checks " + std::to_string(soak.predChecks) + ", over 2 units " + std::to_string(soak.predBad));
+    {
+        char b[200];
+        std::snprintf(b, sizeof b, "prediction checks %d, over 2 units %d; within 500 ms after a hit %d checks, largest difference %.2f units, elsewhere %.2f units",
+                      soak.predChecks, soak.predBad, soak.predAfterDamage, double(soak.predMaxAfterDamage), double(soak.predMaxOther));
+        gReport.note(b);
+    }
     if (soak.scoreRequests > 0 && soak.scoreAnswers == 0) gReport.add("scoreboard.noanswer", std::to_string(soak.scoreRequests) + " score requests, no answer");
     // Snapshot cadence (the server's frame time as the client sees it).
     {

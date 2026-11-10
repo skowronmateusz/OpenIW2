@@ -44,15 +44,17 @@ game::PlayerInput inputFromUsercmd(const net::UserCmd& cmd) {
     return in;
 }
 
-float usercmdStep(int prevTime, int time) {
-    if (prevTime == 0) return 0.05f;
-    return std::min(0.2f, std::max(0.0f, static_cast<float>(time - prevTime) / 1000.0f));
+int usercmdMsec(int prevTime, int time) {
+    if (prevTime == 0) return 50;
+    return std::clamp(time - prevTime, 0, 1000);
 }
+
+float usercmdStep(int prevTime, int time) { return static_cast<float>(usercmdMsec(prevTime, time)) * 0.001f; }
 
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
                 const WeaponMove* weapon) {
-    const float dt = usercmdStep(prevTime, cmd.serverTime);
-    if (dt <= 0.0f) return;
+    const int msec = usercmdMsec(prevTime, cmd.serverTime);
+    if (msec <= 0) return;
     // MP movement types (docs/spec/mp-spectate.md): 5 intermission does not move; 4 is the free spectator's fly move
     // (pm_flags 0x400000, following, comes with the target's state and is not predicted here). TODO(spec): the free look
     // permission on the client side (ps speed 0 without it); 400 is assumed.
@@ -77,7 +79,7 @@ void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const 
         mp.weaponSpeedScale = weapon->params.weaponSpeedScale;
         mp.hipSpread = weapon->params.hipSpread;
     }
-    game::playerMove(world, ps, in, dt, mp);
+    forEachUsercmdPiece(msec, [&](float dt) { game::playerMove(world, ps, in, dt, mp); });
 }
 
 net::UserCmd makeUserCmd(int serverTime, uint32_t buttons, float forward, float right, float pitch, float yaw, int weapon) {
@@ -109,6 +111,9 @@ PsFields readPs(const std::vector<uint8_t>& ps) {
     f.viewLockEntity = getI(ps, 1428);
     f.weaponTime = getI(ps, 52);
     f.weaponState = getI(ps, 216);
+    f.weapon = getI(ps, 212);
+    f.eventSequence = getI(ps, 164) & 0xff;
+    for (int i = 0; i < 4; ++i) f.events[i] = getI(ps, 168 + 4 * i);
     return f;
 }
 
@@ -166,10 +171,12 @@ const game::PlayerState& Predictor::predict(const game::CollisionWorld& world, c
                                             int64_t nowMs) {
     // The start: this client's own state after the acknowledged command, else the last prediction (first frame, a
     // command no longer kept). predictPlayer then puts the server's fields over it.
-    const auto acked = history_.find(server.commandTime);
+    auto acked = history_.upper_bound(server.commandTime);
+    if (acked != history_.begin()) --acked;
+    else acked = history_.end();
     const game::PlayerState* carry = acked != history_.end() ? &acked->second : have_ ? &ps_ : nullptr;
     game::PlayerState ps = predictPlayer(world, server, {}, carry, weapon);
-    history_.erase(history_.begin(), history_.lower_bound(server.commandTime));
+    history_.erase(history_.begin(), acked != history_.end() ? acked : history_.lower_bound(server.commandTime));
     const game::Vec oldOrigin = ps_.origin;
     const int oldTime = psTime_;
     bool compared = false;
@@ -235,6 +242,7 @@ void PredictedAmmo::record(int commandTime, const Counters& before, const Counte
 }
 
 void PredictedAmmo::adjust(int commandTime, Counters& counters) {
+    server_ = counters;
     pending_.erase(pending_.begin(), pending_.upper_bound(commandTime));
     auto add = [](const std::map<std::string, int>& change, std::map<std::string, int>& server) {
         for (const auto& [key, value] : change) {
@@ -246,33 +254,6 @@ void PredictedAmmo::adjust(int commandTime, Counters& counters) {
         add(change.clip, counters.clip);
         add(change.stock, counters.stock);
     }
-}
-
-float PredictedAmmo::weaponStep(int commandTime, float frameDt) {
-    (void)frameDt;
-    if (commandTime == stepTime_) return 0.0f;  // the server runs only the first command of one time
-    const float step = usercmdStep(stepTime_, commandTime);
-    stepTime_ = commandTime;
-    return step;
-}
-
-void PredictedWeaponTime::record(int commandTime, const game::PlayerWeapon& weapon) {
-    pending_[commandTime] = {std::max(0.0f, weapon.timer()), weapon.stateNumber()};
-    while (pending_.size() > 256) pending_.erase(pending_.begin());
-}
-
-void PredictedWeaponTime::reconcile(const PsFields& server, game::PlayerWeapon& weapon) {
-    constexpr float kToleranceSeconds = 0.002f;  // the wire's whole milliseconds
-    const auto it = pending_.find(server.commandTime);
-    if (it != pending_.end() && it->second.state == server.weaponState && it->second.state == weapon.stateNumber()) {
-        const float difference = static_cast<float>(server.weaponTime) * 0.001f - it->second.timer;
-        if (std::fabs(difference) > kToleranceSeconds) {
-            weapon.adjustTimer(difference);
-            for (auto later = std::next(it); later != pending_.end(); ++later)
-                later->second.timer = std::max(0.0f, later->second.timer + difference);
-        }
-    }
-    pending_.erase(pending_.begin(), pending_.upper_bound(server.commandTime));
 }
 
 void PredictedAmmo::clear() {

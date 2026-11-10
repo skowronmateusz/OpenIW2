@@ -810,6 +810,58 @@ int PlayerWeapon::updateImpl(float dt, const Input& in) {
     return shots;
 }
 
+bool PlayerWeapon::applyServer(int state, float timer) {
+    if (name_.empty()) return false;
+    const int own = int(state_);
+    auto cycle = [](int n) { return n == 0 || n == 3 || n == 4; };
+    auto reload = [](int n) { return n == 5 || n == 7; };
+    // The times that run beside the weapon time in a reload or rechamber move with it.
+    auto shift = [&](float to) {
+        const float d = to - std::max(0.0f, timer_);
+        timer_ = to;
+        if (addPending_) addTimer_ = std::max(0.0f, addTimer_ + d);
+        if (brassTimer_ > 0) brassTimer_ = std::max(0.001f, brassTimer_ + d);
+    };
+    if (state == own) {
+        shift(timer);
+        return true;
+    }
+    if (!(cycle(own) || reload(own)) || !(cycle(state) || reload(state))) return false;
+    const int ownClip = clip_;
+    if (readAmmo)
+        if (const auto a = readAmmo(name_)) clip_ = a->first, stock_ = a->second;
+    if (reload(own)) addPending_ = false, reloadInterrupted_ = false;  // the server has not begun that reload
+    switch (state) {
+    case 0:
+        // Not fired there (the rounds are still in the clip): the trigger counts as released, as on the server, whose
+        // press waits for the weapon time.
+        if (clip_ > ownClip) triggerReleased_ = true;
+        needsRechamber_ = false;
+        enter(State::Ready, nullptr, 0);
+        timer_ = timer;
+        break;
+    case 3: {
+        const bool aimed = adsFrac_ == 1.0f;
+        triggerReleased_ = false;
+        needsRechamber_ = fieldValue("boltAction") == "1";
+        brassInChamber_ = needsRechamber_;
+        brassTimer_ = 0;
+        enter(State::Firing, clip_ == 0 ? (aimed ? "adsLastShotAnim" : "lastShotAnim") : (aimed ? "adsFireAnim" : "fireAnim"), timer);
+        break;
+    }
+    case 4:
+        needsRechamber_ = false;
+        enter(State::Rechamber, "rechamberAnim", timer);
+        break;
+    default:  // 5, 7
+        needsRechamber_ = false;
+        if (!startReload()) return false;
+        if (int(state_) == state) shift(timer);
+        break;
+    }
+    return true;
+}
+
 // 0x4ddf30: whether another round can be loaded. No rounds in stock or a full clip: no. With noPartialReload (+0x358)
 // and no reloadAmmoAdd only an empty clip reloads; with reloadAmmoAdd below the clip size the room must hold a whole add.
 bool PlayerWeapon::canLoadMore() const {

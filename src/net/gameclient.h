@@ -28,6 +28,7 @@ struct ClientSnapshot {
     bool valid = false;
     int messageNum = 0;
     int serverTime = 0;
+    int snapFlags = 0;  // bit 4 flips with every map_restart (docs/spec/net.md section 11)
     int64_t receivedMs = 0;
     std::vector<uint8_t> ps;                              // kPlayerStateSize bytes
     std::map<int, std::vector<uint8_t>> entities;         // number -> kEntityStateSize bytes

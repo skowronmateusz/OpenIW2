@@ -2,9 +2,11 @@
 # One invariant id per line; a listed id is reported as KNOWN and does not fail the test. Whoever fixes the bug
 # behind an id removes its line (the report marks a listed id that no longer occurs as FIXED?).
 
-# Prediction: rare misses of 3..13 units against the acknowledged server origin (about 1 in 7000 checks, around jumps).
+# Prediction: rare misses of 3..13 units against the acknowledged server origin around jumps (about 1 in 7000 checks;
+# the other checks differ by 0.00 units). The push of a hit and the placement of a round restart are not counted.
 predict.error
 
-# Rare after the predicted ammo fix (about one HUD step per run at most, was 11-13): the magazine goes up by one
-# when a snapshot lands between a predicted shot and its acknowledgement.
+# Only after a stall of the server (its commands beyond level time + 200 ms are not run one by one, docs/spec/net.md
+# section 10 "Command steps"): the client predicted more shots in the gap than the server then fired, and the next
+# snapshot gives the rounds back. Not seen in runs without stalls.
 ammo.hudrefill

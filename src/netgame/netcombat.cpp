@@ -95,7 +95,155 @@ WeaponMove weaponMoveOf(const game::PlayerWeapon& w) {
     return m;
 }
 
-void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::PlayerState& ps, float dt,
+int weaponStep(game::PlayerWeapon& weapon, int msec, game::PlayerWeapon::Input in) {
+    int shots = 0;
+    forEachUsercmdPiece(msec, [&](float dt) {
+        shots += weapon.update(dt, in);
+        in.reload = false;  // the command is its own old command from the second piece on
+    });
+    return shots;
+}
+
+int PredictedWeapon::pendingShots() const {
+    int n = 0;
+    for (auto it = records_.upper_bound(ackTime_); it != records_.end(); ++it) n += it->second.shots;
+    return n;
+}
+
+int PredictedWeapon::takeFires() {
+    const int predicted = serverFires_ + pendingShots();
+    // The played number is ahead: the prediction fell back (the server did not fire a shot predicted in a stall). The
+    // server's next shot within kAheadMs takes that number without being played again; later the number is given back.
+    if (predicted < played_) {
+        if (aheadSince_ == 0) aheadSince_ = std::max(1, stepTime_);
+        else if (stepTime_ - aheadSince_ > kAheadMs || stepTime_ < aheadSince_) played_ = predicted, aheadSince_ = 0;
+    } else {
+        aheadSince_ = 0;
+    }
+    const int fires = std::max(0, predicted - played_);
+    played_ = std::max(played_, predicted);
+    return fires;
+}
+
+void PredictedWeapon::clear() { *this = PredictedWeapon{}; }
+
+int PredictedWeapon::idle(int commandTime) {
+    stepTime_ = commandTime;
+    lastStepShots_ = 0;
+    return takeFires();
+}
+
+int PredictedWeapon::command(int commandTime, const game::PlayerWeapon::Input& in, game::PlayerWeapon& weapon,
+                             const Counters& clip, const Counters& stock) {
+    // Before the level's first snapshot the commands carry time 0: no step. A time not newer than the last stepped
+    // one: the server does not run that command, so nothing runs here either. An older one (the clock was set back)
+    // is the new reference, as on the server.
+    if (commandTime <= 0) return takeFires();
+    const int msec = stepTime_ == 0 || commandTime > stepTime_ ? usercmdMsec(stepTime_, commandTime) : 0;
+    stepTime_ = commandTime;
+    lastStepShots_ = 0;
+    if (msec > 0) {
+        const PredictedAmmo::Counters before{clip, stock};
+        lastStepShots_ = weaponStep(weapon, msec, in);
+        ammo.record(commandTime, before, {clip, stock});
+        Record& r = records_[commandTime];
+        r.weapon = weapon;
+        r.weapon.dropOutput();
+        r.in = in;
+        r.shots = lastStepShots_;
+        while (records_.size() > 256) records_.erase(records_.begin());
+    }
+    return takeFires();
+}
+
+bool PredictedWeapon::snapshot(const PsFields& server, const std::string& serverWeapon, game::PlayerWeapon& weapon,
+                               Counters& clip, Counters& stock) {
+    // The server's fire events since the last snapshot. The ring holds the last four events; when more were added (a
+    // long command after a stall fires once per piece) the older ones are fire events as far as the acknowledged clip
+    // of the weapon fell by more than the fire events still in the ring.
+    int serverClip = -1;
+    if (!serverWeapon.empty() && weapon.readAmmo) {
+        const Counters predictedClip = clip, predictedStock = stock;
+        clip = ammo.server().clip;
+        stock = ammo.server().stock;
+        if (const auto a = weapon.readAmmo(serverWeapon)) serverClip = a->first;
+        clip = predictedClip;
+        stock = predictedStock;
+    }
+    if (!haveRing_) {
+        haveRing_ = true;
+    } else {
+        int added = (server.eventSequence - ringSequence_) & 0xff;
+        if (added > 128) added = 0;  // the sequence went back: a ring started again, not events
+        const int lost = std::max(0, added - 4);
+        int seen = 0;
+        for (int s = (server.eventSequence - (added - lost)) & 0xff; s != server.eventSequence; s = (s + 1) & 0xff) {
+            const int ev = server.events[s & 3];
+            if (ev == kEvFireWeapon || ev == kEvFireWeaponLastShot) ++seen;
+        }
+        int fires = seen;
+        if (lost > 0 && serverClip >= 0 && ackClip_ >= 0 && serverWeapon == ackWeapon_)
+            fires = std::clamp(ackClip_ - serverClip, seen, seen + lost);
+        serverFires_ += fires;
+    }
+    ackClip_ = serverClip;
+    ackWeapon_ = serverWeapon;
+    ringSequence_ = server.eventSequence;
+    ackTime_ = server.commandTime;
+
+    // This client's weapon after the newest command at or before the snapshot's commandTime.
+    auto base = records_.upper_bound(server.commandTime);
+    if (base == records_.begin()) return false;  // nothing kept that far back
+    --base;
+    records_.erase(records_.begin(), base);
+    const float serverTimer = static_cast<float>(server.weaponTime) * 0.001f;
+    const game::PlayerWeapon& kept = base->second.weapon;
+    constexpr float kToleranceSeconds = 0.002f;  // the wire's whole milliseconds
+    if (base->first == server.commandTime && kept.name() == serverWeapon && kept.stateNumber() == server.weaponState &&
+        std::fabs(std::max(0.0f, kept.timer()) - serverTimer) <= kToleranceSeconds)
+        return false;  // as predicted: the kept commands would run to the same result
+    // A rebuild needs the same weapon in hand from the kept command on, on both sides, and no change of the weapon by
+    // the front end since the newest kept command (an equip, a weapon taken away): the kept weapons do not have it.
+    if (serverWeapon.empty() || base->second.in.dead) return false;
+    if (const game::PlayerWeapon& newest = records_.rbegin()->second.weapon;
+        newest.name() != weapon.name() || newest.holstered() != weapon.holstered())
+        return false;
+    for (auto it = base; it != records_.end(); ++it)
+        if (it->second.weapon.name() != serverWeapon || it->second.in.dead) return false;
+    // The inventory as the server sent it; the replayed commands change it again and are recorded anew.
+    const Counters clipBefore = clip, stockBefore = stock;
+    clip = ammo.server().clip;
+    stock = ammo.server().stock;
+    game::PlayerWeapon w = kept;
+    if (!w.applyServer(server.weaponState, serverTimer)) {
+        clip = clipBefore;
+        stock = stockBefore;
+        return false;
+    }
+    std::vector<std::string> sounds = weapon.takeSounds();
+    std::vector<game::PlayerWeapon::Event> events = weapon.takeEvents();
+    for (std::string& s : w.takeSounds()) sounds.push_back(std::move(s));
+    for (game::PlayerWeapon::Event& e : w.takeEvents()) events.push_back(std::move(e));
+    ammo.clearPending();
+    Record start{w, base->second.in, 0};
+    if (base->first != server.commandTime) records_.erase(base);
+    records_[server.commandTime] = std::move(start);
+    int prev = server.commandTime;
+    for (auto it = records_.upper_bound(server.commandTime); it != records_.end(); ++it) {
+        const PredictedAmmo::Counters before{clip, stock};
+        it->second.shots = weaponStep(w, usercmdMsec(prev, it->first), it->second.in);
+        w.dropOutput();
+        ammo.record(it->first, before, {clip, stock});
+        it->second.weapon = w;
+        prev = it->first;
+    }
+    weapon = std::move(w);
+    weapon.addOutput(std::move(sounds), std::move(events));
+    ++rebuilds_;
+    return true;
+}
+
+void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::PlayerState& ps, int msec,
                       const std::string& cmdWeapon) {
     wire(w, client);
     Entity* e = w.mpClientEntity(client);
@@ -140,7 +288,7 @@ void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::Playe
     wi.binoculars = (buttons & game::Button::Binoculars) != 0;
     wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
     weapon_.grenadeCook = w.cvarFloat("iw2_grenadeCook", 1.0f) != 0;
-    const int shots = dt > 0 ? weapon_.update(std::min(dt, 0.1f), wi) : 0;
+    const int shots = weaponStep(weapon_, msec, wi);
     // Entering the offhand prepare state adds the prepare event (0x4df1b4, parm the offhand weapon).
     if (weapon_.stateNumber() == 13 && statePrev_ != 13) {
         ring_.push(kEvPrepOffhand, weaponIndex ? weaponIndex(weapon_.viewWeaponName()) : 0);

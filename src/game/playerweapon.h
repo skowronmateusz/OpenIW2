@@ -98,9 +98,21 @@ public:
     // the next weapon is raised without a putaway (PM_BeginWeaponChange with weapon 0 → state 2 with timer 0).
     void weaponTaken() { name_.clear(); holstered_ = true; }
     int clip() const { return clip_; }
-    // The state's time left in seconds (ps weaponTime), and a correction of it from the server's value for a network client.
+    // The state's time left in seconds (ps weaponTime).
     float timer() const { return timer_; }
-    void adjustTimer(float seconds) { timer_ = std::max(0.0f, timer_ + seconds); }
+    // A network client's weapon takes the weapon state and time of the acknowledged player state (docs/spec/net.md
+    // section 10 "Predicted weapon"). The same state takes the time. Between ready (0), firing (3), rechambering (4) and
+    // reloading (5, 7) the server's state is entered: a shot the server fired, a reload it began, or one of those it has
+    // not done. Returns false for any other difference; the weapon is then not usable as the server's (call it on a copy).
+    // The counters are read through readAmmo first.
+    bool applyServer(int state, float timer);
+    // Sounds and events queued so far: dropped (a replayed command), or appended (those of applyServer handed to the
+    // weapon the front end reads).
+    void dropOutput() { sounds_.clear(); events_.clear(); }
+    void addOutput(std::vector<std::string> sounds, std::vector<Event> events) {
+        sounds_.insert(sounds_.end(), sounds.begin(), sounds.end());
+        events_.insert(events_.end(), events.begin(), events.end());
+    }
     int stock() const { return stock_; }
     // PM_Weapon's weapon state number (0 ready, 1 raising, 2 dropping, 10/11 melee, 12–16 offhand, …).
     int stateNumber() const { return int(state_); }

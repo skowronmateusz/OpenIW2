@@ -609,11 +609,11 @@ VAs in the patch 1.3 MP executable. The client keeps a server-time estimate for 
   last command time is lowered to the new floor), so they are older than the last command the server ran.
 - Server (0x8091091..0x8091147 in the 1.3 Linux dedicated server, the loop over a packet's commands): a command
   newer than the packet's last one is skipped (sent before a reset), and so is one not newer than the last command
-  run; the game then clamps the command's time to the level time - 1000 .. + 200 and the step to 200 ms
-  (0x80f5d2e; openiw2 does both in the game's client think). openiw2 adds one exception: after a jump of the server's
+  run; the game then clamps the command's time to the level time - 1000 .. + 200 (0x80f5d2e; "Command steps" below
+  has the step). openiw2 adds one exception: after a jump of the server's
   own time (it fell over 500 ms behind its frame schedule, or its time fell over 500 ms behind the real time) each
   client may, for 3 s and once, run a command more than 400 ms older than the last one run, which then becomes the last
-  command time. Its step is 0 (the step clamp), the commands after it move normally. The player does not stand still
+  command time. It runs nothing itself; the commands after it move normally. The player does not stand still
   until the clock has caught up, and without a jump old commands sent again never run.
 - Commands never decrease: a command below the previous one carries the previous one's time (two commands in the
   same client millisecond or while the clock is held at its floor carry the same time; the server runs the first).
@@ -699,28 +699,99 @@ loaded rounds of the weapon's clip slot from the array at SP 0xf70c00, the predi
 snapshot whose state has not seen a predicted shot cannot raise the drawn magazine: the prediction starts from that
 snapshot's counters and re-applies the pending commands' weapon step on top, every frame.
 
-openiw2 (src/netgame/netmove.cpp, `Predictor`): the wire player state carries only part of the movement state
-(commandTime, pm_type, origin, velocity, bob cycle; see section 7.3). The rest (ground, jump flag and origin,
-pm_time, stance, view height, timers, the event ring) comes from this client's own result for the acknowledged
-command, which the predictor keeps per command time; the server's fields are put over it and the newer commands are
-run. The step of a command is the difference of consecutive command times, clamped to 0..200 ms, 50 ms for the first.
-The ammunition lives outside the predicted movement state here (the view world's inventory, written by the weapon
-simulation, which runs once per frame and not once per replayed command), so what each command's weapon step changed
-is kept per command time instead (`PredictedAmmo`): the counters before and after the frame's weapon update give that
-frame's command its change, and a snapshot's counters are written as the server sent them plus the changes of the
-commands after the snapshot's commandTime. Changes up to that time are dropped. A snapshot's own correction of the
-counters is not a change of a command, so it is never replayed; the record starts over with each gamestate, as the
-command history does. The weapon simulation is stepped by the command's own step (`usercmdStep`, the server's step for
-that command), not by the frame time, so client and server reach a shot at the same command.
+### Command steps (server and prediction)
 
-The two weapon simulations can still run a command with different steps: the server clamps a command's time to the
-level time + 200 ms, so after a stall of the server several commands run with almost no time and a later one with the
-sum, and the shot falls on another command than the client's. In the original the weapon timer is part of the replayed
-state, so the next prediction starts from the server's value. openiw2 runs the weapon once per frame and keeps the timer
-of each command (`PredictedWeaponTime`): when a snapshot acknowledges a command, its `weaponTime` (ps+52, ms) in the same
-`weaponstate` (ps+216) moves the client's timer by the difference, and the kept timers of the newer commands with it.
-The server fills both fields from its copy of the weapon. A command run with a clamped time has no matching record and
-is skipped; the next exact one corrects it. A snapshot cannot undo a shot the client has already predicted.
+VAs in the 1.3 Linux dedicated server unless marked MP (the patch 1.3 MP executable).
+- Order of a server frame: the common frame (0x80626f4) first empties the event queue (0x806182a; a packet goes to
+  0x80960e2 and from there, through the netchan, to the command reader of section 4), and only then calls the server
+  frame (0x80969b0). A command is run by the game the moment its packet is read, with the level time of the last game
+  frame. The server frame adds the elapsed time to a residual and runs one game frame (0x8096752) per whole frame
+  length in it (loop 0x8096db7..0x8096deb); between two such frames one routine is called (0x809b016) and after the
+  loop two (0x809bcce, then 0x809b016 again); none of them is the packet reader. So after a stall every waiting
+  command runs against the old level time and the catch-up frames follow. `TODO(spec)`: 0x809b016 is taken to be the
+  snapshot archive (it calls the player-state writer 0x806a200 for every client) and 0x809bcce the sending of the
+  client messages; both are named by what they call, not read in full.
+- The game's client think (0x80f5d2e) clamps the command's time to level time - 1000 .. + 200 (0x80f5d54..0x80f5d92)
+  and takes the difference to the player state's `commandTime`. A difference below 1 ms ends the routine at once
+  (0x80f5da6..0x80f5dcb, unless the client follows another one): nothing of that command runs, neither the movement
+  nor the weapon, and no button of it is seen. The difference clamped to 200 ms (0x80f5dd0) is not the movement step:
+  the movement routine below takes its time from the command and `commandTime` itself. `TODO(spec)`: what the clamped
+  value is used for (it is converted to seconds at 0x80f6028 for a routine called before the movement).
+- The movement routine (0x80e9464, called at 0x80f63de; the same code in the client's prediction, MP 0x51af70) does
+  nothing for a command not newer than `commandTime`, moves `commandTime` up to the command's time - 1000 when it is
+  further back, and then runs the single step (0x80e8934) in pieces of at most 66 ms until `commandTime` is the
+  command's time. After each piece the command becomes the "old command" of the next one, so a button press is an edge
+  in the first piece only. The weapon step is part of every piece: the single step calls the weapon routine
+  (0x80f066e, the one that tests the weapon states, weapon time ps+0x34 and weapon delay ps+0x38) in each of its
+  movement branches (0x80e907b, 0x80e9223, 0x80e933a), so a long command can fire more than once. The single step
+  itself clamps a piece to 200 ms (0x80e8ca5), which the 66 ms pieces never reach.
+- No time is lost by this: after a stall the commands beyond level time + 200 all carry the same clamped time, the
+  first of them runs up to it and the others are skipped, and the next command after the catch-up frames runs the
+  whole gap with its own buttons. The client ran those commands one by one, so the two weapon timers can end a shot on
+  different commands, and within the gap the number of shots can differ (the server steps 66 ms, the client its
+  frames; a shot sets the weapon time to the fire time, SP 0x4ded30, so the cadence follows the step size).
+
+openiw2 (src/netgame/netmove.cpp): `usercmdMsec` is that difference (50 ms for the first command, at most 1000),
+`runUsercmd` moves in pieces of at most 66 ms, and the weapon runs the same pieces (`weaponStep`,
+src/netgame/netcombat.cpp), on the server and in the client's prediction alike. The server's client think returns
+before anything else for a command whose clamped time is not newer than the last one run; one older than it (only the
+clock-reset exception of "Client time" lets such a command through) becomes the last command time and runs nothing.
+The local game (no commands) keeps its per-frame weapon step, at most 100 ms.
+
+### Predicted weapon
+
+In the original the weapon is part of the predicted player state: every frame starts from the snapshot's copy
+(weapon time ps+52, weapon delay ps+56, weapon state ps+216, the counters, the event ring ps+164..) and the replayed
+commands run the weapon step, measured from the snapshot's `commandTime`, which need not be the time of any command
+the client sent (the clamp). A shot is an event of the ring (fire 0x9e, last shot 0xa0); the event check (MP 0x4e0340)
+plays an event when its sequence number is new against the previous frame's predicted state or its slot changed. So
+- a shot the client predicted on another command than the server takes the same sequence number and is not played
+  twice;
+- a shot the server fired and the client did not predict arrives in the snapshot's ring with a new number and is played
+  from there;
+- the drawn counters are always the snapshot's plus the weapon steps of the commands after it.
+A prediction can still be ahead of the server (more shots in a gap than the server's 66 ms pieces fired): the events
+were played, and the next snapshot takes the rounds back.
+
+openiw2 (src/netgame/netmove.cpp `Predictor`, `PredictedAmmo`; src/netgame/netcombat.cpp `PredictedWeapon`): the wire
+player state carries only part of the movement and weapon state (commandTime, pm_type, origin, velocity, bob cycle,
+weapon time and state, the counters, the event ring of the client's own weapon events; see section 7.3). The rest
+comes from this client's own result for the newest command at or before the snapshot's `commandTime`, kept per command
+time; the server's fields are put over it and the newer commands are run, the first one from the snapshot's
+`commandTime`.
+- Movement: every frame, as described above. Outside jumps the predicted origin of an acknowledged command equals
+  the server's (measured by the network soak: 0.00 units). Two things the client cannot predict: the push of a hit
+  (the server adds the knockback to the velocity before the client's next command; about 2 units until the snapshot
+  brings the velocity) and a placement by the server (a spawn toggles the teleport bit, a map_restart flips the
+  snapshot flag 4 of section 11).
+- Weapon: the weapon simulation is a deterministic function of the state and the commands, so the client steps it once
+  per command and keeps the weapon after every command together with the command's weapon input and its shots. A new
+  snapshot is compared with the kept weapon of its `commandTime`: same weapon, same state, weapon time within 2 ms.
+  When they agree nothing is done (a replay would give the same result). When they differ, or no command has that time,
+  the weapon is rebuilt: the kept weapon gets the server's state and time (`PlayerWeapon::applyServer`: the same state
+  takes the time; between ready, firing, rechambering and reloading the state is entered as the server has it; other
+  differences, a weapon change or an offhand throw under way, are left to a later snapshot), the inventory gets the
+  snapshot's counters, and the kept commands after `commandTime` are run again with their kept inputs. Sounds and
+  script-visible events of the replay are dropped (they were played when the commands first ran); those of entering
+  the server's state are played.
+- Counters: `PredictedAmmo` keeps what each command's weapon step changed; a snapshot's counters are drawn with the
+  changes of the commands after its `commandTime`. A rebuild replaces those changes by the replay's.
+- Shots: the client counts fire events, not weapon steps. The predicted number is the server's (the fire events seen
+  in the snapshots' ring, by sequence number) plus the shots of the kept commands after the snapshot's `commandTime`.
+  A shot is played (flash, sound, kick, the soak's shot count) when that number passes the highest value played so far.
+  This differs from 0x4e0340 in one point, on purpose: the comparison is with the highest number played, not with the
+  previous frame's state, so a prediction that falls back after a correction and reaches the same number again does
+  not play the shot a second time. A played number the prediction has fallen below stands for the server's next shot
+  for 1000 ms of command time (the longest time one command runs); after that it is given back and the next shot is
+  played again, so a shot predicted in a stall that the server never fires costs no later shot its sound and flash.
+  With the comparison against the previous frame alone the model of tests/test_weaponpredict.cpp plays shots twice
+  in 20 to 376 of 450 stalled magazine runs, depending on the weapon; with this rule in none. The ring holds four events; when a snapshot's sequence number is more than four
+  past the previous one (a long command after a stall fires once per piece), the events that left the ring count as
+  fire events as far as the snapshot's loaded rounds of the weapon fell by more than the fire events still in the
+  ring. (The original loses such events.)
+- The weapon step of a command is skipped when its time is not newer than the last stepped one (the server skips the
+  command as well). On a map turret neither side runs the weapon; the command's time is passed, so the first
+  step after it is that command's own.
 
 ### Client clock after a gamestate
 

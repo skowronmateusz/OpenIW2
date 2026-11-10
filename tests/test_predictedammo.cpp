@@ -38,63 +38,7 @@ C shown(PredictedAmmo& p, int commandTime, int clip, int stock) {
 
 } // namespace
 
-// The server ran a command with a longer step than the client (its clamp after a stall): the client's timer is moved to
-// the server's, once, and the next shot falls where the server's does.
-void weaponTimeFollowsTheServer() {
-    using iw2::game::PlayerWeapon;
-    PlayerWeapon w;
-    w.equip("smg", {{"firetime", "0.1"}, {"clipsize", "30"}, {"startammo", "60"}, {"raisetime", "0.1"}});
-    PlayerWeapon::Input fire;
-    fire.fire = true;
-    fire.weapon = "smg";
-    PlayerWeapon::Input idle;
-    idle.weapon = "smg";
-    w.update(1.0f, idle);  // raised and ready
-    int shots = w.update(0.02f, fire);
-    CHECK(shots == 1);
-    const float afterShot = w.timer();
-    PredictedWeaponTime t;
-    t.record(1000, w);
-    w.update(0.02f, fire);
-    t.record(1020, w);
-    w.update(0.02f, fire);
-    t.record(1040, w);
-    const float predicted = w.timer();
-    PsFields s;
-    s.commandTime = 1000;
-    s.weaponState = w.stateNumber();
-    s.weaponTime = int(std::lround(afterShot * 1000.0f)) + 50;
-    t.reconcile(s, w);
-    CHECK(std::fabs(w.timer() - (predicted + 0.05f)) < 0.001f);
-    t.reconcile(s, w);  // the same snapshot again: nothing more
-    CHECK(std::fabs(w.timer() - (predicted + 0.05f)) < 0.001f);
-    // The newer command's kept value moved too: a server that agrees with the corrected timer changes nothing.
-    PsFields s2 = s;
-    s2.commandTime = 1020;
-    s2.weaponTime = int(std::lround((afterShot - 0.02f + 0.05f) * 1000.0f));
-    const float corrected = w.timer();
-    t.reconcile(s2, w);
-    CHECK(std::fabs(w.timer() - corrected) < 0.003f);
-    // The shot the uncorrected timer would have fired does not happen.
-    int later = 0;
-    for (int i = 0; i < int(predicted / 0.02f); ++i) later += w.update(0.02f, fire);
-    CHECK(later == 0);
-    // Another weapon state on the server, or a command the client never recorded: no change.
-    PsFields other = s;
-    other.commandTime = 1040;
-    other.weaponState = w.stateNumber() + 1;
-    other.weaponTime = 900;
-    const float kept = w.timer();
-    t.reconcile(other, w);
-    CHECK(w.timer() == kept);
-    other.commandTime = 2000;
-    other.weaponState = w.stateNumber();
-    t.reconcile(other, w);
-    CHECK(w.timer() == kept);
-}
-
 int main() {
-    weaponTimeFollowsTheServer();
     // A shot the snapshot has not seen, then one that has seen it.
     {
         PredictedAmmo p;
@@ -151,13 +95,14 @@ int main() {
         p.clear();
         CHECK(shown(p, 1000, 30, 90).clip.at("clip") == 30);
     }
-    // The weapon step is the command's step; without a new command the frame time.
+    // The counters as the server sent them stay readable, and the kept changes can be restarted (a rebuilt weapon).
     {
         PredictedAmmo p;
-        CHECK(p.weaponStep(1000, 0.02f) == 0.05f);  // first command, as usercmdStep
-        CHECK(p.weaponStep(1000, 0.02f) == 0.0f);  // held clock: the server runs no command
-        const float s = p.weaponStep(1016, 0.02f);
-        CHECK(s > 0.0159f && s < 0.0161f);
+        p.record(1010, counters(30, 90), counters(29, 90));
+        CHECK(shown(p, 1000, 30, 90).clip.at("clip") == 29);
+        CHECK(p.server().clip.at("clip") == 30);
+        p.clearPending();
+        CHECK(shown(p, 1000, 30, 90).clip.at("clip") == 30);
     }
     if (failures == 0) std::cout << "predictedammo: ok\n";
     return failures ? 1 : 0;

@@ -588,8 +588,9 @@ void WorldGame::clientCommand(int slot, const std::string& text) {
 }
 
 void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
-    // 0x80f5d2e: the command's time is clamped to the level time - 1000 .. + 200 (docs/spec/net.md section 10 "Client
-    // time"); the step to the previous command is clamped to 0 .. 200 ms by usercmdStep.
+    // 0x80f5d2e (docs/spec/net.md section 10 "Command steps"): the command's time is clamped to the level time - 1000 ..
+    // + 200; a command not newer than the last one run is not run at all (no movement, no weapon, no buttons). An older
+    // one (the clock-reset exception of the server's command loop) becomes the last command time.
     net::UserCmd cmd = sent;
     cmd.serverTime = std::clamp(cmd.serverTime, serverTime() - 1000, serverTime() + 200);
     static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
@@ -601,6 +602,11 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     Entity* e = w_->mpClientEntity(it->second);
     if (!e) return;
     const int prevTime = m.lastTime;
+    if (prevTime != 0 && cmd.serverTime <= prevTime) {
+        m.lastTime = cmd.serverTime;
+        if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d skipped\n", slot, cmd.serverTime, sent.serverTime, prevTime);
+        return;
+    }
     m.lastTime = cmd.serverTime;
     if (netTrace && prevTime && (cmd.serverTime - prevTime >= 100 || cmd.serverTime <= prevTime))
         std::printf("NETTRACE step slot=%d %d ms\n", slot, cmd.serverTime - prevTime);
@@ -688,8 +694,8 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         if (!(t < m.lastServerTime && now > t)) m.lastServerTime = t;
         m.combat->antilagTime = w_->cvarFloat("g_antilag", 1.0f) != 0 ? m.lastServerTime : now;
     }
-    if (!onTurret) m.combat->think(*w_, it->second, cmd, m.ps, usercmdStep(prevTime, cmd.serverTime), cmdWeapon);
-    if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d btn=%x state=%d clip=%d\n", slot, cmd.serverTime, sent.serverTime, prevTime, unsigned(cmd.buttons), m.combat->weapon().stateNumber(), m.combat->weapon().clip());
+    if (!onTurret) m.combat->think(*w_, it->second, cmd, m.ps, usercmdMsec(prevTime, cmd.serverTime), cmdWeapon);
+    if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d btn=%x state=%d clip=%d tm=%.4f\n", slot, cmd.serverTime, sent.serverTime, prevTime, unsigned(cmd.buttons), m.combat->weapon().stateNumber(), m.combat->weapon().clip(), double(m.combat->weapon().timer()));
     e = w_->mpClientEntity(it->second);
     if (!e) return;
     m.lastOrigin = {m.ps.origin[0], m.ps.origin[1], m.ps.origin[2]};
@@ -1099,6 +1105,14 @@ net::SnapshotView WorldGame::snapshot(int slot) {
     if (m.combat) {  // the weapon timer and state of the last command, for the client's prediction (docs/spec/net.md section 10)
         putI(v.ps, 52, std::clamp(int(std::lround(std::max(0.0f, m.combat->weapon().timer()) * 1000.0f)), 0, 32767));
         putI(v.ps, 216, m.combat->weapon().stateNumber() & 31);
+        // The client's own weapon events (eventSequence +164, events +168, eventParms +184): its prediction counts its
+        // shots by them.
+        const EventRing& r = m.combat->ring();
+        putI(v.ps, 164, r.sequence & 0xff);
+        for (int i = 0; i < 4; ++i) {
+            putI(v.ps, 168 + 4 * i, r.events[size_t(i)]);
+            putI(v.ps, 184 + 4 * i, r.parms[size_t(i)]);
+        }
     }
     putI(v.ps, 244, m.ps.viewHeightTarget);       // targetViewHeight (integer-coded on the wire)
     putF(v.ps, 248, m.ps.viewHeight);             // currentViewHeight
