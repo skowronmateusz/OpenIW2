@@ -37,16 +37,22 @@ int main() {
     for (const auto& e : w.entities())
         if (e->classname == "trigger_friendlychain" && e->obj->get("target").toString() == "auto20" && w.player()) w.debugTouchFriendlyChain(*e, *w.player());
     for (int i = 0; i < 20; ++i) w.frame();
-    int allies = 0, following = 0, onChain = 0;
+    int allies = 0, following = 0, onChain = 0, sentientFields = 0;
     for (const auto& e : w.entities()) {
         if (!e->isActor || e->isSpawner || e->obj->removed || e->obj->get("team").toString() != "allies") continue;
         ++allies;
         if (const auto g = e->obj->get("$goalent"); g.isObject() && w.player() && g.asObject() == w.player()->obj) ++following;
-        if (e->chainNode >= 0) ++onChain; // the actor's chain node (+0x78c)
+        if (e->chainNode >= 0) ++onChain;
+        if (e->obj->get("threatbias").isInt() && e->obj->get("ignoreme").isInt()) ++sentientFields; // the actor's chain node (+0x78c)
     }
     CHECK(allies == 4);
     CHECK(following == allies); // animscripts/init.gsc:396-415 swaps the renamed start point for the player
-    CHECK(onChain == allies);   // and they take nodes of the player's chain (trigger auto20 at the start)
+    CHECK(onChain == allies);
+    CHECK(sentientFields == allies); // decoytown.gsc:2079 asserts a copy of an ally's threatbias   // and they take nodes of the player's chain (trigger auto20 at the start)
+    // The player's sentient fields are integers (docs/spec/ai.md "Native actor fields"; decoytown.gsc:2055-2087
+    // copies the player's threatbias and asserts the copy is defined).
+    CHECK(w.player() && w.player()->obj->get("threatbias").isInt()); // _gameskill.gsc sets it by skill
+    CHECK(w.player() && w.player()->obj->get("ignoreme").isInt());
     if (failures) return 1;
     std::cout << "playerstart test passed\n";
     return 0;

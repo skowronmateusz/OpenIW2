@@ -314,6 +314,7 @@ void World::spawnMapEntities() {
     p.obj->set("health", Value(int32_t(maxhealth)));
     p.obj->set("maxhealth", Value(int32_t(maxhealth)));
     p.obj->set("team", Value("allies"));
+    applySentientFieldDefaults(*p.obj); // the player's sentient (0x4e9010 links one) has the sentient fields too
     if (playerStart) {
         p.obj->set("origin", (*playerStart)->get("origin"));
         p.obj->set("angles", (*playerStart)->get("angles"));

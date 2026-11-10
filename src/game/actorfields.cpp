@@ -4,7 +4,13 @@ namespace iw2::game {
 
 using script::Value;
 
+void applySentientFieldDefaults(script::Object& s) {
+    s.set("threatbias", Value(int32_t(0)));
+    s.set("ignoreme", Value(int32_t(0)));
+}
+
 void applyActorFieldDefaults(script::Object& a) {
+    applySentientFieldDefaults(a);
     // The actor slot is zeroed on allocation (FUN_004fc8d0), then FUN_004fdde0 stores these defaults.
     a.set("fovcosine", Value(0.01f));
     a.set("maxsightdistsqrd", Value(67108864.0f)); // 8192²
