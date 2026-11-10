@@ -37,6 +37,14 @@ Classes not in this table include path nodes (`node_*`, handled by the path-node
 `worldspawn` (part of it, 0x4fa480…): the `gravity` key (default "800") is parsed with atof and passed to 0x4325d0 (not read further); the
 `northyaw` key (default "", stored as "0" when empty) becomes configstring 10 (0x448b80, table 0x815420), which
 `getnorthyaw` (0x4f4a30) reads back: at most 31 characters, converted with atof.
+`info_player_start` (0x4e84a0) renames the entity: its classname becomes `info_player_deathmatch` (the script string held at
+0x1c7f088, registered at 0x506779..0x506794), and it thinks once 100 ms later (handler 0x10, think 0x4e82b0, which drops the
+point to the floor). The entity is not freed and keeps its other keys. The client spawn (0x4e9010) gives the player the
+classname `player` and copies no targetname from the spawn point (spawn point choice 0x4e87e0). Scripts rely on the rename:
+the animscript goal setup (animscripts/init.gsc:396-415) takes an entity named by an actor's `target` as goal entity, and
+replaces one of class `info_player_deathmatch` by the player. Maps target their start squad at the start point (cityhall:
+the four allies at level start target `player`, the start point's targetname), so without the rename those actors take the
+fixed start point as goal entity, stay at the start and never follow the player's friendly chain.
 `misc_model`, `misc_prefab` and `script_struct` share one function. For `misc_model` this matches the map compiler
 baking static models into the level; that the entity is then dropped is *inferred*.
 

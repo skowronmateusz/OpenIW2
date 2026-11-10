@@ -272,7 +272,11 @@ void World::spawnMapEntities() {
             Entity& e = spawnEntity(cls);
             e.mapIndex = mapIndex;
             fill(e.obj);
-            if (cls == "info_player_start") starts.push_back(e.obj);
+            if (cls == "info_player_start") { // spawn 0x4e84a0: renamed (docs/spec/entities.md)
+                starts.push_back(e.obj);
+                e.classname = "info_player_deathmatch";
+                e.obj->set("classname", Value("info_player_deathmatch"));
+            }
             if (cls == "trigger_damage") spawnTriggerDamage(e);
             if (cls == "trigger_hurt") { // spawn 0x5292a0: dmg 0 becomes 5; spawnflags 1 (start off) selects handler 6, else 7
                 const Value dv = e.obj->get("dmg");
