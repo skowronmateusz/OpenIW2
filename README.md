@@ -119,6 +119,44 @@ otherwise other computers cannot reach it (the choice can be changed later in Sy
 generated once per map and cached. Every option — limits, the port, `server.cfg`, the map rotation, console and rcon
 commands — is described in [docs/dedicated-server.md](docs/dedicated-server.md).
 
+```
+iw2server <main-dir> [<map> [<gametype>]] [options] [+command args ...]
+```
+
+| Argument | Default | Possible values |
+|---|---|---|
+| `<main-dir>` | (required) | your `main` folder |
+| `<map>` | (none) | `mp_breakout`, `mp_brecourt`, `mp_burgundy`, `mp_carentan`, `mp_dawnville`, `mp_decoy`, `mp_downtown`, `mp_farmhouse`, `mp_harbor`, `mp_leningrad`, `mp_matmata`, `mp_railyard`, `mp_rhine`, `mp_toujane`, `mp_trainstation` |
+| `<gametype>` | `dm` | `dm` (Deathmatch), `tdm` (Team Deathmatch), `sd` (Search and Destroy), `ctf` (Capture the Flag), `hq` (Headquarters) |
+| `--port N` | 28960 | 0–65535 (0 picks a free port) |
+| `--maxclients N` | 8 | 1–20, players and bots together |
+| `--bots N` | 0 | 0–19 |
+| `--bot-skill N` | 3 | 0 recruit, 1 regular, 2 hardened, 3 veteran |
+| `--weapons LIST` | all | any comma-separated combination of `rifle`, `bolt`, `sniper`, `smg`, `mg`, `shotgun`, `grenades`, or `all`; it must leave every nation a primary weapon (see below) |
+| `--scorelimit N` | 50 dm, 300 tdm, 10 sd, 5 ctf, 600 hq | 0–100000, 0 = no limit (dm: kills of a player, tdm: team kills, sd: rounds won, ctf: captures, hq: seconds holding the radio) |
+| `--timelimit MIN` | 30 (sd: 0) | 0–1440 minutes, decimals allowed, 0 = no limit |
+| `--roundlimit N` | 0 | 0–1000, `sd` only, 0 = no limit |
+| `--cvar name=value` | | any cvar, can be repeated |
+| `--seconds N` | runs until `quit` | stops the server after N seconds |
+| `--no-console` | off | do not read commands from the terminal |
+| `+command args` | | console commands at start-up, e.g. `+exec server.cfg +map_rotate` |
+| `--help` | | prints the usage |
+
+Weapon classes and the weapons in them:
+
+| Class | American | British | Russian | German |
+|---|---|---|---|---|
+| `rifle` (semi-automatic) | M1 Carbine, M1 Garand | M1 Garand | SVT-40 | G43 |
+| `bolt` (bolt-action) | — | Lee-Enfield | Mosin-Nagant | Kar98k |
+| `sniper` | Springfield | Lee-Enfield (scoped) | Mosin-Nagant (scoped) | Kar98k (scoped) |
+| `smg` | Thompson, Grease Gun | Sten, Thompson | PPS-42, PPSh-41 | MP40 |
+| `mg` | BAR | Bren | — | MP44 |
+| `shotgun` | Shotgun | Shotgun | Shotgun | Shotgun |
+| `grenades` | frag and smoke grenades | | | |
+
+Because the Americans have no bolt-action rifle and the Russians no machine gun, `bolt` or `mg` alone is refused, and so
+is `grenades` alone; combine them with another class, e.g. `--weapons bolt,sniper,grenades`.
+
 ### Cheats and developer keys
 
 Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:
