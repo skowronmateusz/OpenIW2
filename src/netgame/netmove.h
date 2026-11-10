@@ -51,7 +51,7 @@ template <class F> void forEachUsercmdPiece(int msec, F&& run) {
 // pass entity of the player move): the client's body clip is linked where it stood, and a move that starts elsewhere
 // (the prediction from an older acknowledged origin) would otherwise run into it.
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
-                const WeaponMove* weapon = nullptr, int passEntity = -1);
+                const WeaponMove* weapon = nullptr, int passEntity = -1, bool controlsFrozen = false);
 
 // The player-state fields the network game uses (byte offsets of docs/spec/net.md section 7.3).
 struct PsFields {
@@ -62,6 +62,7 @@ struct PsFields {
     float origin[3] = {0, 0, 0};
     float velocity[3] = {0, 0, 0};
     float viewangles[3] = {0, 0, 0};
+    int pmFlags = 0;         // ps+12 (0x8000: freezecontrols)
     int eFlags = 0;          // ps+160 (0x300 bits: on a map turret)
     int viewLockMode = 0;    // ps+1424: 1 on a turret, 2 in a frame the turret fired
     int viewLockEntity = 1023; // ps+1428: the turret's entity number, 1023 none

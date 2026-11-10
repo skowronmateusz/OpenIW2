@@ -52,7 +52,7 @@ int usercmdMsec(int prevTime, int time) {
 float usercmdStep(int prevTime, int time) { return static_cast<float>(usercmdMsec(prevTime, time)) * 0.001f; }
 
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
-                const WeaponMove* weapon, int passEntity) {
+                const WeaponMove* weapon, int passEntity, bool controlsFrozen) {
     const int msec = usercmdMsec(prevTime, cmd.serverTime);
     if (msec <= 0) return;
     // MP movement types (docs/spec/mp-spectate.md): 5 intermission does not move; 4 is the free spectator's fly move
@@ -64,6 +64,11 @@ void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const 
     mp.passEntity = passEntity;
     game::PlayerInput in = inputFromUsercmd(cmd);
     in.dead = ps.pmType == 6 || ps.pmType == 7; // MP dead types: no command moves, the dead view height
+    if (controlsFrozen) { // pm_flags 0x8000 (docs/spec/controls.md "freezecontrols"): no move bytes, no jump, aim or lean; velocity and stance are held in playerMove
+        in.controlsFrozen = true;
+        in.forward = in.right = 0.0f;
+        in.jump = in.leanLeft = in.leanRight = in.adsHeld = in.holdBreathHeld = false;
+    }
     if (ps.pmType == 4) {
         mp.mpSpectator = true;
         mp.traceMask = 0x800811u;
@@ -100,6 +105,7 @@ PsFields readPs(const std::vector<uint8_t>& ps) {
     if (ps.size() < static_cast<size_t>(net::kPlayerStateSize)) return f;
     f.commandTime = getI(ps, 0);
     f.pmType = getI(ps, 4);
+    f.pmFlags = getI(ps, 12);
     f.clientNum = getI(ps, 204);
     f.bobCycle = getI(ps, 8) & 0xff;
     for (int i = 0; i < 3; ++i) {
@@ -155,7 +161,7 @@ game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsField
     }
     for (const net::UserCmd& c : commands) {
         if (c.serverTime <= server.commandTime) continue;
-        runUsercmd(world, ps, c, prev, weapon, passEntity);
+        runUsercmd(world, ps, c, prev, weapon, passEntity, (server.pmFlags & 0x8000) != 0);
         prev = c.serverTime;
     }
     return ps;
@@ -185,7 +191,7 @@ const game::PlayerState& Predictor::predict(const game::CollisionWorld& world, c
     const bool held = (server.eFlags & 0x300) != 0;
     for (const net::UserCmd& c : commands) {
         if (c.serverTime <= server.commandTime) continue;
-        if (!held) runUsercmd(world, ps, c, prev, weapon, passEntity);
+        if (!held) runUsercmd(world, ps, c, prev, weapon, passEntity, (server.pmFlags & 0x8000) != 0);
         prev = c.serverTime;
         history_[c.serverTime] = ps;
         // The prediction for the command the last frame ended on: a difference is a correction, drawn away over

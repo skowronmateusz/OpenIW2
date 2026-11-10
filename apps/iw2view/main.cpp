@@ -3977,6 +3977,7 @@ int main(int argc, char** argv) {
         // initially allies), the release time for the 100 ms fade, the last "b" command of a network server and the time of
         // the last "score" request (sent at most every 2000 ms while shown, 0x4dabf0).
         struct MpScoreboardState { int scroll = 0, firstTeam = 2; bool shown = false; int64_t hiddenAt = -1000000; std::string netScores; game::MpScoreRequest request; } mpSb;
+        bool netControlsFrozen = false; // network client: the server set pm_flags 0x8000 (freezecontrols): no look, no move or weapon buttons
         bool mpIntermissionView = false; // the local client's session state is intermission (pm_type 5)
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): [app folder is a deliberate choice, exe default not traced] the real base path
@@ -9625,7 +9626,7 @@ int main(int argc, char** argv) {
                         if (const auto it = world->cvars.find("m_pitch"); it != world->cvars.end()) pitchScale = float(std::atof(it->second.c_str())) / 0.022f;
                     // pm_flags 0x8000 (freezecontrols or an absolute playerlinkto): the client mouse function returns before applying the delta
                     // (0x409871); the multiplayer intermission (pm_type 5) takes no look either.
-                    if (!(world && world->playerControlsFrozen()) && !mpIntermissionView) {
+                    if (!(world && world->playerControlsFrozen()) && !netControlsFrozen && !mpIntermissionView) {
                         float dyaw = mx * 0.15f * lookSens * zoomSens, dpitch = my * 0.15f * lookSens * zoomSens * pitchScale;
                         // Shell shock mouse (0x4b22c0): sensitivity scale and per-frame speed limits (degrees per second).
                         if (world)
@@ -9663,6 +9664,9 @@ int main(int argc, char** argv) {
             // neither is dead, whatever the health of the entity.
             const int mpSession = world && world->multiplayer() && !netClient ? world->mpSessionState(world->mpLocalClient()) : 0;
             const int mpFollow = mpSession == 2 ? world->mpFollowing(world->mpLocalClient()) : -1;
+            netControlsFrozen = false;
+            if (netClient)
+                if (const net::ClientSnapshot* fs = netClient->latest()) netControlsFrozen = (netgame::readPs(fs->ps).pmFlags & 0x8000) != 0;
             mpIntermissionView = netClient ? ps.pmType == 5 : mpSession == 3; // network client: the server's pm_type (prediction keeps it)
             const bool playerDead = world && world->player() && world->player()->obj->get("health").isNumber() &&
                                     world->player()->obj->get("health").asInt() <= 0 && mpSession != 2 && mpSession != 3;
@@ -9678,7 +9682,7 @@ int main(int argc, char** argv) {
             if (onTurret) world->clampPlayerView(cam.pitch, cam.yaw);
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
             // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
-            const bool controlsBlocked = !frontStack.empty() || (world && world->controlsFrozen());
+            const bool controlsBlocked = !frontStack.empty() || netControlsFrozen || (world && world->controlsFrozen());
             uint32_t buttons = controlsBlocked ? input.stanceButtons() : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
             // IW2_DEBUG_THROW=<seconds>[,<seconds>...]: holds the frag key for 150 ms from each real time (docs/debug-flags.md).
             if (static const char* dt = std::getenv("IW2_DEBUG_THROW"); dt && !controlsBlocked) {

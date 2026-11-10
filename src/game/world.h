@@ -409,6 +409,10 @@ public:
     // usercmd buttons of a non-local client (the listen server's own player uses setPlayerCommand)
     // A dedicated server (before mpStart): no client is this process's local player, client 0 included.
     void mpSetDedicated() { mpDedicated_ = true; }
+    // freezecontrols of a client (what the script call stores, client field +0x27b4); a network client's move then runs frozen (WorldGame::clientThink).
+    void mpSetControlsFrozen(int client, bool on) {
+        if (mp_ && client >= 0 && size_t(client) < mp_->clients.size()) mp_->clients[size_t(client)].controlsFrozen = on;
+    }
     // After a client's server move: its entity clip takes the new origin at once, so the next client's command of the
     // same frame traces against it (docs/spec/mp-pmove.md "Players against each other").
     void mpLinkClient(int client);

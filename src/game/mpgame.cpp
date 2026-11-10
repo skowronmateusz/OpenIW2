@@ -79,6 +79,10 @@ void World::mpStart(const std::string& gametype) {
         player_->obj->set("health", Value(int32_t(0)));
         player_->obj->set("sessionstate", Value("spectator"));
         player_->obj->set("classname", Value("")); // not found by getentarray("player", "classname") until it connects
+        // A dedicated server has no local client entity: the slots 0..maxclients-1 are the only client entities (docs/spec/mp.md
+        // "Local client view"). The SP spawn's entity is freed, so no script, trace, trigger or snapshot sees it; player_ stays
+        // as an inert, removed object for the code that reads it unguarded.
+        if (mpDedicated_) freeEntity(*player_);
     }
     timeMs_ += 50; // the frame start before init, as in runLevelMain (TODO(spec): MP init time)
     vm_.setTime(timeMs_);

@@ -152,7 +152,9 @@ docs/spec/mp-scoreboard.md. Spectating, following and the intermission camera: d
 
 A listen server runs the clients of the network and one local client whose screen this process shows (client 0 here,
 `MpState::localClient`). A dedicated server shows nobody: it has no local client (`localClient` -1), and the
-network client or bot in slot 0 is served like every other, with its own entity (`World::mpSetDedicated`). Commands the server sends to one client reach the front end only when they are for the local
+network client or bot in slot 0 is served like every other, with its own entity (`World::mpSetDedicated`). The entity the single-player spawn leaves behind is freed at `mpStart` on a dedicated server (the original's
+client entities are the slots 0..maxclients-1 only): no script lists it, no clip, trace, trigger or snapshot has it, and the killcam
+helpers of the local client do nothing without one. Commands the server sends to one client reach the front end only when they are for the local
 client:
 - `iprintln` / `iprintlnbold` exist twice in the dedicated server: the function (0x8110ad2 / 0x8110afe) sends the
   message to every client (client -1), the method (0x80fca18 / 0x80fca9e, self must be a client) only to that client.
@@ -316,7 +318,11 @@ movement) must not reach the local player when `self` is another client (a bot o
   Implemented: the fields per `MpClient`; the local view shows the local client's; the network game publishes the
   shock names as configstrings 0x48e + index and writes the three fields into the client's own snapshot, and the
   client's view takes the start time onto its own clock like the HUD times and loads the shock record by name.
-- `freezeControls` (0x80fd204) writes the client field +0x27b4 of `self`; `setPlayerAngles` (0x80fa964) the view of
+- `freezeControls` (0x80fd204) writes the client field +0x27b4 of `self`; the client think (0x80f5de9) sets ps pm_flags 0x8000 from it and
+  clears the flag otherwise, so a network client's move runs frozen as in docs/spec/controls.md "freezecontrols" (no move bytes, only the
+  stance buttons, velocity zeroed, no stance change, lean or weapon button; scripts read the held buttons) and the flag goes out in the
+  client's player state (ps+12), which the prediction and the front end's look and button gate read. TODO(spec): the consumers of the flag
+  inside the 1.3 MP player move were not located one by one; the single-player ones are applied; `setPlayerAngles` (0x80fa964) the view of
   `self`. `iprintln` / `iprintlnbold` as methods (0x80fca18 / 0x80fca9e) print to `self` only, as functions to all.
 - Implemented for a non-local `self`: `viewKick`, `setOrigin`, `setPlayerAngles`, `freezeControls`, `allowStand` /
   `allowCrouch` / `allowProne` / `allowLeanLeft` / `allowLeanRight`, `setReverb` / `deactivateReverb`,

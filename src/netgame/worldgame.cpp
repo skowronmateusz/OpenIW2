@@ -680,6 +680,16 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.ps.origin = {o[0], o[1], o[2]};  // placed by the script (spawn): restart movement there
         m.havePs = true;
     }
+    // freezecontrols (client +0x27b4, 0x80f5de9): ClientThink sets ps pm_flags 0x8000 and the move runs on a command with no move
+    // bytes and only the stance buttons (docs/spec/controls.md "freezecontrols"); scripts still read the buttons as held.
+    // TODO(spec): the individual consumers of the flag in the 1.3 MP player move were not located; the SP ones are applied.
+    const bool frozen = w_->mpState().clients[size_t(it->second)].controlsFrozen;
+    const net::UserCmd held = cmd; // the buttons as the client holds them
+    if (frozen) {
+        cmd.forwardmove = 0;
+        cmd.rightmove = 0;
+        cmd.buttons &= 0x2300;
+    }
     // MP movement type by session state (docs/spec/mp-spectate.md): 0 playing, 4 spectator, 5 intermission, 6 dead; a
     // playing client at 0 health is dead too (no weapon, no lean).
     m.ps.pmType = game::mpClientPmType(game::mpSessionStateNumber(e->obj->get("sessionstate").toString()));
@@ -695,7 +705,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.ps.velocity = {0, 0, 0};
     } else {
         for (const game::KnockbackHit& hit : w_->mpTakeKnockbacks(it->second)) game::applyKnockback(m.ps, hit, w_->cvarFloat("g_knockback", 1000.0f));
-        runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm, e->number);
+        runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm, e->number, frozen);
     }
     // The weapon side: fire, aim, reload, weapon change, melee, grenades (src/netgame/netcombat.cpp).
     std::string cmdWeapon;
@@ -727,7 +737,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     e->velocity = {m.ps.velocity[0], m.ps.velocity[1], m.ps.velocity[2]};
     m.viewPitch = in.pitch;
     m.viewYaw = in.yaw;
-    w_->mpSetButtons(it->second, static_cast<uint32_t>(cmd.buttons));
+    w_->mpSetButtons(it->second, static_cast<uint32_t>(held.buttons));
     w_->mpSetView(it->second, script::Vec3{in.pitch, in.yaw, 0.0f}, m.ps.viewHeight);
     w_->mpSetViewState(it->second, game::mpViewStateOf(m.combat->weapon(), m.ps)); // the recorded view state (killcam)
     w_->mpSetClientGround(it->second, m.ps.onGround, m.combat->weapon().fuseMs(), m.combat->weapon().stateNumber(), m.ps.mantling);
@@ -1101,7 +1111,8 @@ net::SnapshotView WorldGame::snapshot(int slot) {
     {
         const int stanceFlags = m.ps.stance == game::Stance::Prone ? kPmfProne : m.ps.stance == game::Stance::Crouch ? kPmfCrouch : 0;
         const bool playing = m.ps.pmType == 0;
-        putI(v.ps, 12, stanceFlags | (playing ? 0x800000 : m.ps.pmType == 4 ? 0x1000000 : 0));
+        const bool frozenNow = self >= 0 && size_t(self) < w_->mpState().clients.size() && w_->mpState().clients[size_t(self)].controlsFrozen;
+        putI(v.ps, 12, stanceFlags | (playing ? 0x800000 : m.ps.pmType == 4 ? 0x1000000 : 0) | (frozenNow ? 0x8000 : 0));
         int ef = stanceFlags == kPmfProne ? kEfProne : stanceFlags == kPmfCrouch ? kEfCrouch : 0;
         if (self >= 0 && size_t(self) < w_->mpState().clients.size() && (w_->mpState().clients[size_t(self)].buttons & 1u) && playing)
             ef |= kEfFiring;

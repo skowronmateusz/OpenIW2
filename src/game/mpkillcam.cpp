@@ -351,6 +351,7 @@ int64_t World::mpKillcamFrame() const {
 // are seen and heard again: the fire sounds (the followed client's own as its player sound without a position), the
 // impact effects and the tracers.
 void World::mpKillcamReplayEvents() {
+    if (!mp_ || mp_->localClient < 0) return; // a dedicated server has no local client to show a killcam
     MpArchive& ar = mp_->archive;
     const int64_t shown = mpKillcamFrame();
     if (shown < 0) {
@@ -414,6 +415,7 @@ void World::mpLogExplosion(bool rocket, const std::string& weapon, const Vec3& a
 }
 
 bool World::mpKillcamShellShock(ShellShockState& out) const {
+    if (!mp_ || mp_->localClient < 0) return false;
     const int64_t n = mpKillcamFrame();
     const ArchivedFrame* f = n >= 0 ? mp_->archive.frame(n) : nullptr;
     if (!f) return false;
@@ -571,6 +573,7 @@ World::MpKillcamView World::mpKillcamViewFor(int spectator, float lerpFrac) cons
 
 bool World::mpKillcamApply(float lerpFrac) {
     mpKillcamRestore();
+    if (!mp_ || mp_->localClient < 0) return false;
     const MpKillcamView v = mpKillcamView(lerpFrac);
     if (!v.active) return false;
     int ms = archiveMsOf(mp_->clients[size_t(mp_->localClient)].ent->obj->get("archivetime"));
