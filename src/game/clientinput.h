@@ -52,6 +52,10 @@ public:
     // is 0x13 or 0x14 (0x4095b6). Clears the "was pressed" latches.
     uint32_t buttons(bool inVehicle, bool forcedAds = false);
 
+    // The stance bits of the command from the client stance alone (0x200 crouch, 0x100 prone): what the command carries while
+    // a menu has the keys. CL_CreateCmd (MP 0x408b00) adds the stance (0x4082f0, read from the client stance setting) to every
+    // command, menu or not; the stance is a setting, not a held button, so opening a menu does not stand the player up.
+    uint32_t stanceButtons() const { return stance_ == 1 ? 0x200u : stance_ == 2 ? 0x100u : 0u; }
     int stance() const { return stance_; } // 0 stand, 1 crouch, 2 prone (client stance, 0x59b724 +8)
     void setStance(int s) { stance_ = s; }
     // Player-state events 0x8c / 0x8d / 0x8e (cgame 0x4bac21..0x4bac60): the client stance becomes stand / crouch / prone, unless

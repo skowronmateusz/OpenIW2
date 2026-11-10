@@ -135,6 +135,40 @@ void unitTests() {
     CHECK(in2.leanLeft && !in2.leanRight && in2.adsHeld && in2.holdBreathHeld);
     c.buttons = 0x80;
     CHECK(netgame::inputFromUsercmd(c).leanRight);
+    {
+        // Hold breath through runUsercmd (the server's pmove and the client's prediction): fully aimed with a scoped
+        // weapon and 0x8000 held, the breath flag rises and the sway scale falls below 1 (MP 0x4f2aa0 gates on the
+        // weapon's reticle and class, so the weapon side must say the weapon holds breath).
+        game::CollisionWorld empty;
+        netgame::WeaponMove wm;
+        wm.adsAllowed = true;
+        wm.adsFrac = 1.0f;
+        wm.breathWeapon = true;
+        game::PlayerState ps;
+        ps.breathScale = 1.0f;
+        int prev = 0;
+        for (int t = 50; t <= 1000; t += 50) {
+            UserCmd hc;
+            hc.serverTime = t;
+            hc.buttons = 0x1000 | 0x8000;
+            netgame::runUsercmd(empty, ps, hc, prev, &wm);
+            prev = t;
+        }
+        CHECK(ps.holdingBreath);
+        CHECK(ps.breathScale < 0.5f);
+        wm.breathWeapon = false; // no reticle: no hold breath
+        game::PlayerState ps2;
+        ps2.breathScale = 1.0f;
+        prev = 0;
+        for (int t = 50; t <= 500; t += 50) {
+            UserCmd hc;
+            hc.serverTime = t;
+            hc.buttons = 0x1000 | 0x8000;
+            netgame::runUsercmd(empty, ps2, hc, prev, &wm);
+            prev = t;
+        }
+        CHECK(!ps2.holdingBreath && ps2.breathScale == 1.0f);
+    }
     // The entity event ring keeps the last four events (net.md section 13).
     netgame::EventRing ring;
     for (int i = 0; i < 6; ++i) ring.push(netgame::kEvFireWeapon + (i & 1), i + 1);

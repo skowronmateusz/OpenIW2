@@ -44,6 +44,13 @@ Held or pressed since the last command: attack 0x1, melee 0x4, activate 0x8, rel
 → 0x100 | 0x2000, else `+movedown` held → 0x200 | 0x2000, else client stance 1 → 0x200 (crouch), 2 → 0x100
 (prone). Aim 0x1000 = `+speed` held XOR the `toggleads` flag, or always while the weapon state is 0x13 / 0x14.
 
+The MP command builder (CL_CreateCmd, MP 0x408b00) collects the buttons (0x4088a0) and then always adds the stance
+(0x4082f0, from the client stance setting, MP keeps it in a dvar read at +8): an open menu does not stop it. The stance is
+a setting, not a held button, so a crouched or prone player stays so while the in-game menu (ESC) is open. openiw2: with
+a menu open (or freezecontrols) the command carries no buttons except the client stance bits (0x200 crouch, 0x100 prone,
+`ClientInput::stanceButtons`); a held `+prone` / `+movedown` does not count then. TODO(spec): whether the original
+releases held kbuttons when the menu takes the keys was not checked; the held-stance case falls back to the setting.
+
 ## freezecontrols (pm_flags 0x8000)
 
 `freezecontrols(on)` (0x5392e0) stores the flag in the client record (+0x8630); an absolute `playerlinkto` sets another byte (+0x8698).

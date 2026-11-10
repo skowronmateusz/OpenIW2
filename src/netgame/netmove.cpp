@@ -73,6 +73,7 @@ void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const 
         in.adsAllowed = weapon->adsAllowed;
         in.adsFrac = weapon->adsFrac;
         in.weaponState = weapon->weaponState;
+        in.breathWeapon = weapon->breathWeapon;
         mp.weaponSpeedScale = weapon->params.weaponSpeedScale;
         mp.hipSpread = weapon->params.hipSpread;
     }

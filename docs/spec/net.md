@@ -942,7 +942,12 @@ Sources: VAs in the 1.3 Linux dedicated server (`0x8…`) and in the patch 1.3 M
 crouch 0x200, lean 0x40 / 0x80 and aim 0x1000); the rest are the client's button bits of docs/spec/weapons.md:
 attack 0x1, melee 0x4, use 0x8, reload 0x10, use-or-reload 0x20, jump 0x400, stance held 0x2000, binoculars 0x4000,
 hold breath 0x8000, frag 0x10000, smoke 0x20000. The movement (`inputFromUsercmd`, shared with the client's prediction)
-takes the moves, angles, jump, stance, lean, aim and hold-breath bits. Script queries `useButtonPressed`,
+takes the moves, angles, jump, stance, lean, aim and hold-breath bits. Hold breath (MP 0x4f2aa0, the same rules as the
+SP 0x4dd350) needs, besides the 0x8000 bit (usercmd +8) and aim fraction 1, a weapon with an aim overlay reticle (def
++0x278 non-null) that is not of class item (def +0x7c != 9); its flag is pm_flags 0x4000, the sway scale ps+0x5b4 and
+the timer ps+0x5b8 (wire fields breathHoldScale / breathHoldTimer). Both the server's movement and the client's prediction
+therefore take that weapon test from their weapon side (`WeaponMove::breathWeapon`); without it the scope sway is never
+steadied in a network game. The cgame breath sounds (MP 0x4d5e30) read pm_flags 0x4000 of the predicted state. Script queries `useButtonPressed`,
 `attackButtonPressed` and `meleeButtonPressed` read a network player's command buttons (masks 0x28, 0x1, 0x4 as for
 the local player); `isOnGround` reads its movement state.
 

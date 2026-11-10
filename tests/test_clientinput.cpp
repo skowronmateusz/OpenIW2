@@ -40,6 +40,16 @@ void bindings() {
     CHECK(in.forwardMove() == 127);
     in.key("W", false);
     CHECK(in.forwardMove() == 0);
+    // The command while a menu has the keys carries only the client stance (CL_CreateCmd MP 0x408b00 adds it to every
+    // command): crouched or prone stays so, standing sends nothing.
+    CHECK(in.stanceButtons() == 0);
+    in.command("togglecrouch");
+    CHECK(in.stanceButtons() == Button::Crouch);
+    CHECK((in.buttons(false) & (Button::Crouch | Button::Prone)) == Button::Crouch);
+    in.command("toggleprone");
+    CHECK(in.stanceButtons() == Button::Prone);
+    in.command("toggleprone");
+    CHECK(in.stanceButtons() == 0);
 }
 
 // Key names (0x40b880) and the key table reads of buttonpressed / getcommandfromkey (0x5d2728 down, 0x5d2730 binding).

@@ -9294,6 +9294,7 @@ int main(int argc, char** argv) {
                         const std::string mn = cs != netClient->configstrings.end() ? cs->second : std::string();
                         if (aj && std::atoi(aj) != 0 && (mn.rfind("team_", 0) == 0 || mn.rfind("weapon_", 0) == 0)) {
                             const std::string resp = mn.rfind("team_", 0) == 0 ? "autoassign"
+                                                     : std::getenv("IW2_MP_WEAPON") ? std::string(std::getenv("IW2_MP_WEAPON")) // debug: as the local autojoin
                                                      : mn == "weapon_german" ? "mp40_mp" : mn == "weapon_russian" ? "ppsh_mp" : "thompson_mp";
                             netClient->addReliableCommand("mr " + std::to_string(netClient->serverId) + " " + tok[1] + " " + resp);
                         } else menuCommand("popupopen", tok[1]);
@@ -9647,7 +9648,7 @@ int main(int argc, char** argv) {
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
             // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
             const bool controlsBlocked = !frontStack.empty() || (world && world->controlsFrozen());
-            uint32_t buttons = controlsBlocked ? 0u : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
+            uint32_t buttons = controlsBlocked ? input.stanceButtons() : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
             // IW2_DEBUG_THROW=<seconds>[,<seconds>...]: holds the frag key for 150 ms from each real time (docs/debug-flags.md).
             if (static const char* dt = std::getenv("IW2_DEBUG_THROW"); dt && !controlsBlocked) {
                 const double realS = double(SDL_GetTicksNS()) * 1e-9;
@@ -10166,6 +10167,15 @@ int main(int argc, char** argv) {
                         (changed & 0xffffd4ffu) != 0 || (buttons & 0x30000u))
                         hudFade.compass = nowMs;
                     hudFade.buttons = buttons;
+                    if (std::getenv("IW2_STANCE_TRACE")) { // debug: stance and hold breath per frame, every 250 ms (docs/debug-flags.md)
+                        static int64_t nextTrace = 0;
+                        if (nowMs >= nextTrace) {
+                            nextTrace = nowMs + 250;
+                            std::cout << "stancetrace t=" << nowMs << " menu=" << !frontStack.empty() << " buttons=0x" << std::hex << buttons << std::dec
+                                      << " stance=" << int(ps.stance) << " ads=" << pweapon.adsFrac() << " breath=" << ps.holdingBreath
+                                      << " breathScale=" << ps.breathScale << " net=" << (netClient != nullptr) << "\n";
+                        }
+                    }
                     // +scores / -scores (0x4a4d40 / 0x4a4d20): each change of the objectives key stamps the touch time 0xf79200.
                     if (!std::getenv("IW2_SHOT_OBJECTIVES") && input.objectivesHeld() != hudFade.objectivesHeld) hudFade.objectivesHeld = input.objectivesHeld(), hudFade.objectives = nowMs;
                 }

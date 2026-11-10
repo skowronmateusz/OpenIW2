@@ -84,6 +84,8 @@ WeaponMove weaponMoveOf(const game::PlayerWeapon& w) {
     m.adsFrac = w.adsFrac();
     m.weaponState = w.stateNumber();
     if (w.equipped()) {
+        const std::string ret = w.field("adsOverlayReticle");
+        m.breathWeapon = !ret.empty() && ret != "none" && w.field("weaponClass") != "item";
         auto n = [&](const char* k) { return w.number(k); };
         m.params.weaponSpeedScale = n("moveSpeedScale");
         m.params.hipSpread = {n("hipSpreadStandMin"), n("hipSpreadDuckedMin"), n("hipSpreadProneMin"), n("hipSpreadMax"),

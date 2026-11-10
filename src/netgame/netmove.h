@@ -28,6 +28,9 @@ struct WeaponMove {
     bool adsAllowed = false;
     float adsFrac = 0;
     int weaponState = 0;
+    // Hold breath applies to this weapon: it has an aim overlay reticle and is not of class item (MP 0x4f2aa0 tests
+    // weapon def +0x278 and +0x7c != 9, as the SP 0x4dd350 does).
+    bool breathWeapon = false;
     game::MoveParams params;
 };
 // The movement step of a command: the difference to the previous command's time, clamped to 0..200 ms;
