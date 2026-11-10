@@ -304,7 +304,9 @@ script::ObjectPtr decodeHudElem(const uint8_t* in, const std::function<script::O
 
 WorldGame::WorldGame(World* w, std::string map, std::string gametype, int serverId, int maxClients)
     : w_(w), map_(std::move(map)), gametype_(std::move(gametype)), serverId_(serverId), maxClients_(maxClients) {
-    for (ConfigstringRange* r : {&weapons_, &materials_, &strings_, &models_, &hints_})
+    // A name added after the gamestate goes to the clients as a configstring command. Sounds are added when a script
+    // first plays them (playLocalSound's MP_hit_alert): without it a client could not resolve that sound command.
+    for (ConfigstringRange* r : {&weapons_, &materials_, &strings_, &models_, &hints_, &sounds_})
         r->onAdd = [this](int index, const std::string& value) { announce(index, value); };
     if (w_) setWorld(w_, map_, gametype_, serverId_);
 }

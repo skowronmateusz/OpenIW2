@@ -153,7 +153,9 @@ command (`s <index>`): announcer lines (`tdm.gsc:1150-1172`), the hit alert, the
 `playSound` on an entity is positional for every client.
 
 The command is reliable and has the letter `s` (0x73) with one number: the alias's sound index (the sound
-configstring is 590 + index), registered on first use like the other script sounds.
+configstring is 590 + index), registered on first use like the other script sounds. A sound registered after the
+gamestate reaches the clients as a configstring change before the command, so the client can resolve the index (the
+hit alert is usually first played during the game).
 
 Implemented: `playLocalSound` on a client plays only when that client is the local one; on any other client the
 network server sends that client `s <index>` and the client plays the alias without a position; `playSound` and weapon fire

@@ -122,7 +122,10 @@ struct Dedicated : Side {
                 cl->sendCommand(c, now);
             }
             for (const std::string& sc : cl->takeServerCommands())
-                if (sc.rfind("s ", 0) == 0) sounds.push_back(sc);
+                if (sc.rfind("s ", 0) == 0) { // the alias the client resolves from the sound configstrings ("" when unknown)
+                    const auto it = cl->configstrings.find(netgame::kSoundConfigstrings - 1 + std::atoi(sc.c_str() + 2));
+                    sounds.push_back(it == cl->configstrings.end() ? std::string() : it->second);
+                }
             server.poll(now, 0);
             now += 50;
         }
@@ -170,6 +173,7 @@ struct Outcome {
     std::vector<Probe> probes;
     bool crouchTouched = false, standTouched = false;
     size_t sounds = 0, localSoundsLogged = 0;
+    std::string soundAliases; // the aliases of the sound commands as the client resolves them
 };
 
 Outcome scenario(Side& s, const char* name) {
@@ -209,7 +213,9 @@ Outcome scenario(Side& s, const char* name) {
     const size_t soundsBefore = w.mpState().localSounds.size();
     call(w, "playlocalsound", {Value("MP_hit_alert")}, Value(p->obj));
     out.localSoundsLogged = w.mpState().localSounds.size() - soundsBefore;
-    out.sounds = s.takeSounds().size();
+    const std::vector<std::string> played = s.takeSounds();
+    out.sounds = played.size();
+    for (const std::string& a : played) out.soundAliases += a;
     // Pick up a weapon item lying in view with a use press.
     std::string item;
     for (const char* wn : {"kar98k_mp", "m1garand_mp", "mosin_nagant_mp", "enfield_mp", "springfield_mp"})
@@ -259,6 +265,8 @@ int main() {
     CHECK(!h.crouchTouched && h.standTouched);
     CHECK(!n.crouchTouched && n.standTouched);
     CHECK(n.localSoundsLogged == 1 && n.sounds == 1);
+    // The alias was first registered by this playLocalSound: its configstring reached the client before the command.
+    CHECK(n.soundAliases == "MP_hit_alert");
     for (const auto& e : host.w.vm().errors()) std::cerr << "host script error: " << e << "\n";
     for (const auto& e : ded.w.vm().errors()) std::cerr << "network script error: " << e << "\n";
     if (failures) std::cerr << failures << " check(s) failed\n";
