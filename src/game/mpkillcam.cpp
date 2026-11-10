@@ -489,6 +489,27 @@ void World::antilagRelink() {
     collision_->setEntityClips(std::move(clips));
 }
 
+// ClientThink links the client's entity right after its move (0x80f6546 in the 1.3 Linux dedicated server, after the
+// box copy), so a client moved earlier in a server frame blocks the commands run after it. Origin and box change here:
+// a clip that is not there yet (a client that just spawned) comes with the next frame's rebuild. The box top follows
+// the stance of the move (the box copy before the link).
+void World::mpLinkClient(int client) {
+    Entity* e = mpClientEntity(client);
+    if (!e) return;
+    const Value o = e->obj->get("origin");
+    if (!o.isVector()) return;
+    std::vector<EntityClip> clips = collision_->entityClips();
+    for (EntityClip& c : clips)
+        if (c.id == e->number) {
+            const float top = playerClipHeight(*e);
+            if (c.origin == o.asVector() && c.maxs[2] == top) return;
+            c.origin = o.asVector();
+            c.maxs[2] = top;
+            collision_->setEntityClips(std::move(clips));
+            return;
+        }
+}
+
 // 0x811fdec: the rewound clients get their live origins back.
 void World::mpAntilagRestore() {
     if (antilagSaved_.empty()) return;

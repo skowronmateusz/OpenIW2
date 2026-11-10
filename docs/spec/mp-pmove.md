@@ -152,6 +152,30 @@ TODO(spec): the pellet impact effects of the cgame are those of a single bullet.
 TODO(spec): the sessionteam string of value 0 is taken as "none" from the order of the setter (0x80f7db6) and the error
 text listing allies, axis, none and spectator.
 
+## Players against each other
+
+VAs in the 1.3 Linux dedicated server unless noted.
+
+- A client's entity has the player contents 0x2000000 (set at 0x80f56eb); the move's trace mask holds that bit
+  (PlayerClipMask 0x281c011), and the move skips only the moving client's own entity (pass entity = its number). So
+  every other living client, bot or human, is solid to the move.
+- ClientThink (from 0x80f5d2e) runs one command: the move, the box of the stance it ended in copied into the entity
+  (three vector copies 0x80f64e8..0x80f6526), the client events (0x80f653b), then the entity is linked (0x80f6546). The link happens per command, not
+  once per server frame: when two clients' commands are run in the same frame, the second one's move already traces
+  against the first one at its new place. The single-player ClientThink does the same (link at 0x4e7dae, VAs in the
+  patch 1.3 SP executable).
+- The box: 15 to each side, from the origin up to 70 standing, 50 crouched, 30 prone. The player entity state sends
+  it packed in `solid` (x/y half size, down, up + 32 in three bytes, docs/spec/net.md section 11).
+- Client prediction: the other players of the snapshot are solid to the prediction with the box from their `solid`.
+  `TODO(spec)`: which origin the original's solid list uses (the newest snapshot or the drawn, interpolated one);
+  openiw2 uses the drawn one.
+
+openiw2 (`World::mpLinkClient`, `World::playerClipHeight`): the server moves a network client and moves its clip with
+the new origin and stance box at once; the listen host's own move (`setPlayerOrigin`) does the same. Entity clips are
+otherwise rebuilt once per world frame, which let two clients walking into each other in the same frame each trace
+against the other's old place; they then overlapped and walked through. A network client's view world places the
+other players' clips each time it places them from the snapshots, with the sent box.
+
 ## OpenIW2
 
 `multiplayerMoveParams()` (src/game/pmove.cpp) sets the MP dvar defaults; the local player of an MP map (iw2view), bots

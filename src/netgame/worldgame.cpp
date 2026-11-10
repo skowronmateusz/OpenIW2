@@ -717,6 +717,8 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     script::OriginWatch::allowed = true;
     e->obj->set("origin", Value(script::Vec3{m.lastOrigin[0], m.lastOrigin[1], m.lastOrigin[2]}));
     script::OriginWatch::allowed = false;
+    e->obj->set("$clipheight", Value(m.ps.stance == game::Stance::Prone ? 30.0f : m.ps.stance == game::Stance::Crouch ? 50.0f : 70.0f));
+    w_->mpLinkClient(it->second); // linked after the move: the next client's command sees it there (docs/spec/mp-pmove.md)
     if (netTrace && slot >= 0 && slot < script::OriginWatch::kSlots) {
         script::OriginWatch::enabled = true;
         script::OriginWatch::object[slot] = e->obj.get();
@@ -888,7 +890,8 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     putI(es, 16, serverTime());
     putI(es, 20, 50);
     putI(es, 48, 1);
-    putI(es, 156, 15 | (1 << 8) | ((70 + 32) << 16));
+    // The top follows the client's stance (its move box, docs/spec/mp-pmove.md "Players against each other").
+    putI(es, 156, 15 | (1 << 8) | ((int(w_->playerClipHeight(e)) + 32) << 16));
     bool onGround = true;
     for (const auto& [s, n] : mp_)
         if (n == client)

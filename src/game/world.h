@@ -409,6 +409,10 @@ public:
     // usercmd buttons of a non-local client (the listen server's own player uses setPlayerCommand)
     // A dedicated server (before mpStart): no client is this process's local player, client 0 included.
     void mpSetDedicated() { mpDedicated_ = true; }
+    // After a client's server move: its entity clip takes the new origin at once, so the next client's command of the
+    // same frame traces against it (docs/spec/mp-pmove.md "Players against each other").
+    void mpLinkClient(int client);
+    float playerClipHeight(const Entity& e) const; // top of a player's box (src/game/entityclips.cpp)
     // The local client (docs/spec/mp.md "Local client view"): the client whose screen this process shows. Its script
     // menus, iprintln lines and client cvars reach the front end; other clients' do not.
     int mpLocalClient() const { return mp_ ? mp_->localClient : -1; }
@@ -553,6 +557,7 @@ public:
         float yaw = 0;
         std::string team;      // sessionteam ("" keeps the current one)
         int viewHeight = 60;   // stance for the animation: 60 stand, 40 crouch, 11 prone
+        float boxHeight = 70;  // top of the box from the packed solid (the prediction clips against it)
         bool dead = false;
         bool hidden = false;   // not playing (spectator): not drawn
         std::string model;                     // body model of the client state ("" keeps the current one)

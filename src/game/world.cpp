@@ -1388,6 +1388,8 @@ void World::setPlayerOrigin(const Vec3& origin, const Vec3& angles) {
     if (!player_) return;
     player_->obj->set("origin", Value(origin));
     player_->obj->set("angles", Value(angles));
+    // A listen host's own move is linked at once too: the network clients' commands of the frame trace against it.
+    if (mp_ && !mpRemote_ && mp_->localClient >= 0) mpLinkClient(mp_->localClient);
 }
 
 bool World::submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const {

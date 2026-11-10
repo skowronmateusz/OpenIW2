@@ -70,6 +70,14 @@ bool World::isScriptMover(const Entity& e) {
 // (0x4fc74f), the player 0x2000000 (0x4e90e2), script_brushmodel 1 (0x533440), script_model 0x2080 (0x533480), script_origin 0
 // (0x5334d0); `solid` restores the model / brush value and `notsolid` clears it (0x533f70 / 0x534050).
 // TODO(spec): other entity classes (their spawn contents are not examined; 0 here).
+// The top of a player's box: the pmove box of its stance (70 / 50 / 30). A multiplayer client other than the local
+// player carries it in "$clipheight": the server's move sets it per client, a network client takes it from the packed
+// box (solid) of the snapshot (docs/spec/mp-pmove.md "Players against each other").
+float World::playerClipHeight(const Entity& e) const {
+    if (const Value h = e.obj->get("$clipheight"); h.isNumber() && &e != player_) return h.asFloat();
+    return playerBoxHeight();
+}
+
 uint32_t World::entityContents(const Entity& e) const {
     const Value c = e.obj->get("$contents");
     if (c.isNumber()) return uint32_t(c.asInt());
@@ -111,7 +119,7 @@ void World::syncEntityClips() {
             c.origin = o.asVector();
             c.mins = {-15, -15, 0};
             // the player's r.maxs is the pmove box of its stance (ClientThink 0x4e7d68..0x4e7da2, linked at 0x4e7dae)
-            c.maxs = {15, 15, e.isActor ? 72.0f : playerBoxHeight()};
+            c.maxs = {15, 15, e.isActor ? 72.0f : playerClipHeight(e)};
             c.contents = e.isActor && e.ai.dyingContents ? e.ai.dyingContents : entityContents(e); // 0xc0: 0x4000 actor (0x4fc74f), 0x2000000 player (0x4e90e2), what setcontents stored, or the death think's 0x4002000 (0x548bc0)
             if (!c.contents) continue;      // 0x44b2d0 unlinks an entity without contents: no trace sees it
             // Actors (0x4fc74f) and, in multiplayer, clients with a body model: Bullet_Fire's locational trace (VAs in the 1.3

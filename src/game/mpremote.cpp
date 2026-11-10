@@ -72,6 +72,7 @@ void World::mpSetRemotePlayers(const std::vector<RemotePlayer>& players) {
         if (!p.team.empty()) cl.ent->obj->set("sessionteam", Value(p.team));
         cl.ent->obj->set("sessionstate", Value(p.hidden ? "spectator" : p.dead ? "dead" : "playing"));
         cl.ent->obj->set("health", Value(int32_t(p.dead ? 0 : 100)));
+        cl.ent->obj->set("$clipheight", Value(p.boxHeight));
         // The animation input as the server's (stance and moves; src/game/mpplayers.cpp derives the rest).
         if (MpPlayerInput* pi = mpPlayerInput(p.client)) {
             pi->valid = true;
@@ -85,6 +86,9 @@ void World::mpSetRemotePlayers(const std::vector<RemotePlayer>& players) {
         if (cl.ent) cl.ent->obj->removed = true;
         cl = MpClient{};
     }
+    // The prediction clips against the other players where they are drawn, with their sent box (docs/spec/mp-pmove.md
+    // "Players against each other"): the clips follow every placement, not only the next world frame.
+    syncEntityClips();
 }
 
 void World::mpSetRemotePlayerWeapon(int client, const std::string& weapon, float lean) {

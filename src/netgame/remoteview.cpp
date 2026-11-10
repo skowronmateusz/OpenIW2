@@ -87,6 +87,8 @@ std::vector<game::World::RemotePlayer> RemoteView::players(const net::ClientSnap
         rp.dead = (flags & kEfDead) != 0;
         rp.hidden = (flags & kEfHidden) != 0;
         rp.viewHeight = (flags & kEfProne) ? 11 : (flags & kEfCrouch) ? 40 : 60;
+        // solid (+156): x/y half size, down, up + 32 in three bytes (docs/spec/net.md section 11)
+        if (const int solid = getI(es, 156); solid && solid != 0xffffff) rp.boxHeight = float(((solid >> 16) & 0xff) - 32);
         if (const auto cs = b.clients.find(e.clientNum); cs != b.clients.end()) {
             rp.name = clientStateName(cs->second);
             rp.team = teamName(getI(cs->second, 4) & 3);
