@@ -342,6 +342,9 @@ void dm(fs::Vfs& vfs) {
         for (int i = 0; i < 260; ++i) {
             g.frame();
             const net::ClientSnapshot* s = g.clients[1]->latest();
+            // In the replay this client's input drives no weapon of its own (the killcam view weapon is the followed one).
+            if (s) CHECK(netgame::RemoteView::ownWeaponRuns(s) == !netgame::RemoteView::following(*s));
+            if (s && netgame::RemoteView::following(*s)) CHECK(!netgame::RemoteView::ownWeaponRuns(s));
             if (!s || !netgame::RemoteView::following(*s)) {
                 if (followSnaps > 0) {  // the killcam ended
                     // The newest snapshot is live, the drawn time still in the replay: the view stays on the last followed one.
@@ -469,6 +472,8 @@ void dm(fs::Vfs& vfs) {
         // After the killcam bravo is no longer following.
         const net::ClientSnapshot* s = g.clients[1]->latest();
         CHECK(s && !netgame::RemoteView::following(*s));
+        CHECK(netgame::RemoteView::ownWeaponRuns(s));
+        CHECK(!netgame::RemoteView::ownWeaponRuns(nullptr));
     }
     CHECK(netgame::sayCommand(false, "hi there") == "say \x15hi there");
     CHECK(netgame::sayCommand(true, "go") == "say_team \x15go");

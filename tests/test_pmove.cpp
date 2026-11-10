@@ -320,6 +320,21 @@ int main() {
         }
     }
     {
+        // Weapon input: none while dead, spectating (4), in the intermission (5) or following (killcam).
+        CHECK(!weaponInputBlocked(false, 0, false));
+        CHECK(weaponInputBlocked(true, 0, false));
+        CHECK(weaponInputBlocked(false, 4, false));
+        CHECK(weaponInputBlocked(false, 5, false));
+        CHECK(weaponInputBlocked(false, 0, true));
+        // Player-state event handling after a new predicted state (resyncEventSeq).
+        CHECK(resyncEventSeq(10, 10) == 10);
+        CHECK(resyncEventSeq(20, 10) == 16);  // only the last 4 are in the ring
+        CHECK(resyncEventSeq(8, 10) == 10);   // a corrected prediction: nothing is played twice
+        CHECK(resyncEventSeq(0, 500) == 0);   // a spawn's fresh state: the next footstep (seq 1) plays at once
+        int handled = resyncEventSeq(0, 500);
+        CHECK(resyncEventSeq(1, handled) == 0 && 1 > handled);
+    }
+    {
         // The weapon is put away while mantling, on a ladder (pm_flags 0x20, 0x4de91b) or in a vehicle (0x4de880).
         PlayerState w;
         CHECK(!moveLowersWeapon(w, false));

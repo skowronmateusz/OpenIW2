@@ -407,6 +407,12 @@ int PlayerWeapon::update(float dt, const Input& in) {
         name_.clear();
         holstered_ = true;
         fuse_ = 0;
+        // The offhand in hand at the death (a cooked or held grenade) does not come back with the next life: the spawn
+        // gives a fresh player state (pm_flags 0x10 clear, ps+0xac 0), and this weapon has no spawn of its own
+        // (docs/spec/net.md "Predicted weapon"). TODO(spec): the server spawn's player state clear (VA).
+        offhandActive_ = false;
+        offhand_.clear();
+        offhandLatch_ = false;
         // The ps weapon is 0, so the view code (CG_CalcFov 0x4ae7b0, scope overlay 0x4b6d7c) reads weapon 0's definition: no zoom, no overlay.
         adsFrac_ = 0;
         zoomingIn_ = true;

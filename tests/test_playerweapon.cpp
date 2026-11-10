@@ -249,6 +249,44 @@ void offhand() {
 }
 
 
+// Killed with a grenade in hand (state 13/14, flag 0x10): the dead step drops the offhand with the weapon, so the next
+// life's equip shows its own weapon, not the grenade (the spawn's fresh player state).
+void deathWithGrenade() {
+    const Def a{{"quickdroptime", "0.1"}, {"quickraisetime", "0.1"}, {"raisetime", "0.1"}, {"gunmodel", "rifle"}};
+    const Def g{{"weapontype", "grenade"}, {"holdfiretime", "0.3"}, {"firetime", "0.2"}, {"fusetime", "3"},
+                {"gunmodel", "grenade"}, {"offhandclass", "Frag Grenade"}};
+    PlayerWeapon w;
+    w.lookup = [&](const std::string& n) -> const Def* { return n == "frag" ? &g : &a; };
+    w.findOffhand = [](const std::string& cls) { return cls == "Frag Grenade" ? std::string("frag") : std::string(); };
+    w.equip("a", a);
+    PlayerWeapon::Input in;
+    in.weapon = "a";
+    for (int i = 0; i < 20; ++i) w.update(0.01f, in);
+    in.frag = true;
+    for (int i = 0; i < 50; ++i) w.update(0.01f, in);
+    CHECK(w.offhandActive() && w.viewWeaponName() == "frag");
+    in.dead = true;
+    for (int i = 0; i < 10; ++i) w.update(0.01f, in);
+    CHECK(!w.offhandActive() && w.viewWeaponName().empty());
+    int throws = 0;
+    for (const auto& e : w.takeEvents()) throws += e.kind == PlayerWeapon::Event::OffhandThrow;
+    CHECK(throws == 0);
+    in.dead = false;
+    in.frag = false; // the respawn: the button released, the weapon given again
+    w.equip("a", a);
+    for (int i = 0; i < 30; ++i) w.update(0.01f, in);
+    CHECK(!w.offhandActive() && w.viewWeaponName() == "a" && w.gunModel() == "xmodel/rifle");
+    CHECK(w.stateNumber() == 0);
+    // Still holding the frag key through the spawn must not bring the dead life's grenade back as a held one.
+    in.dead = true;
+    in.frag = true;
+    w.update(0.01f, in);
+    in.dead = false;
+    w.equip("a", a);
+    w.update(0.01f, in);
+    CHECK(w.viewWeaponName() != "frag" || w.stateNumber() == 12 || w.stateNumber() == 13);
+}
+
 // Cooking (0x4df5a0): the held grenade's fuse (ps+0x3c) only counts down when the weapon has cookOffHold (+0x33c). Without it
 // the fuse stays at fuseTime and the throw hands that to the grenade (0x527605). With it the fuse burns while held, the throw
 // carries the shortened fuse, and at 0 event 200 goes off in the hand.
@@ -806,6 +844,7 @@ void reducedKickWindow() {
 int main() {
     reducedKickWindow();
     deadPlayer();
+    deathWithGrenade();
     scopeExitOnDamage();
     adsFire();
     adsExitDelay();

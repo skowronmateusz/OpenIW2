@@ -193,6 +193,20 @@ bool mantleLowersWeapon(const PlayerState& ps);
 // The same weapon change puts the weapon away on a ladder (pm_flags 0x20, 0x4de91b) and in a vehicle (eFlags 0x20000
 // without 0x80000, 0x4de923), besides the mantle case above.
 bool moveLowersWeapon(const PlayerState& ps, bool inVehicle);
+// The player-state events already handled after a new state: at most the last 4 are still in the ring, and a state whose
+// sequence fell more than 4 below the handled count is a fresh one (a network client's spawn rebuilds its predicted
+// state from zero, docs/spec/net.md "Prediction and interpolation"): handling starts at its sequence, so its footsteps and
+// landings play at once instead of after the old count is reached again. A smaller drop (a corrected prediction) keeps
+// the count, so no event plays twice.
+// No weapon input runs (PM_Weapon 0x4dfc30 with pm_type >= 4: spectator 4, intermission 5, dead): nothing fires, aims,
+// reloads or throws, the aim fraction drops to 0. A network client following another one (the killcam, pm_flags
+// 0x400000) predicts nothing (MP 0x4deae0), so its input drives no weapon either.
+inline bool weaponInputBlocked(bool dead, int pmType, bool following) { return dead || pmType >= 4 || following; }
+inline int resyncEventSeq(int seq, int handled) {
+    if (seq < handled - 4) return seq;
+    if (seq - handled > 4) return seq - 4;
+    return handled;
+}
 // Mantle view yaw cap (0x525b60): while mantling the view yaw stays within mantle yaw ± mantle_view_yawcap.
 float mantleClampYaw(const PlayerState& ps, float yaw);
 

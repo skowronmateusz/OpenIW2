@@ -990,11 +990,15 @@ void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std
         auto it = def.find(k);
         return it != def.end() && !it->second.empty() ? &it->second : nullptr;
     };
+    // The player variants only for the local view's own shots (MP 0x4d70b0: weapon info +0xe0 / +0xe8 only when the
+    // snapshot is first person, flags 0xc00000, and the event entity is the player state's clientNum): another player's
+    // shot plays fireSound / lastShotSound at its position (the _plr aliases are 2D "local" sounds without falloff).
+    const bool viewShooter = shooter.isPlayer && (!mp_ || &shooter == player_);
     const std::string* snd = field("firesound");
-    if (shooter.isPlayer)
+    if (viewShooter)
         if (const std::string* p = field("firesoundplayer")) snd = p;
-    if (shooter.isPlayer && lastShot) {
-        const std::string* ls = field("lastshotsoundplayer");
+    if (lastShot) {
+        const std::string* ls = viewShooter ? field("lastshotsoundplayer") : nullptr;
         if (!ls) ls = field("lastshotsound");
         if (ls) snd = ls;
     }
@@ -1018,6 +1022,13 @@ void World::playWeaponFireSound(Entity& shooter, const std::map<std::string, std
     if (!shooter.isPlayer && shooter.obj->kind == "actor") compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
     // MP (0x4d72a3 -> 0x4daed0): a player entity's fire sound pings the compass too, except for the local client.
     else if (mp_ && shooter.isPlayer && !localShooter) compassPing(shooter, start, int(std::max(0.0f, seconds) * 1000.0f));
+    // MP 0x4d70fa: the event sets the entity's flash flag (cent +0x1e2); the player entity's weapon draw then plays the
+    // weapon's worldFlashEffect on the world model's tag_flash, as 0x4b6660 does for the SP actors. The local view has its
+    // own view model flash.
+    if (mp_ && shooter.isPlayer && !localShooter && !mpLocalInKillcam()) {
+        const std::string* flash = field("worldflasheffect");
+        if (flash) fxEvents_.push_back({*flash, start, {0, 0, 0}, shooter.number, "tag_flash"});
+    }
 }
 
 Vec3 World::playerFire(const Vec3& eye, const Vec3& forward, bool lastShot, float spreadDeg, const Vec3& gunOffset) {

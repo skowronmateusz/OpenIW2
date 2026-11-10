@@ -741,6 +741,33 @@ before anything else for a command whose clamped time is not newer than the last
 clock-reset exception of "Client time" lets such a command through) becomes the last command time and runs nothing.
 The local game (no commands) keeps its per-frame weapon step, at most 100 ms.
 
+### Remote sounds, killcam input, spawn (network client)
+
+- Fire sound of a player entity (VA 0x4d70b0 in the patch 1.3 MP executable): the alias starts as the weapon info's
+  fireSound (+0xdc). The player variant fireSoundPlayer (+0xe0) replaces it only when the snapshot is a first-person
+  one (snapshot flags 0xc00000) and the event's entity is the player state's clientNum (ps +0xd8); the same test picks
+  lastShotSoundPlayer (+0xe8) for event 0xa0, otherwise lastShotSound (+0xe4) when set. The local view's sound goes
+  through the view-weapon path; any other entity's is started at its flash tag (falling back to the entity's
+  position) as a positional sound, and for a player entity the compass ping follows (0x4daed0). The shipped player
+  aliases are non-positional ("local" channel, very large minimum distance), so another player's shot must never use
+  them. Reload, melee swipe and the throw of another player use the plain fields (reloadSound, meleeSwipeSound,
+  fireSound of the offhand) at the shooter's position, as openiw2 does.
+- Muzzle flash of another player: the fire event sets the entity's flash flag (0x4d70fa, cent +0x1e2); the weapon draw
+  of the player entity plays the weapon's worldFlashEffect on the world model's tag_flash. openiw2 queues that effect
+  bolted to the shooter's tag_flash for every non-local player's shot (network client and listen host); the torso
+  animation is the player anim script's fireweapon event (docs/spec/mp-players.md).
+- Intermission and spectating: pm_type 4 / 5 are in the PM_Weapon early-out (pm_type >= 4) like death, so no fire,
+  aim, reload or throw runs and the aim fraction is 0 (no zoom). The client applies the same rule to its predicted
+  weapon (`game::weaponInputBlocked`); the server's weapon step already runs only for a playing client.
+- Killcam: while the player state is a followed one (pm_flags 0x400000) the cgame predicts nothing (0x4deae0, section
+  "Prediction and interpolation"), so the local input steps no weapon: no own shots, effects or sounds. openiw2 runs
+  the predicted weapon as dead then; the view weapon and the shots are the followed client's (section 13).
+- Spawn: the predicted state restarts from zero at a spawn (pm_type from non-zero to 0), so its event sequence starts
+  again at 0. The handled count follows such a drop (more than 4 below it); before, the footsteps and landings of the
+  new life stayed silent until the new sequence passed the old count. A held offhand (a cooked or held grenade at the
+  death) is dropped by the dead weapon step, so the next life's view weapon is its own weapon. TODO(spec): the VA of
+  the server spawn's player state clear.
+
 ### Predicted weapon
 
 In the original the weapon is part of the predicted player state: every frame starts from the snapshot's copy

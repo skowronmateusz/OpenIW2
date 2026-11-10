@@ -57,6 +57,9 @@ public:
     static bool followView(const net::ClientSnapshot& a, const net::ClientSnapshot& b, float frac, float eye[3],
                            float angles[3]);
     static bool following(const net::ClientSnapshot& snap);
+    // Whether this client's own input drives its predicted weapon in this snapshot: not while it follows another client
+    // (the killcam; the cgame predicts nothing then, MP 0x4deae0), nor without a snapshot.
+    static bool ownWeaponRuns(const net::ClientSnapshot* snap) { return snap && !following(*snap); }
     // The followed client's shots in a network killcam: each new fire event of the player state's event ring (+164..)
     // is played once from the sent eye along the sent view (fire sound without a position, impacts, tracers;
     // World::mpRemoteFollowShot) and counted for the view model's fire animation. nowMs: the client clock of the drawn frame.

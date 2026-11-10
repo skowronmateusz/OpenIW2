@@ -9960,7 +9960,7 @@ int main(int argc, char** argv) {
                 }
                 // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
                 if (world) {
-                    if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
+                    lastEventSeq = game::resyncEventSeq(ps.eventSeq, lastEventSeq);
                     for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
                         world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
                         if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], cgNowMs()); // CG_EntityEvent 0x4bac84
@@ -10152,7 +10152,12 @@ int main(int argc, char** argv) {
                 wi.proneMoving = ps.stance == game::Stance::Prone && (input.forwardMove() != 0 || input.rightMove() != 0);
                 wi.binoculars = (buttons & game::Button::Binoculars) != 0;
                 wi.use = (buttons & (game::Button::Activate | game::Button::UseReload)) != 0;
-                wi.dead = playerDead; // PM_Weapon 0x4dfc30: pm_type >= 4 clears the weapon and does nothing else
+                // PM_Weapon 0x4dfc30: pm_type >= 4 (dead, spectator, intermission) clears the weapon and does nothing else.
+                // Following another client (the killcam): no prediction (0x4deae0), the view weapon is the followed one.
+                {
+                    const int pmt = netClient ? ps.pmType : mpSession == 2 ? 4 : mpSession == 3 ? 5 : 0;
+                    wi.dead = game::weaponInputBlocked(playerDead, pmt, netClient && !netgame::RemoteView::ownWeaponRuns(netClient->latest()));
+                }
                 wi.inVehicle = inVehicle;
                 wi.offhandBlocked = inVehicle; // eFlags 0x20300 (0x4df473); the turret skips PM_Weapon altogether (0x4dfc59)
                 {

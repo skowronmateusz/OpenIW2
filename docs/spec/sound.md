@@ -42,7 +42,7 @@ levels; empty means every level.
 `playsound(alias [, notify])` plays at the entity (without position on the player); with a notify name the
 entity gets that notify when the sound ends. Also `playsoundasmaster`, `playlocalsound`, `playloopsound`,
 `stoploopsound`, `ambientplay`, `ambientstop`, `musicplay`, `musicstop`. Weapon shots play the weapon's
-`fireSoundPlayer` (player) or `fireSound` (others); reloading and rechambering play `reloadSound` and
+`fireSoundPlayer` (the local view only; in MP another player is "others", docs/spec/net.md) or `fireSound` (others); reloading and rechambering play `reloadSound` and
 `rechamberSound`.
 
 ## Music, ambient and loadspec (audio survey, exe evidence)
