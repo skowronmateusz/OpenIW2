@@ -162,6 +162,19 @@ Weapon classes and the weapons in them:
 Because the Americans have no bolt-action rifle and the Russians no machine gun, `bolt` or `mg` alone is refused, and so
 is `grenades` alone; combine them with another class, e.g. `--weapons bolt,sniper,grenades`.
 
+### Smooth play over Wi-Fi
+
+Players who stand still and then jump forward are usually a Wi-Fi link that pauses. On a Mac, AWDL (used by AirDrop,
+Handoff, Sidecar, Universal Control and AirPlay) takes the radio off your network's channel for about 90 ms roughly
+twice a second, so every packet in that time is held back, even with a strong signal. A one-per-second `ping` does not
+show it. Measured on one Mac: pings to the router every 20 ms peaked at 96 ms with AWDL on and at 14 ms with it off.
+
+To avoid it: run the server on a cable, turn off AirDrop and Handoff while you play, set your router to channel 149
+(the channel AWDL uses, so the radio does not switch), or turn AWDL off until the next restart with
+`sudo ifconfig awdl0 down` (`sudo ifconfig awdl0 up` turns it back on; macOS may turn it on again by itself).
+OpenIW2 also evens out such a bursty path on the client and the server, at the cost of a little more delay for the
+player on that link.
+
 ### Cheats and developer keys
 
 Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:
