@@ -19,6 +19,14 @@ Evidence: VAs in the patch 1.3 MP executable (it contains both the client and th
 - Drawing (0x406d2d): the label is the localized `EXE_SAY` or `EXE_SAYTEAM` (0x5a1cf4 / 0x5a1d04) formatted `%s: `,
   then the field, at the vec2 dvar `cg_hudSayPosition` (registered at 0x4be4fc: default 5 126, range 0..640), text
   scale 0.2083 (5/24) with the usual small-font choice. TODO(spec): colours and the cursor.
+- Field position (verified): the dvar registered at 0x4be4d4 (`cg_hudChatPosition`) is the one the chat lines read
+  (0x4c7760 reads the pointer stored at 0x14c362c) and `cg_hudSayPosition` (0x4be4fc) the one the field reads (pointer
+  0x14b593c). The field caller (0x4caf70) passes the rounded say y + 24 to 0x406d00, which adds the font height times
+  the text scale (about 10 at 0.2083) to get the baseline: 126 + 24 + 10 = 160 with the defaults, below the history, whose
+  newest line ends at 150. The history is therefore never drawn over the field. The field is not an item of the history.
+- While the field is open the history is drawn exactly as before: 0x4c7760 does not look at the field state, so
+  `cg_chatTime` expiry and the fade go on and `cg_chatHeight` still limits the lines (callers 0x4cbd3b / 0x4cbd70,
+  in the HUD draw for the playing states). TODO(spec): the exact gating of those two calls per client state.
 
 ## Server: say / say_team (game module)
 - ClientCommand (0x503ad0) handles `say` and `say_team` with at least one argument: the arguments from 1 on are joined
@@ -69,6 +77,9 @@ Evidence: VAs in the patch 1.3 MP executable (it contains both the client and th
   0.5 0.5 1 1, axis 1 0.5 0.5 1.
 
 ## Player names
+Network name (openiw2 choice, TODO(spec): where the original takes the default name): the userinfo name is the `name` dvar
+of the menu / profile (`seta name` in the profile's config), else the active profile's own name (`default` gives
+`player`), read from the profile files so a `+connect` start, which joins before the menus load, uses it too.
 ClientUserinfoChanged (0x4fe1ea) cleans the userinfo `name` into a 32-byte buffer (0x4fe010): leading spaces are
 dropped, `^0` is dropped, other `^x` pairs are kept while 2 more bytes fit, more than 3 spaces in a row are dropped,
 other characters are kept while 1 more byte fits (at most 31 bytes). A name with nothing left, or with no character

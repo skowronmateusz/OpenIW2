@@ -97,6 +97,17 @@ int main() {
         CHECK(cmds.size() == 3 && cmds[0] == "chatmodepublic" && cmds[1] == "chatmodeteam" && cmds[2] == "mp_quickmessage");
     }
 
+    // Layout (0x4c7760, 0x4caf70): with the default positions (chat 150, say 126) the newest history line is the rect
+    // 140..150, older ones 10 higher each, and the field baseline is 126 + 24 + the scaled font height, below the history.
+    {
+        using iw2::game::mpChatFieldBaseline;
+        using iw2::game::mpChatLineTop;
+        CHECK(mpChatLineTop(150.0f, 0) == 140.0f && mpChatLineTop(150.0f, 1) == 130.0f && mpChatLineTop(150.0f, 7) == 70.0f);
+        const float field = mpChatFieldBaseline(126.0f, 10.0f);
+        CHECK(field == 160.0f);
+        for (int i = 0; i < 8; ++i) CHECK(field > mpChatLineTop(150.0f, i) + 10.0f); // no history line reaches the field
+    }
+
     const char* main = std::getenv("IW2_MAIN");
     if (!main) {
         std::cout << "IW2_MAIN not set, skipped\n";
@@ -122,6 +133,7 @@ int main() {
     w.mpSay(c1, 0, "\x15" "hello");
     auto chat = takeChat(w);
     CHECK(chat.size() == 3);
+    CHECK(countFor(chat, c1) == 1 && countFor(chat, c0) == 1 && countFor(chat, c2) == 1); // the sender gets his own line once, no local echo
     CHECK(!chat.empty() && chat[0].second == "h \x15" "\x15" "(\x14" "GAME_SPECTATOR\x15" ")Second^7: ^7\x15" "hello");
     // The local client gets the server command.
     bool local = false;

@@ -3542,6 +3542,21 @@ static std::string keyName(SDL_Scancode sc) {
 // log is kept as .1), the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a folder dialog, and it is
 // checked before it is mounted (src/fs/gamedir.h). Returns false when the user quits.
 struct AppStart { std::string mainDir, language; std::filesystem::path pref; uint32_t width = 0, height = 0; };
+// The multiplayer player name for a connection: the "name" dvar of the active profile's config (`seta name`), else the
+// profile's own name (openiw2 choice, TODO(spec): the original's source of a default name), else "player". Read from the
+// files so it also works for a +connect start, which joins before the profile is loaded into the menu cvars.
+static std::string profilePlayerName(const std::filesystem::path& playersDir, const std::string& menuName) {
+    if (!menuName.empty()) return menuName;
+    std::string profile;
+    if (std::ifstream af(playersDir / "active.txt"); af) std::getline(af, profile);
+    while (!profile.empty() && (profile.back() == '\r' || profile.back() == ' ')) profile.pop_back();
+    if (profile.empty()) return "player";
+    if (std::ifstream cf(playersDir / profile / "config.cfg"); cf) {
+        const auto cv = ui::parseConfig(std::string(std::istreambuf_iterator<char>(cf), {}));
+        if (const auto it = cv.find("name"); it != cv.end() && !it->second.empty()) return it->second;
+    }
+    return profile == "default" ? "player" : profile;
+}
 static bool appStartup(AppStart& out) {
     if (const char* home = std::getenv("HOME")) {
         const std::filesystem::path log = std::filesystem::path(home) / "Library/Logs/OpenIW2/openiw2.log";
@@ -3863,6 +3878,7 @@ int main(int argc, char** argv) {
         else {
         netClient = std::make_unique<net::GameClient>();
         ++netConnection;
+        netClient->name = profilePlayerName(app ? app->pref / "players" : std::filesystem::path(args[0]).parent_path() / "players", "");
         if (const char* n = std::getenv("IW2_NET_NAME")) netClient->name = n;
         for (const auto& [k, v] : extraCvars) if (k == "password") netClient->password = v; // --cvar password=...
         if (!netClient->connect(to, netNowMs())) {
@@ -5507,7 +5523,7 @@ int main(int argc, char** argv) {
         auto joinAddress = [&](const net::NetAddress& to) {
             std::cout << "joining " << to.toString() << "\n";
             auto nc = std::make_unique<net::GameClient>();
-            if (const std::string pn = menuEnv.getCvar("name"); !pn.empty()) nc->name = pn; // the player name of the multiplayer options
+            nc->name = profilePlayerName(playersDir, menuEnv.getCvar("name")); // the multiplayer options name, else the profile
             if (const char* n = std::getenv("IW2_NET_NAME")) nc->name = n;
             nc->password = menuEnv.getCvar("password"); // ui_mp/password.menu
             if (netClient) netClient->disconnect(); // a connection still held goes first
@@ -7063,7 +7079,7 @@ int main(int argc, char** argv) {
                     const auto lines = chatBuffer.frame(cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
                     for (size_t i = 0; i < lines.size(); ++i) {
                         const auto& l = lines[i];
-                        const float y = cp[1] - 10.0f * float(i + 1);
+                        const float y = game::mpChatLineTop(cp[1], int(i));
                         // Strip colour: the line's first ^N (0x4032e0: 8 g_TeamColor_Allies, 9 g_TeamColor_Axis), rgb x 0.25, alpha x 0.6.
                         static const float kTab[10][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}, {0, 0, 1}, {0, 1, 1}, {1, 0, 1}, {1, 1, 1}, {0.5f, 0.5f, 1}, {1, 0.5f, 0.5f}};
                         const float* col = l.code >= 0 ? kTab[l.code] : kTab[7];
@@ -7075,13 +7091,14 @@ int main(int argc, char** argv) {
                         const uint8_t white[4] = {255, 255, 255, uint8_t(std::clamp(l.alpha, 0.0f, 1.0f) * 255.0f)};
                         hudText(out, l.text, left43 + cp[0] * sc, (y + 9.0f) * sc, gs, *f, white, 0.0f, 1.0f, 3);
                     }
-                    // The field: "<EXE_SAY>: " or "<EXE_SAYTEAM>: " and the text. TODO(spec): the label colour, the cursor, the y origin.
+                    // The field: "<EXE_SAY>: " or "<EXE_SAYTEAM>: " and the text, below the history (docs/spec/mp-chat.md). TODO(spec): the label colour, the cursor.
                     if (chatField.open) {
                         const auto sp = vec2("cg_hudSayPosition", 5.0f, 126.0f);
                         const std::string* lab = loc.find(chatField.team ? "EXE_SAYTEAM" : "EXE_SAY");
                         const std::string label = (lab ? *lab : std::string(chatField.team ? "EXE_SAYTEAM" : "EXE_SAY")) + ": ";
                         const uint8_t white[4] = {255, 255, 255, 255};
-                        hudText(out, label + chatField.text + "_", left43 + sp[0] * sc, sp[1] * sc, gs, *f, white, 0.0f, 1.0f, 3);
+                        const float fieldY = game::mpChatFieldBaseline(sp[1], ts * float(f->pixelHeight));
+                        hudText(out, label + chatField.text + "_", left43 + sp[0] * sc, fieldY * sc, gs, *f, white, 0.0f, 1.0f, 3);
                     }
                 }
             }
