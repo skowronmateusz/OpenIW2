@@ -1116,6 +1116,10 @@ public:
     Entity* debugFireBullet(const Vec3& start, const Vec3& end) { return fireBullet(*player_, start, end, 10, player_); }
     // Test hook: Bullet_Fire from any entity (its `weapon` field names the weapon, as for actors).
     Entity* debugFireBulletFrom(Entity& shooter, const Vec3& start, const Vec3& end) { return fireBullet(shooter, start, end, 10, &shooter); }
+    // Test hook: a vehicle's turret shot, Bullet_Fire with the turret weapon named (as fireturret passes it) and that weapon's damage.
+    Entity* debugFireTurretBullet(Entity& vehicle, const Vec3& start, const Vec3& end, const std::string& weaponName) {
+        return fireBullet(vehicle, start, end, weaponDamage(weaponName), &vehicle, weaponName);
+    }
     void debugExpireDangerPlanes(Entity& e) { expireDangerPlanes(e); } // test hook: the per-think expiry 0x54b4d0
     bool debugMuzzlePosition(Entity& e, Vec3& out) { return muzzlePosition(e, out); } // test hook: the muzzle 0x500b40
     void debugAddDangerPlane(Entity& e, const Entity& source, const Vec3& a, const Vec3& b) { addDangerPlane(e, source, a, b); }

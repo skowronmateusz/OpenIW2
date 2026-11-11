@@ -509,7 +509,11 @@ MOD_PISTOL_BULLET / MOD_RIFLE_BULLET hurt only with bulletDamage, or with armorP
 MOD_GRENADE / MOD_GRENADE_SPLASH need grenadeDamage; MOD_PROJECTILE projectileDamage; MOD_PROJECTILE_SPLASH
 projectileSplashDamage; MOD_EXPLOSIVE always hurts; MOD_UNKNOWN, MOD_MELEE..MOD_TRIGGER_HURT (incl. MOD_CRUSH) never do.
 Bullet_Fire_Extended (0x531379..0x5313a3) passes MOD_RIFLE_BULLET with dflags 0x40 for rifleBullet weapons, else
-MOD_PISTOL_BULLET with 0, and ORs 2 for armorPiercing weapons. Implemented as `World::vehicleIgnoresDamage`
+MOD_PISTOL_BULLET with 0, and ORs 2 for armorPiercing weapons. For a vehicle's own turret shot `fireturret` (0x514260) passes
+Bullet_Fire the vehicle's turret weapon (weapon table 0x1c64548 indexed by the entity byte +2, the shot's +0x3c, read at 0x531385), so the
+flags come from that weapon: the armored car's `armoredcar_turret` (armorPiercing 1, no rifleBullet) shoots MOD_PISTOL_BULLET with dflags 2 and
+reaches a tank or truck whose file has armorPiercingDamage 1 (toujane_ride's destroyable panzer II). Taking the flags from the shooter's own
+`weapon` field instead (as for actors) lost the flag and made that tank immune. Implemented as `World::vehicleIgnoresDamage`
 (tests/test_itempickup.cpp). The libya tanks (tiger etc.) have bulletDamage 0, so the MP40 no longer hurts them.
 
 ## Collision after destruction

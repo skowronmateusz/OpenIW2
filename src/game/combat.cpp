@@ -739,6 +739,11 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     // 0x51ada0 hands Bullet_Fire the weapon definition of the turret entity's own weapon (table 0x1c64548 by entity byte +2,
     // read through the shot's +0x3c at 0x531385), multiplayer 0x810a982 -> 0x8120484 in the 1.3 Linux dedicated server.
     if (shooter.turret && !shooter.turret->weapon.empty()) def = weapon(shooter.turret->weapon);
+    // A vehicle's turret shot (fireturret 0x514260) hands Bullet_Fire (0x531340) the vehicle's own turret weapon, looked up in the weapon
+    // table 0x1c64548 by the entity's weapon index (byte +2) and read through the shot's +0x3c at 0x531385: its rifleBullet (+0x31c)
+    // and armorPiercing (+0x320) decide the means of death and the damage flags. Without it the armored car's armor-piercing 20 mm
+    // bullets reach a tank as plain pistol bullets with no flag 2 and the vehicle filter drops them (docs/spec/vehicles.md "Damage filter").
+    if (shooter.vehicle && !weaponName.empty()) def = weapon(weaponName);
     bool rifle = false;
     if (def) {
         auto it = def->find("riflebullet");

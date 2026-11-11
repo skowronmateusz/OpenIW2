@@ -81,6 +81,31 @@ int main() {
     CHECK(w.stats.shots > shots0); // the gun fires
     CHECK(health1 < 1000);         // and damages the enemy
 
+    // The turret weapon is armor piercing (armoredcar_turret: armorPiercing 1) and the kubelwagon's vehicle file takes armor-piercing
+    // bullets (bulletDamage 0, armorPiercingDamage 1), so the car's turret shot must wear a vehicle down. Before the fix the SP turret
+    // shot lost the weapon's armorPiercing flag (dflags 0), the vehicle filter dropped every hit and the toujane_ride tank could not be
+    // destroyed. A plain rifle bullet (no armorPiercing) must still be ignored by the same vehicle.
+    Entity* kubel = nullptr;
+    for (const auto& e : w.entities())
+        if (e->vehicle && !e->obj->removed && e->number != carId && e->obj->get("model").toString() == "xmodel/vehicle_german_kubel") kubel = e.get();
+    std::cout << "target vehicle " << (kubel ? kubel->number : -1) << "\n";
+    CHECK(kubel != nullptr);
+    if (kubel) {
+        kubel->obj->set("health", Value(100000));
+        const Vec3 kAt = kubel->obj->get("origin").asVector();
+        const Vec3 from{kAt[0] - 300, kAt[1], kAt[2] + 30};
+        const Vec3 to{kAt[0], kAt[1], kAt[2] + 30};
+        Entity* hit = w.debugFireBulletFrom(*car, from, to); // the shooter's own `weapon` field names none: a plain bullet
+        std::cout << "plain bullet hit " << (hit ? hit->number : -1) << " health " << kubel->obj->get("health").asInt() << "\n";
+        CHECK(hit == kubel);
+        CHECK(kubel->obj->get("health").asInt() == 100000); // bulletDamage 0 without the armor-piercing flag
+        hit = w.debugFireTurretBullet(*car, from, to, "armoredcar_turret");
+        const int vHealth = kubel->obj->get("health").asInt();
+        std::cout << "turret bullet hit " << (hit ? hit->number : -1) << " health 100000 -> " << vHealth << "\n";
+        CHECK(hit == kubel);
+        CHECK(vHealth < 100000);
+    }
+
     // The car's own intake. Bullets: the armoredcar vehicle file filters them (bulletDamage 0, armorPiercingDamage 0),
     // so enemy rifles must not wear the car down.
     const int carHealth0 = int(car->obj->get("health").asFloat());
