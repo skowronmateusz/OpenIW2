@@ -14,6 +14,8 @@
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <optional>
 #include <mutex>
 #include <thread>
 
@@ -27,6 +29,7 @@
 #include "netgame/dedicated.h"
 #include "netgame/netmove.h"
 #include "netgame/remoteview.h"
+#include "netgame/worldgame.h"
 
 using namespace iw2;
 
@@ -120,6 +123,28 @@ int main() {
     int lastEventSeq = 0;
     int lastGamestates = 0;
 
+    // The move parameters of the weapon in hand, as the front ends predict with them: the server's move runs at the
+    // weapon's moveSpeedScale (the run is 5% faster with this weapon), so a prediction without it misses by the
+    // difference over the commands the server has not acknowledged yet, and that depends on how late the snapshots are.
+    std::map<int, float> speedScales;
+    auto weaponMove = [&](int weapon) {
+        netgame::WeaponMove wm;
+        auto it = speedScales.find(weapon);
+        if (it == speedScales.end()) {
+            float scale = 0;
+            const std::string name = netgame::weaponNameFromList(client.configstrings, weapon);
+            if (const auto d = name.empty() ? std::nullopt : vfs.read("weapons/mp/" + name)) {
+                const std::string text(d->begin(), d->end());
+                const std::string key = "\\moveSpeedScale\\";
+                if (const size_t at = text.find(key); at != std::string::npos) scale = float(std::atof(text.c_str() + at + key.size()));
+            }
+            if (!name.empty()) it = speedScales.emplace(weapon, scale).first; // the name list may not be complete yet: ask again
+            else return wm;
+        }
+        wm.params.weaponSpeedScale = it->second;
+        return wm;
+    };
+
     // Runs the client for ms with the given command pattern; returns once done. pattern(t) -> buttons, forward.
     int cmdWeapon = 0;              // the weapon byte of the commands (the client's weapon select)
     uint32_t extraButtons = 0;      // buttons added to the pattern's
@@ -148,6 +173,7 @@ int main() {
             if (client.gamestates != lastGamestates) {
                 lastGamestates = client.gamestates;
                 predictor.reset(); // a new level: nothing of the old one carries over
+                speedScales.clear();
                 lastEventSeq = 0;
             }
             if (client.state() < net::ClientState::Primed || now - lastSend < 16) continue;
@@ -164,8 +190,9 @@ int main() {
             }
             const netgame::PsFields f = netgame::readPs(snap->ps);
             if (f.pmType != 0) continue;
+            const netgame::WeaponMove wm = weaponMove(f.weapon);
             const game::PlayerState& ps =
-                predictor.predict(world, f, client.commandsAfter(f.commandTime), nullptr, now);
+                predictor.predict(world, f, client.commandsAfter(f.commandTime), &wm, now);
             if (!r) {
                 lastEventSeq = ps.eventSeq;
                 continue;
@@ -177,7 +204,9 @@ int main() {
             if (ps.eventSeq - lastEventSeq > 4) lastEventSeq = ps.eventSeq - 4;
             for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
                 const int ev = ps.events[lastEventSeq & 3];
-                if ((ev > 0x46 && ev < 0x46 + 32) || ev == 0x5b) ++r->jumpEvents;
+                // The jump events are 0x46 + the surface of the ground left (0x47..0x5c, 0x5b on a ladder: pmove.cpp); the landings
+                // 0x5d..0x73 come right after them, and the sd spawn the round restart picks decides the ground's surface.
+                if (ev > 0x46 && ev <= 0x5c) ++r->jumpEvents;
             }
             if (wasOnGround && !ps.onGround && ps.velocity[2] > 100) {
                 ++r->jumps;
