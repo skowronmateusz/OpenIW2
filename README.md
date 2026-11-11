@@ -41,8 +41,7 @@ some are missing, it lists them. It remembers the folder and opens the main menu
 | Screenshots (`F12`) | `~/Library/Application Support/OpenIW2/screenshots/` |
 | Logs (last 5 starts: `openiw2.log`, `openiw2-1.log` ... `openiw2-4.log`) | `~/Library/Logs/OpenIW2/` |
 
-The language follows the localized files in your `main` folder. Controls are the game's defaults; `Esc` opens the
-menu.
+The language follows the localized files in your `main` folder.
 
 ### OpenIW2 settings
 
