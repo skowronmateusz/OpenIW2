@@ -142,6 +142,7 @@ void World::saveState(StateWriter& w) {
     for (const auto& v : stateRoots()) t.collect(v);
     vm_.collectState(t);
     w.str(mapName_);
+    vm_.writeCompileModes(w); // version 16: before the function names the table writes
     t.write(w);
     vm_.saveState(w, t);
 
@@ -510,6 +511,10 @@ void World::saveState(StateWriter& w) {
 void World::loadState(StateReader& r) {
     const std::string map = r.str();
     if (map != mapName_) throw std::runtime_error("savegame: map " + map + " does not match the loaded map " + mapName_);
+    // Version 16 lists the developer_script mode of each compiled script file; an older save has one mode for all of them, which
+    // restoreSave works out (r.legacyDeveloper).
+    if (r.version >= 16) vm_.readCompileModes(r);
+    else if (r.legacyDeveloper) vm_.pinDeveloperScriptForAll(*r.legacyDeveloper);
     std::unordered_map<uint64_t, script::ObjectPtr> live;
     script::collectLive(stateRoots(), live);
     ObjectTable t;
@@ -1124,7 +1129,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11 && ver != 12) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11 && ver != 12 && ver != 15) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 
@@ -1137,6 +1142,22 @@ std::string readSaveFile(const std::string& path, const std::string& name, Loade
 void restoreSave(World& world, const LoadedSave& save) {
     StateReader r(save.body.data() + sizeof kStateMagic + 4, save.body.size() - sizeof kStateMagic - 4);
     std::memcpy(&r.version, save.body.data() + sizeof kStateMagic, 4); // version 1 (before the movie-pending flag) still loads
+    // Before format 16 a save does not say how its files were compiled. Formats up to 12 and the format-15 saves of builds before the
+    // compiler followed developer_script come from a compiler that kept every assert / println / /# #/ block: mode on. A format-15 save of
+    // a later build carries the dvar in its cvar list (a record of two strings, name then value): that value was the mode.
+    if (r.version <= 12) r.legacyDeveloper = true;
+    else if (r.version == 15) {
+        static constexpr char key[] = {16, 0, 0, 0, 'd', 'e', 'v', 'e', 'l', 'o', 'p', 'e', 'r', '_', 's', 'c', 'r', 'i', 'p', 't'};
+        const auto& body = save.body;
+        const auto at = std::search(body.begin(), body.end(), std::begin(key), std::end(key));
+        if (at == body.end()) r.legacyDeveloper = true;
+        else {
+            const auto v = at + sizeof key;
+            uint32_t n = 0;
+            if (size_t(body.end() - v) >= 4) std::memcpy(&n, &*v, 4);
+            r.legacyDeveloper = n > 0 && size_t(body.end() - v) >= 4 + size_t(n) && std::atoi(std::string(v + 4, v + 4 + n).c_str()) != 0;
+        }
+    }
     world.loadState(r);
     world.markSaveLoaded();
 }

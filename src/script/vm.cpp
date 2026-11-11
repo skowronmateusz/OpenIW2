@@ -106,7 +106,7 @@ private:
             for (const auto& c : n.children) statement(*c);
             break;
         case NodeKind::DevBlock: // compiled only with developer_script, a bool dvar defaulting to 0 (0x42df9d; lexer 0x457820)
-            if (vm_.developerScript()) {
+            if (vm_.compilingDeveloperScript()) {
                 ++inDev_;
                 for (const auto& c : n.children) statement(*c);
                 --inDev_;
@@ -393,7 +393,7 @@ private:
                 // in a /# ... #/ comment"); openiw2 is lenient: with developer_script off the value is undefined. Needed because the
                 // parser accepts a missing ';' at a line end, so animscripts/traverse/stairs_down.gsc:15 reads `assert(...)` as a method
                 // call on the previous expression's value; that file must keep loading.
-                if (!vm_.developerScript()) {
+                if (!vm_.compilingDeveloperScript()) {
                     if (!discard) emit(Op::PushUndef, 0, 0, n.line);
                     return;
                 }
@@ -583,7 +583,10 @@ void VM::loadFile(const std::string& path) {
     File& file = files_[key];
     file.path = key;
     // Declare functions first so calls within the file resolve. Functions inside a file-scope /# #/ exist only with developer_script.
-    const bool dev = developerScript();
+    bool dev = developerScript();
+    if (const auto pin = devPinned_.find(key); pin != devPinned_.end()) dev = pin->second;
+    else if (devPinAll_) dev = *devPinAll_;
+    file.dev = dev;
     for (const auto& c : tree->children) {
         if (c->kind == NodeKind::Function) {
             if (c->devOnly && !dev) continue;
@@ -605,6 +608,11 @@ void VM::loadFile(const std::string& path) {
     // #animtree means the tree of the closest preceding #using_animtree, so a file may switch trees between
     // functions (maps/_truck.gsc does).
     files_[key].animtree.clear();
+    struct ModeGuard { // a nested loadFile (a call resolved to another file) must not leave its mode behind
+        bool& ref; bool prev;
+        ~ModeGuard() { ref = prev; }
+    } modeGuard{compileDev_, compileDev_};
+    compileDev_ = dev;
     for (const auto& c : tree->children) {
         if (c->kind == NodeKind::UsingAnimtree) files_[key].animtree = c->text;
         if (c->kind != NodeKind::Function || (c->devOnly && !dev)) continue;

@@ -168,6 +168,120 @@ void vmRoundTrip() {
     CHECK(a.save().size() == b.save().size());
 }
 
+
+// A saved pc counts the instructions of the code a file compiled to, and that code depends on developer_script (a println / assert is
+// dropped with it off). A save names the mode of every file; a load compiles in that mode whatever the dvar says now, and refuses a
+// frame whose code size differs (docs/spec/savegame.md section 5, format 16).
+const char* kDevScript = R"(
+main() { level.x = 5; level thread helper(); }
+helper()
+{
+    println("dev A");
+    assert(1);
+    emit("start");
+    println("dev B");
+    level waittill("go");
+    println("dev C");
+    assert(1);
+    emit("resumed " + level.x);
+}
+)";
+
+struct DevHarness {
+    std::vector<std::string> out;
+    bool dev;
+    VM vm;
+    explicit DevHarness(bool devMode)
+        : dev(devMode), vm([](const std::string& p) -> std::optional<std::string> {
+              if (p == "maps/dev.gsc") return std::string(kDevScript);
+              return std::nullopt;
+          }) {
+        vm.setDeveloperScript([this] { return dev; });
+        vm.print = [this](const std::string& s) { out.push_back("println " + s); };
+        vm.registerBuiltin("emit", [this](CallContext& c) {
+            out.push_back(c.arg(0).toString());
+            return Value();
+        });
+    }
+    std::vector<uint8_t> save(bool withModes) {
+        ObjectTable t;
+        t.writeFunction = [this](StateWriter& w, int f) { vm.writeFunctionName(w, f); };
+        vm.collectState(t);
+        StateWriter w;
+        if (withModes) vm.writeCompileModes(w);
+        t.write(w);
+        vm.saveState(w, t);
+        return w.bytes;
+    }
+    void load(const std::vector<uint8_t>& b, bool withModes, bool legacyAllDev = false) {
+        StateReader r(b.data(), b.size());
+        if (withModes) vm.readCompileModes(r);
+        else if (legacyAllDev) vm.pinDeveloperScriptForAll(true);
+        ObjectTable t;
+        t.readFunction = [this](StateReader& sr) { return vm.readFunctionName(sr); };
+        std::unordered_map<uint64_t, ObjectPtr> live;
+        collectLive({Value(vm.level()), Value(vm.game()), Value(vm.anim())}, live);
+        t.read(r, live, [this](const std::string& kind, uint64_t id) { return vm.newObjectWithId(kind, id); });
+        vm.loadState(r, t);
+        CHECK(r.atEnd());
+    }
+    void runToWait() {
+        vm.start("maps/dev.gsc", "main");
+        vm.runFrame(50);
+    }
+    void wake() {
+        vm.notify(vm.level(), "go");
+        vm.runFrame(100);
+    }
+};
+
+void developerModeSave() {
+    for (const bool savedDev : {true, false}) {
+        DevHarness a(savedDev);
+        a.runToWait();
+        CHECK(a.out.size() == (savedDev ? 3u : 1u)); // dev A, start, dev B, or only start
+        const auto bytes = a.save(true);
+        // the loading world runs in the other mode: the save's mode wins
+        DevHarness b(!savedDev);
+        b.load(bytes, true);
+        b.wake();
+        CHECK(b.vm.errors().empty());
+        CHECK(!b.out.empty() && b.out.back() == "resumed 5");
+        CHECK(b.out.size() == (savedDev ? 2u : 1u)); // dev C only when the saved code has it
+        a.wake();
+        CHECK(a.out.back() == "resumed 5");
+        // a file compiled in the same mode needs no pin
+        DevHarness c(savedDev);
+        c.load(bytes, true);
+        c.wake();
+        CHECK(c.out == b.out);
+    }
+    // an old save (every developer statement compiled) loads with the pin for all
+    {
+        DevHarness a(true);
+        a.runToWait();
+        const auto bytes = a.save(false);
+        DevHarness b(false);
+        b.load(bytes, false, true);
+        b.wake();
+        CHECK(b.vm.errors().empty() && !b.out.empty() && b.out.back() == "resumed 5");
+    }
+    // a save of the wrong layout is refused, not resumed at a shifted pc
+    {
+        DevHarness a(true);
+        a.runToWait();
+        const auto bytes = a.save(false);
+        DevHarness b(false);
+        bool refused = false;
+        try {
+            b.load(bytes, false);
+        } catch (const std::exception& e) {
+            refused = std::string(e.what()).find("does not match") != std::string::npos;
+        }
+        CHECK(refused);
+    }
+}
+
 // World round trip on a real map (only with IW2_MAIN=<game main dir>; IW2_SAVE_MAP picks the map, default toujane).
 void worldRoundTrip() {
     const char* main = std::getenv("IW2_MAIN");
@@ -271,6 +385,7 @@ void worldRoundTrip() {
 
 int main() {
     vmRoundTrip();
+    developerModeSave();
     try {
         worldRoundTrip();
     } catch (const std::exception& e) {

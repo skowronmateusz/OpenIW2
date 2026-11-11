@@ -28,6 +28,28 @@ int VM::readFunctionName(StateReader& r) {
     return *f;
 }
 
+void VM::writeCompileModes(StateWriter& w) const {
+    std::vector<std::pair<std::string, bool>> modes;
+    for (const auto& [path, f] : files_) modes.emplace_back(path, f.dev);
+    std::sort(modes.begin(), modes.end());
+    w.u32(uint32_t(modes.size()));
+    for (const auto& [path, dev] : modes) {
+        w.str(path);
+        w.b(dev);
+    }
+}
+
+void VM::readCompileModes(StateReader& r) {
+    const uint32_t n = r.u32();
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string path = r.str();
+        const bool dev = r.b();
+        // A file compiled before the load (the world start runs some library code) keeps the code it has; a thread frame of it that
+        // does not fit is refused by loadState (code size check).
+        if (!files_.count(path)) devPinned_[path] = dev;
+    }
+}
+
 ObjectPtr VM::newObjectWithId(std::string kind, uint64_t id) {
     auto o = std::make_shared<Object>();
     o->kind = std::move(kind);
@@ -80,6 +102,7 @@ void VM::saveState(StateWriter& w, const ObjectTable& t) const {
         for (const Frame& fr : th.frames) {
             writeFunctionName(w, fr.function);
             w.u64(fr.pc);
+            w.u64(fr.function >= 0 ? functions_[size_t(fr.function)].code.size() : 0); // version 16: the layout the pc belongs to
             w.u32(uint32_t(fr.locals.size()));
             for (const Value& v : fr.locals) t.writeValue(w, v);
             t.writeValue(w, fr.self);
@@ -147,12 +170,15 @@ void VM::loadState(StateReader& r, const ObjectTable& t) {
             Frame fr;
             fr.function = readFunctionName(r);
             fr.pc = size_t(r.u64());
+            const bool sized = r.version >= 16; // ~0 = current
+            const uint64_t savedSize = sized ? r.u64() : 0;
             const uint32_t nl = r.u32();
             for (uint32_t j = 0; j < nl; ++j) fr.locals.push_back(t.readValue(r));
             fr.self = t.readValue(r);
             fr.stackBase = size_t(r.u64());
             fr.refBase = size_t(r.u64());
-            if (fr.function < 0 || fr.pc > functions_[size_t(fr.function)].code.size())
+            if (fr.function < 0 || fr.pc > functions_[size_t(fr.function)].code.size() ||
+                (sized && savedSize != functions_[size_t(fr.function)].code.size()))
                 throw std::runtime_error("savegame: thread frame does not match the script code");
             th->frames.push_back(std::move(fr));
         }

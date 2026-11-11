@@ -126,6 +126,9 @@ public:
     // asked at each compile, so the owner can set the dvar after constructing the VM and before the first script starts.
     void setDeveloperScript(std::function<bool()> source) { developerScript_ = std::move(source); }
     bool developerScript() const { return developerScript_ && developerScript_(); }
+    // The mode the file being compiled uses: a saved game pins it per file (see readCompileModes), otherwise the dvar as read when
+    // the compile starts. The compiler asks this, not the dvar, so one file never mixes modes.
+    bool compilingDeveloperScript() const { return compileDev_; }
     static bool isDeveloperBuiltin(const std::string& lowerName);
     bool hasBuiltin(const std::string& name) const;
     // The registered built-in (an empty function when there is none), so a mode can wrap it.
@@ -225,6 +228,13 @@ public:
     void loadState(StateReader& r, const ObjectTable& t);
     void writeFunctionName(StateWriter& w, int function) const;
     int readFunctionName(StateReader& r);
+    // A saved thread stores a pc, an index into the code a file compiled to, and that code depends on the developer_script mode the file was
+    // compiled with (a dropped println / assert shifts every later pc). Format 16 saves list the mode of every loaded file before the
+    // function names; a load compiles those files in the same mode, whatever the dvar says now. Older saves carry no list:
+    // `allDev` (formats up to 12 and the format-15 saves of builds that compiled every developer statement) pins every file to on.
+    void writeCompileModes(StateWriter& w) const;
+    void readCompileModes(StateReader& r);
+    void pinDeveloperScriptForAll(bool on) { devPinAll_ = on; }
     uint64_t nextObjectId() const { return nextObjectId_; }
     // Creates an object with a given id (savegame load of an object the fresh world does not have).
     ObjectPtr newObjectWithId(std::string kind, uint64_t id);
@@ -236,6 +246,7 @@ private:
         std::unordered_map<std::string, int> functions;
         std::vector<std::string> includes;
         std::string animtree;
+        bool dev = false; // the developer_script mode the file was compiled with (its code layout depends on it)
     };
 
     friend class Compiler;
@@ -263,6 +274,9 @@ private:
     std::unordered_map<std::string, int> builtinIndex_;
     std::unordered_map<std::string, int> builtinRegistrations_;
     std::function<bool()> developerScript_;
+    bool compileDev_ = false;                      // the mode of the file being compiled
+    std::unordered_map<std::string, bool> devPinned_; // per file, from a loaded save
+    std::optional<bool> devPinAll_;               // every file without an entry in devPinned_
     std::vector<Builtin> builtins_;
     std::vector<std::string> builtinNames_;
     std::deque<std::unique_ptr<Thread>> threads_;
