@@ -19,7 +19,7 @@ request that breaks them cannot be merged.
 
 ## Practicalities
 
-- Build and test: see the [README](README.md#build-and-test). Tests that need game data use `-DIW2_TEST_MAIN=...`
+- Build and test: see the [README](README.md#build-from-source). Tests that need game data use `-DIW2_TEST_MAIN=...`
   or the `IW2_MAIN` environment variable.
 - Keep commits focused, with a one-line summary that says what changed and why.
 - Match the style of the surrounding code: C++20, the existing naming, comments that cite spec sections or addresses.

@@ -243,7 +243,37 @@ when a map loads, so they apply from the next map or `map_restart`.
   the player goes through. Players must connect to the server's address on that same network: if they use its other
   address, the server list still shows it, but joining times out, because the answers come from an address the game did
   not connect to.
-- On Wi-Fi, see "Smooth play over Wi-Fi" in the README: a Mac's AirDrop and Handoff radio pauses make players stand
+- On Wi-Fi, see [Wi-Fi and AWDL](#wi-fi-and-awdl): a Mac's AirDrop and Handoff radio pauses make players stand
   and jump. A server on a cable avoids it.
 - No CD key, no PunkBuster and no master server: the server is never listed on the internet, and nothing is
   reported anywhere.
+
+## Dedicated server from the menu
+
+**Multiplayer > Start new server** with **Dedicated** set to LAN or Internet (both are the same here, there is no
+master server) closes the game window and opens a server console window instead. The server runs with the chosen map,
+gametype, settings, bots and weapon classes, without a player of its own.
+
+- The window shows the server log and has a command line (`status`, `map <name>`, `map_rotate`, `kick <name>`,
+  `say <text>`, `set <cvar> <value>`, `quit`, ...). Up and down arrows recall earlier commands; Page Up / Page Down
+  and the mouse wheel scroll the log.
+- Closing the window (or `quit`) stops the server and the app.
+- rcon works once `rcon_password` is set, for example `set rcon_password <password>` in the window.
+- Started from Terminal, the log also goes to the terminal, which takes console commands too. Started from Finder, the
+  log goes to `~/Library/Logs/OpenIW2/openiw2.log`.
+
+## Wi-Fi and AWDL
+
+Players who stand still and then jump forward are usually a Wi-Fi link that pauses. On a Mac, AWDL (AirDrop, Handoff,
+Sidecar, Universal Control, AirPlay) takes the radio off your network's channel for about 90 ms roughly twice a second,
+so every packet in that time is held back, even with a strong signal. A one-per-second `ping` does not show it.
+Measured on one Mac: pings to the router every 20 ms peaked at 96 ms with AWDL on and at 14 ms with it off.
+
+- Best: run the server on a cable.
+- Turn off AirDrop and Handoff while you play.
+- Set the router to channel 149, the channel AWDL uses, so the radio does not switch.
+- Or turn AWDL off until the next restart: `sudo ifconfig awdl0 down` (`up` turns it back on; macOS may turn it on
+  again by itself).
+
+OpenIW2 also evens out such a bursty path on the client and the server, at the cost of a little more delay for the
+player on that link (docs/spec/net.md section 10).
