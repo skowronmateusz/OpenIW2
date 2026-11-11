@@ -4025,6 +4025,8 @@ int main(int argc, char** argv) {
             trace("world created", 0);
             for (const auto& [k, v] : uiCvars) w->cvars[k] = v;
             for (const auto& [k, v] : extraCvars) w->cvars[k] = v;
+            // The Cheats option (OpenIW2 page): sv_cheats 1 for a single-player mission; never in multiplayer (the server keeps sv_cheats 0).
+            if (const std::string sv = ui::missionSvCheats(uiCvars.count("iw2_cheats") && std::atoi(uiCvars["iw2_cheats"].c_str()) != 0, mp || bool(netClient)); !sv.empty()) w->cvars["sv_cheats"] = sv;
             w->print = [](const std::string& m) { std::cout << "[script] " << m << "\n"; };
             w->playSound = [&mixer, &subtitles, &trace, wp = w.get()](const std::string& alias, const game::Vec3* origin, float* duration, int owner) {
                 float dur = 0;
@@ -5193,6 +5195,7 @@ int main(int argc, char** argv) {
         assets::Localization loc;
         loc.load(vfs, language);
         for (const auto& [k, t] : ui::mpext::localizedStrings(language)) loc.add(k, t); // the extension panel's texts (docs/spec/mp-ui.md)
+        for (const auto& [k, t] : ui::openIw2Strings(language)) loc.add(k, t); // the OpenIW2 options page
         // Log lines of server texts: localized as the message window shows them, in UTF-8 (the strings are code-page text).
         const int logCodePage = util::codePageForLanguage(language);
         const auto logText = [&](const std::string& msg) {
@@ -5354,6 +5357,9 @@ int main(int argc, char** argv) {
                 if (world) world->cvars[name] = v;
             };
             store(n);
+            // Switching the Cheats option in a running single-player mission takes effect at once (sv_cheats follows it; a --cvar sv_cheats stays).
+            if (world && !world->multiplayer() && !mpFrontEnd && !netClient && n == "iw2_cheats")
+                world->cvars["sv_cheats"] = ui::cheatKeysAllowed(std::atoi(v.c_str()) != 0, cheatsOn(), false) ? "1" : "0";
         };
         menuEnv.ingameActive = [&] {
             return ui::ingameCloseActive(world && world->multiplayer(), world != nullptr, std::atoi(menuEnv.getCvar("cl_paused").c_str()) != 0);
@@ -5908,6 +5914,7 @@ int main(int argc, char** argv) {
                 scriptMenus.loadList("ui/menus.txt");
                 scriptMenus.loadList("ui/ingame.txt");
             }
+            ui::addOpenIw2Options(scriptMenus, mpFrontEnd); // the OpenIW2 options page (no cheats row in the multiplayer menus)
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
             for (const auto& e : scriptMenus.warnings()) if (e.rfind("menu file not found: ", 0) == 0) std::cerr << "WARNING: " << e << "\n";
             menuEnv.setCvar("ui_multiplayer", mpFrontEnd ? "1" : "0");
@@ -5952,7 +5959,7 @@ int main(int argc, char** argv) {
             scriptMenus.loadList("ui/ingame.txt"); // pregame, victoryscreen (exe 0x581314 list)
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
             for (const auto& e : scriptMenus.warnings()) if (e.rfind("menu file not found: ", 0) == 0) std::cerr << "WARNING: " << e << "\n";
-            ui::addOpenIw2Options(scriptMenus); // the openiw2 option rows (hit marker) in the game options menu
+            ui::addOpenIw2Options(scriptMenus, mpFrontEnd || netClient || (world && world->multiplayer())); // the OpenIW2 options page
         }
         // A level started from the command line ends its load the same way (0x449a2c): "pregame" unless ui_autoContinue (not for --shot).
         // Not in MP: the MP game has no pause and opens its own script menus.
@@ -9563,8 +9570,10 @@ int main(int argc, char** argv) {
                     case ui::EscRoute::Menu: case ui::EscRoute::Binding: break;
                     }
                 }
-                // V (walk/fly) and L (fullbright) are openiw2 developer keys: like the cheat commands, they need sv_cheats.
-                else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_N) && !cheatsOn()) {}
+                // L (fullbright), N (walk/fly) and F10 (god cycle) are openiw2 developer keys: like the cheat commands, they need sv_cheats
+                // (--cvar, or the Cheats option of the OpenIW2 page) and are never available in a multiplayer / network game.
+                else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_N || ev.key.scancode == SDL_SCANCODE_F10) &&
+                         !ui::cheatKeysAllowed(std::atoi(menuEnv.getCvar("iw2_cheats").c_str()) != 0, cheatsOn(), mpFrontEnd || bool(netClient) || (world && world->multiplayer()))) {}
                 else if (ev.key.scancode == SDL_SCANCODE_L) {
                     renderer.fullbright = !renderer.fullbright;
                     game::addScreenMessage(screenMessages, renderer.fullbright ? "fullbright ON" : "fullbright OFF", false, SDL_GetTicksNS()); // openiw2 text, no original string

@@ -68,6 +68,7 @@ std::string registeredDefault(const std::string& n) {
         {"ui_multiplayer", "0"},    // 0x4c63a3 (bool, default 0, flags 0x1040); menu rows test it, e.g. the corpse count row
         {"cg_hudGrenadeIconInScope", "0"}, // 0x4a1622 (bool, flags 0x1001, archive), read by the grenade icon loop 0x4be210
         {"cg_drawHealth", "0"},     // 0x4a125d (bool, flags 0x1080; gates the health bar ownerdraws 0x4a8800 / 0x4a8ab0)
+        {"iw2_cheats", "0"},        // openiw2 option (src/ui/iw2options.h): single-player cheats, off by default
         {"iw2_hitMarker", "0"},     // openiw2 option (src/game/hitmarker.h), off by default; not a dvar of the shipped game
         {"monkeytoy", "1"},         // 0x4037ba
         {"cl_freelook", "1"},       // 0x40e2e0

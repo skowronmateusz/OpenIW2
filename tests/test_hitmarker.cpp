@@ -57,62 +57,7 @@ int main() {
     const auto back = iw2::ui::parseConfig(iw2::ui::formatConfig({{"iw2_hitMarker", "1"}, {"iw2_other", "1"}}));
     CHECK(back.size() == 1 && back.at("iw2_hitMarker") == "1");
 
-    // Options menu row, on a synthetic options_game menu (the shipped file is not in the repository).
-    {
-        iw2::fs::Vfs vfs;
-        iw2::ui::MenuLibrary lib(vfs);
-        lib.parseSource(R"({
-menuDef
-{
-	rect 0 0 400 300
-	name options_game
-	itemDef
-	{
-		decoration
-		rect 0 15 1 13
-		text "CROSSHAIR ROW"
-		type 1
-		visible 1
-		name rowlabel
-	}
-	itemDef
-	{
-		dvarFloatList { "ON" 1 "OFF" 0 }
-		rect 0 15 100 13
-		dvar "cg_drawcrosshair"
-		text "x"
-		type 12
-		visible 1
-		name rowvalue
-	}
-	itemDef
-	{
-		dvarFloatList { "A" 0 }
-		rect 0 60 100 13
-		dvar "ui_language"
-		text "x"
-		type 12
-		visible 1
-		name rowlanguage
-	}
-}
-})", "ui/options_game.menu");
-        iw2::ui::Menu* m = lib.find("options_game");
-        CHECK(m && m->items.size() == 3);
-        CHECK(iw2::ui::addOpenIw2Options(lib));
-        CHECK(iw2::ui::addOpenIw2Options(lib)); // idempotent
-        CHECK(m && m->items.size() == 5);
-        if (m && m->items.size() == 5) {
-            const auto& label = *m->items[3];
-            const auto& value = *m->items[4];
-            CHECK(label.decoration && label.text == "Hit marker" && label.rect.y == 75.0f);
-            CHECK(value.type == 12 && value.dvar == "iw2_hitMarker" && value.rect.y == 75.0f && !value.decoration);
-            CHECK(value.floatList.size() == 3 && value.floatList[0].second == 1.0f && value.floatList[1].second == 2.0f &&
-                  value.floatList[1].first == "Red on kill" && value.floatList[2].second == 0.0f);
-        }
-        iw2::ui::MenuLibrary empty(vfs);
-        CHECK(!iw2::ui::addOpenIw2Options(empty)); // no menu, nothing added
-    }
+    // The option row moved to the OpenIW2 page (tests/test_iw2options.cpp); the Game Options menu is left as shipped.
 
     // A level: the real damage path. The player is on "allies".
     const char* main = std::getenv("IW2_MAIN");

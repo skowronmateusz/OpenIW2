@@ -57,11 +57,16 @@ opens the pause menu. `F12` shows or hides a frame rate counter in the top right
 screenshot key was F12, which OpenIW2 uses for the counter). The key can be changed in the controls menu, like every
 other key.
 
-OpenIW2 adds one option that the original game does not have: **Options > Game Options > Hit marker** (off by default). When on, the
-multiplayer hit marker (a small X next to the crosshair, fading in about a second, no sound) shows whenever you damage an enemy
-soldier, also when you fire a mounted gun or a flak gun and when you hit the distant running soldiers some levels show
-(drones). With the value **Red on kill** the X turns red when your hit killed the soldier or dropped a drone (multiplayer always shows it white).
-It is saved in your profile.
+OpenIW2 adds its own options page, **Options > OpenIW2** (in the single-player and the multiplayer options menu):
+
+- **Hit marker** (off by default). When on, the multiplayer hit marker (a small X next to the crosshair, fading in about a second,
+  no sound) shows whenever you damage an enemy soldier, also when you fire a mounted gun or a flak gun and when you hit the distant
+  running soldiers some levels show (drones). With the value **Red on kill** the X turns red when your hit killed the soldier or
+  dropped a drone (multiplayer always shows it white).
+- **Cheats** (single player only, off by default): turns `sv_cheats` on for the mission and unlocks the developer keys described under
+  Cheats below. The row is not in the multiplayer menus, and in a multiplayer or network game the keys never work, whatever the option says.
+
+Both are saved in your profile.
 
 Options that would do nothing in OpenIW2 are hidden from the settings pages: the texture filter (always anisotropic, at the highest
 level the GPU supports), renderer, SLI, shadows, aspect ratio (the view follows the window shape), sound quality and sound card. Of
@@ -178,14 +183,16 @@ player on that link.
 
 ### Cheats and developer keys
 
-Cheats are off by default, as in the original game. To turn them on, start the app from Terminal with `sv_cheats`:
+Cheats are off by default, as in the original game. To turn them on, switch on **Options > OpenIW2 > Cheats** (single player),
+or start the app from Terminal with `sv_cheats`:
 
 ```bash
 open /Applications/OpenIW2.app --args --cvar sv_cheats=1
 ```
 
 With cheats on, `F10` cycles god mode → demigod → off, `N` toggles walking and free flight (noclip camera), and `L`
-toggles fullbright. Without `sv_cheats` these keys do nothing (F10 prints that cheats are not enabled).
+toggles fullbright. Without cheats these keys do nothing (F10 prints that cheats are not enabled). They are never available in a
+multiplayer game.
 
 ### Reporting a bug
 
