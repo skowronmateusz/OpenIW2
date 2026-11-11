@@ -112,6 +112,23 @@ const HideRule kRules[] = {
     // Mods: the filter row. It runs after the PunkBuster row, so what lies below has already closed that gap.
     {"filter_popmenu", "", "", "ui_browserMod", false, kRow, 60, false},
 };
+
+// The option rows of the single-player pages (files below ui/; both menu sets load these pages) that have no effect in openiw2.
+// The graphics page's label and its control sit in one column, so `row` takes the label with the control and the rows below close
+// up; the sound page's control lies 30 left of its label, so each is matched on its own (nothing lies below those rows, so nothing
+// has to move).
+const HideRule kSpRules[] = {
+    // filtering is always anisotropic (deliberate deviation, docs/spec/material.md "Texture sampler state")
+    {"options_graphics", "", "", "ui_r_texturemode", true, kRow, kList, true},
+    {"options_graphics", "", "", "ui_r_rendererpreference", true, kRow, kList, true}, // one renderer path
+    {"options_graphics", "", "", "r_multigpu", true, kRow, kList, true},              // no SLI
+    {"options_graphics", "", "", "ui_r_aspectratio", true, kRow, kList, true},         // nothing reads r_aspectRatio; the view follows the window
+    {"options_graphics", "", "", "ui_sc_enable", true, kRow, kList, true},            // no shadow pass
+    {"options_sound", "", "", "ui_snd_khz"},
+    {"options_sound", "", "@MENU_SOUND_QUALITY"},
+    {"options_sound", "", "", "ui_mss_3d_provider"},
+    {"options_sound", "", "@MENU_SOUND_PROVIDER"},
+};
 // clang-format on
 
 struct MenuKey { const char* menu; const char* key; };
@@ -147,26 +164,10 @@ bool opensHiddenMenu(const Item& it) {
     return hit;
 }
 
-} // namespace
-
-bool menuIsHidden(const std::string& name) {
-    for (const char* h : kHiddenMenus)
-        if (same(name, h)) return true;
-    return false;
-}
-
-bool applyHideRules(Menu& m, const std::string& file, std::vector<std::string>* trace) {
-    if (file.rfind("ui_mp/", 0) != 0) return true;
-    auto note = [&](const std::string& s) { if (trace) trace->push_back(file + ": " + s); };
-    if (menuIsHidden(m.name)) { note("menu " + m.name + " dropped"); return false; }
-
-    std::erase_if(m.execKeys, [&](const auto& k) {
-        for (const auto& mk : kKeys)
-            if (same(m.name, mk.menu) && k.first == mk.key) { note(m.name + " execKey " + k.first); return true; }
-        return false;
-    });
-
-    for (const HideRule& r : kRules) {
+// The kRules / kSpRules loop: removes what a rule matches (and the rest of its line when `row`), then closes the gaps.
+void applyRules(Menu& m, const HideRule* rules, size_t count, const std::function<void(const std::string&)>& note) {
+    for (size_t ri = 0; ri < count; ++ri) {
+        const HideRule& r = rules[ri];
         if (!same(m.name, r.menu) && std::strcmp(r.menu, "*") != 0) continue;
         std::vector<float> lines; // effective y of every removed line, original positions
         std::set<const Item*> drop;
@@ -202,6 +203,36 @@ bool applyHideRules(Menu& m, const std::string& file, std::vector<std::string>* 
         for (const Item* d : drop) note(m.name + " item name=" + d->name + " text=" + d->text + " dvar=" + d->dvar);
         std::erase_if(m.items, [&](const std::unique_ptr<Item>& it) { return drop.count(it.get()) != 0; });
     }
+}
+
+} // namespace
+
+bool menuIsHidden(const std::string& name) {
+    for (const char* h : kHiddenMenus)
+        if (same(name, h)) return true;
+    return false;
+}
+
+bool applyHideRules(Menu& m, const std::string& file, std::vector<std::string>* trace) {
+    const bool mp = file.rfind("ui_mp/", 0) == 0;
+    const bool sp = !mp && file.rfind("ui/", 0) == 0;
+    if (!mp && !sp) return true;
+    auto note = [&](const std::string& s) { if (trace) trace->push_back(file + ": " + s); };
+
+    if (sp) { // the single-player pages: only their own option rows (kSpRules), no hidden menus or keys
+        applyRules(m, kSpRules, std::size(kSpRules), note);
+        return true;
+    }
+
+    if (menuIsHidden(m.name)) { note("menu " + m.name + " dropped"); return false; }
+
+    std::erase_if(m.execKeys, [&](const auto& k) {
+        for (const auto& mk : kKeys)
+            if (same(m.name, mk.menu) && k.first == mk.key) { note(m.name + " execKey " + k.first); return true; }
+        return false;
+    });
+
+    applyRules(m, kRules, std::size(kRules), note);
 
     // Entries leading to a hidden menu.
     std::erase_if(m.items, [&](const std::unique_ptr<Item>& it) {

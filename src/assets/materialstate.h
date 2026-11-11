@@ -105,6 +105,12 @@ constexpr bool receivesDynamicLight(bool pointLit, bool fullbright) { return poi
 enum class TextureMode : uint8_t { Nearest, Linear, Bilinear, Trilinear, Anisotropic };
 constexpr int kDefaultAnisotropy = 8, kMinAnisotropy = 2, kMaxAnisotropy = 16;
 
+// openiw2 forces the filter (deliberate deviation, docs/spec/material.md "Texture sampler state"): anisotropic at the highest
+// supported level, whatever the profile, the config or a --cvar says. The graphics page's filter row is hidden for it
+// (src/ui/menuhide.cpp).
+constexpr TextureMode kForcedTextureMode = TextureMode::Anisotropic;
+constexpr int kForcedAnisotropy = kMaxAnisotropy;
+
 // The sampler byte a texture with no filter bits of its own takes from r_textureMode.
 constexpr uint8_t textureModeState(TextureMode m) {
     constexpr uint8_t table[5] = {0x01, 0x02, 0x06, 0x0a, 0x0b};

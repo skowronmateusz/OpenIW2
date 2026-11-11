@@ -96,10 +96,12 @@ min/mag, POINT mip, no anisotropy; 0x1000abb6), and the shipped `configure.cfg` 
 an int 2..16 with default 8 (0x1000abd1). This covers colorMaps too: for example `egypt_rug1` (state 0x30) clamps U and V, and most
 shipped colorMaps have state 0 and so follow r_textureMode.
 
-iw2view reads both dvars from the menu cvar store (`--cvar r_texturemode=anisotropic` for a shot). Both register with flags
-0x2001, so they are archived in the player profile. The original's graphics page applies the filter row only through its Apply
-button and restart, and `ui/options_graphics.menu` hides Apply while a level runs. openiw2 applies a change at the next frame, so
-as a deliberate deviation a write to ui_r_texturemode also sets r_texturemode at once, in a level as well as in the main menu.
+Both register with flags 0x2001, so they are archived in the player profile. Deliberate deviation (openiw2): the filter is
+forced — anisotropic at the highest supported level (r_textureMode "anisotropic", r_anisotropy 16, clamped to the device) —
+whatever the profile, the config or a `--cvar` says, and the filter row of `ui/options_graphics.menu` is hidden for it
+(`src/ui/menuhide.cpp`). Reason: anisotropy keeps mip level 0 in use at grazing angles, so the alpha-test cut of the rug below
+moves far less, and the cost is negligible on Apple GPUs. (The original's graphics page applies the row only through its Apply
+button and restart, and hides Apply while a level runs; with the row hidden there is nothing to apply.)
 
 Code samplers have fixed bytes in the lookups 0x10038dd0 / 0x10039030; floatZ (code sampler 0x15) is 0x31: point, no mip, clamped.
 
@@ -113,8 +115,9 @@ blanket's vertex alpha from 255 along the top edge of its hanging face down to 4
 inside the lower half of that face: there level 0 gives a dissolved cut that moves with the sampling position, level 1 a clean line.
 At the player's distance the LOD across the face lies between 0 and 0.5 (measured +0.1..+0.3 in a 1280 × 800 view), so with the
 default point mip filter a small move can switch the face between the two looks. This follows from the sampler and alpha-test rules
-read from the renderer and from the shipped shaders and map; it has not been compared against the original's picture. Forced
-anisotropy keeps level 0 in use at more angles. No D3DSAMP_MIPMAPLODBIAS call exists in the renderer, so there is no texture LOD bias.
+read from the renderer and from the shipped shaders and map; it has not been compared against the original's picture. The forced
+anisotropic filter (the deviation above) keeps level 0 in use at more angles, which is why it is forced. No D3DSAMP_MIPMAPLODBIAS
+call exists in the renderer, so there is no texture LOD bias.
 
 ## Multisampling (r_aaSamples, deliberate deviation in the default)
 

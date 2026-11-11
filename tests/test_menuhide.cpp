@@ -305,6 +305,47 @@ int main() {
                     CHECK(it->columns[3].pos == 344 && it->columns[7].pos == 551 && it->columns[10].pos == 566);
                 }
         }
+
+        // The single-player option pages (kSpRules): rows without an effect in openiw2 are gone, with every dvartest variant, and the
+        // rows below close up. Both menu sets load these pages, so the same holds in a running level.
+        {
+            MenuLibrary sp(game);
+            sp.loadFile("ui/options_graphics.menu");
+            sp.loadFile("ui/options_sound.menu");
+            CHECK(sp.errors().empty());
+            if (const char* d = std::getenv("IW2_HIDE_DUMP_SP"))
+                if (const auto* m = sp.find(d))
+                    for (const auto& it : m->items)
+                        std::cout << "x=" << it->rect.x << " y=" << it->rect.y << " t=" << it->type << " name=" << it->name << " text=" << it->text << " dvar=" << it->dvar << " test=" << it->dvarTest << "\n";
+            const std::set<std::string> gone = {"ui_r_texturemode", "ui_r_rendererpreference", "r_multigpu", "ui_sc_enable", "ui_r_aspectratio", "ui_snd_khz", "ui_mss_3d_provider"};
+            for (const char* mn : {"options_graphics", "options_sound"}) {
+                const Menu* m = sp.find(mn);
+                CHECK(m != nullptr);
+                if (!m) continue;
+                for (const auto& it : m->items) {
+                    std::string dv = it->dvar, dt = it->dvarTest;
+                    for (auto& ch : dv) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                    for (auto& ch : dt) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                    if (gone.count(dv) || gone.count(dt)) { std::cerr << mn << ": " << dv << dt << " still there\n"; CHECK(false); }
+                }
+            }
+            // Kept rows: the anti-aliasing row and the sync row are still there.
+            if (const Menu* m = sp.find("options_graphics")) {
+                bool aa = false, vsync = false;
+                for (const auto& it : m->items) {
+                    if (lowerEq(it->dvar, "ui_r_aasamples")) aa = true;
+                    if (lowerEq(it->dvar, "ui_r_swapinterval")) vsync = true;
+                }
+                CHECK(aa && vsync);
+                // The labels of the list run down the column at 15 pixel steps with no gap.
+                std::set<float> ys;
+                for (const auto& it : m->items)
+                    if (it->rect.x == 50 && it->type == 1 && it->rect.y >= 120 && it->rect.y <= 240) ys.insert(it->rect.y);
+                float prev = 105;
+                for (const float y : ys) { if (y != prev + 15) std::cerr << "options_graphics: gap before y=" << y << "\n"; CHECK(y == prev + 15); prev = y; }
+                CHECK(ys.size() == 9 && prev == 240);
+            }
+        }
     }
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;

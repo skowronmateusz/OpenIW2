@@ -3427,15 +3427,11 @@ struct Renderer {
     }
 };
 
-// r_textureMode (default "bilinear", 0x1000abb6) and r_anisotropy (int 2..16, default 8, 0x1000abd1): the menu cvar store, else the defaults.
-static void applyTextureFilter(Renderer& r, const std::map<std::string, std::string>& cvars) {
-    assets::TextureMode mode = assets::TextureMode::Bilinear;
-    for (const char* k : {"r_textureMode", "r_texturemode"})
-        if (const auto it = cvars.find(k); it != cvars.end()) mode = assets::parseTextureMode(it->second);
-    int aniso = assets::kDefaultAnisotropy;
-    for (const char* k : {"r_anisotropy"})
-        if (const auto it = cvars.find(k); it != cvars.end()) aniso = std::atoi(it->second.c_str());
-    r.setTextureFilter(mode, aniso);
+// Texture filtering is forced (deliberate deviation, docs/spec/material.md "Texture sampler state"): anisotropic at the highest
+// supported level, whatever r_textureMode / r_anisotropy in the profile, the config or a --cvar says (the dvars stay registered
+// and archived as the original defines them; nothing reads them). The graphics page's filter row is hidden (src/ui/menuhide.cpp).
+static void applyTextureFilter(Renderer& r) {
+    r.setTextureFilter(assets::kForcedTextureMode, assets::kForcedAnisotropy);
 }
 
 // Renders one frame into an offscreen target (the same draw as to the swapchain) and returns its pixels, top row first.
@@ -4000,7 +3996,8 @@ int main(int argc, char** argv) {
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
         moveScreenshotKeyOffF12(); // a profile saved by the original game still carries F12
-        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_texturemode" || k == "r_anisotropy" || k == "r_aasamples") uiCvars[k] = v; // renderer dvars live in the menu store
+        // renderer dvars live in the menu store; r_texturemode / r_anisotropy are not passed on: the filter is forced (applyTextureFilter)
+        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_aasamples") uiCvars[k] = v;
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
         // Debug IW2_START_TRACE=1: level start timing (real ms since this point, level time, sound starts, load end, first frames).
@@ -5357,7 +5354,6 @@ int main(int argc, char** argv) {
                 if (world) world->cvars[name] = v;
             };
             store(n);
-            if (const std::string direct = ui::immediateMenuDvar(n); !direct.empty()) store(direct);
         };
         menuEnv.ingameActive = [&] {
             return ui::ingameCloseActive(world && world->multiplayer(), world != nullptr, std::atoi(menuEnv.getCvar("cl_paused").c_str()) != 0);
@@ -8894,7 +8890,7 @@ int main(int argc, char** argv) {
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : 0.0f);
             renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
-            applyTextureFilter(renderer, uiCvars);
+            applyTextureFilter(renderer);
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             hudKillcam = killcamView;
             forcedBlur = std::max(forcedBlur, worldMenuBlur());
@@ -11096,7 +11092,7 @@ int main(int argc, char** argv) {
             if (gotSwap && swap)
             {
                 renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
-                applyTextureFilter(renderer, uiCvars);
+                applyTextureFilter(renderer);
                 renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(cgNowMs(), int64_t(SDL_GetTicks()));
                 const float blur = std::max(game::composeSceneBlur(worldMenuBlur(), screenBlur.composed()), forcedBlur);

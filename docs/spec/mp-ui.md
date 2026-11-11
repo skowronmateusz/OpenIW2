@@ -333,7 +333,8 @@ limit. A failure shows `EXE_BADSERVERADDRESS` in `error_popmenu` (the same path 
 
 The multiplayer menus of the shipped game lead to features this build has no server side for: voting, CD key, PunkBuster,
 auto update, voice chat, muting players and mods. The game files stay as shipped; the engine leaves these entries out when it
-parses a menu. Nothing in the menus of the single-player set is touched (only files below `ui_mp/`).
+parses a menu (`kRules`, files below `ui_mp/`). The single-player option pages (files below `ui/`, loaded by both menu sets)
+carry rows that have no effect in openiw2; the same mechanism leaves them out (`kSpRules`).
 Implementation: `src/ui/menuhide.{h,cpp}`, applied by `MenuLibrary::parseSource`. Test: `tests/test_menuhide.cpp`
 (ctest `menuhide`; `menuhide_world` loads the shipped menus).
 

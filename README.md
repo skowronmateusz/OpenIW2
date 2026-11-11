@@ -63,8 +63,9 @@ soldier, also when you fire a mounted gun or a flak gun and when you hit the dis
 (drones). With the value **Red on kill** the X turns red when your hit killed the soldier or dropped a drone (multiplayer always shows it white).
 It is saved in your profile.
 
-Of the original options, the ones the engine has no counterpart for do nothing: texture quality and filter,
-renderer, SLI, shadows, aspect ratio, sound quality and sound card, the console, and the video mode and refresh rate (the window
+Options that would do nothing in OpenIW2 are hidden from the settings pages: the texture filter (always anisotropic, at the highest
+level the GPU supports), renderer, SLI, shadows, aspect ratio (the view follows the window shape), sound quality and sound card. Of
+the remaining original options, the console and the video mode and refresh rate do nothing (the window
 keeps its size; resize it yourself). **Sync every frame** is on by default in OpenIW2 (the original starts with it off and no
 frame limit). **Anti-aliasing** works and defaults to 4x (the original defaults to off); it also smooths alpha-tested textures, and a
 change applies at the next start.

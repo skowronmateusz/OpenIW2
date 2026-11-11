@@ -28,6 +28,9 @@ int main() {
     CHECK(parseTextureMode("bilinear") == TextureMode::Bilinear);
     CHECK(parseTextureMode("4") == TextureMode::Anisotropic);
     CHECK(parseTextureMode("bogus") == TextureMode::Bilinear);
+    // The forced filter (deliberate deviation): anisotropic at the maximum, whatever a profile says.
+    CHECK(kForcedTextureMode == TextureMode::Anisotropic && clampAnisotropy(kForcedAnisotropy) == 16);
+    CHECK(decodeSamplerState(0, kForcedTextureMode).anisotropic);
     SamplerDesc d = decodeSamplerState(0x00, TextureMode::Bilinear);
     CHECK(d.linear && !d.anisotropic && d.mip == MipFilter::Nearest && !d.clampU && !d.clampV);
     d = decodeSamplerState(0x00, TextureMode::Trilinear);

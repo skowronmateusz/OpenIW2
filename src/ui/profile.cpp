@@ -25,12 +25,6 @@ bool isArchivedCvar(const std::string& name) {
     return n.size() == 6 && n.compare(0, 4, "mis_") == 0 && std::isdigit(static_cast<unsigned char>(n[4])) && std::isdigit(static_cast<unsigned char>(n[5]));
 }
 
-std::string immediateMenuDvar(const std::string& name) {
-    std::string n;
-    for (char c : name) n += char(std::tolower(static_cast<unsigned char>(c)));
-    return n == "ui_r_texturemode" ? "r_texturemode" : "";
-}
-
 std::map<std::string, std::string> parseConfig(const std::string& text) {
     std::map<std::string, std::string> out;
     std::istringstream in(text);
