@@ -1737,7 +1737,7 @@ int main(int argc, char** argv) {
                 const int st = world.objectives()[size_t(i)].state;
                 for (int n = 0; n < 8; ++n) {
                     const auto& p = world.objectives()[size_t(i)].positions[size_t(n)];
-                    const auto& q = objPositions[size_t(i)][size_t(n)];
+                    const auto q = objPositions[size_t(i)][size_t(n)]; // by value: printed after objPositions is updated
                     if (p == q) continue;
                     objPositions[size_t(i)][size_t(n)] = p;
                     if ((st == 1 || st == 4) && p[0] == 0 && p[1] == 0 && p[2] == 0) {

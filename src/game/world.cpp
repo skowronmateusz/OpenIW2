@@ -2084,6 +2084,9 @@ void World::registerBuiltins() {
         brushLinkBounds(av.isVector() ? av.asVector() : Vec3{0, 0, 0}, mn, mx);
         return Value(Vec3{org[0] + (mn[0] + mx[0]) * 0.5f, org[1] + (mn[1] + mx[1]) * 0.5f, org[2] + (mn[2] + mx[2]) * 0.5f});
     });
+    // The `.origin` field itself is the raw entity origin (spawnEntity's (0, 0, 0) unless the map ent has an "origin" key); the
+    // brush box rule above is getorigin-only. TODO(spec): [stays: the original's "origin" field getter was not read; the spec
+    // (campaign.md) only says the entity origin stays zero for an origin-less brush model, so the field could differ].
     vm_.registerBuiltin("isalive", [this](CallContext& c) {
         Entity* e = entityOf(c.arg(0));
         return Value(e && !e->obj->removed && e->obj->get("health").isDefined() && e->obj->get("health").asInt() > 0);
