@@ -282,7 +282,9 @@ and test_savestate, whose scripts print with `println` and set developer_script 
 - Env `IW2_MAIN=<game main dir>` (test_savestate): also runs the World round trip on a real map (save after 5 s, load into a
   fresh world, compare `World::stateDigest()`, run 40 more frames on both and compare time and live thread count).
   `IW2_SAVE_MAP=<map>` picks the map (default toujane); `IW2_SAVE_DIFF=1` prints the first lines where the two continuations differ.
-- Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (default `<main dir>/save`, the directory the save list reads); with no arguments `<pref>/save`).
+- Env `IW2_SAVE_DIR=<dir>` (iw2view): directory of the savegame files (the directory the save list reads). Default `<pref>/save`
+  (`<pref>` = SDL_GetPrefPath `~/Library/Application Support/OpenIW2/`) however the game was started — app start, a Terminal start of
+  the app binary or a build-folder run all share it; `<main dir>/save` only when the preference folder cannot be obtained.
 - iw2view with no arguments (the app started from Finder): stdout/stderr go to `~/Library/Logs/OpenIW2/openiw2.log` (previous log
   kept as `openiw2.log.1`); the `main` folder is read from `mainPath=` in `<pref>/settings.cfg` (`<pref>` = SDL_GetPrefPath
   `~/Library/Application Support/OpenIW2/`), else `<pref>/main`, else chosen in a folder dialog; it must hold `iw_00.iwd`..`iw_15.iwd`

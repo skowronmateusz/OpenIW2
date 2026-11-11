@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -21,6 +22,11 @@ constexpr size_t kSaveListMax = 0x100;        // list capacity (0x4c45e2)
 // (0x4e02e0..0x4e0318); '/' and '\' stay '/', except with `autosaveDir` set a slash that is not right after the 8-character prefix
 // "autosave" becomes '-' (0x4e031e..0x4e0345); any other character is an error ("invalid character", 0x5837d8).
 std::string saveFileName(const std::string& name, bool autosaveDir = false);
+
+// The folder the savegame files live in (an openiw2 choice, not an exe rule): the app's preference folder, so saves are in the same
+// place however the game was started (app start, a Terminal start of the app binary, a build-folder run). IW2_SAVE_DIR overrides it
+// (docs/debug-flags.md). The old default <mainDir>/save is used only when no preference folder could be obtained (an empty `pref`).
+std::filesystem::path saveDirectory(const char* iw2SaveDir, const std::filesystem::path& pref, const std::filesystem::path& mainDir);
 
 // First dword of the header = the version. Loader check (0x4e06e0): the header must be read whole (0x4d8 bytes) and the version == 0x99.
 bool saveHeaderLoadable(const std::vector<uint8_t>& bytes);

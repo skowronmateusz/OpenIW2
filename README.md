@@ -265,6 +265,9 @@ That starts the front end: main menu, profiles, options and mission select. To s
 The language is detected from the `localized_<language>_*.iwd` packs in your `main` folder; `--language <name>`
 overrides it.
 
+Saved games are kept in `~/Library/Application Support/OpenIW2/save/` here too — the same place the app keeps them,
+however the game is started (`IW2_SAVE_DIR` overrides it, see [docs/debug-flags.md](docs/debug-flags.md)).
+
 The controls are the game's own bindings from `default.cfg`. `Esc` opens the pause menu. `P` prints the camera
 position. The cheat keys (`F10`, `N`, `L`) need `--cvar sv_cheats=1`, for example:
 

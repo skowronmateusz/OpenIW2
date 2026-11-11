@@ -2,6 +2,7 @@
 #include "ui/savegame.h"
 
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 
 int main() {
@@ -73,5 +74,14 @@ int main() {
     check(saveNameInternal("internal/snd_restart") && saveNameInternal("INTERNAL/vid_restart") && saveNameInternal("x/internal/y") &&
               saveNameInternal("x\\internal/y"), __LINE__);
     check(!saveNameInternal("internal") && !saveNameInternal("internalx/a") && !saveNameInternal("ainternal/b") && !saveNameInternal("internal\\a"), __LINE__);
+    // The save folder is the app's preference location however the game was started; IW2_SAVE_DIR overrides it, and the
+    // <main>/save of a command-line start survives only when no preference folder exists (ui::saveDirectory).
+    check(saveDirectory(nullptr, "/opt/x/OpenIW2", "/opt/x/main") ==
+              std::filesystem::path("/opt/x/OpenIW2/save"), __LINE__);
+    check(saveDirectory("", "/opt/x/OpenIW2", "/opt/x/main") ==
+              std::filesystem::path("/opt/x/OpenIW2/save"), __LINE__); // an empty env value does not override
+    check(saveDirectory("/opt/x/saves", "/opt/x/OpenIW2", "/opt/x/main") == std::filesystem::path("/opt/x/saves"),
+          __LINE__);
+    check(saveDirectory(nullptr, "", "/opt/x/main") == std::filesystem::path("/opt/x/main/save"), __LINE__);
     return failures ? 1 : 0;
 }

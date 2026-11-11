@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <strings.h>
 #include <cstring>
 #include <ctime>
@@ -22,6 +23,12 @@ std::string saveFileName(const std::string& name, bool autosaveDir) {
         }
     }
     return "save/" + out + ".svg";
+}
+
+std::filesystem::path saveDirectory(const char* iw2SaveDir, const std::filesystem::path& pref, const std::filesystem::path& mainDir) {
+    if (iw2SaveDir && *iw2SaveDir) return std::filesystem::path(iw2SaveDir);
+    if (!pref.empty()) return pref / "save";
+    return mainDir / "save";
 }
 
 static int32_t dword(const std::vector<uint8_t>& b, size_t off) {

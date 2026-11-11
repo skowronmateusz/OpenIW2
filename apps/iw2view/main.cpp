@@ -5516,10 +5516,17 @@ int main(int argc, char** argv) {
         std::string saveDetail;   // UI state +0x41e: detail text of the selected savegame (drawn by textsavegame items)
         std::string saveSelName;  // UI state +0x31e: entry +0 of the selected savegame (ownerdraw UI_SAVEGAMENAME 262)
         int saveSel = -1;         // selected row (ownerdraw UI_SAVEGAME_SHOT 258 reads its image name, entry +8)
-        // Savegame directory (IW2_SAVE_DIR, default <main dir>/save, or <pref>/save for the app start; docs/debug-flags.md).
-        const std::filesystem::path saveDir = std::getenv("IW2_SAVE_DIR") ? std::filesystem::path(std::getenv("IW2_SAVE_DIR"))
-                                              : app                       ? app->pref / "save"
-                                                                          : std::filesystem::path(args[0]) / "save";
+        // Savegame directory (docs/debug-flags.md): the app's preference folder however the game was started, so a Terminal start of
+        // the app binary or a build-folder run finds the app's saves instead of writing <main>/save into the game folder. IW2_SAVE_DIR
+        // overrides it; <main>/save stays only when the preference folder cannot be obtained.
+        std::filesystem::path savePref = app ? app->pref : std::filesystem::path();
+        if (!app) {
+            if (char* pref = SDL_GetPrefPath("OpenIW2", "OpenIW2")) {
+                savePref = pref;
+                SDL_free(pref);
+            }
+        }
+        const std::filesystem::path saveDir = ui::saveDirectory(std::getenv("IW2_SAVE_DIR"), savePref, args[0]);
         // Join a server: from the join list, a favorite, "connect" and +connect (name lookup first, docs/spec/mp-ui.md).
         net::Resolver pendingConnect;
         auto joinAddress = [&](const net::NetAddress& to) {
