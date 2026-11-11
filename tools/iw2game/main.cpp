@@ -908,6 +908,10 @@ int main(int argc, char** argv) {
         int actionsSinceProgress = 0; // autoplay actions since the last real progress: escalation level
         float lastActionT = 0.0f, lastSeenProgressT = 0.0f;
         std::array<int, 16> objStates{};
+        // Objective positions of the last frame: a visible objective (active / current) whose position becomes exactly
+        // (0, 0, 0) shows no compass star (docs/spec/campaign.md), so each such change is logged for the report.
+        std::array<std::array<std::array<float, 3>, 8>, 16> objPositions{};
+        std::vector<std::string> zeroPositionLines;
         world.vm().notifyHook = [&](const iw2::script::ObjectPtr& o, const std::string& ev) {
             if (o->kind != "level") return;
             if (ev == "artillery shell impact") ++strikeImpacts;
@@ -1725,11 +1729,25 @@ int main(int argc, char** argv) {
                 std::cout << "[inventory " << world.timeMs() << " ms] carried in vs now:\n";
                 for (const auto& l : inventoryLines) std::cout << "    " << l << "\n";
             }
-            for (int i = 0; i < 16; ++i)
+            for (int i = 0; i < 16; ++i) {
                 if (world.objectives()[size_t(i)].state != objStates[size_t(i)]) {
                     objStates[size_t(i)] = world.objectives()[size_t(i)].state;
                     lastProgressT = f * 0.05f;
                 }
+                const int st = world.objectives()[size_t(i)].state;
+                for (int n = 0; n < 8; ++n) {
+                    const auto& p = world.objectives()[size_t(i)].positions[size_t(n)];
+                    const auto& q = objPositions[size_t(i)][size_t(n)];
+                    if (p == q) continue;
+                    objPositions[size_t(i)][size_t(n)] = p;
+                    if ((st == 1 || st == 4) && p[0] == 0 && p[1] == 0 && p[2] == 0) {
+                        char buf[96];
+                        std::snprintf(buf, sizeof buf, "%.2f objective %i position %i (%.0f, %.0f, %.0f) -> 0,0,0 while state %i",
+                                      world.timeMs() / 1000.0f, i, n, double(q[0]), double(q[1]), double(q[2]), st);
+                        zeroPositionLines.push_back(buf);
+                    }
+                }
+            }
             if ((autoplay || endLevelAt >= 0) && lastChange) break; // the level ends (victory screen, load, mission failed): nothing more to follow
             if (lastProgressT != lastSeenProgressT) { lastSeenProgressT = lastProgressT; actionsSinceProgress = 0; }
             if (autoplay && world.player() && f % 40 == 0) // when each "death" wait first showed up (the kill gate takes the oldest wave first)
@@ -2697,6 +2715,15 @@ int main(int argc, char** argv) {
             r << "[objectives]\n";
             for (int i = 0; i < 16; ++i)
                 if (world.objectives()[size_t(i)].state) r << i << " " << world.objectives()[size_t(i)].state << " " << world.objectives()[size_t(i)].text << "\n";
+            r << "[objective_positions]\n";
+            for (int i = 0; i < 16; ++i)
+                for (int n = 0; n < 8; ++n) {
+                    const auto& p = world.objectives()[size_t(i)].positions[size_t(n)];
+                    if (p[0] == 0 && p[1] == 0 && p[2] == 0) continue;
+                    r << i << " " << n << " " << p[0] << " " << p[1] << " " << p[2] << "\n";
+                }
+            // A visible objective at (0, 0, 0) shows no star (the compass skips a zero position): every such change during the run.
+            for (const auto& l : zeroPositionLines) r << "zero " << l << "\n";
             r << "[notifies]\n";
             for (const auto& l : notifyTimeline) r << l << "\n";
             r << "[autoplay]\n";

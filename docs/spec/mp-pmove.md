@@ -93,8 +93,9 @@ middle. For any other entity they are the middle of its bounds and that middle o
 With none, a trace to the bounds centre (mask 0x811, no pass entity) that is blocked, and a centre closer than 0.2·radius,
 give a truncated tenth of the amount; so an explosion just behind thin cover still hurts a little. Every hit has damage flags
 1 (radius), the explosion origin as its point, hit location none and the direction target − explosion + (0, 0, 24).
-OpenIW2: a client's bounds centre is taken as the eye / origin middle, and brush models use their origin as in the
-single-player code.
+OpenIW2: a client's bounds centre is taken as the eye / origin middle; brush models measure the skip test to their box
+and take the box middle as the centre (`World::brushAbsBounds`, as in the single-player code; test
+`mpradiusbrush_world`).
 
 Friendly fire is gametype script: `scr_friendlyfire` modes 0..3 are read by the gametypes (`tdm.gsc:278-309`); the engine
 reads the dvar only for bullets (below) and the server info.

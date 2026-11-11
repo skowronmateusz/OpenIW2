@@ -962,6 +962,13 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(mphitscale_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
+add_executable(test_mpradiusbrush tests/test_mpradiusbrush.cpp)
+target_link_libraries(test_mpradiusbrush PRIVATE iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  add_test(NAME mpradiusbrush_world COMMAND test_mpradiusbrush)
+  set_tests_properties(mpradiusbrush_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
 add_executable(test_mpturretdamage tests/test_mpturretdamage.cpp)
 target_link_libraries(test_mpturretdamage PRIVATE iw2_game)
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")

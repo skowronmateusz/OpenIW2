@@ -240,7 +240,16 @@ void World::mpRadiusDamage(const Vec3& origin, Entity* attacker, float inner, fl
     }
     constexpr int kRadiusFlag = 1; // iDFLAGS_RADIUS
     for (Entity* t : targets) {
-        const float dist = len(sub(originOf(t->obj), origin));
+        // The skip test measures to the origin, a brush model to its bounds (mp-pmove.md "Radius damage", 0x8101ee6;
+        // box distance as in the single-player 0x528ad2, 0 inside).
+        float dist = len(sub(originOf(t->obj), origin));
+        Vec3 absmin{}, absmax{};
+        if (brushAbsBounds(*t, absmin, absmax)) {
+            Vec3 d{};
+            for (size_t k = 0; k < 3; ++k)
+                d[k] = origin[k] < absmin[k] ? absmin[k] - origin[k] : origin[k] > absmax[k] ? origin[k] - absmax[k] : 0.0f;
+            dist = len(d);
+        }
         if (dist >= radius) continue;
         if (t->isPlayer && sparePlayerRadiusDamage_) continue;
         const float amount = (1.0f - dist / radius) * (inner - outer) + outer;
@@ -257,8 +266,14 @@ void World::mpRadiusDamage(const Vec3& origin, Entity* attacker, float inner, fl
     }
 }
 
-// The centre the near-cover test measures from: the middle of a client between its feet and eye, else the origin.
+// The centre the near-cover test measures from: the middle of a client between its feet and eye; a brush model the
+// middle of its bounds (mp-pmove.md "Radius damage": the visibility points of a non-client are "the middle of its
+// bounds", the near-cover trace goes "to the bounds centre"); any other entity is a point at its origin (its bounds
+// are zero, vehicles.md "Entity boxes", so the middle is the origin).
 Vec3 World::mpRadiusCentre(Entity& t) {
+    Vec3 absmin{}, absmax{};
+    if (brushAbsBounds(t, absmin, absmax))
+        return {(absmin[0] + absmax[0]) * 0.5f, (absmin[1] + absmax[1]) * 0.5f, (absmin[2] + absmax[2]) * 0.5f};
     const Vec3 o = originOf(t.obj);
     if (!t.isPlayer) return o;
     const Vec3 eye = eyePosition(t);

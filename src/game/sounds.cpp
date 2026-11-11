@@ -22,6 +22,9 @@ void World::registerSoundBuiltins() {
         if (!c.self.isObject()) return std::nullopt;
         const Value o = c.self.asObject()->get("origin");
         if (!o.isVector()) return std::nullopt;
+        // TODO(spec): [stays: the spec says playsound "plays at the entity" but not which position the client takes
+        // for a brush-model entity (its currentOrigin stays (0, 0, 0)); here the origin field, without the getorigin
+        // box rule (campaign.md)].
         return o.asVector();
     };
     // setblur(amount, time) (0x4f3340): sends "scr_blur <time*1000> <amount> 0 1" to the client.

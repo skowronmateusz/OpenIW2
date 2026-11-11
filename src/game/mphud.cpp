@@ -191,7 +191,9 @@ bool World::mpObjectiveVisible(const Objective& o) const {
 }
 
 void World::mpHudFrame() {
-    // objective_onEntity: the position follows the entity (0x8112e04).
+    // objective_onEntity: the position follows the entity (0x8112e04). TODO(spec): [stays: which position of a
+    // brush-model entity the MP original follows was not read; here the raw origin field, (0, 0, 0) for an origin-less
+    // brush trigger, not the box centre of the SP getorigin rule (campaign.md); no shipped MP script passes one].
     for (Objective& o : objectives_) {
         if (o.entity < 0) continue;
         Entity* e = entityByNumber(o.entity);
