@@ -70,6 +70,13 @@ baking static models into the level; that the entity is then dropped is *inferre
   entity origin/angles that starts solid; shape flag 0x10 (trigger_radius, spawn 0x528ee0: mins (−r, −r, 0), maxs
   (r, r, height), flags 0x11): the box must reach above the base and below the top, and its centre lie within
   r + half its x width of the axis; shape flag 0x20 (trigger_disk): touches when that distance ≥ r + half width (spawn 0x529070 stores r + 64 in r.maxs, 0x447950 subtracts the 64 again; no z test, z extent ±100000).
+- `spawn("trigger_radius", origin, spawnflags, radius, height)` from a script (0x4ece50 stores origin and spawnflags, then the
+  class spawn 0x528ee0 runs without spawn keys): radius and height are read as floats from the fourth and fifth arguments, and fewer
+  than five arguments raise the script error `USAGE: spawn( "trigger_radius", <origin>, <spawnflags>, <radius>, <height> )`. With
+  spawn keys (the map load) the same routine reads the `radius` / `height` keys and reports a missing one as an error. Shipped
+  scripts depend on the script form (e.g. maps/88ridge.gsc:717, maps/rhine.gsc:741, 929, 1745, maps/elalamein.gsc:1850,
+  maps/tankhunt.gsc:496, maps/_tank.gsc:1232). openiw2 keeps both values in the entity's `radius` / `height` fields, as for a map
+  trigger (TODO(spec): whether a script can read `radius` back from such an entity).
 - `istouching` (0x4ef100) runs the same test with the shape entity and the other entity's box.
 - Actors touch triggers too. The actor frame calls G_TouchTriggers at 0x4ff260 for every actor that is alive (+0x25c), whether it moved or
   not, after its move and prone steps. The area mask depends on the toucher (0x4e732a..0x4e7384): vehicle 8, no sentient 0x400000, client

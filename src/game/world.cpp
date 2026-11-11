@@ -963,7 +963,7 @@ void World::thinkActor(Entity& e) {
         if (!e.ai.corpse) blockFacingNodes(e);
         if (!e.ai.corpse) actorProneFrame(e); // 0x4ff1de: prone refit after a move or turn
         if (!e.ai.corpse) actorDelayedDeath(e); // 0x4ff215
-        if (!e.ai.corpse) actorTouchTriggers(e); // 0x4ff260
+        if (!e.ai.corpse && e.ai.alive) actorTouchTriggers(e); // 0x4ff260: alive actors only (+0x25c), not the dying
     }
 }
 
@@ -1870,6 +1870,13 @@ void World::registerBuiltins() {
         Entity& e = spawnEntity(c.arg(0).toString());
         if (c.arg(1).isDefined()) e.obj->set("origin", c.arg(1));
         if (c.arg(2).isDefined()) e.obj->set("spawnflags", c.arg(2));
+        // trigger_radius from a script (0x528ee0 without spawn keys): the radius and height are the fourth and fifth arguments; fewer
+        // arguments are a script error. The map spawn reads the "radius" / "height" keys instead (docs/spec/entities.md).
+        if (e.classname == "trigger_radius") {
+            if (c.argc() < 5) throw std::runtime_error("USAGE: spawn( \"trigger_radius\", <origin>, <spawnflags>, <radius>, <height> )");
+            e.obj->set("radius", Value(c.arg(3).asFloat()));
+            e.obj->set("height", Value(c.arg(4).asFloat()));
+        }
         if (e.classname.size() > 7 && lower(e.classname.substr(0, 7)) == "weapon_") scriptSpawnItem(e); // G_SpawnItem 0x522c70
         return Value(e.obj);
     });

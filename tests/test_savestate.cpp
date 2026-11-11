@@ -308,6 +308,14 @@ void worldRoundTrip() {
     int scriptedActor = -1;
     for (const auto& e : a.entities())
         if (e->isActor && (e->obj->get("health").asInt() > 0)) { a.debugPushAiState(*e, iw2::game::AiScripted); scriptedActor = e->number; break; }
+    // An actor in the middle of a traversal (state 9): its traverse animscript key (+0x208) and traverse mode (+0x210) are saved;
+    // without them the restored actor ran animscripts/traverse/ with no key. A dying actor's alive flag (+0x25c) is saved too.
+    int traverseActor = -1, dyingActor = -1;
+    for (const auto& e : a.entities()) {
+        if (!e->isActor || e->number == scriptedActor || e->obj->get("health").asInt() <= 0) continue;
+        if (traverseActor < 0) { e->ai.negotiationScript = "window_over_40"; e->ai.traverseMode = 3; traverseActor = e->number; }
+        else if (dyingActor < 0) { e->ai.alive = false; dyingActor = e->number; }
+    }
     // The renderer fog record travels with the save (0x402d60 -> gfx 0x1000bca0); the level script does not resend it on a load.
     a.clientFog.command(0, 3000, 0.562f, 0.57f, 0.59f, 0, a.timeMs());
     iw2::game::SaveRequest req;
@@ -343,6 +351,14 @@ void worldRoundTrip() {
             CHECK(eb->ai.predictedDepth == ea->ai.predictedDepth);
             CHECK(eb->ai.predicted[size_t(eb->ai.predictedDepth)] == iw2::game::AiScripted);
         }
+    }
+    if (traverseActor >= 0) {
+        const iw2::game::Entity* eb = b.debugEntity(traverseActor);
+        CHECK(eb && eb->ai.negotiationScript == "window_over_40" && eb->ai.traverseMode == 3 && eb->ai.alive);
+    }
+    if (dyingActor >= 0) {
+        const iw2::game::Entity* eb = b.debugEntity(dyingActor);
+        CHECK(eb && !eb->ai.alive);
     }
     const std::string da = a.stateDigest(), db = b.stateDigest();
     CHECK(da == db);
@@ -383,7 +399,15 @@ void worldRoundTrip() {
 
 } // namespace
 
+// Every body format the reader has branches for is accepted (formats 13 and 14 were once refused); format 2 and unknown ones are not.
+void formatGate() {
+    using iw2::game::saveFormatLoadable;
+    for (uint32_t v : {1u, 3u, 12u, 13u, 14u, 15u, iw2::game::kStateVersion}) CHECK(saveFormatLoadable(v));
+    for (uint32_t v : {0u, 2u, iw2::game::kStateVersion + 1}) CHECK(!saveFormatLoadable(v));
+}
+
 int main() {
+    formatGate();
     vmRoundTrip();
     developerModeSave();
     try {

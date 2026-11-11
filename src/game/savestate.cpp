@@ -389,6 +389,9 @@ void World::saveState(StateWriter& w) {
         w.i32(e.attackers);
         w.i64(e.enemyEventMs); // version 9
         w.b(e.ai.deathPending); // version 10
+        w.b(e.ai.alive);             // version 16: actor +0x25c (cleared by the die callback 0x4ff530)
+        w.str(e.ai.negotiationScript); // version 16: actor +0x208, the traverse animscript key of state 9 (0x543760)
+        w.i32(e.ai.traverseMode);    // version 16: actor +0x210 (traversemode)
         w.b(e.grenade != nullptr);
         if (const GrenadeState* g = e.grenade.get()) {
             w.str(g->weapon);
@@ -853,6 +856,15 @@ void World::loadState(StateReader& r) {
         e->attackers = r.i32();
         e->enemyEventMs = r.version >= 9 ? r.i64() : 0;
         e->ai.deathPending = r.version >= 10 ? r.b() : false;
+        if (r.version >= 16) {
+            e->ai.alive = r.b();
+            e->ai.negotiationScript = r.str();
+            e->ai.traverseMode = r.i32();
+        } else {
+            // Older saves: a dying actor has the death state on its stack (the die callback 0x4ff530 pushes it with +0x25c cleared);
+            // the traverse key and mode are lost (TODO(spec): an actor saved mid-traversal runs animscripts/traverse/ with no key).
+            e->ai.alive = e->ai.stack[size_t(e->ai.depth)] != AiDeath;
+        }
         e->grenade.reset();
         if (r.b()) {
             auto g = std::make_unique<GrenadeState>();
@@ -1129,7 +1141,7 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out) {
     if (raw < sizeof kStateMagic + 4 || std::memcmp(out.body.data(), kStateMagic, sizeof kStateMagic) != 0) return "not an openiw2 save";
     uint32_t ver = 0;
     std::memcpy(&ver, out.body.data() + sizeof kStateMagic, 4);
-    if (ver != kStateVersion && ver != 1 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11 && ver != 12 && ver != 15) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
+    if (!saveFormatLoadable(ver)) return "openiw2 save format " + std::to_string(ver) + ", expected " + std::to_string(kStateVersion);
     return {};
 }
 
@@ -1142,11 +1154,11 @@ std::string readSaveFile(const std::string& path, const std::string& name, Loade
 void restoreSave(World& world, const LoadedSave& save) {
     StateReader r(save.body.data() + sizeof kStateMagic + 4, save.body.size() - sizeof kStateMagic - 4);
     std::memcpy(&r.version, save.body.data() + sizeof kStateMagic, 4); // version 1 (before the movie-pending flag) still loads
-    // Before format 16 a save does not say how its files were compiled. Formats up to 12 and the format-15 saves of builds before the
+    // Before format 16 a save does not say how its files were compiled. Formats up to 12 and the format 13-15 saves of builds before the
     // compiler followed developer_script come from a compiler that kept every assert / println / /# #/ block: mode on. A format-15 save of
     // a later build carries the dvar in its cvar list (a record of two strings, name then value): that value was the mode.
     if (r.version <= 12) r.legacyDeveloper = true;
-    else if (r.version == 15) {
+    else if (r.version >= 13 && r.version <= 15) {
         static constexpr char key[] = {16, 0, 0, 0, 'd', 'e', 'v', 'e', 'l', 'o', 'p', 'e', 'r', '_', 's', 'c', 'r', 'i', 'p', 't'};
         const auto& body = save.body;
         const auto at = std::search(body.begin(), body.end(), std::begin(key), std::end(key));
