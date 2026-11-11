@@ -75,7 +75,7 @@ int main() {
               saveNameInternal("x\\internal/y"), __LINE__);
     check(!saveNameInternal("internal") && !saveNameInternal("internalx/a") && !saveNameInternal("ainternal/b") && !saveNameInternal("internal\\a"), __LINE__);
     // The save folder is the app's preference location however the game was started; IW2_SAVE_DIR overrides it, and the
-    // <main>/save of a command-line start survives only when no preference folder exists (ui::saveDirectory).
+    // An empty preference folder (a development build, outside the app bundle) keeps <main>/save (ui::saveDirectory).
     check(saveDirectory(nullptr, "/opt/x/OpenIW2", "/opt/x/main") ==
               std::filesystem::path("/opt/x/OpenIW2/save"), __LINE__);
     check(saveDirectory("", "/opt/x/OpenIW2", "/opt/x/main") ==

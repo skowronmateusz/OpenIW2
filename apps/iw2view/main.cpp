@@ -5516,11 +5516,12 @@ int main(int argc, char** argv) {
         std::string saveDetail;   // UI state +0x41e: detail text of the selected savegame (drawn by textsavegame items)
         std::string saveSelName;  // UI state +0x31e: entry +0 of the selected savegame (ownerdraw UI_SAVEGAMENAME 262)
         int saveSel = -1;         // selected row (ownerdraw UI_SAVEGAME_SHOT 258 reads its image name, entry +8)
-        // Savegame directory (docs/debug-flags.md): the app's preference folder however the game was started, so a Terminal start of
-        // the app binary or a build-folder run finds the app's saves instead of writing <main>/save into the game folder. IW2_SAVE_DIR
-        // overrides it; <main>/save stays only when the preference folder cannot be obtained.
+        // Savegame directory (docs/debug-flags.md): the app's preference folder whenever the binary runs from the application bundle
+        // (Finder or Terminal start), so both see the same saves; a development build keeps its own <main>/save. IW2_SAVE_DIR
+        // overrides both.
         std::filesystem::path savePref = app ? app->pref : std::filesystem::path();
-        if (!app) {
+        const char* binBase = SDL_GetBasePath();
+        if (!app && binBase && ui::runsInAppBundle(binBase)) {
             if (char* pref = SDL_GetPrefPath("OpenIW2", "OpenIW2")) {
                 savePref = pref;
                 SDL_free(pref);

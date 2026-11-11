@@ -208,8 +208,8 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
 - UI_SAVEGAMENAME (262) and `textsavegame` items show the UI-state strings +0x31e / +0x41e that the feeder selection 0x4c6050 fills.
   TODO(spec): their draw handlers (font, wrapping of the multi-line detail text) are not decoded; openiw2 draws them with the item's
   text settings.
-- openiw2 (apps/iw2view): saves are written to `IW2_SAVE_DIR` (default `<pref>/save`, the app's preference folder, however the game
-  was started), `save/autosave/` rows are listed as
+- openiw2 (apps/iw2view): saves are written to `IW2_SAVE_DIR` (default `<pref>/save`, the app's preference folder, when the binary
+  runs from the application bundle; `<main dir>/save` for a development build), `save/autosave/` rows are listed as
   `autosave/<name>` while `ui_savegameListAutosave` is set (TODO(spec): the exe's directory walk), uiScripts `Loadgame` ("loadgame %s"
   of `ui_savegame`) and `DelSavegame` work, console `loadgame <name>` / `loadgame_continue` load a save, and a death / mission failure
   (loadgame_continue 0x4d9f90) loads `sv_lastSaveGame`, restarting the level only when no such save exists. `vid_restart` /
