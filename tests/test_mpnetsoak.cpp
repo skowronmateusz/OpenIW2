@@ -208,6 +208,7 @@ struct ServerProcess {
 // A scripted network client (iw2view's client side of the network game)
 
 constexpr uint32_t kFollowBit = 0x100000;  // pm_flags of a followed player state (killcam)
+constexpr int kEntitynumNone = 1023;       // groundEntityNum (ps+0x60) of a player in the air
 
 struct Scenario {
     // What the script holds this frame.
@@ -395,6 +396,8 @@ struct Life {
     float walkScale = 1;
     // jumps
     int jumpPresses = 0;
+    float pressT[3] = {-1.0f, -1.0f, -1.0f};  // the time of each press, -1 not pressed (a slot without a settled
+                                              // on-ground state within its window presses never)
     float jumpBaseZ = 0, jumpApex = -1e9f;
     std::vector<float> apexes;
     int openJump = -1;  // the jump being measured
@@ -842,9 +845,10 @@ struct Soak {
         }
         if (std::getenv("IW2_SOAK_TRACE") && life.spawnMs) {
             const float pv = std::sqrt(c.ps.velocity[0] * c.ps.velocity[0] + c.ps.velocity[1] * c.ps.velocity[1]);
-            std::printf("trace t=%.3f life=%d cmdt=%d pm=%d z=%.1f vz=%.1f vxy=%.1f pz=%.1f pvxy=%.1f jumping=%d stance=%d weapon=%d clip=%d hud=%s/%d events=%d ws=%d cs=%d btn=%x off=%s\n",
+            std::printf("trace t=%.3f life=%d cmdt=%d pm=%d z=%.1f vz=%.1f vxy=%.1f pz=%.1f pvz=%.1f pvxy=%.1f pgrnd=%d jumping=%d pmt=%d sgrnd=%d stance=%d weapon=%d clip=%d hud=%s/%d events=%d ws=%d cs=%d btn=%x off=%s\n",
                         double(now - life.spawnMs) / 1000.0, life.number, f.commandTime, f.pmType, f.origin[2], f.velocity[2],
-                        std::sqrt(f.velocity[0] * f.velocity[0] + f.velocity[1] * f.velocity[1]), c.ps.origin[2], pv, c.ps.jumping ? 1 : 0,
+                        std::sqrt(f.velocity[0] * f.velocity[0] + f.velocity[1] * f.velocity[1]), c.ps.origin[2], c.ps.velocity[2], pv,
+                        c.ps.onGround ? 1 : 0, c.ps.jumping ? 1 : 0, c.ps.pmTimeMs, getI(last->ps, 96) != 1023 ? 1 : 0,
                         netgame::RemoteView::stance(*last), wn, clip, c.pweapon.name().c_str(), hudClip, c.playedEvents, getI(last->ps, 216) & 31, c.pweapon.stateNumber(),
                         c.gc->lastCommand() ? unsigned(c.gc->lastCommand()->buttons) : 0u, c.view->player() ? c.view->inventory(*c.view->player()).offhand.c_str() : "-");
         }
@@ -1053,38 +1057,55 @@ struct Soak {
             life.walkScale = c.pweapon.equipped() ? c.pweapon.number("moveSpeedScale") : 1.0f;
         }
         if (once(1, 2.6) && !life.walkSpeeds.empty()) evaluateWalk(c);
-        // three jumps on the spot
+        // three jumps on the spot. A press waits for a settled on-ground state, at the client's prediction and in the
+        // newest snapshot alike: the walk before can end in the air (a step, a ledge) and a hit's knockback pushes the
+        // player in a way no client can predict, and a press while the prediction is in the air starts no predicted
+        // jump although the server, back on the ground, jumps (seen once as event.jump, press detail 'on ground 0';
+        // the prediction then followed the server's three jumps as falls: three landings, no jump start). A slot that
+        // finds no settled state within 0.6 s is not pressed and not counted; the later presses are made during the
+        // landing slowdown (jump flag set, pm_time running) as before.
+        const bool serverOnGround = getI(last->ps, 96) != kEntitynumNone;
+        const auto settled = [&]() {
+            return c.ps.onGround && std::fabs(c.ps.velocity[2]) < 5.0f && serverOnGround && std::fabs(f.velocity[2]) < 5.0f &&
+                   now - o.lastDamageMs > 600 && now - o.lastTeleportMs > 600;
+        };
         for (int k = 0; k < 3; ++k) {
             const double j = 3.0 + 1.2 * k;
-            if (phase(j, j + 0.1)) {
-                sc.buttons |= game::Button::Jump;
-                if (life.openJump != k && !life.once.count(100 + k)) {
-                    life.once.insert(100 + k);
-                    life.openJump = k;
-                    life.jumpBaseZ = f.origin[2];
-                    life.jumpApex = f.origin[2];
-                    ++life.jumpPresses;
-                    const auto up = c.view->collision().trace({f.origin[0], f.origin[1], f.origin[2]}, {f.origin[0], f.origin[1], f.origin[2] + 44},
-                                                              {-15, -15, 0}, {15, 15, 70}, game::Contents::PlayerClipMask, -1);
-                    char d[200];
-                    std::snprintf(d, sizeof d, " press: predicted jump flag %d pm_time %d on ground %d, vz %.1f, landings since spawn %d, free height over the head %.0f",
-                                  c.ps.jumping ? 1 : 0, c.ps.pmTimeMs, c.ps.onGround ? 1 : 0, f.velocity[2], c.predictedLands - life.landsAtSpawn, up.fraction * 44);
-                    life.pressDetail += d;
-                    if (k == 0) life.freeHeight = up.fraction * 44;
-                    if (k == 0) {
-                        life.predictedJumpsAtStart = c.predictedJumps;
-                        life.landsAtStart = c.predictedLands;
-                        life.eventsAtStart = c.playedEventKinds[0];
-                    }
+            if (life.pressT[k] < 0) {
+                if (t < j || t >= j + 0.6 || !settled()) continue;
+                if (k > 0 && life.openJump == k - 1) {  // a late press of this slot ends the apex window of the one before
+                    life.apexes.push_back(life.jumpApex - life.jumpBaseZ);
+                    life.openJump = -1;
+                }
+                life.pressT[k] = float(t);
+                life.openJump = k;
+                life.jumpBaseZ = f.origin[2];
+                life.jumpApex = f.origin[2];
+                ++life.jumpPresses;
+                const auto up = c.view->collision().trace({f.origin[0], f.origin[1], f.origin[2]}, {f.origin[0], f.origin[1], f.origin[2] + 44},
+                                                          {-15, -15, 0}, {15, 15, 70}, game::Contents::PlayerClipMask, -1);
+                char d[220];
+                std::snprintf(d, sizeof d, " press %d: predicted jump flag %d pm_time %d on ground %d, server on ground %d, vz %.1f, landings since spawn %d, free height over the head %.0f",
+                              k + 1, c.ps.jumping ? 1 : 0, c.ps.pmTimeMs, c.ps.onGround ? 1 : 0, serverOnGround ? 1 : 0, f.velocity[2],
+                              c.predictedLands - life.landsAtSpawn, up.fraction * 44);
+                life.pressDetail += d;
+                if (life.jumpPresses == 1) {
+                    life.freeHeight = up.fraction * 44;
+                    life.predictedJumpsAtStart = c.predictedJumps;
+                    life.landsAtStart = c.predictedLands;
+                    life.eventsAtStart = c.playedEventKinds[0];
                 }
             }
-            if (phase(j + 0.1, j + 1.15)) life.jumpApex = std::max(life.jumpApex, f.origin[2]);
-            if (t >= j + 1.15 && life.openJump == k) {
+            if (life.pressT[k] < 0) continue;  // not pressed: no button, no apex window
+            if (t >= life.pressT[k] && t < life.pressT[k] + 0.1) sc.buttons |= game::Button::Jump;
+            if (t >= life.pressT[k] + 0.1 && t < life.pressT[k] + 1.15) life.jumpApex = std::max(life.jumpApex, f.origin[2]);
+            if (t >= life.pressT[k] + 1.15 && life.openJump == k) {
                 life.openJump = -1;
                 life.apexes.push_back(life.jumpApex - life.jumpBaseZ);
             }
         }
-        if (once(2, 6.7)) evaluateJumps(c);
+        // After the last apex window (a press can be 0.6 s late: 5.4 + 0.6 + 1.15 = 7.15).
+        if (once(2, 7.35)) evaluateJumps(c);
         // crouch, prone, stand
         if (phase(7.0, 8.0)) sc.buttons |= game::Button::Crouch;
         if (phase(8.0, 9.4)) sc.buttons |= game::Button::Prone;
@@ -1194,7 +1215,11 @@ struct Soak {
     }
 
     void evaluateJumps(NetClient& c) {
-        if (life.apexes.empty()) return;
+        if (life.apexes.empty()) {
+            if (life.jumpPresses == 0)
+                gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": no jump press: no settled on-ground state in the jump phase");
+            return;
+        }
         // The height of a jump: v0 = sqrt(2 g h) with jump_height 39 and g 800 (multiplayerMoveParams), the apex 39.
         const game::MoveParams mp = game::multiplayerMoveParams();
         std::string all;
@@ -1205,9 +1230,11 @@ struct Soak {
         }
         const int jumps = c.predictedJumps - life.predictedJumpsAtStart;
         const int lands = c.predictedLands - life.landsAtStart;
+        const int skipped = 3 - life.jumpPresses;  // slots without a settled on-ground state
         char b[700];
-        std::snprintf(b, sizeof b, "apex heights %s(expected %.0f), predicted jump starts %d, landings %d for %d presses;%s", all.c_str(),
-                      mp.jumpHeight, jumps, lands, life.jumpPresses, life.pressDetail.c_str());
+        std::snprintf(b, sizeof b, "apex heights %s(expected %.0f), predicted jump starts %d, landings %d for %d presses%s;%s", all.c_str(),
+                      mp.jumpHeight, jumps, lands, life.jumpPresses, skipped > 0 ? ", slots skipped for no settled state" : "",
+                      life.pressDetail.c_str());
         gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": " + b);
         apexByMap[currentMapKey].push_back(best);
         // The first jump of the three is the clean one (later ones may land in the slowdown).
