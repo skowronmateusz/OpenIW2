@@ -735,9 +735,10 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     // Bullet_Fire_Extended (FUN_00531340): mask 0x280e831; the rifleBullet priority map puts the head first.
     const Value wn = shooter.obj->get(shooter.isPlayer ? "$weapon" : "weapon");
     const auto* def = wn.isString() ? weapon(wn.asString()) : nullptr;
-    // Multiplayer turret fire (0x810a982 -> 0x8120484 in the 1.3 Linux dedicated server): the bullet uses the turret's weapon
-    // (its rifleBullet / armorPiercing, means of death and pass-through). TODO(spec): the same for the SP turret shot.
-    if (mp_ && shooter.turret && !weaponName.empty()) def = weapon(weaponName);
+    // Turret fire uses the turret's weapon (its rifleBullet / armorPiercing, means of death and pass-through): single player
+    // 0x51ada0 hands Bullet_Fire the weapon definition of the turret entity's own weapon (table 0x1c64548 by entity byte +2,
+    // read through the shot's +0x3c at 0x531385), multiplayer 0x810a982 -> 0x8120484 in the 1.3 Linux dedicated server.
+    if (shooter.turret && !shooter.turret->weapon.empty()) def = weapon(shooter.turret->weapon);
     bool rifle = false;
     if (def) {
         auto it = def->find("riflebullet");

@@ -96,7 +96,10 @@ third argument of 0x51ada0 (tested at 0x51ae05): 0x51b250 passes 0 when the turr
 0x51b26e..0x51b27c) and the turret's flag 0x40 otherwise (0x51b296..0x51b2a5). So a player on a turret always shoots
 along the barrel, even when an engaged target and flag 0x40 are still on the turret from an AI gunner or a script
 (decoytown: an MG42 that AI used first bent the player's bullets towards the old aim point while the view stayed
-within the 0.95 cone). Scripts (`maps/_mg42.gsc`) call it
+within the 0.95 cone). The bullet takes the weapon definition of the turret entity's own weapon (0x51ada0 reads the
+weapon table 0x1c64548 at the entity's weapon byte +2 into the shot's +0x3c, which Bullet_Fire reads for rifleBullet +0x31c,
+armorPiercing +0x320 and the damage), so its means of death, hit-location priority and pass-through follow the turret
+weapon. Every shipped SP turret weapon has rifleBullet set. Test `tests/test_spturretbullet.cpp`. Scripts (`maps/_mg42.gsc`) call it
 every 0.1 s while `isfiringturret()`.
 
 ## AI gunner turret state
