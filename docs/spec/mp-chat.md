@@ -106,7 +106,9 @@ that is not a colour code, becomes `UnnamedPlayer` (0x5b8544).
   the menu while the local player is playing or dead and no other menu is open.
 - `wm_quickmessage.menu:124-154`: keys 1, 2, 3 close it and open `quickcommands`, `quickstatements`,
   `quickresponses`; the script menus (`quickcommands.menu:124-236` etc.) answer the digit keys with
-  `scriptMenuResponse "<digit>"` and close themselves. All four menus set `cl_bypassMouseInput` 1 while open.
+  `scriptMenuResponse "<digit>"` and close themselves. All four menus set `cl_bypassMouseInput` 1 while open: they are keyboard-only. Port rule (`menuBypassesGameInput`,
+src/ui/menuinput.h): while the top menu is not full-screen and the cvar is 1, no cursor is shown, the mouse keeps turning the view,
+movement and buttons keep working, and the menu takes only its execKey keys and Escape.
 - execKey (menu parse 0x544150: menu list +0x250 of {key, script}; the key is the first byte of the string): the menu
   key handler (0x53e900) runs the script of a matching entry before anything else. 0x5345b0 decides whether the
   menu takes a key: always while the UI flag 0x19a1c94 is set, otherwise only keys up to 0x100 with an execKey

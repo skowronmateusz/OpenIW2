@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -435,10 +436,23 @@ float MenuStack::valueTextX(const Menu& m, const Item& it) const {
     // for center (1, 3), so a right-aligned label puts every value at the same column (serverinfo_dm.menu:71-104).
     // TODO(spec): 0x4cc170 adds the dvar value's width to w for some centred edit items (0x4c3720); not modelled.
     const float x = m.rect.x + it.rect.x + it.textAlignX;
-    if (it.text.empty()) return x;
-    const float w = env_.textWidth ? env_.textWidth(it) : 0.0f;
-    const float start = it.textAlign == 2 ? x - w : it.textAlign == 1 || it.textAlign == 3 ? x - w * 0.5f : x;
-    return start + w + 8.0f;
+    float vx = x;
+    if (!it.text.empty()) {
+        const float w = env_.textWidth ? env_.textWidth(it) : 0.0f;
+        const float start = it.textAlign == 2 ? x - w : it.textAlign == 1 || it.textAlign == 3 ? x - w * 0.5f : x;
+        vx = start + w + 8.0f;
+    }
+    // A decimal field that shows the value of a slider (same dvar, same row; options_look "Mouse sensitivity") lies right of the
+    // slider's track. The shipped layout puts the field's rect start inside the 96-wide track (the track starts after the label
+    // column), which drew the number over the track's end; the value is moved to 8 after the track end then.
+    // TODO(spec): the original's own placement of this field is not traced (deliberate deviation for readability).
+    if (it.type == 17 && !it.dvar.empty())
+        for (const auto& o : m.items) {
+            if (o->type != 10 || !o->hasRange || o->dvar != it.dvar || std::fabs(o->rect.y - it.rect.y) > 0.01f) continue;
+            const float tx = sliderTrackX(m, *o);
+            if (vx >= tx && vx < tx + kSliderTrackWidth) vx = tx + kSliderTrackWidth + 8.0f;
+        }
+    return vx;
 }
 
 // Index of the dvar's string in the item's dvarStrList (exe 0x4ca370: case-insensitive compare 0x43f6d0, no match = 0).

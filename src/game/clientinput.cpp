@@ -127,6 +127,20 @@ void ClientInput::rebind(const std::string& command, const std::string& rawKey) 
     binds_[key] = command, seq_[key] = nextSeq_++; // slot 0 or slot 1 free (0x4ce21a / 0x4ce22f)
 }
 
+void ClientInput::addCheatKeyDefaults() {
+    static const char* const defaults[][2] = {{"L", "iw2_fullbright"}, {"F10", "iw2_godmode"}, {"N", "iw2_noclip"}};
+    for (const auto& d : defaults)
+        if (keysFor(d[1]).empty() && binds_.find(d[0]) == binds_.end()) binds_[d[0]] = d[1], seq_[d[0]] = nextSeq_++;
+}
+
+bool ClientInput::moveScreenshotBackToF12() {
+    if (lower(commandFromKey("F11")) != "screenshotjpeg" || !commandFromKey("F12").empty()) return false;
+    const std::string cmd = binds_["F11"];
+    binds_.erase("F11"), seq_.erase("F11");
+    binds_["F12"] = cmd, seq_["F12"] = nextSeq_++;
+    return true;
+}
+
 std::string ClientInput::formatBindings() const {
     std::vector<std::pair<int, std::string>> order;
     for (const auto& [k, c] : binds_) order.emplace_back(seq_.at(k), k);

@@ -124,6 +124,7 @@ public:
     const Item* hover(float x, float y, const Menu** owner = nullptr) const;
     // Widget geometry (exe 0x4c9520/0x4cafb0): x of the slider track start in virtual pixels.
     float sliderTrackX(const Menu& m, const Item& it) const;
+    static constexpr float kSliderTrackWidth = 96.0f; // the track texture (slider2) is 96 wide
     // Slider fraction 0..1 of the item's dvar (the dvarfloat default when the dvar is unset).
     float sliderFraction(const Item& it) const;
     // x of the value text of YESNO/MULTI items (exe 0x4cd3a0/0x4cd570): after the item text + 8, or at the text origin.

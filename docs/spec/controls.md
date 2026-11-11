@@ -195,9 +195,8 @@ profiles and saves; `--shot` runs use the executable's folder), never the game's
 frame as displayed — scene and HUD at the window size — drawn a second time into an offscreen target, because the
 swapchain texture cannot be read back. `screenshotJpeg` encodes JPEG with macOS ImageIO (`CGImageDestination`,
 apps/iw2view/jpeg.cpp, quality 95). `screenshot` writes PNG instead of the original's TGA: the port has no TGA writer
-and PNG is lossless and natively viewable on macOS, which serves the command's purpose better. Deliberate deviation
-for the key: OpenIW2 uses F12 for its frame-rate counter, so whenever loaded bindings sit `screenshotJpeg` on F12 (the
-shipped default), the port moves that binding to F11 and keeps F12 for the counter; the key can be rebound in the
+and PNG is lossless and natively viewable on macOS, which serves the command's purpose better. The key stays the shipped F12 (the frame counter is a menu option only). Profiles saved by 0.2.1 had the binding on F11; once per profile
+(marker cvar `iw2_keysver`) a `screenshotJpeg` binding on F11 moves back to F12 when F12 is unbound. The key can be rebound in the
 controls menu (the screenshot row of the interact page). The naming is implemented in `src/util/screenshot.{h,cpp}`
 and tested in test_screenshotname.
 

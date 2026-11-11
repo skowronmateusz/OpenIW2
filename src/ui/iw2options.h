@@ -3,11 +3,18 @@
 // leading to it is added to the options menu in memory.
 #pragma once
 
+#include <cctype>
 #include <string>
 
 #include "ui/menu.h"
 
 namespace iw2::ui {
+
+// The commands behind the three developer key rows of the OpenIW2 page. They are not engine commands: ClientInput only keeps keys for
+// them (rebind, save, "Unbound" / "or" labels like every BIND row) and iw2view reads the bound key. Lowercase, like the shipped ones.
+constexpr const char* kCheatCmdFullbright = "iw2_fullbright";
+constexpr const char* kCheatCmdGod = "iw2_godmode";
+constexpr const char* kCheatCmdNoclip = "iw2_noclip";
 
 // Adds the page "iw2_options" and an "OpenIW2" entry in the options menu ("options_menu", below Game Options; the entries under it move
 // down one line). The page holds the Hit marker option (cvar iw2_hitMarker), Show FPS (iw2_showFps), a note, and, unless `multiplayer`, the Cheats option (cvar
@@ -27,7 +34,15 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
 // its action instead of the weapon, and the aim toggle row (MENU_TOGGLE_AIM_DOWN_THE_SIGHT) loses a stray apostrophe.
 std::vector<std::pair<std::string, std::string>> openIw2StringOverrides(const std::string& language);
 
-// The developer cheat keys (L fullbright, N walk/fly, F10 god cycle) and the sv_cheats of a mission follow the Cheats option, in
+enum class CheatKey { None, Fullbright, God, Noclip };
+// The developer key action a bound command stands for (case-insensitive), None for any other command.
+inline CheatKey cheatKeyFromCommand(const std::string& command) {
+    std::string c = command;
+    for (char& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    return c == kCheatCmdFullbright ? CheatKey::Fullbright : c == kCheatCmdGod ? CheatKey::God : c == kCheatCmdNoclip ? CheatKey::Noclip : CheatKey::None;
+}
+
+// The developer cheat keys (fullbright, walk/fly, god cycle; default L, N, F10, rebindable on the OpenIW2 page) and the sv_cheats of a mission follow the Cheats option, in
 // single player only. `extraSvCheats` is a --cvar sv_cheats=1. A multiplayer session (a multiplayer front end, a network or offline
 // multiplayer game) never allows them, whatever the option says.
 constexpr bool cheatKeysAllowed(bool cheatsOption, bool extraSvCheats, bool multiplayerSession) {

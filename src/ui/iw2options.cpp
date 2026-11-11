@@ -13,9 +13,13 @@ std::string lowerCopy(std::string s) {
 }
 
 // One label + value row of the page: rows lie 15 apart from origin (50, 120), the value 170 right of the label.
-std::string row(const char* name, const char* labelKey, int type, const char* dvar, const char* list, int y, bool hideInMp) {
+// `gate`: kNoGate, kHideInMp (hidden while ui_multiplayer is 1) or kOnWithCheats (shown only while the Cheats option is on).
+enum Gate { kNoGate, kHideInMp, kOnWithCheats };
+std::string row(const char* name, const char* labelKey, int type, const char* dvar, const char* list, int y, Gate gate) {
     std::string s;
-    const std::string hide = hideInMp ? "\t\tdvartest \"ui_multiplayer\"\n\t\thideDvar { \"1\" }\n" : "";
+    const std::string hide = gate == kHideInMp       ? "\t\tdvartest \"ui_multiplayer\"\n\t\thideDvar { \"1\" }\n"
+                             : gate == kOnWithCheats ? "\t\tdvartest \"iw2_cheats\"\n\t\tshowDvar { \"1\" }\n"
+                                                     : "";
     const std::string common =
         "\t\torigin 50 120\n\t\ttextstyle 3\n\t\ttextaligny 11\n\t\ttextscale .25\n\t\tstyle 1\n\t\tbackcolor 0 0 0 0\n\t\tforecolor .9 .9 .9 1\n\t\tvisible 1\n";
     s += std::string("\titemDef\n\t{\n\t\tname ") + name + "_label\n\t\ttype 1\n\t\ttext \"" + labelKey + "\"\n\t\trect 0 " + std::to_string(y) + " 1 13\n\t\ttextalignx 0\n" + common + hide + "\t\tdecoration\n\t}\n";
@@ -31,12 +35,28 @@ std::string openIw2MenuSource(bool multiplayer) {
         "{\nmenuDef\n{\n\tname iw2_options\n\tfullScreen 0\n\trect 0 0 370 480\n\tfocusColor .98 .827 .58 1\n\tonOpen { setdvar ui_background_gradient_show \"1\"; }\n"
         "\tonESC { close options_menu; }\n"
         "\titemDef\n\t{\n\t\tname iw2_title\n\t\ttype 0\n\t\ttext \"@IW2_OPT_TITLE\"\n\t\torigin 48 64\n\t\ttextscale .5\n\t\tforecolor 1 1 1 1\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
-    s += row("iw2_hitmarker", "@IW2_OPT_HITMARKER", 12, "iw2_hitMarker", "\t\tdvarFloatList { \"@MENU_YES\" 1 \"@IW2_OPT_HITMARKER_KILL\" 2 \"@MENU_NO\" 0 }\n", 0, false);
-    s += row("iw2_showfps", "@IW2_OPT_SHOWFPS", 11, "iw2_showFps", "", 15, false);
-    if (!multiplayer) s += row("iw2_cheats", "@IW2_OPT_CHEATS", 11, "iw2_cheats", "", 30, true);
-    // The note under the rows: word-wrapped decoration text inside the page's width.
-    s += "\titemDef\n\t{\n\t\tname iw2_note\n\t\ttype 0\n\t\ttext \"@IW2_OPT_NOTE\"\n\t\trect 0 62 300 13\n\t\torigin 50 120\n\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .22\n"
-         "\t\tforecolor .7 .7 .7 1\n\t\tautowrapped\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
+    s += row("iw2_hitmarker", "@IW2_OPT_HITMARKER", 12, "iw2_hitMarker", "\t\tdvarFloatList { \"@MENU_YES\" 1 \"@IW2_OPT_HITMARKER_KILL\" 2 \"@MENU_NO\" 0 }\n", 0, kNoGate);
+    s += row("iw2_showfps", "@IW2_OPT_SHOWFPS", 11, "iw2_showFps", "", 15, kNoGate);
+    if (!multiplayer) {
+        s += row("iw2_cheats", "@IW2_OPT_CHEATS", 11, "iw2_cheats", "", 30, kHideInMp);
+        // The three developer key rows (single player only, shown while Cheats is on): BIND items on the commands ClientInput keeps
+        // keys for, so they rebind, show "Unbound" / "or" and save like the shipped rows.
+        s += row("iw2_key_fullbright", "@IW2_OPT_KEY_FULLBRIGHT", 14, kCheatCmdFullbright, "", 45, kOnWithCheats);
+        s += row("iw2_key_god", "@IW2_OPT_KEY_GOD", 14, kCheatCmdGod, "", 60, kOnWithCheats);
+        s += row("iw2_key_noclip", "@IW2_OPT_KEY_NOCLIP", 14, kCheatCmdNoclip, "", 75, kOnWithCheats);
+    }
+    // The note under the rows: word-wrapped decoration text inside the page's width. In single player it sits below the key rows
+    // while Cheats is on and right below the Cheats row while it is off (two copies, shown one at a time).
+    const auto note = [](const char* name, int y, const char* gate) {
+        return std::string("\titemDef\n\t{\n\t\tname ") + name + "\n\t\ttype 0\n\t\ttext \"@IW2_OPT_NOTE\"\n\t\trect 0 " + std::to_string(y) +
+               " 300 13\n\t\torigin 50 120\n\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .22\n" + gate +
+               "\t\tforecolor .7 .7 .7 1\n\t\tautowrapped\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
+    };
+    if (multiplayer) s += note("iw2_note", 62, "");
+    else {
+        s += note("iw2_note", 62, "\t\tdvartest \"iw2_cheats\"\n\t\thideDvar { \"1\" }\n");
+        s += note("iw2_note_keys", 97, "\t\tdvartest \"iw2_cheats\"\n\t\tshowDvar { \"1\" }\n");
+    }
     s += "}\n}\n";
     return s;
 }
@@ -50,6 +70,9 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_OPT_HITMARKER", "Hit marker", "Znacznik trafienia"},
         {"IW2_OPT_HITMARKER_KILL", "Red on kill", "Czerwony przy zabiciu"},
         {"IW2_OPT_CHEATS", "Cheats (single player)", "Kody (jeden gracz)"},
+        {"IW2_OPT_KEY_FULLBRIGHT", "Fullbright", "Pe\xB3na jasno\x9C\xE6"},
+        {"IW2_OPT_KEY_GOD", "God mode", "Tryb Boga"},
+        {"IW2_OPT_KEY_NOCLIP", "Noclip (walk / fly)", "Chodzenie / latanie"},
         {"IW2_OPT_SHOWFPS", "Show FPS", "Poka\xBF FPS"},
         {"IW2_OPT_NOTE", "These settings are OpenIW2 additions and differ from the original game.", "Te ustawienia to dodatki OpenIW2 i r\xF3\xBFni\xB9 si\xEA od oryginalnej gry."},
     };

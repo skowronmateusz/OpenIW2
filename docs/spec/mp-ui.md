@@ -371,6 +371,9 @@ To hide something else: add one line to `kRules` (item) or one name to `kHiddenM
 | Auto update | menu `auconfirm`; every item tested on `cl_updateavailable` (the main menu's update button) |
 | Mods | menu `mods_menu` (nothing in the menus opened it); the mod column (header, icon, background, text column 8) of the server list; the mod row of the server filter popup |
 
+Single-player option pages (`kSpRules`) also lose the "Enable console" row of Game Options (label and the controls of its line, with
+the rows below closing up): openiw2 has no in-game console.
+
 Left in place on purpose: the "Internet" source of the server list.
 
 ### Layout facts

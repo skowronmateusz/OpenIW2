@@ -81,6 +81,7 @@
 #include "ui/mpserver.h"
 #include "ui/frontend.h"
 #include "ui/menuhide.h"
+#include "ui/menuinput.h"
 #include "ui/esckey.h"
 #include "ui/profile.h"
 #include "ui/profilelist.h"
@@ -3948,17 +3949,6 @@ int main(int argc, char** argv) {
         if (const auto cfg = vfs.read("default.cfg")) input.loadConfig(std::string(cfg->begin(), cfg->end()));
         else std::cerr << "warning: default.cfg not found, no key bindings\n";
         std::optional<std::string> spBindings; // the SP key table while an MP world has the default_mp.cfg one
-        // The shipped default.cfg binds F12 to screenshotJpeg, but OpenIW2's F12 is the frame-rate counter (see the event
-        // loop), so as a deliberate, documented deviation (README Play; docs/spec/controls.md, Screenshots) the screenshot
-        // key moves to F11 whenever the loaded bindings keep it on F12. The user can rebind it in the controls menu
-        // (the screenshot row of the interact page); a saved F11 binding is left alone.
-        auto moveScreenshotKeyOffF12 = [&] {
-            std::string cmd = input.commandFromKey("F12");
-            for (char& ch : cmd) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-            if (cmd != "screenshotjpeg") return;
-            input.loadConfig("unbind F12\nbind F11 \"screenshotJpeg\"\n");
-        };
-        moveScreenshotKeyOffF12();
         // A level's game world. game[] survives only a persistent level change (changelevel / missionsuccess with persistent set:
         // G_ShutdownGame 0x4d9d3c -> 0x46e1c0 -> 0x4689e0 frees the game object 0x9bef30 otherwise, and G_InitGame 0x4da481 creates
         // a new one); then its fields are copied into the new world before its script starts (maps/_loadout.gsc "gaveweapons").
@@ -3995,7 +3985,16 @@ int main(int argc, char** argv) {
             uiCvars = ui::parseConfig(cfgText);
             if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText); // saved key bindings replace the defaults
         }
-        moveScreenshotKeyOffF12(); // a profile saved by the original game still carries F12
+        // Key defaults of OpenIW2 that the shipped default.cfg lacks, and the return of the screenshot key to F12 for profiles saved by
+        // 0.2.1 (which moved it to F11): once per profile, marked by the archived cvar iw2_keysver, so that a key the user unbinds or moves
+        // later stays as it is. The marker is set by the call after the profile was read (below).
+        auto upgradeKeyBindings = [&] {
+            if (const auto it = uiCvars.find("iw2_keysver"); it != uiCvars.end() && it->second == "2") return;
+            input.moveScreenshotBackToF12();
+            input.addCheatKeyDefaults();
+            uiCvars["iw2_keysver"] = "2";
+        };
+        upgradeKeyBindings();
         // renderer dvars live in the menu store; r_texturemode / r_anisotropy are not passed on: the filter is forced (applyTextureFilter)
         for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_aasamples") uiCvars[k] = v;
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
@@ -5747,11 +5746,11 @@ int main(int argc, char** argv) {
                     fresh = ui::parseConfig(cfgText);
                     if (cfgText.find("unbindall") != std::string::npos) input.loadConfig(cfgText);
                 }
-                moveScreenshotKeyOffF12();
                 for (const char* keep : {"ui_playerProfileCount", "ui_playerProfileSelected", "ui_playerProfileNameNew", "ui_playerProfileAlreadyChosen"})
                     fresh[keep] = uiCvars[keep];
                 fresh["com_playerProfile"] = profileName;
                 uiCvars = fresh;
+                upgradeKeyBindings();
                 loadFavorites();
             }
         };
@@ -6365,8 +6364,11 @@ int main(int argc, char** argv) {
             for (const ui::Menu* m : frontStack.menus()) b.push_back(m->blurWorld);
             return game::menuBlurRadius(b);
         };
-        // Frame counter in the top right corner (openiw2 feature): the option iw2_showFps (OpenIW2 page), which F12 toggles too.
+        // Frame counter in the top right corner (openiw2 feature): the option iw2_showFps (OpenIW2 page), only the menu row controls it (F12 is the screenshot key again).
         const auto showFpsOn = [&] { return std::atoi(menuEnv.getCvar("iw2_showFps").c_str()) != 0; };
+        // A menu that leaves the input to the game (cl_bypassMouseInput 1, set by the quick-message menus while they are open): no cursor,
+        // mouse look, movement and buttons go on, and the menu only takes its execKey keys and Escape (src/ui/menuinput.h).
+        const auto menuBypassesInput = [&] { return ui::menuBypassesGameInput(!frontStack.empty(), frontStack.takesAllKeys(), menuEnv.getCvar("cl_bypassMouseInput") == "1"); };
         int fpsShown = 0;
         // The screenshotJpeg / screenshot commands (docs/spec/controls.md, Screenshots): set by a key event, taken after the
         // frame was drawn, so the file holds the frame as displayed (scene and HUD, at the window size).
@@ -8286,7 +8288,7 @@ int main(int argc, char** argv) {
                         if (it.type != 10 || !it.hasRange || !frontStack.itemVisible(it)) continue;
                         const float tx = frontStack.sliderTrackX(menu, it), ty = menu.rect.y + it.rect.y;
                         const auto white = std::array<uint8_t, 4>{255, 255, 255, 255};
-                        quad(tx, ty, 96.0f, 16.0f, white, "ui/assets/slider2.tga");
+                        quad(tx, ty, ui::MenuStack::kSliderTrackWidth, 16.0f, white, "ui/assets/slider2.tga");
                         quad(tx + 6.0f + frontStack.sliderFraction(it) * 84.0f - 5.0f, ty - 2.0f, 10.0f, 20.0f, white, "ui/assets/sliderbutt_1");
                     }
                     // MP load screen text (0x5390c0, docs/spec/mp-ui.md "Load screen"): the gametype's display string and the map's long
@@ -8300,7 +8302,7 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-                {   // the cursor
+                if (!menuBypassesInput()) {   // the cursor (none while a keyboard-only menu leaves the mouse to the game)
                     Quad2D q{left43 + (menuMx - 8.0f) * sc, (menuMy - 8.0f) * sc, left43 + (menuMx + 8.0f) * sc, (menuMy + 8.0f) * sc};
                     std::memset(q.rgba, 255, 4);
                     q.texture = materialTexture("ui/assets/3_cursor3");
@@ -9418,11 +9420,6 @@ int main(int argc, char** argv) {
             }
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
-                // F12 works everywhere and needs no cheats; only a BIND item waiting for a key takes it first.
-                if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.scancode == SDL_SCANCODE_F12 && !frontStack.capturing()) {
-                    menuEnv.setCvar("iw2_showFps", showFpsOn() ? "0" : "1"); // saved in the profile like the menu row
-                    continue;
-                }
                 // The message field (0x40ade0) takes the keys: Escape closes it, Enter sends `say` / `say_team` "\x15<text>" when the
                 // field is not empty, both clear it; other keys edit it. Key releases still reach the bindings.
                 if (chatField.open && ev.type == SDL_EVENT_KEY_DOWN) {
@@ -9449,7 +9446,7 @@ int main(int argc, char** argv) {
                 }
                 // A menu that leaves the input to the game (cl_bypassMouseInput 1: the quick-message menus) takes only its
                 // execKey keys and Escape (0x5345b0); everything else goes on to the bindings below.
-                if (!frontStack.empty() && !frontStack.takesAllKeys() && menuEnv.getCvar("cl_bypassMouseInput") == "1") {
+                if (menuBypassesInput()) {
                     if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
                         if (ev.key.scancode == SDL_SCANCODE_ESCAPE) { frontStack.key(ui::MenuStack::Key::Escape); continue; }
                         if (ev.key.key < 0x80 && frontStack.execKey(char(ev.key.key))) continue;
@@ -9562,21 +9559,23 @@ int main(int argc, char** argv) {
                     case ui::EscRoute::Menu: case ui::EscRoute::Binding: break;
                     }
                 }
-                // L (fullbright), N (walk/fly) and F10 (god cycle) are openiw2 developer keys: like the cheat commands, they need sv_cheats
+                // Fullbright, walk/fly and god cycle (default keys L, N, F10, rebindable) are openiw2 developer keys: like the cheat commands, they need sv_cheats
                 // (--cvar, or the Cheats option of the OpenIW2 page) and are never available in a multiplayer / network game.
-                else if ((ev.key.scancode == SDL_SCANCODE_L || ev.key.scancode == SDL_SCANCODE_N || ev.key.scancode == SDL_SCANCODE_F10) &&
-                         !ui::cheatKeysAllowed(std::atoi(menuEnv.getCvar("iw2_cheats").c_str()) != 0, cheatsOn(), mpFrontEnd || bool(netClient) || (world && world->multiplayer()))) {}
-                else if (ev.key.scancode == SDL_SCANCODE_L) {
-                    renderer.fullbright = !renderer.fullbright;
-                    game::addScreenMessage(screenMessages, renderer.fullbright ? "fullbright ON" : "fullbright OFF", false, SDL_GetTicksNS()); // openiw2 text, no original string
-                }
-                else if (ev.key.scancode == SDL_SCANCODE_F10) {
-                    pendingF10 = true; // cycle off -> god -> demigod -> off, each step a cheat command behind the sv_cheats / alive gate
-                }
-                else if (ev.key.scancode == SDL_SCANCODE_N) {
-                    walk = !walk;
-                    game::addScreenMessage(screenMessages, walk ? "walk mode ON" : "fly mode ON", false, SDL_GetTicksNS()); // openiw2 text, no original string
-                    if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
+                else if (const ui::CheatKey ck = ui::cheatKeyFromCommand(input.commandFromKey(keyName(ev.key.scancode))); ck != ui::CheatKey::None) {
+                    // The keys bound to iw2_fullbright / iw2_godmode / iw2_noclip (OpenIW2 page; defaults L, F10, N).
+                    if (!ui::cheatKeysAllowed(std::atoi(menuEnv.getCvar("iw2_cheats").c_str()) != 0, cheatsOn(), mpFrontEnd || bool(netClient) || (world && world->multiplayer()))) {}
+                    else if (ck == ui::CheatKey::Fullbright) {
+                        renderer.fullbright = !renderer.fullbright;
+                        game::addScreenMessage(screenMessages, renderer.fullbright ? "fullbright ON" : "fullbright OFF", false, SDL_GetTicksNS()); // openiw2 text, no original string
+                    }
+                    else if (ck == ui::CheatKey::God) {
+                        pendingF10 = true; // cycle off -> god -> demigod -> off, each step a cheat command behind the sv_cheats / alive gate
+                    }
+                    else {
+                        walk = !walk;
+                        game::addScreenMessage(screenMessages, walk ? "walk mode ON" : "fly mode ON", false, SDL_GetTicksNS()); // openiw2 text, no original string
+                        if (walk) { ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight}; ps.velocity = {0, 0, 0}; }
+                    }
                 }
                 else if (ev.key.scancode == SDL_SCANCODE_P) {
                     std::cout << "--pos " << cam.pos.x << "," << cam.pos.y << "," << cam.pos.z << " --yaw " << cam.yaw << " --pitch " << cam.pitch << "\n";
@@ -9692,7 +9691,7 @@ int main(int argc, char** argv) {
             if (onTurret) world->clampPlayerView(cam.pitch, cam.yaw);
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
             // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
-            const bool controlsBlocked = !frontStack.empty() || netControlsFrozen || (world && world->controlsFrozen());
+            const bool controlsBlocked = (!frontStack.empty() && !menuBypassesInput()) || netControlsFrozen || (world && world->controlsFrozen());
             uint32_t buttons = controlsBlocked ? input.stanceButtons() : input.buttons(inVehicle, pweapon.stateNumber() == 0x13 || pweapon.stateNumber() == 0x14);
             if (static const bool wt = std::getenv("IW2_WEAPON_TRACE") != nullptr; wt) { // debug: own weapon state changes (docs/debug-flags.md)
                 static std::string lastWt;
@@ -10971,7 +10970,7 @@ int main(int argc, char** argv) {
             if (world && frontStack.empty() && menuEnv.getCvar("cl_paused") == "1") menuEnv.setCvar("cl_paused", "0"); // menus closed: unpause
             mixer.pausedChannels = menuEnv.getCvar("cl_paused") == "1"; // 0x442dc0: pause / resume the pausable channels when cl_paused changes
             {   // The cursor is shown while menus are open (relative mouse look otherwise).
-                const bool wantCursor = !frontStack.empty();
+                const bool wantCursor = !frontStack.empty() && !menuBypassesInput();
                 if (wantCursor == SDL_GetWindowRelativeMouseMode(window)) SDL_SetWindowRelativeMouseMode(window, !wantCursor);
             }
             const Camera camBase = cam;

@@ -171,6 +171,25 @@ int main() {
         CHECK(m && byName(*m, "button_callvote") && byName(*m, "button_muteplayer") && m->execKeys.size() == 2);
         CHECK(lib.find("callvote") != nullptr);
     }
+    // The console row of a single-player options_game page (synthetic layout): the label and both controls of that line (one for each
+    // menu set) go, the rows below close up, the rows above stay.
+    {
+        MenuLibrary lib(none);
+        lib.parseSource("{\nmenuDef {\n name options_game\n rect 0 0 370 480\n"
+                        " itemDef { name a\n type 1\n text \"@MENU_A\"\n rect 0 0 1 13\n origin 50 100 }\n"
+                        " itemDef { name b\n type 1\n text \"@MENU_ENABLE_CONSOLE\"\n rect 0 15 1 13\n origin 50 100 }\n"
+                        " itemDef { name b_sp\n type 12\n dvar \"monkeytoy\"\n rect 0 15 320 13\n origin 50 100 }\n"
+                        " itemDef { name b_mp\n type 12\n dvar \"con_restricted\"\n rect 0 15 320 13\n origin 50 100 }\n"
+                        " itemDef { name c\n type 1\n text \"@MENU_C\"\n rect 0 30 1 13\n origin 50 100 }\n"
+                        " itemDef { name c_val\n type 11\n dvar \"c_dvar\"\n rect 0 30 320 13\n origin 50 100 }\n"
+                        "}\n}\n",
+                        "ui/options_game.menu");
+        const Menu* m = lib.find("options_game");
+        CHECK(m && m->items.size() == 3);
+        CHECK(m && !byName(*m, "b") && !byName(*m, "b_sp") && !byName(*m, "b_mp"));
+        CHECK(m && byName(*m, "a") && byName(*m, "a")->rect.y == 100);
+        CHECK(m && byName(*m, "c") && byName(*m, "c")->rect.y == 115 && byName(*m, "c_val")->rect.y == 115);
+    }
     // A removed settings row takes its label with it and the rows below move up by one line.
     {
         MenuLibrary lib(none);
@@ -316,6 +335,7 @@ int main() {
             MenuLibrary sp(game);
             sp.loadFile("ui/options_graphics.menu");
             sp.loadFile("ui/options_sound.menu");
+            sp.loadFile("ui/options_game.menu");
             CHECK(sp.errors().empty());
             if (const char* d = std::getenv("IW2_HIDE_DUMP_SP"))
                 if (const auto* m = sp.find(d))
@@ -332,6 +352,16 @@ int main() {
                     for (auto& ch : dt) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                     if (gone.count(dv) || gone.count(dt)) { std::cerr << mn << ": " << dv << dt << " still there\n"; CHECK(false); }
                 }
+            }
+            // The console row of Game Options is gone (label and control), and the rows below it moved up by one line.
+            if (const Menu* m = sp.find("options_game")) {
+                for (const auto& it : m->items) {
+                    CHECK(it->text != "@MENU_ENABLE_CONSOLE" && !lowerEq(it->dvar, "con_restricted") && !lowerEq(it->dvar, "monkeytoy"));
+                }
+                float below = -1;
+                for (const auto& it : m->items)
+                    if (lowerEq(it->dvar, "ui_language") || lowerEq(it->dvarTest, "developer")) below = it->rect.y;
+                CHECK(below == 165); // the language row was at 180 (the developer-only row below the console row)
             }
             // Kept rows: the anti-aliasing row and the sync row are still there.
             if (const Menu* m = sp.find("options_graphics")) {

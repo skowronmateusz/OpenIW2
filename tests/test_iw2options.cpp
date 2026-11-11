@@ -218,7 +218,7 @@ void checkSet(bool multiplayer) {
             const Item* cl = byName(*page, "iw2_cheats_label");
             CHECK(cl && cl->dvarTest == "ui_multiplayer" && cl->rect.y == ch->rect.y && ch->rect.y == 150);
         }
-        // Show FPS: a yes/no row on the cvar F12 toggles, in both menu sets (no hide condition).
+        // Show FPS: a yes/no row on the cvar the counter reads, in both menu sets (no hide condition).
         const Item* fps = byName(*page, "iw2_showfps");
         CHECK(fps && fps->type == 11 && fps->dvar == "iw2_showFps" && fps->dvarTest.empty() && fps->rect.y == 135);
         CHECK(byName(*page, "iw2_showfps_label") && byName(*page, "iw2_showfps_label")->decoration);
@@ -258,7 +258,7 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 6);
+    CHECK(en.size() == pl.size() && en.size() == 9);
     for (size_t i = 0; i < en.size() && i < pl.size(); ++i) CHECK(en[i].first == pl[i].first && !en[i].second.empty() && !pl[i].second.empty());
     CHECK(en[2].second == "Red on kill" && pl[2].second != en[2].second);
     {

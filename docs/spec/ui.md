@@ -325,3 +325,10 @@ with item flag 0x10000 and white otherwise (0x4c7346); the flag comes with `seti
 - With no menu open, ESC in CL_KeyEvent goes by the connection state (0x5d5680): in a level (4) it opens the pause menu
   (UI_SetActiveMenu(2), 0x40c2b2); with no level (states 1, 2) 0x40e0b0 stops a skippable cinematic and, disconnected (0),
   opens the main menu (UI_SetActiveMenu(1)). ESC never quits the game; only the menu's Quit does.
+
+### Slider value text (openiw2 placement)
+
+A slider's number (options_look "Mouse sensitivity") is a separate decimal-field item on the same dvar and row. In the shipped layout its
+rect starts inside the 96-wide track (the track begins after the label column, text rect x + width + 8), so the number was drawn over the
+track's end. `MenuStack::valueTextX` places such a field 8 units after the track end when its natural start lies inside the track.
+TODO(spec): the original's own placement of this field is not traced; the rule is a deliberate readability deviation. Test: tests/test_cheatkeys.cpp.

@@ -126,6 +126,8 @@ const HideRule kSpRules[] = {
     {"options_graphics", "", "", "r_multigpu", true, kRow, kList, true},              // no SLI
     {"options_graphics", "", "", "ui_r_aspectratio", true, kRow, kList, true},         // nothing reads r_aspectRatio; the view follows the window
     {"options_graphics", "", "", "ui_sc_enable", true, kRow, kList, true},            // no shadow pass
+    // openiw2 has no in-game console: the "Enable console" row (its label and its control, one line) goes and the rows below close up
+    {"options_game", "", "@MENU_ENABLE_CONSOLE", "", true, kRow, kList, true},
     {"options_sound", "", "", "ui_snd_khz"},
     {"options_sound", "", "@MENU_SOUND_QUALITY"},
     {"options_sound", "", "", "ui_mss_3d_provider"},

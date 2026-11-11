@@ -51,11 +51,10 @@ It starts in the game's main menu. Your profiles and saved games are kept in
 `~/Library/Logs/OpenIW2/` (`openiw2.log` and the four previous starts, `openiw2-1.log` to `openiw2-4.log`); attach it when you report a problem.
 
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
-opens the pause menu. `F12` shows or hides a frame rate counter in the top right corner (always available, not a cheat).
-`F11` saves a screenshot (JPEG) of the frame as displayed — scene and HUD at the window size — into
-`~/Library/Application Support/OpenIW2/screenshots/` (`shot0000.jpg`, `shot0001.jpg`, …; the game's original
-screenshot key was F12, which OpenIW2 uses for the counter). The key can be changed in the controls menu, like every
-other key.
+opens the pause menu. The frame rate counter in the top right corner is switched with **Options > OpenIW2 > Show FPS** (not a cheat).
+`F12` saves a screenshot (JPEG) of the frame as displayed — scene and HUD at the window size — into
+`~/Library/Application Support/OpenIW2/screenshots/` (`shot0000.jpg`, `shot0001.jpg`, …), as in the original game. The key can be changed in the controls menu, like every
+other key. A profile saved by version 0.2.1, which had moved the screenshot to `F11`, gets `F12` back once.
 
 OpenIW2 adds its own options page, **Options > OpenIW2** (in the single-player and the multiplayer options menu):
 
@@ -65,12 +64,15 @@ OpenIW2 adds its own options page, **Options > OpenIW2** (in the single-player a
   dropped a drone (multiplayer always shows it white).
 - **Cheats** (single player only, off by default): turns `sv_cheats` on for the mission and unlocks the developer keys described under
   Cheats below. The row is not in the multiplayer menus, and in a multiplayer or network game the keys never work, whatever the option says.
+  While Cheats is on, three key rows appear under it: **Fullbright** (default `L`), **God mode** (`F10`) and **Noclip (walk / fly)** (`N`).
+  They are rebound like the rows of the controls menu (Enter or click, then the key; `Del` clears; up to two keys, shown with "or");
+  a key taken from another action leaves that action, as in the controls menu. They are saved in your profile.
 
 Both are saved in your profile.
 
 Options that would do nothing in OpenIW2 are hidden from the settings pages: the texture filter (always anisotropic, at the highest
-level the GPU supports), renderer, SLI, shadows, aspect ratio (the view follows the window shape), sound quality and sound card, and in the multiplayer options the **Connection** row (ISDN / LAN cable, xDSL; the client always uses the faster rate). Of
-the remaining original options, the console and the video mode and refresh rate do nothing (the window
+level the GPU supports), renderer, SLI, shadows, aspect ratio (the view follows the window shape), sound quality and sound card, and in the multiplayer options the **Connection** row (ISDN / LAN cable, xDSL; the client always uses the faster rate). The **Enable console** row of Game Options is hidden too (there is no in-game console). Of
+the remaining original options, the video mode and refresh rate do nothing (the window
 keeps its size; resize it yourself). **Sync every frame** is on by default in OpenIW2 (the original starts with it off and no
 frame limit). **Anti-aliasing** works and defaults to 4x (the original defaults to off); it also smooths alpha-tested textures, and a
 change applies at the next start.
@@ -191,7 +193,7 @@ open /Applications/OpenIW2.app --args --cvar sv_cheats=1
 ```
 
 With cheats on, `F10` cycles god mode → demigod → off, `N` toggles walking and free flight (noclip camera), and `L`
-toggles fullbright. Without cheats these keys do nothing (F10 prints that cheats are not enabled). They are never available in a
+toggles fullbright (default keys; change them under **Options > OpenIW2**). Without cheats these keys do nothing (F10 prints that cheats are not enabled). They are never available in a
 multiplayer game.
 
 ### Reporting a bug

@@ -31,6 +31,12 @@ public:
     // first taken from any command that holds it; then it fills slot 0, else slot 1 (if slot 0 is another key), else
     // both slots are replaced by this key alone.
     void rebind(const std::string& command, const std::string& key);
+    // openiw2 developer key defaults (L fullbright, F10 god cycle, N walk/fly: commands iw2_fullbright, iw2_godmode, iw2_noclip, read by
+    // iw2view): each is bound unless it already has a key or its default key is taken by another command.
+    void addCheatKeyDefaults();
+    // Profiles saved by 0.2.1 carry the screenshot on F11 (a short-lived deviation); it goes back to F12, as in default.cfg, when F12 is free.
+    // Returns true when a binding moved.
+    bool moveScreenshotBackToF12();
     // `unbindall` + `bind KEY "cmd"` lines for config.cfg, in slot order.
     std::string formatBindings() const;
 
