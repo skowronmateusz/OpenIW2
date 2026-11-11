@@ -80,6 +80,11 @@ Keyword tables (MP, 8-byte entries, string pointer first):
   weapon_position, strafing; weapon classes at 0x5d8cf0 (rifle, mg, smg, spread, pistol, grenade, rocketlauncher,
   turret, non-player, item); weapon positions hip / ads (0x5d8d48); strafing not / left / right (0x5d8d60).
 
+The stance of the local (host) client comes from its recorded view state (docs/spec/mp-hud.md, "The recorded view
+state": view height target 11 / 40 / 60, velocity, lean), set every frame by the host's front end; bots and network
+clients fill their input from their own movement. Without it the host's body would stay standing: its death animation
+and its body in a bot's killcam would be the standing ones. The dead state's target (8) is not a stance and is ignored.
+
 Condition values for a client:
 - `playerAnimType`: the weapon file's `playerAnimType` key (thompson_mp: `thompson`, colt_mp: `other`), one of the names
   in `mp/playeranimtypes.txt` (the engine reports `Unknown playerAnimType "%s" in "%s"` otherwise, 0x5bdedd). Without

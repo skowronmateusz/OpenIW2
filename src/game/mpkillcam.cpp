@@ -73,7 +73,28 @@ void World::mpSetViewState(int client, const MpViewState& v) {
 }
 
 void World::mpSetLocalViewState(const MpViewState& v) {
-    if (mp_) mpSetViewState(mp_->localClient, v);
+    if (!mp_) return;
+    mpSetViewState(mp_->localClient, v);
+    // The third-person animation of the local client's body (the killcam of a bot that killed it, the death animation)
+    // takes its stance and movement from the same state: nothing else fills the host's animation input, so without this
+    // the body is always standing. The dead state's view height target (8) is not a stance and is skipped, so the stance
+    // of the moment of death stays for the body's height.
+    if (v.viewHeightTarget < 11 || size_t(mp_->localClient) >= mp_->clients.size()) return;
+    MpClient& cl = mp_->clients[size_t(mp_->localClient)];
+    MpPlayerInput& in = cl.animInput;
+    in.valid = true;
+    in.move.viewHeightTarget = v.viewHeightTarget;
+    in.move.xySpeed = std::sqrt(v.velocity[0] * v.velocity[0] + v.velocity[1] * v.velocity[1]);
+    in.move.forwardMove = in.move.xySpeed > 0 ? 1.0f : 0.0f;
+    in.move.rightMove = 0;
+    if (cl.ent && in.move.xySpeed > 0) { // backwards: the velocity against the body's yaw
+        const Value a = cl.ent->obj->get("angles");
+        if (a.isVector()) {
+            const float yaw = a.asVector()[1] * 3.14159265f / 180.0f;
+            if (v.velocity[0] * std::cos(yaw) + v.velocity[1] * std::sin(yaw) < 0) in.move.forwardMove = -1.0f;
+        }
+    }
+    in.move.slow = v.lean != 0;
 }
 
 void World::mpPushClientEvent(int client, int event, const std::string& weapon) {

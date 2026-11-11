@@ -306,6 +306,59 @@ void worldTests(const iw2::fs::Vfs& vfs) {
         CHECK(body->attachments.size() == e->attachments.size());
         CHECK(body->anim && body->anim->tree().find(cl.anim.deathAnim) >= 0);
     }
+    // The local client's stance: the host's front end records its view state each frame; the body drawn in the killcam
+    // wears the stance of that frame and the death animation is the stance's one (prone, then crouched).
+    {
+        PlayerAnimScript scriptObj;
+        {
+            const auto bytes = vfs.read("mp/playeranim.script");
+            CHECK(bytes && scriptObj.parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()), nullptr));
+        }
+        const PlayerAnimScript* ps = &scriptObj;
+        const MpClient& lc = w.mpState().clients[size_t(c0)];
+        CHECK(ps && lc.ent);
+        if (ps && lc.ent) {
+            MpViewState vs;
+            vs.viewHeightTarget = 11;
+            vs.viewHeight = 11;
+            w.mpSetLocalViewState(vs);
+            for (int i = 0; i < 4; ++i) {
+                w.mpSetLocalViewState(vs);
+                w.frame();
+            }
+            CHECK(lc.anim.moveType == "idleprone");
+            CHECK(lc.ent->anim != nullptr);
+            // The archived frame carries the prone legs animation node of the body.
+            if (lc.ent->anim && w.mpArchive() && w.mpArchive()->enabled) {
+                const ArchivedFrame* af = w.mpArchive()->frame(w.mpArchive()->count - 1);
+                const ArchivedEntity* ae = af ? af->find(lc.ent->number) : nullptr;
+                CHECK(ae != nullptr);
+                if (ae) { // the recorded body animation is the live one (prone legs), not a standing one
+                    size_t live = 0;
+                    for (const auto& st : lc.ent->anim->nodeStates()) live += st.weight > 0 || st.goalWeight > 0;
+                    CHECK(!ae->anim.empty() && ae->anim.size() == live);
+                }
+            }
+            w.mpSetLocalViewState(vs);
+            w.mpDebugDamage(c0, 0, 1000, "MOD_RIFLE_BULLET", "torso_upper");
+            CHECK(lc.anim.deathAnim.rfind("pb_prone_death", 0) == 0);
+            // A crouched victim: the crouched death (a client moved by the network or a script keeps its input's stance).
+            const MpClient& cc = w.mpState().clients[size_t(c2)];
+            if (cc.ent && cc.ent->obj->get("sessionstate").toString() == "playing") {
+                w.mpPlayerInput(c2)->valid = true;
+                w.mpPlayerInput(c2)->move.viewHeightTarget = 40;
+                w.mpDebugDamage(c2, 0, 1000, "MOD_RIFLE_BULLET", "torso_upper");
+                PaContext cr;
+                cr.moveType = "idlecr";
+                const PaItem* crit = ps->event("death", cr);
+                bool inItem = false;
+                for (const auto& c : crit ? crit->commands : std::vector<PaCommand>{})
+                    for (const auto& p : c.parts) inItem |= p.anim == cc.anim.deathAnim;
+                CHECK(inItem && cc.anim.deathAnim.find("crouch") != std::string::npos);
+            }
+            CHECK(w.vm().errors().empty());
+        }
+    }
     CHECK(w.vm().errors().empty());
     for (const auto& m : w.vm().errors()) std::cerr << "script error: " << m << "\n";
 }
