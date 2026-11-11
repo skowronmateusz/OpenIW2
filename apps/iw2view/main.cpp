@@ -5196,6 +5196,7 @@ int main(int argc, char** argv) {
         loc.load(vfs, language);
         for (const auto& [k, t] : ui::mpext::localizedStrings(language)) loc.add(k, t); // the extension panel's texts (docs/spec/mp-ui.md)
         for (const auto& [k, t] : ui::openIw2Strings(language)) loc.add(k, t); // the OpenIW2 options page
+        for (const auto& [k, t] : ui::openIw2StringOverrides(language)) loc.set(k, t); // corrected Polish strings (docs/debug-flags.md)
         // Log lines of server texts: localized as the message window shows them, in UTF-8 (the strings are code-page text).
         const int logCodePage = util::codePageForLanguage(language);
         const auto logText = [&](const std::string& msg) {
@@ -5638,8 +5639,8 @@ int main(int argc, char** argv) {
             else if (name == "loadarenas") {
                 const auto get = menuEnv.getCvar;
                 const auto set = menuEnv.setCvar;
-                mpSetup.loadArenas(vfs, get, set);
-                if (frontPtr) frontPtr->setFeederSelection(ui::MpServerSetup::kFeederAllMaps, 0);
+                const int mapRow = mpSetup.loadArenas(vfs, get, set); // the row of the map chosen earlier, else 0
+                if (frontPtr) frontPtr->setFeederSelection(ui::MpServerSetup::kFeederAllMaps, mapRow);
                 ui::mpext::initDefaults(get, set);
                 menuEnv.open("iw2_createserver_extbutton");
             }
@@ -6364,7 +6365,8 @@ int main(int argc, char** argv) {
             for (const ui::Menu* m : frontStack.menus()) b.push_back(m->blurWorld);
             return game::menuBlurRadius(b);
         };
-        bool showFps = false; // F12, openiw2 feature: frame counter in the top right corner
+        // Frame counter in the top right corner (openiw2 feature): the option iw2_showFps (OpenIW2 page), which F12 toggles too.
+        const auto showFpsOn = [&] { return std::atoi(menuEnv.getCvar("iw2_showFps").c_str()) != 0; };
         int fpsShown = 0;
         // The screenshotJpeg / screenshot commands (docs/spec/controls.md, Screenshots): set by a key event, taken after the
         // frame was drawn, so the file holds the frame as displayed (scene and HUD, at the window size).
@@ -6537,12 +6539,8 @@ int main(int argc, char** argv) {
                         const size_t e = text.find("}]", b);
                         if (e == std::string::npos) break;
                         const auto it = world->keyBindings.find(text.substr(b + 2, e - b - 2));
-                        auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                        std::string keys = name("UNBOUND");
-                        if (it != world->keyBindings.end() && !it->second.empty()) {
-                            keys = name(it->second[0]);
-                            if (it->second.size() > 1) keys += " " + name("OR") + " " + name(it->second[1]);
-                        }
+                        const std::vector<std::string> bound = it != world->keyBindings.end() ? it->second : std::vector<std::string>();
+                        const std::string keys = ui::keyBindingLabel(bound, [&](const std::string& k) { return loc.find(k); });
                         text = text.substr(0, b) + keys + text.substr(e + 2);
                     }
                     if (text.empty()) continue;
@@ -8272,13 +8270,7 @@ int main(int argc, char** argv) {
                             }
                         }
                         if (it.type == 14) { // key names (exe 0x4cd980): "k1 KEY_OR k2", KEY_UNBOUND; x after the text + 8 (0x592010)
-                            auto name = [&](const std::string& k) { const std::string* t = loc.find(k); return t ? *t : k; };
-                            const auto keys = input.keysFor(it.dvar);
-                            std::string label = name("UNBOUND");
-                            if (!keys.empty()) {
-                                label = name(keys[0]);
-                                if (keys.size() > 1) label += " " + name("OR") + " " + name(keys[1]);
-                            }
+                            const std::string label = ui::keyBindingLabel(input.keysFor(it.dvar), [&](const std::string& k) { return loc.find(k); });
                             hudText(front, label, x0 + frontStack.valueTextX(menu, it) * xs, (iy + it.textAlignY) * sc, gs * sc, *f, c.data(), 0.0f, 1.0f, it.textStyle);
                         }
                         if (it.type == 11 || it.type == 12 || it.type == 13 || it.type == 17) { // value text, exe 0x4cd3a0 / 0x4cd570: same font, colour and baseline
@@ -8331,7 +8323,7 @@ int main(int argc, char** argv) {
             out.insert(out.end(), front.begin(), front.end());
             // Without menus the fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
             if (!fadeDrawn) drawScreenFade();
-            if (showFps)
+            if (showFpsOn())
                 if (const assets::Font* f = font("normalFont")) {
                     const float fpsSc = float(h) / 480.0f;
                     const uint8_t yellow[4] = {255, 255, 0, 255};
@@ -9428,7 +9420,7 @@ int main(int argc, char** argv) {
             while (SDL_PollEvent(&ev)) {
                 // F12 works everywhere and needs no cheats; only a BIND item waiting for a key takes it first.
                 if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.scancode == SDL_SCANCODE_F12 && !frontStack.capturing()) {
-                    showFps = !showFps;
+                    menuEnv.setCvar("iw2_showFps", showFpsOn() ? "0" : "1"); // saved in the profile like the menu row
                     continue;
                 }
                 // The message field (0x40ade0) takes the keys: Escape closes it, Enter sends `say` / `say_team` "\x15<text>" when the

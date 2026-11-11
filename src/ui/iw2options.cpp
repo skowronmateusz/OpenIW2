@@ -28,11 +28,15 @@ std::string row(const char* name, const char* labelKey, int type, const char* dv
 std::string openIw2MenuSource(bool multiplayer) {
     // openiw2's own menu (not from the game files). Item types: 1 BUTTON, 11 YESNO, 12 MULTI.
     std::string s =
-        "{\nmenuDef\n{\n\tname iw2_options\n\tfullScreen 0\n\trect 0 0 640 480\n\tfocusColor .98 .827 .58 1\n\tonOpen { setdvar ui_background_gradient_show \"1\"; }\n"
+        "{\nmenuDef\n{\n\tname iw2_options\n\tfullScreen 0\n\trect 0 0 370 480\n\tfocusColor .98 .827 .58 1\n\tonOpen { setdvar ui_background_gradient_show \"1\"; }\n"
         "\tonESC { close options_menu; }\n"
         "\titemDef\n\t{\n\t\tname iw2_title\n\t\ttype 0\n\t\ttext \"@IW2_OPT_TITLE\"\n\t\torigin 48 64\n\t\ttextscale .5\n\t\tforecolor 1 1 1 1\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
     s += row("iw2_hitmarker", "@IW2_OPT_HITMARKER", 12, "iw2_hitMarker", "\t\tdvarFloatList { \"@MENU_YES\" 1 \"@IW2_OPT_HITMARKER_KILL\" 2 \"@MENU_NO\" 0 }\n", 0, false);
-    if (!multiplayer) s += row("iw2_cheats", "@IW2_OPT_CHEATS", 11, "iw2_cheats", "", 15, true);
+    s += row("iw2_showfps", "@IW2_OPT_SHOWFPS", 11, "iw2_showFps", "", 15, false);
+    if (!multiplayer) s += row("iw2_cheats", "@IW2_OPT_CHEATS", 11, "iw2_cheats", "", 30, true);
+    // The note under the rows: word-wrapped decoration text inside the page's width.
+    s += "\titemDef\n\t{\n\t\tname iw2_note\n\t\ttype 0\n\t\ttext \"@IW2_OPT_NOTE\"\n\t\trect 0 62 300 13\n\t\torigin 50 120\n\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .22\n"
+         "\t\tforecolor .7 .7 .7 1\n\t\tautowrapped\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
     s += "}\n}\n";
     return s;
 }
@@ -46,11 +50,19 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_OPT_HITMARKER", "Hit marker", "Znacznik trafienia"},
         {"IW2_OPT_HITMARKER_KILL", "Red on kill", "Czerwony przy zabiciu"},
         {"IW2_OPT_CHEATS", "Cheats (single player)", "Kody (jeden gracz)"},
+        {"IW2_OPT_SHOWFPS", "Show FPS", "Poka\xBF FPS"},
+        {"IW2_OPT_NOTE", "These settings are OpenIW2 additions and differ from the original game.", "Te ustawienia to dodatki OpenIW2 i r\xF3\xBFni\xB9 si\xEA od oryginalnej gry."},
     };
     const bool polish = strcasecmp(language.c_str(), "polish") == 0;
     std::vector<std::pair<std::string, std::string>> out;
     for (const Text& t : texts) out.emplace_back(t.key, polish ? t.pl : t.en);
     return out;
+}
+
+std::vector<std::pair<std::string, std::string>> openIw2StringOverrides(const std::string& language) {
+    if (strcasecmp(language.c_str(), "polish") != 0) return {};
+    return {{"MENU_STEADY_SNIPER_RIFLE", "Wstrzymaj oddech (snajper)"},
+            {"MENU_TOGGLE_AIM_DOWN_THE_SIGHT", "Sta\xB3" "e celowanie przez przyrz\xB9" "dy"}};
 }
 
 bool addOpenIw2Options(MenuLibrary& lib, bool multiplayer) {
@@ -76,16 +88,30 @@ bool addOpenIw2Options(MenuLibrary& lib, bool multiplayer) {
         if (c.size() > 1 && lowerCopy(c[0]) == "open") c[1] = "iw2_options";
     options->items.push_back(std::move(entry));
 
-    // The other entries and the closing of the options menu close the page too (they close the other pages the same way).
-    const Command close = {"close", "iw2_options"};
-    for (const auto& it : options->items) {
-        if (it->name == "iw2_options_button") continue;
-        for (size_t i = 0; i < it->action.size(); ++i)
-            if (it->action[i].size() > 1 && lowerCopy(it->action[i][0]) == "open" && lowerCopy(it->action[i][1]).rfind("options_", 0) == 0) {
-                it->action.insert(it->action.begin() + long(i), close);
-                break;
-            }
+    // Every entry that opens a page closes all the other pages first (and the OpenIW2 page): two pages open at once are drawn over
+    // each other. The shipped entries miss some (the Game Options entry does not close its own page, which our copy would inherit; the
+    // single-player Game Options entry has the Shoot page's close commented out), so the missing closes are added here.
+    std::vector<std::string> pages = {"iw2_options"};
+    for (const auto& m : lib.menus()) {
+        const std::string n = lowerCopy(m->name);
+        if (n.rfind("options_", 0) == 0 && n != "options_menu") pages.push_back(m->name);
     }
+    for (const auto& it : options->items)
+        for (size_t i = 0; i < it->action.size(); ++i) {
+            const Command& c = it->action[i];
+            if (!(c.size() > 1 && lowerCopy(c[0]) == "open")) continue;
+            const std::string target = lowerCopy(c[1]);
+            if (target.rfind("options_", 0) != 0 && target != "iw2_options") continue;
+            if (target == "options_graphics_defaults" || target == "options_control_defaults" || target == "options_graphics_texture") break; // popups of their pages
+            for (const std::string& pg : pages) {
+                if (lowerCopy(pg) == target) continue;
+                bool closed = false;
+                for (const auto& k : it->action) closed = closed || (k.size() > 1 && lowerCopy(k[0]) == "close" && lowerCopy(k[1]) == lowerCopy(pg));
+                if (!closed) it->action.insert(it->action.begin() + long(i++), Command{"close", pg});
+            }
+            break;
+        }
+    const Command close = {"close", "iw2_options"};
     options->onClose.push_back(close);
     return true;
 }

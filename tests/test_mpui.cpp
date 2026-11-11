@@ -182,6 +182,13 @@ void synthetic() {
     CHECK(h.setup.arenas()[0].loadScreen == "loadscreen_mp_one");
     h.setup.selectMap(1, h.env.setCvar);
     CHECK(h.cv["ui_currentNetMap"] == "2");
+    // Reopening the screen (loadArenas again) keeps the map chosen before: the selection row is the listed row of that map and the
+    // preview map (ui_currentNetMap) stays it, so the preview follows the highlighted row. A map no longer listed falls back to row 0.
+    CHECK(h.setup.loadArenas(vfs, h.env.getCvar, h.env.setCvar) == 1);
+    CHECK(h.cv["ui_currentNetMap"] == "2" && h.setup.loadScreenOfCurrent(h.env.getCvar) == "loadscreen_mp_three");
+    h.cv["ui_currentNetMap"] = "1"; // Two: not in the dm list
+    CHECK(h.setup.loadArenas(vfs, h.env.getCvar, h.env.setCvar) == 0 && h.cv["ui_currentNetMap"] == "0");
+    h.setup.selectMap(1, h.env.setCvar);
 
     // UI_NETGAMETYPE: dm -> sd keeps "Three" (row 1); sd -> tdm also lists Two; backwards wraps tdm -> sd -> dm -> tdm.
     CHECK(h.setup.cycleGametype(1, h.env.getCvar, h.env.setCvar) == 1);

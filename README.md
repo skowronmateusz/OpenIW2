@@ -69,7 +69,7 @@ OpenIW2 adds its own options page, **Options > OpenIW2** (in the single-player a
 Both are saved in your profile.
 
 Options that would do nothing in OpenIW2 are hidden from the settings pages: the texture filter (always anisotropic, at the highest
-level the GPU supports), renderer, SLI, shadows, aspect ratio (the view follows the window shape), sound quality and sound card. Of
+level the GPU supports), renderer, SLI, shadows, aspect ratio (the view follows the window shape), sound quality and sound card, and in the multiplayer options the **Connection** row (ISDN / LAN cable, xDSL; the client always uses the faster rate). Of
 the remaining original options, the console and the video mode and refresh rate do nothing (the window
 keeps its size; resize it yourself). **Sync every frame** is on by default in OpenIW2 (the original starts with it off and no
 frame limit). **Anti-aliasing** works and defaults to 4x (the original defaults to off); it also smooths alpha-tested textures, and a

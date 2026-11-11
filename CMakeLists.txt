@@ -390,7 +390,7 @@ add_executable(test_hitmarker tests/test_hitmarker.cpp)
 target_link_libraries(test_hitmarker PRIVATE iw2_game)
 add_test(NAME hitmarker COMMAND test_hitmarker)
 add_executable(test_iw2options tests/test_iw2options.cpp)
-target_link_libraries(test_iw2options PRIVATE iw2_ui)
+target_link_libraries(test_iw2options PRIVATE iw2_ui iw2_assets)
 add_test(NAME iw2options COMMAND test_iw2options)
 
 add_executable(test_savegame tests/test_savegame.cpp)

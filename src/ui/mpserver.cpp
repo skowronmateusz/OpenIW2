@@ -111,6 +111,7 @@ void MpServerSetup::markActive(int gametype) {
 }
 
 int MpServerSetup::loadArenas(const fs::Vfs& vfs, const GetCvar& get, const SetCvar& set) {
+    const std::string previous = get("ui_currentNetMap"); // the map chosen on an earlier visit of the screen
     arenas_.clear();
     for (const std::string& path : vfs.list("mp/")) {
         if (path.size() < 6 || lower(path.substr(path.size() - 6)) != ".arena" || path.find('/', 3) != std::string::npos) continue;
@@ -128,8 +129,16 @@ int MpServerSetup::loadArenas(const fs::Vfs& vfs, const GetCvar& get, const SetC
     markActive(intCvar(get, "ui_netGametype"));
     // Menu_SetFeederSelection(createserver_maps, FEEDER_ALLMAPS, 0) runs the feeder selection of row 0. The exe then (0x536380) keeps
     // the running map selected when the client is connected; the front end has no running server here.
-    if (mapCount() > 0) selectMap(0, set);
-    return 0;
+    // openiw2 keeps the map chosen on an earlier visit (the list keeps its highlighted row when the screen is reopened, so the preview and
+    // the started map must follow that row, not row 0) when it is still listed for the gametype.
+    // TODO(spec): the exe selects row 0 on every open; the list highlight it leaves behind is not analysed.
+    int row = 0;
+    if (!previous.empty()) {
+        const int a = std::atoi(previous.c_str());
+        if (a >= 0 && a < int(arenas_.size()) && arenas_[size_t(a)].active) row = rowOfArena(a);
+    }
+    if (mapCount() > 0) selectMap(row, set);
+    return row;
 }
 
 bool loadWaitsForClick(const std::string& map, bool autoContinue, bool quickReload) {
@@ -361,6 +370,7 @@ const char* menuSource() {
 	{
 		name "iw2_createserver_extbutton"
 		fullscreen 0
+		focusColor 0.98 0.827 0.58 1
 		rect 0 415 640 100
 		visible 1
 		onEsc { close createserver; }
@@ -377,6 +387,7 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
 			action { play "mouse_click"; closeForGameType "settings_%s"; close createserver_serversettings; open iw2_createserver_ext; }
 		}
 	}
@@ -384,6 +395,7 @@ const char* menuSource() {
 	{
 		name "iw2_createserver_ext"
 		fullscreen 0
+		focusColor 0.98 0.827 0.58 1
 		rect 0 2 370 400
 		visible 1
 		onEsc { close createserver; }
@@ -428,6 +440,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -456,6 +470,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -483,6 +499,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -510,6 +528,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -537,6 +557,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -564,6 +586,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -591,6 +615,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -618,6 +644,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 		itemDef
 		{
@@ -645,6 +673,8 @@ const char* menuSource() {
 			textstyle 3
 			forecolor .9 .9 .9 1
 			visible 1
+			mouseEnter { play "mouse_over"; } // hover sound
+			action { play "mouse_click"; }
 		}
 	}
 }

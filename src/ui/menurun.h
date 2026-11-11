@@ -68,6 +68,12 @@ void initUiCvars(MenuEnv& env);
 // 0x1001 (archive), registered at 0x4d02b4..0x4d0540. TODO(spec): the other registered UI dvars (cg_drawCrosshair, ...).
 std::string registeredDefault(const std::string& name);
 
+// The text of a key binding row / "[{command}]" placeholder: the localized key names (`keys` are key.str references such as
+// "KEY_USE"; `find` looks a reference up and returns null when it has no text) joined by the localized KEY_OR, at most two; no key
+// gives KEY_UNBOUND. An unknown reference is shown as it is. The words are the key.str references KEY_UNBOUND / KEY_OR (the "KEY_"
+// comes from the file name key.str), not UNBOUND / OR.
+std::string keyBindingLabel(const std::vector<std::string>& keys, const std::function<const std::string*(const std::string&)>& find);
+
 // The clickable item under (x, y) in the 640x480 virtual screen (visible button items), or nullptr.
 const Item* itemAt(const Menu& menu, float x, float y);
 

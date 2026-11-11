@@ -38,6 +38,8 @@ public:
     const std::string* find(const std::string& key) const;
     // Adds a string under `key` (upper-cased) unless the loaded files already have that key (openiw2's own strings).
     void add(const std::string& key, const std::string& text);
+    // Replaces the text of a key (add keeps an existing one); used for openiw2 corrections of single strings.
+    void set(const std::string& key, const std::string& text);
     size_t size() const { return strings_.size(); }
 
 private:

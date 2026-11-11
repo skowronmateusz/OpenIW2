@@ -10,7 +10,7 @@
 namespace iw2::ui {
 
 // Adds the page "iw2_options" and an "OpenIW2" entry in the options menu ("options_menu", below Game Options; the entries under it move
-// down one line). The page holds the Hit marker option (cvar iw2_hitMarker) and, unless `multiplayer`, the Cheats option (cvar
+// down one line). The page holds the Hit marker option (cvar iw2_hitMarker), Show FPS (iw2_showFps), a note, and, unless `multiplayer`, the Cheats option (cvar
 // iw2_cheats; single player only: the row is not in the multiplayer menu set and is also hidden by ui_multiplayer). Returns false,
 // and changes nothing, when the options menu or its Game Options entry is not found (the options are then still settable with
 // --cvar). Calling it twice adds the page once.
@@ -21,6 +21,11 @@ std::string openIw2MenuSource(bool multiplayer);
 
 // The page's texts as (key, text) pairs for the language; Polish in Windows-1250.
 std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::string& language);
+
+// openiw2 corrections of single shipped strings, applied after the game's string files load (Localization::set); Polish only, own
+// text, Windows-1250. Empty for other languages. The two key binding labels: the hold-breath row (MENU_STEADY_SNIPER_RIFLE) names
+// its action instead of the weapon, and the aim toggle row (MENU_TOGGLE_AIM_DOWN_THE_SIGHT) loses a stray apostrophe.
+std::vector<std::pair<std::string, std::string>> openIw2StringOverrides(const std::string& language);
 
 // The developer cheat keys (L fullbright, N walk/fly, F10 god cycle) and the sv_cheats of a mission follow the Cheats option, in
 // single player only. `extraSvCheats` is a --cvar sv_cheats=1. A multiplayer session (a multiplayer front end, a network or offline

@@ -81,6 +81,8 @@ const HideRule kRules[] = {
     {"options_multi", "", "", "+talk", true, kRow, kList, true},
     {"createserver_serversettings", "", "", "sv_voice", true, kRow, kList, true},
     {"options_menu", "", "@MENU_VOICECHAT", "", false, kRow, 30, true},
+// ---- connection speed (dvar rate, ISDN / LAN-cable-xDSL): the client always sends 25000 ----
+    {"options_multi", "", "", "rate", true, kRow, kList, true},
 // ---- CD key ----
     {"multi_menu", "message_cdkey"},
 // ---- PunkBuster: client option, server setting, browser filter ----

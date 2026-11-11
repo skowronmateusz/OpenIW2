@@ -240,6 +240,10 @@ int main() {
             }
         }
         CHECK(scanned > 500);
+        // The Connection row (dvar rate) of the multiplayer options page is gone; the server browser's own rate item is not part of it.
+        if (const Menu* om = mp.find("options_multi")) {
+            for (const auto& it : om->items) CHECK(it->dvar != "rate");
+        } else CHECK(false);
 
         // Settings and option lists keep one line per 15 pixels down their column (no gap).
         auto columnSteps = [&](const char* menu, float x, float step, float firstY) {
