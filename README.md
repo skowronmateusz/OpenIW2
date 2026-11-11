@@ -48,7 +48,7 @@ Open **OpenIW2** from Applications. On the first start it asks you to choose you
 needed files are there, and remembers the folder. If something is missing, it tells you which files.
 It starts in the game's main menu. Your profiles and saved games are kept in
 `~/Library/Application Support/OpenIW2/`, so your `main` folder is never changed. A log of the last two starts is in
-`~/Library/Logs/OpenIW2/` (`openiw2.log` and `openiw2.log.1`); attach it when you report a problem.
+`~/Library/Logs/OpenIW2/` (`openiw2.log` and the four previous starts, `openiw2-1.log` to `openiw2-4.log`); attach it when you report a problem.
 
 The language follows the localized files in your `main` folder. The controls are the game's own defaults; `Esc`
 opens the pause menu. `F12` shows or hides a frame rate counter in the top right corner (always available, not a cheat).
@@ -193,7 +193,7 @@ Open an issue in [Issues](../../issues) and include:
 - what happened and what you expected, with the map name and roughly where in the mission;
 - steps to reproduce it, if you can;
 - a screenshot or short video for visual problems;
-- the log file `~/Library/Logs/OpenIW2/openiw2.log` (the previous start is in `openiw2.log.1`). In Finder, press
+- the log file `~/Library/Logs/OpenIW2/openiw2.log` (earlier starts are in `openiw2-1.log` to `openiw2-4.log`, newest first). In Finder, press
   `Cmd+Shift+G` and paste `~/Library/Logs/OpenIW2/` to open the folder;
 - your OpenIW2 version and your Mac model.
 

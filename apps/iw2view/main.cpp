@@ -3538,8 +3538,8 @@ static std::string keyName(SDL_Scancode sc) {
     }
 }
 
-// Start without arguments (from Finder / the .app): stdout and stderr go to ~/Library/Logs/OpenIW2/openiw2.log (the previous
-// log is kept as .1), the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a folder dialog, and it is
+// Start without arguments (from Finder / the .app): stdout and stderr go to ~/Library/Logs/OpenIW2/openiw2.log (the four previous
+// logs are kept as openiw2-1.log .. openiw2-4.log), the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a folder dialog, and it is
 // checked before it is mounted (src/fs/gamedir.h). Returns false when the user quits.
 struct AppStart { std::string mainDir, language; std::filesystem::path pref; uint32_t width = 0, height = 0; };
 // Where profiles, saves and screenshots live for a start that gave the game folder on the command line: the app's preference

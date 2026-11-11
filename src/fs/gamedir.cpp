@@ -106,9 +106,17 @@ bool rotateLog(const std::filesystem::path& log) {
     std::error_code ec;
     std::filesystem::create_directories(log.parent_path(), ec);
     if (!std::filesystem::is_directory(log.parent_path(), ec)) return false;
-    std::filesystem::path old = log;
-    old += ".1";
-    if (std::filesystem::exists(log, ec)) std::filesystem::rename(log, old, ec); // rename replaces an older .1
+    // <stem>-N<ext>: Finder still sees the extension (a "<log>.1" name it does not open as text).
+    const auto numbered = [&](int n) {
+        return log.parent_path() / (log.stem().string() + "-" + std::to_string(n) + log.extension().string());
+    };
+    std::filesystem::path legacy = log;
+    legacy += ".1"; // the name older versions used
+    std::filesystem::remove(legacy, ec);
+    std::filesystem::remove(numbered(kLogsKept - 1), ec);
+    for (int n = kLogsKept - 2; n >= 1; --n)
+        if (std::filesystem::exists(numbered(n), ec)) std::filesystem::rename(numbered(n), numbered(n + 1), ec);
+    if (std::filesystem::exists(log, ec)) std::filesystem::rename(log, numbered(1), ec);
     return true;
 }
 

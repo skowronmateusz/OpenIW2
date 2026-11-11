@@ -126,11 +126,25 @@ int main() {
         CHECK(rotateLog(log));
         std::ofstream(log) << "second";
         CHECK(rotateLog(log));
-        std::ifstream f(root / "logs" / "openiw2.log.1");
-        std::string t;
-        std::getline(f, t);
-        CHECK(t == "second");
+        const auto text = [&](const char* name) {
+            std::ifstream f(root / "logs" / name);
+            std::string t;
+            std::getline(f, t);
+            return t;
+        };
+        CHECK(text("openiw2-1.log") == "second");
+        CHECK(text("openiw2-2.log") == "first");
         CHECK(!stdfs::exists(log));
+        // five kept: after more starts the oldest goes, and a legacy "<log>.1" is removed
+        std::ofstream(root / "logs" / "openiw2.log.1") << "legacy";
+        for (const char* s : {"3", "4", "5", "6"}) {
+            std::ofstream(log) << s;
+            CHECK(rotateLog(log));
+        }
+        CHECK(text("openiw2-1.log") == "6");
+        CHECK(text("openiw2-4.log") == "3");
+        CHECK(!stdfs::exists(root / "logs" / "openiw2-5.log"));
+        CHECK(!stdfs::exists(root / "logs" / "openiw2.log.1"));
     }
 
     stdfs::remove_all(root);

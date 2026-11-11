@@ -286,7 +286,7 @@ and test_savestate, whose scripts print with `println` and set developer_script 
   (`<pref>` = SDL_GetPrefPath `~/Library/Application Support/OpenIW2/OpenIW2/`) when the binary runs from the application bundle (a
   Finder start and a Terminal start of the app share it); a development build uses `<main dir>/save`.
 - iw2view with no arguments (the app started from Finder): stdout/stderr go to `~/Library/Logs/OpenIW2/openiw2.log` (previous log
-  kept as `openiw2.log.1`); the `main` folder is read from `mainPath=` in `<pref>/settings.cfg` (`<pref>` = SDL_GetPrefPath
+  kept as `openiw2-1.log` .. `openiw2-4.log`, newest first); the `main` folder is read from `mainPath=` in `<pref>/settings.cfg` (`<pref>` = SDL_GetPrefPath
   `~/Library/Application Support/OpenIW2/`), else `<pref>/main`, else chosen in a folder dialog; it must hold `iw_00.iwd`..`iw_15.iwd`
   and one complete `localized_<language>_iw00.iwd`..`iw10.iwd` set (names case-insensitive). Starts as `--menu` at the desktop size;
   profiles go to `<pref>/players`. Any argument keeps the command-line behaviour.

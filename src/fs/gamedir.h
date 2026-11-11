@@ -28,7 +28,9 @@ std::string mainDirError(const std::filesystem::path& dir);
 std::optional<std::filesystem::path> readMainPath(const std::filesystem::path& settingsFile);
 bool writeMainPath(const std::filesystem::path& settingsFile, const std::filesystem::path& mainPath);
 
-// Moves <log> to <log>.1 (replacing an older .1) and returns false when the folder cannot be created.
+// Keeps the last kLogsKept logs: <log> moves to <stem>-1<ext>, -1 to -2 and so on, the oldest is dropped (also a <log>.1
+// left by older versions). Returns false when the folder cannot be created.
+inline constexpr int kLogsKept = 5;
 bool rotateLog(const std::filesystem::path& log);
 
 } // namespace iw2::fs
