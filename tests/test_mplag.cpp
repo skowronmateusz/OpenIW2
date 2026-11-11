@@ -581,7 +581,16 @@ struct Run {
     }
 };
 
-bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::string& serverExe, const Profile& prof, double seconds) {
+// starved (optional): set when the test process itself was descheduled during the measured stretch (a loop iteration
+// that came more than kStarveGapMs after the previous one, while the loop aims at 8 ms). Then the run measured the
+// machine, not the network or the engine: the walking A looks held and then moved at once in the client's own frames.
+constexpr int64_t kStarveGapMs = 60;
+constexpr int kStarveLateMax = 2;
+
+bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::string& serverExe, const Profile& prof, double seconds,
+                bool* starved = nullptr) {
+    int lateGaps = 0;
+    int64_t prevIter = 0;
     ServerProcess server;
     setenv("IW2_NET_TRACE", "1", 1);
     if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "scr_dm_timelimit", "0",
@@ -608,6 +617,8 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     int64_t measureStart = 0, measureEnd = 0;
     while (nowMs() < deadline) {
         const int64_t now = nowMs();
+        if (measureStart && prevIter && now - prevIter > kStarveGapMs) ++lateGaps;
+        prevIter = now;
         server.pump();
         relay.pump(now);
         // B joins once A is in (one level load at a time).
@@ -679,6 +690,8 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         return false;
     }
     const Stats& s = run.st;
+    if (starved) *starved = lateGaps > kStarveLateMax;
+    if (lateGaps) std::printf("%s: %d loop iterations came more than %d ms late (the machine was busy)\n", prof.name.c_str(), lateGaps, int(kStarveGapMs));
     std::printf("%s: A walked %.0f units on the server (%.0f units/s), server track step back max %.1f; %d blackouts\n", prof.name.c_str(),
                 double(s.walked), double(s.walked / seconds), double(s.maxOf(s.serverBack)), relay.blackouts);
     for (const auto& [k, n] : server.trace) std::printf("  server %s: %d\n", k.c_str(), n);
@@ -761,7 +774,18 @@ int main() {
     }
     bool ok = true;
     for (const Profile& p : profiles)
-        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst" || p.name == "radio" || p.name == "spike") ok = runProfile(vfs, mainDir, serverExe, p, seconds) && ok;
+        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst" || p.name == "radio" || p.name == "spike") {
+            // A run in which this process was starved measured the machine: repeat it (up to 3 runs); a run that was
+            // not starved counts as it is.
+            bool good = false, starved = false;
+            for (int attempt = 1; attempt <= 3; ++attempt) {
+                starved = false;
+                good = runProfile(vfs, mainDir, serverExe, p, seconds, &starved);
+                if (good || !starved) break;
+                std::printf("%s: run %d failed while the test process was starved; repeating\n", p.name.c_str(), attempt);
+            }
+            ok = good && ok;
+        }
     std::printf(ok ? "mplag: OK\n" : "mplag: FAILED\n");
     return ok ? 0 : 1;
 }
