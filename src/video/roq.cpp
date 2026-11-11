@@ -174,6 +174,7 @@ bool RoqDecoder::nextFrame() {
                 rgba_[i * 4] = cur_[i * 3], rgba_[i * 4 + 1] = cur_[i * 3 + 1], rgba_[i * 4 + 2] = cur_[i * 3 + 2];
             }
             std::swap(cur_, prev_);
+            if (frames_ == 0) cur_ = prev_; // after the first picture both buffers hold it (the second frame's unchanged blocks show it)
             ++frames_;
             return true;
         case 0x1020: sound(p, size, arg, 1); break;

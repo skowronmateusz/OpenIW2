@@ -1,6 +1,6 @@
 // RoQ decoder: a hand-made 16x16 stream (info, codebook, vector-quantised frame, unchanged frames, motion block, DPCM sound).
-// Two picture buffers alternate, so an unchanged block shows the picture from two frames ago (regression: it used to show the
-// previous picture, which smeared stale blocks over the intro movies).
+// Two picture buffers alternate, so an unchanged block shows the picture from two frames ago; after the first frame both
+// buffers hold that picture (regressions: stale blocks in the logo movies, black blocks in the second frame of the intro).
 #include "video/roq.h"
 
 #include <iostream>
@@ -34,12 +34,16 @@ int main() {
     chunk(f, 0x1011, 0, {0x00, 0xaa, 0, 0, 0, 0});
     // Mono DPCM: predictor 0, +3*3, then -(3*3).
     chunk(f, 0x1020, 0, {3, 0x83});
-    // Second frame: all blocks unchanged (code 0): the buffer being decoded is still the initial black one.
+    // Second frame: all blocks unchanged (code 0): after the first picture both buffers hold it.
     chunk(f, 0x1011, 0, {0, 0});
-    // Third frame: unchanged again: the buffer of the first frame.
+    // Third frame: a new codebook (luma 50), block 0 a vector, the other blocks unchanged: the buffer being decoded holds the
+    // first picture.
+    chunk(f, 0x1002, 0x0101, {50, 50, 50, 50, 128, 128, 0, 0, 0, 0});
+    chunk(f, 0x1011, 0, {0x00, 0x80, 0});
+    // Fourth frame: all unchanged: the second frame's buffer (the first picture), not the third frame's block 0.
     chunk(f, 0x1011, 0, {0, 0});
-    // Fourth frame: block 0 is a motion block (code 1, byte 0x88 = no displacement) taken from the previous picture (the third
-    // frame, i.e. the first picture); the other blocks are unchanged: black, from the second frame's buffer.
+    // Fifth frame: block 0 a motion block (code 1, byte 0x88 = no displacement) from the previous picture (the first picture);
+    // the other blocks unchanged: the third frame's buffer.
     chunk(f, 0x1011, 0, {0x00, 0x40, 0x88});
 
     RoqDecoder d(f);
@@ -51,14 +55,17 @@ int main() {
     CHECK(px[(0 * 16 + 2) * 4] == 100 && px[(0 * 16 + 2) * 4 + 1] == 100); // the 2x2 cell magnified to 4x4 (x2 for the 8x8 vector)
     CHECK(px[((15 * 16) + 15) * 4] == 200); // bottom right pixel of the last cell: luma 200
     CHECK(d.takeAudio().empty());
+    const size_t last = ((15 * 16) + 15) * 4;
     CHECK(d.nextFrame());
-    CHECK(d.frameIndex() == 2 && d.rgba()[0] == 0 && d.rgba()[((15 * 16) + 15) * 4] == 0);
+    CHECK(d.frameIndex() == 2 && d.rgba()[0] == 100 && d.rgba()[last] == 200);
     const auto audio = d.takeAudio();
     CHECK(audio.size() == 2 && audio[0] == 9 && audio[1] == 0);
     CHECK(d.nextFrame());
-    CHECK(d.frameIndex() == 3 && d.rgba()[0] == 100 && d.rgba()[((15 * 16) + 15) * 4] == 200);
+    CHECK(d.rgba()[0] == 50 && d.rgba()[last] == 200); // block 0 repainted, the rest from the first picture
     CHECK(d.nextFrame());
-    CHECK(d.rgba()[0] == 100 && d.rgba()[((15 * 16) + 15) * 4] == 0); // motion block copied, the rest black
+    CHECK(d.rgba()[0] == 100 && d.rgba()[last] == 200); // two frames ago: block 0 is the first picture again
+    CHECK(d.nextFrame());
+    CHECK(d.rgba()[0] == 100 && d.rgba()[last] == 200);
     CHECK(!d.nextFrame());
     return failures ? 1 : 0;
 }
