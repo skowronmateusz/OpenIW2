@@ -42,7 +42,7 @@ private:
     size_t pos_ = 8;
     std::vector<int16_t> audio_;
     int width_ = 0, height_ = 0, fps_ = 30, channels_ = 2, frames_ = 0;
-    // Planar frames: RGB (3 bytes per pixel) of the current and the previous picture.
+    // RGB (3 bytes per pixel): the picture being decoded (it still holds the one from two frames ago) and the previous picture; swapped per frame.
     std::vector<uint8_t> cur_, prev_, rgba_;
     // 2x2 cells as 4 RGB pixels (12 bytes); 4x4 vectors as 4 cell indices.
     uint8_t cells_[256][12] = {};

@@ -123,7 +123,8 @@ void RoqDecoder::vq(const uint8_t* p, uint32_t size, uint16_t arg) {
     truncated_ = false;
     motionX_ = int8_t(arg >> 8);
     motionY_ = int8_t(arg & 0xff);
-    cur_ = prev_; // unchanged blocks keep the previous picture
+    // Two picture buffers alternate: the picture being decoded still holds the one from two frames ago, and that is what an
+    // unchanged block (code 0) keeps; only motion blocks read the previous picture (prev_).
     for (int my = 0; my < height_; my += 16)
         for (int mx = 0; mx < width_; mx += 16)
             for (int k = 0; k < 4; ++k) decodeBlock(mx + (k & 1) * 8, my + (k >> 1) * 8, 8, 8);
@@ -172,7 +173,7 @@ bool RoqDecoder::nextFrame() {
             for (size_t i = 0, n = size_t(width_) * size_t(height_); i < n; ++i) {
                 rgba_[i * 4] = cur_[i * 3], rgba_[i * 4 + 1] = cur_[i * 3 + 1], rgba_[i * 4 + 2] = cur_[i * 3 + 2];
             }
-            prev_ = cur_;
+            std::swap(cur_, prev_);
             ++frames_;
             return true;
         case 0x1020: sound(p, size, arg, 1); break;
