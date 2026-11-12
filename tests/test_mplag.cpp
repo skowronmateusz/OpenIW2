@@ -313,6 +313,7 @@ void respondMenu(NetClient& c, const std::string& response) {
 void loadLevel(NetClient& c) {
     const std::string map = net::infoValueForKey(c.gc->configstrings[0], "mapname");
     c.view = std::make_unique<game::World>(*c.vfs, map, true);
+    netgame::setMantleAnims(c.view->mpMantleAnims()); // the prediction climbs like the server (netgame::setMantleAnims, as the front end does)
     c.view->vm().setLoopGuardIterations(200000u);
     c.view->cvars["mapname"] = map;
     c.view->mpStartRemote();

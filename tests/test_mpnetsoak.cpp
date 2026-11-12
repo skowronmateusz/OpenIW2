@@ -337,6 +337,7 @@ void loadLevel(NetClient& c) {
     c.map = net::infoValueForKey(c.gc->configstrings[0], "mapname");
     c.gametype = net::infoValueForKey(c.gc->configstrings[0], "g_gametype");
     c.view = std::make_unique<game::World>(*c.vfs, c.map, true);
+    netgame::setMantleAnims(c.view->mpMantleAnims()); // the prediction climbs like the server (netgame::setMantleAnims, as the front end does)
     c.view->vm().setLoopGuardIterations(200000u);
     c.view->cvars["mapname"] = c.map;
     c.view->mpStartRemote();
@@ -404,6 +405,7 @@ struct Life {
     int predictedJumpsAtStart = 0, landsAtStart = 0, eventsAtStart = 0, landsAtSpawn = 0;
     std::string pressDetail, grenadeDetail;
     float freeHeight = 44;  // over the head at the first press (a ceiling ends the jump early)
+    bool mantled = false;   // a press next to a ledge mantled (the jump button is the mantle button): no jump to measure
     // fire
     int shotsClient = 0;
     int clipDrops = 0;
@@ -1099,6 +1101,7 @@ struct Soak {
             if (life.pressT[k] < 0) continue;  // not pressed: no button, no apex window
             if (t >= life.pressT[k] && t < life.pressT[k] + 0.1) sc.buttons |= game::Button::Jump;
             if (t >= life.pressT[k] + 0.1 && t < life.pressT[k] + 1.15) life.jumpApex = std::max(life.jumpApex, f.origin[2]);
+            if (t >= life.pressT[k] && t < life.pressT[k] + 1.15 && c.ps.mantling) life.mantled = true;
             if (t >= life.pressT[k] + 1.15 && life.openJump == k) {
                 life.openJump = -1;
                 life.apexes.push_back(life.jumpApex - life.jumpBaseZ);
@@ -1215,6 +1218,10 @@ struct Soak {
     }
 
     void evaluateJumps(NetClient& c) {
+        if (life.mantled) {
+            gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": a jump press mantled onto a ledge, jumps not measured");
+            return;
+        }
         if (life.apexes.empty()) {
             if (life.jumpPresses == 0)
                 gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": no jump press: no settled on-ground state in the jump phase");

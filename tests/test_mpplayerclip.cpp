@@ -139,6 +139,7 @@ std::unique_ptr<World> clientView(fs::Vfs& vfs) {
     v->vm().setLoopGuardIterations(200000u);
     v->cvars["mapname"] = "mp_toujane";
     v->mpStartRemote();
+    iw2::netgame::setMantleAnims(v->mpMantleAnims()); // the prediction climbs like the server, as the front end does
     return v;
 }
 
