@@ -5399,14 +5399,17 @@ int main(int argc, char** argv) {
             while (start <= text.size()) {
                 size_t end = text.find(';', start);
                 if (end == std::string::npos) end = text.size();
-                std::istringstream in(text.substr(start, end - start));
+                const std::string segment = text.substr(start, end - start);
                 start = end + 1;
-                std::string c, a1, a2;
-                in >> c >> a1;
-                std::getline(in >> std::ws, a2);
+                // Console tokenizing (docs/spec/net.md section 5): quotes group and are dropped, "//" ends the command, so
+                // `set m_pitch "0.022"` from default.cfg stores 0.022, not the quoted text.
+                const auto tok = net::tokenize(segment);
+                std::string c = tok.size() > 0 ? tok[0] : "", a1 = tok.size() > 1 ? tok[1] : "", a2;
+                for (size_t k = 2; k < tok.size(); ++k) a2 += (k > 2 ? " " : "") + tok[k];
                 for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                while (!a2.empty() && std::isspace(static_cast<unsigned char>(a2.back()))) a2.pop_back();
-                if (c == "vstr") execText(menuEnv.getCvar(a1));
+                // Key bindings (default.cfg run by the controls "reset defaults" menu: unbindall, then bind lines) go to the key table.
+                if (c == "bind" || c == "unbind" || c == "unbindall") input.loadConfig(segment);
+                else if (c == "vstr") execText(menuEnv.getCvar(a1));
                 // Chat in a network game: "say" / "say_team" go to the server as client commands (docs/spec/net.md section 10).
                 else if (c == "cmd" && netClient) netClient->addReliableCommand(a1 + (a2.empty() ? "" : " " + a2)); // forwarded to the server (MP console command "cmd")
                 else if ((c == "say" || c == "say_team") && netClient) netClient->addReliableCommand(c + " " + a1 + (a2.empty() ? "" : " " + a2));

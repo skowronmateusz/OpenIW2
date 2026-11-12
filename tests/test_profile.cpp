@@ -17,6 +17,11 @@ int main() {
     check(back.at("m_pitch") == "-0.022" && back.at("sensitivity") == "7" && back.at("mis_03") == "1", __LINE__);
     check(back.count("ui_background") == 0 && back.count("sv_running") == 0, __LINE__);
     check(iw2::ui::parseConfig("bind A x\nseta snd_volume \"0.3\"\r\n").at("snd_volume") == "0.3", __LINE__);
+    // A profile written after a controls reset in 0.2.x kept the quotes of default.cfg: it loads with the plain values.
+    {
+        const auto q = iw2::ui::parseConfig("seta cl_freelook \"\"1\"\"\nseta m_pitch \"\"0.022\"\"\n");
+        check(q.at("cl_freelook") == "1" && q.at("m_pitch") == "0.022", __LINE__);
+    }
     // Mission progress (mis_NN, mis_none, mis_difficulty) is archived and defaults as registered by the exe.
     std::string prog(50, '0');
     prog[0] = '2';

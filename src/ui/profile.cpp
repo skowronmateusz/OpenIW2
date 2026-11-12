@@ -38,7 +38,9 @@ std::map<std::string, std::string> parseConfig(const std::string& text) {
         std::string rest;
         std::getline(ls >> std::ws, rest);
         while (!rest.empty() && (rest.back() == '\r' || rest.back() == ' ')) rest.pop_back();
-        if (rest.size() >= 2 && rest.front() == '"' && rest.back() == '"') rest = rest.substr(1, rest.size() - 2);
+        // Every enclosing quote pair goes: 0.2.x stored default.cfg values with their quotes (`seta m_pitch ""0.022""`), which
+        // read as 0 and turned free look off; such a profile loads with the plain value.
+        while (rest.size() >= 2 && rest.front() == '"' && rest.back() == '"') rest = rest.substr(1, rest.size() - 2);
         out[name] = rest;
     }
     return out;
