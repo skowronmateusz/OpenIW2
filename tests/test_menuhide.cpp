@@ -320,6 +320,12 @@ int main() {
                 prevEnd = it->rect.x + it->rect.w;
             }
             CHECK(prevEnd == 612); // the header row still ends where the table ends
+            // No connection speed choice in the header; game type and refresh date close the gap below the source field.
+            CHECK(!byName(*m, "dataratesetting"));
+            for (const auto& it : m->items) CHECK(!(it->dvar == "rate"));
+            const Item* gt = byName(*m, "gametypefield");
+            const Item* rd = byName(*m, "refreshdate");
+            CHECK(gt && rd && gt->rect.y == 20 && rd->rect.y == 35);
             for (const auto& it : m->items)
                 if (it->type == 6 && it->feeder == 2) {
                     CHECK(it->columns.size() == 11);

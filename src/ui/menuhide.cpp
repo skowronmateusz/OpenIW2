@@ -83,6 +83,8 @@ const HideRule kRules[] = {
     {"options_menu", "", "@MENU_VOICECHAT", "", false, kRow, 30, true},
 // ---- connection speed (dvar rate, ISDN / LAN-cable-xDSL): the client always sends 25000 ----
     {"options_multi", "", "", "rate", true, kRow, kList, true},
+    // the same choice in the server browser header ("Connection:", dataratesetting); game type and refresh date move up a line
+    {"joinserver", "dataratesetting", "", "", false, 15, 30, true},
 // ---- CD key ----
     {"multi_menu", "message_cdkey"},
 // ---- PunkBuster: client option, server setting, browser filter ----
