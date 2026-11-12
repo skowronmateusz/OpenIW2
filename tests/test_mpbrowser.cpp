@@ -114,8 +114,9 @@ void testFavoritesSource() {
     b.setFavorites(favs.items());
     CHECK(b.refresh(nowMs()));
     CHECK(b.rowCount() == 2); // rows exist before any answer
-    CHECK(b.column(0, 2) == "unreachable" || b.column(1, 2) == "unreachable");
+    CHECK(b.column(0, 2) == "127.0.0.1:28988" || b.column(1, 2) == "127.0.0.1:28988"); // the address, not the stored name
     CHECK(b.column(0, 10) == "...");
+    CHECK(b.column(0, 5) == "?"); // no gametype before an answer
     const int64_t t0 = nowMs();
     bool got = false;
     uint8_t buf[2048];
@@ -125,22 +126,24 @@ void testFavoritesSource() {
         if (int n = srv.receive(buf, sizeof buf, from, 5); n > 0) {
             const auto text = outOfBandText(buf, n);
             CHECK(text && text->rfind("getinfo ", 0) == 0);
-            const auto pkt = makeOutOfBand("infoResponse\n\\hostname\\Test Host\\mapname\\mp_toujane\\gametype\\dm\\clients\\3\\sv_maxclients\\16\\pure\\1\\voice\\1");
+            const auto pkt = makeOutOfBand("infoResponse\n\\hostname\\Test Host 0123456789AB\\mapname\\mp_toujane\\gametype\\dm\\clients\\3\\sv_maxclients\\16\\pure\\1\\voice\\1");
             srv.sendTo(from, pkt.data(), int(pkt.size()));
             for (int i = 0; i < 100 && !got; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 b.poll(nowMs());
-                for (int r = 0; r < b.rowCount(); ++r) got = got || b.column(r, 2) == "Test Host";
+                for (int r = 0; r < b.rowCount(); ++r) got = got || b.column(r, 2) == "Test Host 012345678"; // cut to 19 characters
             }
         }
     }
     CHECK(got);
     int row = -1;
-    for (int r = 0; r < b.rowCount(); ++r) if (b.column(r, 2) == "Test Host") row = r;
+    for (int r = 0; r < b.rowCount(); ++r) if (b.column(r, 2) == "Test Host 012345678") row = r;
+    for (int r = 0; r < b.rowCount(); ++r) CHECK(b.column(r, 2) != "mine"); // the answer replaces the stored name
     CHECK(row >= 0);
     if (row < 0) return;
     CHECK(b.column(row, 3) == "mp_toujane");
     CHECK(b.column(row, 4) == "3 (16)");
+    CHECK(b.column(row, 5) == "dm"); // the raw gametype name, not the localized display string
     CHECK(b.column(row, 6) == "X");
     CHECK(b.column(row, 10) != "...");
     b.select(row);

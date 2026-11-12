@@ -306,10 +306,13 @@ patch 1.3 MP executable. Implementation: `src/net/lanbrowser.{h,cpp}`, `src/ui/m
   negative must equal `mod`, `ff`, `kc`, `pb`; `ui_joinGametype` above 0 (0 = "All", then the gametype list, `UI_JOINGAMETYPE` 253, wrapping) must equal `gametype`.
   Registered defaults (0x531c1c..): 1, 1, 1, 1, 1, 0, -1, -1, -1, -1. Deviation: openiw2 registers `ui_browserShowPure` as 0, because its servers do not
   implement a pure check and do not send `pure`; with the original default they would all be hidden.
-- A favorite that has not answered stays listed with its stored name and ping `...`.
+- A favorite that has not answered stays listed with its address and ping `...`. Its stored name is not shown in the list: the add (0x4b52f0)
+  writes it into the entry's host name, which the first answer overwrites with the server's `hostname` (0x4b3300, via 0x4b3130), and column 2
+  shows the address while the ping is below 1. openiw2 shows the address as entered while the name lookup is pending.
 - `ServerSort n` (one argument): sorts by column n, the same column again reverses (0x534d60, compare 0x533e30 / 0x4154e0).
 - Columns (switch at 0x537640, table 0x5379c4): 0 password, 1 platform icon from `hw` (not drawn: no matching icons drawn by openiw2's text list), 2 host name (address until a
-  server answered), 3 map long name (0x532cd0), 4 "clients (max)", 5 gametype display string, 6 voice, 7 pure, 8 mod, 9 PunkBuster, 10 ping. The flag columns
+  server answered; the server's `hostname` cut to 19 characters), 3 map long name (0x532cd0), 4 "clients (max)", 5 the server's raw gametype name (`dm`, `tdm`, ...; the stored copy holds at most 15 characters, 0x4b3300; `?`
+  when the server sent none), not the localized display string, 6 voice, 7 pure, 8 mod, 9 PunkBuster, 10 ping. The flag columns
   show `X` when the key is non-zero.
 - `addFavorite` (from the selected row; not with source 2), `createFavorite` (`ui_favoriteName`, `ui_favoriteAddress`, 31 characters each; only with source 2,
   `createfavorite.menu`), `deleteFavorite` (source 2, the selected row): the add path 0x5348b0 writes `ui_favorite_message`, shown by `fav_message_popmenu`:

@@ -267,12 +267,17 @@ std::string LanBrowser::column(int row, int col) const {
     switch (col) {
     case 0: return flag("pswrd");
     case 2: {
-        if (s.pingMs <= 0) return s.favorite ? s.favoriteName : s.address.toString();
-        return s.hostname();
+        // MP 0x537640: before an answer the address, after it the server's own hostname cut to 19 characters; a favorite's
+        // stored name is overwritten by the answer (0x4b3300) and never shown in this column.
+        if (s.pingMs <= 0) return s.address.ip ? s.address.toString() : s.addressText;
+        return s.hostname().substr(0, 19);
     }
     case 3: return s.map();
     case 4: return s.info.empty() ? std::string() : std::to_string(s.clients()) + " (" + std::to_string(s.maxClients()) + ")";
-    case 5: return s.gametype();
+    case 5: { // the raw gametype name as the server sent it (stored up to 15 characters), "?" when it sent none (MP 0x537640)
+        const std::string g = s.gametype().substr(0, 15);
+        return g.empty() ? std::string("?") : g;
+    }
     case 6: return flag("voice");
     case 7: return flag("pure");
     case 8: return flag("mod");

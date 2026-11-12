@@ -5815,11 +5815,10 @@ int main(int argc, char** argv) {
         menuEnv.feederText = [&](int feeder, int row, int col) {
             if (feeder == 0x18 && col == 0) return profiles.name(row);
             if (feeder == net::LanBrowser::kFeederServers) {
-                if (col == 3 || col == 5) { // the map's long name and the gametype's display string (MP 0x537640, 0x532cd0, 0x532d90)
+                if (col == 3) { // the map's long name (MP 0x537640 -> 0x532cd0); the gametype column is the raw name, not localized
                     const net::LanServer* s = lanBrowser.rowServer(row);
                     if (!s || s->info.empty()) return std::string();
-                    const auto t = browserText(s->gametype(), s->map());
-                    return col == 3 ? t.map : saveLoc(t.gametype);
+                    return browserText(s->gametype(), s->map()).map;
                 }
                 return lanBrowser.column(row, col);
             }
