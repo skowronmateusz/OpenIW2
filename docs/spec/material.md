@@ -195,10 +195,48 @@ houses inside out). The mark entry 0x10024320 only copies vertices into a type-1
 
 ## Flag techniques
 
-Technique sets with `_flag` (for example the CTF flag materials, `phong_flag_alphatest_spec`) bend the cloth in the vertex
-shader (shaders/lib/flag.hlsl): the vertex colour alpha is the weight of a sum of three sine waves along the normal (0 on the
-rigid pole and base, rising towards the free edge of the cloth). The shader then outputs the vertex colour with green and blue
-swapped and alpha 1, so the vertex alpha never reaches the alpha test. The CTF base model `prop_flag_base` and the pole of
-`prop_flag_<nation>` have vertex alpha 0 and were cut away when the alpha was used as colour. openiw2:
-`assets::drawnVertexColor` (src/assets/material.h) for xmodel surfaces, test `tests/test_xmodel.cpp`. TODO(spec): the wave
-displacement is not animated.
+Technique sets with `_flag` (`phong_flag_alphatest_spec`, used by the CTF flags `prop_flag_<nation>` and the flag of
+`vehicle_higgins`) bend the cloth in the vertex shader (shaders/lib/flag.hlsl:5-75). The vertex colour alpha is not a colour
+but the weight w of the wave: 0 on the rigid pole and base, rising towards the free edge. After the bend the shader outputs
+the vertex colour with green and blue swapped and alpha 1, so the vertex alpha never reaches the alpha test. The CTF base
+model `prop_flag_base` and the pole of `prop_flag_<nation>` have vertex alpha 0 and were cut away when the alpha was used as
+colour.
+
+Which passes bend (phong_flag_alphatest_spec.techset): the light probe techniques without and with fog, the point light
+technique without fog, and the light probe static-model technique without fog. The depth prepass, the build floatz pass, the
+unlit, lightmap and fogged point light techniques and the other static-model variants use the ordinary shaders, so there the
+cloth is drawn unbent.
+
+The wave, with (U, V) = (1 - u, 1 - v) from the first texture coordinate and t = gameTime.w in seconds: three travelling
+sine waves k = 1..3, each with a wavelength L, a direction angle a in the (U, V) plane, a speed s in cycles per second and an
+amplitude A (flag.hlsl:16-30):
+
+| k | L | a | s | A |
+|---|---|---|---|---|
+| 1 | 1.73 | 4 degrees | 0.9 | 1.5 |
+| 2 | 0.75 | -10 degrees | 1.5 | 0.6 |
+| 3 | 0.31 | 15 degrees | 1.2 | 0.34 |
+
+- phase p_k = 2 pi ((cos a_k · U + sin a_k · V) / L_k + s_k t);
+- offset = 5 · w · sum A_k sin p_k, added to the model-space position along the vertex normal (flag.hlsl:45-49), before the
+  object-to-clip transform, so a scaled model scales the offset; |offset| <= 5 · 2.44 · w = 12.2 w;
+- the normal tilts by tU = w · atan(sum A_k cos a_k cos p_k / L_k) towards the tangent and tV = w · atan(sum A_k sin a_k cos p_k
+  / L_k) towards the binormal: n' = tU T + tV B + sqrt(1 - tU^2 - tV^2) N (flag.hlsl:52-62; the shader writes the slope with an
+  explicit 2 pi that cancels).
+
+Because the speeds are 0.9, 1.5 and 1.2 cycles per second, the whole cloth repeats exactly every 10 s.
+
+The time: gameTime is a renderer code constant (name table 0x1018f20c, index 0x82, storage 0x1070c020). 0x1002f6a0 takes one
+float t and writes x = sin(2 pi frac t), y = cos(2 pi frac t), z = frac t, w = t (frac via floor 0x100f6ae0, 2 pi at 0x1019be28;
+while the dvar at 0x101ce710 is 2 it writes only frac t to 0x1070c4dc and leaves gameTime alone). The surface walker calls it
+(0x1002fa49 -> 0x1002fa57) when the drawn entity changes, with t = the view's scene time in seconds minus the entity's float
+at record +0x5c (stride 0x74; world surfaces and entity 0x7fe use 0). The scene time is the refdef time in ms times 0.001
+(0x10025c65 -> 0x10025c79), carried through the scene command (0x10021fb0, view +8) into 0x1070c3bc (0x10032675).
+
+openiw2: `assets::flagWave` and `assets::gameTimeConst` (src/assets/material.h) and the same function in the iw2view vertex
+shaders (`flag_flap`, vs_main and the point light vs_dlight); the vertex weight and an offset scale (1 for entity models, the
+placement scale for static models baked into world space) go in a per-vertex attribute that is 0 for every other surface.
+gameTime is pushed once per frame from the client render time (`clientRenderTimeMs`), not the 20 Hz world time. Deliberate
+deviations: t is taken modulo 10 s (the period above) so the float keeps its precision; the fogged point light pass bends too,
+so its additive light stays on the cloth. TODO(spec): the per-entity material time is taken as 0 for flag models, and which
+static-model variant (bent or not) the renderer picks for static flags. Tests: `tests/test_xmodel.cpp`.

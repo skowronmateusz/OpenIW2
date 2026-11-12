@@ -12,6 +12,9 @@ struct VertexIn {
     float2 uv       [[attribute(3)]];
     float2 lmUv     [[attribute(4)]];
     float3 light    [[attribute(5)]];
+    float3 tangent  [[attribute(6)]];
+    float3 binormal [[attribute(7)]];
+    float2 wave     [[attribute(8)]]; // flag techniques: x = cloth wave weight (vertex alpha), y = offset scale; 0 elsewhere
 };
 
 struct VertexUniforms {
@@ -60,15 +63,41 @@ static float4 world_clip(float4x4 viewProj, float4x4 model, float3 p, float dept
     return c;
 }
 
-vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
+// Flag cloth wave of the lit flag techniques (docs/spec/material.md "Flag techniques", assets::flagWave): three travelling
+// sine waves over (1 - u, 1 - v), weighted by the vertex alpha, move the vertex along its normal in model space and tilt the
+// normal towards the tangent frame. gameTime.w is the render time in seconds (vertex uniform slot 1, every vertex shader
+// that draws flag surfaces through the lit techniques). A zero weight leaves position and normal unchanged.
+struct GameTimeU { float4 gameTime; };
+struct ClothWave { float length, angleDeg, speed, amp; };
+static void flag_flap(float2 wave, float2 uv, float seconds, float3 tangent, float3 binormal, thread float3& p, thread float3& n) {
+    if (wave.x == 0.0) return;
+    const ClothWave k[3] = {{1.73, 4.0, 0.9, 1.5}, {0.75, -10.0, 1.5, 0.6}, {0.31, 15.0, 1.2, 0.34}};
+    const float2 c = 1.0 - uv;
+    float sum = 0.0, slopeU = 0.0, slopeV = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        const float ang = k[i].angleDeg * (M_PI_F / 180.0);
+        const float du = cos(ang) / k[i].length, dv = sin(ang) / k[i].length;
+        const float phase = 2.0 * M_PI_F * (du * c.x + dv * c.y + k[i].speed * seconds);
+        sum += k[i].amp * sin(phase);
+        slopeU += k[i].amp * du * cos(phase);
+        slopeV += k[i].amp * dv * cos(phase);
+    }
+    p += n * (5.0 * wave.x * sum * wave.y);
+    const float tu = atan(slopeU) * wave.x, tv = atan(slopeV) * wave.x;
+    n = tu * tangent + tv * binormal + sqrt(max(0.0, 1.0 - (tu * tu + tv * tv))) * n;
+}
+
+vertex VertexOut vs_main(VertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]], constant GameTimeU& gt [[buffer(1)]]) {
     VertexOut o;
-    o.position = world_clip(u.viewProj, u.model, in.position, u.eye.w);
-    o.normal = (u.model * float4(in.normal, 0.0)).xyz;
+    float3 pos = in.position, nrm = in.normal;
+    flag_flap(in.wave, in.uv, gt.gameTime.w, in.tangent, in.binormal, pos, nrm);
+    o.position = world_clip(u.viewProj, u.model, pos, u.eye.w);
+    o.normal = (u.model * float4(nrm, 0.0)).xyz;
     o.color = in.color;
     o.uv = in.uv;
     o.lmUv = in.lmUv;
     o.light = in.light;
-    o.eyeVec = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
+    o.eyeVec = (u.model * float4(pos, 1.0)).xyz - u.eye.xyz;
     return o;
 }
 
@@ -409,15 +438,27 @@ struct DLightVertexOut {
     float2 uv;
     float3 eyeVec;
 };
-vertex DLightVertexOut vs_dlight(SpecVertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]]) {
+struct DLightVertexIn { // SpecVertexIn plus the flag wave (attribute 8, see VertexIn); the l_point pipelines read one buffer
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+    float4 color    [[attribute(2)]];
+    float2 uv       [[attribute(3)]];
+    float3 tangent  [[attribute(6)]];
+    float3 binormal [[attribute(7)]];
+    float2 wave     [[attribute(8)]];
+};
+vertex DLightVertexOut vs_dlight(DLightVertexIn in [[stage_in]], constant VertexUniforms& u [[buffer(0)]], constant GameTimeU& gt [[buffer(1)]]) {
     DLightVertexOut o;
-    o.position = world_clip(u.viewProj, u.model, in.position, u.eye.w);
-    o.normal = (u.model * float4(in.normal, 0.0)).xyz;
+    // l_point_flag: the same cloth wave as the lit pass, so the additive light lands on the moved cloth.
+    float3 pos = in.position, nrm = in.normal;
+    flag_flap(in.wave, in.uv, gt.gameTime.w, in.tangent, in.binormal, pos, nrm);
+    o.position = world_clip(u.viewProj, u.model, pos, u.eye.w);
+    o.normal = (u.model * float4(nrm, 0.0)).xyz;
     o.tangent = (u.model * float4(in.tangent, 0.0)).xyz;
     o.binormal = (u.model * float4(in.binormal, 0.0)).xyz;
     o.color = in.color;
     o.uv = in.uv;
-    o.eyeVec = (u.model * float4(in.position, 1.0)).xyz - u.eye.xyz;
+    o.eyeVec = (u.model * float4(pos, 1.0)).xyz - u.eye.xyz;
     return o;
 }
 fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], texture2d<float> detailMap [[texture(2)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]], sampler detailSampler [[sampler(2)]]) {

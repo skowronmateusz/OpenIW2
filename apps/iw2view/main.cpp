@@ -345,8 +345,9 @@ struct GpuVertex {
     float light[3];
     float tangent[3];  // lib/normalmap.hlsl frame, read by the l_point pass
     float binormal[3];
+    float wave[2] = {0, 0}; // flag techniques: cloth wave weight (vertex alpha / 255) and offset scale (model scale); see flag_flap
 };
-static_assert(sizeof(GpuVertex) == 80);
+static_assert(sizeof(GpuVertex) == 88);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
 // Grouping of world surfaces into batches; the last six fields are the draw-list fields of Batch.
@@ -765,6 +766,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
                 std::memcpy(g.tangent, v.tangent.data(), 12);
                 std::memcpy(g.binormal, v.binormal.data(), 12);
                 { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
+                if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = 1.0f;
                 g.uv[0] = v.uv[0];
                 g.uv[1] = v.uv[1];
                 g.light[0] = g.light[1] = g.light[2] = 1.0f;
@@ -856,6 +858,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
             std::memcpy(g.tangent, tangent.data(), 12);
             std::memcpy(g.binormal, binormal.data(), 12);
             { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
+            if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = 1.0f;
             g.uv[0] = v.uv[0];
             g.uv[1] = v.uv[1];
             verts.push_back(g);
@@ -1602,6 +1605,10 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.tangent[0] = tangent.x; g.tangent[1] = tangent.y; g.tangent[2] = tangent.z;
                 g.binormal[0] = binormal.x; g.binormal[1] = binormal.y; g.binormal[2] = binormal.z;
                 { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
+                // Baked into world space: the wave runs in model space before the placement, so its offset takes the model scale.
+                // TODO(spec): whether static models wave in the original depends on the smodel technique the renderer picks
+                // (the flag techset maps only "lightprobe smodel no fog" to a flag shader; the fog and cached variants are rigid).
+                if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = scale;
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
                 const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
                 std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
@@ -1891,6 +1898,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUGraphicsPipeline* objectivePipelines[3] = {}; // objective.sm: [polygon offset level]; cull back
     float gameTimeSeconds = 0.0f; // provisional gameTime.z of the objective technique (see the objective pass in draw)
+    int64_t renderTimeMs = 0;     // client render time of the frame: gameTime code constant (assets::gameTimeConst) of the flag wave
     SDL_GPUGraphicsPipeline* dlightPipelines[3][3] = {}; // l_point: [polygon offset][cull]
     struct DLight { float pos[3]; float radius; float rgb[3]; };
     std::vector<DLight> dlights; // lights of this frame (already limited to r_dlightLimit)
@@ -2024,7 +2032,9 @@ struct Renderer {
         vs.format = SDL_GPU_SHADERFORMAT_MSL;
         vs.stage = SDL_GPU_SHADERSTAGE_VERTEX;
         vs.num_uniform_buffers = 1;
-        SDL_GPUShader* vsh = SDL_CreateGPUShader(dev, &vs);
+        SDL_GPUShaderCreateInfo vmain = vs;
+        vmain.num_uniform_buffers = 2; // slot 1: gameTime (flag_flap)
+        SDL_GPUShader* vsh = SDL_CreateGPUShader(dev, &vmain);
         SDL_GPUShaderCreateInfo fs = vs;
         fs.entrypoint = "fs_main";
         fs.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
@@ -2036,13 +2046,16 @@ struct Renderer {
         vbd.slot = 0;
         vbd.pitch = sizeof(GpuVertex);
         vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-        SDL_GPUVertexAttribute attrs[6] = {
+        SDL_GPUVertexAttribute attrs[9] = {
             {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, pos)},
             {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, normal)},
             {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, offsetof(GpuVertex, color)},
             {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv)},
             {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, lmUv)},
             {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, light)},
+            {6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, tangent)},
+            {7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, binormal)},
+            {8, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, wave)},
         };
 
         SDL_GPUVertexBufferDescription vbd2[2] = {vbd, {1, 24, SDL_GPU_VERTEXINPUTRATE_VERTEX, 0}};
@@ -2060,11 +2073,10 @@ struct Renderer {
         SDL_GPUShader* dlightFsh = SDL_CreateGPUShader(dev, &dfsi);
         SDL_GPUShaderCreateInfo dvsi = vs;
         dvsi.entrypoint = "vs_dlight";
+        dvsi.num_uniform_buffers = 2; // slot 1: gameTime (flag_flap)
         SDL_GPUShader* dlightVsh = SDL_CreateGPUShader(dev, &dvsi);
         if (!dlightFsh || !dlightVsh) sdlFail("dlight shader");
-        SDL_GPUVertexAttribute dlightAttrs[8] = {attrs[0], attrs[1], attrs[2], attrs[3], attrs[4], attrs[5],
-                                                 {6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, tangent)},
-                                                 {7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, binormal)}};
+        const SDL_GPUVertexAttribute* dlightAttrs = attrs; // tangent frame and flag wave from the one vertex buffer
         SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
         SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
         if (!specVsh || !specFsh) sdlFail("spec shaders");
@@ -2086,7 +2098,7 @@ struct Renderer {
             pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
             pi.vertex_input_state.num_vertex_buffers = 1;
             pi.vertex_input_state.vertex_attributes = attrs;
-            pi.vertex_input_state.num_vertex_attributes = 6;
+            pi.vertex_input_state.num_vertex_attributes = 9;
             pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
             pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -2125,7 +2137,7 @@ struct Renderer {
                 pi.vertex_shader = dlightVsh;
                 pi.fragment_shader = dlightFsh;
                 pi.vertex_input_state.vertex_attributes = dlightAttrs;
-                pi.vertex_input_state.num_vertex_attributes = 8;
+                pi.vertex_input_state.num_vertex_attributes = 9;
                 for (int lvl = 0; lvl <= 2; ++lvl)
                     for (int c = 0; c < 3; ++c) {
                         pi.rasterizer_state.enable_depth_bias = lvl > 0;
@@ -2139,7 +2151,7 @@ struct Renderer {
                 pi.vertex_shader = vsh;
                 pi.fragment_shader = fsh;
                 pi.vertex_input_state.vertex_attributes = attrs;
-                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.vertex_input_state.num_vertex_attributes = 9;
                 pi.rasterizer_state.enable_depth_bias = false;
                 pi.rasterizer_state.depth_bias_slope_factor = 0;
                 pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -2166,7 +2178,7 @@ struct Renderer {
                 pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
                 pi.vertex_input_state.num_vertex_buffers = 1;
                 pi.vertex_input_state.vertex_attributes = attrs;
-                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.vertex_input_state.num_vertex_attributes = 9;
             }
             pi.rasterizer_state.enable_depth_bias = false;
             pi.rasterizer_state.depth_bias_slope_factor = 0;
@@ -2191,7 +2203,7 @@ struct Renderer {
             pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
             pi.vertex_input_state.num_vertex_buffers = 1;
             pi.vertex_input_state.vertex_attributes = attrs;
-            pi.vertex_input_state.num_vertex_attributes = 6;
+            pi.vertex_input_state.num_vertex_attributes = 9;
             pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
             pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             pi.depth_stencil_state.enable_depth_test = true;
@@ -2231,7 +2243,7 @@ struct Renderer {
                 opi.vertex_input_state.vertex_buffer_descriptions = &vbd;
                 opi.vertex_input_state.num_vertex_buffers = 1;
                 opi.vertex_input_state.vertex_attributes = attrs;
-                opi.vertex_input_state.num_vertex_attributes = 6;
+                opi.vertex_input_state.num_vertex_attributes = 9;
                 opi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
                 opi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
                 opi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
@@ -2333,7 +2345,7 @@ struct Renderer {
                 pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
                 pi.vertex_input_state.num_vertex_buffers = 1;
                 pi.vertex_input_state.vertex_attributes = attrs;
-                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.vertex_input_state.num_vertex_attributes = 9;
                 pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
                 pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
                 pi.depth_stencil_state.enable_depth_test = true;
@@ -2371,7 +2383,7 @@ struct Renderer {
                 pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
                 pi.vertex_input_state.num_vertex_buffers = 1;
                 pi.vertex_input_state.vertex_attributes = attrs;
-                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.vertex_input_state.num_vertex_attributes = 9;
                 pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
                 pi.rasterizer_state.front_face = kFrontFace;
                 pi.depth_stencil_state.enable_depth_test = true;
@@ -2423,7 +2435,7 @@ struct Renderer {
                 pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
                 pi.vertex_input_state.num_vertex_buffers = 1;
                 pi.vertex_input_state.vertex_attributes = attrs;
-                pi.vertex_input_state.num_vertex_attributes = 6;
+                pi.vertex_input_state.num_vertex_attributes = 9;
                 pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
                 pi.rasterizer_state.front_face = kFrontFace;
                 pi.depth_stencil_state.enable_depth_test = true;
@@ -2585,6 +2597,11 @@ struct Renderer {
     void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
                    const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
         ensureDepth(w, h);
+        {   // gameTime for every vs_main / vs_dlight draw of this command buffer (vertex uniform slot 1)
+            const assets::GameTimeConst g = assets::gameTimeConst(renderTimeMs);
+            const float gt[4] = {g.x, g.y, g.z, g.w};
+            SDL_PushGPUVertexUniformData(cmd, 1, gt, sizeof(gt));
+        }
         // Blur post effect: only when the composed radius is > 0 (gate in gfx 0x10030ed0); the scene goes to an offscreen
         // texture, then composite pass: scene, blurred quarter copy with alpha min(R / F, 1), then the HUD (not blurred).
         const float blurA = game::blurAlpha(blur, float(h));
@@ -8899,6 +8916,7 @@ int main(int argc, char** argv) {
             hudKillcam = killcamView;
             forcedBlur = std::max(forcedBlur, worldMenuBlur());
             renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
+            renderer.renderTimeMs = world ? cgNowMs() : 0;
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
@@ -11124,6 +11142,7 @@ int main(int argc, char** argv) {
                 updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : float(SDL_GetTicks()) / 1000.0f);
                 const uint64_t profC = SDL_GetTicksNS();
                 renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
+                renderer.renderTimeMs = world ? cgNowMs() : int64_t(SDL_GetTicks()); // client render time, not the 20 Hz world time
                 hudKillcam = killcamView;
                 const std::vector<Quad2D> hud = buildHud(w, h, cam);
                 hudKillcam.reset();

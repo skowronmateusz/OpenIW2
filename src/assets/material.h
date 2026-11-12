@@ -48,12 +48,27 @@ struct Material {
     const std::string& colorImage() const;
 };
 
-// Flag techniques (technique sets "*_flag*", shaders/lib/flag.hlsl): the vertex colour alpha is not a colour but the
-// weight of the cloth wave (0 on the rigid pole and base, up to 1 at the free edge); the shader outputs the vertex
-// colour with its green and blue channels swapped and alpha 1. Returns the colour a vertex is drawn with.
-// TODO(spec): the wave offset itself (three sine waves along the normal, scaled by that weight) is not modelled.
+// Flag techniques (technique sets "*_flag*", docs/spec/material.md "Flag techniques"): the vertex colour alpha is not a
+// colour but the weight of the cloth wave (0 on the rigid pole and base, up to 1 at the free edge); the shader outputs the
+// vertex colour with its green and blue channels swapped and alpha 1. Returns the colour a vertex is drawn with.
 bool isFlagTechniqueSet(const std::string& techniqueSet);
 std::array<uint8_t, 4> drawnVertexColor(bool flagTechnique, const std::array<uint8_t, 4>& color);
+
+// The gameTime code constant of the 1.3 renderer (0x1002f6a0, called from 0x1002fa57): x = sin(2 pi frac t),
+// y = cos(2 pi frac t), z = frac t, w = t, with t the scene time in seconds (refdef time * 0.001, 0x10025c79) minus the
+// drawn entity's material time (0 for world surfaces). Deliberate deviation (openiw2): t is taken modulo 10 s so the float
+// keeps millisecond precision on long sessions; every lane and every flag wave repeats exactly after 10 s, so nothing
+// visible changes.
+struct GameTimeConst { float x = 0, y = 1, z = 0, w = 0; };
+GameTimeConst gameTimeConst(int64_t renderTimeMs);
+
+// The flag cloth wave (docs/spec/material.md "Flag techniques"): at texture coordinate (u, v) with wave weight
+// `weight` (vertex alpha, 0..1) and gameTime.w = `seconds`, the vertex moves `offset` model units along its normal,
+// and the normal tilts by (tiltU, tiltV) towards the tangent and binormal: n' = tiltU T + tiltV B + sqrt(1 - tiltU^2 -
+// tiltV^2) N. |offset| <= kFlagWaveMaxOffset * weight.
+struct FlagWave { float offset = 0, tiltU = 0, tiltV = 0; };
+FlagWave flagWave(float u, float v, float weight, float seconds);
+inline constexpr float kFlagWaveMaxOffset = 5.0f * (1.5f + 0.6f + 0.34f);
 
 // Throws std::runtime_error on malformed input.
 Material parseMaterial(std::span<const uint8_t> data);

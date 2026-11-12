@@ -165,9 +165,11 @@ inline int vehicleTexScrollStep(int flag, int acc, float speed, float dvar, floa
 }
 
 // The V offset the renderer subtracts from tread texture coordinates (cgame 0x4ac839): accumulator * 0.001 (0x591e30);
-// the cgame skips a negative accumulator (offset 0). TODO(spec): the gfx DLL step that turns the entity's
-// (cg.time - value) * 0.001 into gameTime.z (assumed to cancel the time part), and the per-frame interpolation
-// ((next - cur) * frameInterp) of the accumulator.
+// the cgame skips a negative accumulator (offset 0). The 1.3 renderer sets gameTime per drawn entity as scene seconds
+// (refdef time * 0.001, 0x10025c79) minus the entity's material time float (0x1002fa49 -> 0x1002f6a0; docs/spec/material.md
+// "Flag techniques"), so (cg.time - value) * 0.001 leaves value * 0.001 when the refdef time is cg.time.
+// TODO(spec): that the refdef time equals cg.time here, and the per-frame interpolation ((next - cur) * frameInterp) of the
+// accumulator.
 inline float vehicleTexScrollOffset(int acc) { return acc < 0 ? 0.0f : float(acc) * 0.001f; }
 
 

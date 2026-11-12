@@ -3,6 +3,7 @@
 #include "assets/material.h"
 #include "assets/xmodel.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -39,6 +40,42 @@ int main() {
         const std::array<uint8_t, 4> pole{10, 20, 30, 0};
         CHECK((drawnVertexColor(true, pole) == std::array<uint8_t, 4>{10, 30, 20, 255}));
         CHECK((drawnVertexColor(false, pole) == pole));
+    }
+    {
+        // Flag cloth wave (docs/spec/material.md "Flag techniques").
+        using iw2::assets::flagWave;
+        auto close = [](float a, float b, float eps) { return std::abs(a - b) < eps; };
+        // Weight 0 (pole, base) never moves or tilts.
+        const auto rigid = flagWave(0.3f, 0.7f, 0.0f, 3.4f);
+        CHECK(rigid.offset == 0.0f && rigid.tiltU == 0.0f && rigid.tiltV == 0.0f);
+        // Hand-computed: at u = v = 1 the phases are 2 pi speed t; t = 0.25 s, weight 1.
+        CHECK(close(flagWave(1, 1, 1, 0.25f).offset, 11.1458f, 1e-3f));
+        // At t = 0 the slopes are the summed amplitude * cos(angle) / length (and sin), through atan.
+        const auto t0 = flagWave(1, 1, 1, 0);
+        CHECK(close(t0.offset, 0, 1e-5f) && close(t0.tiltU, 1.21756f, 1e-4f) && close(t0.tiltV, 0.202611f, 1e-4f));
+        // The weight scales the offset and the tilt linearly.
+        CHECK(close(flagWave(0.2f, 0.4f, 0.5f, 1.3f).offset, 0.5f * flagWave(0.2f, 0.4f, 1, 1.3f).offset, 1e-4f));
+        // Bounded by 5 * (1.5 + 0.6 + 0.34) and repeating every 10 s.
+        float maxOff = 0;
+        for (int i = 0; i < 2000; ++i) {
+            const float u = float(i % 37) / 36.0f, v = float(i % 11) / 10.0f, t = float(i) * 0.005f;
+            const auto a = flagWave(u, v, 1, t), b = flagWave(u, v, 1, t + 10.0f);
+            maxOff = std::max(maxOff, std::abs(a.offset));
+            CHECK(close(a.offset, b.offset, 2e-3f) && close(a.tiltU, b.tiltU, 1e-3f));
+        }
+        CHECK(maxOff <= iw2::assets::kFlagWaveMaxOffset && maxOff > 5.0f);
+        CHECK(close(iw2::assets::kFlagWaveMaxOffset, 12.2f, 1e-5f));
+        // The cloth moves between two drawn frames 16 ms apart (render time, not 20 Hz world steps).
+        CHECK(std::abs(flagWave(0.5f, 0.5f, 1, 1.00f).offset - flagWave(0.5f, 0.5f, 1, 1.016f).offset) > 1e-3f);
+
+        // gameTime code constant lanes: x sin, y cos of 2 pi frac(t), z frac(t), w t (wrapped every 10 s).
+        using iw2::assets::gameTimeConst;
+        const auto g = gameTimeConst(12250);
+        CHECK(close(g.w, 2.25f, 1e-6f) && close(g.z, 0.25f, 1e-6f) && close(g.x, 1, 1e-5f) && close(g.y, 0, 1e-5f));
+        const auto n = gameTimeConst(-750); // before the epoch: still in [0, 10)
+        CHECK(close(n.w, 9.25f, 1e-6f) && close(n.z, 0.25f, 1e-6f));
+        const auto z = gameTimeConst(0);
+        CHECK(z.w == 0 && z.z == 0 && close(z.y, 1, 1e-6f));
     }
     using namespace iw2::assets;
 

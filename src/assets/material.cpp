@@ -1,5 +1,6 @@
 #include "assets/material.h"
 
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 
@@ -90,6 +91,44 @@ bool isFlagTechniqueSet(const std::string& techniqueSet) { return techniqueSet.f
 std::array<uint8_t, 4> drawnVertexColor(bool flagTechnique, const std::array<uint8_t, 4>& color) {
     if (!flagTechnique) return color;
     return {color[0], color[2], color[1], 255};
+}
+
+GameTimeConst gameTimeConst(int64_t renderTimeMs) {
+    const int64_t ms = ((renderTimeMs % 10000) + 10000) % 10000;
+    GameTimeConst g;
+    g.w = float(ms) * 0.001f;
+    g.z = float(ms % 1000) * 0.001f;
+    const float a = g.z * 6.2831855f;
+    g.x = std::sin(a);
+    g.y = std::cos(a);
+    return g;
+}
+
+namespace {
+// The three waves of the flag cloth: wavelength in texture units, direction in the (1-u, 1-v) plane (degrees from the
+// u axis), speed in cycles per second and amplitude (shaders/lib/flag.hlsl:14-30; overall scale 5, flag.hlsl:14).
+struct ClothWave { float length, angleDeg, speed, amp; };
+constexpr ClothWave kClothWaves[3] = {{1.73f, 4.0f, 0.9f, 1.5f}, {0.75f, -10.0f, 1.5f, 0.6f}, {0.31f, 15.0f, 1.2f, 0.34f}};
+constexpr float kTwoPi = 6.2831855f;
+} // namespace
+
+FlagWave flagWave(float u, float v, float weight, float seconds) {
+    const float cu = 1.0f - u, cv = 1.0f - v;
+    float sum = 0, slopeU = 0, slopeV = 0;
+    for (const ClothWave& k : kClothWaves) {
+        const float ang = k.angleDeg * (kTwoPi / 360.0f);
+        const float du = std::cos(ang) / k.length, dv = std::sin(ang) / k.length; // cycles per texture unit
+        const float phase = kTwoPi * (du * cu + dv * cv + k.speed * seconds);
+        sum += k.amp * std::sin(phase);
+        // d(amp sin phase)/du = amp * 2 pi du * cos phase; the shader divides the summed slope by 2 pi.
+        slopeU += k.amp * du * std::cos(phase);
+        slopeV += k.amp * dv * std::cos(phase);
+    }
+    FlagWave f;
+    f.offset = 5.0f * weight * sum;
+    f.tiltU = std::atan(slopeU) * weight;
+    f.tiltV = std::atan(slopeV) * weight;
+    return f;
 }
 
 } // namespace iw2::assets
