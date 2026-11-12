@@ -4,6 +4,7 @@
 // Single-threaded on an in-memory network with an injected clock: the server and the clients advance one millisecond at
 // a time, so every time limit below is exact and the result does not depend on how loaded the machine is.
 
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -202,7 +203,29 @@ void playoutTests() {
     }
 }
 
+// The wait for packets ends when the next frame is due (docs/spec/net.md section 10 "Server cadence"): a poll asked
+// to wait 40 ms with the frame due in 3 ms returns within a few ms, and the next poll runs that frame.
+void frameWaitTest() {
+    StubGame game;
+    Server server(game, 7);
+    if (!server.open(0)) return;
+    const auto real = [] { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+    int64_t now = 5000;
+    server.poll(now, 0); // the first frame at once; the next one 50 ms later
+    const int before = game.time;
+    now += 47;
+    const int64_t t0 = real();
+    server.poll(now, 40);
+    const int64_t waited = real() - t0;
+    std::printf("frame wait: asked 40 ms with the frame due in 3, waited %lld ms\n", (long long)waited);
+    CHECK(waited < 20);
+    now += 3;
+    server.poll(now, 40);
+    CHECK(game.time > before);
+}
+
 int main() {
+    frameWaitTest();
     playoutTests();
     MemoryUdp network;
     StubGame game;

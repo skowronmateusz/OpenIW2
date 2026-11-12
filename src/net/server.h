@@ -102,6 +102,9 @@ public:
     bool mapStarted_ = false;
 
     struct Client {
+        uint32_t traceButtons = 0;   // IW2_NET_TRACE shot timing
+        int64_t shotReadMs = -1;
+        bool shotHeld = false;
         ServerClientState state = ServerClientState::Free;
         NetAddress address;
         int qport = 0;

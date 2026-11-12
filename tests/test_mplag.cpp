@@ -403,6 +403,7 @@ struct Run {
     int64_t turretPhaseMs = 0, useSeenMs = 0, firePressMs = 0, fireSeenMs = 0, offPressMs = 0, offSeenMs = 0; // IW2_LAG_TURRET
     std::deque<std::pair<int, int64_t>> bPresses; // B's fire presses: command time, wall time
     bool bPrevBtn = false;
+    int64_t bTapNext = 0; // IW2_LAG_BTAP
     int bSeq = -1, shotCmd = 0;
     int64_t shotWall = 0, deathShotWall = 0, aDamageWall = 0;
     bool aDamageKilled = false; // the press of B's last fired shot; of the shot that killed A // B's command time -> wall time sent
@@ -525,7 +526,14 @@ struct Run {
                 break;
             }
         static const bool bFire = std::getenv("IW2_LAG_BFIRE") != nullptr;
-        const uint32_t btn = bFire && gFireOn && i == 1 && (netNow / 150) % 2 ? 1u : 0u;
+        // IW2_LAG_BTAP=<ms>: B taps attack in one command every that many ms instead (a press the ready weapon fires
+        // in the very command, so the press times the shot).
+        static const int bTap = std::getenv("IW2_LAG_BTAP") ? std::atoi(std::getenv("IW2_LAG_BTAP")) : 0;
+        uint32_t btn = bFire && gFireOn && i == 1 && (netNow / 150) % 2 ? 1u : 0u;
+        if (bTap > 0 && i == 1) {
+            btn = 0;
+            if (gFireOn && now >= bTapNext) btn = 1, bTapNext = now + bTap;
+        }
         if (i == 1 && btn && (!hitPressMs || now - hitPressMs > 1500)) hitPressMs = now, hitPressCmd = clientTime;
         if (i == 1) {
             if (btn && !bPrevBtn) bPresses.emplace_back(clientTime, now);

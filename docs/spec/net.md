@@ -830,6 +830,14 @@ largest correction was 3.4 units. The server already skips commands it has run, 
 
 ### Server cadence
 
+The dedicated server's loop waits for packets for at most 5 ms per pass, and the pass runs the due frames with the
+time taken before the wait. openiw2 let that wait run past the frame's due time, so a frame and its snapshots started
+up to 5 ms late; the wait now ends when the next frame is due (the 1.3 server sleeps until its next frame as well).
+Measured on a quiet internet path (ping 6 ms, a bolt rifle tapped in single commands): from the read of the packet
+with the attack press to the snapshot that carries the shot, 0..48 ms (median 31) before and 1..49 ms (median 29)
+after: that wait is the 20 Hz frame (the commands run when they are read, the snapshot follows the next frame), as in
+the original. `IW2_NET_TRACE=1` prints it per press (`NETTRACE shot`).
+
 A snapshot goes to every active client after each game frame (the message pass follows the frame; one snapshot per
 server time, so their serverTimes are spaced by the frame, 50 ms at sv_fps 20, and a late server frame yields one
 snapshot with the caught-up time, never two with the same time). openiw2 sends a message every second to a client

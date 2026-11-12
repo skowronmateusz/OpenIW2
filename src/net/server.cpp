@@ -163,6 +163,10 @@ void Server::poll(int64_t nowMs, int waitMs) {
     }
     static uint8_t buf[kMaxPacketLen + 64];
     NetAddress from;
+    // The wait for packets ends at the next frame: nowMs is the time before the wait, and the frame and its snapshots
+    // run with it, so a longer wait would start the frame late by up to the rest of the wait (docs/spec/net.md section
+    // 10 "Server cadence"; the 1.3 server sleeps until its next frame is due).
+    if (waitMs > 0 && nextFrameMs_ - nowMs < waitMs) waitMs = static_cast<int>(std::max<int64_t>(0, nextFrameMs_ - nowMs));
     for (int wait = waitMs;; wait = 0) {
         int n = sock_.receive(buf, kMaxPacketLen, from, wait);
         if (n <= 0) break;
@@ -238,6 +242,13 @@ void Server::poll(int64_t nowMs, int waitMs) {
             ((serverTime >= c.nextSnapshotServerTime && serverTime != c.lastSnapshotServerTime) || nowMs - c.lastSnapshotMs >= 1000)) {
             const int messageNum = c.chan->outgoingSequence();
             const int bytes = sendSnapshot(i);
+            if (c.shotReadMs >= 0) {
+                static const bool shotTrace = std::getenv("IW2_NET_TRACE") != nullptr;
+                if (shotTrace)
+                    std::printf("NETTRACE shot slot=%d read->snapshot %lld ms (server time %d%s)\n", i, (long long)(nowMs - c.shotReadMs), serverTime,
+                                c.shotHeld ? ", held" : "");
+                c.shotReadMs = -1;
+            }
             Client::Frame& sent = c.frames[static_cast<size_t>(messageNum & 31)];
             sent.sentMs = nowMs;
             sent.ackMs = -1;
@@ -448,6 +459,10 @@ void Server::parseMove(int slot, Msg& msg, bool delta, int64_t nowMs) {
         c.lastUsercmdTime = cmd.serverTime;
         if (hold) c.playout.push(cmd);
         else game_.clientThink(slot, cmd);
+        // IW2_NET_TRACE: an attack press (the button's rising edge) is timed from the read of its packet to the snapshot
+        // that carries its result (docs/debug-flags.md).
+        if ((cmd.buttons & 1) && !(c.traceButtons & 1)) c.shotReadMs = nowMs, c.shotHeld = hold;
+        c.traceButtons = cmd.buttons;
     }
 }
 
