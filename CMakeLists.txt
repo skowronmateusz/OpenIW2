@@ -1109,6 +1109,10 @@ add_test(NAME gammaramp COMMAND test_gammaramp)
 add_executable(test_clienttime tests/test_clienttime.cpp)
 target_link_libraries(test_clienttime PRIVATE iw2_netgame)
 add_test(NAME clienttime COMMAND test_clienttime)
+
+add_executable(test_eventrack tests/test_eventrack.cpp)
+target_include_directories(test_eventrack PRIVATE src)
+add_test(NAME eventrack COMMAND test_eventrack)
 # Camera height of a network client around a landing, against the dedicated server.
 # Movement through an impaired network path (tests/test_mplag.cpp): iw2server as a child process, two network clients
 # through an in-process UDP relay with latency, jitter, loss and reordering from a fixed seed; no position snap.

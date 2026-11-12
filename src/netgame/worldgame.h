@@ -19,6 +19,7 @@
 #include "game/mpgame.h"
 #include "game/pmove.h"
 #include "net/server.h"
+#include "netgame/eventrack.h"
 #include "netgame/netcombat.h"
 #include "script/value.h"
 
@@ -202,6 +203,8 @@ private:
         int placedSpawn = -1; // IW2_MP_PLACE: the spawn count the client was last placed for
         std::array<float, 3> lastOrigin{};
         int lastTime = 0;
+        EvenTrack track;      // his places by command time, for the other clients' snapshots (eventrack.h)
+        int trackSampledAt = -1; // the snapshot time the track was last sampled for
         int lastServerTime = 0;  // the antilag time (0x80f5614)
         bool turretMoved = false; // on a map turret at the last think, or the turret code moved the client since
         float viewPitch = 0, viewYaw = 0;

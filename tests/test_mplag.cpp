@@ -929,6 +929,26 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         std::sort(h.begin(), h.end());
         std::printf("%s: B's fire press to A's lower health: %zu hits, median %d ms, max %d ms\n", prof.name.c_str(), h.size(), h[h.size() / 2], h.back());
     }
+    // A clean path: the server sends the walking A sampled evenly (docs/spec/net.md section 10 "Player positions in a
+    // snapshot"), so the steps of his walk between B's snapshots are alike; where his last command left him they differ
+    // by a command (IW2_PLAYER_PLAIN=1 fails here).
+    if (prof.name == "loopback") {
+        std::vector<float> steps = s.obsStep;
+        std::sort(steps.begin(), steps.end());
+        const float median = steps.empty() ? 0.0f : steps[steps.size() / 2];
+        int walking = 0, uneven = 0;
+        for (float d : steps) {
+            if (d < 0.7f * median || d > 1.3f * median) continue;  // standing at a wall, starting, turning
+            ++walking;
+            if (std::fabs(d - median) > 0.06f * median) ++uneven;
+        }
+        std::printf("%s: A's walk in B's snapshots: %d steps around the median %.2f units, %d more than 6 %% off it\n", prof.name.c_str(), walking,
+                    double(median), uneven);
+        if (walking < int(60 * seconds / 10.0) || uneven * 20 > walking) {
+            std::printf("FAIL %s: the walking A's places in B's snapshots are uneven\n", prof.name.c_str());
+            ok = false;
+        }
+    }
     if (prof.name == "spike" && s.drawnFrames < int(150 * seconds / 10.0)) {
         std::printf("FAIL %s: too few frames in which B draws the walking A\n", prof.name.c_str());
         ok = false;
@@ -982,7 +1002,7 @@ int main() {
     vfs.mountDirectory(mainDir);
     gStart = nowMs();
     const double seconds = std::getenv("IW2_LAG_SECONDS") ? std::atof(std::getenv("IW2_LAG_SECONDS")) : 10.0;
-    const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}, {"radio", 2, 6, 2, 0.0, 0.0, 0.0, false, 520, 220}, {"spike", 2, 4, 2, 0.0, 0.0, 0.0, false, 500, 85}};
+    const std::vector<Profile> profiles = {{"loopback", 0, 0, 0, 0.0, 0.0}, {"wan", 40, 45, 10, 0.015, 0.02}, {"wifi", 1, 20, 10, 0.005, 0.0}, {"wifigood", 2, 6, 5, 0.002, 0.0}, {"wifiburst", 2, 25, 15, 0.01, 0.0, 0.004}, {"wifistall", 2, 25, 15, 0.0, 0.0, 0.004, true}, {"radio", 2, 6, 2, 0.0, 0.0, 0.0, false, 520, 220}, {"spike", 2, 4, 2, 0.0, 0.0, 0.0, false, 500, 85}};
     const char* only = std::getenv("IW2_LAG_PROFILE");
     // IW2_LAG_RELAY=[<server address>:]<server port>: only the relay with the profile (default wifiburst), for real
     // clients (they connect to 127.0.0.1 and the printed port); the server is local unless an address is given.
@@ -1008,7 +1028,7 @@ int main() {
     }
     bool ok = true;
     for (const Profile& p : profiles)
-        if (only ? p.name == only : p.name == "wan" || p.name == "wifiburst" || p.name == "radio" || p.name == "spike") {
+        if (only ? p.name == only : p.name == "loopback" || p.name == "wan" || p.name == "wifiburst" || p.name == "radio" || p.name == "spike") {
             // A run in which this process was starved measured the machine: repeat it (up to 3 runs); a run that was
             // not starved counts as it is.
             bool good = false, starved = false;

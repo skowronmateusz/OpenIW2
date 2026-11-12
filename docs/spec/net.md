@@ -612,6 +612,12 @@ VAs in the patch 1.3 MP executable. The client keeps a server-time estimate for 
   fraction of the interval (0x4cca00; 0 when both have the same time); when the time lies before the current pair it is
   raised to the current snapshot. Without a newer snapshot the next snapshot stays the current one (the loop at 0x4dfe20
   asks for another only while both are the same and returns when there is none), so the fraction is 0.
+  openiw2: the fraction is taken with the part of the frame's real time below the millisecond added to the (whole
+  millisecond) client time. The 1.3 client's times are whole milliseconds; at 120 drawn frames a second the client
+  time then moves by 8 or 9 ms per 8.33 ms frame, and everything drawn between two snapshots moves 4 % slower or 8 %
+  faster from frame to frame (measured: the drawn speed of a walking player was off by 4.6 % in the median frame, 0.3
+to 0.9 % with the fraction). The
+  commands keep the whole milliseconds (the wire format).
 - Entity placement (0x4cda50, per entity and frame): a position trajectory of type 1, or of type 3 on an entity
   numbered below 64 (a player), goes through the pair routine 0x4cd8d0: the current state's trajectory is evaluated
   (0x513df0) at the current snapshot's time, the next state's at the next snapshot's time, and origin and angles
@@ -842,6 +848,61 @@ A snapshot goes to every active client after each game frame (the message pass f
 server time, so their serverTimes are spaced by the frame, 50 ms at sv_fps 20, and a late server frame yields one
 snapshot with the caught-up time, never two with the same time). openiw2 sends a message every second to a client
 whose host stopped stepping its world (its pending server commands). `TODO(spec)`: the `snaps` / rate limits.
+
+### Player positions in a snapshot
+
+VAs in the 1.3 Linux dedicated server unless marked MP (the patch 1.3 MP executable). A player moves when his commands
+are read ("Command steps" below), and a snapshot carries him where his last command left him. That command's time is
+not a fixed distance from the snapshot's time: the client makes one command per drawn frame (MP 0x409da0) with its
+client time (MP 0x408aa2), the server frame takes whatever has arrived, and the two rates beat. Measured on the
+loopback and between two machines (the clients on a radio path while it was quiet: ping 5 ms, deviation 0.5 ms) with
+two openiw2 clients at 120 frames a second:
+a 50 ms snapshot carried 6 commands of a walking player in three snapshots of four and 5 or 7 in the others (1 to 4
+for a scripted test client with frames of 16 to 18 ms), so the snapshot's time minus the player's command time moved between 63 and
+72 ms. The watching client draws him between two snapshots by their times ("Client time" above), so he covers 42, 50
+or 58 ms of his walk in 50 ms of the watcher's time: on a steady straight walk the drawn speed of a frame was off
+the mean of the 150 ms around it by 16 % in one drawn frame of twenty and by 24 % in one of a hundred; one
+command more or less is 1.6 units of a walk at 190 units/s. A jittering path of the walking player widens the spread
+by its jitter. The path of the watcher adds nothing to it (the same figures on the loopback and between the machines).
+
+The original has the same beat (derived from the rules cited here, not observed with a 1.3 client). Its answer is the `g_smoothClients` trajectory ("Commands on a bursty path" below:
+0x80f56f8 writes the origin as base, the velocity as delta, the player state's `commandTime` as start and 50 ms as
+duration, and the client evaluates it at the snapshot's time, MP 0x4cd8d0), which would move the player on by exactly
+the missing time. But the 1.3 client's command time is one snapshot interval + 5 ms + the round trip behind the
+server's time (MP 0x402d70 sets the client time that far back, and the commands carry it), more than the 50 ms the
+trajectory lasts, so every player is moved on by the full 50 ms and the spread stays. With `cl_maxpackets 30` on an
+internet server the original's commands also arrive in packets 33 ms or more apart ("Command redundancy" below), so
+the spread there is one packet interval, not one frame.
+
+openiw2 (src/netgame/eventrack.h, `EvenTrack`; no 1.3 counterpart): the server keeps each network client's last
+positions with their command times and puts into the snapshots (the player's entity as the other clients get it) the
+place he had at `snapshot time - lag`, taken between the two commands around that time. `lag` is the largest
+`snapshot time - last command time` of the last 60 snapshots (3 s), or the smallest one of them plus his mean command
+interval if that is more (the distance swings by one command as the two rates beat, also when the window has seen only
+one end of the swing), at most 35 ms above the smallest (one command of a client at 30 frames a second; a path with
+larger late stretches is the business of the command hold below, and every ms of lag is a ms the others see him
+later); it rises at once and falls by 1 ms per snapshot. So the other clients get his walk sampled every 50 ms of his own command
+time, whatever arrived when. Nothing is drawn ahead of his commands: the place is one he was at, at most `lag` minus
+the present distance earlier (4 ms on average for the 120 frames a second above, never over 35 ms). When his newest
+command is older than `snapshot time - lag` (a packet later than everything in the window) the snapshot carries his
+newest place as before. The positions are forgotten when his movement starts again (a spawn, a place set by a script
+or a turret, a command time that went back), and a player the frame itself moved after his commands is sent where he is. Not changed: his own player
+state in his own snapshot (his prediction starts from it), his view angles, velocity and events, the server's own
+collision, and bots (they move in the frame).
+The antilag archive and the killcam ("Antilag", docs/spec/mp-hud.md) keep the same place for that frame, so a shot is
+tested against the players where the shooter's snapshots had them (a listen server, whose front end steps the world,
+archives the frame before the places are taken and keeps the players' own origins there). `IW2_PLAYER_PLAIN=1` in the server's environment
+sends the place after the last command, as before.
+Measured the same way, the server run with and without it in turn (the sub-millisecond fraction of "Client time" in
+both): where the commands beat (5 or 7 in a third of the snapshots) 19 % in one frame of twenty and 24 % in one of a
+hundred without it, 12 % and 13 % with it; between two machines 10 % and 16 % without, 3 to 4 % and 11 % with it. What
+is left is taken to be the client clock's steps of 1 ms per snapshot (12 % of one 8.33 ms frame; "Client time"; not
+separated in the measurement), which the original has as well.
+Tests: tests/test_eventrack.cpp (a walk at a constant speed whose commands arrive 5, 6 or 7 per snapshot: the
+snapshot places are 50 ms of the walk apart within 0.01 units, against 42 to 51 ms without it; a late packet holds the
+newest place and the lag then falls by 1 ms per snapshot; a restart forgets the track; command times that start again
+earlier) and tests/test_mplag.cpp profile `loopback` (two clients and a real server: the places of the walking client
+in the other client's snapshots; fails with `IW2_PLAYER_PLAIN=1`).
 
 ### Prediction and interpolation
 

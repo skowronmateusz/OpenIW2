@@ -607,6 +607,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     const int prevTime = m.lastTime;
     if (prevTime != 0 && cmd.serverTime <= prevTime) {
         m.lastTime = cmd.serverTime;
+        if (cmd.serverTime < prevTime) m.track.restart(); // his command times start again from an older one
         if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d skipped\n", slot, cmd.serverTime, sent.serverTime, prevTime);
         return;
     }
@@ -663,6 +664,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     // original's turret code moves the player state itself.
     const bool onTurretNow = w_->mpClientOnTurret(it->second);
     if (m.havePs && m.spawnCount == spawns && (onTurretNow || m.turretMoved)) {
+        m.track.restart();
         m.ps.origin = {o[0], o[1], o[2]};
         m.lastOrigin = {o[0], o[1], o[2]};
     }
@@ -680,6 +682,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         }
         m.spawnCount = spawns;
         m.ps = {};
+        m.track.restart();
         m.ps.origin = {o[0], o[1], o[2]};  // placed by the script (spawn): restart movement there
         m.psEventsDone = 0;
         m.havePs = true;
@@ -777,6 +780,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     e = w_->mpClientEntity(it->second);
     if (!e) return;
     m.lastOrigin = {m.ps.origin[0], m.ps.origin[1], m.ps.origin[2]};
+    m.track.add(cmd.serverTime, m.lastOrigin);
     script::OriginWatch::allowed = true;
     e->obj->set("origin", Value(script::Vec3{m.lastOrigin[0], m.lastOrigin[1], m.lastOrigin[2]}));
     script::OriginWatch::allowed = false;
@@ -831,9 +835,26 @@ void WorldGame::clientDisconnect(int slot) {
     if (slot >= 0 && slot < script::OriginWatch::kSlots) script::OriginWatch::object[slot] = nullptr;
 }
 
-void WorldGame::runFrame(int) {
+void WorldGame::runFrame(int frameMs) {
     if (clientPing)
         for (const auto& [slot, client] : mp_) w_->mpSetClientPing(client, clientPing(slot));
+    // The network clients' places for the snapshots of this frame (docs/spec/net.md section 10 "Player positions in a
+    // snapshot"): every command of the frame has run; the frame's archive and the snapshots after it read them. A host
+    // that steps its own world has run the frame already (its archive keeps the entity origins).
+    static const bool plainPlayers = std::getenv("IW2_PLAYER_PLAIN") != nullptr;
+    const int snapshotTime = serverTime() + (worldOwnedByHost ? 0 : frameMs);
+    for (const auto& [slot, client] : mp_) {
+        auto mv = moves_.find(slot);
+        EvenTrack::Vec at{};
+        if (plainPlayers || mv == moves_.end() || !mv->second.havePs || mv->second.trackSampledAt == snapshotTime ||
+            !mv->second.track.sample(snapshotTime, at)) {
+            if (plainPlayers || mv == moves_.end() || !mv->second.havePs) w_->mpClearSentOrigin(client);
+            continue;
+        }
+        mv->second.trackSampledAt = snapshotTime;
+        const auto& live = mv->second.lastOrigin;
+        w_->mpSetSentOrigin(client, script::Vec3{live[0], live[1], live[2]}, script::Vec3{at[0], at[1], at[2]});
+    }
     if (!worldOwnedByHost) w_->frame();
     forwardToClients();
 }
@@ -893,7 +914,9 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     re.number = client;
     re.eType = kEtPlayer;
     re.clientNum = client;
-    const auto o = e.obj->get("origin").asVector();
+    // The place the other clients get: his walk sampled evenly (docs/spec/net.md section 10 "Player positions in a
+    // snapshot"), or the entity's origin.
+    const auto o = w_->mpSnapshotOrigin(client);
     const auto a = e.obj->get("angles");
     for (int i = 0; i < 3; ++i) re.origin[i] = o[size_t(i)];
     if (a.isVector()) re.angles[1] = a.asVector()[1];

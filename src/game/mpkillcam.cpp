@@ -300,7 +300,9 @@ void World::mpKillcamEndFrame() {
             yaw = cl.viewAngles[1];
             viewHeight = cl.viewHeight;
         }
-        ac.origin = org;
+        // The archived place is the one the snapshots of this frame carry (docs/spec/net.md section 10 "Player
+        // positions in a snapshot"): the antilag tests a shot where the shooter's snapshots had the player.
+        ac.origin = mpSnapshotOrigin(int(i));
         ac.eye = {org[0], org[1], org[2] + viewHeight};
         ac.viewAngles = {pitch, yaw, 0};
         ac.weapon = cl.ent->obj->get("$weapon").toString();
@@ -692,6 +694,31 @@ void World::mpKillcamRestore() {
     }
     killcamSaved_.clear();
     killcamSwapped_ = false;
+}
+
+void World::mpSetSentOrigin(int client, const Vec3& live, const Vec3& sent) {
+    if (!mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return;
+    MpClient& cl = mp_->clients[size_t(client)];
+    cl.sentValid = true;
+    cl.sentLive = live;
+    cl.sentOrigin = sent;
+}
+
+void World::mpClearSentOrigin(int client) {
+    if (!mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return;
+    mp_->clients[size_t(client)].sentValid = false;
+}
+
+Vec3 World::mpSnapshotOrigin(int client) const {
+    if (!mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return Vec3{0, 0, 0};
+    const MpClient& cl = mp_->clients[size_t(client)];
+    if (!cl.ent) return Vec3{0, 0, 0};
+    const Value o = cl.ent->obj->get("origin");
+    const Vec3 org = o.isVector() ? o.asVector() : Vec3{0, 0, 0};
+    // Moved since the place was set (a script, a spawn, a turret, a later command): the entity's own origin.
+    if (!cl.sentValid || std::fabs(org[0] - cl.sentLive[0]) + std::fabs(org[1] - cl.sentLive[1]) + std::fabs(org[2] - cl.sentLive[2]) > 0.01f)
+        return org;
+    return cl.sentOrigin;
 }
 
 } // namespace iw2::game

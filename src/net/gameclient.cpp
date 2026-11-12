@@ -492,7 +492,7 @@ void GameClient::parseSnapshot(Msg& msg, int64_t nowMs) {
     if (state_ == ClientState::Primed) state_ = ClientState::Active;
 }
 
-bool GameClient::interpolation(int t, const ClientSnapshot*& a, const ClientSnapshot*& b, float& frac) const {
+bool GameClient::interpolation(double t, const ClientSnapshot*& a, const ClientSnapshot*& b, float& frac) const {
     if (!latest_.valid) return false;
     frac = 0;
     a = b = nullptr;
@@ -509,7 +509,7 @@ bool GameClient::interpolation(int t, const ClientSnapshot*& a, const ClientSnap
     if (!a && !b) a = b = &latest_;
     else if (!a) a = b;   // t before the oldest kept frame: that frame
     else if (!b) b = a;   // t past the newest: its state is held
-    if (a != b) frac = static_cast<float>(t - a->serverTime) / static_cast<float>(b->serverTime - a->serverTime);
+    if (a != b) frac = static_cast<float>((t - a->serverTime) / static_cast<double>(b->serverTime - a->serverTime));
     return true;
 }
 

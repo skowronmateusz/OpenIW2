@@ -512,6 +512,13 @@ public:
     bool mpClientView(int client, Vec3& eye, Vec3& angles);
     // Scoreboard (docs/spec/mp-scoreboard.md): the server command "b ..." for the current clients.
     std::string mpScoresCommand();
+    // The place of a network client in the snapshots of the coming frame (docs/spec/net.md section 10 "Player positions
+    // in a snapshot"): `sent` stands for the entity's origin `live` in the snapshots and in the antilag / killcam
+    // archive as long as the entity is still at `live`. mpClearSentOrigin: the snapshots carry the entity's origin.
+    void mpSetSentOrigin(int client, const Vec3& live, const Vec3& sent);
+    void mpClearSentOrigin(int client);
+    // The origin the snapshots carry for the client's entity: the sent place, or the entity's origin.
+    Vec3 mpSnapshotOrigin(int client) const;
     void mpSetClientPing(int client, int ms) {
         if (mp_ && client >= 0 && size_t(client) < mp_->clients.size()) mp_->clients[size_t(client)].ping = ms;
     }

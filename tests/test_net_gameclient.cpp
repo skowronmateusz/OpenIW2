@@ -441,7 +441,7 @@ void smoothnessTest() {
     }
     CHECK(c.state() == ClientState::Active);
     const float nominal = ConstGame::kSpeed * 0.016f;
-    int samples = 0, good = 0, backwards = 0, big = 0;
+    int samples = 0, good = 0, backwards = 0, big = 0, subMsChecks = 0;
     float lastX = -1;
     int holdClient = 0, holdServer = 0;
     for (int step = 0; step < 1500; ++step) {
@@ -458,6 +458,16 @@ void smoothnessTest() {
         const ClientSnapshot *s0 = nullptr, *s1 = nullptr;
         float frac = 0;
         if (c.interpolation(c.renderTime(now), s0, s1, frac)) {
+            // A time between two milliseconds gives the fraction between theirs (docs/spec/net.md section 10 "Client
+            // time": the drawn frame's sub-millisecond time).
+            if (s0 != s1 && c.renderTime(now) + 1 < s1->serverTime) {
+                const ClientSnapshot *h0 = nullptr, *h1 = nullptr;
+                float half = 0;
+                CHECK(c.interpolation(double(c.renderTime(now)) + 0.5, h0, h1, half));
+                CHECK(h0 == s0 && h1 == s1);
+                CHECK(std::fabs(half - (frac + 0.5f / float(s1->serverTime - s0->serverTime))) < 1e-4f);
+                ++subMsChecks;
+            }
             const auto ents = netgame::interpolateEntities(*s0, *s1, frac);
             if (!ents.empty() && step > 200) {  // after the clock settled
                 const float x = ents[0].origin[0];
@@ -476,6 +486,7 @@ void smoothnessTest() {
     std::cout << "smoothness: " << samples << " frames, " << good << " within 50% of " << nominal << " units, " << backwards
               << " backwards, " << big << " over 2.5x, time delta " << c.timeDelta() << "\n";
     CHECK(samples > 1000);
+    CHECK(subMsChecks > 500);
     CHECK(backwards == 0);
     CHECK(big <= samples / 100);  // a held frame (the clock ran into a late snapshot) is caught up at once
     CHECK(good >= samples * 9 / 10);

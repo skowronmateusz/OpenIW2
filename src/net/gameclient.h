@@ -108,7 +108,9 @@ public:
     // The two snapshots around time t (the newest one at or before t and the oldest one after it, from the 32 kept)
     // and the fraction between them (0 = a, 1 = b). With one snapshot, t past the newest (the state is held) or t
     // before the oldest, a == b and frac == 0.
-    bool interpolation(int t, const ClientSnapshot*& a, const ClientSnapshot*& b, float& frac) const;
+    // t may carry a fraction of a millisecond (openiw2: the drawn frame's real time below the millisecond, so that the
+    // fraction moves on by the frame's real length and not by 8 or 9 whole ms).
+    bool interpolation(double t, const ClientSnapshot*& a, const ClientSnapshot*& b, float& frac) const;
     int snapshots = 0;
     int deltaSnapshots = 0;
     int droppedSnapshots = 0;

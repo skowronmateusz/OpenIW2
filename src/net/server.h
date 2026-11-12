@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -102,6 +103,7 @@ public:
     bool mapStarted_ = false;
 
     struct Client {
+        int traceCmds = 0, tracePackets = 0; // IW2_NET_TRACE=2: commands accepted and packets read since the last snapshot
         uint32_t traceButtons = 0;   // IW2_NET_TRACE shot timing
         int64_t shotReadMs = -1;
         bool shotHeld = false;
@@ -168,6 +170,7 @@ private:
     std::vector<Client> clients_;
     std::map<int, std::vector<uint8_t>> baselines_;
     int64_t lastNowMs_ = 0;
+    const bool frameTrace_ = [] { const char* e = std::getenv("IW2_NET_TRACE"); return e && std::atoi(e) >= 2; }();
     int64_t startMs_ = -1;
     int64_t nextFrameMs_ = 0;
     int64_t clockResetUntilMs_ = -1;  // end of the window in which a client may run one older command

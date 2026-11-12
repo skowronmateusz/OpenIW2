@@ -3873,6 +3873,10 @@ int main(int argc, char** argv) {
     // Network client (docs/spec/net.md section 10): the handshake runs before the level loads; the gamestate names the map.
     std::unique_ptr<net::GameClient> netClient;
     netgame::RemoteView remoteView;
+    // IW2_NET_TRACE / IW2_FRAME_TRACE (docs/debug-flags.md): the frame's start (real microseconds) and the client time its
+    // snapshot pair was taken at; the swapchain wait and the whole length of the previous frame.
+    uint64_t netTraceFrameUs = 0, netTracePrevWaitUs = 0, netTracePrevFrameUs = 0;
+    int64_t netTraceClock = 0;
     // Network killcam: the followed client's view between the drawn snapshots (RemoteView::killcamView), for the view
     // model and the HUD as in the local killcam.
     game::World::MpKillcamView netKillcam;
@@ -4454,10 +4458,10 @@ int main(int argc, char** argv) {
                 // IW2_NET_TRACE: the drawn (post-lerp) origin of every other player per rendered frame (docs/debug-flags.md).
                 if (static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
                     netTrace && (e->isPlayer || m.asString().rfind("xmodel/projectile_", 0) == 0))
-                    std::printf("nettrace rt=%lld t=%lld client=%d org=%.2f,%.2f,%.2f ang=%.1f,%.1f,%.1f ent=%d\n", static_cast<long long>(SDL_GetTicksNS() / 1000000ull),
-                                static_cast<long long>(netClient ? netClient->renderTime(netNowMs()) : cgNowMs()),
+                    std::printf("nettrace rt=%lld t=%lld client=%d org=%.2f,%.2f,%.2f ang=%.1f,%.1f,%.1f ent=%d us=%llu\n", static_cast<long long>(SDL_GetTicksNS() / 1000000ull),
+                                static_cast<long long>(netClient ? netTraceClock : cgNowMs()),
                                 e->obj->get("$client").isInt() ? e->obj->get("$client").asInt() : e->isPlayer ? -1 : -2 - e->number, double(ov[0]), double(ov[1]), double(ov[2]),
-                                double(av[0]), double(av[1]), double(av[2]), e->number);
+                                double(av[0]), double(av[1]), double(av[2]), e->number, static_cast<unsigned long long>(netTraceFrameUs));
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                 // gameTime.z of the *_scroll techniques (texscroll.hlsl subtracts it from V): frac(t), t = scene time - the refEntity
@@ -9366,8 +9370,25 @@ int main(int argc, char** argv) {
             bool netFollow = false;
             float netFollowEye[3] = {0, 0, 0}, netFollowAngles[3] = {0, 0, 0};
             if (netClient && world) {
-                const int64_t nowNet = netNowMs();
+                // One reading of the real time for the frame: the milliseconds for the client clock, the rest for the
+                // interpolation fraction (docs/spec/net.md section 10 "Client time").
+                const uint64_t nowNetNs = SDL_GetTicksNS();
+                const int64_t nowNet = int64_t(nowNetNs / 1000000ull);
+                const double nowNetSubMs = double(nowNetNs % 1000000ull) * 1e-6;
+                const int snapshotsBefore = netClient->snapshots;
                 netClient->poll(nowNet);
+                netTraceFrameUs = profFrameStart / 1000;
+                netTraceClock = netClient->renderTime(nowNet);
+                if (static const bool frameTrace = std::getenv("IW2_FRAME_TRACE") != nullptr; frameTrace) {
+                    const net::ClientSnapshot *ta = nullptr, *tb = nullptr;
+                    float tf = 0;
+                    const bool have = netClient->interpolation(int(netTraceClock), ta, tb, tf);
+                    std::printf("frametrace us=%llu now=%lld clock=%lld a=%d b=%d frac=%.3f newest=%d got=%d delta=%d ext=%d prevwait=%llu prevframe=%llu\n",
+                                static_cast<unsigned long long>(netTraceFrameUs), static_cast<long long>(nowNet), static_cast<long long>(netTraceClock),
+                                have ? ta->serverTime : -1, have ? tb->serverTime : -1, double(tf), netClient->latest() ? netClient->latest()->serverTime : -1,
+                                netClient->snapshots - snapshotsBefore, netClient->timeDelta(), int(netClient->extrapolating()),
+                                static_cast<unsigned long long>(netTracePrevWaitUs), static_cast<unsigned long long>(netTracePrevFrameUs));
+                }
                 // A new gamestate after the one the level was loaded from (the server changed or restarted the map, e.g.
                 // map rotation): the client loads the map it names (docs/spec/net.md section 10, "Map change").
                 // A gamestate sent again for the same server id (the client was busy loading) is no new map.
@@ -9451,7 +9472,14 @@ int main(int argc, char** argv) {
                 const net::ClientSnapshot *snapA = nullptr, *snapB = nullptr;
                 float snapFrac = 0;
                 // Self: the client number of the gamestate (the server's MP client number, docs/spec/net.md section 11).
-                if (netClient->interpolation(netClient->renderTime(nowNet), snapA, snapB, snapFrac)) {
+                // The drawn time with the frame's sub-millisecond part; it does not go back by that part while the clock
+                // stands (a reset of the clock, by more, does).
+                static double netDrawnTime = 0;
+                {
+                    const double t = double(netClient->renderTime(nowNet)) + nowNetSubMs;
+                    netDrawnTime = t < netDrawnTime && t > netDrawnTime - 1.0 ? netDrawnTime : t;
+                }
+                if (netClient->interpolation(netDrawnTime, snapA, snapB, snapFrac)) {
                     world->mpSetRemotePlayers(netgame::RemoteView::players(*snapA, *snapB, snapFrac, netClient->clientNum, netClient->configstrings));
                     netFollow = netgame::RemoteView::followView(*snapA, *snapB, snapFrac, netFollowEye, netFollowAngles);
                     netKillcam = remoteView.killcamView(*snapA, *snapB, snapFrac, netClient->configstrings, cgNowMs());
@@ -11173,6 +11201,7 @@ int main(int argc, char** argv) {
             const uint64_t profA = SDL_GetTicksNS();
             const bool gotSwap = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h);
             profWait += double(SDL_GetTicksNS() - profA) * 1e-6;
+            netTracePrevWaitUs = (SDL_GetTicksNS() - profA) / 1000;
             if (gotSwap && swap)
             {
                 renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
@@ -11245,6 +11274,7 @@ int main(int argc, char** argv) {
                 trace(what, world ? world->timeMs() : 0); // [server time]
             }
             profFrame += double(SDL_GetTicksNS() - profFrameStart) * 1e-6;
+            netTracePrevFrameUs = (SDL_GetTicksNS() - profFrameStart) / 1000;
             if (killcamView) {
                 cam.pos = killcamLivePos;
                 cam.fovX43 = killcamLiveFov;

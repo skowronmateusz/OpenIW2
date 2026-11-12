@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -182,7 +183,11 @@ void Server::poll(int64_t nowMs, int waitMs) {
     if (timeJump) flushCommands();
     while (nowMs >= nextFrameMs_) {
         runDueCommands(nextFrameMs_);
+        const auto frameStart = std::chrono::steady_clock::now();
         game_.runFrame(frameMs);
+        if (frameTrace_)  // IW2_NET_TRACE=2 (docs/debug-flags.md): the frame's lateness against its schedule and its length
+            std::printf("NETTRACE frame t=%d late=%lld run_us=%lld\n", game_.serverTime(), (long long)(nowMs - nextFrameMs_),
+                        (long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - frameStart).count());
         nextFrameMs_ += frameMs;
         framesRan = true;
     }
@@ -242,6 +247,11 @@ void Server::poll(int64_t nowMs, int waitMs) {
             ((serverTime >= c.nextSnapshotServerTime && serverTime != c.lastSnapshotServerTime) || nowMs - c.lastSnapshotMs >= 1000)) {
             const int messageNum = c.chan->outgoingSequence();
             const int bytes = sendSnapshot(i);
+            if (frameTrace_) {  // IW2_NET_TRACE=2: what this snapshot carries of the client's own commands
+                std::printf("NETTRACE snap slot=%d t=%d bytes=%d cmdlag=%d cmds=%d pkts=%d hold=%d\n", i, serverTime, bytes,
+                            serverTime - c.lastUsercmdTime, c.traceCmds, c.tracePackets, c.playout.holdMs());
+                c.traceCmds = c.tracePackets = 0;
+            }
             if (c.shotReadMs >= 0) {
                 static const bool shotTrace = std::getenv("IW2_NET_TRACE") != nullptr;
                 if (shotTrace)
@@ -447,6 +457,7 @@ void Server::parseMove(int slot, Msg& msg, bool delta, int64_t nowMs) {
         if (lastNowMs_ > 0 && nowMs - lastNowMs_ <= kLateReadMs) c.playout.packet(nowMs, cmds.back().serverTime);
         hold = c.playout.holding();
     }
+    ++c.tracePackets;
     for (const UserCmd& cmd : cmds) {
         if (cmd.serverTime > cmds.back().serverTime) continue;
         if (cmd.serverTime <= c.lastUsercmdTime) {
@@ -457,6 +468,7 @@ void Server::parseMove(int slot, Msg& msg, bool delta, int64_t nowMs) {
             c.clockResetAllowed = false;
         }
         c.lastUsercmdTime = cmd.serverTime;
+        ++c.traceCmds;
         if (hold) c.playout.push(cmd);
         else game_.clientThink(slot, cmd);
         // IW2_NET_TRACE: an attack press (the button's rising edge) is timed from the read of its packet to the snapshot

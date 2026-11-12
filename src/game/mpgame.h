@@ -26,6 +26,10 @@ enum class MpClientState { Free = 0, Connected = 1, Active = 2 };
 struct MpClient {
     MpClientState state = MpClientState::Free;
     Entity* ent = nullptr;
+    // A network client's place as the other clients' snapshots of this frame carry it (docs/spec/net.md section 10
+    // "Player positions in a snapshot"), valid while the entity still stands at sentLive.
+    bool sentValid = false;
+    script::Vec3 sentLive{}, sentOrigin{};
     std::string name;
     std::map<std::string, std::string> cvars; // setClientCvar values sent to this client
     std::string openMenu;                     // the script menu the client has open ("" none)
