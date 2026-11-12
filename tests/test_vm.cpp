@@ -667,6 +667,35 @@ main()
         CHECK(!h.vm.level()->get("x").isDefined());
     }
 
+    // .size (docs/spec/gsc-vm.md): an object that is not an array has size 1 (a loop over one entity runs once), a string its
+    // length; other types raise "size cannot be applied to <type>".
+    {
+        Harness h;
+        h.files["test/size.gsc"] = R"(
+main()
+{
+    s = spawnstruct();
+    n = 0;
+    for (i = 0; i < s.size; i++)
+        n++;
+    println(n + " " + level.size + " " + "abcd".size);
+    thread vecsize();
+    thread undefsize();
+    println("after");
+}
+vecsize() { v = (1, 2, 3); x = v.size; }
+undefsize() { u = undefined; x = u.size; }
+)";
+        h.vm.start("test/size.gsc", "main");
+        CHECK(!h.out.empty() && h.out.front() == "1 1 4");
+        CHECK(!h.out.empty() && h.out.back() == "after");
+        const auto& errs = h.vm.errors();
+        CHECK(errs.size() == 2);
+        CHECK(errs.size() == 2 && errs[0].find("size cannot be applied to vector") != std::string::npos);
+        CHECK(errs.size() == 2 && errs[1].find("size cannot be applied to undefined") != std::string::npos);
+        if (errs.size() != 2) for (const auto& e : errs) std::cerr << e << "\n";
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_vm: all checks passed\n";
     return 0;

@@ -907,10 +907,12 @@ void VM::step(Thread& t, bool& suspended) {
     }
     case Op::Size: {
         const Value c = pop();
+        // 0x465e00 (docs/spec/gsc-vm.md "size"): an array gives its element count, a string its length, any other object
+        // (entity, struct, level) 1; every other type is a script error.
         if (c.isArray()) push(Value(int32_t(std::get<ArrayPtr>(c.v)->size())));
         else if (c.isString()) push(Value(int32_t(c.asString().size())));
-        else if (!c.isDefined()) throw std::runtime_error("size of undefined");
-        else throw std::runtime_error("size of " + c.typeName());
+        else if (c.isObject()) push(Value(int32_t(1)));
+        else throw std::runtime_error("size cannot be applied to " + c.typeName());
         break;
     }
     case Op::RefLocal: {

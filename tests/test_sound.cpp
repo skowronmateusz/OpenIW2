@@ -7,6 +7,7 @@
 #include "audio/sound.h"
 
 #include "fs/vfs.h"
+#include <random>
 
 #include <cmath>
 #include <cstdlib>
@@ -331,6 +332,19 @@ int main() {
         vfs.mountDirectory(main);
         iw2::audio::SoundAliases al;
         al.load(vfs, "toujane");
+        // German battle chatter (docs/spec/sound.md "Battle chatter notify"): the aliases are in the shipped tables and their files
+        // open through the case-insensitive VFS (aliases name battlechatter/ge/..., the localized packs store Sound/Battlechatter/GE/...).
+        // The "Missing Sound" print comes from distance-culled lines, as in the original, not from a missing alias or file.
+        {
+            iw2::audio::SoundAliases ge;
+            ge.loadLevel(vfs, "elalamein");
+            std::mt19937 rng(1);
+            for (const char* a : {"GE_3_inform_reloading_generic", "GE_0_inform_killconfirm_infantry", "GE_1_taunt"}) {
+                const iw2::audio::SoundAlias* p = ge.pick(a, rng);
+                CHECK(p != nullptr);
+                if (p) CHECK(vfs.read("sound/" + p->file).has_value());
+            }
+        }
         // A level start (also the first one, `iw2view <main> trainyard`) must carry the interface rows too: the pause menu plays
         // mouse_over / mouse_click and its soundLoop (music_mainmenu) in game. Loading only the level's rows left them silent
         // until the first restart.

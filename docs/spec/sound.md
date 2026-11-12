@@ -190,6 +190,32 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   TODO(spec): the owners of the other callers of 0x4423d0 (playlocalsound, impact / whizby sounds, projectile explosion sounds, vehicle / turret sounds, exact script-playsound
   event ids); the port's loops still pass `dedicated` / keep their handle, `sweepLoops` is not wired into the frame.
 
+## Menu music and the level
+
+VAs in the patch 1.3 SP executable. The pause menu is the main menu: ESC in a level calls UI_SetActiveMenu(2), which sets `cl_paused`
+and opens `main` (0x4c669b..0x4c66be, name 0x573c90), the menu whose `soundLoop` is `music_mainmenu` (channel menu, not pausable).
+So the menu music plays while the game is paused in the original too, and stops within a frame once the menu closes (the loop is
+only kept alive by Menu_Paint, see "Stopping sounds"). A level start runs the stop-all and UI_SetActiveMenu(13) closes every menu
+before it opens `briefing`, which has no loop, so the music does not carry into the level. openiw2 does the same: the level-change
+reset stops every voice (the menu loop included), `closeAll` runs, and `resumeLoop` finds no open menu with a loop
+(tests/test_frontend.cpp).
+
+## Battle chatter notify (sound length report)
+
+VAs in the patch 1.3 SP executable. `playsound` / `playsoundasmaster` with a notify name (0x4ef230) adds the notify variant of the
+sound event and records the request on the entity (0x4d80b0): the notify string (+0x1b8), the alias index (+0x1ba), the level time
+(+0x1c0) and the length +0x1c4 = -1. The client plays the event (0x4bb650 -> 0x4a3610 / 0x4a3660 -> 0x4423d0); the play returns the
+sound's length in ms, 0 when nothing started (a 3D channel beyond the lerped dist_max, 0x4424e6, or no free slot). The client then
+sends the reliable command `sl <entity> <length>` (format 0x58098c, 0x4bb6b1..0x4bb6c5, skipped when 0xf5bd08 is 1), which the server
+handler 0x4e97a0 stores as the larger of the stored and the reported length. The entity think 0x4da7e0 sends the notify once level
+time - start >= length, using 5000 ms while no report has arrived (0x4da80a..0x4da827), and clears the request. So a culled line
+notifies on the next think. Battle chatter (`battlechatter.gsc:1271`) prints its developer line `Missing Sound: <alias>` when the
+notify comes back within 250 ms; German soldiers are usually farther from the player than the chatter rows' dist_max (2800), so the
+original prints these lines too. The GE_ aliases are in `iw_battlechatter2.csv` and their files are in the localized packs; openiw2
+loads both (tests/test_sound.cpp). openiw2 notifies after the mixer's duration (0 for a culled or refused play).
+TODO(spec): not implemented: the 5000 ms fallback (openiw2 always knows the result at once), the "issued a second playsound with
+notify" script error and the early notify of a replaced request in 0x4d80b0.
+
 ## Channel volume slots (0x793a34 / 0x793cdc) and the entity-loop re-player
 
 - Table 0x793a34: 5 slots of 0x88 bytes. Per channel c a `{cur, target, step}` float triple at c*12; an active flag at +0x84.

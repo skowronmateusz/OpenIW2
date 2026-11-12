@@ -356,6 +356,21 @@ int main() {
         loopStack.resumeLoop();
         loopStack.resumeLoop();
         CHECK(started.size() == 2 && started[1] == "music_x");
+        // Level start (docs/spec/sound.md "Menu music and the level"): the stop-all, then every menu closes (UI_SetActiveMenu(13));
+        // nothing brings the loop back. The pause menu opens the same menu again and its loop plays until it closes.
+        int stops = 0;
+        loopEnv.stopLoop = [&] { ++stops; };
+        iw2::ui::MenuStack levelStack(loopLib, loopEnv);
+        started.clear();
+        CHECK(levelStack.open("looped") && started.size() == 1);
+        levelStack.soundsStopped();
+        levelStack.closeAll();
+        levelStack.resumeLoop();
+        CHECK(started.size() == 1 && stops == 0 && levelStack.empty());
+        CHECK(levelStack.open("looped") && started.size() == 2); // pause menu
+        levelStack.close("looped");
+        levelStack.resumeLoop();
+        CHECK(stops == 1 && started.size() == 2);
     }
     return failures ? 1 : 0;
 }

@@ -4,6 +4,7 @@
 #include "fs/vfs.h"
 #include "game/savestate.h"
 #include "game/world.h"
+#include "netgame/clienterror.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -37,6 +38,13 @@ int main() {
         CHECK(!readSaveFile((dir / "missing.svg").string(), "missing", ls).empty());
         CHECK(readSaveFile((dir / "missing.svg").string(), "missing", ls).rfind("Can't find savegame", 0) == 0);
         CHECK(!readSaveFile(bad.string(), "bad", ls).empty());
+        // A failed load is one drop error (docs/spec/savegame.md section 5): the banner once, MENU_ERROR over the SP main menu.
+        const std::string err = readSaveFile(bad.string(), "bad", ls);
+        const std::string banner = loadErrorBanner(err);
+        CHECK(banner == "********************\nERROR: " + err + "\n********************\n");
+        const auto dlg = iw2::netgame::dropErrorDialog(err);
+        CHECK(dlg.titleKey == "MENU_ERROR" && dlg.message == err && !dlg.multiplayer);
+        CHECK(iw2::netgame::errorDialog(false, "EXE_SERVERISFULL").multiplayer);
         std::filesystem::remove_all(dir);
     }
     const char* main = std::getenv("IW2_MAIN");

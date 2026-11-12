@@ -151,8 +151,8 @@ openiw2 (iw2view): the world is built before the scene loads and the audio threa
   line started 0.1 s later; the rest of the opening ran ahead of the audio.
 - The first frame after a load is no frame time (the pipeline and upload warm-up is part of the load): the frame clock restarts after it,
   and the simulation step per frame is clamped as above (`comFrameSeconds`, was 250 ms).
-- TODO(spec): when a culled sound reports its length to a `playsound` notify (a far-away line with a notify name still returns length 0
-  here); which cgame call places the listener before the entity event pass of step 2.
+- A culled sound reports length 0 to a `playsound` notify in the original as well (`sl` command, docs/spec/sound.md "Battle chatter
+  notify"), so its notify comes at once. TODO(spec): which cgame call places the listener before the entity event pass of step 2.
 
 ## Death screen
 

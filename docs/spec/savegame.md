@@ -68,6 +68,16 @@ moscow `nextmission` at skill 1 gives `mis_01=2`, `mis_difficulty[0]='2'`; demol
   game was saved"). The three script fingerprint dwords (+0x14 = [0x9bef44], +0x18 = [0x82d720], +0x1c = [0x9bef54] - [0x9bef50]) are compared
   with the running values; a mismatch sets the runtime byte `header +0x11`, which G_InitGame turns into the error "Save game saved with
   different script files" (0x4d9af2; with 0x4d9800 "Script function count mismatch"). Uncompressed size +0x4d0 <= 0x280000.
+- Every load failure above is a drop error: the text is formatted by 0x4e07f0 and raised with kind 1 through 0x42c7f0, which unwinds
+  the frame. The error frame 0x42c4f0 fills `com_errorMessage` with the text and `com_errorTitle` with `MENU_ERROR` (0x42c3b0; `MENU_NOTICE`
+  only for a server disconnect or a notice key), prints the text once between two lines of asterisks (`ERROR: %s`, string 0x576190) and
+  disconnects; with `com_errorMessage` set the UI opens `error_popmenu` over the main menu (UI_SetActiveMenu(1), 0x4c65cb..0x4c65e3).
+  So one load attempt gives one console line and a dialog the player has to close before trying again. openiw2: a failed `loadgame` /
+  `loadgame_continue` from the menu (e.g. the resume popup's "yes", which runs `loadgame_continue`) prints the banner once
+  (`game::loadErrorBanner`), leaves a running level and opens `error_popmenu` over the single-player main menu
+  (`netgame::dropErrorDialog`). Without the dialog nothing showed the failure and a player clicked the resume button again and again,
+  each click printing the line once more. The openiw2 restart after a death with an unusable save (docs/spec/campaign.md) stays.
+  TODO(spec): the openiw2 messages for its own container ("openiw2 save format ...") are not the original's texts.
 
 ### 2.2 Header (0x4d8 bytes; built by 0x4d4f70, the save state keeps it at +0x1c)
 

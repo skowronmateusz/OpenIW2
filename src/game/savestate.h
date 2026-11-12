@@ -44,6 +44,12 @@ std::string parseSaveFile(const std::vector<uint8_t>& file, LoadedSave& out);
 // Reads and checks a save file from disk (loadgame / loadgame_continue): "" = ok, else the message ("Can't find savegame <name>" for a
 // missing or empty file, or parseSaveFile's). loadgame_continue restarts the level when this fails (docs/spec/campaign.md).
 std::string readSaveFile(const std::string& path, const std::string& name, LoadedSave& out);
+// A failed load is a drop error in the original (G_LoadGame 0x4d5270 -> 0x4e07f0 -> 0x42c7f0 kind 1): the error frame 0x42c4f0
+// prints it once in this banner (string 0x576190), fills com_errorMessage / com_errorTitle (0x42c3b0, MENU_ERROR) and the
+// main menu shows error_popmenu (docs/spec/savegame.md section 5).
+inline std::string loadErrorBanner(const std::string& err) {
+    return "********************\nERROR: " + err + "\n********************\n";
+}
 // Restores the state into a world freshly constructed for out.info.mapName with prepareStart() already run.
 void restoreSave(World& world, const LoadedSave& save);
 

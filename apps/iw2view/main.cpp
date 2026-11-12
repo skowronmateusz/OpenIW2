@@ -5931,8 +5931,9 @@ int main(int argc, char** argv) {
             menuEnv.setCvar("com_errorTitle", game::localizeTextMessage("\x14" + netError->titleKey, find));
             menuEnv.setCvar("com_errorMessage", game::localizeTextMessage(netError->message, find));
             std::cout << "error dialog: " << menuEnv.getCvar("com_errorTitle") << ": " << menuEnv.getCvar("com_errorMessage") << "\n";
+            const bool toMp = netError->multiplayer;
             netError.reset();
-            if (!mpFrontEnd) pendingFrontEnd = true;
+            if (!mpFrontEnd && toMp) pendingFrontEnd = true;
             applyFrontEnd();
             frontStack.errorKeepsScreen(false);
             frontStack.closeAll();
@@ -10789,6 +10790,10 @@ int main(int argc, char** argv) {
                     if (std::exchange(continueRestart, false) && !currentMap.empty()) { // loadgame_continue found no usable save: restart
                         std::cout << "loadgame_continue: no usable save, restarting " << currentMap << "\n";
                         pendingLevel = std::make_pair(currentMap, true);
+                    } else { // the original's drop error: banner once, leave the level, error_popmenu over the main menu
+                        std::cout << game::loadErrorBanner(err);
+                        netError = netgame::dropErrorDialog(err);
+                        if (world) pendingDisconnect = true;
                     }
                     quickReload = false;
                 }

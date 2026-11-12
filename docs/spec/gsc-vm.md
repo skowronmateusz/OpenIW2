@@ -10,6 +10,12 @@ animation reference, animation tree.
 
 - Objects (`level`, `game`, `anim`, `spawnstruct()` results, entities) are reference types.
 - Arrays have value semantics (copy on write). Keys are ints or strings; `.size` is the element count.
+- `.size` (VAs in the patch 1.3 SP executable: 0x465e00, the size operation of the interpreter): on an object value it reads
+  the object's kind; an array gives its element count, any other object (entity, `spawnstruct()` struct, `level`) gives 1.
+  A string gives its length. Every other type (undefined, int, float, localized string, vector, function, animation) is a
+  script error `size cannot be applied to <type>` (string 0x57b4c4), the type named from the table at 0x5a0a50 (`undefined`,
+  `localized string`, `vector`, ...). Shipped use: `eldaba.gsc:1419` loops over `.size` of a single boat entity, so its
+  body (unlink and delete the boat) runs once.
   Assigning `undefined` removes an element. Indexing `undefined` in an assignment creates a new array
   (*inferred*, from `level.strings["x"] = …` on a fresh field).
 - `obj["key"]` on an object reads or writes the field `key` (used as `game["allies"] = …`).
