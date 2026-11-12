@@ -7,6 +7,8 @@
 //     snapshot's origin (a correction of the prediction);
 //   - how far A's track falls back from the furthest point of the current leg: on the server (A's snapshots), as A
 //     draws himself (the prediction with the error decay) and as B draws him (interpolated between snapshots).
+//   - how long after A drew himself at a place B draws him there, on the straight part of a leg (the whole path: A's
+//     commands, the server, the snapshot, B's clock).
 // Default profiles: "wan" (40-45 ms each way, +-10 ms jitter, 1.5 % loss, 2 % reordered) and "wifiburst" (a LAN peer
 // on Wi-Fi: 2-25 ms each way, +-15 ms jitter, 1 % loss and stretches of 80-180 ms that lose every datagram). A snap
 // above kMaxSnap units fails the test. "radio" (a LAN peer whose radio leaves the channel: both directions held for 220 ms
@@ -374,6 +376,7 @@ struct Stats {
     int drawnFrames = 0, drawnStands = 0, drawnJumps = 0;
     float drawnMax = 0;
     std::vector<int> drawnLead;
+    std::vector<int> seenDelay; // ms between A drawing himself at a place and B drawing him there
     int snapGaps = 0, snapGapsLong = 0; // snapshots received while measuring, those more than one frame after the previous
     int presses = 0, selectFlips = 0, serverWeaponChanges = 0; // IW2_LAG_ASWITCH
     std::vector<int> turretUse, turretFire, turretOff; // IW2_LAG_TURRET
@@ -393,6 +396,7 @@ struct Run {
     int64_t aSpawnMs = 0;
     int aPm = -1;
     bool haveSelf = false, haveOther = false;
+    std::deque<std::pair<int64_t, float>> selfTrail; // A's own drawn place along the walk, by wall time
     game::Vec lastSelf{}, lastOther{};
     Retreat rSelf, rOther, rServer;
     int64_t drawnLastMs = 0;
@@ -695,12 +699,14 @@ struct Run {
                 const float back = rSelf.add(d[0] * walkDir, dirChangeMs);
                 if (back > 0.01f) st.selfBack.push_back(back);
             }
+            selfTrail.emplace_back(now, d[0] * walkDir);
+            while (selfTrail.size() > 400) selfTrail.pop_front();
             lastSelf = d;
             haveSelf = true;
         } else {
             const net::ClientSnapshot *a = nullptr, *b = nullptr;
             float frac = 0;
-            if (!c.gc->interpolation(c.gc->renderTime(netNow), a, b, frac)) return;
+            if (!c.gc->interpolation(double(c.gc->renderTime(netNow)) + c.gc->timeFraction(), a, b, frac)) return;
             const int aNum = netgame::RemoteView::worldSlot(clients[0]->gc->clientNum, c.gc->clientNum);
             if (newSnap && measuring && now - dirChangeMs > 900 && clients[0]->menuStack.empty())
                 for (const auto& p : netgame::RemoteView::players(*last, *last, 0.0f, c.gc->clientNum, c.gc->configstrings)) {
@@ -748,7 +754,9 @@ struct Run {
                     deathShotWall = 0;
                 }
             }
-            for (const auto& p : netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings)) {
+            auto drawn = netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings);
+            netgame::RemoteView::extrapolate(drawn, c.gc->pastNewestMs(double(c.gc->renderTime(netNow)) + c.gc->timeFraction()));
+            for (const auto& p : drawn) {
                 if (p.client != aNum || p.dead || p.hidden) continue;
                 const game::Vec o{p.origin[0], p.origin[1], p.origin[2]};
                 // B draws A one interpolation delay later: A's direction change shows up ~ a round trip later.
@@ -766,6 +774,18 @@ struct Run {
                         if (step > kDrawnJump && step < 200.0f) ++st.drawnJumps;
                         if (step < 200.0f) st.drawnMax = std::max(st.drawnMax, step);
                         st.drawnLead.push_back(last->serverTime - c.gc->renderTime(netNow));
+                        // How long ago A drew himself where B draws him now (the whole path: A's commands, the server,
+                        // the snapshot, B's clock), on a straight leg.
+                        if (now - dirChangeMs > 1500 && step > 0.3f) {
+                            const float at = o[0] * walkDir;
+                            for (size_t k = selfTrail.size(); k-- > 1;)
+                                if (selfTrail[k - 1].second <= at && selfTrail[k].second >= at) {
+                                    const float span = selfTrail[k].second - selfTrail[k - 1].second;
+                                    const float f = span > 0 ? (at - selfTrail[k - 1].second) / span : 0.0f;
+                                    st.seenDelay.push_back(int(now - selfTrail[k - 1].first - int64_t(f * float(selfTrail[k].first - selfTrail[k - 1].first))));
+                                    break;
+                                }
+                        }
                         if (std::getenv("IW2_LAG_TRACE") && step > kDrawnJump) std::printf("drawn t=%lld A moved %.1f in a frame of %d ms\n", (long long)netNow, double(step), dt);
                     }
                 }
@@ -902,6 +922,12 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
                 s.obsStep.size(), double(s.maxOf(s.obsStep)), s.over(s.obsStep, 20.0f), s.obsStalls);
     std::printf("%s: A's command clock: %d frames, stood in %d, leapt in %d\n", prof.name.c_str(), s.clockFrames, s.clockHolds, s.clockLeaps);
     {
+        if (!s.seenDelay.empty()) {
+            std::vector<int> sd = s.seenDelay;
+            std::sort(sd.begin(), sd.end());
+            std::printf("%s: B draws A where A drew himself %d ms before (median; 10%% %d, 90%% %d, 99%% %d; %zu frames)\n", prof.name.c_str(), sd[sd.size() / 2],
+                        sd[sd.size() / 10], sd[sd.size() * 9 / 10], sd[sd.size() * 99 / 100], sd.size());
+        }
         std::vector<int> lead = s.drawnLead;
         std::sort(lead.begin(), lead.end());
         std::printf("%s: A as B draws him: %d frames, without a move %d, step over %.1f units %d (max %.1f); drawn time %d ms before the newest snapshot (median)\n",
@@ -958,7 +984,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         ok = false;
     }
     // A path that is dark at regular times: the clock must settle and run evenly (docs/spec/net.md section 10
-    // "Client time on a bursty path").
+    // "Client time: the even clock").
     if (prof.darkPeriodMs > 0 && (s.clockHolds > 0 || s.clockLeaps > 0)) {
         std::printf("FAIL %s: the command clock stood or leapt\n", prof.name.c_str());
         ok = false;

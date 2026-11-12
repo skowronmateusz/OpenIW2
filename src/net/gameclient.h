@@ -86,6 +86,15 @@ public:
     // the player saw. Marks the clock as extrapolating when it reaches the newest snapshot's time - 5 ms.
     int commandTime(int64_t nowMs) const;
     int renderTime(int64_t nowMs) const { return commandTime(nowMs); }
+    // The part of the last client time below the millisecond (the even clock; 0 with the plain rule).
+    double timeFraction() const { return clock_.fraction(); }
+    // Past the newest snapshot (docs/spec/net.md section 10 "Past the newest snapshot"): how far the drawn time t lies
+    // past it, at most kExtrapolateMs (0 when it is not past it).
+    static constexpr int kExtrapolateMs = 30;
+    float pastNewestMs(double t) const {
+        if (!latest_.valid || t <= double(latest_.serverTime)) return 0.0f;
+        return float(std::min(t - double(latest_.serverTime), double(kExtrapolateMs)));
+    }
     int timeDelta() const { return clock_.delta(); }
     bool extrapolating() const { return clock_.extrapolating(); }
     // The time delta rule of the 1.3 client, applied once per received snapshot (docs/spec/net.md section 10):
@@ -154,6 +163,8 @@ private:
     bool haveDelta_ = false;
     int64_t lastPollMs_ = 0;
     bool lateRead_ = false;              // this poll follows a long gap
+    int arrivalAgeMs_ = 0;               // how long the packet being handled waited in the socket
+    bool arrivalKnown_ = false;          // the system told when it arrived
     mutable ClientClock clock_;          // the client time (docs/spec/net.md section 10); IW2_CLOCK_PLAIN=1: the plain 1.3 rule
     // The last commands (the prediction runs those after the snapshot). The original keeps 128; openiw2 keeps more, so
     // that a server which holds this client's commands (docs/spec/net.md section 10 "Commands on a bursty path") does

@@ -32,6 +32,13 @@ public:
     // False when the snapshot has no state for it.
     static bool clientInfo(const net::ClientSnapshot& snap, int client, std::string& name, int& team);
     // The other players between two snapshots (frac 0..1), for World::mpSetRemotePlayers.
+    // Past the newest snapshot (docs/spec/net.md section 10 "Past the newest snapshot"): the players move on along
+    // their velocity for `ms`.
+    static void extrapolate(std::vector<game::World::RemotePlayer>& players, float ms) {
+        for (auto& p : players)
+            if (!p.dead)
+                for (size_t k = 0; k < 3; ++k) p.origin[k] += p.velocity[k] * ms * 0.001f;
+    }
     static std::vector<game::World::RemotePlayer> players(const net::ClientSnapshot& a, const net::ClientSnapshot& b,
                                                          float frac, int self, const std::map<int, std::string>& cs = {});
     // Everything else of the newest snapshot: the local player's health, weapon, ammo and team, HUD elements,
@@ -41,7 +48,10 @@ public:
     // (after apply placed them at the snapshot time), from the older snapshot a of the pair around t; when the newer
     // snapshot b carries a re-based trajectory (a bounce, a stop), a's trajectory ends where it reaches b's base and
     // the model waits there until b's start time, as it did on the server.
-    static void placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t);
+    // newest: the snapshot apply was given, when it is a later one than b (the drawn time lies more than one snapshot
+    // back): a model that only it holds (thrown since b) waits at the start of its path until its start time.
+    static void placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t,
+                                  const net::ClientSnapshot* newest = nullptr);
     // The position of such a model at time t from the pair's two entity states (exposed for the tests). spanMs: the time
     // between the two snapshots, the span in which the server may have re-based the path.
     static void trajectoryAt(const std::vector<uint8_t>& ea, const std::vector<uint8_t>* eb, int t, float out[3], int spanMs);

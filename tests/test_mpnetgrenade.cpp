@@ -144,7 +144,7 @@ void run(fs::Vfs& vfs) {
         const int t = g.client->renderTime(g.now);
         if (!g.client->interpolation(t, s0, s1, frac)) continue;
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t);
+        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t, g.client->latest());
         ++frames;
         if (!gren.grenade || gren.grenade->trType != 5) continue;  // airborne on the server only
         for (const auto& e : view.entities()) {
@@ -215,7 +215,7 @@ void run(fs::Vfs& vfs) {
         const int t = g.client->renderTime(g.now);
         if (!g.client->interpolation(t, s0, s1, frac)) continue;
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t);
+        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t, g.client->latest());
         if (!lob->grenade || lob->grenade->trType != 5) continue;
         if (lob->grenade->trTime != lastTrTime) ++rebases, lastTrTime = lob->grenade->trTime;
         for (const auto& e : view.entities()) {

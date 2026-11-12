@@ -532,8 +532,20 @@ void RemoteView::trajectoryAt(const std::vector<uint8_t>& ea, const std::vector<
     else std::memcpy(out, pb.base, sizeof pb.base);
 }
 
-void RemoteView::placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t) {
+void RemoteView::placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t,
+                                   const net::ClientSnapshot* newest) {
     if (!b.valid) return;
+    // A model the drawn pair does not hold yet (the newest snapshot is a later one than b): at its path's start.
+    if (newest && newest != &b && newest->valid && newest->serverTime > b.serverTime)
+        for (const auto& [number, es] : newest->entities) {
+            const int type = getI(es, 4) & 0xff;
+            if ((type != kEtGeneral && type != kEtItem) || b.entities.count(number)) continue;
+            const Trajectory p = readTrajectory(es, kPosTrajectory);
+            if (!trajectoryMoves(p)) continue;
+            float o[3];
+            evaluateTrajectory(p, std::max(t, p.time), o);
+            w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, nullptr);
+        }
     // The server's frame length is not known here (sv_fps): the snapshots themselves give the span.
     const int spanMs = a.valid && b.serverTime > a.serverTime ? b.serverTime - a.serverTime : game::kServerFrameMs;
     // Over the newer snapshot's entities: one the older snapshot lacks (just thrown) starts its path at its start time.

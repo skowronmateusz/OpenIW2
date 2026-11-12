@@ -49,7 +49,8 @@ public:
 
     bool sendTo(const NetAddress& to, const void* data, int len);
     // Waits up to timeoutMs (0 = poll) for a datagram. Returns its length, 0 when none, -1 on error.
-    int receive(void* buf, int cap, NetAddress& from, int timeoutMs);
+    // ageUs (optional): how long ago the datagram reached this host, in microseconds (0 when the system gives no time).
+    int receive(void* buf, int cap, NetAddress& from, int timeoutMs, int64_t* ageUs = nullptr);
 
 private:
     int fd_ = -1;

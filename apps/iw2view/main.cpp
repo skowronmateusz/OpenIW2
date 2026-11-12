@@ -9480,11 +9480,15 @@ int main(int argc, char** argv) {
                 // stands (a reset of the clock, by more, does).
                 static double netDrawnTime = 0;
                 {
-                    const double t = double(netClient->renderTime(nowNet)) + nowNetSubMs;
+                    const double t = double(netClient->renderTime(nowNet)) + netClient->timeFraction() + nowNetSubMs;
                     netDrawnTime = t < netDrawnTime && t > netDrawnTime - 1.0 ? netDrawnTime : t;
                 }
                 if (netClient->interpolation(netDrawnTime, snapA, snapB, snapFrac)) {
-                    world->mpSetRemotePlayers(netgame::RemoteView::players(*snapA, *snapB, snapFrac, netClient->clientNum, netClient->configstrings));
+                    auto drawnPlayers = netgame::RemoteView::players(*snapA, *snapB, snapFrac, netClient->clientNum, netClient->configstrings);
+                    // Past the newest snapshot the players move on along their velocity for a moment (docs/spec/net.md section 10).
+                    if (const float past = netClient->pastNewestMs(netDrawnTime); past > 0 && !netgame::RemoteView::following(*snapB))
+                        netgame::RemoteView::extrapolate(drawnPlayers, past);
+                    world->mpSetRemotePlayers(std::move(drawnPlayers));
                     netFollow = netgame::RemoteView::followView(*snapA, *snapB, snapFrac, netFollowEye, netFollowAngles);
                     netKillcam = remoteView.killcamView(*snapA, *snapB, snapFrac, netClient->configstrings, cgNowMs());
                 } else {
@@ -9497,7 +9501,7 @@ int main(int argc, char** argv) {
                                      &netPredictedWeapon.ammo);
                     // Grenades, rockets and falling weapons move along their trajectory in the drawn time (docs/spec/net.md
                     // section 11 "Trajectories"); evaluated from the older snapshot of the pair, as the cgame does.
-                    if (snapA && snapB) netgame::RemoteView::placeTrajectories(*world, *snapA, *snapB, netClient->renderTime(nowNet));
+                    if (snapA && snapB) netgame::RemoteView::placeTrajectories(*world, *snapA, *snapB, netClient->renderTime(nowNet), last);
                     // Other players' shots, reloads and throws: sounds, impacts, animations (docs/spec/net.md section 13).
                     remoteView.playerEvents(*world, *last, netClient->configstrings, netClient->clientNum);
                     // The followed client's shots in a killcam (the player state's event ring).

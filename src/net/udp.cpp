@@ -5,6 +5,8 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -80,6 +82,9 @@ bool UdpSocket::open(uint32_t ip, uint16_t port) {
         close();
         return false;
     }
+    // The system notes when each datagram arrived (receive's ageUs).
+    const int on = 1;
+    ::setsockopt(fd_, SOL_SOCKET, SO_TIMESTAMP, &on, sizeof on);
     return true;
 }
 
@@ -127,7 +132,8 @@ bool UdpSocket::sendTo(const NetAddress& to, const void* data, int len) {
     return ::sendto(fd_, data, static_cast<size_t>(len), 0, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == len;
 }
 
-int UdpSocket::receive(void* buf, int cap, NetAddress& from, int timeoutMs) {
+int UdpSocket::receive(void* buf, int cap, NetAddress& from, int timeoutMs, int64_t* ageUs) {
+    if (ageUs) *ageUs = 0;
     if (memoryPort_) {
         auto& q = gMemoryUdp->queues_->byPort[memoryPort_];
         if (q.empty()) return 0;
@@ -142,11 +148,28 @@ int UdpSocket::receive(void* buf, int cap, NetAddress& from, int timeoutMs) {
     if (r < 0) return -1;
     if (r == 0) return 0;
     sockaddr_in sa{};
-    socklen_t len = sizeof sa;
-    ssize_t n = ::recvfrom(fd_, buf, static_cast<size_t>(cap), 0, reinterpret_cast<sockaddr*>(&sa), &len);
+    iovec iov{buf, static_cast<size_t>(cap)};
+    alignas(cmsghdr) char control[128];
+    msghdr mh{};
+    mh.msg_name = &sa;
+    mh.msg_namelen = sizeof sa;
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    mh.msg_control = control;
+    mh.msg_controllen = sizeof control;
+    ssize_t n = ::recvmsg(fd_, &mh, 0);
     if (n < 0) return 0;
     from.ip = ntohl(sa.sin_addr.s_addr);
     from.port = ntohs(sa.sin_port);
+    if (ageUs)
+        for (cmsghdr* c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c))
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMP) {
+                timeval at{}, now{};
+                std::memcpy(&at, CMSG_DATA(c), sizeof at);
+                ::gettimeofday(&now, nullptr);
+                const int64_t age = (static_cast<int64_t>(now.tv_sec) - at.tv_sec) * 1000000 + (now.tv_usec - at.tv_usec);
+                *ageUs = std::clamp<int64_t>(age, 0, 5000000); // a stepped wall clock gives nonsense: bounded
+            }
     return static_cast<int>(n);
 }
 

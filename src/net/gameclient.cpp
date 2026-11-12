@@ -39,7 +39,7 @@ const char* clientStateName(ClientState s) {
 }
 
 GameClient::GameClient() {
-    // Debug (docs/debug-flags.md): the plain 1.3 time delta rule, without the delay window and the slew.
+    // Debug (docs/debug-flags.md): the plain 1.3 time delta rule instead of the even clock.
     if (std::getenv("IW2_CLOCK_PLAIN")) clock_ = ClientClock{0, 0};
     if (const char* spread = std::getenv("IW2_CLOCK_SPREAD")) clock_.spreadMs = std::atoi(spread); // docs/debug-flags.md
 }
@@ -180,13 +180,19 @@ void GameClient::poll(int64_t nowMs, int waitMs) {
         fail("connection timed out");
         return;
     }
-    // A long frame of the client: what it reads now may have waited in the socket (the clock's delay window).
+    // A long frame of the client: what it reads now may have waited in the socket (only used when the system gives no arrival time).
     lateRead_ = lastPollMs_ != 0 && nowMs - lastPollMs_ > kLateReadMs;
+    // What this poll reads arrived after the poll before it: an arrival time is never taken earlier than that.
+    const int64_t sincePoll = lastPollMs_ != 0 ? std::clamp<int64_t>(nowMs - lastPollMs_, 0, 5000) : 5000;
     lastPollMs_ = nowMs;
     static uint8_t buf[0x20000 + 16];
     for (int i = 0; i < 4096; ++i) { // bounded: a flood of packets must not keep the caller here
         NetAddress from;
-        const int n = sock_.receive(buf, 0x20000, from, i == 0 ? waitMs : 0);
+        // When the packet reached this host (0: not known): the clock measures the path, not the frame that read it.
+        int64_t ageUs = 0;
+        const int n = sock_.receive(buf, 0x20000, from, i == 0 ? waitMs : 0, &ageUs);
+        arrivalAgeMs_ = static_cast<int>(std::min<int64_t>(ageUs / 1000, sincePoll));
+        arrivalKnown_ = ageUs > 0;
         if (n <= 0) break;
         if (!(from == server_)) continue;
         if (n >= 4 && std::memcmp(buf, "\xff\xff\xff\xff", 4) == 0) {
@@ -479,7 +485,7 @@ void GameClient::parseSnapshot(Msg& msg, int64_t nowMs) {
     {
         const bool first = snapshots == 1 || !latest_.valid;
         const int floorBefore = clock_.floor();
-        if (clock_.snapshot(frame.serverTime, latest_.serverTime, first, nowMs, lateRead_) && !first && clock_.floor() < floorBefore &&
+        if (clock_.snapshot(frame.serverTime, latest_.serverTime, first, nowMs - arrivalAgeMs_, lateRead_ && !arrivalKnown_) && !first && clock_.floor() < floorBefore &&
             clock_.floor() < lastCmdTime_)
             lastCmdTime_ = clock_.floor();
     }

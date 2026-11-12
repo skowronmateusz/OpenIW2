@@ -616,14 +616,14 @@ VAs in the patch 1.3 MP executable. The client keeps a server-time estimate for 
   millisecond) client time. The 1.3 client's times are whole milliseconds; at 120 drawn frames a second the client
   time then moves by 8 or 9 ms per 8.33 ms frame, and everything drawn between two snapshots moves 4 % slower or 8 %
   faster from frame to frame (measured: the drawn speed of a walking player was off by 4.6 % in the median frame, 0.3
-to 0.9 % with the fraction). The
+to 0.9 % with the fraction). The even clock below adds its own part below the millisecond. The
   commands keep the whole milliseconds (the wire format).
 - Entity placement (0x4cda50, per entity and frame): a position trajectory of type 1, or of type 3 on an entity
   numbered below 64 (a player), goes through the pair routine 0x4cd8d0: the current state's trajectory is evaluated
   (0x513df0) at the current snapshot's time, the next state's at the next snapshot's time, and origin and angles
   (0x429b00) are taken between the two by the fraction. Every other trajectory is evaluated at the drawn time. So a
   player past the newest snapshot is held where that snapshot puts him: the pair is one snapshot and nothing is
-  extrapolated at the drawn time. openiw2 holds the newest state the same way.
+  extrapolated at the drawn time. openiw2 moves him on for up to 30 ms first ("Past the newest snapshot" below).
 - A reset can move the clock back: when the server's time falls behind (a long frame, frames without time) the
   client's clock runs on and the next snapshot resets it back to that snapshot. The commands follow the clock (the
   last command time is lowered to the new floor), so they are older than the last command the server ran.
@@ -642,51 +642,74 @@ to 0.9 % with the fraction). The
 - User commands carry that same clientTime as `serverTime` (never decreasing; equal times are possible), so the server's antilag rewind
   (docs/spec/mp-hud.md "Antilag") puts the other players where this client saw them when it fired.
 
-### Client time on a bursty path
+### Client time: the even clock
 
-openiw2 (src/net/clientclock.h; no 1.3 counterpart). The rule above assumes snapshots that arrive evenly. Measured on a
-LAN game whose server host was on Wi-Fi: the client got no snapshot for 160 to 320 ms and then 4 to 6 at once, 183
-times in 96 s (about every 520 ms), and its commands reached the server the same way. A ping from the server host to
-its gateway showed the same rhythm (2 to 4 ms, rising to 70 to 200 ms every half second, no loss); what holds the
-packets back on that path was not established. With the plain rule the first snapshot of
-a burst is late by more than 100 ms, so the delta goes half way back and the clock stands until real time has caught
-up (no command runs: the own player stands still, on the client and on the server); a few bursts later the delta is
-more than 100 ms behind and goes half way forward (the player leaps); in between the clock runs past the newest
-snapshot, where the other players are held. In that trace the command time stood in 137 frames of 7536 and leapt 32
-times; the prediction itself was right (three corrections over 2 units, the largest 3.3, apart from two spawns).
+openiw2 (src/net/clientclock.h; no 1.3 counterpart). The 1.3 rule above has three properties that show on the screen:
+- The delta is a whole number of milliseconds and moves by 1 or 2 ms per snapshot. One such step is an eighth or a
+  quarter of a frame at 120 frames a second, so everything drawn between two snapshots is that much faster or slower
+  in that frame; with more snapshots a second ("Snapshot rate" below) the steps come more often.
+- It assumes snapshots that arrive evenly. Measured on a LAN game whose server host was on Wi-Fi: the client got no
+  snapshot for 160 to 320 ms and then 4 to 6 at once, 183 times in 96 s (about every 520 ms), and its commands reached
+  the server the same way. A ping from the server host to its gateway showed the same rhythm (2 to 4 ms, rising to 70
+  to 200 ms every half second, no loss); what holds the packets back on that path was not established. With the plain
+  rule the first snapshot of a burst is late by more than 100 ms, so the delta goes half way back and the clock stands
+  until real time has caught up (no command runs: the own player stands still, on the client and on the server); a few
+  bursts later the delta is more than 100 ms behind and goes half way forward (the player leaps); in between the clock
+  runs past the newest snapshot, where the other players are held. In that trace the command time stood in 137 frames
+  of 7536 and leapt 32 times.
+- It takes the time a snapshot was read as its arrival. A client reads the socket once per frame, so a snapshot looks
+  up to one frame late (8 ms at 120 frames a second, 33 ms at 30), and a long frame makes every waiting snapshot look
+  late by its whole length.
 
-Two changes to the rule's input and output, the rule itself as above:
-- Delay window: the rule is given, as the receive time of a snapshot, the time it would have arrived with the largest
-  delay seen in the last 1500 ms of real time (delay = receive time - server time, compared between snapshots), but only
-  while that window holds two separate stretches (200 ms or more apart) of snapshots more than 40 ms later than
-  its least delayed one (src/net/delaywindow.h). Otherwise (ordinary jitter, one late burst, the first snapshots of a
-  level) the rule gets the snapshot's own receive time and the clock is the plain one: the window would only keep it
-  behind. 40 ms is above what a client's own frames add (it reads the socket once per frame: up to 17 ms at 60 frames
-  a second, 33 ms at 30), so an even path gets no delay; the limit was 100 ms (the size at which the rule steps)
-  before, which left a path with shorter spikes to the plain rule. On a path with regular late stretches the target
-  stays behind the most delayed snapshots, so the delta is constant, the clock stays before the newest snapshot (the
-  other players are drawn between two snapshots instead of being held and then moved at once), and the commands carry
-  evenly spaced times. The price is a clock further behind the server by the size of the late stretches, as on a
-  slower path: the other players are drawn that much later. The commands carry the same clock, so the server's
-  antilag still rewinds to what the client drew. A reset (over 500 ms) is decided and made with the snapshot's own
-  receive time and empties the window; a difference over 500 ms from the window's target alone is taken as a step
-  without the floor.
-- Late reads: after a gap of more than 100 ms between two socket reads (a long frame of the client) the receive
-  times are the client's own delay. Those snapshots stay out of the window; one that looks more than 100 ms late
-  is not used, the others go through the plain rule. A frame of one second leaves the clock where it was (the plain
-  rule reset it a second back on the oldest waiting snapshot and came forward again on the newer ones).
-- Slew: a half-way step of the delta is not taken at once. The clock runs a quarter slower or faster than real time
-  until the step is made, so a single late burst slows the player for a moment instead of stopping it, and the way
-  back is not a leap. Resets and the 1 or 2 ms of the slow rule apply at once.
+The even clock keeps the 1.3 rule's reset and replaces the rest (`ClientClock`, window 1500 ms):
+- Arrival times. The socket asks the system for the time each datagram arrived (`SO_TIMESTAMP`; `UdpSocket::receive`
+  returns its age), and the clock is given `read time - age` for a snapshot, never earlier than the read before it. Without such a time (the in-memory
+  network of the tests) the read time is used, and snapshots read after a gap of more than 100 ms between two reads
+  (a long frame of the client) are left out, as they say nothing about the path.
+- Target. Per snapshot the clock notes `offset = snapshot time - arrival time` and the interval to the snapshot before
+  it. Over the snapshots of the last 1500 ms of real time: `best` is the largest offset (the least delayed snapshot),
+  `interval` the middle one of the last five known intervals (one lost snapshot does not change it, another snapshot
+  rate does within a few snapshots), and `cover` the delay (`best - offset`) that 90 % of the snapshots with a delay
+  of at most 40 ms (`spreadMs`) stay within. The target delta is `best - interval - cover - 3 ms`: the clock runs one
+  interval behind the arrivals, plus the path's usual jitter, plus a margin. The few snapshots later than `cover` are
+  drawn past the newest snapshot for a moment ("Past the newest snapshot" below).
+- Late stretches. A delay over 40 ms is not jitter: it counts only while the window holds two separate stretches
+  (200 ms or more apart) of such snapshots, and then `cover` is the largest delay of the window, at most 100 ms
+  (`maxBehindMs`). A single late burst, or the first snapshots of a level, do not move the clock (the plain rule
+  stepped half way back and forward again). 40 ms is above what a client's own frames add when only read times are
+  known (up to 17 ms at 60 frames a second, 33 ms at 30).
+- Slew. The delta is a fraction and moves towards the target while the clock is read, by `difference / 250 ms` per
+  millisecond, at most 10 % slower or 5 % faster than real time. Nothing is stepped: the clock never stands or leaps,
+  and its time moves by the frame's real length in every frame. The drawn time is that time with its part below the
+  millisecond (and the frame's own, "Client time" above); the commands carry the whole milliseconds.
+- Reset. As in the 1.3 rule, decided with the snapshot's own arrival: more than 500 ms from where this snapshot alone
+  would put the clock (`offset - interval - 3`) sets the delta there, empties the window and puts the clock floor at
+  the snapshot's time.
 
-`IW2_CLOCK_PLAIN=1` switches both off. Tests: tests/test_net_gameclient.cpp (`burstyClockTests`: 220 ms dark out of
-every 520 ms, the plain rule stands in 24 and leaps in 5 of 750 frames and is past the newest snapshot in 112;
-with the window and the slew none; one dark stretch; a client frame of one second; spikes of 85 ms) and
-tests/test_mplag.cpp profiles `radio` and `spike` (the same paths between a real server and two clients; `radio`
-fails when the command clock stands or leaps in a frame, `spike` when the watching client draws the walking one held
-and then moved at once). A real iw2view walking through the `radio` relay path for 35 s: plain rule 142 frames stood,
-14 leapt, 625 past the newest snapshot of 4266; with the window and the slew 5, 0 and 14 of 4100 (command time 229 ms
-behind the newest snapshot at the median, 127 ms before).
+`IW2_CLOCK_PLAIN=1` gives the plain 1.3 rule (`ClientClock{0, 0}`). Tests: tests/test_net_gameclient.cpp
+(`evenClockTests`: an even path at 20 and 60 snapshots a second, the step per frame 8.000 ms where the plain rule
+gives 6 to 9; a client at 30 frames a second with read times and with arrival times, 82 and 53 ms behind the newest
+snapshot at most; jitter of 0 to 12 ms; one lost snapshot. `burstyClockTests`: 220 ms dark out of every 520 ms, the
+plain rule stands in 24 and leaps in 5 of 750 frames and is past the newest snapshot in 112, the even clock without
+the 100 ms limit in none; one dark stretch; a client frame of one second; spikes of 85 ms) and tests/test_mplag.cpp
+profiles `radio` and `spike` (the same paths between a real server and two clients; `radio` fails when the command
+clock stands or leaps in a frame, `spike` when the watching client draws the walking one held and then moved at once).
+
+Measured with tests/test_mplag.cpp (a real server, two clients at 125 frames a second, 20 snapshots a second, 30 s per
+run; "seen" is the time between the walking client drawing himself at a place and the other client drawing him there,
+median / 90 % / 99 %; "held" and "stepped" count the watching client's frames in which the walking player did not move
+or moved more than twice his walk), the clock before this change (the 1.3 rule with a delay window and a slew for its
+steps) against the even clock with the arrival times and the move past the newest snapshot:
+
+| path | before: seen ms | held / stepped of 2100 | even clock: seen ms | held / stepped |
+|---|---|---|---|---|
+| `wifigood` (2-6 ms, jitter 5) | 82 / 90 / 106 | 3 / 0 | 82 / 85 / 87 | 0 / 0 |
+| `wan` (40-45 ms, jitter 10, 1.5 % loss) | 167 / 200 / 244 | 26 / 9 | 171 / 175 / 178 | 0 / 0 |
+| `wifiburst` (losses of 80-180 ms) | 118 / 186 / 213 | 91 / 103 | 112 / 141 / 178 | 90 / 94 |
+| `spike` (85 ms dark every 500 ms) | 222 / 224 / 230 | 0 / 0 | 211 / 212 / 222 | 0 / 0 |
+
+(The stretches of `wifiburst` lose the walking client's commands as well; what the watcher then sees is the server
+moving him at once, which no clock of the watcher changes.)
 
 **Limits (both mechanisms).** Everything the client does not predict comes from the server's state of him and is
 drawn on the client's clock: his shots and their hits, a kill, a turret he uses and fires, the HUD of those. Measured
@@ -698,9 +721,13 @@ client draws its result later by the window. So both are limited now: the window
 (`ClientClock::maxBehindMs`) behind the window's least delayed snapshot, and the hold never exceeds 100 ms
 (`CommandPlayout::maxHoldMs`, 250 before). 100 ms keeps the spikes of 85 ms (the measured radio path) smooth: the
 `spike` and `radio` relay profiles still pass and the clock never stands or leaps; the 220 ms dark stretches out of
-every 520 ms are only partly smoothed: the clock runs past the newest snapshot in 129 of 750 frames there (112 with
+every 520 ms are only partly smoothed: the clock runs past the newest snapshot in 130 of 750 frames there (112 with
 the plain rule, none without the limit) and the hold covers 100 of the 220 ms. Against the same server, the client
 with the limit drew the others 73 ms before the newest snapshot.
+
+The figures of this and the next two paragraphs were measured with the earlier form of the clock (the 1.3 rule fed
+through a delay window with the same 1500 ms, 40 ms and 100 ms, its steps spread over time); they are what the 40 ms
+and the 100 ms were chosen by.
 
 Spikes below 100 ms, measured between two machines on one LAN (the server and one client wired, the other client on
 a radio path whose ping to the gateway was 2 to 4 ms with spikes of 70 to 95 ms about twice a second, no loss; 149 s,
@@ -719,6 +746,20 @@ limit 2 of 19544 frames and no step, drawn 80 ms before the newest snapshot at t
 path itself while its ping had spikes up to 96 ms, with the 40 ms limit: 69 of 19184 frames past the newest snapshot,
 1 step, drawn 97 ms before the newest snapshot (the wired client 38 ms as before). On the quiet radio path the limit
 changes nothing (134 s: both clients drawn 36 ms before the newest snapshot, no step).
+
+### Past the newest snapshot
+
+openiw2 (no 1.3 counterpart; "Client time" above: the 1.3 client holds a player where the newest snapshot has him).
+While the drawn time lies past the newest snapshot (a snapshot later than the clock's `cover`, a lost one), the other
+players are drawn on along the velocity their entity carries (pos.trDelta), for at most 30 ms
+(`GameClient::kExtrapolateMs`); after that they are held as before. The next snapshot continues from there when the
+player kept his velocity; when he turned or stopped, the drawn place is off by at most the distance he covers in that
+time (5.7 units at 190 units/s) for the frames until the snapshot comes. A dead player and the followed view of a
+spectator are not moved. The commands carry the clock's time as always, and the server's antilag rewind takes the
+players' places at that time from what it had of them then ("Antilag", docs/spec/mp-hud.md), so a shot at a player drawn
+this way is tested against where he was, not against the guess; the two differ only by the error of the guess.
+`RemoteView::extrapolate` (src/netgame/remoteview.h) and `GameClient::pastNewestMs`; tests/test_net_gameclient.cpp
+(`pastNewestTest`) and the `wan` profile of tests/test_mplag.cpp (the table above: 26 held frames before, none after).
 
 ### Commands on a bursty path
 
@@ -742,7 +783,7 @@ So with the defaults a player whose commands come in bursts stands and then move
 as well; the client's own send gate ("Command redundancy" below: every frame on a LAN, `cl_maxpackets` otherwise) does
 not change that. Measured in the run above: the radio client's command time was 76 ms behind the snapshot at the
 median and 167 ms in one snapshot of ten (282 in one of a hundred); the wired client drew him held and then moved
-at once 103 times (counted as in "Client time on a bursty path"; 24 units at most), while its own clock was never
+at once 103 times (counted as in "Client time: the even clock"; 24 units at most), while its own clock was never
 past the newest snapshot.
 
 openiw2 (src/net/server.cpp, `CommandPlayout`; no 1.3 counterpart): the server holds such a client's commands back
@@ -750,7 +791,7 @@ by the size of his late stretches and runs them on an even schedule.
 - Per command packet the server notes the newest command's time minus the receive time. A packet is late when that
   value lies more than 40 ms below the highest one of the 500 ms before it (not of the whole window as on the client:
   the command times follow the client's clock, which slides by tens of milliseconds over seconds after the first
-  snapshot of a level or when its own delay window engages, and that is not a delay of the path). Two separate
+  snapshot of a level or when it moves behind a path's late stretches, and that is not a delay of the path). Two separate
   stretches of late packets (200 ms or more apart) within 1500 ms make the path bursty; the window is looked at once
   per server frame. Packets read after a pause of more than 30 ms between two socket reads (a long frame of the
   server itself) are left out. Otherwise, and for every client with `IW2_CMD_PLAIN=1` in the server's environment,
@@ -1294,7 +1335,10 @@ flips it on a new map and on a map_restart.
   trajectory, the client ends the old path where it passes closest to the new base (searched over the frame before
   the new start time) and holds the model there until the new path starts, instead of running the old path through
   the wall and back (openiw2 rule; `TODO(spec)`: the MP cgame's handling). A model the older snapshot lacks (just
-  thrown) and any path evaluated before its start time stay at the base. A grenade held in a hand (cooking) is sent
+  thrown) and any path evaluated before its start time stay at the base; so does a model that only a snapshot newer
+  than the drawn pair holds (the drawn time lies more than one snapshot back, as on a path with late stretches: before,
+  such a model was drawn where the newest snapshot has it until the pair reached it, and then went back to its start;
+  tests/test_mpnetgrenade.cpp, the lob's reversals). A grenade held in a hand (cooking) is sent
   stationary at its origin, not on its throw parabola.
 - Missile explosions: an event entity of type 10 + 0xbc (grenade) or 10 + 0xbd (rocket) at the explosion point
   (pos.trBase), the weapon number in `weapon`, the surface type in `surfaceType`, the direction in origin2, kept 1 s

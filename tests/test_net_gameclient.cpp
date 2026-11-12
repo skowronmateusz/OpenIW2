@@ -16,6 +16,7 @@
 #include "net/server.h"
 #include "netgame/netcombat.h"
 #include "netgame/netmove.h"
+#include "netgame/remoteview.h"
 
 using namespace iw2;
 using namespace iw2::net;
@@ -218,7 +219,7 @@ void unitTests() {
     CHECK(out[1].origin[0] == 42);
 }
 
-// The client clock on a path that delivers in bursts (docs/spec/net.md section 10 "Client time on a bursty path"):
+// The client clock on a path that delivers in bursts (docs/spec/net.md section 10 "Client time: the even clock"):
 // snapshots every 50 ms of server time, 5 ms on the way, but the path is dark for darkMs out of every periodMs and
 // delivers what it held at the end of the stretch (a radio that leaves its channel). Frames every 16 ms.
 struct ClockRun {
@@ -257,6 +258,126 @@ ClockRun runClock(ClientClock clock, int periodMs, int darkMs, int fromMs, int t
         prevT = t;
     }
     return r;
+}
+
+// The even clock (docs/spec/net.md section 10 "Client time: the even clock"). Snapshots of server time 1000 + n *
+// interval leave at n * interval + 5 and arrive `late(n)` ms later; the client draws every frameMs and either knows
+// the arrival times or only the times of its reads.
+struct EvenRun {
+    double stepMin = 1e9, stepMax = -1e9; // the clock's step per frame, with the fraction
+    double behindMin = 1e9, behindMax = -1e9; // the newest arrived snapshot's time minus the clock
+    int past = 0, frames = 0;
+};
+template <typename Late>
+EvenRun runEven(ClientClock clock, int intervalMs, int frameMs, bool arrivalKnown, Late late, int fromMs = 4000, int toMs = 12000) {
+    EvenRun r;
+    int next = 0, newest = -1, prevSnap = 0;
+    double prevT = 0;
+    for (int now = 0; now < toMs; now += frameMs) {
+        for (;; ++next) {
+            const int at = next * intervalMs + 5 + late(next);
+            if (at > now) break;
+            const int st = 1000 + next * intervalMs;
+            clock.snapshot(st, prevSnap, next == 0, arrivalKnown ? at : now);
+            prevSnap = newest = st;
+        }
+        if (newest < 0) continue;
+        const double t = double(clock.time(now, newest)) + clock.fraction();
+        if (now >= fromMs) {
+            ++r.frames;
+            r.stepMin = std::min(r.stepMin, t - prevT), r.stepMax = std::max(r.stepMax, t - prevT);
+            r.behindMin = std::min(r.behindMin, newest - t), r.behindMax = std::max(r.behindMax, newest - t);
+            if (t > newest) ++r.past;
+        }
+        prevT = t;
+    }
+    return r;
+}
+
+void evenClockTests() {
+    const auto even = [](int) { return 0; };
+    // An even path, 20 snapshots a second, a client at 125 frames a second that only knows when it read them (up to a
+    // frame late): the clock never passes the newest snapshot and moves by the frame's length in every frame (the plain
+    // rule's whole milliseconds move by 1 ms now and then, an eighth of such a frame).
+    {
+        const EvenRun r = runEven(ClientClock{}, 50, 8, false, even);
+        std::printf("even clock, 20 Hz: step %.3f..%.3f ms per 8 ms frame, %.1f..%.1f ms before the newest snapshot, past it in %d of %d\n",
+                    r.stepMin, r.stepMax, r.behindMin, r.behindMax, r.past, r.frames);
+        CHECK(r.frames > 500 && r.past == 0);
+        CHECK(r.stepMin > 7.9 && r.stepMax < 8.1);
+        CHECK(r.behindMin >= 0 && r.behindMax <= 50 + 8 + 3 + 1);
+    }
+    // 60 snapshots a second (16 / 17 / 17 ms apart): the clock follows the snapshots' own spacing.
+    {
+        ClientClock c;
+        EvenRun r;
+        int next = 0, newest = -1, prevSnap = 0;
+        for (int now = 0; now < 12000; now += 8) {
+            for (;; ++next) {
+                if (next * 50 / 3 + 5 > now) break;
+                const int st = 1000 + next * 50 / 3;
+                c.snapshot(st, prevSnap, next == 0, next * 50 / 3 + 5);
+                prevSnap = newest = st;
+            }
+            if (newest < 0) continue;
+            const double t = double(c.time(now, newest)) + c.fraction();
+            if (now >= 4000) {
+                ++r.frames;
+                r.behindMin = std::min(r.behindMin, newest - t), r.behindMax = std::max(r.behindMax, newest - t);
+                if (t > newest) ++r.past;
+            }
+        }
+        std::printf("even clock, 60 Hz with arrival times: %.1f..%.1f ms before the newest snapshot, past it in %d of %d\n", r.behindMin,
+                    r.behindMax, r.past, r.frames);
+        CHECK(r.frames > 500 && r.past == 0 && r.behindMax <= 17 + 8 + 3 + 2);
+    }
+    // A client at 30 frames a second: with the read times alone the snapshots look up to 33 ms late and the clock runs
+    // that much further behind; with the arrival times it stays one interval + safetyMs behind the arrivals.
+    {
+        const EvenRun read = runEven(ClientClock{}, 50, 33, false, even);
+        const EvenRun arrival = runEven(ClientClock{}, 50, 33, true, even);
+        std::printf("even clock at 30 frames a second: %.1f..%.1f ms before the newest snapshot by read times, %.1f..%.1f by arrival times\n",
+                    read.behindMin, read.behindMax, arrival.behindMin, arrival.behindMax);
+        CHECK(read.past == 0 && arrival.past == 0);
+        CHECK(arrival.behindMax <= 50 + 33 + 3 + 1 && arrival.behindMax < read.behindMax - 15);
+    }
+    // Jitter (every snapshot 0..12 ms late, in order): the clock runs behind the delay nine snapshots in ten stay
+    // within, moves evenly, and is past the newest snapshot only for the few beyond that, never by more than the jitter.
+    {
+        uint32_t seed = 12345;
+        std::vector<int> lates;
+        for (int i = 0; i < 400; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            lates.push_back(int((seed >> 16) % 13));
+        }
+        const auto jitter = [&](int n) { return lates[size_t(n) % lates.size()]; };
+        const EvenRun r = runEven(ClientClock{}, 50, 8, true, jitter);
+        const EvenRun plain = runEven(ClientClock{0, 0}, 50, 8, true, jitter);
+        std::printf("even clock, 0..12 ms jitter: step %.3f..%.3f ms, %.1f..%.1f ms before the newest snapshot, past it in %d of %d (plain rule: %d, step %.0f..%.0f)\n",
+                    r.stepMin, r.stepMax, r.behindMin, r.behindMax, r.past, r.frames, plain.past, plain.stepMin, plain.stepMax);
+        CHECK(r.stepMin > 7.1 && r.stepMax < 8.5);  // within the slew limits (10 % slower, 5 % faster)
+        CHECK(r.past * 20 < r.frames && r.behindMin > -13);
+        CHECK(r.behindMax <= 50 + 12 + 8 + 3 + 1);
+    }
+    // One lost snapshot does not move the clock (the interval is the middle one of the last five); another snapshot
+    // rate is followed within a few snapshots.
+    {
+        ClientClock c;
+        int prevSnap = 0, newest = 0;
+        double worst = 0, before = 0;
+        for (int now = 0, n = 0; now < 9000; now += 8)
+            for (; n * 50 + 5 <= now; ++n) {
+                if (n == 100) continue; // lost
+                const int st = 1000 + n * 50;
+                c.snapshot(st, prevSnap, n == 0, n * 50 + 5);
+                prevSnap = newest = st;
+                const double t = double(c.time(now, newest)) + c.fraction() - now;
+                if (n == 99) before = t;
+                if (n > 100 && n < 130) worst = std::max(worst, std::fabs(t - before));
+            }
+        std::printf("even clock, one lost snapshot: the clock moves by %.2f ms at most\n", worst);
+        CHECK(worst < 1.0);
+    }
 }
 
 void burstyClockTests() {
@@ -309,35 +430,16 @@ void burstyClockTests() {
                 stallBursty.lagMin, stallBursty.lagMax);
     CHECK(stallBursty.holds == 0 && stallBursty.leaps == 0 && stallBursty.lagMax <= 220 + 50 + 70);
     // Spikes below the 100 ms at which the 1.3 rule steps (85 ms dark out of every 500 ms): the plain rule runs past
-    // the newest snapshot with every spike (the other players are held, then moved at once); with the 100 ms limit of
-    // the window the clock did the same. The window's 40 ms limit keeps the clock before the newest snapshot, at most
-    // the spike further behind.
+    // the newest snapshot with every spike (the other players are held, then moved at once). A stretch over spreadMs
+    // (40 ms) that comes again puts the even clock that much further behind, and it stays before the newest snapshot.
     const ClockRun plainSpike = runClock(ClientClock{0, 0}, 500, 85, 4000, 16000);
-    ClientClock limit100;
-    limit100.spreadMs = 100;
-    const ClockRun oldSpike = runClock(limit100, 500, 85, 4000, 16000);
     const ClockRun oursSpike = runClock(ClientClock{}, 500, 85, 4000, 16000);
-    std::printf("spikes of 85 ms: past the newest snapshot in %d frames (plain), %d (100 ms limit), %d (openiw2) of %d; openiw2 %d held / %d leaps, lag %d..%d ms\n",
-                plainSpike.starved, oldSpike.starved, oursSpike.starved, oursSpike.frames, oursSpike.holds, oursSpike.leaps, oursSpike.lagMin, oursSpike.lagMax);
-    CHECK(plainSpike.starved > 20 && oldSpike.starved > 20);
+    std::printf("spikes of 85 ms: past the newest snapshot in %d frames (plain), %d (openiw2) of %d; openiw2 %d held / %d leaps, lag %d..%d ms\n",
+                plainSpike.starved, oursSpike.starved, oursSpike.frames, oursSpike.holds, oursSpike.leaps, oursSpike.lagMin, oursSpike.lagMax);
+    CHECK(plainSpike.starved > 20);
     CHECK(oursSpike.starved == 0 && oursSpike.holds == 0 && oursSpike.leaps == 0);
     CHECK(oursSpike.lagMax <= 85 + 50 + 70);
-    // Jitter of a client's own frames (a snapshot is read up to one frame after it arrived) is not a bursty path: the
-    // window stays out and the clock is the plain one, tick for tick.
-    {
-        ClientClock a{0, 0}, b{};
-        bool same = true;
-        int prev = 0;
-        for (int now = 0, n = 0; now < 20000; now += 33) // 30 frames a second
-            for (; n * 50 + 5 <= now; ++n) {
-                const int st = 1000 + n * 50;
-                a.snapshot(st, prev, n == 0, now);
-                b.snapshot(st, prev, n == 0, now);
-                prev = st;
-                same = same && a.time(now, st) == b.time(now, st);
-            }
-        CHECK(same);
-    }
+    evenClockTests();
 }
 
 // The time delta rule of the 1.3 client (docs/spec/net.md section 10 "Client time").
@@ -490,6 +592,34 @@ void smoothnessTest() {
     CHECK(backwards == 0);
     CHECK(big <= samples / 100);  // a held frame (the clock ran into a late snapshot) is caught up at once
     CHECK(good >= samples * 9 / 10);
+    // pastNewestTest (docs/spec/net.md section 10 "Past the newest snapshot"): no snapshot arrives any more; the time
+    // past the newest one grows with the clock up to 30 ms, and the players move on along their velocity that long.
+    {
+        const ClientSnapshot* newest = c.latest();
+        CHECK(newest != nullptr);
+        float last = 0;
+        bool grew = false, capped = false;
+        for (int i = 0; i < 20 && newest; ++i) {
+            now += 8;
+            const double t = double(c.renderTime(now)) + c.timeFraction();
+            const float past = c.pastNewestMs(t);
+            CHECK(past >= last && past <= float(GameClient::kExtrapolateMs));
+            if (t <= double(newest->serverTime)) CHECK(past == 0);
+            else CHECK(std::fabs(past - float(std::min(t - double(newest->serverTime), 30.0))) < 1e-3f);
+            grew = grew || (past > 0 && past < 30);
+            capped = capped || (past == 30 && t > double(newest->serverTime) + 40);
+            last = past;
+        }
+        CHECK(grew && capped);
+        std::vector<game::World::RemotePlayer> players(2);
+        players[0].origin = {10, 20, 30};
+        players[0].velocity = {200, -100, 0};
+        players[1] = players[0];
+        players[1].dead = true;
+        netgame::RemoteView::extrapolate(players, 30.0f);
+        CHECK(std::fabs(players[0].origin[0] - 16.0f) < 1e-3f && std::fabs(players[0].origin[1] - 17.0f) < 1e-3f && players[0].origin[2] == 30.0f);
+        CHECK(players[1].origin[0] == 10.0f);
+    }
     c.disconnect();
 }
 
