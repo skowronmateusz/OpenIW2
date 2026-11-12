@@ -363,6 +363,15 @@ int main() {
                     if (lowerEq(it->dvar, "ui_language") || lowerEq(it->dvarTest, "developer")) below = it->rect.y;
                 CHECK(below == 165); // the language row was at 180 (the developer-only row below the console row)
             }
+            // The options menu has no "Reset system defaults" entry (setRecommended is not implemented).
+            {
+                MenuLibrary om(game);
+                om.loadFile("ui/options.menu");
+                const Menu* m = om.find("options_menu");
+                CHECK(m != nullptr);
+                if (m)
+                    for (const auto& it : m->items) CHECK(it->text != "@MENU_RESET_SYSTEM_DEFAULTS");
+            }
             // Kept rows: the anti-aliasing row and the sync row are still there.
             if (const Menu* m = sp.find("options_graphics")) {
                 bool aa = false, vsync = false;

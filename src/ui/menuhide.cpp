@@ -132,6 +132,9 @@ const HideRule kSpRules[] = {
     {"options_sound", "", "@MENU_SOUND_QUALITY"},
     {"options_sound", "", "", "ui_mss_3d_provider"},
     {"options_sound", "", "@MENU_SOUND_PROVIDER"},
+    // "Reset system defaults": its confirm popup runs setRecommended (hardware-detected graphics settings), which openiw2 does not
+    // implement. TODO(spec): the command's settings; the entry is the last of its column, so nothing moves.
+    {"options_menu", "", "@MENU_RESET_SYSTEM_DEFAULTS"},
 };
 // clang-format on
 

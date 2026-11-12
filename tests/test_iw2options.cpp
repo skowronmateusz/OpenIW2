@@ -180,26 +180,25 @@ void checkSet(bool multiplayer) {
     MenuLibrary lib(vfs);
     lib.parseSource(kOptions, "ui/options.menu");
     Menu* opt = lib.find("options_menu");
-    CHECK(opt && opt->items.size() == 4);
+    CHECK(opt && opt->items.size() == 3); // the Reset system defaults entry is hidden (menuhide.cpp)
     CHECK(addOpenIw2Options(lib, multiplayer));
     CHECK(addOpenIw2Options(lib, multiplayer)); // idempotent
-    CHECK(opt && opt->items.size() == 5);
+    CHECK(opt && opt->items.size() == 4);
     if (!opt) return;
     // The entry sits below Game Options, the entries under it moved down by one line, Back (another column) stays.
     const Item* entry = byName(*opt, "iw2_options_button");
     const Item* game = byText(*opt, "@MENU_GAME_OPTIONS");
-    const Item* reset = byText(*opt, "@MENU_RESET_SYSTEM_DEFAULTS");
     const Item* back = byText(*opt, "@MENU_BACK");
-    CHECK(entry && game && reset && back);
-    if (entry && game && reset && back) {
+    CHECK(entry && game && back && !byText(*opt, "@MENU_RESET_SYSTEM_DEFAULTS"));
+    if (entry && game && back) {
         CHECK(entry->text == "@IW2_OPT_TITLE" && entry->rect.x == 400 && entry->rect.y == game->rect.y + 15 && game->rect.y == 270);
-        CHECK(reset->rect.y == 300 && back->rect.y == 380);
+        CHECK(back->rect.y == 380);
         CHECK(hasCommand(entry->action, "open", "iw2_options") && !hasCommand(entry->action, "open", "options_game"));
     }
     // Opening another page closes the OpenIW2 page, and so does closing the options menu.
     const Item* sound = byText(*opt, "@MENU_SOUND");
     CHECK(sound && hasCommand(sound->action, "close", "iw2_options") && hasCommand(opt->onClose, "close", "iw2_options"));
-    CHECK(checkNavigation(lib) == 3); // Sound, Game Options, OpenIW2 from each of the three pages (Reset opens a popup that is not in the fixture)
+    CHECK(checkNavigation(lib) == 3); // Sound, Game Options, OpenIW2 from each of the three pages
     // The page: the hit marker option (three values), the Cheats option only in single player (and hidden by ui_multiplayer there).
     const Menu* page = lib.find("iw2_options");
     CHECK(page != nullptr);
