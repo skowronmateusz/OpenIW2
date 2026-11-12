@@ -50,6 +50,10 @@ template <class F> void forEachUsercmdPiece(int msec, F&& run) {
 // Runs one command on ps. passEntity: the moving client's own entity, which its traces skip (pm->clientNum as the
 // pass entity of the player move): the client's body clip is linked where it stood, and a move that starts elsewhere
 // (the prediction from an older acknowledged origin) would otherwise run into it.
+// The player_mantle_* animations both sides move with (the server's world, the client's front end): without them
+// playerMove never starts a mantle, so a network player could not climb (docs/spec/mp-pmove.md). Process-wide; a listen
+// host's server and client share the same data. nullptr: no mantling.
+void setMantleAnims(const game::MantleAnims* anims);
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
                 const WeaponMove* weapon = nullptr, int passEntity = -1, bool controlsFrozen = false);
 

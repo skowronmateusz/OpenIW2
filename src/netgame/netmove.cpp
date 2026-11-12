@@ -51,6 +51,11 @@ int usercmdMsec(int prevTime, int time) {
 
 float usercmdStep(int prevTime, int time) { return static_cast<float>(usercmdMsec(prevTime, time)) * 0.001f; }
 
+namespace {
+const game::MantleAnims* g_mantle = nullptr;
+}
+void setMantleAnims(const game::MantleAnims* anims) { g_mantle = anims; }
+
 void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const net::UserCmd& cmd, int prevTime,
                 const WeaponMove* weapon, int passEntity, bool controlsFrozen) {
     const int msec = usercmdMsec(prevTime, cmd.serverTime);
@@ -62,6 +67,7 @@ void runUsercmd(const game::CollisionWorld& world, game::PlayerState& ps, const 
     // A network game is multiplayer: the MP dvar defaults (docs/spec/mp-pmove.md), on the server and in the prediction alike.
     game::MoveParams mp = game::multiplayerMoveParams();
     mp.passEntity = passEntity;
+    mp.mantle = g_mantle;
     game::PlayerInput in = inputFromUsercmd(cmd);
     in.dead = ps.pmType == 6 || ps.pmType == 7; // MP dead types: no command moves, the dead view height
     if (controlsFrozen) { // pm_flags 0x8000 (docs/spec/controls.md "freezecontrols"): no move bytes, no jump, aim or lean; velocity and stance are held in playerMove

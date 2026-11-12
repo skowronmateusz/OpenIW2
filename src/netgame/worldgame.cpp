@@ -723,6 +723,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.ps.velocity = {0, 0, 0};
     } else {
         for (const game::KnockbackHit& hit : w_->mpTakeKnockbacks(it->second)) game::applyKnockback(m.ps, hit, w_->cvarFloat("g_knockback", 1000.0f));
+        setMantleAnims(w_->mpMantleAnims());
         runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm, e->number, frozen);
     }
     // The movement's player-state events (0x80e00d2): into the entity's ring for the other clients, the client's own

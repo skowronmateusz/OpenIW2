@@ -74,9 +74,7 @@ float botTurn(float from, float to, float maxStep) {
     return wrap180(from + std::clamp(d, -maxStep, maxStep));
 }
 
-// The map's navigation graph: from the cache when its key matches this map's BSP data and the generator version,
-// else generated from the collision world (seeded with the MP spawn points) and written to the cache.
-const NavGraph& World::mpNav() {
+const MantleAnims* World::mpMantleAnims() {
     if (!bots_) bots_ = std::make_shared<BotSystem>();
     if (!bots_->mantleLoaded) { // xanim/player_mantle_* (tree indices 1-10, pmove.h MantleAnims)
         bots_->mantleLoaded = true;
@@ -88,6 +86,13 @@ const NavGraph& World::mpNav() {
             if (bots_->mantleAnims[size_t(i)]) bots_->mantle.anims[size_t(i)] = &*bots_->mantleAnims[size_t(i)];
         }
     }
+    return bots_->mantle.loaded() ? &bots_->mantle : nullptr;
+}
+
+// The map's navigation graph: from the cache when its key matches this map's BSP data and the generator version,
+// else generated from the collision world (seeded with the MP spawn points) and written to the cache.
+const NavGraph& World::mpNav() {
+    mpMantleAnims();
     if (bots_->nav) return *bots_->nav;
     // The flood fill starts at the spawn points left by the game type, so they are part of the cache key: two game
     // types on one map (parallel processes sharing the cache) must not read each other's graph.

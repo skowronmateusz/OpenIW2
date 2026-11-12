@@ -941,6 +941,16 @@ else()
   add_test(NAME mpbots_world COMMAND test_mpbots)
 endif()
 
+add_executable(test_netmantle tests/test_netmantle.cpp)
+target_link_libraries(test_netmantle PRIVATE iw2_netgame iw2_game)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # A network player climbs mantle links of mp_toujane through the shared server / prediction move.
+  add_test(NAME netmantle_world COMMAND test_netmantle)
+  set_tests_properties(netmantle_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+else()
+  add_test(NAME netmantle_world COMMAND test_netmantle)
+endif()
+
 add_executable(test_mpbotcombat tests/test_mpbotcombat.cpp)
 target_link_libraries(test_mpbotcombat PRIVATE iw2_game)
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")

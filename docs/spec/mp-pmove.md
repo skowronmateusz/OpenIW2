@@ -27,6 +27,13 @@ There is no sprint and no sprint dvar. The pmove constant pool (0x8154f6c..0x815
 as SP (0.4, 3, 6, 0.15, 0.65, the lean and view-height values). So stances, lean, prone, mantle and ladders behave as in
 SP; the differences below come only from the dvars.
 
+## Mantle
+
+The mantle in MP is the SP one (0x80dcf80): it moves the player along the root deltas of the player_mantle_* animations
+(PLAYER_MANTLE tree, the same xanims). openiw2 runs the server move and the client prediction through one function
+(src/netgame/netmove.cpp); both must have those animations, or the move never starts a mantle and a network player
+cannot climb. The server takes them from its world, the client front end loads them itself.
+
 ## Falling (CrashLand 0x80e30c4)
 
 Same formula as SP (0x508fe0): the fall height from the speed at the start of the step, damage 0..100 between the two

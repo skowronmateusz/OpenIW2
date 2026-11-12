@@ -8946,6 +8946,7 @@ int main(int argc, char** argv) {
         const game::MoveParams mp;
         game::MantleAnims mantleAnims;
         for (int i = 1; i < 11; ++i) mantleAnims.anims[size_t(i)] = viewAnim(vfs, game::mantleAnimName(i));
+        netgame::setMantleAnims(mantleAnims.loaded() ? &mantleAnims : nullptr); // the network prediction climbs like the server
         // Window pixels to the 640x480 virtual screen (4:3 area centred horizontally, as the HUD).
         auto toVirtual = [&](float wx, float wy) {
             int pw = 0, ph = 0, ww = 0, wh = 0;

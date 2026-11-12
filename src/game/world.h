@@ -523,6 +523,8 @@ public:
     bool mpIsBot(int client) const;
     void mpKickBot(int client);                          // disconnects a bot and removes it from the controller
     const NavGraph& mpNav();
+    // The player_mantle_* animations (loaded once from the VFS), nullptr when the files are missing: the MP player move uses them.
+    const MantleAnims* mpMantleAnims();
     void mpSetBotSkill(int skill);                       // 0 easy .. 3 veteran, for bots added afterwards
     // Bot goals (docs/spec/mp-bots.md, "Objectives"): a point or an entity to reach within radius (holding use there when
     // `use`), replacing the gametype objective until cleared; the role picks the objective (auto, attack, defend, hunt).
