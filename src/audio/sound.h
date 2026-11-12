@@ -38,13 +38,13 @@ struct SoundAlias {
     bool master = false;       // masterslave column "master" (alias flag 0x2)
     float slavePct = -1;       // masterslave column number 0..1 (alias flag 0x4, +0x30); -1 = not a slave
     bool noWetLevel = false;   // `reverb` column contains "nowetlevel" (alias flag 0x10, 0x429130): the voice gets no reverb send
-    bool fullDryLevel = false; // `reverb` column contains "fulldrylevel" (alias flag 0x8); TODO(spec): no consumer found in the exe
+    bool fullDryLevel = false; // `reverb` column contains "fulldrylevel" (alias flag 0x8); no consumer in the exe, kept for completeness
     // volumefalloffcurve (soundaliases/<name>.vfcurve, alias +0x40): knots (x = normalised distance 0..1, y = gain); an empty
     // column keeps the built-in default curve (0,1)-(1,0) (0x428d22).
     std::vector<std::array<float, 2>> curve{{0, 1}, {1, 0}};
     bool streamed = false;     // `type` column "streamed" (alias +0x12c = 2; empty/"loaded" = 1, 0x428e70): plays from the stream slot pool
     int startDelayMs = 0;      // `startdelay` column (atoi, 0x429579 -> alias +0x3c): the sample starts this many ms after the play call
-    float lfePct = 0;          // `lfe percentage` (clamped 0..1, 0x42959d -> alias +0x38); TODO(spec): no consumer found in the exe
+    float lfePct = 0;          // `lfe percentage` (clamped 0..1, 0x42959d -> alias +0x38); no consumer in the exe
     // `speakermap` (radio/announcer/ambience/music) is read by no parser case (column handler 0x4295c3 is empty): ignored.
     std::string secondary;     // secondaryaliasname
     std::string subtitle;      // `subtitle` column: localised caption key (e.g. SUBTITLE_MOSCOW_RS1_PICKUPRIFLE), original case

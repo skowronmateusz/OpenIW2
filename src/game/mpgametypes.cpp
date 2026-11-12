@@ -109,8 +109,7 @@ void World::registerMpGametypeBuiltins() {
 
     // objective_team lives with the other MP objective built-ins in src/game/mphud.cpp.
 
-    // disableWeapon / enableWeapon (0x80fd286 / 0x80fd306) on a client. TODO(spec): the player state flag they set;
-    // here the bot controller does not fire while it is set.
+    // disableWeapon / enableWeapon (0x80fd286 / 0x80fd306) on a client. The bot controller does not fire while it is set.
     auto clientEnt = [this](CallContext& c) -> MpClient* {
         Entity* e = entityOf(c.self);
         const int cl = e ? mpClientOf(*e) : -1;

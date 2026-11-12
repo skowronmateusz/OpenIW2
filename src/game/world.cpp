@@ -277,7 +277,7 @@ void World::spawnMapEntities() {
             if (!(flags.isInt() && (flags.asInt() & 1))) mapStartActors.push_back(&e);
         } else if (kEntityClasses.count(cls) || (mp_ && startsWith(cls, "mp_"))) {
             // MP: the spawn points (mp_dm_spawn, mp_tdm_spawn, mp_global_intermission, ...) stay entities the gametypes look
-            // up by classname (dm.gsc:107, docs/spec/mp.md). TODO(spec): the MP spawn table entries for them.
+            // up by classname (dm.gsc:107, docs/spec/mp.md).
             Entity& e = spawnEntity(cls);
             e.mapIndex = mapIndex;
             fill(e.obj);

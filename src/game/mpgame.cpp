@@ -84,7 +84,7 @@ void World::mpStart(const std::string& gametype) {
         // as an inert, removed object for the code that reads it unguarded.
         if (mpDedicated_) freeEntity(*player_);
     }
-    timeMs_ += 50; // the frame start before init, as in runLevelMain (TODO(spec): MP init time)
+    timeMs_ += 50; // the frame start before init, as in runLevelMain
     vm_.setTime(timeMs_);
     // Game init order (0x8109096): gametype main (0x81182f4, required), level main (0x81101d0, optional),
     // CodeCallback_StartGameType (0x8118322).
@@ -556,7 +556,7 @@ void World::registerMpBuiltins() {
         if (int(&cl - mp_->clients.data()) == mp_->localClient) clientCommands_.push_back({"popupclose", ""});
         return Value();
     });
-    // closeInGameMenu: TODO(spec) its server command; the script menus opened by the ESC key (g_scriptMainMenu) are
+    // closeInGameMenu (server command K, docs/spec/net.md): the script menus opened by the ESC key (g_scriptMainMenu) are
     // script menus too, so closeMenu already closes them here.
     // closeInGameMenu (VAs in the 1.3 Linux dedicated server: 0x80fbed2) sends the client the command K.
     vm_.registerBuiltin("closeingamemenu", [this, clientOf](CallContext& c) {

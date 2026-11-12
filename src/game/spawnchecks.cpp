@@ -75,7 +75,7 @@ bool World::sightToActorBox(const Vec3& eye, const Vec3& pos, int pass1, int pas
 // With none: "Tried to force spawning of an AI when all AI slots are used by undeletable AI" (0x589e00; the exe then
 // reads the empty candidate). The victim gets notify "death" (0x46d0f0, const 0x1c7f05c) and G_FreeEntity (0x4d7c30),
 // the same as the script delete (0x4ef570).
-// TODO(spec): the exe iterates actor slots (pool 0x1c6051c); the port uses entity order, which differs only for ties.
+// TODO(spec): [stays: differs only for ties] the exe iterates actor slots (pool 0x1c6051c); the port uses entity order, which differs only for ties.
 bool World::freeActorForForceSpawn() {
     if (levelInitializing_) {
         print("too many actors in bsp file"); // Com_Error (0x42c7f0 code 1) in the exe

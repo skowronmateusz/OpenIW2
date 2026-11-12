@@ -30,7 +30,7 @@ bool grenadeHintLob(const HintVec& hint, const HintVec& start, const HintVec& ta
                     HintVec& land);
 
 // 0x51f320 sorts the table in place (CRT qsort, 12-byte entries, comparator 0x51f280) by squared 3D distance from
-// `origin`, nearest first. The CRT qsort is not stable; equal distances keep their order here (TODO(spec): the exact
+// `origin`, nearest first. The CRT qsort is not stable; equal distances keep their order here (TODO(spec): [stays: ties only] the exact
 // order of ties under the MSVC qsort is not reproduced).
 void grenadeHintSortByDistance(std::vector<HintVec>& hints, const HintVec& origin);
 

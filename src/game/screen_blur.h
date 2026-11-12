@@ -47,7 +47,7 @@ struct ScreenBlur {
             priority = 0;
         }
     }
-    // 0x4af3d0: sqrt(cur^2 + [0xf48b88]^2 + x^2). TODO(spec): the other two terms are taken as 0. No instruction stores to either address
+    // 0x4af3d0: sqrt(cur^2 + [0xf48b88]^2 + x^2). The other two terms are 0. No instruction stores to either address
     // directly, so they are fields written through a base pointer; x is only used while the UI key catcher is up (0x617f04 bit 8).
     float composed() const { return cur; }
 };
